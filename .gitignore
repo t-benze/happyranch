@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Environment & secrets
+.env
+.env.*
+*.key
+credentials.json
+
+# Logs (tracked separately, not in git)
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# CrewAI / LangChain
+.crewai/
+.langchain/
+
+# Database
+*.db
+*.sqlite3
