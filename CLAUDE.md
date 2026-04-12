@@ -5,8 +5,8 @@ A one-person company (OPC) that provides online tourism information and booking 
 
 ## Architecture Summary
 - **Layer 1**: Founder (human) — sets rules, handles escalations, reviews weekly dashboard
-- **Layer 2**: 4 Manager Agents — Content Manager, Product Manager, Operations Manager, CX Manager
-- **Layer 3**: 8 Worker Agents — Content Writer, SEO Agent, QA Agent, Dev Agent, Payment Agent, Partner Liaison, Compliance Agent, Support Agent
+- **Layer 2**: 4 Manager Agents — Content Manager, Engineering Head, Operations Manager, CX Manager
+- **Layer 3**: 9 Worker Agents — Content Writer, SEO Agent, QA Agent, Product Manager, Dev Agent, Payment Agent, Partner Liaison, Compliance Agent, Support Agent
 - **Infrastructure**: Audit Logger, Escalation Router, Knowledge Base
 
 Agents operate autonomously within defined authority. Managers cross-audit each other (peer review). No agent both proposes and approves consequential actions (maker-checker pattern).
@@ -16,7 +16,12 @@ Agents operate autonomously within defined authority. Managers cross-audit each 
 - `02-system-prompts-managers.md` — Full system prompts for all 4 manager agents with accountability contracts and performance tiers
 - `03-system-prompts-workers.md` — Full system prompts for all 8 worker agents with accountability contracts and performance tiers
 - `04-escalation-rules.md` — 12 routing rules (priority-ordered), manager-resolvable categories, peer audit triggers, structured request/response formats
-- `05-crewai-blueprint.md` — CrewAI implementation blueprint: crew definitions, provider-agnostic executor model, agent memory architecture, permission/authority model, task state machine, orchestrator design, tool assignments, performance tier impact
+- `05-crewai-blueprint.md` — Index pointing to the split blueprint documents:
+  - `05a-crews.md` — Concept mapping, crew definitions, agent tools, CrewAI boundary
+  - `05b-agent-runtime.md` — Executor model, memory architecture, lifecycle & scheduling
+  - `05c-orchestrator.md` — Orchestrator responsibilities, performance tiers, permissions, task state machine
+  - `05d-feishu.md` — Founder interaction via Feishu, bot architecture, notification tiers
+  - `05e-dashboard.md` — Dashboard layout, API endpoints, implementation order
 
 ## Tech Stack
 - **Language**: Python 3.11+
@@ -28,15 +33,17 @@ Agents operate autonomously within defined authority. Managers cross-audit each 
 - **Hosting**: Local Mac Mini
 
 ## Implementation Order (follow this sequence)
-1. **Content Crew** — Content Writer + QA Agent + Content Manager with CrewAI hierarchical process. Get write → review → approve working end-to-end.
-2. **Audit logging** — Wrap Content Crew with callbacks that log every task, completion report, and review to SQLite.
-3. **Revision loop** — Orchestrator re-runs the Crew when QA returns REVISE. Track revision count. Escalate after 2 rounds.
-4. **Performance scoring** — Score agents after each Crew run. Store rolling 30-day scorecards.
-5. **Knowledge base** — RAG access to org charter, guides, SOPs. Scoped read/write per agent.
-6. **Product Crew + Ops Crew** — More complex due to cross-crew dependencies (Compliance Agent cross-audits Payment Agent).
-7. **Inter-Crew communication** — Orchestrator routes tasks between Crews (see blueprint §3 for patterns).
-8. **CX Crew** — Support Agent may run as persistent agent for real-time chat, not batch CrewAI.
-9. **Founder dashboard** — Aggregate audit logs, escalation summaries, scorecards into weekly view.
+1. **Product & Engineering Crew** — Engineering Head (manager) + Product Manager + Dev Agent + Payment Agent with Claude Code executor. Get spec → implement → review working end-to-end.
+2. **Audit logging** — Wrap crew with callbacks that log every task, completion report, and review to SQLite.
+3. **Revision loop** — Orchestrator re-runs when Engineering Head returns REVISE. Track revision count. Escalate after 2 rounds.
+4. **Agent memory** — Persistent workspaces with learnings write-back, scorecard injection, periodic consolidation.
+5. **Performance scoring** — Score agents after each crew run. Store rolling 30-day scorecards. Implement tier-based task chain adjustment.
+6. **Content Crew** — Content Writer + QA Agent + SEO Agent + Content Manager.
+7. **Ops Crew** — Partner Liaison + Compliance Agent + Operations Manager. Enables real cross-crew audits for payment changes.
+8. **Inter-Crew communication** — Orchestrator routes tasks between Crews.
+9. **CX Crew** — Support Agent may run as persistent agent for real-time chat, not batch CrewAI.
+10. **Feishu integration** — Bot architecture, notification tiers, reply parsing.
+11. **Founder dashboard** — Aggregate audit logs, escalation summaries, scorecards into weekly view.
 
 ## Key Constraints
 - **Three jurisdictions**: Mainland China (PIPL, CSL, DSL), Hong Kong (PDPO), Macau (PDPA) — all must be complied with simultaneously
@@ -87,11 +94,17 @@ opc-org/
 │   ├── test_content_crew.py
 │   ├── test_escalation_router.py
 │   └── ...
+├── workspaces/                        # Persistent agent workspaces
+│   ├── engineering_head/
+│   ├── product_manager/
+│   ├── dev_agent/
+│   ├── payment_agent/
+│   └── ...
 ├── knowledge_base/                    # Static KB content (org charter, SOPs)
 │   ├── charter.md
 │   └── sops/
 └── scripts/
-    ├── run_content_crew.py            # CLI to run a content task
+    ├── run_product_crew.py            # CLI to run a product & engineering task
     └── dashboard.py                   # Founder dashboard generator
 ```
 
