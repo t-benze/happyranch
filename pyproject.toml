@@ -3,8 +3,6 @@ name = "opc-org"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "crewai>=0.80",
-    "anthropic>=0.40",
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
 ]
