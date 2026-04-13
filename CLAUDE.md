@@ -38,11 +38,11 @@ The following documents are in the `protocol/` folder.
 - **Hosting**: Local Mac Mini
 
 ## Implementation Order (follow this sequence)
-1. ~~**Product & Engineering Crew**~~ done — Engineering Head + Product Manager + Dev Agent + Payment Agent with Claude Code executor. Orchestrator, audit logging, revision loop, agent memory, performance scoring all implemented.
-2. ~~**Audit logging**~~ done — SQLite-backed audit logger with session start/end, completion reports, review verdicts, escalations, cross-audit stubs.
-3. ~~**Revision loop**~~ done — Max 2 revision rounds before escalation. Engineering Head reviews, routes feedback to target agent.
+1. ~~**Product & Engineering Crew**~~ done — Engineering Head + Product Manager + Dev Agent + Payment Agent with Claude Code executor. EH-driven orchestration loop (EH decides each step: delegate, handle directly, or escalate). Audit logging, agent memory, performance scoring all implemented.
+2. ~~**Audit logging**~~ done — SQLite-backed audit logger with session start/end, completion reports, orchestration steps, escalations.
+3. ~~**EH-driven orchestration**~~ done — Engineering Head analyzes each task and decides the approach. No hardcoded task chains. Max 10 orchestration steps before escalation.
 4. ~~**Agent memory**~~ done — Persistent workspaces with CLAUDE.md, learnings.md, scorecard.md, recent_tasks.md. Context builder regenerates identity on tier changes.
-5. ~~**Performance scoring**~~ done — Rolling 30-day scorecards, green/yellow/red tiers, tier-dependent task chain adjustment.
+5. ~~**Performance scoring**~~ done — Rolling 30-day scorecards, green/yellow/red tiers, exposed to EH via capabilities prompt.
 6. **Content Crew** — Content Writer + QA Agent + SEO Agent + Content Manager.
 7. **Ops Crew** — Partner Liaison + Compliance Agent + Operations Manager. Enables real cross-crew audits for payment changes.
 8. **Inter-Crew communication** — Orchestrator routes tasks between Crews.
@@ -77,20 +77,19 @@ Source code and protocol docs live in the repo. Runtime data lives in `~/.opc/` 
 |   |-- config.py                      # Settings (OPC_ env prefix, paths, thresholds)
 |   |-- models.py                      # Pydantic models + StrEnums
 |   |-- orchestrator/
-|   |   |-- orchestrator.py            # Main loop: create task, build chain, run steps, review loop
+|   |   |-- orchestrator.py            # EH-driven loop: ask Engineering Head, execute decisions
+|   |   |-- capabilities.py            # Builds capabilities prompt for EH decision sessions
 |   |   |-- executor.py                # Spawns `claude -p` subprocess, reads completion_report.json
-|   |   |-- task_router.py             # Builds tier-dependent task chains per task type
-|   |   |-- revision_loop.py           # Max-rounds escalation logic
 |   |   |-- performance_tracker.py     # 30-day rolling scorecards, tier calculation
 |   |   |-- context_builder.py         # Generates CLAUDE.md + .claude/settings.json per agent workspace
 |   |   +-- prompt_loader.py           # Parses system prompts from protocol markdown
 |   |-- infrastructure/
 |   |   |-- database.py                # SQLite (WAL mode), 4 tables, typed CRUD
-|   |   +-- audit_logger.py            # Semantic logging (session, verdict, escalation, cross-audit)
+|   |   +-- audit_logger.py            # Semantic logging (session, verdict, escalation, orchestration steps)
 |   |-- agents/                        # Agent definitions (future)
 |   |-- crews/                         # Crew definitions (future)
 |   +-- tools/                         # Agent tools (future)
-|-- tests/                             # 89 tests across 11 files
+|-- tests/                             # 95 tests across 10 files
 +-- docs/superpowers/
     |-- specs/                         # Design specs
     +-- plans/                         # Implementation plans

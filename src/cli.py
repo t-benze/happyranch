@@ -61,7 +61,6 @@ def cmd_status(args: argparse.Namespace) -> None:
     print(f"Status:     {task.status.value}")
     print(f"Agent:      {task.assigned_agent or '-'}")
     print(f"Brief:      {task.brief}")
-    print(f"Revisions:  {task.revision_count}")
     print(f"Created:    {task.created_at}")
     print(f"Updated:    {task.updated_at}")
 
@@ -89,11 +88,11 @@ def cmd_tasks(args: argparse.Namespace) -> None:
         db.close()
         return
 
-    print(f"{'ID':<12} {'Type':<20} {'Status':<12} {'Rev':>3}  Brief")
-    print("-" * 80)
+    print(f"{'ID':<12} {'Type':<20} {'Status':<12}  Brief")
+    print("-" * 76)
     for t in tasks:
         brief = t.brief[:40] + "..." if len(t.brief) > 40 else t.brief
-        print(f"{t.id:<12} {t.type.value:<20} {t.status.value:<12} {t.revision_count:>3}  {brief}")
+        print(f"{t.id:<12} {t.type.value:<20} {t.status.value:<12}  {brief}")
     db.close()
 
 
