@@ -2,30 +2,33 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 
 from src.config import Settings
 from src.infrastructure.audit_logger import AuditLogger
 from src.infrastructure.database import Database
 from src.models import (
     AgentName,
-    ReviewVerdict,
+    NextStep,
+    StepRecord,
     TaskRecord,
     TaskStatus,
-    TaskStep,
     TaskType,
 )
+from src.orchestrator.capabilities import build_capabilities_prompt
 from src.orchestrator.context_builder import ContextBuilder
 from src.orchestrator.executor import AgentExecutor, ExecutorResult
 from src.orchestrator.performance_tracker import PerformanceTracker
-from src.orchestrator.revision_loop import decide_next_action
-from src.orchestrator.task_router import build_task_chain
 
 logger = logging.getLogger(__name__)
 
 
 _DEFAULT_SYSTEM_PROMPTS: dict[str, str] = {
-    "engineering_head": "You are the Engineering Head. Review work from your team. Return a JSON verdict in your output_summary: {\"verdict\": \"approve\"|\"revise\"|\"reject\", \"feedback\": \"...\", \"target_agent\": \"...\"}",
+    "engineering_head": (
+        "You are the Engineering Head for a tourism services company. "
+        "You decide how to handle incoming tasks -- doing work yourself, "
+        "delegating to your team, or escalating to the founder. "
+        "Follow the instructions in your task prompt for the expected response format."
+    ),
     "product_manager": "You are the Product Manager. Write specs and triage bugs.",
     "dev_agent": "You are the Dev Agent. Implement features and fix bugs.",
     "payment_agent": "You are the Payment Agent. Draft payment change proposals with compliance considerations.",
@@ -52,165 +55,111 @@ class Orchestrator:
         logger.info("Created task %s: %s", task_id, brief)
         return task_id
 
-    def build_chain(self, task_type: TaskType) -> list[TaskStep]:
-        """Build a task chain based on current agent tiers."""
-        tiers = self._tracker.get_all_tiers()
-        return build_task_chain(task_type, tiers)
-
     def run_task(self, task_id: str) -> str:
-        """Run a task through its full lifecycle. Returns final status string."""
+        """Run a task through the EH-driven orchestration loop.
+
+        The Engineering Head decides each step: delegate to a worker,
+        handle directly, or escalate. The loop continues until the EH
+        says "done", "escalate", or the max steps guardrail fires.
+        """
         task = self._db.get_task(task_id)
         if task is None:
             raise ValueError(f"Task {task_id} not found")
 
-        chain = self.build_chain(task.type)
         self._db.update_task(task_id, status=TaskStatus.IN_PROGRESS)
+        tiers = self._tracker.get_all_tiers()
+        prior_steps: list[StepRecord] = []
+        max_steps = self._settings.max_orchestration_steps
 
-        # For payment_change, log cross-audit stub before review
-        if task.type == TaskType.PAYMENT_CHANGE:
-            self._audit.log_cross_audit_stub(task_id, task.type.value)
+        for step_num in range(1, max_steps + 1):
+            # Ask the Engineering Head what to do next
+            eh_prompt = build_capabilities_prompt(
+                brief=task.brief,
+                agent_tiers=tiers,
+                step_number=step_num,
+                max_steps=max_steps,
+                prior_steps=prior_steps,
+            )
 
-        prior_output: str | None = None
-        review_step_index = self._find_review_step(chain)
+            eh_result = self._run_agent(task_id, AgentName.ENGINEERING_HEAD, eh_prompt)
 
-        # Run pre-review steps
-        for step in chain[:review_step_index]:
-            result = self._run_agent_step(task_id, step, prior_output)
-            if not result.success:
-                self._db.update_task(task_id, status=TaskStatus.REJECTED)
-                return "rejected"
-            self._log_step_result(task_id, result)
-            prior_output = result.report.output_summary if result.report else None
-
-        # Review loop
-        return self._review_loop(task_id, task, chain, review_step_index, prior_output)
-
-    def _find_review_step(self, chain: list[TaskStep]) -> int:
-        """Find the index of the final review step."""
-        for i in range(len(chain) - 1, -1, -1):
-            if chain[i].action == "review":
-                return i
-        return len(chain) - 1
-
-    def _review_loop(
-        self,
-        task_id: str,
-        task: TaskRecord,
-        chain: list[TaskStep],
-        review_index: int,
-        prior_output: str | None,
-    ) -> str:
-        """Run the review step, handle revisions, return final status."""
-        revision_count = 0
-        max_rounds = self._settings.max_revision_rounds
-
-        while True:
-            # Run the review step
-            review_step = chain[review_index]
-            self._db.update_task(task_id, status=TaskStatus.IN_REVIEW)
-            result = self._run_agent_step(task_id, review_step, prior_output)
-
-            if not result.success or result.report is None:
+            if not eh_result.success:
                 self._db.update_task(task_id, status=TaskStatus.REJECTED)
                 return "rejected"
 
-            self._log_step_result(task_id, result)
+            self._log_step_result(task_id, eh_result)
+            next_step = self._parse_next_step(eh_result)
 
-            # Parse verdict from Engineering Head's output
-            verdict, feedback, target_agent = self._parse_review_verdict(result)
-            reviewed_agent = target_agent or self._find_last_worker(chain, review_index)
-            self._audit.log_review_verdict(
-                task_id, review_step.agent.value, verdict, feedback,
-                reviewed_agent=reviewed_agent,
+            self._audit.log_orchestration_step(
+                task_id, step_num, next_step.model_dump(exclude_none=True),
             )
 
-            # Use revision loop to decide next action
-            action = decide_next_action(
-                verdict=ReviewVerdict(verdict),
-                revision_count=revision_count,
-                max_rounds=max_rounds,
-                feedback=feedback,
-                target_agent=target_agent,
-            )
-
-            if action.action == "approved":
+            if next_step.action == "done":
                 self._db.update_task(task_id, status=TaskStatus.APPROVED)
                 self._update_recent_tasks(task_id)
                 return "approved"
 
-            if action.action == "rejected":
-                self._db.update_task(task_id, status=TaskStatus.REJECTED)
-                self._update_recent_tasks(task_id)
-                return "rejected"
-
-            if action.action == "escalated":
+            if next_step.action == "escalate":
                 self._db.update_task(task_id, status=TaskStatus.ESCALATED)
-                self._audit.log_escalation(task_id, "orchestrator", action.feedback or "Max revisions exceeded")
+                self._audit.log_escalation(
+                    task_id, "engineering_head",
+                    next_step.reason or "Escalated by Engineering Head",
+                )
                 self._update_recent_tasks(task_id)
                 return "escalated"
 
-            # action.action == "revise"
-            revision_count += 1
-            self._db.increment_revision_count(task_id)
+            if next_step.action == "delegate":
+                delegate_result = self._run_agent(
+                    task_id, AgentName(next_step.agent), next_step.prompt or "",
+                )
+                if delegate_result.success:
+                    self._log_step_result(task_id, delegate_result)
 
-            # Find the worker to revise and re-run them
-            revise_agent = target_agent or self._find_last_worker(chain, review_index)
-            revise_step = TaskStep(
-                agent=AgentName(revise_agent),
-                action="revise",
-                description=f"Revise based on feedback: {feedback}",
-            )
-            revise_result = self._run_agent_step(task_id, revise_step, feedback)
-            if revise_result.success and revise_result.report:
-                self._log_step_result(task_id, revise_result)
-                prior_output = revise_result.report.output_summary
+                result_summary = (
+                    delegate_result.report.output_summary
+                    if delegate_result.report
+                    else "Agent session failed"
+                )
+                prior_steps.append(StepRecord(
+                    step_number=step_num,
+                    agent=next_step.agent or "unknown",
+                    action=f"delegate: {(next_step.prompt or '')[:100]}",
+                    result_summary=result_summary,
+                    success=delegate_result.success,
+                ))
 
-    def _parse_review_verdict(self, result: ExecutorResult) -> tuple[str, str | None, str | None]:
-        """Parse the Engineering Head's review verdict from the completion report."""
+        # Max steps exceeded — escalate
+        self._db.update_task(task_id, status=TaskStatus.ESCALATED)
+        self._audit.log_escalation(
+            task_id, "orchestrator",
+            f"Max orchestration steps ({max_steps}) exceeded",
+        )
+        self._update_recent_tasks(task_id)
+        return "escalated"
+
+    def _parse_next_step(self, result: ExecutorResult) -> NextStep:
+        """Parse the Engineering Head's decision from its completion report."""
         if result.report is None:
-            return "reject", "No completion report", None
+            return NextStep(action="escalate", reason="No completion report from Engineering Head")
         try:
             data = json.loads(result.report.output_summary)
-            return (
-                data.get("verdict", "reject"),
-                data.get("feedback"),
-                data.get("target_agent"),
-            )
-        except (json.JSONDecodeError, AttributeError):
-            if result.report.confidence >= 80:
-                return "approve", None, None
-            return "revise", result.report.output_summary, None
+            return NextStep(**data)
+        except (json.JSONDecodeError, TypeError, KeyError, ValueError):
+            # Plain text output — treat as "done" with the text as summary
+            return NextStep(action="done", summary=result.report.output_summary)
 
-    def _find_last_worker(self, chain: list[TaskStep], before_index: int) -> str:
-        """Find the last non-review agent in the chain before the review step."""
-        for i in range(before_index - 1, -1, -1):
-            if chain[i].agent != AgentName.ENGINEERING_HEAD:
-                return chain[i].agent.value
-        return AgentName.DEV_AGENT.value
-
-    def _run_agent_step(
+    def _run_agent(
         self,
         task_id: str,
-        step: TaskStep,
-        prior_output: str | None,
+        agent: AgentName,
+        prompt: str,
     ) -> ExecutorResult:
-        """Set up workspace context and run an agent session."""
-        agent_name = step.agent.value
+        """Set up workspace and run an agent session."""
+        agent_name = agent.value
         workspace = self._settings.get_workspaces_dir() / agent_name
 
         system_prompt = _DEFAULT_SYSTEM_PROMPTS.get(agent_name, "")
         self._context.initialize_workspace(workspace, agent_name, system_prompt)
-
-        task = self._db.get_task(task_id)
-        prompt_parts = [
-            f"Task ID: {task_id}",
-            f"Action: {step.action}",
-            f"Description: {step.description}",
-            f"Brief: {task.brief}" if task else "",
-        ]
-        if prior_output:
-            prompt_parts.append(f"Input from previous step:\n{prior_output}")
-        prompt = "\n\n".join(p for p in prompt_parts if p)
 
         self._audit.log_session_start(task_id, agent_name, str(workspace))
         self._db.update_task(task_id, assigned_agent=agent_name)
@@ -222,15 +171,17 @@ class Orchestrator:
         )
 
         self._audit.log_session_end(task_id, agent_name, result.duration_seconds)
-
         return result
 
     def _update_recent_tasks(self, task_id: str) -> None:
-        """Append a summary to recent_tasks.md for all agents involved in this task."""
+        """Append a summary to recent_tasks.md for all agents."""
         task = self._db.get_task(task_id)
         if task is None:
             return
-        summary = f"- **{task_id}** ({task.type.value}): {task.brief} -- {task.status.value} (revisions: {task.revision_count})\n"
+        summary = (
+            f"- **{task_id}** ({task.type.value}): {task.brief} "
+            f"-- {task.status.value}\n"
+        )
         for agent in AgentName:
             workspace = self._settings.get_workspaces_dir() / agent.value
             recent_path = workspace / "recent_tasks.md"
