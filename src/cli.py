@@ -6,16 +6,33 @@ import logging
 import sys
 from pathlib import Path
 
-from src.config import settings
+from src.config import Settings
 from src.infrastructure.database import Database
 from src.models import AgentName, TaskType
 from src.orchestrator.orchestrator import Orchestrator
 from src.orchestrator.performance_tracker import PerformanceTracker
+from src.runtime import RuntimeDir
 
 
-def _get_db(args: argparse.Namespace) -> Database:
-    db_path = Path(args.db) if args.db else settings.get_db_path()
-    return Database(db_path)
+def _get_settings() -> Settings:
+    return Settings()
+
+
+def _require_runtime(args: argparse.Namespace) -> RuntimeDir:
+    """Validate and load the RuntimeDir from --runtime flag."""
+    if not args.runtime:
+        print("Error: --runtime is required. Pass the path to an OPC runtime directory.")
+        print("  Create one with: opc init <path>")
+        sys.exit(1)
+    try:
+        return RuntimeDir.load(Path(args.runtime))
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+
+def _get_db(runtime: RuntimeDir) -> Database:
+    return Database(runtime.db_path)
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -28,11 +45,19 @@ def _setup_logging(verbose: bool) -> None:
 # ── subcommands ──────────────────────────────────────────────
 
 
+def cmd_init(args: argparse.Namespace) -> None:
+    """Initialize a new OPC runtime directory."""
+    path = Path(args.path)
+    runtime = RuntimeDir.init(path)
+    print(f"Initialized OPC runtime directory at {runtime.root}")
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     """Run a task through the Engineering Head-driven orchestration loop."""
     _setup_logging(args.verbose)
-    db = _get_db(args)
-    orchestrator = Orchestrator(db=db, settings=settings)
+    runtime = _require_runtime(args)
+    db = _get_db(runtime)
+    orchestrator = Orchestrator(db=db, settings=_get_settings(), runtime=runtime)
 
     task_type = TaskType(args.task)
     task_id = orchestrator.create_task(task_type, args.brief)
@@ -50,7 +75,8 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 def cmd_status(args: argparse.Namespace) -> None:
     """Show status of a specific task."""
-    db = _get_db(args)
+    runtime = _require_runtime(args)
+    db = _get_db(runtime)
     task = db.get_task(args.task_id)
     if task is None:
         print(f"Task {args.task_id} not found.")
@@ -81,7 +107,8 @@ def cmd_status(args: argparse.Namespace) -> None:
 
 def cmd_tasks(args: argparse.Namespace) -> None:
     """List recent tasks."""
-    db = _get_db(args)
+    runtime = _require_runtime(args)
+    db = _get_db(runtime)
     tasks = db.list_tasks(limit=args.limit)
     if not tasks:
         print("No tasks found.")
@@ -98,8 +125,9 @@ def cmd_tasks(args: argparse.Namespace) -> None:
 
 def cmd_agents(args: argparse.Namespace) -> None:
     """Show agent performance tiers."""
-    db = _get_db(args)
-    tracker = PerformanceTracker(db, settings)
+    runtime = _require_runtime(args)
+    db = _get_db(runtime)
+    tracker = PerformanceTracker(db, _get_settings())
     tiers = tracker.get_all_tiers()
 
     print(f"{'Agent':<22} {'Tier':<8}")
@@ -122,8 +150,9 @@ def cmd_agents(args: argparse.Namespace) -> None:
 
 def _resolve_repos() -> dict[str, str]:
     """Get repos from settings, falling back to auto-detect from current git remote."""
-    if settings.repos:
-        return settings.repos
+    repos = _get_settings().repos
+    if repos:
+        return repos
     # Auto-detect: use the current repo's remote as a single-repo default
     import subprocess
     try:
@@ -147,23 +176,25 @@ def cmd_init_agent(args: argparse.Namespace) -> None:
     from src.orchestrator.prompt_loader import load_all_prompts
 
     _setup_logging(args.verbose)
-    db = _get_db(args)
+    runtime = _require_runtime(args)
+    db = _get_db(runtime)
 
-    protocol_dir = settings.get_protocol_dir()
+    s = _get_settings()
+    protocol_dir = s.get_protocol_dir()
     if not protocol_dir.exists():
         print(f"Error: protocol directory not found at {protocol_dir}")
         print("Expected: 02-system-prompts-managers.md, 03-system-prompts-workers.md")
         sys.exit(1)
 
     prompts = load_all_prompts(protocol_dir)
-    ctx = ContextBuilder(settings)
+    ctx = ContextBuilder(s)
     repos = _resolve_repos()
 
     agents_to_init = [AgentName(args.agent)] if args.agent else list(AgentName)
 
     for agent in agents_to_init:
         name = agent.value
-        workspace = settings.get_workspaces_dir() / name
+        workspace = runtime.workspaces_dir / name
         prompt = prompts.get(name, "")
 
         if not prompt:
@@ -199,8 +230,13 @@ def build_parser() -> argparse.ArgumentParser:
         prog="opc",
         description="OPC — multi-agent tourism organization CLI",
     )
-    parser.add_argument("--db", default=None, help="Path to SQLite database")
+    parser.add_argument("--runtime", default=None, help="Path to OPC runtime directory")
     sub = parser.add_subparsers(dest="command")
+
+    # opc init
+    p_init_runtime = sub.add_parser("init", help="Initialize a new OPC runtime directory")
+    p_init_runtime.add_argument("path", help="Path for the new runtime directory")
+    p_init_runtime.set_defaults(func=cmd_init)
 
     # opc run
     p_run = sub.add_parser("run", help="Run a task")
@@ -229,11 +265,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_agents.set_defaults(func=cmd_agents)
 
     # opc init-agent
-    p_init = sub.add_parser("init-agent", help="Initialize agent workspaces with system prompts and repo clone")
-    p_init.add_argument("agent", nargs="?", default=None, choices=[a.value for a in AgentName],
+    p_init_agent = sub.add_parser("init-agent", help="Initialize agent workspaces with system prompts and repo clone")
+    p_init_agent.add_argument("agent", nargs="?", default=None, choices=[a.value for a in AgentName],
                         help="Specific agent to initialize (default: all)")
-    p_init.add_argument("--verbose", action="store_true", help="Debug logging")
-    p_init.set_defaults(func=cmd_init_agent)
+    p_init_agent.add_argument("--verbose", action="store_true", help="Debug logging")
+    p_init_agent.set_defaults(func=cmd_init_agent)
 
     return parser
 

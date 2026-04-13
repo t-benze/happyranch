@@ -1,7 +1,9 @@
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
 from src.cli import build_parser
+from src.infrastructure.database import Database
 
 
 def test_run_subcommand():
@@ -76,10 +78,17 @@ def test_init_agent_specific():
     assert args.agent == "dev_agent"
 
 
-def test_global_db_flag():
+def test_init_subcommand():
     parser = build_parser()
-    args = parser.parse_args(["--db", "/tmp/test.db", "tasks"])
-    assert args.db == "/tmp/test.db"
+    args = parser.parse_args(["init", "/tmp/my-runtime"])
+    assert args.command == "init"
+    assert args.path == "/tmp/my-runtime"
+
+
+def test_runtime_flag():
+    parser = build_parser()
+    args = parser.parse_args(["--runtime", "/tmp/rt", "tasks"])
+    assert args.runtime == "/tmp/rt"
     assert args.command == "tasks"
 
 
@@ -89,11 +98,9 @@ def test_no_command_prints_help(capsys):
     assert args.command is None
 
 
-def test_list_tasks_integration(test_settings):
+def test_list_tasks_integration(tmp_dir):
     """Test that `opc tasks` works end-to-end with an empty database."""
-    from src.infrastructure.database import Database
-
-    db = Database(test_settings.get_db_path())
+    db = Database(tmp_dir / "test.db")
     tasks = db.list_tasks()
     assert tasks == []
     db.close()
@@ -113,12 +120,11 @@ def test_run_with_task_flag():
     assert args.task == "bug_fix"
 
 
-def test_list_tasks_returns_records(test_settings):
+def test_list_tasks_returns_records(tmp_dir):
     """Test list_tasks returns TaskRecords."""
-    from src.infrastructure.database import Database
     from src.models import TaskRecord, TaskType
 
-    db = Database(test_settings.get_db_path())
+    db = Database(tmp_dir / "test.db")
     db.insert_task(TaskRecord(id="TASK-001", type=TaskType.BUG_FIX, brief="Fix it"))
     db.insert_task(TaskRecord(id="TASK-002", type=TaskType.IMPLEMENT_FEATURE, brief="Build it"))
     tasks = db.list_tasks()

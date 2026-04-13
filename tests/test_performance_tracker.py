@@ -28,39 +28,34 @@ def _seed_task_results(db: Database, agent: str, outcomes: list[str]) -> None:
         )
 
 
-def test_calculate_tier_green(test_settings):
-    db = Database(test_settings.get_db_path())
+def test_calculate_tier_green(db, test_settings):
     tracker = PerformanceTracker(db, test_settings)
     _seed_task_results(db, "dev_agent", ["approved"] * 9 + ["revised"])
     tier = tracker.calculate_tier("dev_agent")
     assert tier == PerformanceTier.GREEN
 
 
-def test_calculate_tier_yellow(test_settings):
-    db = Database(test_settings.get_db_path())
+def test_calculate_tier_yellow(db, test_settings):
     tracker = PerformanceTracker(db, test_settings)
     _seed_task_results(db, "dev_agent", ["approved"] * 8 + ["revised"] * 2)
     tier = tracker.calculate_tier("dev_agent")
     assert tier == PerformanceTier.YELLOW
 
 
-def test_calculate_tier_red(test_settings):
-    db = Database(test_settings.get_db_path())
+def test_calculate_tier_red(db, test_settings):
     tracker = PerformanceTracker(db, test_settings)
     _seed_task_results(db, "dev_agent", ["approved"] * 7 + ["revised"] * 3)
     tier = tracker.calculate_tier("dev_agent")
     assert tier == PerformanceTier.RED
 
 
-def test_no_results_defaults_to_green(test_settings):
-    db = Database(test_settings.get_db_path())
+def test_no_results_defaults_to_green(db, test_settings):
     tracker = PerformanceTracker(db, test_settings)
     tier = tracker.calculate_tier("dev_agent")
     assert tier == PerformanceTier.GREEN
 
 
-def test_update_scorecard_writes_to_db(test_settings):
-    db = Database(test_settings.get_db_path())
+def test_update_scorecard_writes_to_db(db, test_settings):
     tracker = PerformanceTracker(db, test_settings)
     _seed_task_results(db, "dev_agent", ["approved"] * 9 + ["revised"])
     tracker.update_scorecard("dev_agent")
@@ -70,10 +65,9 @@ def test_update_scorecard_writes_to_db(test_settings):
     assert scorecard["acceptance_rate"] == 0.9
 
 
-def test_write_scorecard_file(test_settings):
-    db = Database(test_settings.get_db_path())
+def test_write_scorecard_file(db, test_settings, tmp_dir):
     tracker = PerformanceTracker(db, test_settings)
-    workspace = test_settings.get_workspaces_dir() / "dev_agent"
+    workspace = tmp_dir / "dev_agent"
     workspace.mkdir(parents=True)
     _seed_task_results(db, "dev_agent", ["approved"] * 9 + ["revised"])
     tracker.update_scorecard("dev_agent")
@@ -85,8 +79,7 @@ def test_write_scorecard_file(test_settings):
     assert "90" in content
 
 
-def test_get_all_tiers(test_settings):
-    db = Database(test_settings.get_db_path())
+def test_get_all_tiers(db, test_settings):
     tracker = PerformanceTracker(db, test_settings)
     _seed_task_results(db, "dev_agent", ["approved"] * 9 + ["revised"])
     tracker.update_scorecard("dev_agent")

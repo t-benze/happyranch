@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from src.config import Settings
 from src.infrastructure.audit_logger import AuditLogger
 from src.infrastructure.database import Database
+from src.runtime import RuntimeDir
 from src.models import (
     AgentName,
     NextStep,
@@ -38,9 +39,10 @@ _DEFAULT_SYSTEM_PROMPTS: dict[str, str] = {
 
 
 class Orchestrator:
-    def __init__(self, db: Database, settings: Settings) -> None:
+    def __init__(self, db: Database, settings: Settings, runtime: RuntimeDir) -> None:
         self._db = db
         self._settings = settings
+        self._runtime = runtime
         self._audit = AuditLogger(db)
         self._tracker = PerformanceTracker(db, settings)
         self._context = ContextBuilder(settings)
@@ -191,7 +193,7 @@ class Orchestrator:
         """Set up workspace and run an agent session."""
         task = self._db.get_task(task_id)
         agent_name = agent.value
-        workspace = self._settings.get_workspaces_dir() / agent_name
+        workspace = self._runtime.workspaces_dir / agent_name
 
         system_prompt = _DEFAULT_SYSTEM_PROMPTS.get(agent_name, "")
         self._context.initialize_workspace(workspace, agent_name, system_prompt)
@@ -237,7 +239,7 @@ class Orchestrator:
             f"-- {task.status.value}\n"
         )
         for agent in AgentName:
-            workspace = self._settings.get_workspaces_dir() / agent.value
+            workspace = self._runtime.workspaces_dir / agent.value
             recent_path = workspace / "recent_tasks.md"
             if recent_path.exists():
                 content = recent_path.read_text()

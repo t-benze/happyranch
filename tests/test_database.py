@@ -2,8 +2,7 @@ from src.infrastructure.database import Database
 from src.models import TaskRecord, TaskStatus, TaskType
 
 
-def test_init_creates_tables(test_settings):
-    db = Database(test_settings.get_db_path())
+def test_init_creates_tables(db):
     tables = db.list_tables()
     assert "tasks" in tables
     assert "audit_log" in tables
@@ -11,8 +10,7 @@ def test_init_creates_tables(test_settings):
     assert "task_results" in tables
 
 
-def test_insert_and_get_task(test_settings):
-    db = Database(test_settings.get_db_path())
+def test_insert_and_get_task(db):
     task = TaskRecord(
         id="TASK-001",
         type=TaskType.IMPLEMENT_FEATURE,
@@ -27,13 +25,11 @@ def test_insert_and_get_task(test_settings):
     assert retrieved.status == TaskStatus.PENDING
 
 
-def test_get_nonexistent_task_returns_none(test_settings):
-    db = Database(test_settings.get_db_path())
+def test_get_nonexistent_task_returns_none(db):
     assert db.get_task("TASK-999") is None
 
 
-def test_update_task_status(test_settings):
-    db = Database(test_settings.get_db_path())
+def test_update_task_status(db):
     task = TaskRecord(
         id="TASK-002",
         type=TaskType.BUG_FIX,
@@ -46,8 +42,7 @@ def test_update_task_status(test_settings):
     assert retrieved.assigned_agent == "dev_agent"
 
 
-def test_increment_revision_count(test_settings):
-    db = Database(test_settings.get_db_path())
+def test_increment_revision_count(db):
     task = TaskRecord(
         id="TASK-003",
         type=TaskType.IMPLEMENT_FEATURE,
@@ -62,8 +57,7 @@ def test_increment_revision_count(test_settings):
     assert retrieved.revision_count == 2
 
 
-def test_insert_audit_log(test_settings):
-    db = Database(test_settings.get_db_path())
+def test_insert_audit_log(db):
     db.insert_audit_log(
         task_id="TASK-001",
         agent="dev_agent",
@@ -76,8 +70,7 @@ def test_insert_audit_log(test_settings):
     assert logs[0]["action"] == "session_start"
 
 
-def test_insert_task_result(test_settings):
-    db = Database(test_settings.get_db_path())
+def test_insert_task_result(db):
     db.insert_task_result(
         task_id="TASK-001",
         agent="dev_agent",
@@ -95,8 +88,7 @@ def test_insert_task_result(test_settings):
     assert results[0]["duration_seconds"] == 120
 
 
-def test_insert_and_get_scorecard(test_settings):
-    db = Database(test_settings.get_db_path())
+def test_insert_and_get_scorecard(db):
     db.upsert_scorecard(
         agent="dev_agent",
         period_start="2026-03-13T00:00:00Z",
@@ -112,8 +104,7 @@ def test_insert_and_get_scorecard(test_settings):
     assert scorecard["tier"] == "green"
 
 
-def test_upsert_scorecard_updates_existing(test_settings):
-    db = Database(test_settings.get_db_path())
+def test_upsert_scorecard_updates_existing(db):
     db.upsert_scorecard(
         agent="dev_agent",
         period_start="2026-03-13T00:00:00Z",
@@ -137,8 +128,7 @@ def test_upsert_scorecard_updates_existing(test_settings):
     assert scorecard["tier"] == "yellow"
 
 
-def test_next_task_id(test_settings):
-    db = Database(test_settings.get_db_path())
+def test_next_task_id(db):
     assert db.next_task_id() == "TASK-001"
     task = TaskRecord(id="TASK-001", type=TaskType.BUG_FIX, brief="test")
     db.insert_task(task)

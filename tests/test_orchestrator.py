@@ -14,6 +14,7 @@ from src.models import (
 )
 from src.orchestrator.executor import ExecutorResult
 from src.orchestrator.orchestrator import Orchestrator
+from src.runtime import RuntimeDir
 
 
 def _make_eh_decision(task_id: str, decision: dict) -> ExecutorResult:
@@ -59,15 +60,15 @@ def _make_failed_result(task_id: str) -> ExecutorResult:
 
 
 @pytest.fixture
-def orchestrator(test_settings):
-    db = Database(test_settings.get_db_path())
-    return Orchestrator(db=db, settings=test_settings)
+def orchestrator(test_settings, test_runtime):
+    db = Database(test_runtime.db_path)
+    return Orchestrator(db=db, settings=test_settings, runtime=test_runtime)
 
 
-def _setup_workspaces(settings):
+def _setup_workspaces(runtime):
     """Create workspace dirs with recent_tasks.md for all agents."""
     for agent in AgentName:
-        ws = settings.get_workspaces_dir() / agent.value
+        ws = runtime.workspaces_dir / agent.value
         ws.mkdir(parents=True, exist_ok=True)
         (ws / "recent_tasks.md").write_text(f"# Recent Tasks: {agent.value}\n\n")
 
@@ -87,9 +88,9 @@ def test_create_task_with_type(orchestrator):
 
 
 @patch.object(Orchestrator, "_run_agent")
-def test_eh_handles_directly(mock_run, orchestrator, test_settings):
+def test_eh_handles_directly(mock_run, orchestrator, test_runtime):
     """EH explores and returns done on first step -- no delegation."""
-    _setup_workspaces(test_settings)
+    _setup_workspaces(test_runtime)
 
     mock_run.return_value = _make_eh_decision("TASK-001", {
         "action": "done",
@@ -107,9 +108,9 @@ def test_eh_handles_directly(mock_run, orchestrator, test_settings):
 
 
 @patch.object(Orchestrator, "_run_agent")
-def test_eh_delegates_then_done(mock_run, orchestrator, test_settings):
+def test_eh_delegates_then_done(mock_run, orchestrator, test_runtime):
     """EH delegates to dev_agent, then approves the result."""
-    _setup_workspaces(test_settings)
+    _setup_workspaces(test_runtime)
 
     call_count = 0
 
@@ -140,9 +141,9 @@ def test_eh_delegates_then_done(mock_run, orchestrator, test_settings):
 
 
 @patch.object(Orchestrator, "_run_agent")
-def test_eh_multi_step_delegation(mock_run, orchestrator, test_settings):
+def test_eh_multi_step_delegation(mock_run, orchestrator, test_runtime):
     """EH delegates to PM, then to Dev, then approves."""
-    _setup_workspaces(test_settings)
+    _setup_workspaces(test_runtime)
 
     eh_calls = 0
 
@@ -180,8 +181,8 @@ def test_eh_multi_step_delegation(mock_run, orchestrator, test_settings):
 
 
 @patch.object(Orchestrator, "_run_agent")
-def test_eh_escalates(mock_run, orchestrator, test_settings):
-    _setup_workspaces(test_settings)
+def test_eh_escalates(mock_run, orchestrator, test_runtime):
+    _setup_workspaces(test_runtime)
 
     mock_run.return_value = _make_eh_decision("TASK-001", {
         "action": "escalate",
@@ -197,12 +198,12 @@ def test_eh_escalates(mock_run, orchestrator, test_settings):
 
 
 @patch.object(Orchestrator, "_run_agent")
-def test_max_steps_exceeded(mock_run, test_settings):
+def test_max_steps_exceeded(mock_run, test_settings, test_runtime):
     """EH keeps delegating until max steps is reached."""
     test_settings.max_orchestration_steps = 3
-    db = Database(test_settings.get_db_path())
-    orchestrator = Orchestrator(db=db, settings=test_settings)
-    _setup_workspaces(test_settings)
+    db = Database(test_runtime.db_path)
+    orchestrator = Orchestrator(db=db, settings=test_settings, runtime=test_runtime)
+    _setup_workspaces(test_runtime)
 
     def mock_side_effect(task_id, agent, prompt):
         if agent == AgentName.ENGINEERING_HEAD:
@@ -224,9 +225,9 @@ def test_max_steps_exceeded(mock_run, test_settings):
 
 
 @patch.object(Orchestrator, "_run_agent")
-def test_eh_session_fails(mock_run, orchestrator, test_settings):
+def test_eh_session_fails(mock_run, orchestrator, test_runtime):
     """If the EH session itself fails, task is rejected."""
-    _setup_workspaces(test_settings)
+    _setup_workspaces(test_runtime)
     mock_run.return_value = _make_failed_result("TASK-001")
 
     task_id = orchestrator.create_task(TaskType.GENERAL, "Do something")
@@ -236,9 +237,9 @@ def test_eh_session_fails(mock_run, orchestrator, test_settings):
 
 
 @patch.object(Orchestrator, "_run_agent")
-def test_delegate_agent_fails_eh_sees_failure(mock_run, orchestrator, test_settings):
+def test_delegate_agent_fails_eh_sees_failure(mock_run, orchestrator, test_runtime):
     """When a delegated agent fails, EH sees the failure and can decide."""
-    _setup_workspaces(test_settings)
+    _setup_workspaces(test_runtime)
 
     call_count = 0
 
@@ -270,9 +271,9 @@ def test_delegate_agent_fails_eh_sees_failure(mock_run, orchestrator, test_setti
 
 
 @patch.object(Orchestrator, "_run_agent")
-def test_eh_plain_text_output_treated_as_done(mock_run, orchestrator, test_settings):
+def test_eh_plain_text_output_treated_as_done(mock_run, orchestrator, test_runtime):
     """If EH returns plain text (not JSON), treat it as done with that text."""
-    _setup_workspaces(test_settings)
+    _setup_workspaces(test_runtime)
 
     mock_run.return_value = ExecutorResult(
         success=True,
@@ -294,9 +295,9 @@ def test_eh_plain_text_output_treated_as_done(mock_run, orchestrator, test_setti
 
 
 @patch.object(Orchestrator, "_run_agent")
-def test_audit_log_records_orchestration_steps(mock_run, orchestrator, test_settings):
+def test_audit_log_records_orchestration_steps(mock_run, orchestrator, test_runtime):
     """Orchestration steps are logged to the audit trail."""
-    _setup_workspaces(test_settings)
+    _setup_workspaces(test_runtime)
 
     mock_run.return_value = _make_eh_decision("TASK-001", {
         "action": "done",
@@ -313,9 +314,9 @@ def test_audit_log_records_orchestration_steps(mock_run, orchestrator, test_sett
 
 
 @patch.object(Orchestrator, "_run_agent")
-def test_malformed_eh_json_escalates(mock_run, orchestrator, test_settings):
+def test_malformed_eh_json_escalates(mock_run, orchestrator, test_runtime):
     """Valid JSON with invalid schema should escalate, not auto-approve."""
-    _setup_workspaces(test_settings)
+    _setup_workspaces(test_runtime)
 
     # EH returns valid JSON but missing required 'agent' field for delegate action
     mock_run.return_value = ExecutorResult(
@@ -341,9 +342,9 @@ def test_malformed_eh_json_escalates(mock_run, orchestrator, test_settings):
 
 
 @patch.object(Orchestrator, "_run_agent")
-def test_review_verdicts_logged_for_delegated_agents(mock_run, orchestrator, test_settings):
+def test_review_verdicts_logged_for_delegated_agents(mock_run, orchestrator, test_runtime):
     """When EH approves, review_verdict entries are logged for delegated agents."""
-    _setup_workspaces(test_settings)
+    _setup_workspaces(test_runtime)
 
     call_count = 0
 
@@ -376,9 +377,9 @@ def test_review_verdicts_logged_for_delegated_agents(mock_run, orchestrator, tes
     assert verdicts[0]["payload"]["verdict"] == "approved"
 
 
-def test_task_metadata_in_agent_prompt(orchestrator, test_settings):
+def test_task_metadata_in_agent_prompt(orchestrator, test_runtime):
     """Agent prompts should include task_id and brief."""
-    _setup_workspaces(test_settings)
+    _setup_workspaces(test_runtime)
 
     task_id = orchestrator.create_task(TaskType.GENERAL, "Explore payments")
 

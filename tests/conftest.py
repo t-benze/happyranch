@@ -4,6 +4,7 @@ import pytest
 
 from src.config import Settings
 from src.infrastructure.database import Database
+from src.runtime import RuntimeDir
 
 
 @pytest.fixture
@@ -13,13 +14,12 @@ def tmp_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def test_settings(tmp_dir: Path) -> Settings:
-    """Settings that use temporary directories for DB and workspaces."""
-    return Settings(
-        project_root=tmp_dir,
-        data_dir=tmp_dir,
-        db_path="test.db",
-        workspaces_dir="workspaces",
-    )
+    return Settings(project_root=tmp_dir)
+
+
+@pytest.fixture
+def test_runtime(tmp_dir: Path) -> RuntimeDir:
+    return RuntimeDir.init(tmp_dir / "runtime")
 
 
 @pytest.fixture
