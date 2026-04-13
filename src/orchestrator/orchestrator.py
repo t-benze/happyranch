@@ -99,6 +99,7 @@ class Orchestrator:
 
             if next_step.action == "done":
                 self._db.update_task(task_id, status=TaskStatus.APPROVED)
+                self._log_review_verdicts(task_id, prior_steps)
                 self._update_recent_tasks(task_id)
                 return "approved"
 
@@ -166,12 +167,20 @@ class Orchestrator:
         """Parse the Engineering Head's decision from its completion report."""
         if result.report is None:
             return NextStep(action="escalate", reason="No completion report from Engineering Head")
+        text = result.report.output_summary
         try:
-            data = json.loads(result.report.output_summary)
-            return NextStep(**data)
-        except (json.JSONDecodeError, TypeError, KeyError, ValueError, ValidationError):
+            data = json.loads(text)
+        except (json.JSONDecodeError, TypeError, ValueError):
             # Plain text output — treat as "done" with the text as summary
-            return NextStep(action="done", summary=result.report.output_summary)
+            return NextStep(action="done", summary=text)
+        try:
+            return NextStep(**data)
+        except (KeyError, ValueError, ValidationError) as exc:
+            # Valid JSON but invalid schema — don't silently approve
+            return NextStep(
+                action="escalate",
+                reason=f"Malformed EH decision: {exc}",
+            )
 
     def _run_agent(
         self,
@@ -180,23 +189,43 @@ class Orchestrator:
         prompt: str,
     ) -> ExecutorResult:
         """Set up workspace and run an agent session."""
+        task = self._db.get_task(task_id)
         agent_name = agent.value
         workspace = self._settings.get_workspaces_dir() / agent_name
 
         system_prompt = _DEFAULT_SYSTEM_PROMPTS.get(agent_name, "")
         self._context.initialize_workspace(workspace, agent_name, system_prompt)
 
+        # Prepend task metadata so agents can reference task_id in outputs
+        brief = task.brief if task else ""
+        full_prompt = f"Task ID: {task_id}\nBrief: {brief}\n\n{prompt}"
+
         self._audit.log_session_start(task_id, agent_name, str(workspace))
         self._db.update_task(task_id, assigned_agent=agent_name)
 
         result = self._executor.run(
             workspace=workspace,
-            prompt=prompt,
+            prompt=full_prompt,
             timeout_seconds=self._settings.session_timeout_seconds,
         )
 
         self._audit.log_session_end(task_id, agent_name, result.duration_seconds)
         return result
+
+    def _log_review_verdicts(self, task_id: str, prior_steps: list[StepRecord]) -> None:
+        """Log review verdicts for delegated agents so performance tiers stay current."""
+        for step in prior_steps:
+            if step.agent in ("unknown", "engineering_head", "orchestrator"):
+                continue
+            verdict = "approved" if step.success else "rejected"
+            self._audit.log_review_verdict(
+                task_id=task_id,
+                reviewer="engineering_head",
+                verdict=verdict,
+                feedback=step.result_summary,
+                reviewed_agent=step.agent,
+            )
+            self._tracker.update_scorecard(step.agent)
 
     def _update_recent_tasks(self, task_id: str) -> None:
         """Append a summary to recent_tasks.md for all agents."""

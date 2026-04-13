@@ -310,3 +310,97 @@ def test_audit_log_records_orchestration_steps(mock_run, orchestrator, test_sett
     orch_steps = [l for l in logs if l["action"] == "orchestration_step"]
     assert len(orch_steps) == 1
     assert orch_steps[0]["payload"]["decision"]["action"] == "done"
+
+
+@patch.object(Orchestrator, "_run_agent")
+def test_malformed_eh_json_escalates(mock_run, orchestrator, test_settings):
+    """Valid JSON with invalid schema should escalate, not auto-approve."""
+    _setup_workspaces(test_settings)
+
+    # EH returns valid JSON but missing required 'agent' field for delegate action
+    mock_run.return_value = ExecutorResult(
+        success=True,
+        report=CompletionReport(
+            task_id="TASK-001",
+            agent="engineering_head",
+            status="completed",
+            confidence=90,
+            output_summary=json.dumps({"action": "delegate"}),
+        ),
+        duration_seconds=30,
+        session_id="sess-eh",
+    )
+
+    task_id = orchestrator.create_task(TaskType.GENERAL, "Do something")
+    result = orchestrator.run_task(task_id)
+
+    # Should escalate (malformed decision), NOT auto-approve
+    assert result == "escalated"
+    task = orchestrator._db.get_task(task_id)
+    assert task.status == TaskStatus.ESCALATED
+
+
+@patch.object(Orchestrator, "_run_agent")
+def test_review_verdicts_logged_for_delegated_agents(mock_run, orchestrator, test_settings):
+    """When EH approves, review_verdict entries are logged for delegated agents."""
+    _setup_workspaces(test_settings)
+
+    call_count = 0
+
+    def mock_side_effect(task_id, agent, prompt):
+        nonlocal call_count
+        call_count += 1
+        if agent == AgentName.ENGINEERING_HEAD:
+            if call_count == 1:
+                return _make_eh_decision(task_id, {
+                    "action": "delegate",
+                    "agent": "dev_agent",
+                    "prompt": "Implement feature",
+                })
+            else:
+                return _make_eh_decision(task_id, {
+                    "action": "done",
+                    "summary": "Looks good",
+                })
+        return _make_agent_result(task_id, agent.value)
+
+    mock_run.side_effect = mock_side_effect
+
+    task_id = orchestrator.create_task(TaskType.GENERAL, "Add feature")
+    orchestrator.run_task(task_id)
+
+    logs = orchestrator._db.get_audit_logs(task_id)
+    verdicts = [l for l in logs if l["action"] == "review_verdict"]
+    assert len(verdicts) == 1
+    assert verdicts[0]["payload"]["reviewed_agent"] == "dev_agent"
+    assert verdicts[0]["payload"]["verdict"] == "approved"
+
+
+def test_task_metadata_in_agent_prompt(orchestrator, test_settings):
+    """Agent prompts should include task_id and brief."""
+    _setup_workspaces(test_settings)
+
+    task_id = orchestrator.create_task(TaskType.GENERAL, "Explore payments")
+
+    # Mock the executor.run to capture the prompt and return a valid result
+    with patch.object(orchestrator._executor, "run") as mock_executor_run:
+        mock_executor_run.return_value = ExecutorResult(
+            success=True,
+            report=CompletionReport(
+                task_id=task_id,
+                agent="engineering_head",
+                status="completed",
+                confidence=90,
+                output_summary=json.dumps({"action": "done", "summary": "Done"}),
+            ),
+            duration_seconds=30,
+            session_id="sess-eh",
+        )
+
+        orchestrator.run_task(task_id)
+
+        # Check that the prompt passed to executor.run includes task metadata
+        call_kwargs = mock_executor_run.call_args
+        prompt = call_kwargs[1]["prompt"] if "prompt" in call_kwargs[1] else call_kwargs[0][1]
+        assert "Task ID: TASK-001" in prompt
+        assert "Brief: Explore payments" in prompt
