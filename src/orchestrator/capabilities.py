@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from src.models import AgentName, PerformanceTier, StepRecord
 
-AGENT_DESCRIPTIONS: dict[str, str] = {
-    "product_manager": "Writes feature specs, triages bugs, prioritizes roadmap",
-    "dev_agent": "Implements features, fixes bugs, writes code",
-    "payment_agent": "Drafts payment change proposals with compliance considerations",
+AGENT_DESCRIPTIONS: dict[AgentName, str] = {
+    AgentName.PRODUCT_MANAGER: "Writes feature specs, triages bugs, prioritizes roadmap",
+    AgentName.DEV_AGENT: "Implements features, fixes bugs, writes code",
+    AgentName.PAYMENT_AGENT: "Drafts payment change proposals with compliance considerations",
 }
 
 
@@ -29,10 +29,9 @@ def build_capabilities_prompt(
         "|-------|------|------|",
     ]
 
-    for agent_name, description in AGENT_DESCRIPTIONS.items():
-        agent_enum = AgentName(agent_name)
-        tier = agent_tiers.get(agent_enum, PerformanceTier.GREEN)
-        sections.append(f"| {agent_name} | {description} | {tier.value} |")
+    for agent, description in AGENT_DESCRIPTIONS.items():
+        tier = agent_tiers.get(agent, PerformanceTier.GREEN)
+        sections.append(f"| {agent} | {description} | {tier.value} |")
 
     sections.extend([
         "\n### Available Actions\n",

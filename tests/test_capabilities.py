@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from src.models import AgentName, PerformanceTier, StepRecord
 from src.orchestrator.capabilities import build_capabilities_prompt
 
