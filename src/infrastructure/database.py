@@ -116,6 +116,26 @@ class Database:
             completed_at=row["completed_at"],
         )
 
+    def list_tasks(self, limit: int = 20) -> list[TaskRecord]:
+        cursor = self._conn.execute(
+            "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)
+        )
+        return [
+            TaskRecord(
+                id=row["id"],
+                type=row["type"],
+                status=row["status"],
+                assigned_agent=row["assigned_agent"],
+                crew=row["crew"],
+                brief=row["brief"],
+                revision_count=row["revision_count"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+                completed_at=row["completed_at"],
+            )
+            for row in cursor.fetchall()
+        ]
+
     def update_task(self, task_id: str, **fields: object) -> None:
         allowed = {"status", "assigned_agent", "revision_count", "completed_at"}
         updates = {k: v for k, v in fields.items() if k in allowed and v is not None}

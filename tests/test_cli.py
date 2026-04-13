@@ -1,30 +1,105 @@
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-from src.models import TaskType
+from src.cli import build_parser
 
 
-def test_parse_args():
-    # Import inline to avoid config issues
-    sys.argv = [
-        "run_product_crew.py",
+def test_run_subcommand():
+    parser = build_parser()
+    args = parser.parse_args([
+        "run",
         "--task", "implement_feature",
-        "--brief", "Add Alipay support for international cards",
-    ]
-    from scripts.run_product_crew import parse_args
-
-    args = parse_args()
+        "--brief", "Add Alipay support",
+    ])
+    assert args.command == "run"
     assert args.task == "implement_feature"
-    assert args.brief == "Add Alipay support for international cards"
+    assert args.brief == "Add Alipay support"
 
 
-def test_parse_args_bug_fix():
-    sys.argv = [
-        "run_product_crew.py",
+def test_run_verbose():
+    parser = build_parser()
+    args = parser.parse_args([
+        "run",
         "--task", "bug_fix",
-        "--brief", "Fix broken payment links",
-    ]
-    from scripts.run_product_crew import parse_args
-
-    args = parse_args()
+        "--brief", "Fix broken links",
+        "--verbose",
+    ])
+    assert args.command == "run"
     assert args.task == "bug_fix"
+    assert args.verbose is True
+
+
+def test_status_subcommand():
+    parser = build_parser()
+    args = parser.parse_args(["status", "TASK-001"])
+    assert args.command == "status"
+    assert args.task_id == "TASK-001"
+
+
+def test_tasks_subcommand():
+    parser = build_parser()
+    args = parser.parse_args(["tasks"])
+    assert args.command == "tasks"
+    assert args.limit == 20
+
+
+def test_tasks_with_limit():
+    parser = build_parser()
+    args = parser.parse_args(["tasks", "--limit", "5"])
+    assert args.limit == 5
+
+
+def test_agents_subcommand():
+    parser = build_parser()
+    args = parser.parse_args(["agents"])
+    assert args.command == "agents"
+    assert args.detail is False
+
+
+def test_agents_detail():
+    parser = build_parser()
+    args = parser.parse_args(["agents", "--detail"])
+    assert args.detail is True
+
+
+def test_init_subcommand():
+    parser = build_parser()
+    args = parser.parse_args(["init"])
+    assert args.command == "init"
+
+
+def test_global_db_flag():
+    parser = build_parser()
+    args = parser.parse_args(["--db", "/tmp/test.db", "tasks"])
+    assert args.db == "/tmp/test.db"
+    assert args.command == "tasks"
+
+
+def test_no_command_prints_help(capsys):
+    parser = build_parser()
+    args = parser.parse_args([])
+    assert args.command is None
+
+
+def test_list_tasks_integration(test_settings):
+    """Test that `opc tasks` works end-to-end with an empty database."""
+    from src.infrastructure.database import Database
+
+    db = Database(test_settings.get_db_path())
+    tasks = db.list_tasks()
+    assert tasks == []
+    db.close()
+
+
+def test_list_tasks_returns_records(test_settings):
+    """Test list_tasks returns TaskRecords."""
+    from src.infrastructure.database import Database
+    from src.models import TaskRecord, TaskType
+
+    db = Database(test_settings.get_db_path())
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.BUG_FIX, brief="Fix it"))
+    db.insert_task(TaskRecord(id="TASK-002", type=TaskType.IMPLEMENT_FEATURE, brief="Build it"))
+    tasks = db.list_tasks()
+    assert len(tasks) == 2
+    assert tasks[0].id == "TASK-002"  # most recent first
+    db.close()
