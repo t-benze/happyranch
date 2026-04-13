@@ -97,3 +97,13 @@ class AuditLogger:
                 "note": "Cross-audit stubbed -- Compliance Agent review pending Ops Crew implementation",
             },
         )
+
+    def log_orchestration_step(
+        self, task_id: str, step_number: int, decision: dict
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="orchestrator",
+            action="orchestration_step",
+            payload={"step_number": step_number, "decision": decision},
+        )

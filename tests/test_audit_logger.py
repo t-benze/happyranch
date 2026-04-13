@@ -83,3 +83,17 @@ def test_log_cross_audit_stub(test_settings):
     assert len(logs) == 1
     assert logs[0]["action"] == "cross_audit_requested"
     assert logs[0]["payload"]["auto_approved"] is True
+
+
+def test_log_orchestration_step(db):
+    logger = AuditLogger(db)
+    logger.log_orchestration_step("TASK-001", step_number=1, decision={
+        "action": "delegate",
+        "agent": "dev_agent",
+        "prompt": "Implement feature",
+    })
+    logs = db.get_audit_logs("TASK-001")
+    assert len(logs) == 1
+    assert logs[0]["action"] == "orchestration_step"
+    assert logs[0]["payload"]["step_number"] == 1
+    assert logs[0]["payload"]["decision"]["action"] == "delegate"

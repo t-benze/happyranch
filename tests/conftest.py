@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from src.config import Settings
+from src.infrastructure.database import Database
 
 
 @pytest.fixture
@@ -19,3 +20,9 @@ def test_settings(tmp_dir: Path) -> Settings:
         db_path="test.db",
         workspaces_dir="workspaces",
     )
+
+
+@pytest.fixture
+def db(tmp_dir: Path) -> Database:
+    """A fresh Database instance backed by a temporary file."""
+    return Database(tmp_dir / "test.db")
