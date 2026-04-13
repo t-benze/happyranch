@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import StrEnum
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -78,7 +80,7 @@ class TaskStep(BaseModel):
 
 class NextStep(BaseModel):
     """Decision returned by the Engineering Head for what the orchestrator should do next."""
-    action: str  # "delegate", "done", "escalate"
+    action: Literal["delegate", "done", "escalate"]
     agent: str | None = None
     prompt: str | None = None
     summary: str | None = None

@@ -1,8 +1,10 @@
 from src.models import (
     AgentName,
     CompletionReport,
+    NextStep,
     PerformanceTier,
     ReviewVerdict,
+    StepRecord,
     TaskRecord,
     TaskStatus,
     TaskStep,
@@ -98,9 +100,6 @@ def test_task_step_creation():
     assert step.action == "write_spec"
 
 
-from src.models import NextStep, StepRecord
-
-
 def test_next_step_delegate():
     step = NextStep(action="delegate", agent="dev_agent", prompt="Implement feature X")
     assert step.action == "delegate"
@@ -133,5 +132,4 @@ def test_step_record():
 
 
 def test_task_type_general():
-    from src.models import TaskType
     assert TaskType.GENERAL == "general"
