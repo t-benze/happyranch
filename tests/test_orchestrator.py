@@ -197,11 +197,12 @@ def test_eh_escalates(mock_run, orchestrator, test_settings):
 
 
 @patch.object(Orchestrator, "_run_agent")
-def test_max_steps_exceeded(mock_run, orchestrator, test_settings):
+def test_max_steps_exceeded(mock_run, test_settings):
     """EH keeps delegating until max steps is reached."""
+    test_settings.max_orchestration_steps = 3
+    db = Database(test_settings.get_db_path())
+    orchestrator = Orchestrator(db=db, settings=test_settings)
     _setup_workspaces(test_settings)
-    # Override max steps to something small for testing
-    orchestrator._settings.max_orchestration_steps = 3
 
     def mock_side_effect(task_id, agent, prompt):
         if agent == AgentName.ENGINEERING_HEAD:

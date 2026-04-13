@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 
+from pydantic import ValidationError
+
 from src.config import Settings
 from src.infrastructure.audit_logger import AuditLogger
 from src.infrastructure.database import Database
@@ -85,6 +87,7 @@ class Orchestrator:
 
             if not eh_result.success:
                 self._db.update_task(task_id, status=TaskStatus.REJECTED)
+                self._update_recent_tasks(task_id)
                 return "rejected"
 
             self._log_step_result(task_id, eh_result)
@@ -109,8 +112,30 @@ class Orchestrator:
                 return "escalated"
 
             if next_step.action == "delegate":
+                if next_step.agent is None:
+                    prior_steps.append(StepRecord(
+                        step_number=step_num,
+                        agent="unknown",
+                        action="delegate: missing agent name",
+                        result_summary="Delegate action had no agent specified",
+                        success=False,
+                    ))
+                    continue
+
+                try:
+                    delegate_agent = AgentName(next_step.agent)
+                except ValueError:
+                    prior_steps.append(StepRecord(
+                        step_number=step_num,
+                        agent=next_step.agent,
+                        action=f"delegate: {(next_step.prompt or '')[:100]}",
+                        result_summary=f"Unknown agent name: {next_step.agent!r}",
+                        success=False,
+                    ))
+                    continue
+
                 delegate_result = self._run_agent(
-                    task_id, AgentName(next_step.agent), next_step.prompt or "",
+                    task_id, delegate_agent, next_step.prompt or "",
                 )
                 if delegate_result.success:
                     self._log_step_result(task_id, delegate_result)
@@ -122,7 +147,7 @@ class Orchestrator:
                 )
                 prior_steps.append(StepRecord(
                     step_number=step_num,
-                    agent=next_step.agent or "unknown",
+                    agent=next_step.agent,
                     action=f"delegate: {(next_step.prompt or '')[:100]}",
                     result_summary=result_summary,
                     success=delegate_result.success,
@@ -144,7 +169,7 @@ class Orchestrator:
         try:
             data = json.loads(result.report.output_summary)
             return NextStep(**data)
-        except (json.JSONDecodeError, TypeError, KeyError, ValueError):
+        except (json.JSONDecodeError, TypeError, KeyError, ValueError, ValidationError):
             # Plain text output — treat as "done" with the text as summary
             return NextStep(action="done", summary=result.report.output_summary)
 
