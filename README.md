@@ -8,24 +8,16 @@ The system uses a **custom orchestrator** that dispatches tasks to AI agents run
 
 ### Current: Product & Engineering Crew
 
-Four agents work together through an automated review loop:
+The **Engineering Head** (EH) drives all task execution. When you submit a task, the EH analyzes it and decides what to do at each step — handle it directly, delegate to a team member, or escalate to the founder. There are no hardcoded task chains.
 
 | Agent | Role |
 |-------|------|
-| **Engineering Head** | Manager — reviews output, approves/rejects, routes revisions |
+| **Engineering Head** | Manager — analyzes tasks, delegates work, reviews results |
 | **Product Manager** | Writes specs, triages bugs, prioritizes roadmap |
 | **Dev Agent** | Implements features, fixes bugs |
 | **Payment Agent** | Proposes payment flow changes |
 
-### Task Flows
-
-**Feature implementation:** Engineering Head → PM writes spec → Dev implements → Engineering Head reviews → approve / revise / reject
-
-**Bug fix:** Engineering Head → PM triages → Dev fixes → Engineering Head reviews → approve / revise / reject
-
-**Payment change:** Engineering Head → Payment Agent drafts proposal → cross-audit (stubbed) → Engineering Head reviews → approve / revise / reject
-
-If an agent's work is rejected twice, the task escalates to the founder.
+The EH can delegate multiple steps (e.g., PM writes spec, then Dev implements), explore the codebase itself, or escalate if the task requires human judgment. A max of 10 orchestration steps prevents runaway loops.
 
 ## Requirements
 
@@ -56,13 +48,12 @@ opc init-agent
 # Or initialize a specific agent
 opc init-agent dev_agent
 
-# Run a feature implementation
+# Run a task (EH decides the approach)
+opc run --brief "Explore how the payment module handles refunds"
+
+# Provide a task type hint to guide the EH
 opc run --task implement_feature --brief "Add Alipay support for international cards"
-
-# Fix a bug
 opc run --task bug_fix --brief "Payment confirmation emails not sending for HK bookings"
-
-# Propose a payment change
 opc run --task payment_change --brief "Add WeChat Pay as alternative payment method"
 
 # Check task status
@@ -80,7 +71,8 @@ opc agents --detail
 
 | Command | Description |
 |---------|-------------|
-| `opc run --task TYPE --brief "..."` | Run a task (`implement_feature`, `bug_fix`, `payment_change`) |
+| `opc run --brief "..."` | Run a task (EH decides approach) |
+| `opc run --task TYPE --brief "..."` | Run with task type hint (`general`, `implement_feature`, `bug_fix`, `payment_change`) |
 | `opc status TASK-ID` | Show task details, results, and audit log |
 | `opc tasks [--limit N]` | List recent tasks (default: 20) |
 | `opc agents [--detail]` | Show agent performance tiers and scorecards |
@@ -100,7 +92,7 @@ All settings use the `OPC_` environment variable prefix. Defaults work out of th
 | `OPC_DB_PATH` | `opc.db` | SQLite database filename (relative to data dir) |
 | `OPC_WORKSPACES_DIR` | `workspaces` | Workspaces dirname (relative to data dir) |
 | `OPC_REPOS` | *(auto-detected)* | Git repos for agent clones, JSON dict: `{"name": "url"}` |
-| `OPC_MAX_REVISION_ROUNDS` | `2` | Max revisions before escalation |
+| `OPC_MAX_ORCHESTRATION_STEPS` | `10` | Max EH decision steps before escalation |
 | `OPC_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout (30 min) |
 | `OPC_TIER_GREEN_THRESHOLD` | `0.90` | Acceptance rate for green tier |
 | `OPC_TIER_YELLOW_THRESHOLD` | `0.75` | Acceptance rate for yellow tier |
@@ -116,13 +108,15 @@ Runtime data is stored in `~/.opc/` by default, separate from the source code.
 
 ## Performance Tiers
 
-Agents are scored on a rolling 30-day window based on review verdicts from the Engineering Head:
+Agents are scored on a rolling 30-day window based on the Engineering Head's verdicts after delegation:
 
 | Tier | Acceptance Rate | Effect |
 |------|----------------|--------|
-| **Green** | >= 90% | Standard flow, minimal oversight |
-| **Yellow** | 75-89% | Extra pre-review step added to task chain |
-| **Red** | < 75% | Double review, reduced task scope |
+| **Green** | >= 90% | Full capabilities, EH trusts the agent |
+| **Yellow** | 75-89% | EH sees reduced trust, may add extra review |
+| **Red** | < 75% | EH sees low trust, may avoid delegating to this agent |
+
+Tier information is exposed to the EH in its capabilities prompt, so it influences delegation decisions naturally.
 
 ## Agent Workspaces
 

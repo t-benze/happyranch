@@ -30,7 +30,7 @@ The following documents are in the `protocol/` folder.
 - **Language**: Python 3.11+ (currently running 3.13)
 - **Package manager**: `uv`
 - **Agent executor**: Claude Code CLI (`claude -p "<prompt>" --permission-mode auto`) — no CrewAI dependency for now
-- **Orchestrator**: Custom Python application (manages task routing, revision loop, performance scoring)
+- **Orchestrator**: Custom Python application (EH-driven orchestration loop, performance scoring)
 - **Data models**: Pydantic v2 + pydantic-settings
 - **Database**: SQLite with WAL mode (audit logs, scorecards, task state)
 - **Knowledge base**: Vector store with RAG (planned — not yet implemented)
@@ -89,7 +89,7 @@ Source code and protocol docs live in the repo. Runtime data lives in `~/.opc/` 
 |   |-- agents/                        # Agent definitions (future)
 |   |-- crews/                         # Crew definitions (future)
 |   +-- tools/                         # Agent tools (future)
-|-- tests/                             # 95 tests across 10 files
+|-- tests/                             # 98 tests across 10 files
 +-- docs/superpowers/
     |-- specs/                         # Design specs
     +-- plans/                         # Implementation plans
@@ -129,7 +129,7 @@ All settings use the `OPC_` environment variable prefix. Defaults work out of th
 | `OPC_WORKSPACES_DIR` | `workspaces` | Workspaces dirname (relative to data dir) |
 | `OPC_PROTOCOL_DIR` | `protocol` | Protocol docs dirname (relative to project root) |
 | `OPC_REPOS` | *(auto-detected)* | Git repos for agent clones, JSON dict: `{"name": "url", ...}` |
-| `OPC_MAX_REVISION_ROUNDS` | `2` | Max revisions before escalation |
+| `OPC_MAX_ORCHESTRATION_STEPS` | `10` | Max EH decision steps before escalation |
 | `OPC_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout (30 min) |
 | `OPC_TIER_GREEN_THRESHOLD` | `0.90` | Acceptance rate for green tier |
 | `OPC_TIER_YELLOW_THRESHOLD` | `0.75` | Acceptance rate for yellow tier |
@@ -154,7 +154,8 @@ uv run pytest tests/ -v
 
 ## Running the CLI
 ```bash
-opc run --task implement_feature --brief "Add Alipay support" [--verbose]
+opc run --brief "Explore the payment module"                    # EH decides approach
+opc run --task implement_feature --brief "Add Alipay support"   # with task type hint
 opc tasks                    # list recent tasks
 opc status TASK-001          # show task details
 opc agents [--detail]        # show performance tiers
@@ -162,6 +163,10 @@ opc init-agent               # initialize all agent workspaces (repo clones + sy
 opc init-agent dev_agent     # initialize a specific agent
 opc --db /path/to/db <cmd>   # use custom database
 ```
+
+## Maintaining Documentation
+- **README.md** is for end users of the system — only usage-related content (setup, CLI commands, configuration, agent workspaces). No developer internals, code style, directory layout, or implementation details.
+- **CLAUDE.md** is for developers and AI agents working on the codebase — architecture, code patterns, directory layout, implementation order.
 
 ## When Starting a New Implementation Phase
 1. Read the relevant design doc first (e.g., blueprint in `protocol/05c-orchestrator.md`)
