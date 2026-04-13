@@ -123,10 +123,11 @@ def cmd_agents(args: argparse.Namespace) -> None:
     db.close()
 
 
-def _resolve_repo_url() -> str:
-    """Get repo URL from settings or detect from current git remote."""
-    if settings.repo_url:
-        return settings.repo_url
+def _resolve_repos() -> dict[str, str]:
+    """Get repos from settings, falling back to auto-detect from current git remote."""
+    if settings.repos:
+        return settings.repos
+    # Auto-detect: use the current repo's remote as a single-repo default
     import subprocess
     try:
         result = subprocess.run(
@@ -134,14 +135,17 @@ def _resolve_repo_url() -> str:
             capture_output=True, text=True, timeout=10,
         )
         if result.returncode == 0:
-            return result.stdout.strip()
+            url = result.stdout.strip()
+            # Derive name from URL: https://github.com/user/my-opc.git → my-opc
+            name = url.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
+            return {name: url}
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
-    return ""
+    return {}
 
 
 def cmd_init_agent(args: argparse.Namespace) -> None:
-    """Initialize agent workspaces with real system prompts, repo clone, and agent-specific dirs."""
+    """Initialize agent workspaces with real system prompts, repo clones, and agent-specific dirs."""
     from src.orchestrator.context_builder import ContextBuilder
     from src.orchestrator.prompt_loader import load_all_prompts
 
@@ -156,7 +160,7 @@ def cmd_init_agent(args: argparse.Namespace) -> None:
 
     prompts = load_all_prompts(protocol_dir)
     ctx = ContextBuilder(settings)
-    repo_url = _resolve_repo_url()
+    repos = _resolve_repos()
 
     agents_to_init = [AgentName(args.agent)] if args.agent else list(AgentName)
 
@@ -168,16 +172,19 @@ def cmd_init_agent(args: argparse.Namespace) -> None:
         if not prompt:
             print(f"  Warning: no system prompt found for {name}")
 
-        # 1. Create workspace + persistent files + CLAUDE.md + settings.json
+        # 1. Clone or pull repos
+        if repos:
+            results = ctx.clone_repos(workspace, repos)
+            for repo_name, ok in results.items():
+                status = "ready" if ok else "FAILED"
+                print(f"  [{name}] repo {repo_name}: {status}")
+        else:
+            print(f"  [{name}] repos skipped (no OPC_REPOS set and no git remote detected)")
+
+        # 2. Create workspace + persistent files + CLAUDE.md + settings.json
+        #    (runs after clone so CLAUDE.md can list available repos)
         ctx.initialize_workspace(workspace, name, prompt)
         print(f"  [{name}] workspace initialized")
-
-        # 2. Clone or pull repo
-        if repo_url:
-            ok = ctx.clone_repo(workspace, repo_url)
-            print(f"  [{name}] repo {'ready' if ok else 'FAILED'}: {workspace / 'repo'}")
-        else:
-            print(f"  [{name}] repo skipped (no OPC_REPO_URL and no git remote detected)")
 
         # 3. Create agent-specific dirs (specs/, proposals/)
         ctx.create_agent_dirs(workspace, name)

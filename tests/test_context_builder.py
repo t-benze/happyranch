@@ -4,7 +4,7 @@ from pathlib import Path
 from src.orchestrator.context_builder import ContextBuilder
 
 
-def test_build_settings_json(test_settings, tmp_dir):
+def test_build_settings_json_no_repos(test_settings, tmp_dir):
     builder = ContextBuilder(test_settings)
     workspace = tmp_dir / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
@@ -13,10 +13,20 @@ def test_build_settings_json(test_settings, tmp_dir):
     assert settings_path.exists()
     data = json.loads(settings_path.read_text())
     assert "permissions" in data
-    assert "allow" in data["permissions"]
     assert "Read(*)" in data["permissions"]["allow"]
-    assert "hooks" in data
-    assert "PreToolUse" in data["hooks"]
+    # No repos → no hooks
+    assert data["hooks"] == {}
+
+
+def test_build_settings_json_with_repos(test_settings, tmp_dir):
+    builder = ContextBuilder(test_settings)
+    workspace = tmp_dir / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    builder.write_settings_json(workspace, repo_names=["my-opc", "web-app"])
+    data = json.loads((workspace / ".claude" / "settings.json").read_text())
+    hook_cmd = data["hooks"]["PreToolUse"][0]["command"]
+    assert "repos/my-opc" in hook_cmd
+    assert "repos/web-app" in hook_cmd
 
 
 def test_build_claude_md_contains_system_prompt(test_settings, tmp_dir):
@@ -78,6 +88,38 @@ def test_initialize_workspace_creates_persistent_files(test_settings, tmp_dir):
     assert (workspace / "recent_tasks.md").exists()
     assert (workspace / "CLAUDE.md").exists()
     assert (workspace / ".claude" / "settings.json").exists()
+
+
+def test_build_claude_md_lists_repos(test_settings, tmp_dir):
+    builder = ContextBuilder(test_settings)
+    workspace = tmp_dir / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    builder.write_claude_md(
+        workspace=workspace,
+        agent_name="dev_agent",
+        system_prompt="You are the Dev Agent.",
+        repo_names=["my-opc", "web-app"],
+    )
+    content = (workspace / "CLAUDE.md").read_text()
+    assert "repos/my-opc/" in content
+    assert "repos/web-app/" in content
+    assert "Available Repositories" in content
+
+
+def test_initialize_workspace_detects_cloned_repos(test_settings, tmp_dir):
+    builder = ContextBuilder(test_settings)
+    workspace = tmp_dir / "workspaces" / "dev_agent"
+    # Simulate pre-existing cloned repos
+    for name in ["my-opc", "web-app"]:
+        repo_dir = workspace / "repos" / name / ".git"
+        repo_dir.mkdir(parents=True)
+    builder.initialize_workspace(workspace, "dev_agent", "You are the Dev Agent.")
+    content = (workspace / "CLAUDE.md").read_text()
+    assert "repos/my-opc/" in content
+    assert "repos/web-app/" in content
+    settings_data = json.loads((workspace / ".claude" / "settings.json").read_text())
+    hook_cmd = settings_data["hooks"]["PreToolUse"][0]["command"]
+    assert "repos/my-opc" in hook_cmd
 
 
 def test_initialize_workspace_does_not_overwrite_existing_learnings(test_settings, tmp_dir):

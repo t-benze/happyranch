@@ -10,32 +10,45 @@ from src.config import Settings
 logger = logging.getLogger(__name__)
 
 
-_SETTINGS_JSON = {
-    "permissions": {
-        "allow": ["Read(*)", "Write(*)", "Bash(*)", "Glob(*)", "Grep(*)"]
-    },
-    "hooks": {
-        "PreToolUse": [
-            {
-                "matcher": "Bash|Read|Grep|Glob",
-                "command": "cd repo && git pull --ff-only 2>/dev/null; true",
-                "runOnce": True,
-            }
-        ]
-    },
-}
+def _build_settings_json(repo_names: list[str]) -> dict:
+    """Build .claude/settings.json with a git pull hook for all repos."""
+    if repo_names:
+        # Pull all repos on first tool use
+        pull_cmds = " && ".join(
+            f"(cd repos/{name} && git pull --ff-only 2>/dev/null; true)"
+            for name in repo_names
+        )
+        hooks = {
+            "PreToolUse": [
+                {
+                    "matcher": "Bash|Read|Grep|Glob",
+                    "command": pull_cmds,
+                    "runOnce": True,
+                }
+            ]
+        }
+    else:
+        hooks = {}
+
+    return {
+        "permissions": {
+            "allow": ["Read(*)", "Write(*)", "Bash(*)", "Glob(*)", "Grep(*)"]
+        },
+        "hooks": hooks,
+    }
 
 
 class ContextBuilder:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
 
-    def write_settings_json(self, workspace: Path) -> None:
+    def write_settings_json(self, workspace: Path, repo_names: list[str] | None = None) -> None:
         """Write .claude/settings.json to workspace."""
         claude_dir = workspace / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
+        settings_data = _build_settings_json(repo_names or [])
         (claude_dir / "settings.json").write_text(
-            json.dumps(_SETTINGS_JSON, indent=2) + "\n"
+            json.dumps(settings_data, indent=2) + "\n"
         )
 
     def write_claude_md(
@@ -44,12 +57,23 @@ class ContextBuilder:
         agent_name: str,
         system_prompt: str,
         task_brief: str | None = None,
+        repo_names: list[str] | None = None,
     ) -> None:
         """Write CLAUDE.md to workspace with system prompt and context pointers."""
         sections = [
             f"# Agent: {agent_name}\n",
             "## System Prompt\n",
             system_prompt.strip() + "\n",
+        ]
+
+        # List available repos
+        if repo_names:
+            sections.append("## Available Repositories\n")
+            for name in repo_names:
+                sections.append(f"- `repos/{name}/` — git clone, kept fresh via PreToolUse hook")
+            sections.append("")
+
+        sections.extend([
             "## Persistent Files\n",
             "- `learnings.md` -- your accumulated operational learnings (append new insights here)",
             "- `scorecard.md` -- your current performance scorecard (read-only, updated by orchestrator)",
@@ -69,7 +93,7 @@ class ContextBuilder:
             '}',
             "```\n",
             "If you learn something reusable for future tasks, append it to `learnings.md` in this workspace.\n",
-        ]
+        ])
 
         if task_brief:
             sections.extend([
@@ -101,12 +125,21 @@ class ContextBuilder:
             if not path.exists():
                 path.write_text(default_content)
 
-        self.write_claude_md(workspace, agent_name, system_prompt)
-        self.write_settings_json(workspace)
+        # Detect cloned repos
+        repos_dir = workspace / "repos"
+        repo_names = []
+        if repos_dir.exists():
+            repo_names = sorted(
+                d.name for d in repos_dir.iterdir()
+                if d.is_dir() and (d / ".git").exists()
+            )
 
-    def clone_repo(self, workspace: Path, repo_url: str) -> bool:
-        """Clone the project repo into workspace/repo/. Returns True on success."""
-        repo_dir = workspace / "repo"
+        self.write_claude_md(workspace, agent_name, system_prompt, repo_names=repo_names)
+        self.write_settings_json(workspace, repo_names=repo_names)
+
+    def clone_repo(self, workspace: Path, name: str, url: str) -> bool:
+        """Clone a repo into workspace/repos/<name>/. Returns True on success."""
+        repo_dir = workspace / "repos" / name
         if repo_dir.exists() and (repo_dir / ".git").exists():
             logger.info("Repo already cloned at %s, pulling latest", repo_dir)
             try:
@@ -122,10 +155,10 @@ class ContextBuilder:
                 return False
 
         repo_dir.mkdir(parents=True, exist_ok=True)
-        logger.info("Cloning %s into %s", repo_url, repo_dir)
+        logger.info("Cloning %s into %s", url, repo_dir)
         try:
             subprocess.run(
-                ["git", "clone", repo_url, str(repo_dir)],
+                ["git", "clone", url, str(repo_dir)],
                 capture_output=True,
                 check=True,
                 timeout=120,
@@ -134,6 +167,13 @@ class ContextBuilder:
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             logger.error("git clone failed: %s", e)
             return False
+
+    def clone_repos(self, workspace: Path, repos: dict[str, str]) -> dict[str, bool]:
+        """Clone multiple repos. Returns {name: success}."""
+        results = {}
+        for name, url in repos.items():
+            results[name] = self.clone_repo(workspace, name, url)
+        return results
 
     def create_agent_dirs(self, workspace: Path, agent_name: str) -> None:
         """Create agent-specific subdirectories per the spec."""

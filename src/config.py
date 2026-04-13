@@ -34,8 +34,9 @@ class Settings(BaseSettings):
     # Protocol docs (relative to project_root)
     protocol_dir: str = "protocol"
 
-    # Git repo URL for agent workspace clones
-    repo_url: str = ""
+    # Git repos for agent workspace clones: {"name": "url", ...}
+    # Set via OPC_REPOS='{"my-opc": "https://...", "web-app": "https://..."}'
+    repos: dict[str, str] = Field(default_factory=dict)
 
     # Task constraints
     max_revision_rounds: int = 2
