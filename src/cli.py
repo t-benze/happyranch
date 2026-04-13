@@ -29,7 +29,7 @@ def _setup_logging(verbose: bool) -> None:
 
 
 def cmd_run(args: argparse.Namespace) -> None:
-    """Run a task through the Product & Engineering Crew."""
+    """Run a task through the Engineering Head-driven orchestration loop."""
     _setup_logging(args.verbose)
     db = _get_db(args)
     orchestrator = Orchestrator(db=db, settings=settings)
@@ -40,12 +40,10 @@ def cmd_run(args: argparse.Namespace) -> None:
 
     result = orchestrator.run_task(task_id)
 
-    task = db.get_task(task_id)
     print(f"\n{'='*60}")
     print(f"Task ID:    {task_id}")
     print(f"Type:       {args.task}")
     print(f"Status:     {result}")
-    print(f"Revisions:  {task.revision_count}")
     print(f"{'='*60}")
     db.close()
 
@@ -208,9 +206,9 @@ def build_parser() -> argparse.ArgumentParser:
     # opc run
     p_run = sub.add_parser("run", help="Run a task")
     p_run.add_argument(
-        "--task", required=True,
-        choices=["implement_feature", "bug_fix", "payment_change"],
-        help="Task type",
+        "--task", default="general",
+        choices=["general", "implement_feature", "bug_fix", "payment_change"],
+        help="Task type hint (default: general -- EH decides the approach)",
     )
     p_run.add_argument("--brief", required=True, help="Task description")
     p_run.add_argument("--verbose", action="store_true", help="Debug logging")

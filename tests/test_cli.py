@@ -99,6 +99,20 @@ def test_list_tasks_integration(test_settings):
     db.close()
 
 
+def test_run_without_task_flag():
+    parser = build_parser()
+    args = parser.parse_args(["run", "--brief", "Explore the codebase"])
+    assert args.command == "run"
+    assert args.task == "general"
+    assert args.brief == "Explore the codebase"
+
+
+def test_run_with_task_flag():
+    parser = build_parser()
+    args = parser.parse_args(["run", "--task", "bug_fix", "--brief", "Fix it"])
+    assert args.task == "bug_fix"
+
+
 def test_list_tasks_returns_records(test_settings):
     """Test list_tasks returns TaskRecords."""
     from src.infrastructure.database import Database
