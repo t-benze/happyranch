@@ -58,55 +58,61 @@ The following documents are in the protocol folder.
 - **Refund authority**: CX Manager up to $150 USD. Above that → founder
 - **Downtime tolerance**: 30 minutes max before escalation
 
-## Project Structure
+## Directory Layout
+
+Source code and protocol docs live in the repo. Runtime data lives in `~/.opc/` (configurable via `OPC_DATA_DIR`).
+
 ```
-opc-org/
-├── CLAUDE.md                          # This file
-├── 01-org-charter.md                  # Org charter
-├── 02-system-prompts-managers.md      # Manager agent prompts
-├── 03-system-prompts-workers.md       # Worker agent prompts
-├── 04-escalation-rules.md            # Escalation routing rules
-├── 05-crewai-blueprint.md            # Blueprint index → 05a-05e
-├── 05a-crews.md                       # Crew definitions, agent tools
-├── 05b-agent-runtime.md              # Executor model, memory, lifecycle
-├── 05c-orchestrator.md               # Orchestrator, tiers, permissions, state machine
-├── 05d-feishu.md                      # Feishu bot architecture
-├── 05e-dashboard.md                   # Dashboard layout, API endpoints
-├── pyproject.toml                     # Python project config (uv / hatchling)
+~/projects/my-opc/                     # Source code (this repo)
+├── CLAUDE.md
+├── pyproject.toml
+├── protocol/                          # Org charter, system prompts, escalation rules, blueprint
+│   ├── 01-org-charter.md
+│   ├── 02-system-prompts-managers.md
+│   ├── 03-system-prompts-workers.md
+│   ├── 04-escalation-rules.md
+│   └── 05*.md
 ├── src/
 │   ├── cli.py                         # Unified CLI entry point (`opc` command)
 │   ├── config.py                      # Settings (OPC_ env prefix, paths, thresholds)
-│   ├── models.py                      # Pydantic models + StrEnums (TaskStatus, TaskType, AgentName, etc.)
+│   ├── models.py                      # Pydantic models + StrEnums
 │   ├── orchestrator/
 │   │   ├── orchestrator.py            # Main loop — create task, build chain, run steps, review loop
 │   │   ├── executor.py                # Spawns `claude -p` subprocess, reads completion_report.json
 │   │   ├── task_router.py             # Builds tier-dependent task chains per task type
 │   │   ├── revision_loop.py           # Max-rounds escalation logic
 │   │   ├── performance_tracker.py     # 30-day rolling scorecards, tier calculation
-│   │   └── context_builder.py         # Generates CLAUDE.md + .claude/settings.json per agent workspace
+│   │   ├── context_builder.py         # Generates CLAUDE.md + .claude/settings.json per agent workspace
+│   │   └── prompt_loader.py           # Parses system prompts from protocol markdown
 │   ├── infrastructure/
 │   │   ├── database.py                # SQLite (WAL mode), 4 tables, typed CRUD
 │   │   └── audit_logger.py            # Semantic logging (session, verdict, escalation, cross-audit)
-│   ├── agents/                        # Agent definitions (future — Content/Ops/CX crews)
+│   ├── agents/                        # Agent definitions (future)
 │   ├── crews/                         # Crew definitions (future)
 │   └── tools/                         # Agent tools (future)
-├── tests/                             # 78 tests across 10 files
-│   ├── conftest.py                    # Shared fixtures (tmp_dir, test_settings)
-│   ├── test_models.py
-│   ├── test_database.py
-│   ├── test_audit_logger.py
-│   ├── test_task_router.py
-│   ├── test_revision_loop.py
-│   ├── test_performance_tracker.py
-│   ├── test_context_builder.py
-│   ├── test_executor.py
-│   ├── test_orchestrator.py
-│   └── test_cli.py
-├── workspaces/                        # Persistent agent workspaces (created at runtime)
-├── docs/superpowers/
-│   ├── specs/                         # Design specs
-│   └── plans/                         # Implementation plans
-└── knowledge_base/                    # Static KB content (future)
+├── tests/                             # 86 tests across 11 files
+���── docs/superpowers/
+    ├── specs/                         # Design specs
+    └── plans/                         # Implementation plans
+
+~/.opc/                                # Runtime data (OPC_DATA_DIR)
+├── opc.db                             # SQLite database
+└── workspaces/
+    ├── engineering_head/
+    │   ├── CLAUDE.md                  # Generated from protocol/02-system-prompts-managers.md
+    │   ├── .claude/settings.json
+    │   ├── repo/                      # Git clone of the project
+    │   ├── learnings.md
+    │   ├── scorecard.md
+    │   └── recent_tasks.md
+    ├─�� product_manager/
+    │   ├── ...
+    │   └── specs/
+    ├── dev_agent/
+    │   └── ...
+    └── payment_agent/
+        ├── ...
+        └── proposals/
 ```
 
 ## Code Style
@@ -128,7 +134,8 @@ opc run --task implement_feature --brief "Add Alipay support" [--verbose]
 opc tasks                    # list recent tasks
 opc status TASK-001          # show task details
 opc agents [--detail]        # show performance tiers
-opc init                     # initialize workspaces + database
+opc init-agent               # initialize all agent workspaces (repo clone + system prompts)
+opc init-agent dev_agent     # initialize a specific agent
 opc --db /path/to/db <cmd>   # use custom database
 ```
 

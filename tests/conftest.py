@@ -15,6 +15,7 @@ def test_settings(tmp_dir: Path) -> Settings:
     """Settings that use temporary directories for DB and workspaces."""
     return Settings(
         project_root=tmp_dir,
+        data_dir=tmp_dir,
         db_path="test.db",
         workspaces_dir="workspaces",
     )

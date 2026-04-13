@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
+import subprocess
 from pathlib import Path
 
 from src.config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 _SETTINGS_JSON = {
@@ -99,3 +103,43 @@ class ContextBuilder:
 
         self.write_claude_md(workspace, agent_name, system_prompt)
         self.write_settings_json(workspace)
+
+    def clone_repo(self, workspace: Path, repo_url: str) -> bool:
+        """Clone the project repo into workspace/repo/. Returns True on success."""
+        repo_dir = workspace / "repo"
+        if repo_dir.exists() and (repo_dir / ".git").exists():
+            logger.info("Repo already cloned at %s, pulling latest", repo_dir)
+            try:
+                subprocess.run(
+                    ["git", "pull", "--ff-only"],
+                    cwd=str(repo_dir),
+                    capture_output=True,
+                    timeout=60,
+                )
+                return True
+            except (subprocess.TimeoutExpired, subprocess.SubprocessError) as e:
+                logger.warning("git pull failed: %s", e)
+                return False
+
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        logger.info("Cloning %s into %s", repo_url, repo_dir)
+        try:
+            subprocess.run(
+                ["git", "clone", repo_url, str(repo_dir)],
+                capture_output=True,
+                check=True,
+                timeout=120,
+            )
+            return True
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            logger.error("git clone failed: %s", e)
+            return False
+
+    def create_agent_dirs(self, workspace: Path, agent_name: str) -> None:
+        """Create agent-specific subdirectories per the spec."""
+        agent_dirs: dict[str, list[str]] = {
+            "product_manager": ["specs"],
+            "payment_agent": ["proposals"],
+        }
+        for dirname in agent_dirs.get(agent_name, []):
+            (workspace / dirname).mkdir(parents=True, exist_ok=True)

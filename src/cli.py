@@ -123,24 +123,64 @@ def cmd_agents(args: argparse.Namespace) -> None:
     db.close()
 
 
-def cmd_init(args: argparse.Namespace) -> None:
-    """Initialize agent workspaces and database."""
+def _resolve_repo_url() -> str:
+    """Get repo URL from settings or detect from current git remote."""
+    if settings.repo_url:
+        return settings.repo_url
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return ""
+
+
+def cmd_init_agent(args: argparse.Namespace) -> None:
+    """Initialize agent workspaces with real system prompts, repo clone, and agent-specific dirs."""
     from src.orchestrator.context_builder import ContextBuilder
+    from src.orchestrator.prompt_loader import load_all_prompts
 
+    _setup_logging(args.verbose)
     db = _get_db(args)
+
+    protocol_dir = settings.get_protocol_dir()
+    if not protocol_dir.exists():
+        print(f"Error: protocol directory not found at {protocol_dir}")
+        print("Expected: 02-system-prompts-managers.md, 03-system-prompts-workers.md")
+        sys.exit(1)
+
+    prompts = load_all_prompts(protocol_dir)
     ctx = ContextBuilder(settings)
+    repo_url = _resolve_repo_url()
 
-    prompts = {
-        "engineering_head": "You are the Engineering Head.",
-        "product_manager": "You are the Product Manager.",
-        "dev_agent": "You are the Dev Agent.",
-        "payment_agent": "You are the Payment Agent.",
-    }
+    agents_to_init = [AgentName(args.agent)] if args.agent else list(AgentName)
 
-    for agent in AgentName:
-        workspace = settings.get_workspaces_dir() / agent.value
-        ctx.initialize_workspace(workspace, agent.value, prompts.get(agent.value, ""))
-        print(f"  Initialized {workspace}")
+    for agent in agents_to_init:
+        name = agent.value
+        workspace = settings.get_workspaces_dir() / name
+        prompt = prompts.get(name, "")
+
+        if not prompt:
+            print(f"  Warning: no system prompt found for {name}")
+
+        # 1. Create workspace + persistent files + CLAUDE.md + settings.json
+        ctx.initialize_workspace(workspace, name, prompt)
+        print(f"  [{name}] workspace initialized")
+
+        # 2. Clone or pull repo
+        if repo_url:
+            ok = ctx.clone_repo(workspace, repo_url)
+            print(f"  [{name}] repo {'ready' if ok else 'FAILED'}: {workspace / 'repo'}")
+        else:
+            print(f"  [{name}] repo skipped (no OPC_REPO_URL and no git remote detected)")
+
+        # 3. Create agent-specific dirs (specs/, proposals/)
+        ctx.create_agent_dirs(workspace, name)
 
     print(f"\nDatabase: {db.db_path}")
     print("Done.")
@@ -184,9 +224,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_agents.add_argument("--detail", action="store_true", help="Show detailed scorecards")
     p_agents.set_defaults(func=cmd_agents)
 
-    # opc init
-    p_init = sub.add_parser("init", help="Initialize workspaces and database")
-    p_init.set_defaults(func=cmd_init)
+    # opc init-agent
+    p_init = sub.add_parser("init-agent", help="Initialize agent workspaces with system prompts and repo clone")
+    p_init.add_argument("agent", nargs="?", default=None, choices=[a.value for a in AgentName],
+                        help="Specific agent to initialize (default: all)")
+    p_init.add_argument("--verbose", action="store_true", help="Debug logging")
+    p_init.set_defaults(func=cmd_init_agent)
 
     return parser
 

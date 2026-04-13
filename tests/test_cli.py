@@ -62,10 +62,18 @@ def test_agents_detail():
     assert args.detail is True
 
 
-def test_init_subcommand():
+def test_init_agent_subcommand():
     parser = build_parser()
-    args = parser.parse_args(["init"])
-    assert args.command == "init"
+    args = parser.parse_args(["init-agent"])
+    assert args.command == "init-agent"
+    assert args.agent is None
+
+
+def test_init_agent_specific():
+    parser = build_parser()
+    args = parser.parse_args(["init-agent", "dev_agent"])
+    assert args.command == "init-agent"
+    assert args.agent == "dev_agent"
 
 
 def test_global_db_flag():

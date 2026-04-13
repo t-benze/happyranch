@@ -50,8 +50,11 @@ uv run pytest tests/ -v
 ## Usage
 
 ```bash
-# Initialize workspaces and database
-opc init
+# Initialize all agent workspaces (clones repo, loads system prompts)
+opc init-agent
+
+# Or initialize a specific agent
+opc init-agent dev_agent
 
 # Run a feature implementation
 opc run --task implement_feature --brief "Add Alipay support for international cards"
@@ -81,7 +84,7 @@ opc agents --detail
 | `opc status TASK-ID` | Show task details, results, and audit log |
 | `opc tasks [--limit N]` | List recent tasks (default: 20) |
 | `opc agents [--detail]` | Show agent performance tiers and scorecards |
-| `opc init` | Initialize agent workspaces and database |
+| `opc init-agent [name]` | Initialize agent workspaces (all or specific agent) |
 
 Global flag: `opc --db /path/to/db.sqlite <command>` to use a custom database.
 
@@ -91,14 +94,18 @@ All settings use the `OPC_` environment variable prefix. Defaults work out of th
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `OPC_DATA_DIR` | `~/.opc` | Runtime data directory (database, workspaces) |
 | `OPC_CLAUDE_CLI_PATH` | `claude` | Path to Claude Code CLI |
 | `OPC_PERMISSION_MODE` | `auto` | Claude Code permission mode |
-| `OPC_DB_PATH` | `opc.db` | SQLite database path |
-| `OPC_WORKSPACES_DIR` | `workspaces` | Agent workspace root directory |
+| `OPC_DB_PATH` | `opc.db` | SQLite database filename (relative to data dir) |
+| `OPC_WORKSPACES_DIR` | `workspaces` | Workspaces dirname (relative to data dir) |
+| `OPC_REPO_URL` | *(auto-detected)* | Git repo URL for agent workspace clones |
 | `OPC_MAX_REVISION_ROUNDS` | `2` | Max revisions before escalation |
 | `OPC_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout (30 min) |
 | `OPC_TIER_GREEN_THRESHOLD` | `0.90` | Acceptance rate for green tier |
 | `OPC_TIER_YELLOW_THRESHOLD` | `0.75` | Acceptance rate for yellow tier |
+
+Runtime data is stored in `~/.opc/` by default, separate from the source code.
 
 ## Performance Tiers
 
@@ -113,7 +120,7 @@ Agents are scored on a rolling 30-day window based on review verdicts from the E
 ## Architecture
 
 ```
-src/cli.py (opc command)             CLI entry point
+src/cli.py (`opc` command)           CLI entry point
         |
         v
 src/orchestrator/orchestrator.py     Main loop -- creates tasks, builds chains, runs review loop

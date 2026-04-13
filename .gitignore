@@ -32,3 +32,6 @@ logs/
 # Database
 *.db
 *.sqlite3
+
+# Agent workspaces (runtime data lives in ~/.opc/)
+workspaces/
