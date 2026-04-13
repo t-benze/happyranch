@@ -96,3 +96,42 @@ def test_task_step_creation():
     )
     assert step.agent == AgentName.PRODUCT_MANAGER
     assert step.action == "write_spec"
+
+
+from src.models import NextStep, StepRecord
+
+
+def test_next_step_delegate():
+    step = NextStep(action="delegate", agent="dev_agent", prompt="Implement feature X")
+    assert step.action == "delegate"
+    assert step.agent == "dev_agent"
+    assert step.prompt == "Implement feature X"
+
+
+def test_next_step_done():
+    step = NextStep(action="done", summary="Explored the codebase, found no issues")
+    assert step.action == "done"
+    assert step.summary == "Explored the codebase, found no issues"
+
+
+def test_next_step_escalate():
+    step = NextStep(action="escalate", reason="Budget exceeds $200")
+    assert step.action == "escalate"
+    assert step.reason == "Budget exceeds $200"
+
+
+def test_step_record():
+    record = StepRecord(
+        step_number=1,
+        agent="dev_agent",
+        action="delegate: implement feature",
+        result_summary="Feature implemented with 3 tests",
+        success=True,
+    )
+    assert record.step_number == 1
+    assert record.success is True
+
+
+def test_task_type_general():
+    from src.models import TaskType
+    assert TaskType.GENERAL == "general"

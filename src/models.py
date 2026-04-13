@@ -20,6 +20,7 @@ class TaskType(StrEnum):
     IMPLEMENT_FEATURE = "implement_feature"
     BUG_FIX = "bug_fix"
     PAYMENT_CHANGE = "payment_change"
+    GENERAL = "general"
 
 
 class AgentName(StrEnum):
@@ -73,3 +74,21 @@ class TaskStep(BaseModel):
     agent: AgentName
     action: str
     description: str
+
+
+class NextStep(BaseModel):
+    """Decision returned by the Engineering Head for what the orchestrator should do next."""
+    action: str  # "delegate", "done", "escalate"
+    agent: str | None = None
+    prompt: str | None = None
+    summary: str | None = None
+    reason: str | None = None
+
+
+class StepRecord(BaseModel):
+    """Record of a completed orchestration step, shown to EH as history."""
+    step_number: int
+    agent: str
+    action: str
+    result_summary: str
+    success: bool

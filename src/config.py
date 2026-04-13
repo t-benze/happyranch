@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     max_revision_rounds: int = 2
     session_timeout_seconds: int = 1800  # 30 minutes
 
+    # Orchestration loop
+    max_orchestration_steps: int = 10
+
     # Performance tier thresholds
     tier_green_threshold: float = 0.90
     tier_yellow_threshold: float = 0.75
