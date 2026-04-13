@@ -13,7 +13,7 @@ Agents operate autonomously within defined authority. Managers cross-audit each 
 
 ## Design Documents (read these first)
 
-The following documents are in the protocol folder.
+The following documents are in the `protocol/` folder.
 
 - `01-org-charter.md` — Mission, brand voice, risk tolerance, budget caps, partner standards, compliance requirements across 3 jurisdictions
 - `02-system-prompts-managers.md` — Full system prompts for all 4 manager agents with accountability contracts and performance tiers
@@ -38,11 +38,11 @@ The following documents are in the protocol folder.
 - **Hosting**: Local Mac Mini
 
 ## Implementation Order (follow this sequence)
-1. ~~**Product & Engineering Crew**~~ ✅ — Engineering Head + Product Manager + Dev Agent + Payment Agent with Claude Code executor. Orchestrator, audit logging, revision loop, agent memory, performance scoring all implemented.
-2. ~~**Audit logging**~~ ✅ — SQLite-backed audit logger with session start/end, completion reports, review verdicts, escalations, cross-audit stubs.
-3. ~~**Revision loop**~~ ✅ — Max 2 revision rounds before escalation. Engineering Head reviews, routes feedback to target agent.
-4. ~~**Agent memory**~~ ✅ — Persistent workspaces with CLAUDE.md, learnings.md, scorecard.md, recent_tasks.md. Context builder regenerates identity on tier changes.
-5. ~~**Performance scoring**~~ ✅ — Rolling 30-day scorecards, green/yellow/red tiers, tier-dependent task chain adjustment.
+1. ~~**Product & Engineering Crew**~~ done — Engineering Head + Product Manager + Dev Agent + Payment Agent with Claude Code executor. Orchestrator, audit logging, revision loop, agent memory, performance scoring all implemented.
+2. ~~**Audit logging**~~ done — SQLite-backed audit logger with session start/end, completion reports, review verdicts, escalations, cross-audit stubs.
+3. ~~**Revision loop**~~ done — Max 2 revision rounds before escalation. Engineering Head reviews, routes feedback to target agent.
+4. ~~**Agent memory**~~ done — Persistent workspaces with CLAUDE.md, learnings.md, scorecard.md, recent_tasks.md. Context builder regenerates identity on tier changes.
+5. ~~**Performance scoring**~~ done — Rolling 30-day scorecards, green/yellow/red tiers, tier-dependent task chain adjustment.
 6. **Content Crew** — Content Writer + QA Agent + SEO Agent + Content Manager.
 7. **Ops Crew** — Partner Liaison + Compliance Agent + Operations Manager. Enables real cross-crew audits for payment changes.
 8. **Inter-Crew communication** — Orchestrator routes tasks between Crews.
@@ -54,8 +54,8 @@ The following documents are in the protocol folder.
 - **Three jurisdictions**: Mainland China (PIPL, CSL, DSL), Hong Kong (PDPO), Macau (PDPA) — all must be complied with simultaneously
 - **PCI-DSS**: No raw card data storage — ever
 - **Political sensitivity**: Any content about China/HK/Macau relations escalates to founder
-- **Budget authority**: Auto-approved up to $200 USD single / $100/month recurring. Above that → founder
-- **Refund authority**: CX Manager up to $150 USD. Above that → founder
+- **Budget authority**: Auto-approved up to $200 USD single / $100/month recurring. Above that -> founder
+- **Refund authority**: CX Manager up to $150 USD. Above that -> founder
 - **Downtime tolerance**: 30 minutes max before escalation
 
 ## Directory Layout
@@ -64,56 +64,83 @@ Source code and protocol docs live in the repo. Runtime data lives in `~/.opc/` 
 
 ```
 ~/projects/my-opc/                     # Source code (this repo)
-├── CLAUDE.md
-├── pyproject.toml
-├── protocol/                          # Org charter, system prompts, escalation rules, blueprint
-│   ├── 01-org-charter.md
-│   ├── 02-system-prompts-managers.md
-│   ├── 03-system-prompts-workers.md
-│   ├── 04-escalation-rules.md
-│   └── 05*.md
-├── src/
-│   ├── cli.py                         # Unified CLI entry point (`opc` command)
-│   ├── config.py                      # Settings (OPC_ env prefix, paths, thresholds)
-│   ├── models.py                      # Pydantic models + StrEnums
-│   ├── orchestrator/
-│   │   ├── orchestrator.py            # Main loop — create task, build chain, run steps, review loop
-│   │   ├── executor.py                # Spawns `claude -p` subprocess, reads completion_report.json
-│   │   ├── task_router.py             # Builds tier-dependent task chains per task type
-│   │   ├── revision_loop.py           # Max-rounds escalation logic
-│   │   ├── performance_tracker.py     # 30-day rolling scorecards, tier calculation
-│   │   ├── context_builder.py         # Generates CLAUDE.md + .claude/settings.json per agent workspace
-│   │   └── prompt_loader.py           # Parses system prompts from protocol markdown
-│   ├── infrastructure/
-│   │   ├── database.py                # SQLite (WAL mode), 4 tables, typed CRUD
-│   │   └── audit_logger.py            # Semantic logging (session, verdict, escalation, cross-audit)
-│   ├── agents/                        # Agent definitions (future)
-│   ├── crews/                         # Crew definitions (future)
-│   └── tools/                         # Agent tools (future)
-├── tests/                             # 86 tests across 11 files
-���── docs/superpowers/
-    ├── specs/                         # Design specs
-    └── plans/                         # Implementation plans
+|-- CLAUDE.md
+|-- pyproject.toml
+|-- protocol/                          # Org charter, system prompts, escalation rules, blueprint
+|   |-- 01-org-charter.md
+|   |-- 02-system-prompts-managers.md
+|   |-- 03-system-prompts-workers.md
+|   |-- 04-escalation-rules.md
+|   +-- 05*.md
+|-- src/
+|   |-- cli.py                         # Unified CLI entry point (`opc` command)
+|   |-- config.py                      # Settings (OPC_ env prefix, paths, thresholds)
+|   |-- models.py                      # Pydantic models + StrEnums
+|   |-- orchestrator/
+|   |   |-- orchestrator.py            # Main loop: create task, build chain, run steps, review loop
+|   |   |-- executor.py                # Spawns `claude -p` subprocess, reads completion_report.json
+|   |   |-- task_router.py             # Builds tier-dependent task chains per task type
+|   |   |-- revision_loop.py           # Max-rounds escalation logic
+|   |   |-- performance_tracker.py     # 30-day rolling scorecards, tier calculation
+|   |   |-- context_builder.py         # Generates CLAUDE.md + .claude/settings.json per agent workspace
+|   |   +-- prompt_loader.py           # Parses system prompts from protocol markdown
+|   |-- infrastructure/
+|   |   |-- database.py                # SQLite (WAL mode), 4 tables, typed CRUD
+|   |   +-- audit_logger.py            # Semantic logging (session, verdict, escalation, cross-audit)
+|   |-- agents/                        # Agent definitions (future)
+|   |-- crews/                         # Crew definitions (future)
+|   +-- tools/                         # Agent tools (future)
+|-- tests/                             # 89 tests across 11 files
++-- docs/superpowers/
+    |-- specs/                         # Design specs
+    +-- plans/                         # Implementation plans
 
 ~/.opc/                                # Runtime data (OPC_DATA_DIR)
-├── opc.db                             # SQLite database
-└── workspaces/
-    ├── engineering_head/
-    │   ├── CLAUDE.md                  # Generated from protocol/02-system-prompts-managers.md
-    │   ├── .claude/settings.json
-    │   ├── repo/                      # Git clone of the project
-    │   ├── learnings.md
-    │   ├── scorecard.md
-    │   └── recent_tasks.md
-    ├─�� product_manager/
-    │   ├── ...
-    │   └── specs/
-    ├── dev_agent/
-    │   └── ...
-    └── payment_agent/
-        ├── ...
-        └── proposals/
+|-- opc.db                             # SQLite database
++-- workspaces/
+    |-- engineering_head/
+    |   |-- CLAUDE.md                  # Generated from protocol/02-system-prompts-managers.md
+    |   |-- .claude/settings.json      # Permissions + PreToolUse hook (git pull all repos)
+    |   |-- repos/                     # Git clones (supports multiple repos)
+    |   |   |-- my-opc/
+    |   |   +-- web-app/               # (if configured via OPC_REPOS)
+    |   |-- learnings.md
+    |   |-- scorecard.md
+    |   +-- recent_tasks.md
+    |-- product_manager/
+    |   |-- ...
+    |   +-- specs/
+    |-- dev_agent/
+    |   +-- ...
+    +-- payment_agent/
+        |-- ...
+        +-- proposals/
 ```
+
+## Configuration
+
+All settings use the `OPC_` environment variable prefix. Defaults work out of the box for single-repo setups.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPC_DATA_DIR` | `~/.opc` | Runtime data directory (database, workspaces) |
+| `OPC_CLAUDE_CLI_PATH` | `claude` | Path to Claude Code CLI |
+| `OPC_PERMISSION_MODE` | `auto` | Claude Code permission mode |
+| `OPC_DB_PATH` | `opc.db` | SQLite database filename (relative to data dir) |
+| `OPC_WORKSPACES_DIR` | `workspaces` | Workspaces dirname (relative to data dir) |
+| `OPC_PROTOCOL_DIR` | `protocol` | Protocol docs dirname (relative to project root) |
+| `OPC_REPOS` | *(auto-detected)* | Git repos for agent clones, JSON dict: `{"name": "url", ...}` |
+| `OPC_MAX_REVISION_ROUNDS` | `2` | Max revisions before escalation |
+| `OPC_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout (30 min) |
+| `OPC_TIER_GREEN_THRESHOLD` | `0.90` | Acceptance rate for green tier |
+| `OPC_TIER_YELLOW_THRESHOLD` | `0.75` | Acceptance rate for yellow tier |
+
+Multi-repo example in `.env`:
+```
+OPC_REPOS={"my-opc": "https://github.com/t-benze/my-opc.git", "web-app": "https://github.com/t-benze/web-app.git"}
+```
+
+If `OPC_REPOS` is not set, `opc init-agent` auto-detects the current git remote as a single repo.
 
 ## Code Style
 - Type hints on all function signatures
@@ -124,8 +151,6 @@ Source code and protocol docs live in the repo. Runtime data lives in `~/.opc/` 
 ## Running Tests
 ```bash
 uv run pytest tests/ -v
-# or with the venv directly:
-.venv313/bin/python -m pytest tests/ -v
 ```
 
 ## Running the CLI
@@ -134,13 +159,13 @@ opc run --task implement_feature --brief "Add Alipay support" [--verbose]
 opc tasks                    # list recent tasks
 opc status TASK-001          # show task details
 opc agents [--detail]        # show performance tiers
-opc init-agent               # initialize all agent workspaces (repo clone + system prompts)
+opc init-agent               # initialize all agent workspaces (repo clones + system prompts)
 opc init-agent dev_agent     # initialize a specific agent
 opc --db /path/to/db <cmd>   # use custom database
 ```
 
 ## When Starting a New Implementation Phase
-1. Read the relevant design doc first (e.g., blueprint §2 for crew definitions)
+1. Read the relevant design doc first (e.g., blueprint in `protocol/05c-orchestrator.md`)
 2. Check existing code for patterns to follow — especially `src/orchestrator/` for the established patterns
 3. Write tests alongside implementation
 4. Keep agents' system prompts in sync with the markdown docs — the docs are the source of truth

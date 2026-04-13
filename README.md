@@ -99,11 +99,18 @@ All settings use the `OPC_` environment variable prefix. Defaults work out of th
 | `OPC_PERMISSION_MODE` | `auto` | Claude Code permission mode |
 | `OPC_DB_PATH` | `opc.db` | SQLite database filename (relative to data dir) |
 | `OPC_WORKSPACES_DIR` | `workspaces` | Workspaces dirname (relative to data dir) |
-| `OPC_REPO_URL` | *(auto-detected)* | Git repo URL for agent workspace clones |
+| `OPC_REPOS` | *(auto-detected)* | Git repos for agent clones, JSON dict: `{"name": "url"}` |
 | `OPC_MAX_REVISION_ROUNDS` | `2` | Max revisions before escalation |
 | `OPC_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout (30 min) |
 | `OPC_TIER_GREEN_THRESHOLD` | `0.90` | Acceptance rate for green tier |
 | `OPC_TIER_YELLOW_THRESHOLD` | `0.75` | Acceptance rate for yellow tier |
+
+Multi-repo example in `.env`:
+```
+OPC_REPOS={"my-opc": "https://github.com/t-benze/my-opc.git", "web-app": "https://github.com/t-benze/web-app.git"}
+```
+
+If `OPC_REPOS` is not set, `opc init-agent` auto-detects the current git remote as a single repo.
 
 Runtime data is stored in `~/.opc/` by default, separate from the source code.
 
@@ -117,43 +124,16 @@ Agents are scored on a rolling 30-day window based on review verdicts from the E
 | **Yellow** | 75-89% | Extra pre-review step added to task chain |
 | **Red** | < 75% | Double review, reduced task scope |
 
-## Architecture
+## Agent Workspaces
 
-```
-src/cli.py (`opc` command)           CLI entry point
-        |
-        v
-src/orchestrator/orchestrator.py     Main loop -- creates tasks, builds chains, runs review loop
-        |
-        |-- task_router.py           Builds tier-dependent task chains
-        |-- executor.py              Spawns `claude -p` sessions, reads completion reports
-        |-- revision_loop.py         Tracks revision rounds, escalates at max
-        |-- performance_tracker.py   Calculates tiers, updates scorecards
-        |-- context_builder.py       Generates CLAUDE.md + settings per agent workspace
-        |
-        |-- infrastructure/
-        |   |-- database.py          SQLite (WAL mode) -- tasks, audit_log, scorecards, task_results
-        |   |-- audit_logger.py      Structured event logging
-        |
-        |-- models.py                Pydantic models + enums
-```
+Each agent runs in its own persistent workspace under `~/.opc/workspaces/`. After running `opc init-agent`, each workspace contains:
 
-Each agent runs in its own persistent workspace under `workspaces/`. The workspace contains:
-- `CLAUDE.md` — agent identity, system prompt, pointers to persistent files
-- `.claude/settings.json` — permissions and hooks
-- `learnings.md` — agent-written insights, periodically consolidated
-- `scorecard.md` — human-readable performance summary
+- `CLAUDE.md` — agent identity, system prompt, available repos
+- `.claude/settings.json` — permissions and git-pull hooks
+- `repos/` — git clones of configured repositories (auto-pulled before each task)
+- `learnings.md` — agent-written insights from past tasks
+- `scorecard.md` — performance summary (updated by orchestrator)
 - `recent_tasks.md` — rolling task history
-
-## Design Documents
-
-| File | Description |
-|------|-------------|
-| `01-org-charter.md` | Mission, brand voice, risk tolerance, budget caps, compliance requirements |
-| `02-system-prompts-managers.md` | System prompts for 4 manager agents with accountability contracts |
-| `03-system-prompts-workers.md` | System prompts for 8 worker agents with accountability contracts |
-| `04-escalation-rules.md` | 12 routing rules, manager-resolvable categories, peer audit triggers |
-| `05-crewai-blueprint.md` | Blueprint index pointing to 05a-05e |
 
 ## Roadmap
 
