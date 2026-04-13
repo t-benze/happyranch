@@ -1,0 +1,95 @@
+from pathlib import Path
+
+from src.infrastructure.database import Database
+from src.models import AgentName, PerformanceTier, TaskRecord, TaskStatus, TaskType
+from src.orchestrator.performance_tracker import PerformanceTracker
+
+
+def _seed_task_results(db: Database, agent: str, outcomes: list[str]) -> None:
+    """Seed task results. outcomes is a list of 'approved' or 'revised' or 'rejected'."""
+    for i, outcome in enumerate(outcomes):
+        task_id = f"TASK-{i+1:03d}"
+        db.insert_task(TaskRecord(id=task_id, type=TaskType.IMPLEMENT_FEATURE, brief="test"))
+        db.insert_task_result(
+            task_id=task_id,
+            agent=agent,
+            session_id=f"sess-{i}",
+            output_summary="test output",
+            confidence_score=80,
+            duration_seconds=60,
+            token_count=1000,
+            estimated_cost=0.05,
+        )
+        db.insert_audit_log(
+            task_id=task_id,
+            agent="engineering_head",
+            action="review_verdict",
+            payload={"verdict": outcome, "reviewed_agent": agent},
+        )
+
+
+def test_calculate_tier_green(test_settings):
+    db = Database(test_settings.get_db_path())
+    tracker = PerformanceTracker(db, test_settings)
+    _seed_task_results(db, "dev_agent", ["approved"] * 9 + ["revised"])
+    tier = tracker.calculate_tier("dev_agent")
+    assert tier == PerformanceTier.GREEN
+
+
+def test_calculate_tier_yellow(test_settings):
+    db = Database(test_settings.get_db_path())
+    tracker = PerformanceTracker(db, test_settings)
+    _seed_task_results(db, "dev_agent", ["approved"] * 8 + ["revised"] * 2)
+    tier = tracker.calculate_tier("dev_agent")
+    assert tier == PerformanceTier.YELLOW
+
+
+def test_calculate_tier_red(test_settings):
+    db = Database(test_settings.get_db_path())
+    tracker = PerformanceTracker(db, test_settings)
+    _seed_task_results(db, "dev_agent", ["approved"] * 7 + ["revised"] * 3)
+    tier = tracker.calculate_tier("dev_agent")
+    assert tier == PerformanceTier.RED
+
+
+def test_no_results_defaults_to_green(test_settings):
+    db = Database(test_settings.get_db_path())
+    tracker = PerformanceTracker(db, test_settings)
+    tier = tracker.calculate_tier("dev_agent")
+    assert tier == PerformanceTier.GREEN
+
+
+def test_update_scorecard_writes_to_db(test_settings):
+    db = Database(test_settings.get_db_path())
+    tracker = PerformanceTracker(db, test_settings)
+    _seed_task_results(db, "dev_agent", ["approved"] * 9 + ["revised"])
+    tracker.update_scorecard("dev_agent")
+    scorecard = db.get_scorecard("dev_agent")
+    assert scorecard is not None
+    assert scorecard["tier"] == "green"
+    assert scorecard["acceptance_rate"] == 0.9
+
+
+def test_write_scorecard_file(test_settings):
+    db = Database(test_settings.get_db_path())
+    tracker = PerformanceTracker(db, test_settings)
+    workspace = test_settings.get_workspaces_dir() / "dev_agent"
+    workspace.mkdir(parents=True)
+    _seed_task_results(db, "dev_agent", ["approved"] * 9 + ["revised"])
+    tracker.update_scorecard("dev_agent")
+    tracker.write_scorecard_file("dev_agent", workspace)
+    scorecard_path = workspace / "scorecard.md"
+    assert scorecard_path.exists()
+    content = scorecard_path.read_text()
+    assert "green" in content.lower()
+    assert "90" in content
+
+
+def test_get_all_tiers(test_settings):
+    db = Database(test_settings.get_db_path())
+    tracker = PerformanceTracker(db, test_settings)
+    _seed_task_results(db, "dev_agent", ["approved"] * 9 + ["revised"])
+    tracker.update_scorecard("dev_agent")
+    tiers = tracker.get_all_tiers()
+    assert tiers[AgentName.DEV_AGENT] == PerformanceTier.GREEN
+    assert tiers[AgentName.PRODUCT_MANAGER] == PerformanceTier.GREEN
