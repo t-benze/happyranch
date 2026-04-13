@@ -42,7 +42,13 @@ uv run pytest tests/ -v
 ## Usage
 
 ```bash
-# Initialize all agent workspaces (clones repo, loads system prompts)
+# 1. Create a runtime directory (stores database, agent workspaces)
+opc init ~/opc-runtime
+
+# 2. Work from inside the runtime directory
+cd ~/opc-runtime
+
+# 3. Initialize all agent workspaces (clones repo, loads system prompts)
 opc init-agent
 
 # Or initialize a specific agent
@@ -65,12 +71,16 @@ opc tasks
 # View agent performance tiers
 opc agents
 opc agents --detail
+
+# Or specify runtime dir explicitly from anywhere
+opc --runtime ~/opc-runtime tasks
 ```
 
 ### Commands
 
 | Command | Description |
 |---------|-------------|
+| `opc init <path>` | Create a new runtime directory |
 | `opc run --brief "..."` | Run a task (EH decides approach) |
 | `opc run --task TYPE --brief "..."` | Run with task type hint (`general`, `implement_feature`, `bug_fix`, `payment_change`) |
 | `opc status TASK-ID` | Show task details, results, and audit log |
@@ -78,19 +88,16 @@ opc agents --detail
 | `opc agents [--detail]` | Show agent performance tiers and scorecards |
 | `opc init-agent [name]` | Initialize agent workspaces (all or specific agent) |
 
-Global flag: `opc --db /path/to/db.sqlite <command>` to use a custom database.
+All commands except `init` require a runtime directory. Either `cd` into it or pass `--runtime <path>`.
 
 ## Configuration
 
-All settings use the `OPC_` environment variable prefix. Defaults work out of the box.
+Operational settings use the `OPC_` environment variable prefix. Runtime paths (database, workspaces) are derived from the runtime directory.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPC_DATA_DIR` | `~/.opc` | Runtime data directory (database, workspaces) |
 | `OPC_CLAUDE_CLI_PATH` | `claude` | Path to Claude Code CLI |
 | `OPC_PERMISSION_MODE` | `auto` | Claude Code permission mode |
-| `OPC_DB_PATH` | `opc.db` | SQLite database filename (relative to data dir) |
-| `OPC_WORKSPACES_DIR` | `workspaces` | Workspaces dirname (relative to data dir) |
 | `OPC_REPOS` | *(auto-detected)* | Git repos for agent clones, JSON dict: `{"name": "url"}` |
 | `OPC_MAX_ORCHESTRATION_STEPS` | `10` | Max EH decision steps before escalation |
 | `OPC_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout (30 min) |
@@ -103,8 +110,6 @@ OPC_REPOS={"my-opc": "https://github.com/t-benze/my-opc.git", "web-app": "https:
 ```
 
 If `OPC_REPOS` is not set, `opc init-agent` auto-detects the current git remote as a single repo.
-
-Runtime data is stored in `~/.opc/` by default, separate from the source code.
 
 ## Performance Tiers
 
@@ -120,7 +125,7 @@ Tier information is exposed to the EH in its capabilities prompt, so it influenc
 
 ## Agent Workspaces
 
-Each agent runs in its own persistent workspace under `~/.opc/workspaces/`. After running `opc init-agent`, each workspace contains:
+Each agent runs in its own persistent workspace inside the runtime directory. After running `opc init-agent`, each workspace contains:
 
 - `CLAUDE.md` — agent identity, system prompt, available repos
 - `.claude/settings.json` — permissions and git-pull hooks

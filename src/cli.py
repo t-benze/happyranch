@@ -19,15 +19,17 @@ def _get_settings() -> Settings:
 
 
 def _require_runtime(args: argparse.Namespace) -> RuntimeDir:
-    """Validate and load the RuntimeDir from --runtime flag."""
-    if not args.runtime:
-        print("Error: --runtime is required. Pass the path to an OPC runtime directory.")
-        print("  Create one with: opc init <path>")
-        sys.exit(1)
+    """Load RuntimeDir from --runtime flag, or detect from current directory."""
+    path = Path(args.runtime) if args.runtime else Path.cwd()
     try:
-        return RuntimeDir.load(Path(args.runtime))
-    except ValueError as exc:
-        print(f"Error: {exc}")
+        return RuntimeDir.load(path)
+    except ValueError:
+        if args.runtime:
+            print(f"Error: {path} is not a valid OPC runtime directory (missing opc.toml)")
+        else:
+            print("Error: not inside an OPC runtime directory (no opc.toml found).")
+            print("  Either run from inside a runtime directory, or pass --runtime <path>")
+            print("  Create one with: opc init <path>")
         sys.exit(1)
 
 

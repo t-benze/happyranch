@@ -60,7 +60,7 @@ The following documents are in the `protocol/` folder.
 
 ## Directory Layout
 
-Source code and protocol docs live in the repo. Runtime data lives in `~/.opc/` (configurable via `OPC_DATA_DIR`).
+Source code and protocol docs live in the repo. Runtime data lives in a dedicated **runtime directory** created with `opc init`.
 
 ```
 ~/projects/my-opc/                     # Source code (this repo)
@@ -74,7 +74,8 @@ Source code and protocol docs live in the repo. Runtime data lives in `~/.opc/` 
 |   +-- 05*.md
 |-- src/
 |   |-- cli.py                         # Unified CLI entry point (`opc` command)
-|   |-- config.py                      # Settings (OPC_ env prefix, paths, thresholds)
+|   |-- config.py                      # Settings (OPC_ env prefix, operational thresholds)
+|   |-- runtime.py                     # RuntimeDir — self-describing runtime folder (opc.toml marker)
 |   |-- models.py                      # Pydantic models + StrEnums
 |   |-- orchestrator/
 |   |   |-- orchestrator.py            # EH-driven loop: ask Engineering Head, execute decisions
@@ -89,12 +90,13 @@ Source code and protocol docs live in the repo. Runtime data lives in `~/.opc/` 
 |   |-- agents/                        # Agent definitions (future)
 |   |-- crews/                         # Crew definitions (future)
 |   +-- tools/                         # Agent tools (future)
-|-- tests/                             # 98 tests across 10 files
+|-- tests/                             # 106 tests across 11 files
 +-- docs/superpowers/
     |-- specs/                         # Design specs
     +-- plans/                         # Implementation plans
 
-~/.opc/                                # Runtime data (OPC_DATA_DIR)
+<runtime-dir>/                         # Created by `opc init <path>`
+|-- opc.toml                           # Marker file (presence = valid runtime folder)
 |-- opc.db                             # SQLite database
 +-- workspaces/
     |-- engineering_head/
@@ -118,15 +120,12 @@ Source code and protocol docs live in the repo. Runtime data lives in `~/.opc/` 
 
 ## Configuration
 
-All settings use the `OPC_` environment variable prefix. Defaults work out of the box for single-repo setups.
+Operational settings use the `OPC_` environment variable prefix. Runtime paths (database, workspaces) are derived from the runtime directory, not from env vars.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPC_DATA_DIR` | `~/.opc` | Runtime data directory (database, workspaces) |
 | `OPC_CLAUDE_CLI_PATH` | `claude` | Path to Claude Code CLI |
 | `OPC_PERMISSION_MODE` | `auto` | Claude Code permission mode |
-| `OPC_DB_PATH` | `opc.db` | SQLite database filename (relative to data dir) |
-| `OPC_WORKSPACES_DIR` | `workspaces` | Workspaces dirname (relative to data dir) |
 | `OPC_PROTOCOL_DIR` | `protocol` | Protocol docs dirname (relative to project root) |
 | `OPC_REPOS` | *(auto-detected)* | Git repos for agent clones, JSON dict: `{"name": "url", ...}` |
 | `OPC_MAX_ORCHESTRATION_STEPS` | `10` | Max EH decision steps before escalation |
@@ -154,6 +153,8 @@ uv run pytest tests/ -v
 
 ## Running the CLI
 ```bash
+opc init /path/to/runtime                                       # bootstrap runtime directory
+cd /path/to/runtime                                             # run from inside runtime dir
 opc run --brief "Explore the payment module"                    # EH decides approach
 opc run --task implement_feature --brief "Add Alipay support"   # with task type hint
 opc tasks                    # list recent tasks
@@ -161,7 +162,7 @@ opc status TASK-001          # show task details
 opc agents [--detail]        # show performance tiers
 opc init-agent               # initialize all agent workspaces (repo clones + system prompts)
 opc init-agent dev_agent     # initialize a specific agent
-opc --db /path/to/db <cmd>   # use custom database
+opc --runtime /path/to/runtime <cmd>  # or specify runtime dir explicitly
 ```
 
 ## Maintaining Documentation
