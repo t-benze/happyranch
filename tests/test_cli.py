@@ -267,3 +267,36 @@ def test_cmd_tail_handles_stream_error(capsys):
     out = capsys.readouterr().out
     assert "TASK-X" in out
     assert "404" in out
+
+
+def test_cmd_report_completion_posts_with_session_id():
+    from src.cli import cmd_report_completion
+
+    fake = MagicMock()
+    fake.post.return_value.status_code = 200
+    args = MagicMock(
+        task_id="TASK-001", session_id="sess-1", agent="dev_agent",
+        status="completed", confidence=90, summary="ok",
+        risks=[], dependencies=[], reviewer_focus=[],
+    )
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_report_completion(args)
+    args_pos, kwargs = fake.post.call_args
+    assert args_pos[0] == "/api/v1/tasks/TASK-001/completion"
+    assert kwargs["json"]["session_id"] == "sess-1"
+
+
+def test_cmd_learning_posts_with_session_id():
+    from src.cli import cmd_learning
+
+    fake = MagicMock()
+    fake.post.return_value.status_code = 200
+    args = MagicMock(
+        task_id="TASK-001", session_id="sess-1",
+        agent="dev_agent", text="x",
+    )
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_learning(args)
+    args_pos, kwargs = fake.post.call_args
+    assert args_pos[0] == "/api/v1/agents/dev_agent/learnings"
+    assert kwargs["json"]["session_id"] == "sess-1"

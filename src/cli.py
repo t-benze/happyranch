@@ -258,59 +258,67 @@ def _write_default_agent_config(workspace: Path) -> None:
 
 
 def cmd_init_agent(args: argparse.Namespace) -> None:
-    """Initialize agent workspaces with real system prompts, repo clones, and agent-specific dirs."""
-    from src.orchestrator.context_builder import ContextBuilder
-    from src.orchestrator.prompt_loader import load_all_prompts
-
-    _setup_logging(args.verbose)
-    runtime = _require_runtime(args)
-    db = _get_db(runtime)
-
-    s = _get_settings()
-    protocol_dir = s.get_protocol_dir()
-    if not protocol_dir.exists():
-        print(f"Error: protocol directory not found at {protocol_dir}")
-        print("Expected: 02-system-prompts-managers.md, 03-system-prompts-workers.md")
+    """Initialize agent workspaces by streaming progress from the daemon."""
+    import json as _json
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
         sys.exit(1)
+    try:
+        for payload in client.stream(
+            "POST", "/api/v1/agents/init", json={"agent": args.agent},
+        ):
+            try:
+                event = _json.loads(payload)
+            except _json.JSONDecodeError:
+                print(payload)
+                continue
+            if event.get("phase") == "all_done":
+                print("Done.")
+                return
+            agent = event.get("agent", "")
+            phase = event.get("phase", "")
+            print(f"  [{agent}] {phase}")
+    except KeyboardInterrupt:
+        print("Init cancelled (daemon will continue).")
 
-    prompts = load_all_prompts(protocol_dir)
-    ctx = ContextBuilder(s)
 
-    agents_to_init = [AgentName(args.agent)] if args.agent else list(AgentName)
+def cmd_report_completion(args: argparse.Namespace) -> None:
+    """Agent callback: report task completion to the daemon."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    body = {
+        "session_id": args.session_id,
+        "agent": args.agent,
+        "status": args.status,
+        "confidence": args.confidence,
+        "output_summary": args.summary,
+        "risks_flagged": args.risks or [],
+        "dependencies": args.dependencies or [],
+        "suggested_reviewer_focus": args.reviewer_focus or [],
+    }
+    r = client.post(f"/api/v1/tasks/{args.task_id}/completion", json=body)
+    if not _ok(r):
+        return
 
-    for agent in agents_to_init:
-        name = agent.value
-        workspace = runtime.workspaces_dir / name
-        workspace.mkdir(parents=True, exist_ok=True)
 
-        # 0. Ensure agent.yaml exists
-        _write_default_agent_config(workspace)
-        agent_config = _load_agent_config(workspace)
-        repos = agent_config.get("repos", {})
-
-        prompt = prompts.get(name, "")
-        if not prompt:
-            print(f"  Warning: no system prompt found for {name}")
-
-        # 1. Clone or pull repos
-        if repos:
-            results = ctx.clone_repos(workspace, repos)
-            for repo_name, ok in results.items():
-                status = "ready" if ok else "FAILED"
-                print(f"  [{name}] repo {repo_name}: {status}")
-        else:
-            print(f"  [{name}] repos: none configured (edit {workspace}/agent.yaml)")
-
-        # 2. Create workspace + persistent files + CLAUDE.md + settings.json
-        ctx.initialize_workspace(workspace, name, prompt)
-        print(f"  [{name}] workspace initialized")
-
-        # 3. Create agent-specific dirs (specs/, proposals/)
-        ctx.create_agent_dirs(workspace, name)
-
-    print(f"\nDatabase: {db.db_path}")
-    print("Done.")
-    db.close()
+def cmd_learning(args: argparse.Namespace) -> None:
+    """Agent callback: append a learning to the agent's learnings.md."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    r = client.post(
+        f"/api/v1/agents/{args.agent}/learnings",
+        json={"session_id": args.session_id, "task_id": args.task_id, "text": args.text},
+    )
+    if not _ok(r):
+        return
 
 
 # ── parser ───────────────────────────────────────────────────
@@ -371,6 +379,25 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Specific agent to initialize (default: all)")
     p_init_agent.add_argument("--verbose", action="store_true", help="Debug logging")
     p_init_agent.set_defaults(func=cmd_init_agent)
+
+    p_rep = sub.add_parser("report-completion", help="Agent callback: report task completion")
+    p_rep.add_argument("--task-id", required=True)
+    p_rep.add_argument("--session-id", required=True)
+    p_rep.add_argument("--agent", required=True)
+    p_rep.add_argument("--status", required=True, choices=["completed", "blocked"])
+    p_rep.add_argument("--confidence", type=int, default=80)
+    p_rep.add_argument("--summary", required=True)
+    p_rep.add_argument("--risks", action="append", default=[])
+    p_rep.add_argument("--dependencies", action="append", default=[])
+    p_rep.add_argument("--reviewer-focus", action="append", default=[], dest="reviewer_focus")
+    p_rep.set_defaults(func=cmd_report_completion)
+
+    p_learn = sub.add_parser("learning", help="Agent callback: append a learning")
+    p_learn.add_argument("--task-id", required=True)
+    p_learn.add_argument("--session-id", required=True)
+    p_learn.add_argument("--agent", required=True)
+    p_learn.add_argument("--text", required=True)
+    p_learn.set_defaults(func=cmd_learning)
 
     return parser
 
