@@ -64,7 +64,7 @@
 - `src/orchestrator/orchestrator.py` — `_run_agent` accepts a `session_id` and reads the latest completion record from DB filtered by `session_id`; remove `initialize_workspace` per-session call
 - `src/orchestrator/executor.py` — drop `read_completion_report` and `completion_report.json` lifecycle; `ExecutorResult.report` may be `None` on success
 - `src/orchestrator/context_builder.py` — `write_claude_md` drops `task_brief`; CLAUDE.md drops the "Completion Report" and "Current Task" sections; `initialize_workspace` copies `protocol/skills/` to `<workspace>/.claude/skills/`
-- `src/infrastructure/database.py` — add `get_latest_task_result(task_id, agent, session_id)` helper; add `get_in_progress_task_ids()` helper
+- `src/infrastructure/database.py` — add `get_latest_task_result(task_id, agent, session_id)` helper; add `get_nonterminal_task_ids()` helper
 - `tests/test_executor.py` — remove `completion_report.json` cases
 - `tests/test_orchestrator.py` — adjust mocks: completion arrives via DB, not via file
 - `tests/test_context_builder.py` — drop `task_brief` cases; add skill-copying assertions
@@ -1256,6 +1256,30 @@ def test_activate_blocked_by_in_flight_task(
     assert "TASK-001" in body["detail"]["task_ids"]
 
 
+def test_activate_blocked_by_pending_task(
+    tmp_home, app, daemon_state, auth_headers, tmp_path: Path,
+) -> None:
+    """A submitted-but-not-yet-running task must also block activation —
+    its runner already holds the current runtime reference."""
+    other = _make_runtime(tmp_path, "rt-other")
+    reg.register(daemon_state.runtime.root)
+    reg.register(other)
+    reg.activate(daemon_state.runtime.root)
+
+    # Insert a PENDING task — never marked IN_PROGRESS.
+    task = TaskRecord(id="TASK-002", type=TaskType.GENERAL, brief="y")
+    daemon_state.db.insert_task(task)
+
+    r = TestClient(app).post(
+        "/api/v1/runtimes/activate",
+        json={"path": str(other)},
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "active_tasks_in_flight"
+    assert "TASK-002" in r.json()["detail"]["task_ids"]
+
+
 def test_unauthenticated_request_401(tmp_home, app_idle) -> None:
     r = TestClient(app_idle).get("/api/v1/runtimes")
     assert r.status_code == 401
@@ -1266,14 +1290,16 @@ def test_unauthenticated_request_401(tmp_home, app_idle) -> None:
 Run: `uv run pytest tests/daemon/test_routes_runtimes.py -v`
 Expected: `ModuleNotFoundError`.
 
-- [ ] **Step 3: Add `get_in_progress_task_ids` to `src/infrastructure/database.py`**
+- [ ] **Step 3: Add `get_nonterminal_task_ids` to `src/infrastructure/database.py`**
 
-Add this method on the `Database` class, after `next_task_id`:
+Add this method on the `Database` class, after `next_task_id`. **Why nonterminal (PENDING + IN_PROGRESS) and not just IN_PROGRESS:** between `POST /tasks` inserting the task row and the asyncio runner actually marking it `IN_PROGRESS`, the task is `PENDING` but the runner already holds a reference to the current runtime. If we let activation through during that gap, the next runtime swap could either close the DB the runner is about to use or strand the task on the wrong runtime.
 
 ```python
-    def get_in_progress_task_ids(self) -> list[str]:
+    def get_nonterminal_task_ids(self) -> list[str]:
+        nonterminal = (TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value)
         cursor = self._conn.execute(
-            "SELECT id FROM tasks WHERE status = ?", (TaskStatus.IN_PROGRESS.value,),
+            f"SELECT id FROM tasks WHERE status IN ({','.join('?' * len(nonterminal))})",
+            nonterminal,
         )
         return [row["id"] for row in cursor.fetchall()]
 ```
@@ -1344,9 +1370,11 @@ def activate_runtime(body: RuntimePath, request: Request) -> dict:
     if path not in state.registered:
         raise HTTPException(status_code=404, detail=f"{path} is not registered")
 
-    # Forbid swap while tasks are in flight on the current runtime.
+    # Forbid swap while any nonterminal task exists on the current runtime —
+    # PENDING included so submitted-but-not-yet-running tasks can't get
+    # re-pointed at a different DB by an interleaved swap.
     if daemon.db is not None:
-        in_flight = daemon.db.get_in_progress_task_ids()
+        in_flight = daemon.db.get_nonterminal_task_ids()
         if in_flight:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -1377,13 +1405,13 @@ And after `app.include_router(health.router, prefix="/api/v1")`, add:
 - [ ] **Step 6: Run tests**
 
 Run: `uv run pytest tests/daemon/test_routes_runtimes.py -v`
-Expected: all 5 tests pass.
+Expected: all 6 tests pass.
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add src/daemon/routes/runtimes.py src/daemon/app.py src/infrastructure/database.py tests/daemon/test_routes_runtimes.py
-git commit -m "feat(daemon): runtime register/activate/list with in-flight guard"
+git commit -m "feat(daemon): runtime register/activate/list, block on nonterminal tasks"
 ```
 
 ---
@@ -1799,6 +1827,26 @@ async def test_two_subscribers_both_receive() -> None:
     await bus.publish("TASK-001", {"type": "task_complete"})
     await asyncio.wait_for(asyncio.gather(ta, tb), timeout=2.0)
     assert a == b == [{"type": "task_complete"}]
+
+
+@pytest.mark.asyncio
+async def test_late_subscriber_to_finished_task_gets_synthesized_terminal() -> None:
+    """Reattach scenario: task already finished, no live publisher exists.
+    The history loader must surface a terminal event so the subscriber closes."""
+    history = [
+        {"type": "audit", "action": "session_end"},
+        {"type": "task_complete", "outcome": "approved", "synthesized": True},
+    ]
+    bus = EventBus(history_loader=lambda _t: history)
+    received: list = []
+
+    async def consumer():
+        async for event in bus.subscribe("TASK-DONE"):
+            received.append(event)
+
+    await asyncio.wait_for(consumer(), timeout=2.0)
+    assert received[-1]["type"] == "task_complete"
+    assert received[-1].get("synthesized") is True
 ```
 
 - [ ] **Step 2: Run the test and verify it fails**
@@ -1854,10 +1902,11 @@ class EventBus:
 
 - [ ] **Step 4: Wire `EventBus` into `DaemonState`**
 
-In `src/daemon/state.py`, add an import and instantiate it lazily — `DaemonState.idle` and `DaemonState.from_runtime` both need the bus, but the loader needs the DB. Use a small factory:
+In `src/daemon/state.py`, add imports and instantiate the bus in `__post_init__`. The history loader must do two things: (a) replay audit logs, (b) **synthesize a terminal event** from `task.status` if the task is already in a terminal state. Without (b), an `opc tail` that subscribes after a task completed sees only audit rows, then blocks on `queue.get()` forever because no live publisher will ever fire `task_complete` again.
 
 ```python
 from src.daemon.event_bus import EventBus
+from src.models import TaskStatus
 ```
 
 Add the field:
@@ -1867,16 +1916,37 @@ Add the field:
 
 And inside `__post_init__` (add it):
 ```python
+    _TERMINAL_STATUS_TO_EVENT = {
+        TaskStatus.APPROVED: "task_complete",
+        TaskStatus.COMPLETED: "task_complete",
+        TaskStatus.REJECTED: "task_rejected",
+        TaskStatus.ESCALATED: "task_escalated",
+    }
+
     def __post_init__(self) -> None:
         def loader(task_id: str) -> list[dict]:
             if self.db is None:
                 return []
-            return [
+            history: list[dict] = [
                 {"type": "audit", **log}
                 for log in self.db.get_audit_logs(task_id)
             ]
+            task = self.db.get_task(task_id)
+            if task is not None and task.status in self._TERMINAL_STATUS_TO_EVENT:
+                # Synthesize the terminal event so late subscribers close cleanly.
+                # Live runs publish their own terminal event before the task row
+                # flips to a terminal status, so the subscriber will see one or
+                # the other — never both, never neither.
+                history.append({
+                    "type": self._TERMINAL_STATUS_TO_EVENT[task.status],
+                    "outcome": task.status.value,
+                    "synthesized": True,
+                })
+            return history
         self.event_bus = EventBus(history_loader=loader)
 ```
+
+(The class needs `from typing import ClassVar` if `_TERMINAL_STATUS_TO_EVENT` is annotated; here it's a plain class attribute so no annotation needed.)
 
 - [ ] **Step 5: Run tests**
 
@@ -2147,6 +2217,8 @@ git commit -m "refactor(orchestrator): session_id injection + DB-based completio
 
 The runner is the bridge between FastAPI (async) and the existing blocking orchestrator. It also wires the `on_session_started` callback so the `SessionTracker` always reflects the currently-active spawn.
 
+**Critical: snapshot the runtime at construction.** `TaskRunner` must capture `(db, runtime)` from `DaemonState` *at submission time* and never re-read them when it actually runs. If we instead held a reference to `DaemonState` and dereferenced `state.db` / `state.runtime` inside `run()`, an interleaved `POST /runtimes/activate` could swap the runtime out from under a queued runner — sending the task to the wrong workspace or a closed DB. The PENDING-blocking guard in Task 9 is the primary defense; this snapshot is belt-and-braces in case the guard is ever weakened.
+
 - [ ] **Step 1: Write the failing test**
 
 `tests/daemon/test_runner.py`:
@@ -2167,6 +2239,7 @@ async def test_runner_invokes_orchestrator_run_task() -> None:
     state = MagicMock()
     state.runtime = MagicMock()
     state.db = MagicMock()
+    state.settings = MagicMock()
     state.sessions = MagicMock()
     state.event_bus = MagicMock()
     state.event_bus.publish = MagicMock(return_value=asyncio.sleep(0))
@@ -2174,7 +2247,7 @@ async def test_runner_invokes_orchestrator_run_task() -> None:
     orch = MagicMock()
     orch.run_task = MagicMock(return_value="approved")
 
-    runner = TaskRunner(state=state, orchestrator_factory=lambda _state: orch)
+    runner = TaskRunner(state=state, orchestrator_factory=lambda _r, _d, _s: orch)
     await runner.run("TASK-001")
 
     orch.run_task.assert_called_once_with("TASK-001")
@@ -2193,9 +2266,47 @@ async def test_runner_publishes_terminal_event() -> None:
     orch = MagicMock()
     orch.run_task = MagicMock(return_value="escalated")
 
-    runner = TaskRunner(state=state, orchestrator_factory=lambda _state: orch)
+    runner = TaskRunner(state=state, orchestrator_factory=lambda _r, _d, _s: orch)
     await runner.run("TASK-001")
     assert any(e["type"] == "task_escalated" for e in captured)
+
+
+@pytest.mark.asyncio
+async def test_runner_snapshots_runtime_and_db_at_construction() -> None:
+    """If DaemonState gets a different runtime/db after the runner is built,
+    the runner must still use the originals."""
+    state = MagicMock()
+    state.event_bus = MagicMock()
+    state.event_bus.publish = MagicMock(return_value=asyncio.sleep(0))
+    state.sessions = MagicMock()
+
+    original_runtime = MagicMock(name="rt-original")
+    original_db = MagicMock(name="db-original")
+    original_settings = MagicMock(name="settings-original")
+    state.runtime = original_runtime
+    state.db = original_db
+    state.settings = original_settings
+
+    captured: dict = {}
+    def factory(rt, db, settings):
+        captured["rt"] = rt
+        captured["db"] = db
+        captured["settings"] = settings
+        m = MagicMock()
+        m.run_task = MagicMock(return_value="approved")
+        return m
+
+    runner = TaskRunner(state=state, orchestrator_factory=factory)
+
+    # Simulate a runtime swap after submit but before the runner actually runs.
+    state.runtime = MagicMock(name="rt-swapped")
+    state.db = MagicMock(name="db-swapped")
+
+    await runner.run("TASK-001")
+
+    assert captured["rt"] is original_runtime
+    assert captured["db"] is original_db
+    assert captured["settings"] is original_settings
 ```
 
 - [ ] **Step 2: Run the test and verify it fails**
@@ -2213,8 +2324,11 @@ import asyncio
 import logging
 from typing import Callable
 
+from src.config import Settings
 from src.daemon.state import DaemonState
+from src.infrastructure.database import Database
 from src.orchestrator.orchestrator import Orchestrator
+from src.runtime import RuntimeDir
 
 logger = logging.getLogger("opc.daemon.runner")
 
@@ -2226,35 +2340,43 @@ _OUTCOME_TO_EVENT = {
 
 
 class TaskRunner:
+    """Snapshot of (runtime, db, settings) at construction time, decoupled from
+    live `DaemonState` mutation. The event bus + session tracker are still
+    looked up live on `state` because they're singletons that don't change on
+    runtime swap."""
+
     def __init__(
         self,
         state: DaemonState,
-        orchestrator_factory: Callable[[DaemonState], Orchestrator] | None = None,
+        orchestrator_factory: Callable[[RuntimeDir, Database, Settings], Orchestrator] | None = None,
     ) -> None:
-        self._state = state
+        assert state.db is not None and state.runtime is not None, \
+            "TaskRunner cannot be constructed in idle mode"
+        # Snapshot the runtime/db/settings now. Even if state.runtime swaps
+        # later (which the activate guard should prevent anyway), this runner
+        # keeps operating against the runtime the task was created in.
+        self._runtime: RuntimeDir = state.runtime
+        self._db: Database = state.db
+        self._settings: Settings = state.settings
+        self._sessions = state.sessions
+        self._event_bus = state.event_bus
         self._make_orchestrator = orchestrator_factory or self._default_factory
 
     @staticmethod
-    def _default_factory(state: DaemonState) -> Orchestrator:
-        assert state.db is not None and state.runtime is not None
-        return Orchestrator(db=state.db, settings=state.settings, runtime=state.runtime)
+    def _default_factory(runtime: RuntimeDir, db: Database, settings: Settings) -> Orchestrator:
+        return Orchestrator(db=db, settings=settings, runtime=runtime)
 
     async def run(self, task_id: str) -> None:
-        orchestrator = self._make_orchestrator(self._state)
+        orchestrator = self._make_orchestrator(self._runtime, self._db, self._settings)
 
         # Patch the orchestrator's per-spawn callback into SessionTracker.
         original_run_agent = orchestrator._run_agent
-        sessions = self._state.sessions
+        sessions = self._sessions
 
         def _wrapped_run_agent(task_id_, agent, prompt):
             def _on_started(t, a, s):
                 sessions.set_active(t, a, s)
-            try:
-                return original_run_agent(task_id_, agent, prompt, on_session_started=_on_started)
-            finally:
-                # Allow the tracker to be queried for the most recent session
-                # even after the spawn finishes — completion endpoint uses it.
-                pass
+            return original_run_agent(task_id_, agent, prompt, on_session_started=_on_started)
 
         orchestrator._run_agent = _wrapped_run_agent  # type: ignore[assignment]
 
@@ -2262,12 +2384,12 @@ class TaskRunner:
             outcome = await asyncio.to_thread(orchestrator.run_task, task_id)
         except Exception as exc:  # pragma: no cover — defensive
             logger.exception("task %s crashed in runner", task_id)
-            await self._state.event_bus.publish(task_id, {
+            await self._event_bus.publish(task_id, {
                 "type": "task_escalated", "reason": f"runner crash: {exc}",
             })
             return
 
-        await self._state.event_bus.publish(task_id, {
+        await self._event_bus.publish(task_id, {
             "type": _OUTCOME_TO_EVENT.get(outcome, "task_complete"),
             "outcome": outcome,
         })
@@ -2498,6 +2620,29 @@ def test_completion_session_mismatch_409(tmp_home, app, daemon_state, auth_heade
     assert r.json()["detail"]["code"] == "session_mismatch"
 
 
+def test_completion_unknown_session_409(tmp_home, app, daemon_state, auth_headers) -> None:
+    """If the daemon never registered a session for (task, agent), reject —
+    do not silently persist a fabricated completion."""
+    sub = TestClient(app).post(
+        "/api/v1/tasks",
+        json={"type": "general", "brief": "x"},
+        headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    # Note: no set_active() call — tracker is empty for (task_id, dev_agent).
+
+    r = TestClient(app).post(
+        f"/api/v1/tasks/{task_id}/completion",
+        json={"session_id": "fabricated", "agent": "dev_agent",
+              "status": "completed", "confidence": 90, "output_summary": "ok"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "unknown_session"
+    # And nothing was persisted.
+    assert daemon_state.db.get_task_results(task_id) == []
+
+
 def test_completion_persists_when_session_matches(tmp_home, app, daemon_state, auth_headers) -> None:
     sub = TestClient(app).post(
         "/api/v1/tasks",
@@ -2584,7 +2729,15 @@ async def submit_completion(task_id: str, body: CompletionBody, request: Request
     state: DaemonState = request.app.state.daemon
     _require_active(state)
     expected = state.sessions.get_active(task_id, body.agent)
-    if expected is not None and expected != body.session_id:
+    # Reject callbacks the daemon never spawned. Both branches are 409 — the
+    # tracker is the source of truth for "is this a real session". Unknown
+    # comes first so an empty tracker can't silently accept a fabricated id.
+    if expected is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "unknown_session", "task_id": task_id, "agent": body.agent},
+        )
+    if expected != body.session_id:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "session_mismatch", "active": expected, "got": body.session_id},
@@ -2684,6 +2837,26 @@ def test_learnings_session_mismatch_409(
         headers=auth_headers,
     )
     assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "session_mismatch"
+
+
+def test_learnings_unknown_session_409(
+    tmp_home, app, daemon_state, auth_headers, tmp_path,
+) -> None:
+    """Unregistered (task, agent) pair — reject and do not create/append."""
+    workspace = daemon_state.runtime.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True, exist_ok=True)
+    learnings = workspace / "learnings.md"
+    learnings.write_text("# Learnings: dev_agent\n\n")
+
+    r = TestClient(app).post(
+        "/api/v1/agents/dev_agent/learnings",
+        json={"session_id": "fabricated", "task_id": "TASK-NOPE", "text": "should not land"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "unknown_session"
+    assert "should not land" not in learnings.read_text()
 ```
 
 - [ ] **Step 2: Run the test and verify it fails**
@@ -2785,7 +2958,15 @@ async def append_learning(agent_name: str, body: LearningBody, request: Request)
     _require_active(state)
 
     expected = state.sessions.get_active(body.task_id, agent_name)
-    if expected is not None and expected != body.session_id:
+    # Same gate as completion: the SessionTracker is the source of truth for
+    # which sessions exist. No entry → reject (otherwise any local process
+    # with the bearer token could append to learnings.md for any agent).
+    if expected is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "unknown_session", "task_id": body.task_id, "agent": agent_name},
+        )
+    if expected != body.session_id:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "session_mismatch", "active": expected, "got": body.session_id},
@@ -2816,7 +2997,7 @@ from src.daemon.routes import agents, health, runtimes, tasks
 - [ ] **Step 5: Run tests**
 
 Run: `uv run pytest tests/daemon/test_routes_agents.py -v`
-Expected: all 4 tests pass.
+Expected: all 5 tests pass.
 
 - [ ] **Step 6: Commit**
 
@@ -3324,7 +3505,7 @@ Parameters:
 ## Error handling
 
 - If `opc` returns non-zero, retry once after 1 second.
-- **Exception:** if `opc` returns `409 session_mismatch`, the daemon has spawned a newer session for this task. Do not retry — exit immediately.
+- **Exceptions (no retry, fatal):** `409 session_mismatch` (the daemon has spawned a newer session for this `(task_id, agent)`) and `409 unknown_session` (the daemon has no record of this spawn — the session is orphaned). Either way, exit immediately.
 ```
 
 - [ ] **Step 2: Verify the file is well-formed**
@@ -3580,12 +3761,13 @@ Add this function above `_build_state`:
 
 ```python
 def _escalate_in_flight_tasks(db) -> None:
-    """Mark IN_PROGRESS tasks as escalated — daemon restart breaks any spawn."""
+    """Mark nonterminal tasks (PENDING + IN_PROGRESS) as escalated — daemon restart
+    kills any in-flight spawn and orphans queued runners. No resumption in Spec 1."""
     from src.infrastructure.audit_logger import AuditLogger
     from src.models import TaskStatus
 
     audit = AuditLogger(db)
-    for task_id in db.get_in_progress_task_ids():
+    for task_id in db.get_nonterminal_task_ids():
         db.update_task(task_id, status=TaskStatus.ESCALATED)
         audit.log_escalation(task_id, "daemon", "daemon restarted mid-task")
 ```

@@ -77,7 +77,7 @@ Local-only (`127.0.0.1` bind). Path prefix `/api/v1/`. Framework: **FastAPI + uv
 |---|---|---|
 | `GET` | `/api/v1/health` | Liveness ping. Returns `{"status": "ok", "active_runtime": "<path or null>"}`. |
 | `POST` | `/api/v1/runtimes/register` | Body: `{"path": "..."}`. Creates `opc.yaml` marker at path, adds to registry, activates. |
-| `POST` | `/api/v1/runtimes/activate` | Body: `{"path": "..."}`. Sets active runtime. **Forbidden while any task is `IN_PROGRESS`** — returns `409 active_tasks_in_flight` with the offending task IDs. The caller must wait for completion or escalate the running tasks before switching. |
+| `POST` | `/api/v1/runtimes/activate` | Body: `{"path": "..."}`. Sets active runtime. **Forbidden while any task is in a nonterminal state (`PENDING` or `IN_PROGRESS`)** — returns `409 active_tasks_in_flight` with the offending task IDs. Submitted-but-not-yet-running tasks count, because their runners hold a reference to the current runtime. The caller must wait for completion or escalate the offending tasks before switching. |
 | `GET` | `/api/v1/runtimes` | Lists registered runtimes, shows which is active. |
 
 ### Tasks (all scoped to active runtime)
@@ -88,7 +88,7 @@ Local-only (`127.0.0.1` bind). Path prefix `/api/v1/`. Framework: **FastAPI + uv
 | `GET` | `/api/v1/tasks` | List tasks. |
 | `GET` | `/api/v1/tasks/{id}` | Task detail. |
 | `GET` | `/api/v1/tasks/{id}/events` | **SSE stream** of orchestration step events + session log lines. Replays recent history on subscribe, then streams live. Disconnecting does not affect the task. |
-| `POST` | `/api/v1/tasks/{id}/completion` | Agent callback. Body: `{"session_id": "<uuid>", ...completion report fields (status, confidence, summary, risks, dependencies, reviewer_focus)}`. `session_id` is required and must match the UUID the daemon injected when spawning the subprocess; mismatch → `409 session_mismatch`. Persists to DB tagged with the session_id, emits event. |
+| `POST` | `/api/v1/tasks/{id}/completion` | Agent callback. Body: `{"session_id": "<uuid>", ...completion report fields (status, confidence, summary, risks, dependencies, reviewer_focus)}`. `session_id` is required and must match an **active** spawn the daemon registered for `(task_id, agent)`. No active session for that pair → `409 unknown_session`. Active session exists but differs → `409 session_mismatch`. Persists to DB tagged with the session_id, emits event. |
 
 ### Agents
 
@@ -96,15 +96,16 @@ Local-only (`127.0.0.1` bind). Path prefix `/api/v1/`. Framework: **FastAPI + uv
 |---|---|---|
 | `GET` | `/api/v1/agents` | Performance tiers. |
 | `POST` | `/api/v1/agents/init` | Body: `{"agent": "..." | null}`. SSE response streaming progress messages (workspace setup, repo clones, skill distribution). Closes when init completes. |
-| `POST` | `/api/v1/agents/{name}/learnings` | Agent callback to append to `learnings.md`. Body includes `session_id` so the daemon can record provenance and reject calls from sessions it didn't spawn. Serialized by daemon. |
+| `POST` | `/api/v1/agents/{name}/learnings` | Agent callback to append to `learnings.md`. Body: `{"session_id": "<uuid>", "task_id": "...", "text": "..."}`. `session_id` must match an active spawn for `(task_id, agent)` — same gating as the completion endpoint (`409 unknown_session` / `409 session_mismatch`). Serialized by daemon. |
 
 ### Error conventions
 
 - `401` for missing/invalid auth token (except `/health`).
 - `404` for unknown task / runtime / agent.
 - `409 no_active_runtime` for task operations when no runtime is active.
-- `409 active_tasks_in_flight` for `POST /runtimes/activate` while tasks are running.
-- `409 session_mismatch` for callbacks whose `session_id` does not match the most recent spawn for that `(task_id, agent)`.
+- `409 active_tasks_in_flight` for `POST /runtimes/activate` while any task is in a nonterminal state (`PENDING` or `IN_PROGRESS`).
+- `409 unknown_session` for callbacks targeting `(task_id, agent)` pairs the daemon hasn't spawned a session for.
+- `409 session_mismatch` for callbacks whose `session_id` does not match the active session for that `(task_id, agent)`.
 - `400` for malformed bodies.
 - `5xx` for daemon-internal errors (logged).
 
@@ -180,7 +181,12 @@ The `session_id` makes every callback traceable to a specific subprocess. Skills
 
 ### Completion handling
 
-Agent calls `opc report-completion --task-id ... --session-id ... --status ... ...` mid-session. The daemon validates that `session_id` matches the currently-active session for `(task_id, agent)`; mismatched callbacks are rejected with `409 session_mismatch` and **not** persisted. Valid callbacks are written to DB tagged with `session_id` (timestamped) and emit an event. When the Claude Code subprocess exits, the daemon looks up the **most recent** completion record for `(task_id, agent, session_id)` — scoped to the session it just ran:
+Agent calls `opc report-completion --task-id ... --session-id ... --status ... ...` mid-session. The daemon's `SessionTracker` is the source of truth for which sessions exist:
+- No tracker entry for `(task_id, agent)` → `409 unknown_session`. Nothing persisted.
+- Tracker entry exists but `session_id` differs → `409 session_mismatch`. Nothing persisted.
+- Tracker entry matches → write to DB tagged with `session_id` (timestamped) and emit an event.
+
+The "active session" the tracker stores is the most recent spawn the daemon performed; it is never cleared on subprocess exit (so late callbacks from the just-finished session still validate, while spawns the daemon never registered are unconditionally rejected). When the Claude Code subprocess exits, the daemon looks up the **most recent** completion record for `(task_id, agent, session_id)` — scoped to the session it just ran:
 
 - **Found** → mark session complete with that report's status.
 - **Not found** → mark `"session ended without completion report"` and escalate.
@@ -190,6 +196,7 @@ If the agent calls `opc report-completion` more than once **within the same sess
 ### Concurrency model
 
 - API layer enqueues tasks, returns immediately.
+- **Runtime snapshotting.** `POST /tasks` constructs a `TaskRunner` with `(db, runtime)` captured by value at submission time and never re-reads them from the live `DaemonState`. A subsequent `POST /runtimes/activate` cannot affect a task already submitted: nonterminal tasks block activation, and even if a switch ever did slip through, the runner still operates on the runtime/DB the task was created against. This eliminates the submit-vs-activate race.
 - Each task runs as its own asyncio task wrapping `asyncio.to_thread(orchestrator.run_task, task_id)`. Existing blocking `AgentExecutor` code is reused unchanged.
 - **No per-agent locks.** Concurrent sessions on the same agent role share cwd and coexist because:
   - `CLAUDE.md` is read-only during sessions.
@@ -200,7 +207,7 @@ If the agent calls `opc report-completion` more than once **within the same sess
 
 ### Event bus
 
-In-memory pub/sub, keyed by task_id. On SSE subscribe, the bus queries the DB for prior events of that task and replays them, then switches to live. Disconnect on either side is non-fatal.
+In-memory pub/sub, keyed by task_id. On SSE subscribe, the bus queries the DB for prior audit events of that task and replays them. **Terminal-event durability:** because the live `task_complete` / `task_escalated` / `task_rejected` events `TaskRunner` publishes are in-memory only, late subscribers (e.g., `opc tail` after a task already finished) would otherwise hang. To prevent that, the history loader inspects the task row at subscribe time: if the task is in a terminal status (`COMPLETED`, `ESCALATED`, `REJECTED`), the loader appends a synthesized terminal event derived from `task.status` (and the latest result row when available) as the final history entry. Subscribers always receive a terminal event and close cleanly. Disconnect on either side is non-fatal.
 
 ### Daemon-restart policy
 
@@ -233,7 +240,7 @@ protocol/skills/
   - Blocker: `opc report-completion --task-id <id> --session-id <session_id> --status blocked --summary "..."` then exit.
   - Mid-task learning: `opc learning --agent <name> --session-id <session_id> --text "..."`
 - Cleanup protocol: always run worktree cleanup as the final step, even on blocker/error paths (best-effort).
-- Retry policy: if `opc` CLI returns non-zero, retry once after 1s, then exit with log. **Exception:** `409 session_mismatch` is fatal — the daemon has spawned a newer session for this `(task_id, agent)`; do not retry, exit immediately.
+- Retry policy: if `opc` CLI returns non-zero, retry once after 1s, then exit with log. **Exceptions (no retry, fatal):** `409 session_mismatch` (a newer session has been spawned for this `(task_id, agent)`) and `409 unknown_session` (the daemon has no record of this spawn — the session is orphaned). Either way, exit immediately.
 
 ### `make-worktree` skill contents
 
@@ -385,7 +392,7 @@ Most of the 106 existing tests keep working because the daemon wraps the existin
 - **launchd auto-start** — future polish spec. Daemon runs via `scripts/daemon.sh` in Spec 1.
 - **Web UI** — HTTP API is web-ready, no frontend ships here.
 - **Remote access / multi-user auth / TLS** — `127.0.0.1` only. The Bearer token in §3 is a per-user secret to prevent same-machine processes from spoofing callbacks; it is not a multi-user auth system.
-- **Runtime hot-swap with active tasks** — `opc use` is forbidden while any task is `IN_PROGRESS` (returns `409 active_tasks_in_flight`). Graceful drain or queued switching is future work.
+- **Runtime hot-swap with active tasks** — `opc use` is forbidden while any task is in a nonterminal state (`PENDING` or `IN_PROGRESS`); returns `409 active_tasks_in_flight`. Graceful drain or queued switching is future work.
 - **Task resumption after daemon restart** — in-flight tasks are escalated with `"daemon restarted mid-task"`.
 - **Stale worktree reaper** — skill-level cleanup only.
 - **Structured audit query API** — single-task lookup only. Founder dashboard (implementation order step 11) will design a query surface.
