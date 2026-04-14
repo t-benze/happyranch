@@ -46,7 +46,7 @@ def list_agents(request: Request) -> dict:
         "agents": [
             {
                 "name": a.value,
-                "tier": tiers.get(a, "green").value if hasattr(tiers.get(a, "green"), "value") else tiers.get(a, "green"),
+                "tier": tiers[a].value,
                 "scorecard": state.db.get_scorecard(a.value),
             }
             for a in AgentName
@@ -63,7 +63,13 @@ async def init_agents(body: InitBody, request: Request):
     if body.agent is None:
         targets = list(AgentName)
     else:
-        targets = [AgentName(body.agent)]
+        try:
+            targets = [AgentName(body.agent)]
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "unknown_agent", "agent": body.agent},
+            )
 
     async def gen():
         protocol_dir = state.settings.get_protocol_dir()
@@ -73,10 +79,19 @@ async def init_agents(body: InitBody, request: Request):
             workspace = state.runtime.workspaces_dir / agent.value
             workspace.mkdir(parents=True, exist_ok=True)
             yield {"data": _json.dumps({"agent": agent.value, "phase": "starting"})}
-            await asyncio.to_thread(
-                ctx.initialize_workspace, workspace, agent.value,
-                prompts.get(agent.value, ""),
-            )
+            try:
+                await asyncio.to_thread(
+                    ctx.initialize_workspace, workspace, agent.value,
+                    prompts.get(agent.value, ""),
+                )
+            except Exception as exc:  # noqa: BLE001 - surface to client and stop
+                # SSE clients otherwise see a silent disconnect — emit an
+                # explicit error frame so the caller can distinguish failure
+                # from clean completion.
+                yield {"data": _json.dumps({
+                    "agent": agent.value, "phase": "error", "detail": str(exc),
+                })}
+                return
             yield {"data": _json.dumps({"agent": agent.value, "phase": "done"})}
         yield {"data": _json.dumps({"phase": "all_done"})}
 
@@ -102,11 +117,13 @@ async def append_learning(agent_name: str, body: LearningBody, request: Request)
 
     workspace = state.runtime.workspaces_dir / agent_name
     learnings_path = workspace / "learnings.md"
-    if not learnings_path.exists():
-        learnings_path.parent.mkdir(parents=True, exist_ok=True)
-        learnings_path.write_text(f"# Learnings: {agent_name}\n\n")
 
+    # Hold the lock across exists/init/append so two concurrent posts can't both
+    # see the file as missing and race the header write.
     async with state.db_lock:
+        if not learnings_path.exists():
+            learnings_path.parent.mkdir(parents=True, exist_ok=True)
+            learnings_path.write_text(f"# Learnings: {agent_name}\n\n")
         existing = learnings_path.read_text()
         learnings_path.write_text(existing + f"- {body.text}\n")
     return {"ok": True}

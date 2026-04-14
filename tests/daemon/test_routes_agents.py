@@ -69,3 +69,14 @@ def test_learnings_unknown_session_409(
     assert r.status_code == 409
     assert r.json()["detail"]["code"] == "unknown_session"
     assert "should not land" not in learnings.read_text()
+
+
+def test_init_unknown_agent_returns_422(tmp_home, app, auth_headers) -> None:
+    """Unrecognized agent name must surface as 422, not crash to 500."""
+    r = TestClient(app).post(
+        "/api/v1/agents/init",
+        json={"agent": "ghost_writer"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "unknown_agent"
