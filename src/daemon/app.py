@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
-from src.daemon.routes import health, runtimes, tasks
+from src.daemon.routes import agents, health, runtimes, tasks
 from src.daemon.state import DaemonState
 
 
@@ -13,4 +13,5 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(health.router, prefix="/api/v1")
     app.include_router(runtimes.router, prefix="/api/v1")
     app.include_router(tasks.router, prefix="/api/v1")
+    app.include_router(agents.router, prefix="/api/v1")
     return app
