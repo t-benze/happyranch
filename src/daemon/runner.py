@@ -8,6 +8,7 @@ from typing import Callable
 from src.config import Settings
 from src.daemon.state import DaemonState
 from src.infrastructure.database import Database
+from src.models import TaskStatus
 from src.orchestrator.orchestrator import Orchestrator
 from src.runtime import RuntimeDir
 
@@ -63,8 +64,12 @@ class TaskRunner:
 
         try:
             outcome = await asyncio.to_thread(orchestrator.run_task, task_id)
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception as exc:
             logger.exception("task %s crashed in runner", task_id)
+            # Orchestrator sets IN_PROGRESS at entry and only flips to a
+            # terminal status on its normal returns. A crash leaves the row
+            # stuck — flip to ESCALATED so it stops blocking runtime activate.
+            self._db.update_task(task_id, status=TaskStatus.ESCALATED)
             await self._event_bus.publish(task_id, {
                 "type": "task_escalated", "reason": f"runner crash: {exc}",
             })

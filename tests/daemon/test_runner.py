@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -16,7 +15,7 @@ async def test_runner_invokes_orchestrator_run_task() -> None:
     state.settings = MagicMock()
     state.sessions = MagicMock()
     state.event_bus = MagicMock()
-    state.event_bus.publish = MagicMock(return_value=asyncio.sleep(0))
+    state.event_bus.publish = AsyncMock()
 
     orch = MagicMock()
     orch.run_task = MagicMock(return_value="approved")
@@ -46,12 +45,66 @@ async def test_runner_publishes_terminal_event() -> None:
 
 
 @pytest.mark.asyncio
+async def test_runner_wraps_run_agent_to_track_sessions() -> None:
+    """The runner must patch `_run_agent` so `SessionTracker.set_active` fires
+    when the orchestrator spawns an agent session."""
+    state = MagicMock()
+    state.event_bus = MagicMock()
+    state.event_bus.publish = AsyncMock()
+    state.sessions = MagicMock()
+
+    captured_agent_args: dict = {}
+
+    class FakeOrchestrator:
+        def _run_agent(self, task_id, agent, prompt, on_session_started=None):
+            captured_agent_args["on_session_started"] = on_session_started
+            if on_session_started is not None:
+                on_session_started(task_id, agent, "sess-xyz")
+            return (MagicMock(), MagicMock())
+
+        def run_task(self, task_id):
+            # Simulate run_task spawning one agent session
+            self._run_agent(task_id, "engineering_head", "prompt")
+            return "approved"
+
+    orch = FakeOrchestrator()
+
+    runner = TaskRunner(state=state, orchestrator_factory=lambda _r, _d, _s: orch)
+    await runner.run("TASK-001")
+
+    state.sessions.set_active.assert_called_once_with(
+        "TASK-001", "engineering_head", "sess-xyz",
+    )
+
+
+@pytest.mark.asyncio
+async def test_runner_crash_flips_task_to_escalated() -> None:
+    """If orchestrator.run_task raises, runner must flip DB status to ESCALATED
+    so the row stops blocking runtime activate."""
+    from src.models import TaskStatus
+
+    state = MagicMock()
+    state.event_bus = MagicMock()
+    state.event_bus.publish = AsyncMock()
+    state.sessions = MagicMock()
+    state.db = MagicMock()
+
+    orch = MagicMock()
+    orch.run_task = MagicMock(side_effect=RuntimeError("boom"))
+
+    runner = TaskRunner(state=state, orchestrator_factory=lambda _r, _d, _s: orch)
+    await runner.run("TASK-001")
+
+    state.db.update_task.assert_called_once_with("TASK-001", status=TaskStatus.ESCALATED)
+
+
+@pytest.mark.asyncio
 async def test_runner_snapshots_runtime_and_db_at_construction() -> None:
     """If DaemonState gets a different runtime/db after the runner is built,
     the runner must still use the originals."""
     state = MagicMock()
     state.event_bus = MagicMock()
-    state.event_bus.publish = MagicMock(return_value=asyncio.sleep(0))
+    state.event_bus.publish = AsyncMock()
     state.sessions = MagicMock()
 
     original_runtime = MagicMock(name="rt-original")
