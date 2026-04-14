@@ -53,6 +53,7 @@ def ensure_token() -> str:
     path = token_file()
     if path.exists():
         return path.read_text().strip()
+    path.parent.mkdir(parents=True, exist_ok=True)
     token = secrets.token_urlsafe(32)
     path.write_text(token)
     os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)

@@ -57,3 +57,11 @@ def test_read_token_returns_existing(tmp_home: Path) -> None:
     paths_mod.ensure_daemon_home()
     token = paths_mod.ensure_token()
     assert paths_mod.read_token() == token
+
+
+def test_ensure_token_creates_home_when_missing(tmp_home: Path) -> None:
+    # Do NOT call ensure_daemon_home first — ensure_token must self-bootstrap.
+    assert not tmp_home.exists()
+    token = paths_mod.ensure_token()
+    assert tmp_home.is_dir()
+    assert paths_mod.token_file().read_text() == token
