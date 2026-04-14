@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from collections.abc import Callable
 
 from pydantic import ValidationError
 
@@ -195,8 +196,8 @@ class Orchestrator:
         task_id: str,
         agent: AgentName,
         prompt: str,
-        on_session_started: callable | None = None,
-    ):
+        on_session_started: Callable[[str, str, str], None] | None = None,
+    ) -> tuple[ExecutorResult, CompletionReport | None]:
         """Set up workspace and run an agent session.
 
         Returns a tuple ``(executor_result, completion_report_or_None)``.
@@ -263,7 +264,12 @@ class Orchestrator:
                 content = recent_path.read_text()
                 recent_path.write_text(content + summary)
 
-    def _log_step_result(self, task_id: str, result, report) -> None:
+    def _log_step_result(
+        self,
+        task_id: str,
+        result: ExecutorResult,
+        report: CompletionReport | None,
+    ) -> None:
         if report is None:
             return
         self._audit.log_completion_report(
