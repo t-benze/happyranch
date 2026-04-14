@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 
 from pydantic import ValidationError
 
@@ -11,6 +12,7 @@ from src.infrastructure.database import Database
 from src.runtime import RuntimeDir
 from src.models import (
     AgentName,
+    CompletionReport,
     NextStep,
     StepRecord,
     TaskRecord,
@@ -18,24 +20,10 @@ from src.models import (
     TaskType,
 )
 from src.orchestrator.capabilities import build_capabilities_prompt
-from src.orchestrator.context_builder import ContextBuilder
 from src.orchestrator.executor import AgentExecutor, ExecutorResult
 from src.orchestrator.performance_tracker import PerformanceTracker
 
 logger = logging.getLogger(__name__)
-
-
-_DEFAULT_SYSTEM_PROMPTS: dict[str, str] = {
-    "engineering_head": (
-        "You are the Engineering Head for a tourism services company. "
-        "You decide how to handle incoming tasks -- doing work yourself, "
-        "delegating to your team, or escalating to the founder. "
-        "Follow the instructions in your task prompt for the expected response format."
-    ),
-    "product_manager": "You are the Product Manager. Write specs and triage bugs.",
-    "dev_agent": "You are the Dev Agent. Implement features and fix bugs.",
-    "payment_agent": "You are the Payment Agent. Draft payment change proposals with compliance considerations.",
-}
 
 
 class Orchestrator:
@@ -45,10 +33,29 @@ class Orchestrator:
         self._runtime = runtime
         self._audit = AuditLogger(db)
         self._tracker = PerformanceTracker(db, settings)
-        self._context = ContextBuilder(settings)
         self._executor = AgentExecutor(
             claude_cli_path=settings.claude_cli_path,
             permission_mode=settings.permission_mode,
+        )
+
+    def _build_session_id(self) -> str:
+        return f"sess-{uuid.uuid4().hex}"
+
+    def _read_completion_from_db(
+        self, task_id: str, agent: str, session_id: str,
+    ) -> CompletionReport | None:
+        row = self._db.get_latest_task_result(task_id, agent, session_id)
+        if row is None:
+            return None
+        return CompletionReport(
+            task_id=task_id,
+            agent=agent,
+            status="completed",
+            confidence=row["confidence_score"] or 0,
+            output_summary=row["output_summary"] or "",
+            risks_flagged=row.get("risks_flagged") or [],
+            dependencies=[],
+            suggested_reviewer_focus=[],
         )
 
     def create_task(self, task_type: TaskType, brief: str) -> str:
@@ -85,15 +92,14 @@ class Orchestrator:
                 prior_steps=prior_steps,
             )
 
-            eh_result = self._run_agent(task_id, AgentName.ENGINEERING_HEAD, eh_prompt)
-
-            if not eh_result.success:
+            eh_result, eh_report = self._run_agent(task_id, AgentName.ENGINEERING_HEAD, eh_prompt)
+            if not eh_result.success or eh_report is None:
                 self._db.update_task(task_id, status=TaskStatus.REJECTED)
                 self._update_recent_tasks(task_id)
                 return "rejected"
 
-            self._log_step_result(task_id, eh_result)
-            next_step = self._parse_next_step(eh_result)
+            self._log_step_result(task_id, eh_result, eh_report)
+            next_step = self._parse_next_step(eh_report)
 
             self._audit.log_orchestration_step(
                 task_id, step_num, next_step.model_dump(exclude_none=True),
@@ -137,15 +143,15 @@ class Orchestrator:
                     ))
                     continue
 
-                delegate_result = self._run_agent(
+                delegate_result, delegate_report = self._run_agent(
                     task_id, delegate_agent, next_step.prompt or "",
                 )
-                if delegate_result.success:
-                    self._log_step_result(task_id, delegate_result)
+                if delegate_result.success and delegate_report is not None:
+                    self._log_step_result(task_id, delegate_result, delegate_report)
 
                 result_summary = (
-                    delegate_result.report.output_summary
-                    if delegate_result.report
+                    delegate_report.output_summary
+                    if delegate_report
                     else "Agent session failed"
                 )
                 prior_steps.append(StepRecord(
@@ -153,7 +159,7 @@ class Orchestrator:
                     agent=next_step.agent,
                     action=f"delegate: {(next_step.prompt or '')[:100]}",
                     result_summary=result_summary,
-                    success=delegate_result.success,
+                    success=delegate_result.success and delegate_report is not None,
                 ))
 
         # Max steps exceeded — escalate
@@ -165,11 +171,11 @@ class Orchestrator:
         self._update_recent_tasks(task_id)
         return "escalated"
 
-    def _parse_next_step(self, result: ExecutorResult) -> NextStep:
+    def _parse_next_step(self, report: CompletionReport | None) -> NextStep:
         """Parse the Engineering Head's decision from its completion report."""
-        if result.report is None:
+        if report is None:
             return NextStep(action="escalate", reason="No completion report from Engineering Head")
-        text = result.report.output_summary
+        text = report.output_summary
         try:
             data = json.loads(text)
         except (json.JSONDecodeError, TypeError, ValueError):
@@ -189,18 +195,28 @@ class Orchestrator:
         task_id: str,
         agent: AgentName,
         prompt: str,
-    ) -> ExecutorResult:
-        """Set up workspace and run an agent session."""
+        on_session_started: callable | None = None,
+    ):
+        """Set up workspace and run an agent session.
+
+        Returns a tuple ``(executor_result, completion_report_or_None)``.
+        ``on_session_started`` is invoked with ``(task_id, agent_name, session_id)``
+        before the subprocess starts so the daemon can register the active session.
+        """
         task = self._db.get_task(task_id)
         agent_name = agent.value
         workspace = self._runtime.workspaces_dir / agent_name
 
-        system_prompt = _DEFAULT_SYSTEM_PROMPTS.get(agent_name, "")
-        self._context.initialize_workspace(workspace, agent_name, system_prompt)
-
-        # Prepend task metadata so agents can reference task_id in outputs
+        # Workspace is initialized once at `opc init-agent` — not per session.
+        # Brief is injected here:
         brief = task.brief if task else ""
-        full_prompt = f"Task ID: {task_id}\nBrief: {brief}\n\n{prompt}"
+        session_id = self._build_session_id()
+        full_prompt = (
+            f"Task ID: {task_id}\nSession ID: {session_id}\nBrief: {brief}\n\n{prompt}"
+        )
+
+        if on_session_started is not None:
+            on_session_started(task_id, agent_name, session_id)
 
         self._audit.log_session_start(task_id, agent_name, str(workspace))
         self._db.update_task(task_id, assigned_agent=agent_name)
@@ -208,11 +224,13 @@ class Orchestrator:
         result = self._executor.run(
             workspace=workspace,
             prompt=full_prompt,
+            session_id=session_id,
             timeout_seconds=self._settings.session_timeout_seconds,
         )
-
         self._audit.log_session_end(task_id, agent_name, result.duration_seconds)
-        return result
+
+        report = self._read_completion_from_db(task_id, agent_name, session_id)
+        return result, report
 
     def _log_review_verdicts(self, task_id: str, prior_steps: list[StepRecord]) -> None:
         """Log review verdicts for delegated agents so performance tiers stay current."""
@@ -245,11 +263,11 @@ class Orchestrator:
                 content = recent_path.read_text()
                 recent_path.write_text(content + summary)
 
-    def _log_step_result(self, task_id: str, result: ExecutorResult) -> None:
-        """Log a successful step result to audit trail."""
-        if result.report:
-            self._audit.log_completion_report(
-                report=result.report,
-                session_id=result.session_id,
-                duration_seconds=result.duration_seconds,
-            )
+    def _log_step_result(self, task_id: str, result, report) -> None:
+        if report is None:
+            return
+        self._audit.log_completion_report(
+            report=report,
+            session_id=result.session_id,
+            duration_seconds=result.duration_seconds,
+        )

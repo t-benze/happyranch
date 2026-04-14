@@ -17,45 +17,51 @@ from src.orchestrator.orchestrator import Orchestrator
 from src.runtime import RuntimeDir
 
 
-def _make_eh_decision(task_id: str, decision: dict) -> ExecutorResult:
+def _make_eh_decision(task_id: str, decision: dict):
     """Simulate the Engineering Head returning a NextStep decision."""
-    return ExecutorResult(
-        success=True,
-        report=CompletionReport(
+    return (
+        ExecutorResult(
+            success=True,
+            duration_seconds=30,
+            session_id="sess-eh",
+        ),
+        CompletionReport(
             task_id=task_id,
             agent="engineering_head",
             status="completed",
             confidence=90,
             output_summary=json.dumps(decision),
         ),
-        duration_seconds=30,
-        session_id="sess-eh",
     )
 
 
-def _make_agent_result(task_id: str, agent: str, summary: str = "Work done") -> ExecutorResult:
+def _make_agent_result(task_id: str, agent: str, summary: str = "Work done"):
     """Simulate a worker agent completing its task."""
-    return ExecutorResult(
-        success=True,
-        report=CompletionReport(
+    return (
+        ExecutorResult(
+            success=True,
+            duration_seconds=60,
+            session_id="sess-worker",
+        ),
+        CompletionReport(
             task_id=task_id,
             agent=agent,
             status="completed",
             confidence=85,
             output_summary=summary,
         ),
-        duration_seconds=60,
-        session_id="sess-worker",
     )
 
 
-def _make_failed_result(task_id: str) -> ExecutorResult:
-    return ExecutorResult(
-        success=False,
-        report=None,
-        duration_seconds=10,
-        session_id="sess-fail",
-        error="Session failed",
+def _make_failed_result(task_id: str):
+    return (
+        ExecutorResult(
+            success=False,
+            duration_seconds=10,
+            session_id="sess-fail",
+            error="Session failed",
+        ),
+        None,
     )
 
 
@@ -275,17 +281,19 @@ def test_eh_plain_text_output_treated_as_done(mock_run, orchestrator, test_runti
     """If EH returns plain text (not JSON), treat it as done with that text."""
     _setup_workspaces(test_runtime)
 
-    mock_run.return_value = ExecutorResult(
-        success=True,
-        report=CompletionReport(
+    mock_run.return_value = (
+        ExecutorResult(
+            success=True,
+            duration_seconds=30,
+            session_id="sess-eh",
+        ),
+        CompletionReport(
             task_id="TASK-001",
             agent="engineering_head",
             status="completed",
             confidence=85,
             output_summary="I explored the codebase. The payment module uses Stripe.",
         ),
-        duration_seconds=30,
-        session_id="sess-eh",
     )
 
     task_id = orchestrator.create_task(TaskType.GENERAL, "Explore payments")
@@ -319,17 +327,19 @@ def test_malformed_eh_json_escalates(mock_run, orchestrator, test_runtime):
     _setup_workspaces(test_runtime)
 
     # EH returns valid JSON but missing required 'agent' field for delegate action
-    mock_run.return_value = ExecutorResult(
-        success=True,
-        report=CompletionReport(
+    mock_run.return_value = (
+        ExecutorResult(
+            success=True,
+            duration_seconds=30,
+            session_id="sess-eh",
+        ),
+        CompletionReport(
             task_id="TASK-001",
             agent="engineering_head",
             status="completed",
             confidence=90,
             output_summary=json.dumps({"action": "delegate"}),
         ),
-        duration_seconds=30,
-        session_id="sess-eh",
     )
 
     task_id = orchestrator.create_task(TaskType.GENERAL, "Do something")
@@ -377,23 +387,28 @@ def test_review_verdicts_logged_for_delegated_agents(mock_run, orchestrator, tes
     assert verdicts[0]["payload"]["verdict"] == "approved"
 
 
-def test_task_metadata_in_agent_prompt(orchestrator, test_runtime):
-    """Agent prompts should include task_id and brief."""
+def test_task_metadata_in_agent_prompt(orchestrator, test_runtime, monkeypatch):
+    """Agent prompts should include task_id, session_id, and brief."""
     _setup_workspaces(test_runtime)
 
     task_id = orchestrator.create_task(TaskType.GENERAL, "Explore payments")
+
+    # Fix the session_id so we can pre-insert the DB row
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
+
+    # Pre-insert the completion result that _read_completion_from_db will find
+    orchestrator._db.insert_task_result(
+        task_id,
+        "engineering_head",
+        "sess-eh",
+        output_summary=json.dumps({"action": "done", "summary": "Done"}),
+        confidence_score=90,
+    )
 
     # Mock the executor.run to capture the prompt and return a valid result
     with patch.object(orchestrator._executor, "run") as mock_executor_run:
         mock_executor_run.return_value = ExecutorResult(
             success=True,
-            report=CompletionReport(
-                task_id=task_id,
-                agent="engineering_head",
-                status="completed",
-                confidence=90,
-                output_summary=json.dumps({"action": "done", "summary": "Done"}),
-            ),
             duration_seconds=30,
             session_id="sess-eh",
         )
@@ -405,3 +420,4 @@ def test_task_metadata_in_agent_prompt(orchestrator, test_runtime):
         prompt = call_kwargs[1]["prompt"] if "prompt" in call_kwargs[1] else call_kwargs[0][1]
         assert "Task ID: TASK-001" in prompt
         assert "Brief: Explore payments" in prompt
+        assert "Session ID:" in prompt
