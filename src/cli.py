@@ -2,46 +2,11 @@
 from __future__ import annotations
 
 import argparse
-import logging
 import sys
 from pathlib import Path
 
 from src.client.client import DaemonNotRunning, DaemonStateInconsistent, OpcClient
-from src.config import Settings
-from src.infrastructure.database import Database
-from src.models import AgentName, TaskType
-from src.orchestrator.orchestrator import Orchestrator
-from src.runtime import RuntimeDir
-
-
-def _get_settings() -> Settings:
-    return Settings()
-
-
-def _require_runtime(args: argparse.Namespace) -> RuntimeDir:
-    """Load RuntimeDir from --runtime flag, or detect from current directory."""
-    path = Path(args.runtime) if args.runtime else Path.cwd()
-    try:
-        return RuntimeDir.load(path)
-    except ValueError:
-        if args.runtime:
-            print(f"Error: {path} is not a valid OPC runtime directory (missing opc.yaml)")
-        else:
-            print("Error: not inside an OPC runtime directory (no opc.yaml found).")
-            print("  Either run from inside a runtime directory, or pass --runtime <path>")
-            print("  Create one with: opc init <path>")
-        sys.exit(1)
-
-
-def _get_db(runtime: RuntimeDir) -> Database:
-    return Database(runtime.db_path)
-
-
-def _setup_logging(verbose: bool) -> None:
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+from src.models import AgentName
 
 
 def _ok(r) -> bool:
@@ -247,27 +212,6 @@ def cmd_agents(args: argparse.Namespace) -> None:
                 print(f"  Period: {sc['period_start'][:10]} to {sc['period_end'][:10]}")
 
 
-def _load_agent_config(workspace: Path) -> dict:
-    """Load agent.yaml from workspace, returning parsed dict (empty if missing)."""
-    import yaml
-
-    config_path = workspace / "agent.yaml"
-    if not config_path.exists():
-        return {}
-    return yaml.safe_load(config_path.read_text()) or {}
-
-
-def _write_default_agent_config(workspace: Path) -> None:
-    """Write a default agent.yaml if one doesn't exist."""
-    import yaml
-
-    config_path = workspace / "agent.yaml"
-    if config_path.exists():
-        return
-    default = {"repos": {}}
-    config_path.write_text(yaml.dump(default, default_flow_style=False))
-
-
 def cmd_init_agent(args: argparse.Namespace) -> None:
     """Initialize agent workspaces by streaming progress from the daemon."""
     import json as _json
@@ -355,7 +299,6 @@ def build_parser() -> argparse.ArgumentParser:
         prog="opc",
         description="OPC — multi-agent tourism organization CLI",
     )
-    parser.add_argument("--runtime", default=None, help="Path to OPC runtime directory")
     sub = parser.add_subparsers(dest="command")
 
     # opc init
@@ -376,7 +319,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Task type hint (default: general -- EH decides the approach)",
     )
     p_run.add_argument("--brief", required=True, help="Task description")
-    p_run.add_argument("--verbose", action="store_true", help="Debug logging")
     p_run.set_defaults(func=cmd_run)
 
     # opc status
@@ -403,7 +345,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_init_agent = sub.add_parser("init-agent", help="Initialize agent workspaces with system prompts and repo clone")
     p_init_agent.add_argument("agent", nargs="?", default=None, choices=[a.value for a in AgentName],
                         help="Specific agent to initialize (default: all)")
-    p_init_agent.add_argument("--verbose", action="store_true", help="Debug logging")
     p_init_agent.set_defaults(func=cmd_init_agent)
 
     p_rep = sub.add_parser("report-completion", help="Agent callback: report task completion")

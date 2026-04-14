@@ -1,11 +1,8 @@
-import sys
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.cli import build_parser
-from src.infrastructure.database import Database
 
 
 def test_run_subcommand():
@@ -18,19 +15,6 @@ def test_run_subcommand():
     assert args.command == "run"
     assert args.task == "implement_feature"
     assert args.brief == "Add Alipay support"
-
-
-def test_run_verbose():
-    parser = build_parser()
-    args = parser.parse_args([
-        "run",
-        "--task", "bug_fix",
-        "--brief", "Fix broken links",
-        "--verbose",
-    ])
-    assert args.command == "run"
-    assert args.task == "bug_fix"
-    assert args.verbose is True
 
 
 def test_status_subcommand():
@@ -85,13 +69,6 @@ def test_init_subcommand():
     args = parser.parse_args(["init", "/tmp/my-runtime"])
     assert args.command == "init"
     assert args.path == "/tmp/my-runtime"
-
-
-def test_runtime_flag():
-    parser = build_parser()
-    args = parser.parse_args(["--runtime", "/tmp/rt", "tasks"])
-    assert args.runtime == "/tmp/rt"
-    assert args.command == "tasks"
 
 
 def test_no_command_prints_help(capsys):
