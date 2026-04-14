@@ -6,6 +6,7 @@ import logging
 import sys
 from pathlib import Path
 
+from src.client.client import DaemonNotRunning, DaemonStateInconsistent, OpcClient
 from src.config import Settings
 from src.infrastructure.database import Database
 from src.models import AgentName, TaskType
@@ -48,10 +49,37 @@ def _setup_logging(verbose: bool) -> None:
 
 
 def cmd_init(args: argparse.Namespace) -> None:
-    """Initialize a new OPC runtime directory."""
-    path = Path(args.path)
-    runtime = RuntimeDir.init(path)
-    print(f"Initialized OPC runtime directory at {runtime.root}")
+    """Register a runtime directory with the daemon."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    r = client.post("/api/v1/runtimes/register", json={"path": str(Path(args.path).expanduser())})
+    if r.status_code != 200:
+        print(f"Error ({r.status_code}): {r.text}")
+        sys.exit(1)
+    body = r.json()
+    print(f"Active runtime: {body['active']}")
+
+
+def cmd_use(args: argparse.Namespace) -> None:
+    """Switch the daemon's active runtime."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    r = client.post("/api/v1/runtimes/activate", json={"path": str(Path(args.path).expanduser())})
+    if r.status_code == 409:
+        detail = r.json().get("detail", {})
+        print(f"Cannot switch runtime: tasks in flight ({detail.get('task_ids')})")
+        sys.exit(1)
+    if r.status_code != 200:
+        print(f"Error ({r.status_code}): {r.text}")
+        sys.exit(1)
+    body = r.json()
+    print(f"Active runtime: {body['active']}")
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -242,6 +270,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_init_runtime = sub.add_parser("init", help="Initialize a new OPC runtime directory")
     p_init_runtime.add_argument("path", help="Path for the new runtime directory")
     p_init_runtime.set_defaults(func=cmd_init)
+
+    # opc use
+    p_use = sub.add_parser("use", help="Switch the daemon's active runtime")
+    p_use.add_argument("path", help="Path of an already-registered runtime")
+    p_use.set_defaults(func=cmd_use)
 
     # opc run
     p_run = sub.add_parser("run", help="Run a task")

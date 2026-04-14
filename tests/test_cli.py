@@ -131,3 +131,46 @@ def test_list_tasks_returns_records(tmp_dir):
     assert len(tasks) == 2
     assert tasks[0].id == "TASK-002"  # most recent first
     db.close()
+
+
+from unittest.mock import MagicMock, patch
+
+
+def test_cmd_init_calls_register_endpoint(tmp_path, capsys):
+    from src.cli import cmd_init
+
+    fake_client = MagicMock()
+    fake_client.post.return_value.status_code = 200
+    fake_client.post.return_value.json.return_value = {
+        "active": str(tmp_path / "rt"),
+        "registered": [str(tmp_path / "rt")],
+    }
+
+    with patch("src.cli.OpcClient.from_env", return_value=fake_client):
+        args = MagicMock(path=str(tmp_path / "rt"))
+        cmd_init(args)
+
+    fake_client.post.assert_called_once_with(
+        "/api/v1/runtimes/register", json={"path": str(tmp_path / "rt")},
+    )
+    out = capsys.readouterr().out
+    assert "active runtime" in out.lower()
+
+
+def test_cmd_use_calls_activate_endpoint(tmp_path, capsys):
+    from src.cli import cmd_use
+
+    fake_client = MagicMock()
+    fake_client.post.return_value.status_code = 200
+    fake_client.post.return_value.json.return_value = {
+        "active": str(tmp_path / "rt"),
+        "registered": [str(tmp_path / "rt")],
+    }
+
+    with patch("src.cli.OpcClient.from_env", return_value=fake_client):
+        args = MagicMock(path=str(tmp_path / "rt"))
+        cmd_use(args)
+
+    fake_client.post.assert_called_once_with(
+        "/api/v1/runtimes/activate", json={"path": str(tmp_path / "rt")},
+    )
