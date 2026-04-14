@@ -107,24 +107,49 @@ def cmd_use(args: argparse.Namespace) -> None:
 
 
 def cmd_run(args: argparse.Namespace) -> None:
-    """Run a task through the Engineering Head-driven orchestration loop."""
-    _setup_logging(args.verbose)
-    runtime = _require_runtime(args)
-    db = _get_db(runtime)
-    orchestrator = Orchestrator(db=db, settings=_get_settings(), runtime=runtime)
+    """Submit a task and stream its events until terminal."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
 
-    task_type = TaskType(args.task)
-    task_id = orchestrator.create_task(task_type, args.brief)
-    logging.info("Created task %s (%s): %s", task_id, args.task, args.brief)
+    r = client.post("/api/v1/tasks", json={"type": args.task, "brief": args.brief})
+    if r.status_code == 409:
+        print(f"Error: {r.json()['detail']}")
+        sys.exit(1)
+    if r.status_code != 200:
+        print(f"Error ({r.status_code}): {r.text}")
+        sys.exit(1)
+    task_id = r.json()["task_id"]
+    print(f"Submitted {task_id}; streaming events (Ctrl-C to detach)...")
+    _stream_task_events(client, task_id)
 
-    result = orchestrator.run_task(task_id)
 
-    print(f"\n{'='*60}")
-    print(f"Task ID:    {task_id}")
-    print(f"Type:       {args.task}")
-    print(f"Status:     {result}")
-    print(f"{'='*60}")
-    db.close()
+def cmd_tail(args: argparse.Namespace) -> None:
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    _stream_task_events(client, args.task_id)
+
+
+def _stream_task_events(client: "OpcClient", task_id: str) -> None:
+    import json as _json
+    try:
+        for payload in client.stream("GET", f"/api/v1/tasks/{task_id}/events"):
+            try:
+                event = _json.loads(payload)
+            except _json.JSONDecodeError:
+                print(payload)
+                continue
+            etype = event.get("type", "?")
+            print(f"[{etype}] {event}")
+            if etype in ("task_complete", "task_escalated", "task_rejected"):
+                return
+    except KeyboardInterrupt:
+        print(f"\nDetached. Reattach with: opc tail {task_id}")
 
 
 def cmd_tasks(args: argparse.Namespace) -> None:
@@ -318,6 +343,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_status = sub.add_parser("status", help="Show task status")
     p_status.add_argument("task_id", help="Task ID (e.g. TASK-001)")
     p_status.set_defaults(func=cmd_status)
+
+    # opc tail
+    p_tail = sub.add_parser("tail", help="Stream events for an existing task")
+    p_tail.add_argument("task_id", help="Task ID")
+    p_tail.set_defaults(func=cmd_tail)
 
     # opc tasks
     p_tasks = sub.add_parser("tasks", help="List recent tasks")

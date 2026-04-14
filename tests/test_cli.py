@@ -197,3 +197,35 @@ def test_cmd_status_handles_404(capsys):
         with pytest.raises(SystemExit):
             cmd_status(args)
     assert "not found" in capsys.readouterr().out
+
+
+def test_cmd_run_submits_then_streams(capsys):
+    from src.cli import cmd_run
+
+    fake = MagicMock()
+    fake.post.return_value.status_code = 200
+    fake.post.return_value.json.return_value = {"task_id": "TASK-001"}
+    fake.stream.return_value = iter([
+        '{"type": "audit", "n": 1}',
+        '{"type": "task_complete", "outcome": "approved"}',
+    ])
+
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        args = MagicMock(task="general", brief="x")
+        cmd_run(args)
+
+    fake.post.assert_called_once_with("/api/v1/tasks", json={"type": "general", "brief": "x"})
+    out = capsys.readouterr().out
+    assert "TASK-001" in out
+    assert "task_complete" in out
+
+
+def test_cmd_tail_streams_existing_task(capsys):
+    from src.cli import cmd_tail
+
+    fake = MagicMock()
+    fake.stream.return_value = iter(['{"type": "task_complete"}'])
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        args = MagicMock(task_id="TASK-001")
+        cmd_tail(args)
+    assert "task_complete" in capsys.readouterr().out
