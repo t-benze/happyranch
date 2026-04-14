@@ -12,7 +12,7 @@ class Database:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(db_path))
+        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
@@ -161,6 +161,14 @@ class Database:
         cursor = self._conn.execute("SELECT COUNT(*) as cnt FROM tasks")
         count = cursor.fetchone()["cnt"]
         return f"TASK-{count + 1:03d}"
+
+    def get_nonterminal_task_ids(self) -> list[str]:
+        nonterminal = (TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value)
+        cursor = self._conn.execute(
+            f"SELECT id FROM tasks WHERE status IN ({','.join('?' * len(nonterminal))})",
+            nonterminal,
+        )
+        return [row["id"] for row in cursor.fetchall()]
 
     # --- Audit Log ---
 

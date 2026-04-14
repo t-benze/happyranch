@@ -1,0 +1,72 @@
+"""Runtime registry endpoints."""
+from __future__ import annotations
+
+from pathlib import Path
+
+from fastapi import APIRouter, HTTPException, Request, status
+from pydantic import BaseModel
+
+from src.daemon import runtimes as reg
+from src.daemon.auth import require_token
+from src.daemon.state import DaemonState
+from src.infrastructure.database import Database
+from src.runtime import RuntimeDir
+
+router = APIRouter(dependencies=[require_token()])
+
+
+class RuntimePath(BaseModel):
+    path: str
+
+
+def _swap_active_runtime(state: DaemonState, new_path: Path) -> None:
+    """Replace the daemon's active runtime."""
+    if state.db is not None:
+        state.db.close()
+    state.runtime = RuntimeDir.load(new_path)
+    state.db = Database(state.runtime.db_path)
+
+
+@router.get("/runtimes")
+def list_runtimes(request: Request) -> dict:
+    state = reg.load()
+    return {
+        "active": str(state.active) if state.active else None,
+        "registered": [str(p) for p in state.registered],
+    }
+
+
+@router.post("/runtimes/register")
+def register_runtime(body: RuntimePath, request: Request) -> dict:
+    daemon: DaemonState = request.app.state.daemon
+    path = Path(body.path).expanduser()
+    if not path.exists():
+        path.mkdir(parents=True, exist_ok=True)
+    RuntimeDir.init(path)
+    try:
+        reg.register(path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _swap_active_runtime(daemon, path.resolve())
+    return list_runtimes(request)
+
+
+@router.post("/runtimes/activate")
+def activate_runtime(body: RuntimePath, request: Request) -> dict:
+    daemon: DaemonState = request.app.state.daemon
+    path = Path(body.path).expanduser().resolve()
+    state = reg.load()
+    if path not in state.registered:
+        raise HTTPException(status_code=404, detail=f"{path} is not registered")
+
+    if daemon.db is not None:
+        in_flight = daemon.db.get_nonterminal_task_ids()
+        if in_flight:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "active_tasks_in_flight", "task_ids": in_flight},
+            )
+
+    reg.activate(path)
+    _swap_active_runtime(daemon, path)
+    return list_runtimes(request)
