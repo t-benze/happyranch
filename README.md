@@ -48,7 +48,7 @@ opc init ~/opc-runtime
 # 2. Work from inside the runtime directory
 cd ~/opc-runtime
 
-# 3. Initialize all agent workspaces (clones repo, loads system prompts)
+# 3. Initialize all agent workspaces (creates agent.yaml, loads system prompts)
 opc init-agent
 
 # Or initialize a specific agent
@@ -98,18 +98,22 @@ Operational settings use the `OPC_` environment variable prefix. Runtime paths (
 |----------|---------|-------------|
 | `OPC_CLAUDE_CLI_PATH` | `claude` | Path to Claude Code CLI |
 | `OPC_PERMISSION_MODE` | `auto` | Claude Code permission mode |
-| `OPC_REPOS` | *(auto-detected)* | Git repos for agent clones, JSON dict: `{"name": "url"}` |
 | `OPC_MAX_ORCHESTRATION_STEPS` | `10` | Max EH decision steps before escalation |
 | `OPC_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout (30 min) |
 | `OPC_TIER_GREEN_THRESHOLD` | `0.90` | Acceptance rate for green tier |
 | `OPC_TIER_YELLOW_THRESHOLD` | `0.75` | Acceptance rate for yellow tier |
 
-Multi-repo example in `.env`:
-```
-OPC_REPOS={"my-opc": "https://github.com/t-benze/my-opc.git", "web-app": "https://github.com/t-benze/web-app.git"}
+### Per-Agent Configuration
+
+Each agent has an `agent.yaml` in its workspace (`<runtime>/workspaces/<agent>/agent.yaml`). Created automatically by `opc init-agent` with empty defaults:
+
+```yaml
+repos:
+  web-app: https://github.com/user/web-app.git
+  docs: https://github.com/user/docs.git
 ```
 
-If `OPC_REPOS` is not set, `opc init-agent` auto-detects the current git remote as a single repo.
+Repos are cloned into the agent's workspace on `opc init-agent` and auto-pulled before each task.
 
 ## Performance Tiers
 
@@ -127,9 +131,10 @@ Tier information is exposed to the EH in its capabilities prompt, so it influenc
 
 Each agent runs in its own persistent workspace inside the runtime directory. After running `opc init-agent`, each workspace contains:
 
+- `agent.yaml` — per-agent configuration (repos, etc.)
 - `CLAUDE.md` — agent identity, system prompt, available repos
 - `.claude/settings.json` — permissions and git-pull hooks
-- `repos/` — git clones of configured repositories (auto-pulled before each task)
+- `repos/` — git clones of repositories configured in `agent.yaml` (auto-pulled before each task)
 - `learnings.md` — agent-written insights from past tasks
 - `scorecard.md` — performance summary (updated by orchestrator)
 - `recent_tasks.md` — rolling task history

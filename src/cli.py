@@ -25,9 +25,9 @@ def _require_runtime(args: argparse.Namespace) -> RuntimeDir:
         return RuntimeDir.load(path)
     except ValueError:
         if args.runtime:
-            print(f"Error: {path} is not a valid OPC runtime directory (missing opc.toml)")
+            print(f"Error: {path} is not a valid OPC runtime directory (missing opc.yaml)")
         else:
-            print("Error: not inside an OPC runtime directory (no opc.toml found).")
+            print("Error: not inside an OPC runtime directory (no opc.yaml found).")
             print("  Either run from inside a runtime directory, or pass --runtime <path>")
             print("  Create one with: opc init <path>")
         sys.exit(1)
@@ -150,26 +150,25 @@ def cmd_agents(args: argparse.Namespace) -> None:
     db.close()
 
 
-def _resolve_repos() -> dict[str, str]:
-    """Get repos from settings, falling back to auto-detect from current git remote."""
-    repos = _get_settings().repos
-    if repos:
-        return repos
-    # Auto-detect: use the current repo's remote as a single-repo default
-    import subprocess
-    try:
-        result = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode == 0:
-            url = result.stdout.strip()
-            # Derive name from URL: https://github.com/user/my-opc.git → my-opc
-            name = url.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
-            return {name: url}
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
-    return {}
+def _load_agent_config(workspace: Path) -> dict:
+    """Load agent.yaml from workspace, returning parsed dict (empty if missing)."""
+    import yaml
+
+    config_path = workspace / "agent.yaml"
+    if not config_path.exists():
+        return {}
+    return yaml.safe_load(config_path.read_text()) or {}
+
+
+def _write_default_agent_config(workspace: Path) -> None:
+    """Write a default agent.yaml if one doesn't exist."""
+    import yaml
+
+    config_path = workspace / "agent.yaml"
+    if config_path.exists():
+        return
+    default = {"repos": {}}
+    config_path.write_text(yaml.dump(default, default_flow_style=False))
 
 
 def cmd_init_agent(args: argparse.Namespace) -> None:
@@ -190,15 +189,20 @@ def cmd_init_agent(args: argparse.Namespace) -> None:
 
     prompts = load_all_prompts(protocol_dir)
     ctx = ContextBuilder(s)
-    repos = _resolve_repos()
 
     agents_to_init = [AgentName(args.agent)] if args.agent else list(AgentName)
 
     for agent in agents_to_init:
         name = agent.value
         workspace = runtime.workspaces_dir / name
-        prompt = prompts.get(name, "")
+        workspace.mkdir(parents=True, exist_ok=True)
 
+        # 0. Ensure agent.yaml exists
+        _write_default_agent_config(workspace)
+        agent_config = _load_agent_config(workspace)
+        repos = agent_config.get("repos", {})
+
+        prompt = prompts.get(name, "")
         if not prompt:
             print(f"  Warning: no system prompt found for {name}")
 
@@ -209,10 +213,9 @@ def cmd_init_agent(args: argparse.Namespace) -> None:
                 status = "ready" if ok else "FAILED"
                 print(f"  [{name}] repo {repo_name}: {status}")
         else:
-            print(f"  [{name}] repos skipped (no OPC_REPOS set and no git remote detected)")
+            print(f"  [{name}] repos: none configured (edit {workspace}/agent.yaml)")
 
         # 2. Create workspace + persistent files + CLAUDE.md + settings.json
-        #    (runs after clone so CLAUDE.md can list available repos)
         ctx.initialize_workspace(workspace, name, prompt)
         print(f"  [{name}] workspace initialized")
 

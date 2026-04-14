@@ -6,7 +6,7 @@ from pathlib import Path
 class RuntimeDir:
     """Value object representing a self-describing OPC runtime folder.
 
-    The presence of an ``opc.toml`` marker file distinguishes a valid
+    The presence of an ``opc.yaml`` marker file distinguishes a valid
     runtime directory from an arbitrary path.
     """
 
@@ -31,7 +31,7 @@ class RuntimeDir:
 
     @property
     def marker_file(self) -> Path:
-        return self._path / "opc.toml"
+        return self._path / "opc.yaml"
 
     # ------------------------------------------------------------------
     # Validation
@@ -49,7 +49,7 @@ class RuntimeDir:
     def init(cls, path: Path) -> RuntimeDir:
         """Create a runtime directory at *path*.
 
-        Creates the directory, writes an empty ``opc.toml`` marker, and
+        Creates the directory, writes an empty ``opc.yaml`` marker, and
         creates the ``workspaces/`` sub-directory.  Calling this more
         than once on the same path is idempotent — existing files are
         not overwritten.

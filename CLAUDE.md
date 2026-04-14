@@ -75,7 +75,7 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |-- src/
 |   |-- cli.py                         # Unified CLI entry point (`opc` command)
 |   |-- config.py                      # Settings (OPC_ env prefix, operational thresholds)
-|   |-- runtime.py                     # RuntimeDir — self-describing runtime folder (opc.toml marker)
+|   |-- runtime.py                     # RuntimeDir — self-describing runtime folder (opc.yaml marker)
 |   |-- models.py                      # Pydantic models + StrEnums
 |   |-- orchestrator/
 |   |   |-- orchestrator.py            # EH-driven loop: ask Engineering Head, execute decisions
@@ -96,10 +96,11 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
     +-- plans/                         # Implementation plans
 
 <runtime-dir>/                         # Created by `opc init <path>`
-|-- opc.toml                           # Marker file (presence = valid runtime folder)
+|-- opc.yaml                           # Marker file (presence = valid runtime folder)
 |-- opc.db                             # SQLite database
 +-- workspaces/
     |-- engineering_head/
+    |   |-- agent.yaml                 # Per-agent config (repos, etc.)
     |   |-- CLAUDE.md                  # Generated from protocol/02-system-prompts-managers.md
     |   |-- .claude/settings.json      # Permissions + PreToolUse hook (git pull all repos)
     |   |-- repos/                     # Git clones (supports multiple repos)
@@ -127,18 +128,19 @@ Operational settings use the `OPC_` environment variable prefix. Runtime paths (
 | `OPC_CLAUDE_CLI_PATH` | `claude` | Path to Claude Code CLI |
 | `OPC_PERMISSION_MODE` | `auto` | Claude Code permission mode |
 | `OPC_PROTOCOL_DIR` | `protocol` | Protocol docs dirname (relative to project root) |
-| `OPC_REPOS` | *(auto-detected)* | Git repos for agent clones, JSON dict: `{"name": "url", ...}` |
 | `OPC_MAX_ORCHESTRATION_STEPS` | `10` | Max EH decision steps before escalation |
 | `OPC_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout (30 min) |
 | `OPC_TIER_GREEN_THRESHOLD` | `0.90` | Acceptance rate for green tier |
 | `OPC_TIER_YELLOW_THRESHOLD` | `0.75` | Acceptance rate for yellow tier |
 
-Multi-repo example in `.env`:
-```
-OPC_REPOS={"my-opc": "https://github.com/t-benze/my-opc.git", "web-app": "https://github.com/t-benze/web-app.git"}
+Repos are configured per agent in `<runtime>/workspaces/<agent>/agent.yaml`:
+```yaml
+repos:
+  web-app: https://github.com/t-benze/web-app.git
+  docs: https://github.com/t-benze/docs.git
 ```
 
-If `OPC_REPOS` is not set, `opc init-agent` auto-detects the current git remote as a single repo.
+`opc init-agent` creates a default `agent.yaml` with empty repos if one doesn't exist.
 
 ## Code Style
 - Type hints on all function signatures

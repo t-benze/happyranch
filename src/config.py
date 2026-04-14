@@ -23,10 +23,6 @@ class Settings(BaseSettings):
     # Protocol docs (relative to project_root)
     protocol_dir: str = "protocol"
 
-    # Git repos for agent workspace clones: {"name": "url", ...}
-    # Set via OPC_REPOS='{"my-opc": "https://...", "web-app": "https://..."}'
-    repos: dict[str, str] = Field(default_factory=dict)
-
     # Task constraints
     session_timeout_seconds: int = 1800  # 30 minutes
 
