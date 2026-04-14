@@ -98,12 +98,6 @@ def test_no_command_prints_help(capsys):
     assert args.command is None
 
 
-def test_list_tasks_integration(tmp_dir):
-    """Test that `opc tasks` works end-to-end with an empty database."""
-    db = Database(tmp_dir / "test.db")
-    tasks = db.list_tasks()
-    assert tasks == []
-    db.close()
 
 
 def test_run_without_task_flag():
@@ -120,19 +114,7 @@ def test_run_with_task_flag():
     assert args.task == "bug_fix"
 
 
-def test_list_tasks_returns_records(tmp_dir):
-    """Test list_tasks returns TaskRecords."""
-    from src.models import TaskRecord, TaskType
-
-    db = Database(tmp_dir / "test.db")
-    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.BUG_FIX, brief="Fix it"))
-    db.insert_task(TaskRecord(id="TASK-002", type=TaskType.IMPLEMENT_FEATURE, brief="Build it"))
-    tasks = db.list_tasks()
-    assert len(tasks) == 2
-    assert tasks[0].id == "TASK-002"  # most recent first
-    db.close()
-
-
+import pytest
 from unittest.mock import MagicMock, patch
 
 
@@ -174,3 +156,30 @@ def test_cmd_use_calls_activate_endpoint(tmp_path, capsys):
     fake_client.post.assert_called_once_with(
         "/api/v1/runtimes/activate", json={"path": str(tmp_path / "rt")},
     )
+
+
+def test_cmd_tasks_calls_list_endpoint(capsys):
+    from src.cli import cmd_tasks
+
+    fake = MagicMock()
+    fake.get.return_value.status_code = 200
+    fake.get.return_value.json.return_value = {"tasks": [
+        {"id": "TASK-001", "type": "general", "status": "approved", "brief": "x"},
+    ]}
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        args = MagicMock(limit=20)
+        cmd_tasks(args)
+    fake.get.assert_called_once_with("/api/v1/tasks", params={"limit": 20})
+    assert "TASK-001" in capsys.readouterr().out
+
+
+def test_cmd_status_handles_404(capsys):
+    from src.cli import cmd_status
+
+    fake = MagicMock()
+    fake.get.return_value.status_code = 404
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        args = MagicMock(task_id="TASK-X")
+        with pytest.raises(SystemExit):
+            cmd_status(args)
+    assert "not found" in capsys.readouterr().out

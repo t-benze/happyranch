@@ -11,7 +11,6 @@ from src.config import Settings
 from src.infrastructure.database import Database
 from src.models import AgentName, TaskType
 from src.orchestrator.orchestrator import Orchestrator
-from src.orchestrator.performance_tracker import PerformanceTracker
 from src.runtime import RuntimeDir
 
 
@@ -103,79 +102,85 @@ def cmd_run(args: argparse.Namespace) -> None:
     db.close()
 
 
-def cmd_status(args: argparse.Namespace) -> None:
-    """Show status of a specific task."""
-    runtime = _require_runtime(args)
-    db = _get_db(runtime)
-    task = db.get_task(args.task_id)
-    if task is None:
-        print(f"Task {args.task_id} not found.")
-        sys.exit(1)
-
-    print(f"Task:       {task.id}")
-    print(f"Type:       {task.type.value}")
-    print(f"Status:     {task.status.value}")
-    print(f"Agent:      {task.assigned_agent or '-'}")
-    print(f"Brief:      {task.brief}")
-    print(f"Created:    {task.created_at}")
-    print(f"Updated:    {task.updated_at}")
-
-    results = db.get_task_results(args.task_id)
-    if results:
-        print(f"\nResults ({len(results)}):")
-        for r in results:
-            print(f"  - [{r['agent']}] confidence={r['confidence_score']}  {r['output_summary'][:80]}")
-
-    logs = db.get_audit_logs(args.task_id)
-    if logs:
-        print(f"\nAudit log ({len(logs)} entries):")
-        for log in logs:
-            print(f"  {log['timestamp'][:19]}  {log['agent']:20s}  {log['action']}")
-
-    db.close()
-
-
 def cmd_tasks(args: argparse.Namespace) -> None:
     """List recent tasks."""
-    runtime = _require_runtime(args)
-    db = _get_db(runtime)
-    tasks = db.list_tasks(limit=args.limit)
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    r = client.get("/api/v1/tasks", params={"limit": args.limit})
+    if r.status_code != 200:
+        print(f"Error ({r.status_code}): {r.text}")
+        sys.exit(1)
+    tasks = r.json()["tasks"]
     if not tasks:
         print("No tasks found.")
-        db.close()
         return
-
     print(f"{'ID':<12} {'Type':<20} {'Status':<12}  Brief")
     print("-" * 76)
     for t in tasks:
-        brief = t.brief[:40] + "..." if len(t.brief) > 40 else t.brief
-        print(f"{t.id:<12} {t.type.value:<20} {t.status.value:<12}  {brief}")
-    db.close()
+        brief = t["brief"][:40] + "..." if len(t["brief"]) > 40 else t["brief"]
+        print(f"{t['id']:<12} {t['type']:<20} {t['status']:<12}  {brief}")
+
+
+def cmd_status(args: argparse.Namespace) -> None:
+    """Show status of a specific task."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    r = client.get(f"/api/v1/tasks/{args.task_id}")
+    if r.status_code == 404:
+        print(f"Task {args.task_id} not found.")
+        sys.exit(1)
+    if r.status_code != 200:
+        print(f"Error ({r.status_code}): {r.text}")
+        sys.exit(1)
+    body = r.json()
+    task = body["task"]
+    print(f"Task:       {task['id']}")
+    print(f"Type:       {task['type']}")
+    print(f"Status:     {task['status']}")
+    print(f"Agent:      {task.get('assigned_agent') or '-'}")
+    print(f"Brief:      {task['brief']}")
+    print(f"Created:    {task['created_at']}")
+    print(f"Updated:    {task['updated_at']}")
+    if body.get("results"):
+        print(f"\nResults ({len(body['results'])}):")
+        for r_ in body["results"]:
+            print(f"  - [{r_['agent']}] confidence={r_['confidence_score']}  {r_['output_summary'][:80]}")
+    if body.get("audit_log"):
+        print(f"\nAudit log ({len(body['audit_log'])} entries):")
+        for log in body["audit_log"]:
+            print(f"  {log['timestamp'][:19]}  {log['agent']:20s}  {log['action']}")
 
 
 def cmd_agents(args: argparse.Namespace) -> None:
     """Show agent performance tiers."""
-    runtime = _require_runtime(args)
-    db = _get_db(runtime)
-    tracker = PerformanceTracker(db, _get_settings())
-    tiers = tracker.get_all_tiers()
-
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    r = client.get("/api/v1/agents")
+    if r.status_code != 200:
+        print(f"Error ({r.status_code}): {r.text}")
+        sys.exit(1)
+    body = r.json()
     print(f"{'Agent':<22} {'Tier':<8}")
     print("-" * 30)
-    for agent in AgentName:
-        tier = tiers.get(agent, "green")
-        print(f"{agent.value:<22} {tier.value:<8}")
-
-    # Show detailed scorecards if --detail
+    for entry in body["agents"]:
+        print(f"{entry['name']:<22} {entry['tier']:<8}")
     if args.detail:
         print()
-        for agent in AgentName:
-            sc = db.get_scorecard(agent.value)
+        for entry in body["agents"]:
+            sc = entry.get("scorecard")
             if sc:
-                print(f"{agent.value}:")
+                print(f"{entry['name']}:")
                 print(f"  Acceptance: {sc['acceptance_rate']:.0%}  Revision: {sc['revision_rate']:.0%}  Errors: {sc['error_count']}")
                 print(f"  Period: {sc['period_start'][:10]} to {sc['period_end'][:10]}")
-    db.close()
 
 
 def _load_agent_config(workspace: Path) -> dict:
