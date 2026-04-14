@@ -5,6 +5,7 @@ import asyncio
 from dataclasses import dataclass, field
 
 from src.config import Settings
+from src.daemon.sessions import SessionTracker
 from src.infrastructure.database import Database
 from src.runtime import RuntimeDir
 
@@ -17,6 +18,7 @@ class DaemonState:
     db: Database | None
     settings: Settings
     db_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    sessions: SessionTracker = field(default_factory=SessionTracker)
 
     @classmethod
     def idle(cls, settings: Settings) -> "DaemonState":
