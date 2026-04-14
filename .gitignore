@@ -33,5 +33,7 @@ logs/
 *.db
 *.sqlite3
 
-# Agent workspaces (runtime data lives in ~/.opc/)
-workspaces/
+
+# Claude
+.claude/worktrees
+.worktrees
