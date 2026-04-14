@@ -60,24 +60,21 @@ def register_runtime(body: RuntimePath, request: Request) -> dict:
 
 
 @router.post("/runtimes/activate")
-def activate_runtime(body: RuntimePath, request: Request) -> dict:
+async def activate_runtime(body: RuntimePath, request: Request) -> dict:
     daemon: DaemonState = request.app.state.daemon
     path = Path(body.path).expanduser().resolve()
     state = reg.load()
     if path not in state.registered:
         raise HTTPException(status_code=404, detail=f"{path} is not registered")
 
-    # TODO(task-16): wrap the guard-check + swap in `async with
-    # daemon.db_lock` once POST /tasks exists — without serialization the
-    # guard is TOCTOU against concurrent task submissions.
-    if daemon.db is not None:
-        in_flight = daemon.db.get_nonterminal_task_ids()
-        if in_flight:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={"code": "active_tasks_in_flight", "task_ids": in_flight},
-            )
-
-    reg.activate(path)
-    _swap_active_runtime(daemon, path)
+    async with daemon.db_lock:
+        if daemon.db is not None:
+            in_flight = daemon.db.get_nonterminal_task_ids()
+            if in_flight:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={"code": "active_tasks_in_flight", "task_ids": in_flight},
+                )
+        reg.activate(path)
+        _swap_active_runtime(daemon, path)
     return list_runtimes(request)

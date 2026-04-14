@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from unittest.mock import patch
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -47,3 +45,12 @@ def test_list_tasks_returns_list(tmp_home, app, auth_headers) -> None:
 def test_get_task_detail_404_when_missing(tmp_home, app, auth_headers) -> None:
     r = TestClient(app).get("/api/v1/tasks/TASK-999", headers=auth_headers)
     assert r.status_code == 404
+
+
+def test_submit_task_invalid_type_returns_422(tmp_home, app, auth_headers) -> None:
+    r = TestClient(app).post(
+        "/api/v1/tasks",
+        json={"type": "garbage", "brief": "x"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 422

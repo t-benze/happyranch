@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
 
 from src.daemon.auth import require_token
@@ -15,7 +15,7 @@ router = APIRouter(dependencies=[require_token()])
 
 
 class SubmitTask(BaseModel):
-    type: str = "general"
+    type: TaskType = TaskType.GENERAL
     brief: str
 
 
@@ -31,12 +31,12 @@ def _require_active(state: DaemonState) -> None:
 async def submit_task(body: SubmitTask, request: Request) -> dict:
     state: DaemonState = request.app.state.daemon
     _require_active(state)
-    task_type = TaskType(body.type)
-    task_id = state.db.next_task_id()
-    state.db.insert_task(TaskRecord(id=task_id, type=task_type, brief=body.brief))
+    async with state.db_lock:
+        task_id = state.db.next_task_id()
+        state.db.insert_task(TaskRecord(id=task_id, type=body.type, brief=body.brief))
 
     runner = TaskRunner(state=state)
-    asyncio.create_task(runner.run(task_id))
+    asyncio.create_task(runner.run(task_id))  # TODO(task-26): track these tasks so shutdown can cancel/await them.
     return {"task_id": task_id}
 
 
