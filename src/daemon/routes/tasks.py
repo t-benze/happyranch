@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import json as _json
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
+from sse_starlette.sse import EventSourceResponse
 
 from src.daemon.auth import require_token
 from src.daemon.runner import TaskRunner
@@ -60,3 +62,62 @@ def get_task(task_id: str, request: Request) -> dict:
         "results": state.db.get_task_results(task_id),
         "audit_log": state.db.get_audit_logs(task_id),
     }
+
+
+class CompletionBody(BaseModel):
+    session_id: str
+    agent: str
+    status: str
+    confidence: int
+    output_summary: str
+    risks_flagged: list[str] = []
+    dependencies: list[str] = []
+    suggested_reviewer_focus: list[str] = []
+
+
+@router.get("/tasks/{task_id}/events")
+async def task_events(task_id: str, request: Request):
+    state: DaemonState = request.app.state.daemon
+    _require_active(state)
+
+    async def gen():
+        async for event in state.event_bus.subscribe(task_id):
+            yield {"data": _json.dumps(event)}
+
+    return EventSourceResponse(gen())
+
+
+@router.post("/tasks/{task_id}/completion")
+async def submit_completion(task_id: str, body: CompletionBody, request: Request) -> dict:
+    state: DaemonState = request.app.state.daemon
+    _require_active(state)
+    expected = state.sessions.get_active(task_id, body.agent)
+    # Reject callbacks the daemon never spawned. Both branches are 409 — the
+    # tracker is the source of truth for "is this a real session". Unknown
+    # comes first so an empty tracker can't silently accept a fabricated id.
+    if expected is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "unknown_session", "task_id": task_id, "agent": body.agent},
+        )
+    if expected != body.session_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "session_mismatch", "active": expected, "got": body.session_id},
+        )
+    async with state.db_lock:
+        state.db.insert_task_result(
+            task_id=task_id,
+            agent=body.agent,
+            session_id=body.session_id,
+            output_summary=body.output_summary,
+            confidence_score=body.confidence,
+            risks_flagged=body.risks_flagged or None,
+        )
+    await state.event_bus.publish(task_id, {
+        "type": "completion_reported",
+        "agent": body.agent,
+        "session_id": body.session_id,
+        "status": body.status,
+    })
+    return {"ok": True}
