@@ -65,3 +65,10 @@ def test_activate_after_register_switches(tmp_home: Path, tmp_path: Path) -> Non
     assert reg.load().active == b
     reg.activate(a)
     assert reg.load().active == a
+
+
+def test_load_returns_empty_when_yaml_is_non_mapping(tmp_home: Path) -> None:
+    paths_mod.runtimes_file().write_text("- not_a_mapping\n")
+    state = reg.load()
+    assert state.active is None
+    assert state.registered == []

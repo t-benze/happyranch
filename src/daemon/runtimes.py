@@ -20,7 +20,9 @@ def load() -> RegistryState:
     path = paths.runtimes_file()
     if not path.exists():
         return RegistryState()
-    raw = yaml.safe_load(path.read_text()) or {}
+    raw = yaml.safe_load(path.read_text())
+    if not isinstance(raw, dict):
+        raw = {}
     active = raw.get("active")
     registered = raw.get("registered") or []
     return RegistryState(
