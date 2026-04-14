@@ -48,8 +48,15 @@ class OpcClient:
         with self._client.stream(method, path, **kwargs) as response:
             response.raise_for_status()
             for line in response.iter_lines():
-                if line.startswith("data: "):
-                    yield line.removeprefix("data: ")
+                if line.startswith("data:"):
+                    payload = line[5:]
+                    yield payload[1:] if payload.startswith(" ") else payload
 
     def close(self) -> None:
         self._client.close()
+
+    def __enter__(self) -> "OpcClient":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()

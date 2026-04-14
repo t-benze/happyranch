@@ -79,3 +79,35 @@ def test_get_uses_injected_transport(tmp_home: Path) -> None:
     )
     body = client.get("/api/v1/ping").json()
     assert body["auth_seen"] == f"Bearer {token}"
+
+
+def test_stream_accepts_data_without_space(tmp_home: Path) -> None:
+    paths_mod.port_file().write_text("12345")
+    paths_mod.ensure_token()
+
+    from fastapi.responses import StreamingResponse
+    app = FastAPI()
+
+    @app.get("/api/v1/events")
+    def events() -> StreamingResponse:
+        def gen():
+            yield "data:no-space\n\n"
+            yield "data: with-space\n\n"
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    client = OpcClient.from_env()
+    client._client = httpx.Client(
+        base_url=client.base_url,
+        headers=client.headers,
+        transport=_StarletteTransport(app),
+    )
+    payloads = list(client.stream("GET", "/api/v1/events"))
+    assert payloads == ["no-space", "with-space"]
+
+
+def test_context_manager_closes(tmp_home: Path) -> None:
+    paths_mod.port_file().write_text("12345")
+    paths_mod.ensure_token()
+    with OpcClient.from_env() as client:
+        assert client.headers["Authorization"].startswith("Bearer ")
+    assert client._client.is_closed
