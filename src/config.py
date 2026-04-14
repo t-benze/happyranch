@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     tier_green_threshold: float = 0.90
     tier_yellow_threshold: float = 0.75
 
+    # Daemon
+    daemon_bind_host: str = "127.0.0.1"
+
     def get_protocol_dir(self) -> Path:
         return self.project_root / self.protocol_dir
 
