@@ -133,3 +133,37 @@ def test_next_task_id(db):
     task = TaskRecord(id="TASK-001", type=TaskType.BUG_FIX, brief="test")
     db.insert_task(task)
     assert db.next_task_id() == "TASK-002"
+
+
+def test_get_latest_task_result_filters_by_session_id(db) -> None:
+    db.insert_task_result(
+        task_id="TASK-001", agent="dev_agent", session_id="sess-A",
+        output_summary="early", confidence_score=70,
+    )
+    db.insert_task_result(
+        task_id="TASK-001", agent="dev_agent", session_id="sess-B",
+        output_summary="newer", confidence_score=90,
+    )
+    a = db.get_latest_task_result("TASK-001", "dev_agent", "sess-A")
+    assert a is not None
+    assert a["output_summary"] == "early"
+    b = db.get_latest_task_result("TASK-001", "dev_agent", "sess-B")
+    assert b is not None
+    assert b["output_summary"] == "newer"
+
+
+def test_get_latest_task_result_returns_none_when_missing(db) -> None:
+    assert db.get_latest_task_result("TASK-X", "dev_agent", "sess-Z") is None
+
+
+def test_get_latest_task_result_picks_most_recent_in_session(db) -> None:
+    db.insert_task_result(
+        task_id="TASK-001", agent="dev_agent", session_id="sess-A",
+        output_summary="first", confidence_score=70,
+    )
+    db.insert_task_result(
+        task_id="TASK-001", agent="dev_agent", session_id="sess-A",
+        output_summary="retry", confidence_score=85,
+    )
+    latest = db.get_latest_task_result("TASK-001", "dev_agent", "sess-A")
+    assert latest["output_summary"] == "retry"

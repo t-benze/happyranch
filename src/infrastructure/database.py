@@ -295,6 +295,23 @@ class Database:
             result.append(d)
         return result
 
+    def get_latest_task_result(
+        self, task_id: str, agent: str, session_id: str,
+    ) -> dict | None:
+        cursor = self._conn.execute(
+            """SELECT * FROM task_results
+               WHERE task_id = ? AND agent = ? AND session_id = ?
+               ORDER BY id DESC LIMIT 1""",
+            (task_id, agent, session_id),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        if d.get("risks_flagged"):
+            d["risks_flagged"] = json.loads(d["risks_flagged"])
+        return d
+
     # --- Scorecards ---
 
     def upsert_scorecard(
