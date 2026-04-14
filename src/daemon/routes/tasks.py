@@ -112,8 +112,16 @@ async def submit_completion(task_id: str, body: CompletionBody, request: Request
             session_id=body.session_id,
             output_summary=body.output_summary,
             confidence_score=body.confidence,
-            risks_flagged=body.risks_flagged or None,
+            risks_flagged=body.risks_flagged,
         )
+    # Clear the tracker so a duplicate POST for the same session is rejected as
+    # unknown_session rather than silently persisting a second row.
+    state.sessions.clear(task_id, body.agent)
+    # TODO(events): subscribers that connect after this point won't replay
+    # `completion_reported`. The terminal task_* event is still synthesized
+    # from the DB status, but per-agent completion beats are lost. Acceptable
+    # today because the orchestrator consumes completions via DB (not SSE) and
+    # SSE is for human observers.
     await state.event_bus.publish(task_id, {
         "type": "completion_reported",
         "agent": body.agent,

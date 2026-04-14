@@ -138,6 +138,65 @@ def test_completion_persists_when_session_matches(tmp_home, app, daemon_state, a
     assert any(r["session_id"] == "sess-1" for r in rows)
 
 
+def test_completion_clears_session_so_duplicate_rejected(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """After a successful completion POST, the tracker must be cleared so that a
+    second POST with the same session id is rejected as unknown_session rather
+    than silently persisting a duplicate row."""
+    sub = TestClient(app).post(
+        "/api/v1/tasks",
+        json={"type": "general", "brief": "x"},
+        headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    daemon_state.sessions.set_active(task_id, "dev_agent", "sess-1")
+
+    payload = {
+        "session_id": "sess-1", "agent": "dev_agent",
+        "status": "completed", "confidence": 90, "output_summary": "ok",
+    }
+    first = TestClient(app).post(
+        f"/api/v1/tasks/{task_id}/completion", json=payload, headers=auth_headers,
+    )
+    assert first.status_code == 200
+
+    second = TestClient(app).post(
+        f"/api/v1/tasks/{task_id}/completion", json=payload, headers=auth_headers,
+    )
+    assert second.status_code == 409
+    assert second.json()["detail"]["code"] == "unknown_session"
+    # And the second POST did not persist a duplicate row.
+    rows = daemon_state.db.get_task_results(task_id)
+    assert len([r for r in rows if r["session_id"] == "sess-1"]) == 1
+
+
+def test_completion_preserves_empty_risks_flagged(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """An empty risks_flagged list submitted by the agent must round-trip as an
+    empty list, not be coerced to NULL/None by the DB layer."""
+    sub = TestClient(app).post(
+        "/api/v1/tasks",
+        json={"type": "general", "brief": "x"},
+        headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    daemon_state.sessions.set_active(task_id, "dev_agent", "sess-1")
+
+    r = TestClient(app).post(
+        f"/api/v1/tasks/{task_id}/completion",
+        json={"session_id": "sess-1", "agent": "dev_agent",
+              "status": "completed", "confidence": 90, "output_summary": "ok",
+              "risks_flagged": []},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    latest = daemon_state.db.get_latest_task_result(task_id, "dev_agent", "sess-1")
+    assert latest is not None
+    assert latest["risks_flagged"] == []
+
+
 def test_events_stream_yields_completion(tmp_home, app, daemon_state, auth_headers) -> None:
     sub = TestClient(app).post(
         "/api/v1/tasks",

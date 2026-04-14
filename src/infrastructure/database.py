@@ -254,7 +254,7 @@ class Database:
                 output_summary,
                 confidence_score,
                 learnings,
-                json.dumps(risks_flagged) if risks_flagged else None,
+                json.dumps(risks_flagged) if risks_flagged is not None else None,
                 duration_seconds,
                 token_count,
                 estimated_cost,
