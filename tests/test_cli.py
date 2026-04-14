@@ -300,3 +300,85 @@ def test_cmd_learning_posts_with_session_id():
     args_pos, kwargs = fake.post.call_args
     assert args_pos[0] == "/api/v1/agents/dev_agent/learnings"
     assert kwargs["json"]["session_id"] == "sess-1"
+
+
+def test_cmd_report_completion_session_mismatch_friendly_message(capsys):
+    """409 session_mismatch must print a clean sentence, not raw JSON."""
+    from src.cli import cmd_report_completion
+
+    fake = MagicMock()
+    fake.post.return_value.status_code = 409
+    fake.post.return_value.json.return_value = {
+        "detail": {"code": "session_mismatch", "active": "sess-real", "got": "sess-stale"},
+    }
+    args = MagicMock(
+        task_id="TASK-001", session_id="sess-stale", agent="dev_agent",
+        status="completed", confidence=80, summary="x",
+        risks=[], dependencies=[], reviewer_focus=[],
+    )
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        with pytest.raises(SystemExit):
+            cmd_report_completion(args)
+    out = capsys.readouterr().out
+    assert "Session id mismatch" in out
+    assert "sess-real" in out
+    assert "sess-stale" in out
+
+
+def test_cmd_learning_unknown_session_friendly_message(capsys):
+    """409 unknown_session must print a clean sentence, not raw JSON."""
+    from src.cli import cmd_learning
+
+    fake = MagicMock()
+    fake.post.return_value.status_code = 409
+    fake.post.return_value.json.return_value = {
+        "detail": {"code": "unknown_session", "task_id": "TASK-001", "agent": "dev_agent"},
+    }
+    args = MagicMock(
+        task_id="TASK-001", session_id="ghost", agent="dev_agent", text="x",
+    )
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        with pytest.raises(SystemExit):
+            cmd_learning(args)
+    out = capsys.readouterr().out
+    assert "Session not recognised" in out
+    assert "TASK-001" in out
+    assert "dev_agent" in out
+
+
+def test_cmd_init_agent_surfaces_error_detail(capsys):
+    """Daemon-emitted error frames must show the `detail` so users see what broke."""
+    from src.cli import cmd_init_agent
+
+    fake = MagicMock()
+    fake.stream.return_value = iter([
+        '{"agent": "dev_agent", "phase": "starting"}',
+        '{"agent": "dev_agent", "phase": "error", "detail": "repo clone failed: fatal"}',
+    ])
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        args = MagicMock(agent="dev_agent")
+        cmd_init_agent(args)
+    out = capsys.readouterr().out
+    assert "[dev_agent] starting" in out
+    assert "[dev_agent] error: repo clone failed: fatal" in out
+
+
+def test_cmd_init_agent_handles_stream_http_error(capsys):
+    """OpcClient.stream calls raise_for_status — a 409 from /agents/init must
+    surface as a clean message, not an httpx traceback."""
+    import httpx
+
+    from src.cli import cmd_init_agent
+
+    response = MagicMock(status_code=409)
+    fake = MagicMock()
+    fake.stream.side_effect = httpx.HTTPStatusError(
+        "conflict", request=MagicMock(), response=response,
+    )
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        args = MagicMock(agent=None)
+        with pytest.raises(SystemExit):
+            cmd_init_agent(args)
+    out = capsys.readouterr().out
+    assert "init stream failed" in out
+    assert "409" in out

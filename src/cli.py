@@ -64,6 +64,17 @@ def _ok(r) -> bool:
         print("No active runtime. Run `opc use <runtime-path>` first (see `opc init`).")
     elif code == "active_tasks_in_flight":
         print(f"Cannot proceed: tasks still in flight ({detail.get('task_ids')}).")
+    elif code == "unknown_session":
+        print(
+            f"Session not recognised by daemon for task {detail.get('task_id')} "
+            f"(agent {detail.get('agent')}). The daemon may have restarted, or "
+            "the task already completed.",
+        )
+    elif code == "session_mismatch":
+        print(
+            f"Session id mismatch — daemon expected {detail.get('active')} "
+            f"but got {detail.get('got')}.",
+        )
     else:
         print(f"Error ({r.status_code}): {r.text}")
     sys.exit(1)
@@ -260,6 +271,9 @@ def _write_default_agent_config(workspace: Path) -> None:
 def cmd_init_agent(args: argparse.Namespace) -> None:
     """Initialize agent workspaces by streaming progress from the daemon."""
     import json as _json
+
+    import httpx
+
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
@@ -279,7 +293,19 @@ def cmd_init_agent(args: argparse.Namespace) -> None:
                 return
             agent = event.get("agent", "")
             phase = event.get("phase", "")
-            print(f"  [{agent}] {phase}")
+            # The daemon emits {"phase": "error", "detail": "<reason>"} when a
+            # workspace init fails. Surface the reason — without it the user
+            # sees "[dev_agent] error" with no clue what broke.
+            detail = event.get("detail")
+            line = f"  [{agent}] {phase}"
+            if detail:
+                line += f": {detail}"
+            print(line)
+    except httpx.HTTPStatusError as exc:
+        # OpcClient.stream calls raise_for_status(), so a 409 (e.g. idle
+        # daemon — no active runtime) lands here. Match the cmd_tail pattern.
+        print(f"Error: init stream failed ({exc.response.status_code})")
+        sys.exit(1)
     except KeyboardInterrupt:
         print("Init cancelled (daemon will continue).")
 
