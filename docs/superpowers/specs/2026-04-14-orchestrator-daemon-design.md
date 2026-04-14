@@ -49,22 +49,27 @@ registered:
 
 **Why `~/.opc/` and not inside a runtime dir:** daemon lifetime is decoupled from any one runtime. Switching runtimes must not require restarting the daemon; pid/port files inside a runtime would be orphaned on switch.
 
+**Auth token:** on first start, the daemon generates a random 32-byte token (`secrets.token_urlsafe(32)`) and writes it to `~/.opc/daemon.token` with `0600` permissions. On subsequent starts, it reuses the existing token file. The token is the shared secret between the daemon and any process on the same user account that needs to call the API.
+
 **Daemon startup flow:**
 
 1. Read `~/.opc/runtimes.yaml` (missing file treated as empty registry). If empty or `active` is null, start in **idle mode** — HTTP API up, task-running endpoints return `409 no_active_runtime`, runtime-management endpoints still work.
 2. Otherwise load the active `RuntimeDir`, verify its `opc.yaml` marker, open SQLite (WAL mode), wire up the `Orchestrator`.
-3. Bind `127.0.0.1` on an ephemeral port (OS-assigned), write `~/.opc/daemon.port`.
-4. Write `~/.opc/daemon.pid`.
-5. Install signal handlers for SIGTERM / SIGINT.
-6. Start accepting requests.
+3. Ensure `~/.opc/daemon.token` exists (generate + write `0600` if not).
+4. Bind `127.0.0.1` on an ephemeral port (OS-assigned), write `~/.opc/daemon.port`.
+5. Write `~/.opc/daemon.pid`.
+6. Install signal handlers for SIGTERM / SIGINT.
+7. Start accepting requests.
 
-**CLI client discovery:** every CLI command reads `~/.opc/daemon.port`. Missing file → "daemon not running" error with the script hint.
+**CLI client discovery:** every CLI command reads `~/.opc/daemon.port` and `~/.opc/daemon.token`. Missing port file → "daemon not running" error. Missing token file with live daemon → "daemon state inconsistent — restart via scripts/daemon.sh" error.
 
 ---
 
 ## 3. HTTP API Surface
 
-Local-only (`127.0.0.1` bind), no auth. Path prefix `/api/v1/`. Framework: **FastAPI + uvicorn + sse-starlette**. Reuses Pydantic models from `src/models.py`.
+Local-only (`127.0.0.1` bind). Path prefix `/api/v1/`. Framework: **FastAPI + uvicorn + sse-starlette**. Reuses Pydantic models from `src/models.py`.
+
+**Auth:** every request (including agent callbacks from `opc report-completion` and `opc learning`) must carry `Authorization: Bearer <token>`, where `<token>` matches the contents of `~/.opc/daemon.token`. Missing or wrong token → `401`. The token is per-user; the threat model is "another local process running as the same user shouldn't be able to fabricate completion records by guessing the port", not multi-user isolation. `0600` perms on the token file enforce that scope. The `/api/v1/health` endpoint is exempt for liveness probes.
 
 ### Runtime management
 
@@ -72,7 +77,7 @@ Local-only (`127.0.0.1` bind), no auth. Path prefix `/api/v1/`. Framework: **Fas
 |---|---|---|
 | `GET` | `/api/v1/health` | Liveness ping. Returns `{"status": "ok", "active_runtime": "<path or null>"}`. |
 | `POST` | `/api/v1/runtimes/register` | Body: `{"path": "..."}`. Creates `opc.yaml` marker at path, adds to registry, activates. |
-| `POST` | `/api/v1/runtimes/activate` | Body: `{"path": "..."}`. Sets active runtime. |
+| `POST` | `/api/v1/runtimes/activate` | Body: `{"path": "..."}`. Sets active runtime. **Forbidden while any task is `IN_PROGRESS`** — returns `409 active_tasks_in_flight` with the offending task IDs. The caller must wait for completion or escalate the running tasks before switching. |
 | `GET` | `/api/v1/runtimes` | Lists registered runtimes, shows which is active. |
 
 ### Tasks (all scoped to active runtime)
@@ -83,7 +88,7 @@ Local-only (`127.0.0.1` bind), no auth. Path prefix `/api/v1/`. Framework: **Fas
 | `GET` | `/api/v1/tasks` | List tasks. |
 | `GET` | `/api/v1/tasks/{id}` | Task detail. |
 | `GET` | `/api/v1/tasks/{id}/events` | **SSE stream** of orchestration step events + session log lines. Replays recent history on subscribe, then streams live. Disconnecting does not affect the task. |
-| `POST` | `/api/v1/tasks/{id}/completion` | Agent callback. Body: completion report fields (status, confidence, summary, risks, dependencies, reviewer_focus). Persists to DB, emits event. |
+| `POST` | `/api/v1/tasks/{id}/completion` | Agent callback. Body: `{"session_id": "<uuid>", ...completion report fields (status, confidence, summary, risks, dependencies, reviewer_focus)}`. `session_id` is required and must match the UUID the daemon injected when spawning the subprocess; mismatch → `409 session_mismatch`. Persists to DB tagged with the session_id, emits event. |
 
 ### Agents
 
@@ -91,12 +96,15 @@ Local-only (`127.0.0.1` bind), no auth. Path prefix `/api/v1/`. Framework: **Fas
 |---|---|---|
 | `GET` | `/api/v1/agents` | Performance tiers. |
 | `POST` | `/api/v1/agents/init` | Body: `{"agent": "..." | null}`. SSE response streaming progress messages (workspace setup, repo clones, skill distribution). Closes when init completes. |
-| `POST` | `/api/v1/agents/{name}/learnings` | Agent callback to append to `learnings.md`. Serialized by daemon. |
+| `POST` | `/api/v1/agents/{name}/learnings` | Agent callback to append to `learnings.md`. Body includes `session_id` so the daemon can record provenance and reject calls from sessions it didn't spawn. Serialized by daemon. |
 
 ### Error conventions
 
+- `401` for missing/invalid auth token (except `/health`).
 - `404` for unknown task / runtime / agent.
 - `409 no_active_runtime` for task operations when no runtime is active.
+- `409 active_tasks_in_flight` for `POST /runtimes/activate` while tasks are running.
+- `409 session_mismatch` for callbacks whose `session_id` does not match the most recent spawn for that `(task_id, agent)`.
 - `400` for malformed bodies.
 - `5xx` for daemon-internal errors (logged).
 
@@ -155,26 +163,29 @@ No `sessions/` subfolder. No task-suffixed files. No `completion_report.json`.
 
 ### Session context flow
 
-All task-scoped info is injected via the initial prompt sent to `claude -p "..."`:
+Every subprocess spawn gets a fresh `session_id = uuid4()`. The daemon records this as the active session for `(task_id, agent)` before launch, then injects it into the initial prompt sent to `claude -p "..."`:
 
 ```
 You are {agent_name}. Use the start-task skill to handle this task.
 Parameters:
   task_id: TASK-001
+  session_id: <uuid>
   brief: <brief text>
   role_guidance: <role-specific instructions — for EH this is the decision prompt currently built by capabilities.py; for delegated workers this is next_step.prompt from the EH decision>
 ```
 
 `role_guidance` replaces the current per-call prompt text the orchestrator sends. Existing prompt-building code in `src/orchestrator/capabilities.py` keeps producing that text; it's just passed as a `role_guidance` parameter instead of being the whole prompt. The skill carries the workflow (§6). The orchestrator's prompt does not describe how to use `opc` CLI or handle errors.
 
+The `session_id` makes every callback traceable to a specific subprocess. Skills must echo it back on `opc report-completion` and `opc learning` (§6).
+
 ### Completion handling
 
-Agent calls `opc report-completion --task-id ... --status ... ...` mid-session. Daemon writes to DB (timestamped) and emits an event. When the Claude Code subprocess exits, the daemon looks up the **most recent** completion record for `(task_id, agent)` by timestamp:
+Agent calls `opc report-completion --task-id ... --session-id ... --status ... ...` mid-session. The daemon validates that `session_id` matches the currently-active session for `(task_id, agent)`; mismatched callbacks are rejected with `409 session_mismatch` and **not** persisted. Valid callbacks are written to DB tagged with `session_id` (timestamped) and emit an event. When the Claude Code subprocess exits, the daemon looks up the **most recent** completion record for `(task_id, agent, session_id)` — scoped to the session it just ran:
 
 - **Found** → mark session complete with that report's status.
 - **Not found** → mark `"session ended without completion report"` and escalate.
 
-If the agent calls `opc report-completion` more than once in a single session (e.g., after a retry), the last call wins. All calls are retained in the DB for audit.
+If the agent calls `opc report-completion` more than once **within the same session** (e.g., after a self-retry inside the skill), the last call wins. Callbacks from prior or concurrent sessions of the same `(task_id, agent)` cannot influence each other's outcome — each spawn is an isolated session. All calls are retained in the DB for audit.
 
 ### Concurrency model
 
@@ -215,14 +226,14 @@ protocol/skills/
 
 ### `start-task` skill contents
 
-- Parse `task_id`, `brief`, `role_guidance` from the orchestrator prompt.
+- Parse `task_id`, `session_id`, `brief`, `role_guidance` from the orchestrator prompt. Hold `session_id` in a variable for the lifetime of the session — every `opc` callback must include it.
 - Execute the work loop appropriate to role (may invoke `make-worktree` if repo writes are needed).
-- Report-back protocol:
-  - Success: `opc report-completion --task-id <id> --status completed --confidence <n> --summary "..." --risks "..." --dependencies "..." --reviewer-focus "..."`
-  - Blocker: `opc report-completion --task-id <id> --status blocked --summary "..."` then exit.
-  - Mid-task learning: `opc learning --agent <name> --text "..."`
+- Report-back protocol (every command must pass `--session-id <session_id>`):
+  - Success: `opc report-completion --task-id <id> --session-id <session_id> --status completed --confidence <n> --summary "..." --risks "..." --dependencies "..." --reviewer-focus "..."`
+  - Blocker: `opc report-completion --task-id <id> --session-id <session_id> --status blocked --summary "..."` then exit.
+  - Mid-task learning: `opc learning --agent <name> --session-id <session_id> --text "..."`
 - Cleanup protocol: always run worktree cleanup as the final step, even on blocker/error paths (best-effort).
-- Retry policy: if `opc` CLI returns non-zero, retry once after 1s, then exit with log.
+- Retry policy: if `opc` CLI returns non-zero, retry once after 1s, then exit with log. **Exception:** `409 session_mismatch` is fatal — the daemon has spawned a newer session for this `(task_id, agent)`; do not retry, exit immediately.
 
 ### `make-worktree` skill contents
 
@@ -309,7 +320,7 @@ Daemon asks the OS for an ephemeral port (`bind(('127.0.0.1', 0))` then reads th
   - `routes/` — one file per resource: `health.py`, `runtimes.py`, `tasks.py`, `agents.py`.
 
 - `src/client/`
-  - `client.py` — reads `~/.opc/daemon.port`, provides `get` / `post` / `stream` helpers with uniform "daemon not running" error.
+  - `client.py` — reads `~/.opc/daemon.port` and `~/.opc/daemon.token`, attaches `Authorization: Bearer <token>` to every request, provides `get` / `post` / `stream` helpers with uniform "daemon not running" / "daemon state inconsistent" errors.
 
 ### New files
 
@@ -320,7 +331,7 @@ Daemon asks the OS for an ephemeral port (`bind(('127.0.0.1', 0))` then reads th
 ### Changed files
 
 - `src/cli.py` — every command handler becomes a thin HTTP client call. New commands: `cmd_tail`, `cmd_use`, `cmd_report_completion`, `cmd_learning`. Remove `--runtime` flag.
-- `src/orchestrator/orchestrator.py` — `_run_agent` no longer reads `completion_report.json`. After subprocess exits, reads latest completion record from DB for `(task_id, agent)`; if missing, marks escalated. `initialize_workspace` no longer called per session (workspace is set up once at `opc init-agent`).
+- `src/orchestrator/orchestrator.py` — `_run_agent` generates a `session_id = uuid4()`, records it as the active session for `(task_id, agent)` before launch, and injects it into the prompt. After subprocess exits, reads latest completion record from DB for `(task_id, agent, session_id)`; if missing, marks escalated. No longer reads `completion_report.json`. `initialize_workspace` no longer called per session (workspace is set up once at `opc init-agent`).
 - `src/orchestrator/context_builder.py` — `write_claude_md` drops the `task_brief` parameter; CLAUDE.md no longer contains "Current Task" section. `initialize_workspace` copies skill files from `protocol/skills/` to `<workspace>/.claude/skills/`.
 - `src/orchestrator/executor.py` — `ExecutorResult.report` may be `None` on success (completion now arrives via HTTP); callers updated.
 - `src/config.py` — adds daemon-home path (default `~/.opc/`), bind host (default `127.0.0.1`).
@@ -373,7 +384,8 @@ Most of the 106 existing tests keep working because the daemon wraps the existin
 - **`add-repo` capability** — Spec 2. Will add a daemon endpoint, a CLI, and likely a skill update.
 - **launchd auto-start** — future polish spec. Daemon runs via `scripts/daemon.sh` in Spec 1.
 - **Web UI** — HTTP API is web-ready, no frontend ships here.
-- **Remote access / auth** — `127.0.0.1` only. Tokens/TLS are a future security spec.
+- **Remote access / multi-user auth / TLS** — `127.0.0.1` only. The Bearer token in §3 is a per-user secret to prevent same-machine processes from spoofing callbacks; it is not a multi-user auth system.
+- **Runtime hot-swap with active tasks** — `opc use` is forbidden while any task is `IN_PROGRESS` (returns `409 active_tasks_in_flight`). Graceful drain or queued switching is future work.
 - **Task resumption after daemon restart** — in-flight tasks are escalated with `"daemon restarted mid-task"`.
 - **Stale worktree reaper** — skill-level cleanup only.
 - **Structured audit query API** — single-task lookup only. Founder dashboard (implementation order step 11) will design a query surface.
