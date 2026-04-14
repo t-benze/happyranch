@@ -115,18 +115,15 @@ def cmd_run(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     r = client.post("/api/v1/tasks", json={"type": args.task, "brief": args.brief})
-    if r.status_code == 409:
-        print(f"Error: {r.json()['detail']}")
-        sys.exit(1)
-    if r.status_code != 200:
-        print(f"Error ({r.status_code}): {r.text}")
-        sys.exit(1)
+    if not _ok(r):
+        return
     task_id = r.json()["task_id"]
     print(f"Submitted {task_id}; streaming events (Ctrl-C to detach)...")
     _stream_task_events(client, task_id)
 
 
 def cmd_tail(args: argparse.Namespace) -> None:
+    """Reattach to a running task and stream its events until terminal."""
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
@@ -135,8 +132,11 @@ def cmd_tail(args: argparse.Namespace) -> None:
     _stream_task_events(client, args.task_id)
 
 
-def _stream_task_events(client: "OpcClient", task_id: str) -> None:
+def _stream_task_events(client: OpcClient, task_id: str) -> None:
     import json as _json
+
+    import httpx
+
     try:
         for payload in client.stream("GET", f"/api/v1/tasks/{task_id}/events"):
             try:
@@ -148,6 +148,12 @@ def _stream_task_events(client: "OpcClient", task_id: str) -> None:
             print(f"[{etype}] {event}")
             if etype in ("task_complete", "task_escalated", "task_rejected"):
                 return
+    except httpx.HTTPStatusError as exc:
+        # OpcClient.stream calls raise_for_status(), so a 404 (e.g. unknown
+        # task id from `opc tail`) lands here. Surface a clean message instead
+        # of an httpx traceback.
+        print(f"Error: stream failed for {task_id} ({exc.response.status_code})")
+        sys.exit(1)
     except KeyboardInterrupt:
         print(f"\nDetached. Reattach with: opc tail {task_id}")
 

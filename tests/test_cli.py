@@ -229,3 +229,41 @@ def test_cmd_tail_streams_existing_task(capsys):
         args = MagicMock(task_id="TASK-001")
         cmd_tail(args)
     assert "task_complete" in capsys.readouterr().out
+
+
+def test_cmd_run_idle_daemon_prints_friendly_message(capsys):
+    """409 no_active_runtime from POST should produce the same friendly sentence
+    as the read-side commands — no raw JSON, no KeyError on malformed bodies."""
+    from src.cli import cmd_run
+
+    fake = MagicMock()
+    fake.post.return_value.status_code = 409
+    fake.post.return_value.json.return_value = {"detail": {"code": "no_active_runtime"}}
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        args = MagicMock(task="general", brief="x")
+        with pytest.raises(SystemExit):
+            cmd_run(args)
+    out = capsys.readouterr().out
+    assert "No active runtime" in out
+    assert "opc use" in out
+
+
+def test_cmd_tail_handles_stream_error(capsys):
+    """OpcClient.stream calls raise_for_status — a 404 for an unknown task id
+    must surface as a clean message, not an httpx traceback."""
+    import httpx
+
+    from src.cli import cmd_tail
+
+    response = MagicMock(status_code=404)
+    fake = MagicMock()
+    fake.stream.side_effect = httpx.HTTPStatusError(
+        "not found", request=MagicMock(), response=response,
+    )
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        args = MagicMock(task_id="TASK-X")
+        with pytest.raises(SystemExit):
+            cmd_tail(args)
+    out = capsys.readouterr().out
+    assert "TASK-X" in out
+    assert "404" in out
