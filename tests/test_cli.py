@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from src.cli import build_parser
 from src.infrastructure.database import Database
@@ -114,10 +116,6 @@ def test_run_with_task_flag():
     assert args.task == "bug_fix"
 
 
-import pytest
-from unittest.mock import MagicMock, patch
-
-
 def test_cmd_init_calls_register_endpoint(tmp_path, capsys):
     from src.cli import cmd_init
 
@@ -171,6 +169,22 @@ def test_cmd_tasks_calls_list_endpoint(capsys):
         cmd_tasks(args)
     fake.get.assert_called_once_with("/api/v1/tasks", params={"limit": 20})
     assert "TASK-001" in capsys.readouterr().out
+
+
+def test_cmd_tasks_idle_daemon_prints_friendly_message(capsys):
+    """409 no_active_runtime should produce a sentence, not raw JSON."""
+    from src.cli import cmd_tasks
+
+    fake = MagicMock()
+    fake.get.return_value.status_code = 409
+    fake.get.return_value.json.return_value = {"detail": {"code": "no_active_runtime"}}
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        args = MagicMock(limit=20)
+        with pytest.raises(SystemExit):
+            cmd_tasks(args)
+    out = capsys.readouterr().out
+    assert "No active runtime" in out
+    assert "opc use" in out
 
 
 def test_cmd_status_handles_404(capsys):

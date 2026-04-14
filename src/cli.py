@@ -44,6 +44,31 @@ def _setup_logging(verbose: bool) -> None:
     )
 
 
+def _ok(r) -> bool:
+    """True if response is 2xx. On error: print a friendly message and exit(1).
+
+    Translates the daemon's structured `{"detail": {"code": ...}}` errors into
+    actionable user-facing sentences instead of dumping JSON.
+    """
+    if 200 <= r.status_code < 300:
+        return True
+    detail = {}
+    try:
+        body = r.json()
+        if isinstance(body.get("detail"), dict):
+            detail = body["detail"]
+    except ValueError:
+        pass
+    code = detail.get("code")
+    if code == "no_active_runtime":
+        print("No active runtime. Run `opc use <runtime-path>` first (see `opc init`).")
+    elif code == "active_tasks_in_flight":
+        print(f"Cannot proceed: tasks still in flight ({detail.get('task_ids')}).")
+    else:
+        print(f"Error ({r.status_code}): {r.text}")
+    sys.exit(1)
+
+
 # ── subcommands ──────────────────────────────────────────────
 
 
@@ -110,9 +135,8 @@ def cmd_tasks(args: argparse.Namespace) -> None:
         print(f"Error: {exc}")
         sys.exit(1)
     r = client.get("/api/v1/tasks", params={"limit": args.limit})
-    if r.status_code != 200:
-        print(f"Error ({r.status_code}): {r.text}")
-        sys.exit(1)
+    if not _ok(r):
+        return
     tasks = r.json()["tasks"]
     if not tasks:
         print("No tasks found.")
@@ -135,9 +159,8 @@ def cmd_status(args: argparse.Namespace) -> None:
     if r.status_code == 404:
         print(f"Task {args.task_id} not found.")
         sys.exit(1)
-    if r.status_code != 200:
-        print(f"Error ({r.status_code}): {r.text}")
-        sys.exit(1)
+    if not _ok(r):
+        return
     body = r.json()
     task = body["task"]
     print(f"Task:       {task['id']}")
@@ -165,9 +188,8 @@ def cmd_agents(args: argparse.Namespace) -> None:
         print(f"Error: {exc}")
         sys.exit(1)
     r = client.get("/api/v1/agents")
-    if r.status_code != 200:
-        print(f"Error ({r.status_code}): {r.text}")
-        sys.exit(1)
+    if not _ok(r):
+        return
     body = r.json()
     print(f"{'Agent':<22} {'Tier':<8}")
     print("-" * 30)

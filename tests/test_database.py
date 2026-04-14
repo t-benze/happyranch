@@ -29,6 +29,18 @@ def test_get_nonexistent_task_returns_none(db):
     assert db.get_task("TASK-999") is None
 
 
+def test_list_tasks_empty_returns_empty_list(db):
+    assert db.list_tasks() == []
+
+
+def test_list_tasks_returns_most_recent_first(db):
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.BUG_FIX, brief="Fix it"))
+    db.insert_task(TaskRecord(id="TASK-002", type=TaskType.IMPLEMENT_FEATURE, brief="Build it"))
+    tasks = db.list_tasks()
+    assert len(tasks) == 2
+    assert tasks[0].id == "TASK-002"
+
+
 def test_update_task_status(db):
     task = TaskRecord(
         id="TASK-002",
