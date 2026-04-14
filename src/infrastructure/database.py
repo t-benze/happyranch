@@ -12,6 +12,9 @@ class Database:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         db_path.parent.mkdir(parents=True, exist_ok=True)
+        # FastAPI dispatches sync route handlers on a threadpool, so the
+        # connection is read from threads other than its creator. Serialize
+        # writes via DaemonState.db_lock.
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")

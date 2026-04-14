@@ -20,11 +20,19 @@ class RuntimePath(BaseModel):
 
 
 def _swap_active_runtime(state: DaemonState, new_path: Path) -> None:
-    """Replace the daemon's active runtime."""
-    if state.db is not None:
-        state.db.close()
-    state.runtime = RuntimeDir.load(new_path)
-    state.db = Database(state.runtime.db_path)
+    """Replace the daemon's active runtime atomically.
+
+    Build the new runtime + connection before touching the old one so a
+    failing load leaves the daemon on the old runtime instead of a closed
+    half-state.
+    """
+    new_runtime = RuntimeDir.load(new_path)
+    new_db = Database(new_runtime.db_path)
+    old_db = state.db
+    state.runtime = new_runtime
+    state.db = new_db
+    if old_db is not None:
+        old_db.close()
 
 
 @router.get("/runtimes")
@@ -59,6 +67,9 @@ def activate_runtime(body: RuntimePath, request: Request) -> dict:
     if path not in state.registered:
         raise HTTPException(status_code=404, detail=f"{path} is not registered")
 
+    # TODO(task-16): wrap the guard-check + swap in `async with
+    # daemon.db_lock` once POST /tasks exists — without serialization the
+    # guard is TOCTOU against concurrent task submissions.
     if daemon.db is not None:
         in_flight = daemon.db.get_nonterminal_task_ids()
         if in_flight:
