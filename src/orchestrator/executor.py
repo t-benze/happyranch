@@ -35,6 +35,7 @@ class AgentExecutor:
             "-p", prompt,
             "--permission-mode", self._permission_mode,
         ]
+        workspace.mkdir(parents=True, exist_ok=True)
         start_time = time.monotonic()
         try:
             subprocess.run(

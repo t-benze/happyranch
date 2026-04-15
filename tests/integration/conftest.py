@@ -34,7 +34,21 @@ def fake_claude(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def live_daemon(tmp_home, fake_claude, monkeypatch):
+def fake_plan_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Pre-declare FAKE_CLAUDE_PLAN so the daemon inherits it at launch time.
+
+    The test body writes the plan script at this path AFTER the daemon is up,
+    but BEFORE the daemon spawns fake_claude (i.e. before submitting a task).
+    Setting the env var in the daemon's parent process is a no-op once the
+    daemon is running, so this must happen during fixture setup.
+    """
+    plan_path = tmp_path / "plan.sh"
+    monkeypatch.setenv("FAKE_CLAUDE_PLAN", str(plan_path))
+    return plan_path
+
+
+@pytest.fixture
+def live_daemon(tmp_home, fake_claude, fake_plan_env, monkeypatch):
     """Start the daemon via scripts/daemon.sh and stop it after the test."""
     monkeypatch.setenv("OPC_CLAUDE_CLI_PATH", str(fake_claude))
     script = Path(__file__).resolve().parent.parent.parent / "scripts" / "daemon.sh"
