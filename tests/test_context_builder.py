@@ -124,8 +124,6 @@ def test_initialize_workspace_does_not_overwrite_existing_learnings(test_setting
 
 
 def test_initialize_workspace_copies_skills(test_settings, tmp_path):
-    from src.orchestrator.context_builder import ContextBuilder
-
     # Set up a fake protocol/skills/ tree
     skills_root = test_settings.get_protocol_dir() / "skills"
     (skills_root / "start-task").mkdir(parents=True)
@@ -140,9 +138,15 @@ def test_initialize_workspace_copies_skills(test_settings, tmp_path):
     assert (workspace / ".claude" / "skills" / "make-worktree" / "SKILL.md").read_text() == "# make-worktree\n"
 
 
-def test_claude_md_drops_task_brief_and_completion_report(test_settings, tmp_path):
-    from src.orchestrator.context_builder import ContextBuilder
+def test_initialize_workspace_without_skills_dir_is_noop(test_settings, tmp_path):
+    skills_root = test_settings.get_protocol_dir() / "skills"
+    assert not skills_root.exists()
+    workspace = tmp_path / "workspace"
+    ContextBuilder(test_settings).initialize_workspace(workspace, "dev_agent", "system prompt")
+    assert not (workspace / ".claude" / "skills").exists()
 
+
+def test_claude_md_drops_task_brief_and_completion_report(test_settings, tmp_path):
     workspace = tmp_path / "workspace"
     ContextBuilder(test_settings).write_claude_md(workspace, "dev_agent", "system prompt")
     text = (workspace / "CLAUDE.md").read_text()
