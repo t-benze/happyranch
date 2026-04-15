@@ -18,17 +18,17 @@ from src.config import Settings
 from src.daemon import paths, runtimes
 from src.daemon.app import create_app
 from src.daemon.state import DaemonState
+from src.infrastructure.audit_logger import AuditLogger
+from src.infrastructure.database import Database
+from src.models import TaskStatus
 from src.runtime import RuntimeDir
 
 logger = logging.getLogger("opc.daemon")
 
 
-def _escalate_in_flight_tasks(db) -> None:
+def _escalate_in_flight_tasks(db: Database) -> None:
     """Mark nonterminal tasks (PENDING + IN_PROGRESS) as escalated — daemon restart
     kills any in-flight spawn and orphans queued runners. No resumption in Spec 1."""
-    from src.infrastructure.audit_logger import AuditLogger
-    from src.models import TaskStatus
-
     audit = AuditLogger(db)
     for task_id in db.get_nonterminal_task_ids():
         db.update_task(task_id, status=TaskStatus.ESCALATED)
