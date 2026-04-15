@@ -30,6 +30,9 @@ The following documents are in the `protocol/` folder.
 - **Language**: Python 3.11+ (currently running 3.13)
 - **Package manager**: `uv`
 - **Agent executor**: Claude Code CLI (`claude -p "<prompt>" --permission-mode auto`) — no CrewAI dependency for now
+- **Daemon**: FastAPI HTTP service (`src/daemon/`) — serves orchestrator work, SSE task events, agent callbacks
+- **CLI**: Thin HTTP client (`src/client/`) that talks to the daemon over localhost
+- **Agent workflow**: Claude Code skills (`protocol/skills/start-task`, `protocol/skills/make-worktree`) — the orchestrator prompt just names the skill and passes parameters
 - **Orchestrator**: Custom Python application (EH-driven orchestration loop, performance scoring)
 - **Data models**: Pydantic v2 + pydantic-settings
 - **Database**: SQLite with WAL mode (audit logs, scorecards, task state)
@@ -66,34 +69,64 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 ~/projects/my-opc/                     # Source code (this repo)
 |-- CLAUDE.md
 |-- pyproject.toml
-|-- protocol/                          # Org charter, system prompts, escalation rules, blueprint
+|-- protocol/                          # Org charter, system prompts, escalation rules, blueprint, skills
 |   |-- 01-org-charter.md
 |   |-- 02-system-prompts-managers.md
 |   |-- 03-system-prompts-workers.md
 |   |-- 04-escalation-rules.md
-|   +-- 05*.md
+|   |-- 05*.md
+|   +-- skills/                        # Claude Code skills copied into every agent workspace
+|       |-- start-task/                # Parses injected params, runs role, reports via CLI callback
+|       +-- make-worktree/             # Creates an isolated git worktree under .claude/worktrees/
+|-- scripts/
+|   +-- daemon.sh                      # Starts the FastAPI daemon (uv run python -m src.daemon)
 |-- src/
-|   |-- cli.py                         # Unified CLI entry point (`opc` command)
+|   |-- cli.py                         # Unified CLI entry point (`opc` command) — HTTP client
 |   |-- config.py                      # Settings (OPC_ env prefix, operational thresholds)
 |   |-- runtime.py                     # RuntimeDir — self-describing runtime folder (opc.yaml marker)
 |   |-- models.py                      # Pydantic models + StrEnums
+|   |-- client/
+|   |   +-- client.py                  # httpx-based client for the daemon (+ SSE streaming)
+|   |-- daemon/                        # FastAPI HTTP daemon
+|   |   |-- __main__.py                # Uvicorn entry (python -m src.daemon)
+|   |   |-- app.py                     # FastAPI app factory, lifespan, DaemonState wiring
+|   |   |-- state.py                   # DaemonState (db, runtime, settings, sessions, event bus)
+|   |   |-- auth.py                    # Bearer-token dependency (~/.opc/auth_token)
+|   |   |-- paths.py                   # ~/.opc/ home paths (auth token, runtimes.yaml)
+|   |   |-- runtimes.py                # Runtime registry (runtimes.yaml, set/get active)
+|   |   |-- runner.py                  # TaskRunner — runs orchestrator in a thread, snapshots runtime/db
+|   |   |-- sessions.py                # Active-session tracker (task_id,agent) -> session_id
+|   |   |-- event_bus.py               # Per-task event pub/sub with DB replay + synthesized terminals
+|   |   |-- agent_config.py            # Read/write workspaces/<agent>/agent.yaml
+|   |   +-- routes/
+|   |       |-- health.py              # GET /health
+|   |       |-- runtimes.py            # POST /runtimes/init, POST /runtimes/use, GET /runtimes
+|   |       |-- tasks.py               # POST /tasks, GET /tasks, GET /tasks/{id}, SSE /tasks/{id}/events, callbacks
+|   |       +-- agents.py              # GET /agents, POST /agents/init (SSE), POST /agents/{name}/learnings
 |   |-- orchestrator/
 |   |   |-- orchestrator.py            # EH-driven loop: ask Engineering Head, execute decisions
 |   |   |-- capabilities.py            # Builds capabilities prompt for EH decision sessions
-|   |   |-- executor.py                # Spawns `claude -p` subprocess, reads completion_report.json
+|   |   |-- executor.py                # Spawns `claude -p` subprocess with session_id
 |   |   |-- performance_tracker.py     # 30-day rolling scorecards, tier calculation
-|   |   |-- context_builder.py         # Generates CLAUDE.md + .claude/settings.json per agent workspace
+|   |   |-- context_builder.py         # Generates CLAUDE.md + .claude/settings.json + copies skills
 |   |   +-- prompt_loader.py           # Parses system prompts from protocol markdown
 |   |-- infrastructure/
-|   |   |-- database.py                # SQLite (WAL mode), 4 tables, typed CRUD
+|   |   |-- database.py                # SQLite (WAL mode), typed CRUD, task_results.status column
 |   |   +-- audit_logger.py            # Semantic logging (session, verdict, escalation, orchestration steps)
 |   |-- agents/                        # Agent definitions (future)
 |   |-- crews/                         # Crew definitions (future)
 |   +-- tools/                         # Agent tools (future)
-|-- tests/                             # 106 tests across 11 files
+|-- tests/                             # 194 tests (193 unit + 1 integration)
+|   |-- daemon/                        # Route-level tests for the FastAPI app
+|   |-- integration/                   # End-to-end test with a fake Claude binary
+|   +-- test_*.py                      # Orchestrator, executor, config, skills, etc.
 +-- docs/superpowers/
     |-- specs/                         # Design specs
     +-- plans/                         # Implementation plans
+
+~/.opc/                                # Daemon home (per-user)
+|-- auth_token                         # Bearer token shared by daemon + CLI
++-- runtimes.yaml                      # Registered runtime dirs + which one is active
 
 <runtime-dir>/                         # Created by `opc init <path>`
 |-- opc.yaml                           # Marker file (presence = valid runtime folder)
@@ -102,10 +135,11 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
     |-- engineering_head/
     |   |-- agent.yaml                 # Per-agent config (repos, etc.)
     |   |-- CLAUDE.md                  # Generated from protocol/02-system-prompts-managers.md
-    |   |-- .claude/settings.json      # Permissions + PreToolUse hook (git pull all repos)
-    |   |-- repos/                     # Git clones (supports multiple repos)
-    |   |   |-- my-opc/
-    |   |   +-- web-app/               # (if configured via OPC_REPOS)
+    |   |-- .claude/
+    |   |   |-- settings.json          # Permissions + PreToolUse hook (git pull all repos)
+    |   |   +-- skills/                # start-task + make-worktree copied from protocol/skills/
+    |   |-- repos/                     # Git clones declared in agent.yaml
+    |   |   +-- <name>/                # One dir per entry in agent.yaml `repos:`
     |   |-- learnings.md
     |   |-- scorecard.md
     |   +-- recent_tasks.md
@@ -153,18 +187,26 @@ repos:
 uv run pytest tests/ -v
 ```
 
-## Running the CLI
+## Running the Daemon + CLI
+
+The CLI is an HTTP client. Start the daemon once, then run CLI commands.
+
 ```bash
-opc init /path/to/runtime                                       # bootstrap runtime directory
-cd /path/to/runtime                                             # run from inside runtime dir
-opc run --brief "Explore the payment module"                    # EH decides approach
+scripts/daemon.sh                                               # start FastAPI daemon (blocks)
+
+opc init /path/to/runtime                                       # register + activate a runtime dir
+opc use /path/to/other-runtime                                  # switch the daemon's active runtime
+opc run --brief "Explore the payment module"                    # submit a task; EH decides approach
 opc run --task implement_feature --brief "Add Alipay support"   # with task type hint
+opc tail TASK-001            # stream live SSE events for a task
 opc tasks                    # list recent tasks
 opc status TASK-001          # show task details
 opc agents [--detail]        # show performance tiers
-opc init-agent               # initialize all agent workspaces (repo clones + system prompts)
+opc init-agent               # initialize all agent workspaces (repo clones + system prompts + skills)
 opc init-agent dev_agent     # initialize a specific agent
-opc --runtime /path/to/runtime <cmd>  # or specify runtime dir explicitly
+# Agent-side callbacks (invoked by the start-task skill):
+opc report-completion --task-id TASK-001 --session-id <sid> --status completed ...
+opc learning --agent dev_agent --session-id <sid> --task-id TASK-001 --text "..."
 ```
 
 ## Maintaining Documentation
