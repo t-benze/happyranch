@@ -4,7 +4,7 @@ A one-person company (OPC) that provides online tourism information and booking 
 
 ## How It Works
 
-The system uses a **custom orchestrator** that dispatches tasks to AI agents running as [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions. Each agent has a persistent workspace, a performance scorecard, and a defined role within the organization.
+OPC runs as a local **HTTP daemon** that dispatches tasks to AI agents running as [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions. The `opc` CLI is a thin client that talks to the daemon. Each agent has a persistent workspace, a performance scorecard, and a defined role within the organization.
 
 ### Current: Product & Engineering Crew
 
@@ -42,25 +42,30 @@ uv run pytest tests/ -v
 ## Usage
 
 ```bash
-# 1. Create a runtime directory (stores database, agent workspaces)
+# 1. Start the daemon (once per machine). It listens on localhost and
+#    stores its auth token + runtime registry under ~/.opc/.
+scripts/daemon.sh start
+
+# 2. Create and activate a runtime directory (stores database, agent workspaces)
 opc init ~/opc-runtime
 
-# 2. Work from inside the runtime directory
-cd ~/opc-runtime
-
-# 3. Initialize all agent workspaces (creates agent.yaml, loads system prompts)
+# 3. Initialize all agent workspaces (creates agent.yaml, loads system prompts,
+#    copies skills, clones repos declared in agent.yaml)
 opc init-agent
 
 # Or initialize a specific agent
 opc init-agent dev_agent
 
-# Run a task (EH decides the approach)
+# Run a task (EH decides the approach). The CLI streams live events until done.
 opc run --brief "Explore how the payment module handles refunds"
 
 # Provide a task type hint to guide the EH
 opc run --task implement_feature --brief "Add Alipay support for international cards"
 opc run --task bug_fix --brief "Payment confirmation emails not sending for HK bookings"
 opc run --task payment_change --brief "Add WeChat Pay as alternative payment method"
+
+# Re-attach to a running task and stream its events
+opc tail TASK-001
 
 # Check task status
 opc status TASK-001
@@ -72,23 +77,35 @@ opc tasks
 opc agents
 opc agents --detail
 
-# Or specify runtime dir explicitly from anywhere
-opc --runtime ~/opc-runtime tasks
+# Switch which runtime directory the daemon is serving
+opc use ~/another-runtime
 ```
 
 ### Commands
 
 | Command | Description |
 |---------|-------------|
-| `opc init <path>` | Create a new runtime directory |
-| `opc run --brief "..."` | Run a task (EH decides approach) |
+| `opc init <path>` | Create a runtime directory and set it as active |
+| `opc use <path>` | Switch the daemon's active runtime directory |
+| `opc run --brief "..."` | Submit a task and stream its events (EH decides approach) |
 | `opc run --task TYPE --brief "..."` | Run with task type hint (`general`, `implement_feature`, `bug_fix`, `payment_change`) |
+| `opc tail TASK-ID` | Stream live events for a running (or historical) task |
 | `opc status TASK-ID` | Show task details, results, and audit log |
 | `opc tasks [--limit N]` | List recent tasks (default: 20) |
 | `opc agents [--detail]` | Show agent performance tiers and scorecards |
 | `opc init-agent [name]` | Initialize agent workspaces (all or specific agent) |
 
-All commands except `init` require a runtime directory. Either `cd` into it or pass `--runtime <path>`.
+The CLI does not take a runtime path — every command operates on whichever runtime is currently active. Use `opc use` to switch.
+
+### Managing the daemon
+
+`scripts/daemon.sh` is a tiny supervisor that records the pid/port under `~/.opc/`:
+
+```bash
+scripts/daemon.sh start    # start in background
+scripts/daemon.sh status   # check if running
+scripts/daemon.sh stop     # graceful shutdown
+```
 
 ## Configuration
 
@@ -134,8 +151,9 @@ Each agent runs in its own persistent workspace inside the runtime directory. Af
 - `agent.yaml` — per-agent configuration (repos, etc.)
 - `CLAUDE.md` — agent identity, system prompt, available repos
 - `.claude/settings.json` — permissions and git-pull hooks
+- `.claude/skills/` — `start-task` and `make-worktree` skills that the agent runs during each session
 - `repos/` — git clones of repositories configured in `agent.yaml` (auto-pulled before each task)
-- `learnings.md` — agent-written insights from past tasks
+- `learnings.md` — agent-written insights from past tasks (appended via `opc learning`)
 - `scorecard.md` — performance summary (updated by orchestrator)
 - `recent_tasks.md` — rolling task history
 

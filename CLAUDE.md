@@ -192,7 +192,8 @@ uv run pytest tests/ -v
 The CLI is an HTTP client. Start the daemon once, then run CLI commands.
 
 ```bash
-scripts/daemon.sh                                               # start FastAPI daemon (blocks)
+scripts/daemon.sh start                                         # start daemon in background (pid/port under ~/.opc/)
+scripts/daemon.sh status                                        # or stop
 
 opc init /path/to/runtime                                       # register + activate a runtime dir
 opc use /path/to/other-runtime                                  # switch the daemon's active runtime
