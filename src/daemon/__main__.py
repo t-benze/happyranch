@@ -23,13 +23,27 @@ from src.runtime import RuntimeDir
 logger = logging.getLogger("opc.daemon")
 
 
+def _escalate_in_flight_tasks(db) -> None:
+    """Mark nonterminal tasks (PENDING + IN_PROGRESS) as escalated — daemon restart
+    kills any in-flight spawn and orphans queued runners. No resumption in Spec 1."""
+    from src.infrastructure.audit_logger import AuditLogger
+    from src.models import TaskStatus
+
+    audit = AuditLogger(db)
+    for task_id in db.get_nonterminal_task_ids():
+        db.update_task(task_id, status=TaskStatus.ESCALATED)
+        audit.log_escalation(task_id, "daemon", "daemon restarted mid-task")
+
+
 def _build_state(settings: Settings) -> DaemonState:
     reg = runtimes.load()
     if reg.active is None:
         logger.warning("no active runtime — starting in idle mode")
         return DaemonState.idle(settings)
     runtime = RuntimeDir.load(reg.active)
-    return DaemonState.from_runtime(runtime, settings)
+    state = DaemonState.from_runtime(runtime, settings)
+    _escalate_in_flight_tasks(state.db)
+    return state
 
 
 def _bind_port(host: str) -> tuple[socket.socket, int]:
