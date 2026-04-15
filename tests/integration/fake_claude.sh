@@ -12,9 +12,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Extract task_id and session_id from the prompt.
-TASK_ID=$(echo "$PROMPT" | awk -F': ' '/^Task ID: /{print $2; exit}')
-SESSION_ID=$(echo "$PROMPT" | awk -F': ' '/^Session ID: /{print $2; exit}')
+# Extract task_id and session_id from the start-task SKILL's Parameters block.
+TASK_ID=$(echo "$PROMPT" | awk -F': ' '/^[[:space:]]*task_id: /{gsub(/^[[:space:]]*/, "", $0); print $2; exit}')
+SESSION_ID=$(echo "$PROMPT" | awk -F': ' '/^[[:space:]]*session_id: /{gsub(/^[[:space:]]*/, "", $0); print $2; exit}')
 
 # If a plan file exists, source it (it can call opc).
 if [[ -n "${FAKE_CLAUDE_PLAN:-}" && -f "$FAKE_CLAUDE_PLAN" ]]; then

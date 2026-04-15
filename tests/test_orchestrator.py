@@ -277,6 +277,55 @@ def test_delegate_agent_fails_eh_sees_failure(mock_run, orchestrator, test_runti
 
 
 @patch.object(Orchestrator, "_run_agent")
+def test_delegate_blocked_report_treated_as_failure(mock_run, orchestrator, test_runtime):
+    """A worker returning status=blocked must surface to EH as a failed step,
+    not as a silent success."""
+    _setup_workspaces(test_runtime)
+
+    call_count = 0
+    recorded_prior: list = []
+
+    def mock_side_effect(task_id, agent, prompt):
+        nonlocal call_count
+        call_count += 1
+        if agent == AgentName.ENGINEERING_HEAD:
+            if call_count == 1:
+                return _make_eh_decision(task_id, {
+                    "action": "delegate",
+                    "agent": "dev_agent",
+                    "prompt": "Implement feature",
+                })
+            # Capture what EH sees on its second decision round.
+            recorded_prior.append(prompt)
+            return _make_eh_decision(task_id, {
+                "action": "escalate",
+                "reason": "Worker blocked",
+            })
+        # dev_agent returns a blocked completion.
+        return (
+            ExecutorResult(success=True, duration_seconds=10, session_id="sess-dev"),
+            CompletionReport(
+                task_id=task_id,
+                agent=agent.value,
+                status="blocked",
+                confidence=0,
+                output_summary="needs missing credentials",
+            ),
+        )
+
+    mock_run.side_effect = mock_side_effect
+
+    task_id = orchestrator.create_task(TaskType.GENERAL, "Add feature")
+    result = orchestrator.run_task(task_id)
+
+    assert result == "escalated"
+    # The second EH prompt must include the failed-step record so the EH can
+    # react to the block. The prior-steps section prefixes failures explicitly.
+    eh_second_prompt = recorded_prior[0]
+    assert "blocked" in eh_second_prompt.lower()
+
+
+@patch.object(Orchestrator, "_run_agent")
 def test_eh_plain_text_output_treated_as_done(mock_run, orchestrator, test_runtime):
     """If EH returns plain text (not JSON), treat it as done with that text."""
     _setup_workspaces(test_runtime)
@@ -415,9 +464,12 @@ def test_task_metadata_in_agent_prompt(orchestrator, test_runtime, monkeypatch):
 
         orchestrator.run_task(task_id)
 
-        # Check that the prompt passed to executor.run includes task metadata
+        # Check that the prompt passed to executor.run follows the start-task
+        # SKILL parsing contract (see protocol/skills/start-task/SKILL.md).
         call_kwargs = mock_executor_run.call_args
         prompt = call_kwargs[1]["prompt"] if "prompt" in call_kwargs[1] else call_kwargs[0][1]
-        assert "Task ID: TASK-001" in prompt
-        assert "Brief: Explore payments" in prompt
-        assert "Session ID:" in prompt
+        assert "Use the start-task skill" in prompt
+        assert "task_id: TASK-001" in prompt
+        assert "brief: Explore payments" in prompt
+        assert "session_id:" in prompt
+        assert "role_guidance:" in prompt

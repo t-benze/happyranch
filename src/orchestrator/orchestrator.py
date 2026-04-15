@@ -27,6 +27,13 @@ from src.orchestrator.performance_tracker import PerformanceTracker
 logger = logging.getLogger(__name__)
 
 
+def _indent(text: str, prefix: str) -> str:
+    """Indent every line of text with prefix (for YAML block-literal emission)."""
+    if not text:
+        return prefix
+    return "\n".join(prefix + line for line in text.splitlines())
+
+
 class Orchestrator:
     def __init__(self, db: Database, settings: Settings, runtime: RuntimeDir) -> None:
         self._db = db
@@ -51,7 +58,7 @@ class Orchestrator:
         return CompletionReport(
             task_id=task_id,
             agent=agent,
-            status="completed",
+            status=row.get("status") or "completed",
             confidence=row["confidence_score"] or 0,
             output_summary=row["output_summary"] or "",
             risks_flagged=row.get("risks_flagged") or [],
@@ -150,17 +157,28 @@ class Orchestrator:
                 if delegate_result.success and delegate_report is not None:
                     self._log_step_result(task_id, delegate_result, delegate_report)
 
-                result_summary = (
-                    delegate_report.output_summary
-                    if delegate_report
-                    else "Agent session failed"
+                # A "blocked" completion is a real signal from the agent that
+                # the work did not finish. Treat it as unsuccessful so the EH
+                # sees it as a failed step on the next decision.
+                delegate_blocked = (
+                    delegate_report is not None and delegate_report.status == "blocked"
                 )
+                if delegate_report is None:
+                    result_summary = "Agent session failed"
+                elif delegate_blocked:
+                    result_summary = f"blocked: {delegate_report.output_summary}"
+                else:
+                    result_summary = delegate_report.output_summary
                 prior_steps.append(StepRecord(
                     step_number=step_num,
                     agent=next_step.agent,
                     action=f"delegate: {(next_step.prompt or '')[:100]}",
                     result_summary=result_summary,
-                    success=delegate_result.success and delegate_report is not None,
+                    success=(
+                        delegate_result.success
+                        and delegate_report is not None
+                        and not delegate_blocked
+                    ),
                 ))
 
         # Max steps exceeded — escalate
@@ -212,8 +230,18 @@ class Orchestrator:
         # Brief is injected here:
         brief = task.brief if task else ""
         session_id = self._build_session_id()
+        # The prompt format must match the parsing contract documented in
+        # protocol/skills/start-task/SKILL.md. Multi-line values use YAML-style
+        # block literals so an agent scanning the text can bracket them cleanly.
         full_prompt = (
-            f"Task ID: {task_id}\nSession ID: {session_id}\nBrief: {brief}\n\n{prompt}"
+            f"You are {agent_name}. Use the start-task skill to handle this task.\n"
+            f"\n"
+            f"Parameters:\n"
+            f"  task_id: {task_id}\n"
+            f"  session_id: {session_id}\n"
+            f"  brief: {brief}\n"
+            f"  role_guidance: |\n"
+            f"{_indent(prompt, '    ')}\n"
         )
 
         if on_session_started is not None:

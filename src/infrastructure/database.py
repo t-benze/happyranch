@@ -62,6 +62,7 @@ class Database:
                 task_id TEXT NOT NULL,
                 agent TEXT NOT NULL,
                 session_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'completed',
                 output_summary TEXT,
                 confidence_score INTEGER,
                 learnings TEXT,
@@ -72,6 +73,15 @@ class Database:
                 created_at TEXT NOT NULL
             );
         """)
+        # Best-effort migration for DBs created before `status` existed. SQLite
+        # has no IF NOT EXISTS for ADD COLUMN; swallow the duplicate-column
+        # error so this is idempotent across restarts.
+        try:
+            self._conn.execute(
+                "ALTER TABLE task_results ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'"
+            )
+        except sqlite3.OperationalError:
+            pass
 
     def list_tables(self) -> list[str]:
         cursor = self._conn.execute(
@@ -236,6 +246,7 @@ class Database:
         session_id: str,
         output_summary: str,
         confidence_score: int,
+        status: str = "completed",
         risks_flagged: list[str] | None = None,
         learnings: str | None = None,
         duration_seconds: int | None = None,
@@ -244,13 +255,14 @@ class Database:
     ) -> None:
         self._conn.execute(
             """INSERT INTO task_results
-               (task_id, agent, session_id, output_summary, confidence_score,
+               (task_id, agent, session_id, status, output_summary, confidence_score,
                 learnings, risks_flagged, duration_seconds, token_count, estimated_cost, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task_id,
                 agent,
                 session_id,
+                status,
                 output_summary,
                 confidence_score,
                 learnings,

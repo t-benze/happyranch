@@ -71,6 +71,27 @@ def test_learnings_unknown_session_409(
     assert "should not land" not in learnings.read_text()
 
 
+def test_init_writes_default_agent_yaml_and_creates_dirs(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """init-agent must leave the workspace bootstrapped: agent.yaml present,
+    agent-specific folders created (e.g. specs/ for product_manager)."""
+    client = TestClient(app)
+    with client.stream(
+        "POST", "/api/v1/agents/init",
+        json={"agent": "product_manager"},
+        headers=auth_headers,
+    ) as r:
+        assert r.status_code == 200
+        # Drain the SSE stream so the background generator completes.
+        for _ in r.iter_lines():
+            pass
+
+    ws = daemon_state.runtime.workspaces_dir / "product_manager"
+    assert (ws / "agent.yaml").exists(), "agent.yaml was not created"
+    assert (ws / "specs").is_dir(), "product_manager specs/ dir missing"
+
+
 def test_init_unknown_agent_returns_422(tmp_home, app, auth_headers) -> None:
     """Unrecognized agent name must surface as 422, not crash to 500."""
     r = TestClient(app).post(

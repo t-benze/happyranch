@@ -197,6 +197,12 @@ def test_completion_preserves_empty_risks_flagged(
     assert latest["risks_flagged"] == []
 
 
+def test_events_unknown_task_returns_404(tmp_home, app, auth_headers) -> None:
+    """Opening /events for a task the daemon never saw must 404, not hang."""
+    r = TestClient(app).get("/api/v1/tasks/TASK-999/events", headers=auth_headers)
+    assert r.status_code == 404
+
+
 def test_events_stream_yields_completion(tmp_home, app, daemon_state, auth_headers) -> None:
     sub = TestClient(app).post(
         "/api/v1/tasks",

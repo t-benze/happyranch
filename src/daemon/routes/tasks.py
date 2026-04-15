@@ -79,6 +79,11 @@ class CompletionBody(BaseModel):
 async def task_events(task_id: str, request: Request):
     state: DaemonState = request.app.state.daemon
     _require_active(state)
+    # Reject unknown task IDs up front — otherwise EventBus.subscribe() replays
+    # no history for a fabricated id and then blocks forever, which makes
+    # `opc tail <bad-id>` hang instead of surfacing a 404.
+    if state.db.get_task(task_id) is None:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
 
     async def gen():
         async for event in state.event_bus.subscribe(task_id):
@@ -110,6 +115,7 @@ async def submit_completion(task_id: str, body: CompletionBody, request: Request
             task_id=task_id,
             agent=body.agent,
             session_id=body.session_id,
+            status=body.status,
             output_summary=body.output_summary,
             confidence_score=body.confidence,
             risks_flagged=body.risks_flagged,

@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+from src.daemon.agent_config import load_agent_config, write_default_agent_config
 from src.daemon.auth import require_token
 from src.daemon.state import DaemonState
 from src.models import AgentName
@@ -80,9 +81,33 @@ async def init_agents(body: InitBody, request: Request):
             workspace.mkdir(parents=True, exist_ok=True)
             yield {"data": _json.dumps({"agent": agent.value, "phase": "starting"})}
             try:
+                # 1. Ensure agent.yaml, then clone any configured repos. The
+                #    make-worktree skill assumes `repos/<name>/` already exists,
+                #    so this has to run before CLAUDE.md is regenerated (which
+                #    lists the available repos).
+                write_default_agent_config(workspace)
+                repos = load_agent_config(workspace).get("repos") or {}
+                for repo_name, url in repos.items():
+                    yield {"data": _json.dumps({
+                        "agent": agent.value, "phase": "repo_cloning",
+                        "repo": repo_name,
+                    })}
+                    ok = await asyncio.to_thread(
+                        ctx.clone_repo, workspace, repo_name, url,
+                    )
+                    yield {"data": _json.dumps({
+                        "agent": agent.value,
+                        "phase": "repo_ready" if ok else "repo_failed",
+                        "repo": repo_name,
+                    })}
+                # 2. Write CLAUDE.md / settings.json / copy skills.
                 await asyncio.to_thread(
                     ctx.initialize_workspace, workspace, agent.value,
                     prompts.get(agent.value, ""),
+                )
+                # 3. Create agent-specific folders (specs/, proposals/).
+                await asyncio.to_thread(
+                    ctx.create_agent_dirs, workspace, agent.value,
                 )
             except Exception as exc:  # noqa: BLE001 - surface to client and stop
                 # SSE clients otherwise see a silent disconnect — emit an
