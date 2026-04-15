@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -56,52 +57,44 @@ class ContextBuilder:
         workspace: Path,
         agent_name: str,
         system_prompt: str,
-        task_brief: str | None = None,
         repo_names: list[str] | None = None,
     ) -> None:
         """Write CLAUDE.md to workspace with system prompt and context pointers."""
+        workspace.mkdir(parents=True, exist_ok=True)
         sections = [
             f"# Agent: {agent_name}\n",
             "## System Prompt\n",
             system_prompt.strip() + "\n",
         ]
-
-        # List available repos
         if repo_names:
             sections.append("## Available Repositories\n")
             for name in repo_names:
                 sections.append(f"- `repos/{name}/` — git clone, kept fresh via PreToolUse hook")
             sections.append("")
-
         sections.extend([
             "## Persistent Files\n",
-            "- `learnings.md` -- your accumulated operational learnings (append new insights here)",
-            "- `scorecard.md` -- your current performance scorecard (read-only, updated by orchestrator)",
-            "- `recent_tasks.md` -- summary of your recent tasks (read-only, updated by orchestrator)\n",
-            "## Completion Report\n",
-            "At the end of every task, write `completion_report.json` to this workspace root:",
-            "```json",
-            '{',
-            '  "task_id": "<from your task brief>",',
-            '  "agent": "' + agent_name + '",',
-            '  "status": "completed",',
-            '  "confidence": 85,',
-            '  "output_summary": "<what you did>",',
-            '  "risks_flagged": ["<any concerns>"],',
-            '  "dependencies": ["<what you assumed or relied on>"],',
-            '  "suggested_reviewer_focus": ["<where to look hardest>"]',
-            '}',
-            "```\n",
-            "If you learn something reusable for future tasks, append it to `learnings.md` in this workspace.\n",
+            "- `learnings.md` -- your accumulated operational learnings",
+            "- `scorecard.md` -- read-only, updated by orchestrator",
+            "- `recent_tasks.md` -- read-only, updated by orchestrator\n",
+            "## Workflow\n",
+            "Every task arrives via the orchestrator's prompt. Use the **start-task** skill",
+            "(in `.claude/skills/start-task/`) to parse parameters and report completion via",
+            "`opc report-completion`. Mid-task learnings go through `opc learning`.\n",
         ])
-
-        if task_brief:
-            sections.extend([
-                "## Current Task\n",
-                task_brief.strip() + "\n",
-            ])
-
         (workspace / "CLAUDE.md").write_text("\n".join(sections))
+
+    def _copy_skills(self, workspace: Path) -> None:
+        """Copy protocol/skills/ tree into workspace/.claude/skills/."""
+        src = self._settings.get_protocol_dir() / "skills"
+        if not src.exists():
+            return
+        dst = workspace / ".claude" / "skills"
+        dst.mkdir(parents=True, exist_ok=True)
+        for child in src.iterdir():
+            target = dst / child.name
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(child, target)
 
     def initialize_workspace(
         self,
@@ -135,6 +128,7 @@ class ContextBuilder:
             )
 
         self.write_claude_md(workspace, agent_name, system_prompt, repo_names=repo_names)
+        self._copy_skills(workspace)
         self.write_settings_json(workspace, repo_names=repo_names)
 
     def clone_repo(self, workspace: Path, name: str, url: str) -> bool:

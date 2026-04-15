@@ -61,19 +61,6 @@ def test_build_claude_md_contains_persistent_file_pointers(test_settings, tmp_di
     assert "recent_tasks.md" in content
 
 
-def test_build_claude_md_with_task_brief(test_settings, tmp_dir):
-    builder = ContextBuilder(test_settings)
-    workspace = tmp_dir / "workspaces" / "dev_agent"
-    workspace.mkdir(parents=True)
-    builder.write_claude_md(
-        workspace=workspace,
-        agent_name="dev_agent",
-        system_prompt="You are the Dev Agent.",
-        task_brief="Implement Alipay integration for international cards",
-    )
-    content = (workspace / "CLAUDE.md").read_text()
-    assert "Alipay integration" in content
-
 
 def test_initialize_workspace_creates_persistent_files(test_settings, tmp_dir):
     builder = ContextBuilder(test_settings)
@@ -134,3 +121,30 @@ def test_initialize_workspace_does_not_overwrite_existing_learnings(test_setting
     )
     content = (workspace / "learnings.md").read_text()
     assert "Important lesson" in content
+
+
+def test_initialize_workspace_copies_skills(test_settings, tmp_path):
+    from src.orchestrator.context_builder import ContextBuilder
+
+    # Set up a fake protocol/skills/ tree
+    skills_root = test_settings.get_protocol_dir() / "skills"
+    (skills_root / "start-task").mkdir(parents=True)
+    (skills_root / "start-task" / "SKILL.md").write_text("# start-task\n")
+    (skills_root / "make-worktree").mkdir(parents=True)
+    (skills_root / "make-worktree" / "SKILL.md").write_text("# make-worktree\n")
+
+    workspace = tmp_path / "workspace"
+    ContextBuilder(test_settings).initialize_workspace(workspace, "dev_agent", "system prompt")
+
+    assert (workspace / ".claude" / "skills" / "start-task" / "SKILL.md").read_text() == "# start-task\n"
+    assert (workspace / ".claude" / "skills" / "make-worktree" / "SKILL.md").read_text() == "# make-worktree\n"
+
+
+def test_claude_md_drops_task_brief_and_completion_report(test_settings, tmp_path):
+    from src.orchestrator.context_builder import ContextBuilder
+
+    workspace = tmp_path / "workspace"
+    ContextBuilder(test_settings).write_claude_md(workspace, "dev_agent", "system prompt")
+    text = (workspace / "CLAUDE.md").read_text()
+    assert "Current Task" not in text
+    assert "completion_report.json" not in text
