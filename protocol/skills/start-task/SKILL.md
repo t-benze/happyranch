@@ -28,24 +28,38 @@ Parameters:
    opc learning --task-id <task_id> --session-id <session_id> --agent <your_agent_name> --text "..."
    ```
 
-4. **Report completion.** When you finish (success or blocker), call:
+4. **Report completion.** When you finish (success or blocker), write a JSON
+   payload to a file and invoke `opc report-completion --from-file <path>` as
+   a single-line command. The file form is mandatory: multi-line bash commands
+   with backslash continuations are rejected by the agent's Claude Code
+   permission rule (newlines count as command separators, and only the first
+   subcommand matches `Bash(opc:*)`).
 
-   - **Success:**
-     ```bash
-     opc report-completion \
-       --task-id <task_id> --session-id <session_id> --agent <your_agent_name> \
-       --status completed --confidence <0-100> \
-       --summary "<what you did>" \
-       --risks "<concern>" \
-       --dependencies "<assumption>" \
-       --reviewer-focus "<where to look hardest>"
-     ```
-   - **Blocker:**
-     ```bash
-     opc report-completion \
-       --task-id <task_id> --session-id <session_id> --agent <your_agent_name> \
-       --status blocked --confidence 0 --summary "<what blocked you>"
-     ```
+   Use the Write tool to create `/tmp/completion-<task_id>.json` with this shape:
+
+   ```json
+   {
+     "task_id": "<task_id>",
+     "session_id": "<session_id>",
+     "agent": "<your_agent_name>",
+     "status": "completed",
+     "confidence": 85,
+     "summary": "<what you did>",
+     "risks": ["<concern>"],
+     "dependencies": ["<assumption>"],
+     "reviewer_focus": ["<where to look hardest>"]
+   }
+   ```
+
+   For a blocker, set `"status": "blocked"`, `"confidence": 0`, and put the
+   reason in `summary`. Optional keys (`risks`, `dependencies`,
+   `reviewer_focus`, `confidence`) may be omitted.
+
+   Then submit:
+
+   ```bash
+   opc report-completion --from-file /tmp/completion-<task_id>.json
+   ```
 
 5. **Cleanup.** Always run worktree cleanup as the final step, even on the blocker path. The make-worktree skill describes how.
 

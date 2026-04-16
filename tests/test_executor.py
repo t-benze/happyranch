@@ -30,6 +30,10 @@ def test_run_agent_session_success(mock_subprocess, tmp_path):
     assert "-p" in cmd
     assert "--permission-mode" in cmd
     assert "auto" in cmd
+    # Allow rule is passed on the CLI, not via settings.json — see the
+    # comment in AgentExecutor.run for why.
+    assert "--allowedTools" in cmd
+    assert "Bash(opc *)" in cmd
 
 
 @patch("src.orchestrator.executor.subprocess")

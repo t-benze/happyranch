@@ -102,7 +102,7 @@ async def init_agents(body: InitBody, request: Request):
                     })}
                 # 2. Write CLAUDE.md / settings.json / copy skills.
                 await asyncio.to_thread(
-                    ctx.initialize_workspace, workspace, agent.value,
+                    ctx.ensure_workspace_ready, workspace, agent.value,
                     prompts.get(agent.value, ""),
                 )
                 # 3. Create agent-specific folders (specs/, proposals/).

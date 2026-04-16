@@ -179,3 +179,51 @@ def test_get_latest_task_result_picks_most_recent_in_session(db) -> None:
     )
     latest = db.get_latest_task_result("TASK-001", "dev_agent", "sess-A")
     assert latest["output_summary"] == "retry"
+
+
+def _seed_audit(db) -> None:
+    db.insert_audit_log("TASK-001", "dev_agent", "session_start", {"workspace": "/tmp/a"})
+    db.insert_audit_log("TASK-001", "dev_agent", "session_end", {"duration_seconds": 30})
+    db.insert_audit_log("TASK-002", "engineering_head", "session_start", None)
+    db.insert_audit_log("TASK-002", "engineering_head", "escalation", {"reason": "budget"})
+
+
+def test_query_audit_logs_no_filters_returns_all_ascending(db) -> None:
+    _seed_audit(db)
+    rows = db.query_audit_logs()
+    assert [r["id"] for r in rows] == [1, 2, 3, 4]
+
+
+def test_query_audit_logs_filters_by_task_id(db) -> None:
+    _seed_audit(db)
+    rows = db.query_audit_logs(task_id="TASK-001")
+    assert {r["task_id"] for r in rows} == {"TASK-001"}
+    assert len(rows) == 2
+
+
+def test_query_audit_logs_filters_by_agent_and_action(db) -> None:
+    _seed_audit(db)
+    rows = db.query_audit_logs(agent="engineering_head", action="escalation")
+    assert len(rows) == 1
+    assert rows[0]["payload"] == {"reason": "budget"}
+
+
+def test_query_audit_logs_limit_returns_most_recent_chronological(db) -> None:
+    _seed_audit(db)
+    rows = db.query_audit_logs(limit=2)
+    # limit caps to most recent N but preserves chronological (ascending) order
+    assert [r["id"] for r in rows] == [3, 4]
+
+
+def test_query_audit_logs_since_filters_by_timestamp(db) -> None:
+    _seed_audit(db)
+    all_rows = db.query_audit_logs()
+    cutoff = all_rows[2]["timestamp"]  # keep rows #3 and #4
+    rows = db.query_audit_logs(since=cutoff)
+    assert {r["id"] for r in rows} == {3, 4}
+
+
+def test_query_audit_logs_parses_payload_json(db) -> None:
+    _seed_audit(db)
+    rows = db.query_audit_logs(task_id="TASK-001", action="session_end")
+    assert rows[0]["payload"] == {"duration_seconds": 30}

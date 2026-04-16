@@ -237,6 +237,54 @@ class Database:
             result.append(d)
         return result
 
+    def query_audit_logs(
+        self,
+        task_id: str | None = None,
+        agent: str | None = None,
+        action: str | None = None,
+        since: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict]:
+        """Filtered audit-log query used by the /audit route.
+
+        All filters are optional and AND-composed. ``limit`` returns the most
+        recent N rows (ORDER BY id DESC) but the result is re-sorted ascending
+        so callers still see chronological order.
+        """
+        clauses: list[str] = []
+        params: list[object] = []
+        if task_id is not None:
+            clauses.append("task_id = ?")
+            params.append(task_id)
+        if agent is not None:
+            clauses.append("agent = ?")
+            params.append(agent)
+        if action is not None:
+            clauses.append("action = ?")
+            params.append(action)
+        if since is not None:
+            clauses.append("timestamp >= ?")
+            params.append(since)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        if limit is not None:
+            sql = f"SELECT * FROM audit_log {where} ORDER BY id DESC LIMIT ?"
+            params.append(limit)
+        else:
+            sql = f"SELECT * FROM audit_log {where} ORDER BY id ASC"
+        cursor = self._conn.execute(sql, tuple(params))
+        rows = cursor.fetchall()
+        result = []
+        for row in rows:
+            d = dict(row)
+            if d.get("payload"):
+                d["payload"] = json.loads(d["payload"])
+            result.append(d)
+        # When `limit` forces DESC, re-sort ascending so the CLI renders the
+        # oldest-first timeline readers expect.
+        if limit is not None:
+            result.sort(key=lambda d: d["id"])
+        return result
+
     # --- Task Results ---
 
     def insert_task_result(

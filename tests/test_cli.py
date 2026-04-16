@@ -252,6 +252,7 @@ def test_cmd_report_completion_posts_with_session_id():
     fake = MagicMock()
     fake.post.return_value.status_code = 200
     args = MagicMock(
+        from_file=None,
         task_id="TASK-001", session_id="sess-1", agent="dev_agent",
         status="completed", confidence=90, summary="ok",
         risks=[], dependencies=[], reviewer_focus=[],
@@ -261,6 +262,62 @@ def test_cmd_report_completion_posts_with_session_id():
     args_pos, kwargs = fake.post.call_args
     assert args_pos[0] == "/api/v1/tasks/TASK-001/completion"
     assert kwargs["json"]["session_id"] == "sess-1"
+
+
+def test_cmd_report_completion_from_file_posts_loaded_body(tmp_path):
+    """--from-file lets agents submit a completion as a single-line command.
+    Multi-line bash (backslash continuations) breaks Claude Code's
+    Bash(opc:*) allow rule because newlines separate subcommands."""
+    import json
+    from src.cli import cmd_report_completion
+
+    payload = {
+        "task_id": "TASK-042",
+        "session_id": "sess-x",
+        "agent": "dev_agent",
+        "status": "completed",
+        "confidence": 85,
+        "summary": "Wired Alipay happy path",
+        "risks": ["refund flow untested"],
+        "dependencies": ["ALIPAY_APP_ID env var"],
+        "reviewer_focus": ["signature canonicalization"],
+    }
+    completion_file = tmp_path / "completion.json"
+    completion_file.write_text(json.dumps(payload))
+
+    fake = MagicMock()
+    fake.post.return_value.status_code = 200
+    args = MagicMock(
+        from_file=str(completion_file),
+        task_id=None, session_id=None, agent=None,
+        status=None, confidence=80, summary=None,
+        risks=[], dependencies=[], reviewer_focus=[],
+    )
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_report_completion(args)
+
+    args_pos, kwargs = fake.post.call_args
+    assert args_pos[0] == "/api/v1/tasks/TASK-042/completion"
+    body = kwargs["json"]
+    assert body["session_id"] == "sess-x"
+    assert body["agent"] == "dev_agent"
+    assert body["status"] == "completed"
+    assert body["confidence"] == 85
+    assert body["output_summary"] == "Wired Alipay happy path"
+    assert body["risks_flagged"] == ["refund flow untested"]
+    assert body["dependencies"] == ["ALIPAY_APP_ID env var"]
+    assert body["suggested_reviewer_focus"] == ["signature canonicalization"]
+
+
+def test_report_completion_parser_accepts_from_file_alone():
+    """With --from-file, none of --task-id/--session-id/... are required."""
+    parser = build_parser()
+    args = parser.parse_args([
+        "report-completion", "--from-file", "/tmp/x.json",
+    ])
+    assert args.from_file == "/tmp/x.json"
+    assert args.task_id is None
+    assert args.summary is None
 
 
 def test_cmd_learning_posts_with_session_id():
@@ -289,6 +346,7 @@ def test_cmd_report_completion_session_mismatch_friendly_message(capsys):
         "detail": {"code": "session_mismatch", "active": "sess-real", "got": "sess-stale"},
     }
     args = MagicMock(
+        from_file=None,
         task_id="TASK-001", session_id="sess-stale", agent="dev_agent",
         status="completed", confidence=80, summary="x",
         risks=[], dependencies=[], reviewer_focus=[],
@@ -338,6 +396,96 @@ def test_cmd_init_agent_surfaces_error_detail(capsys):
     out = capsys.readouterr().out
     assert "[dev_agent] starting" in out
     assert "[dev_agent] error: repo clone failed: fatal" in out
+
+
+def test_audit_subcommand_defaults():
+    parser = build_parser()
+    args = parser.parse_args(["audit"])
+    assert args.command == "audit"
+    assert args.task_id is None
+    assert args.agent is None
+    assert args.action is None
+    assert args.since is None
+    assert args.limit is None
+    assert args.json is False
+
+
+def test_audit_subcommand_with_filters():
+    parser = build_parser()
+    args = parser.parse_args([
+        "audit", "TASK-007",
+        "--agent", "engineering_head",
+        "--action", "session_end",
+        "--limit", "5",
+        "--json",
+    ])
+    assert args.task_id == "TASK-007"
+    assert args.agent == "engineering_head"
+    assert args.action == "session_end"
+    assert args.limit == 5
+    assert args.json is True
+
+
+def test_cmd_audit_sends_filters_and_prints_table(capsys):
+    from src.cli import cmd_audit
+
+    fake = MagicMock()
+    fake.get.return_value.status_code = 200
+    fake.get.return_value.json.return_value = {
+        "entries": [
+            {
+                "id": 1,
+                "task_id": "TASK-001",
+                "agent": "dev_agent",
+                "action": "session_start",
+                "payload": {"workspace": "/tmp/a"},
+                "timestamp": "2026-04-16T12:00:00+00:00",
+            },
+        ],
+    }
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_audit(MagicMock(
+            task_id="TASK-001", agent=None, action=None,
+            since=None, limit=3, json=False,
+        ))
+    # Verify params were forwarded correctly (only non-None filters).
+    call_kwargs = fake.get.call_args.kwargs
+    assert call_kwargs["params"] == {"task_id": "TASK-001", "limit": 3}
+    out = capsys.readouterr().out
+    assert "TASK-001" in out
+    assert "session_start" in out
+    assert "dev_agent" in out
+
+
+def test_cmd_audit_empty_result_message(capsys):
+    from src.cli import cmd_audit
+
+    fake = MagicMock()
+    fake.get.return_value.status_code = 200
+    fake.get.return_value.json.return_value = {"entries": []}
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_audit(MagicMock(
+            task_id=None, agent=None, action=None, since=None, limit=None, json=False,
+        ))
+    assert "No audit entries" in capsys.readouterr().out
+
+
+def test_cmd_audit_json_flag_dumps_raw(capsys):
+    import json as _json
+
+    from src.cli import cmd_audit
+
+    fake = MagicMock()
+    fake.get.return_value.status_code = 200
+    entries = [{"id": 9, "task_id": "T", "agent": "a", "action": "x", "payload": None,
+                "timestamp": "2026-01-01T00:00:00+00:00"}]
+    fake.get.return_value.json.return_value = {"entries": entries}
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_audit(MagicMock(
+            task_id=None, agent=None, action=None, since=None, limit=None, json=True,
+        ))
+    parsed = _json.loads(capsys.readouterr().out)
+    assert parsed == entries
 
 
 def test_cmd_init_agent_handles_stream_http_error(capsys):

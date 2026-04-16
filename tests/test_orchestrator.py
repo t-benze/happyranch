@@ -72,11 +72,16 @@ def orchestrator(test_settings, test_runtime):
 
 
 def _setup_workspaces(runtime):
-    """Create workspace dirs with recent_tasks.md for all agents."""
+    """Create workspace dirs with recent_tasks.md and the start-task skill
+    marker for all agents. The marker satisfies the orchestrator's fail-fast
+    guard — real workspaces get it via `opc init-agent`."""
     for agent in AgentName:
         ws = runtime.workspaces_dir / agent.value
         ws.mkdir(parents=True, exist_ok=True)
         (ws / "recent_tasks.md").write_text(f"# Recent Tasks: {agent.value}\n\n")
+        skill = ws / ".claude" / "skills" / "start-task"
+        skill.mkdir(parents=True, exist_ok=True)
+        (skill / "SKILL.md").write_text("# start-task\n")
 
 
 def test_create_task(orchestrator):
@@ -473,3 +478,23 @@ def test_task_metadata_in_agent_prompt(orchestrator, test_runtime, monkeypatch):
         assert "brief: Explore payments" in prompt
         assert "session_id:" in prompt
         assert "role_guidance:" in prompt
+
+
+def test_run_agent_fails_fast_when_workspace_missing_skill(orchestrator, test_runtime):
+    """Workspace bootstrap is an explicit, operator-driven step. If the
+    start-task skill file is missing, the orchestrator should raise an
+    actionable error instead of silently marking the task rejected."""
+    from src.orchestrator.orchestrator import WorkspaceNotInitialized
+
+    task_id = orchestrator.create_task(TaskType.GENERAL, "ping")
+    eh_workspace = test_runtime.workspaces_dir / "engineering_head"
+    assert not eh_workspace.exists()
+
+    with pytest.raises(WorkspaceNotInitialized) as exc_info:
+        orchestrator.run_task(task_id)
+
+    msg = str(exc_info.value)
+    assert "engineering_head" in msg
+    assert "opc init-agent engineering_head" in msg
+    # The executor must never have been invoked against a broken workspace.
+    assert not (eh_workspace / ".claude" / "skills" / "start-task" / "SKILL.md").exists()

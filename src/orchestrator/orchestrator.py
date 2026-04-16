@@ -27,6 +27,16 @@ from src.orchestrator.performance_tracker import PerformanceTracker
 logger = logging.getLogger(__name__)
 
 
+class WorkspaceNotInitialized(RuntimeError):
+    """Raised when an agent workspace is missing required skill files.
+
+    Workspace bootstrap is an explicit, operator-driven step (`opc init-agent`)
+    rather than an implicit side-effect of task runs. If the orchestrator
+    discovers the workspace isn't ready, it fails fast with an actionable
+    message instead of silently rejecting the task.
+    """
+
+
 def _indent(text: str, prefix: str) -> str:
     """Indent every line of text with prefix (for YAML block-literal emission)."""
     if not text:
@@ -225,6 +235,19 @@ class Orchestrator:
         task = self._db.get_task(task_id)
         agent_name = agent.value
         workspace = self._runtime.workspaces_dir / agent_name
+
+        # The orchestrator relies on the start-task skill to bridge prompt →
+        # agent work → completion callback. If the workspace was bootstrapped
+        # before skills existed (or the user wiped it), the agent never calls
+        # `opc report-completion` and the task silently rejects. Fail fast
+        # with an actionable message instead.
+        skill_marker = workspace / ".claude" / "skills" / "start-task" / "SKILL.md"
+        if not skill_marker.exists():
+            raise WorkspaceNotInitialized(
+                f"workspace for {agent_name!r} is not initialized "
+                f"(missing {skill_marker}). Run `opc init-agent {agent_name}` "
+                f"to bootstrap it."
+            )
 
         # Workspace is initialized once at `opc init-agent` — not per session.
         # Brief is injected here:

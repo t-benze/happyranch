@@ -13,7 +13,9 @@ def test_build_settings_json_no_repos(test_settings, tmp_dir):
     assert settings_path.exists()
     data = json.loads(settings_path.read_text())
     assert "permissions" in data
-    assert "Read(*)" in data["permissions"]["allow"]
+    # Only the orchestrator CLI is pinned open; everything else inherits
+    # Claude Code's default auto-mode behavior.
+    assert data["permissions"]["allow"] == ["Bash(opc:*)"]
     # No repos → no hooks
     assert data["hooks"] == {}
 
@@ -62,10 +64,10 @@ def test_build_claude_md_contains_persistent_file_pointers(test_settings, tmp_di
 
 
 
-def test_initialize_workspace_creates_persistent_files(test_settings, tmp_dir):
+def test_ensure_workspace_ready_creates_persistent_files(test_settings, tmp_dir):
     builder = ContextBuilder(test_settings)
     workspace = tmp_dir / "workspaces" / "dev_agent"
-    builder.initialize_workspace(
+    builder.ensure_workspace_ready(
         workspace=workspace,
         agent_name="dev_agent",
         system_prompt="You are the Dev Agent.",
@@ -77,7 +79,9 @@ def test_initialize_workspace_creates_persistent_files(test_settings, tmp_dir):
     assert (workspace / ".claude" / "settings.json").exists()
 
 
-def test_build_claude_md_lists_repos(test_settings, tmp_dir):
+def test_build_claude_md_points_at_agent_yaml_for_repos(test_settings, tmp_dir):
+    """CLAUDE.md should redirect readers to agent.yaml for the repo list,
+    not duplicate it inline — agent.yaml is the source of truth."""
     builder = ContextBuilder(test_settings)
     workspace = tmp_dir / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
@@ -88,33 +92,36 @@ def test_build_claude_md_lists_repos(test_settings, tmp_dir):
         repo_names=["my-opc", "web-app"],
     )
     content = (workspace / "CLAUDE.md").read_text()
-    assert "repos/my-opc/" in content
-    assert "repos/web-app/" in content
     assert "Available Repositories" in content
+    assert "agent.yaml" in content
+    # The repo names themselves must not be inlined — that would drift.
+    assert "repos/my-opc/" not in content
+    assert "repos/web-app/" not in content
 
 
-def test_initialize_workspace_detects_cloned_repos(test_settings, tmp_dir):
+def test_ensure_workspace_ready_detects_cloned_repos(test_settings, tmp_dir):
+    """Cloned repos drive the PreToolUse git-pull hook (so `git pull` fires
+    per repo) but do not get enumerated in CLAUDE.md — agent.yaml is the
+    single source of truth for that list."""
     builder = ContextBuilder(test_settings)
     workspace = tmp_dir / "workspaces" / "dev_agent"
     # Simulate pre-existing cloned repos
     for name in ["my-opc", "web-app"]:
         repo_dir = workspace / "repos" / name / ".git"
         repo_dir.mkdir(parents=True)
-    builder.initialize_workspace(workspace, "dev_agent", "You are the Dev Agent.")
-    content = (workspace / "CLAUDE.md").read_text()
-    assert "repos/my-opc/" in content
-    assert "repos/web-app/" in content
+    builder.ensure_workspace_ready(workspace, "dev_agent", "You are the Dev Agent.")
     settings_data = json.loads((workspace / ".claude" / "settings.json").read_text())
     hook_cmd = settings_data["hooks"]["PreToolUse"][0]["command"]
     assert "repos/my-opc" in hook_cmd
+    assert "repos/web-app" in hook_cmd
 
 
-def test_initialize_workspace_does_not_overwrite_existing_learnings(test_settings, tmp_dir):
+def test_ensure_workspace_ready_does_not_overwrite_existing_learnings(test_settings, tmp_dir):
     builder = ContextBuilder(test_settings)
     workspace = tmp_dir / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
     (workspace / "learnings.md").write_text("# Learnings\n\n- Important lesson\n")
-    builder.initialize_workspace(
+    builder.ensure_workspace_ready(
         workspace=workspace,
         agent_name="dev_agent",
         system_prompt="You are the Dev Agent.",
@@ -123,7 +130,7 @@ def test_initialize_workspace_does_not_overwrite_existing_learnings(test_setting
     assert "Important lesson" in content
 
 
-def test_initialize_workspace_copies_skills(test_settings, tmp_path):
+def test_ensure_workspace_ready_copies_skills(test_settings, tmp_path):
     # Set up a fake protocol/skills/ tree
     skills_root = test_settings.get_protocol_dir() / "skills"
     (skills_root / "start-task").mkdir(parents=True)
@@ -132,17 +139,17 @@ def test_initialize_workspace_copies_skills(test_settings, tmp_path):
     (skills_root / "make-worktree" / "SKILL.md").write_text("# make-worktree\n")
 
     workspace = tmp_path / "workspace"
-    ContextBuilder(test_settings).initialize_workspace(workspace, "dev_agent", "system prompt")
+    ContextBuilder(test_settings).ensure_workspace_ready(workspace, "dev_agent", "system prompt")
 
     assert (workspace / ".claude" / "skills" / "start-task" / "SKILL.md").read_text() == "# start-task\n"
     assert (workspace / ".claude" / "skills" / "make-worktree" / "SKILL.md").read_text() == "# make-worktree\n"
 
 
-def test_initialize_workspace_without_skills_dir_is_noop(test_settings, tmp_path):
+def test_ensure_workspace_ready_without_skills_dir_is_noop(test_settings, tmp_path):
     skills_root = test_settings.get_protocol_dir() / "skills"
     assert not skills_root.exists()
     workspace = tmp_path / "workspace"
-    ContextBuilder(test_settings).initialize_workspace(workspace, "dev_agent", "system prompt")
+    ContextBuilder(test_settings).ensure_workspace_ready(workspace, "dev_agent", "system prompt")
     assert not (workspace / ".claude" / "skills").exists()
 
 

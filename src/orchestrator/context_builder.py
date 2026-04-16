@@ -33,7 +33,13 @@ def _build_settings_json(repo_names: list[str]) -> dict:
 
     return {
         "permissions": {
-            "allow": ["Read(*)", "Write(*)", "Bash(*)", "Glob(*)", "Grep(*)"]
+            # The orchestrator's CLI (`opc …`) is the agent's only sanctioned
+            # side-effect channel — report-completion, learning, etc. Pin it
+            # open so callbacks can't be silently blocked by auto-mode
+            # prompting. Everything else falls under Claude Code's default
+            # auto-mode behavior (read-only tools run, writes/arbitrary Bash
+            # prompt).
+            "allow": ["Bash(opc:*)"]
         },
         "hooks": hooks,
     }
@@ -59,19 +65,21 @@ class ContextBuilder:
         system_prompt: str,
         repo_names: list[str] | None = None,
     ) -> None:
-        """Write CLAUDE.md to workspace with system prompt and context pointers."""
+        """Write CLAUDE.md to workspace with system prompt and context pointers.
+
+        ``repo_names`` is accepted for API compatibility but is not listed
+        inline — CLAUDE.md just points at ``agent.yaml`` as the source of
+        truth so the repo list doesn't drift between the two files.
+        """
         workspace.mkdir(parents=True, exist_ok=True)
         sections = [
             f"# Agent: {agent_name}\n",
             "## System Prompt\n",
             system_prompt.strip() + "\n",
-        ]
-        if repo_names:
-            sections.append("## Available Repositories\n")
-            for name in repo_names:
-                sections.append(f"- `repos/{name}/` — git clone, kept fresh via PreToolUse hook")
-            sections.append("")
-        sections.extend([
+            "## Available Repositories\n",
+            "See `agent.yaml` in this workspace for the authoritative list of",
+            "repositories cloned under `repos/`. Each is kept fresh via the",
+            "PreToolUse hook in `.claude/settings.json`.\n",
             "## Persistent Files\n",
             "- `learnings.md` -- your accumulated operational learnings",
             "- `scorecard.md` -- read-only, updated by orchestrator",
@@ -80,7 +88,7 @@ class ContextBuilder:
             "Every task arrives via the orchestrator's prompt. Use the **start-task** skill",
             "(in `.claude/skills/start-task/`) to parse parameters and report completion via",
             "`opc report-completion`. Mid-task learnings go through `opc learning`.\n",
-        ])
+        ]
         (workspace / "CLAUDE.md").write_text("\n".join(sections))
 
     def _copy_skills(self, workspace: Path) -> None:
@@ -96,16 +104,17 @@ class ContextBuilder:
                 shutil.rmtree(target)
             shutil.copytree(child, target)
 
-    def initialize_workspace(
+    def ensure_workspace_ready(
         self,
         workspace: Path,
         agent_name: str,
         system_prompt: str,
     ) -> None:
-        """Set up an agent workspace with all required files.
+        """Make sure an agent workspace has every file the orchestrator requires.
 
-        Creates persistent files only if they don't already exist.
-        Always regenerates CLAUDE.md and settings.json.
+        Persistent files (learnings, scorecard, recent tasks) are created only if
+        missing. CLAUDE.md, settings.json, and the skills tree are always
+        regenerated so workspaces carried over from older code self-heal.
         """
         workspace.mkdir(parents=True, exist_ok=True)
 

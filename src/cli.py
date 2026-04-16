@@ -254,6 +254,86 @@ def cmd_init_agent(args: argparse.Namespace) -> None:
         print("Init cancelled (daemon will continue).")
 
 
+def cmd_audit(args: argparse.Namespace) -> None:
+    """Show filtered audit-log entries via the daemon."""
+    import json as _json
+
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    params: dict[str, str | int] = {}
+    if args.task_id is not None:
+        params["task_id"] = args.task_id
+    if args.agent is not None:
+        params["agent"] = args.agent
+    if args.action is not None:
+        params["action"] = args.action
+    if args.since is not None:
+        params["since"] = args.since
+    if args.limit is not None:
+        params["limit"] = args.limit
+
+    r = client.get("/api/v1/audit", params=params)
+    if not _ok(r):
+        return
+    entries = r.json()["entries"]
+
+    if args.json:
+        print(_json.dumps(entries, indent=2))
+        return
+
+    if not entries:
+        print("No audit entries match the filters.")
+        return
+
+    print(f"{'Timestamp':<20} {'Task':<10} {'Agent':<22} {'Action':<22} Payload")
+    print("-" * 120)
+    for e in entries:
+        ts = (e.get("timestamp") or "")[:19]
+        task = e.get("task_id") or "-"
+        agent = e.get("agent") or "-"
+        action = e.get("action") or "-"
+        payload = e.get("payload")
+        payload_s = _json.dumps(payload, separators=(",", ":")) if payload else "-"
+        if len(payload_s) > 60:
+            payload_s = payload_s[:57] + "..."
+        print(f"{ts:<20} {task:<10} {agent:<22} {action:<22} {payload_s}")
+
+
+def _completion_payload_from_file(path: str) -> tuple[str, dict]:
+    """Load a completion payload from a JSON file.
+
+    Agents use this path because multi-line bash commands (backslash
+    continuations) count as separate subcommands under Claude Code's
+    permission model, which breaks the narrow ``Bash(opc:*)`` allow rule.
+    Writing a JSON file and invoking `opc report-completion --from-file
+    <path>` keeps the tool call a single line.
+
+    Returns ``(task_id, body)`` shaped for the daemon's completion endpoint.
+    """
+    import json as _json
+    with open(path) as f:
+        data = _json.load(f)
+    required = ["task_id", "session_id", "agent", "status", "summary"]
+    missing = [k for k in required if not data.get(k)]
+    if missing:
+        raise ValueError(f"completion file missing keys: {missing}")
+    body = {
+        "session_id": data["session_id"],
+        "agent": data["agent"],
+        "status": data["status"],
+        "confidence": data.get("confidence", 80),
+        "output_summary": data["summary"],
+        "risks_flagged": data.get("risks") or [],
+        "dependencies": data.get("dependencies") or [],
+        "suggested_reviewer_focus": data.get("reviewer_focus") or [],
+    }
+    return data["task_id"], body
+
+
 def cmd_report_completion(args: argparse.Namespace) -> None:
     """Agent callback: report task completion to the daemon."""
     try:
@@ -261,17 +341,40 @@ def cmd_report_completion(args: argparse.Namespace) -> None:
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
         print(f"Error: {exc}")
         sys.exit(1)
-    body = {
-        "session_id": args.session_id,
-        "agent": args.agent,
-        "status": args.status,
-        "confidence": args.confidence,
-        "output_summary": args.summary,
-        "risks_flagged": args.risks or [],
-        "dependencies": args.dependencies or [],
-        "suggested_reviewer_focus": args.reviewer_focus or [],
-    }
-    r = client.post(f"/api/v1/tasks/{args.task_id}/completion", json=body)
+
+    import json as _json
+    if args.from_file:
+        try:
+            task_id, body = _completion_payload_from_file(args.from_file)
+        except (OSError, _json.JSONDecodeError, ValueError) as exc:
+            print(f"Error reading completion file {args.from_file}: {exc}")
+            sys.exit(1)
+    else:
+        missing = [
+            flag for flag, val in [
+                ("--task-id", args.task_id), ("--session-id", args.session_id),
+                ("--agent", args.agent), ("--status", args.status),
+                ("--summary", args.summary),
+            ] if not val
+        ]
+        if missing:
+            print(
+                f"Error: missing required args: {', '.join(missing)} "
+                f"(or pass --from-file <path>)"
+            )
+            sys.exit(1)
+        task_id = args.task_id
+        body = {
+            "session_id": args.session_id,
+            "agent": args.agent,
+            "status": args.status,
+            "confidence": args.confidence,
+            "output_summary": args.summary,
+            "risks_flagged": args.risks or [],
+            "dependencies": args.dependencies or [],
+            "suggested_reviewer_focus": args.reviewer_focus or [],
+        }
+    r = client.post(f"/api/v1/tasks/{task_id}/completion", json=body)
     if not _ok(r):
         return
 
@@ -341,6 +444,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_agents.add_argument("--detail", action="store_true", help="Show detailed scorecards")
     p_agents.set_defaults(func=cmd_agents)
 
+    # opc audit
+    p_audit = sub.add_parser("audit", help="Show filtered audit-log entries")
+    p_audit.add_argument("task_id", nargs="?", default=None,
+                         help="Optional task id to filter by (e.g. TASK-007)")
+    p_audit.add_argument("--agent", default=None, help="Filter by agent name")
+    p_audit.add_argument("--action", default=None,
+                         help="Filter by action (session_start, session_end, completion_report, ...)")
+    p_audit.add_argument("--since", default=None,
+                         help="ISO-8601 timestamp; only entries at or after this time")
+    p_audit.add_argument("--limit", type=int, default=None,
+                         help="Cap to the most recent N entries")
+    p_audit.add_argument("--json", action="store_true",
+                         help="Emit raw JSON instead of the human-readable table")
+    p_audit.set_defaults(func=cmd_audit)
+
     # opc init-agent
     p_init_agent = sub.add_parser("init-agent", help="Initialize agent workspaces with system prompts and repo clone")
     p_init_agent.add_argument("agent", nargs="?", default=None, choices=[a.value for a in AgentName],
@@ -348,12 +466,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_init_agent.set_defaults(func=cmd_init_agent)
 
     p_rep = sub.add_parser("report-completion", help="Agent callback: report task completion")
-    p_rep.add_argument("--task-id", required=True)
-    p_rep.add_argument("--session-id", required=True)
-    p_rep.add_argument("--agent", required=True)
-    p_rep.add_argument("--status", required=True, choices=["completed", "blocked"])
+    p_rep.add_argument(
+        "--from-file", dest="from_file", default=None,
+        help="Path to a JSON file containing the completion payload. "
+             "Preferred by agents — keeps the tool call a single line so "
+             "Claude Code's Bash(opc:*) allow rule matches. Keys: task_id, "
+             "session_id, agent, status, summary (required), plus optional "
+             "confidence, risks, dependencies, reviewer_focus.",
+    )
+    p_rep.add_argument("--task-id", default=None)
+    p_rep.add_argument("--session-id", default=None)
+    p_rep.add_argument("--agent", default=None)
+    p_rep.add_argument("--status", default=None, choices=["completed", "blocked"])
     p_rep.add_argument("--confidence", type=int, default=80)
-    p_rep.add_argument("--summary", required=True)
+    p_rep.add_argument("--summary", default=None)
     p_rep.add_argument("--risks", action="append", default=[])
     p_rep.add_argument("--dependencies", action="append", default=[])
     p_rep.add_argument("--reviewer-focus", action="append", default=[], dest="reviewer_focus")

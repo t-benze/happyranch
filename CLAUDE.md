@@ -102,7 +102,8 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |   |       |-- health.py              # GET /health
 |   |       |-- runtimes.py            # POST /runtimes/init, POST /runtimes/use, GET /runtimes
 |   |       |-- tasks.py               # POST /tasks, GET /tasks, GET /tasks/{id}, SSE /tasks/{id}/events, callbacks
-|   |       +-- agents.py              # GET /agents, POST /agents/init (SSE), POST /agents/{name}/learnings
+|   |       |-- agents.py              # GET /agents, POST /agents/init (SSE), POST /agents/{name}/learnings
+|   |       +-- audit.py               # GET /audit — filtered audit-log view (task/agent/action/since/limit)
 |   |-- orchestrator/
 |   |   |-- orchestrator.py            # EH-driven loop: ask Engineering Head, execute decisions
 |   |   |-- capabilities.py            # Builds capabilities prompt for EH decision sessions
@@ -116,7 +117,7 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |   |-- agents/                        # Agent definitions (future)
 |   |-- crews/                         # Crew definitions (future)
 |   +-- tools/                         # Agent tools (future)
-|-- tests/                             # 194 tests (193 unit + 1 integration)
+|-- tests/                             # 211 tests (210 unit + 1 integration)
 |   |-- daemon/                        # Route-level tests for the FastAPI app
 |   |-- integration/                   # End-to-end test with a fake Claude binary
 |   +-- test_*.py                      # Orchestrator, executor, config, skills, etc.
@@ -176,6 +177,17 @@ repos:
 
 `opc init-agent` creates a default `agent.yaml` with empty repos if one doesn't exist.
 
+### Agent permission model
+
+Agents call the orchestrator's CLI (`opc report-completion`, `opc learning`, future callbacks) as their only sanctioned side-effect channel. The allow rule `Bash(opc:*)` lives in **two places** and both must stay in sync:
+
+1. `.claude/settings.json` `permissions.allow` — written by `context_builder._build_settings_json`. Used by interactive (non-`-p`) sessions and surfaces intent to anyone inspecting the workspace.
+2. `--allowedTools "Bash(opc *)"` on the CLI — passed by `AgentExecutor.run` for every headless session.
+
+**Why both:** in headless `-p` mode, Claude Code 2.1.105 ignores the workspace's `permissions.allow` list (observed empirically: `command_permissions.allowedTools: []` regardless of settings.json). Without the `--allowedTools` flag the agent's first `opc ...` call is blocked by auto-mode prompting, the callback never reaches the daemon, and the task silently rejects — see the TASK-007/008/009 post-mortem. When adding new orchestrator-side capabilities, keep them under the `opc` binary so they stay inside this allow rule; do **not** widen either location to cover arbitrary tools.
+
+**Agent-side completion payloads must be single-line `opc` invocations.** Claude Code's permission matcher treats newlines (and `&&`, `||`, `;`, `|`) as command separators and matches each subcommand independently. Multi-line bash with backslash continuations is rejected even though the surface command is `opc ...`. The `start-task` skill therefore mandates writing the payload to `/tmp/completion-<task_id>.json` and invoking `opc report-completion --from-file <path>` as a single line. Any new agent-facing callback with multiple arguments should follow the same `--from-file` pattern.
+
 ## Code Style
 - Type hints on all function signatures
 - Pydantic v2 models for structured data, StrEnum for enumerations
@@ -203,6 +215,9 @@ opc tail TASK-001            # stream live SSE events for a task
 opc tasks                    # list recent tasks
 opc status TASK-001          # show task details
 opc agents [--detail]        # show performance tiers
+opc audit TASK-007                               # filtered audit-log view (task, agent, action, since, limit)
+opc audit --agent engineering_head --limit 10    # recent entries for one agent, any task
+opc audit TASK-007 --json                        # raw JSON with full payloads
 opc init-agent               # initialize all agent workspaces (repo clones + system prompts + skills)
 opc init-agent dev_agent     # initialize a specific agent
 # Agent-side callbacks (invoked by the start-task skill):
