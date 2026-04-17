@@ -26,3 +26,33 @@ def write_default_agent_config(workspace: Path) -> None:
         return
     workspace.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.dump({"repos": {}}, default_flow_style=False))
+
+
+def add_repo(workspace: Path, name: str, url: str) -> None:
+    """Add a repo entry to agent.yaml. Raises ValueError if name exists."""
+    config = load_agent_config(workspace)
+    repos = config.setdefault("repos", {})
+    if name in repos:
+        raise ValueError(f"repo {name!r} already exists")
+    repos[name] = url
+    (workspace / "agent.yaml").write_text(yaml.dump(config, default_flow_style=False))
+
+
+def remove_repo(workspace: Path, name: str) -> None:
+    """Remove a repo entry from agent.yaml. Raises KeyError if not found."""
+    config = load_agent_config(workspace)
+    repos = config.get("repos", {})
+    if name not in repos:
+        raise KeyError(name)
+    del repos[name]
+    (workspace / "agent.yaml").write_text(yaml.dump(config, default_flow_style=False))
+
+
+def update_repo_url(workspace: Path, name: str, url: str) -> None:
+    """Change the URL for an existing repo. Raises KeyError if not found."""
+    config = load_agent_config(workspace)
+    repos = config.get("repos", {})
+    if name not in repos:
+        raise KeyError(name)
+    repos[name] = url
+    (workspace / "agent.yaml").write_text(yaml.dump(config, default_flow_style=False))
