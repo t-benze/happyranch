@@ -78,7 +78,8 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |   +-- skills/                        # Claude Code skills copied into every agent workspace
 |       |-- start-task/                # Parses injected params, runs role, reports via CLI callback
 |       |-- make-worktree/             # Creates an isolated git worktree under .claude/worktrees/
-|       +-- manage-repo/              # Agent-driven repo add/remove/update via opc manage-repo
+|       |-- manage-repo/              # Agent-driven repo add/remove/update via opc manage-repo
+|       +-- manage-agent/            # EH-driven agent enroll/update/terminate via opc manage-agent
 |-- scripts/
 |   +-- daemon.sh                      # Starts the FastAPI daemon (uv run python -m src.daemon)
 |-- src/
@@ -118,7 +119,7 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |   |-- agents/                        # Agent definitions (future)
 |   |-- crews/                         # Crew definitions (future)
 |   +-- tools/                         # Agent tools (future)
-|-- tests/                             # 233 tests (232 unit + 1 integration)
+|-- tests/                             # 258 tests (257 unit + 1 integration)
 |   |-- daemon/                        # Route-level tests for the FastAPI app
 |   |-- integration/                   # End-to-end test with a fake Claude binary
 |   +-- test_*.py                      # Orchestrator, executor, config, skills, etc.
@@ -225,6 +226,11 @@ opc init-agent dev_agent     # initialize a specific agent
 opc report-completion --task-id TASK-001 --session-id <sid> --status completed ...
 opc learning --agent dev_agent --session-id <sid> --task-id TASK-001 --text "..."
 opc manage-repo add --agent dev_agent --repo-name docs --url https://github.com/t-benze/docs.git
+opc manage-agent --from-file /tmp/manage-agent-enroll.json  # enroll/update/terminate an agent
+# Founder-side enrollment management:
+opc enrollments [--status pending]     # list enrollment requests
+opc approve-agent <name>               # approve and bootstrap workspace
+opc reject-agent <name>                # reject enrollment
 ```
 
 ## Maintaining Documentation

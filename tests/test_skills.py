@@ -16,7 +16,7 @@ def _parse_frontmatter(text: str) -> dict:
     return yaml.safe_load(fm)
 
 
-@pytest.mark.parametrize("skill_name", ["start-task", "make-worktree", "manage-repo"])
+@pytest.mark.parametrize("skill_name", ["start-task", "make-worktree", "manage-repo", "manage-agent"])
 def test_skill_has_required_frontmatter(skill_name: str) -> None:
     skill_md = SKILLS_ROOT / skill_name / "SKILL.md"
     assert skill_md.exists(), f"missing {skill_md}"
