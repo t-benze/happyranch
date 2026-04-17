@@ -25,13 +25,6 @@ class TaskType(StrEnum):
     GENERAL = "general"
 
 
-class AgentName(StrEnum):
-    ENGINEERING_HEAD = "engineering_head"
-    PRODUCT_MANAGER = "product_manager"
-    DEV_AGENT = "dev_agent"
-    PAYMENT_AGENT = "payment_agent"
-
-
 class PerformanceTier(StrEnum):
     GREEN = "green"
     YELLOW = "yellow"
@@ -73,7 +66,7 @@ class CompletionReport(BaseModel):
 
 
 class TaskStep(BaseModel):
-    agent: AgentName
+    agent: str
     action: str
     description: str
 

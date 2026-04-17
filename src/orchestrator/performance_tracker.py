@@ -5,7 +5,7 @@ from pathlib import Path
 
 from src.config import Settings
 from src.infrastructure.database import Database
-from src.models import AgentName, PerformanceTier
+from src.models import PerformanceTier
 
 
 class PerformanceTracker:
@@ -93,11 +93,11 @@ class PerformanceTracker:
             )
         (workspace / "scorecard.md").write_text(content)
 
-    def get_all_tiers(self) -> dict[AgentName, PerformanceTier]:
-        """Get current tier for all Product & Engineering agents."""
-        tiers: dict[AgentName, PerformanceTier] = {}
-        for agent in AgentName:
-            scorecard = self._db.get_scorecard(agent.value)
+    def get_all_tiers(self, agent_names: list[str]) -> dict[str, PerformanceTier]:
+        """Get current tier for a list of agents."""
+        tiers: dict[str, PerformanceTier] = {}
+        for agent in agent_names:
+            scorecard = self._db.get_scorecard(agent)
             if scorecard:
                 tiers[agent] = PerformanceTier(scorecard["tier"])
             else:

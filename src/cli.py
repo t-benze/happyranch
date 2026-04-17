@@ -6,7 +6,6 @@ import sys
 from pathlib import Path
 
 from src.client.client import DaemonNotRunning, DaemonStateInconsistent, OpcClient
-from src.models import AgentName
 
 
 def _ok(r) -> bool:
@@ -509,7 +508,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # opc init-agent
     p_init_agent = sub.add_parser("init-agent", help="Initialize agent workspaces with system prompts and repo clone")
-    p_init_agent.add_argument("agent", nargs="?", default=None, choices=[a.value for a in AgentName],
+    p_init_agent.add_argument("agent", nargs="?", default=None,
                         help="Specific agent to initialize (default: all)")
     p_init_agent.set_defaults(func=cmd_init_agent)
 

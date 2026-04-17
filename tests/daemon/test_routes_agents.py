@@ -5,7 +5,10 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 
-def test_list_agents_returns_tiers(tmp_home, app, auth_headers) -> None:
+def test_list_agents_returns_tiers(tmp_home, app, daemon_state, auth_headers) -> None:
+    # Create at least one workspace so list_agents finds it
+    ws = daemon_state.runtime.workspaces_dir / "engineering_head"
+    ws.mkdir(parents=True, exist_ok=True)
     r = TestClient(app).get("/api/v1/agents", headers=auth_headers)
     assert r.status_code == 200
     body = r.json()
@@ -94,15 +97,19 @@ def test_init_writes_default_agent_yaml_and_creates_dirs(
     assert (ws / "specs").is_dir(), "product_manager specs/ dir missing"
 
 
-def test_init_unknown_agent_returns_422(tmp_home, app, auth_headers) -> None:
-    """Unrecognized agent name must surface as 422, not crash to 500."""
-    r = TestClient(app).post(
-        "/api/v1/agents/init",
-        json={"agent": "ghost_writer"},
+def test_init_creates_workspace_for_any_name(tmp_home, app, daemon_state, auth_headers) -> None:
+    """init-agent accepts any valid agent name, no longer validates against enum."""
+    client = TestClient(app)
+    with client.stream(
+        "POST", "/api/v1/agents/init",
+        json={"agent": "new_custom_agent"},
         headers=auth_headers,
-    )
-    assert r.status_code == 422
-    assert r.json()["detail"]["code"] == "unknown_agent"
+    ) as r:
+        assert r.status_code == 200
+        for _ in r.iter_lines():
+            pass
+    ws = daemon_state.runtime.workspaces_dir / "new_custom_agent"
+    assert (ws / "agent.yaml").exists()
 
 
 def test_manage_repo_add_creates_entry_and_clones(

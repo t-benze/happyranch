@@ -13,7 +13,7 @@ from sse_starlette.sse import EventSourceResponse
 from src.daemon.agent_config import add_repo, load_agent_config, remove_repo, update_repo_url, write_default_agent_config
 from src.daemon.auth import require_token
 from src.daemon.state import DaemonState
-from src.models import AgentName
+from src.models import PerformanceTier
 from src.orchestrator.context_builder import ContextBuilder
 from src.orchestrator.performance_tracker import PerformanceTracker
 from src.orchestrator.prompt_loader import load_all_prompts
@@ -56,15 +56,20 @@ def list_agents(request: Request) -> dict:
     state: DaemonState = request.app.state.daemon
     _require_active(state)
     tracker = PerformanceTracker(state.db, state.settings)
-    tiers = tracker.get_all_tiers()
+    ws_dir = state.runtime.workspaces_dir
+    if ws_dir.exists():
+        agent_names = sorted(d.name for d in ws_dir.iterdir() if d.is_dir())
+    else:
+        agent_names = []
+    tiers = tracker.get_all_tiers(agent_names)
     return {
         "agents": [
             {
-                "name": a.value,
-                "tier": tiers[a].value,
-                "scorecard": state.db.get_scorecard(a.value),
+                "name": name,
+                "tier": tiers.get(name, PerformanceTier.GREEN).value,
+                "scorecard": state.db.get_scorecard(name),
             }
-            for a in AgentName
+            for name in agent_names
         ],
     }
 
@@ -74,64 +79,50 @@ async def init_agents(body: InitBody, request: Request):
     state: DaemonState = request.app.state.daemon
     _require_active(state)
 
-    targets: list[AgentName]
     if body.agent is None:
-        targets = list(AgentName)
+        ws_dir = state.runtime.workspaces_dir
+        targets = sorted(d.name for d in ws_dir.iterdir() if d.is_dir()) if ws_dir.exists() else []
     else:
-        try:
-            targets = [AgentName(body.agent)]
-        except ValueError:
-            raise HTTPException(
-                status_code=422,
-                detail={"code": "unknown_agent", "agent": body.agent},
-            )
+        targets = [body.agent]
 
     async def gen():
         protocol_dir = state.settings.get_protocol_dir()
         prompts = load_all_prompts(protocol_dir)
         ctx = ContextBuilder(state.settings)
-        for agent in targets:
-            workspace = state.runtime.workspaces_dir / agent.value
+        for agent_name in targets:
+            workspace = state.runtime.workspaces_dir / agent_name
             workspace.mkdir(parents=True, exist_ok=True)
-            yield {"data": _json.dumps({"agent": agent.value, "phase": "starting"})}
+            yield {"data": _json.dumps({"agent": agent_name, "phase": "starting"})}
             try:
-                # 1. Ensure agent.yaml, then clone any configured repos. The
-                #    make-worktree skill assumes `repos/<name>/` already exists,
-                #    so this has to run before CLAUDE.md is regenerated (which
-                #    lists the available repos).
                 write_default_agent_config(workspace)
                 repos = load_agent_config(workspace).get("repos") or {}
                 for repo_name, url in repos.items():
                     yield {"data": _json.dumps({
-                        "agent": agent.value, "phase": "repo_cloning",
+                        "agent": agent_name, "phase": "repo_cloning",
                         "repo": repo_name,
                     })}
                     ok = await asyncio.to_thread(
                         ctx.clone_repo, workspace, repo_name, url,
                     )
                     yield {"data": _json.dumps({
-                        "agent": agent.value,
+                        "agent": agent_name,
                         "phase": "repo_ready" if ok else "repo_failed",
                         "repo": repo_name,
                     })}
-                # 2. Write CLAUDE.md / settings.json / copy skills.
+                enrollment = state.db.get_enrollment(agent_name)
+                sys_prompt = enrollment["system_prompt"] if enrollment else prompts.get(agent_name, "")
                 await asyncio.to_thread(
-                    ctx.ensure_workspace_ready, workspace, agent.value,
-                    prompts.get(agent.value, ""),
+                    ctx.ensure_workspace_ready, workspace, agent_name, sys_prompt,
                 )
-                # 3. Create agent-specific folders (specs/, proposals/).
                 await asyncio.to_thread(
-                    ctx.create_agent_dirs, workspace, agent.value,
+                    ctx.create_agent_dirs, workspace, agent_name,
                 )
-            except Exception as exc:  # noqa: BLE001 - surface to client and stop
-                # SSE clients otherwise see a silent disconnect — emit an
-                # explicit error frame so the caller can distinguish failure
-                # from clean completion.
+            except Exception as exc:
                 yield {"data": _json.dumps({
-                    "agent": agent.value, "phase": "error", "detail": str(exc),
+                    "agent": agent_name, "phase": "error", "detail": str(exc),
                 })}
                 return
-            yield {"data": _json.dumps({"agent": agent.value, "phase": "done"})}
+            yield {"data": _json.dumps({"agent": agent_name, "phase": "done"})}
         yield {"data": _json.dumps({"phase": "all_done"})}
 
     return EventSourceResponse(gen())

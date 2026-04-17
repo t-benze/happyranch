@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from src.infrastructure.database import Database
-from src.models import AgentName, PerformanceTier, TaskRecord, TaskStatus, TaskType
+from src.models import PerformanceTier, TaskRecord, TaskStatus, TaskType
 from src.orchestrator.performance_tracker import PerformanceTracker
 
 
@@ -83,6 +83,6 @@ def test_get_all_tiers(db, test_settings):
     tracker = PerformanceTracker(db, test_settings)
     _seed_task_results(db, "dev_agent", ["approved"] * 9 + ["revised"])
     tracker.update_scorecard("dev_agent")
-    tiers = tracker.get_all_tiers()
-    assert tiers[AgentName.DEV_AGENT] == PerformanceTier.GREEN
-    assert tiers[AgentName.PRODUCT_MANAGER] == PerformanceTier.GREEN
+    tiers = tracker.get_all_tiers(["dev_agent", "product_manager"])
+    assert tiers["dev_agent"] == PerformanceTier.GREEN
+    assert tiers["product_manager"] == PerformanceTier.GREEN

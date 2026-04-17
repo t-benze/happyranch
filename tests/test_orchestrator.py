@@ -7,7 +7,6 @@ import pytest
 from src.config import Settings
 from src.infrastructure.database import Database
 from src.models import (
-    AgentName,
     CompletionReport,
     TaskStatus,
     TaskType,
@@ -71,14 +70,13 @@ def orchestrator(test_settings, test_runtime):
     return Orchestrator(db=db, settings=test_settings, runtime=test_runtime)
 
 
-def _setup_workspaces(runtime):
-    """Create workspace dirs with recent_tasks.md and the start-task skill
-    marker for all agents. The marker satisfies the orchestrator's fail-fast
-    guard — real workspaces get it via `opc init-agent`."""
-    for agent in AgentName:
-        ws = runtime.workspaces_dir / agent.value
+_DEFAULT_AGENTS = ["engineering_head", "product_manager", "dev_agent", "payment_agent"]
+
+def _setup_workspaces(runtime, agents: list[str] | None = None):
+    for agent in (agents or _DEFAULT_AGENTS):
+        ws = runtime.workspaces_dir / agent
         ws.mkdir(parents=True, exist_ok=True)
-        (ws / "recent_tasks.md").write_text(f"# Recent Tasks: {agent.value}\n\n")
+        (ws / "recent_tasks.md").write_text(f"# Recent Tasks: {agent}\n\n")
         skill = ws / ".claude" / "skills" / "start-task"
         skill.mkdir(parents=True, exist_ok=True)
         (skill / "SKILL.md").write_text("# start-task\n")
@@ -115,7 +113,7 @@ def test_eh_handles_directly(mock_run, orchestrator, test_runtime):
     assert mock_run.call_count == 1
     # Only EH was called, no workers
     call_agent = mock_run.call_args_list[0][0][1]
-    assert call_agent == AgentName.ENGINEERING_HEAD
+    assert call_agent == "engineering_head"
 
 
 @patch.object(Orchestrator, "_run_agent")
@@ -128,7 +126,7 @@ def test_eh_delegates_then_done(mock_run, orchestrator, test_runtime):
     def mock_side_effect(task_id, agent, prompt):
         nonlocal call_count
         call_count += 1
-        if agent == AgentName.ENGINEERING_HEAD:
+        if agent == "engineering_head":
             if call_count == 1:
                 return _make_eh_decision(task_id, {
                     "action": "delegate",
@@ -140,7 +138,7 @@ def test_eh_delegates_then_done(mock_run, orchestrator, test_runtime):
                     "action": "done",
                     "summary": "Dev agent implemented Alipay. Looks good.",
                 })
-        return _make_agent_result(task_id, agent.value)
+        return _make_agent_result(task_id, agent)
 
     mock_run.side_effect = mock_side_effect
 
@@ -160,7 +158,7 @@ def test_eh_multi_step_delegation(mock_run, orchestrator, test_runtime):
 
     def mock_side_effect(task_id, agent, prompt):
         nonlocal eh_calls
-        if agent == AgentName.ENGINEERING_HEAD:
+        if agent == "engineering_head":
             eh_calls += 1
             if eh_calls == 1:
                 return _make_eh_decision(task_id, {
@@ -179,7 +177,7 @@ def test_eh_multi_step_delegation(mock_run, orchestrator, test_runtime):
                     "action": "done",
                     "summary": "Feature complete",
                 })
-        return _make_agent_result(task_id, agent.value)
+        return _make_agent_result(task_id, agent)
 
     mock_run.side_effect = mock_side_effect
 
@@ -217,13 +215,13 @@ def test_max_steps_exceeded(mock_run, test_settings, test_runtime):
     _setup_workspaces(test_runtime)
 
     def mock_side_effect(task_id, agent, prompt):
-        if agent == AgentName.ENGINEERING_HEAD:
+        if agent == "engineering_head":
             return _make_eh_decision(task_id, {
                 "action": "delegate",
                 "agent": "dev_agent",
                 "prompt": "Try again",
             })
-        return _make_agent_result(task_id, agent.value)
+        return _make_agent_result(task_id, agent)
 
     mock_run.side_effect = mock_side_effect
 
@@ -257,7 +255,7 @@ def test_delegate_agent_fails_eh_sees_failure(mock_run, orchestrator, test_runti
     def mock_side_effect(task_id, agent, prompt):
         nonlocal call_count
         call_count += 1
-        if agent == AgentName.ENGINEERING_HEAD:
+        if agent == "engineering_head":
             if call_count == 1:
                 return _make_eh_decision(task_id, {
                     "action": "delegate",
@@ -293,7 +291,7 @@ def test_delegate_blocked_report_treated_as_failure(mock_run, orchestrator, test
     def mock_side_effect(task_id, agent, prompt):
         nonlocal call_count
         call_count += 1
-        if agent == AgentName.ENGINEERING_HEAD:
+        if agent == "engineering_head":
             if call_count == 1:
                 return _make_eh_decision(task_id, {
                     "action": "delegate",
@@ -311,7 +309,7 @@ def test_delegate_blocked_report_treated_as_failure(mock_run, orchestrator, test
             ExecutorResult(success=True, duration_seconds=10, session_id="sess-dev"),
             CompletionReport(
                 task_id=task_id,
-                agent=agent.value,
+                agent=agent,
                 status="blocked",
                 confidence=0,
                 output_summary="needs missing credentials",
@@ -415,7 +413,7 @@ def test_review_verdicts_logged_for_delegated_agents(mock_run, orchestrator, tes
     def mock_side_effect(task_id, agent, prompt):
         nonlocal call_count
         call_count += 1
-        if agent == AgentName.ENGINEERING_HEAD:
+        if agent == "engineering_head":
             if call_count == 1:
                 return _make_eh_decision(task_id, {
                     "action": "delegate",
@@ -427,7 +425,7 @@ def test_review_verdicts_logged_for_delegated_agents(mock_run, orchestrator, tes
                     "action": "done",
                     "summary": "Looks good",
                 })
-        return _make_agent_result(task_id, agent.value)
+        return _make_agent_result(task_id, agent)
 
     mock_run.side_effect = mock_side_effect
 

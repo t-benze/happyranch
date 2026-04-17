@@ -12,9 +12,9 @@ from src.infrastructure.audit_logger import AuditLogger
 from src.infrastructure.database import Database
 from src.runtime import RuntimeDir
 from src.models import (
-    AgentName,
     CompletionReport,
     NextStep,
+    PerformanceTier,
     StepRecord,
     TaskRecord,
     TaskStatus,
@@ -96,21 +96,34 @@ class Orchestrator:
             raise ValueError(f"Task {task_id} not found")
 
         self._db.update_task(task_id, status=TaskStatus.IN_PROGRESS)
-        tiers = self._tracker.get_all_tiers()
+
+        # Build dynamic agent list from workspaces
+        agent_names = [
+            d.name for d in self._runtime.workspaces_dir.iterdir()
+            if d.is_dir() and d.name != "engineering_head"
+        ] if self._runtime.workspaces_dir.exists() else []
+        tiers = self._tracker.get_all_tiers(agent_names)
+
         prior_steps: list[StepRecord] = []
         max_steps = self._settings.max_orchestration_steps
 
         for step_num in range(1, max_steps + 1):
             # Ask the Engineering Head what to do next
+            agents_for_prompt = []
+            for name in agent_names:
+                enrollment = self._db.get_enrollment(name)
+                desc = enrollment["description"] if enrollment else name
+                tier = tiers.get(name, PerformanceTier.GREEN)
+                agents_for_prompt.append({"name": name, "description": desc, "tier": tier.value})
             eh_prompt = build_capabilities_prompt(
                 brief=task.brief,
-                agent_tiers=tiers,
+                agents=agents_for_prompt,
                 step_number=step_num,
                 max_steps=max_steps,
                 prior_steps=prior_steps,
             )
 
-            eh_result, eh_report = self._run_agent(task_id, AgentName.ENGINEERING_HEAD, eh_prompt)
+            eh_result, eh_report = self._run_agent(task_id, "engineering_head", eh_prompt)
             if not eh_result.success or eh_report is None:
                 self._db.update_task(task_id, status=TaskStatus.REJECTED)
                 self._update_recent_tasks(task_id)
@@ -149,20 +162,19 @@ class Orchestrator:
                     ))
                     continue
 
-                try:
-                    delegate_agent = AgentName(next_step.agent)
-                except ValueError:
+                delegate_workspace = self._runtime.workspaces_dir / next_step.agent
+                if not delegate_workspace.exists():
                     prior_steps.append(StepRecord(
                         step_number=step_num,
                         agent=next_step.agent,
                         action=f"delegate: {(next_step.prompt or '')[:100]}",
-                        result_summary=f"Unknown agent name: {next_step.agent!r}",
+                        result_summary=f"No workspace for agent: {next_step.agent!r}",
                         success=False,
                     ))
                     continue
 
                 delegate_result, delegate_report = self._run_agent(
-                    task_id, delegate_agent, next_step.prompt or "",
+                    task_id, next_step.agent, next_step.prompt or "",
                 )
                 if delegate_result.success and delegate_report is not None:
                     self._log_step_result(task_id, delegate_result, delegate_report)
@@ -222,7 +234,7 @@ class Orchestrator:
     def _run_agent(
         self,
         task_id: str,
-        agent: AgentName,
+        agent: str,
         prompt: str,
         on_session_started: Callable[[str, str, str], None] | None = None,
     ) -> tuple[ExecutorResult, CompletionReport | None]:
@@ -233,7 +245,7 @@ class Orchestrator:
         before the subprocess starts so the daemon can register the active session.
         """
         task = self._db.get_task(task_id)
-        agent_name = agent.value
+        agent_name = agent
         workspace = self._runtime.workspaces_dir / agent_name
 
         # The orchestrator relies on the start-task skill to bridge prompt →
@@ -308,9 +320,12 @@ class Orchestrator:
             f"- **{task_id}** ({task.type.value}): {task.brief} "
             f"-- {task.status.value}\n"
         )
-        for agent in AgentName:
-            workspace = self._runtime.workspaces_dir / agent.value
-            recent_path = workspace / "recent_tasks.md"
+        if not self._runtime.workspaces_dir.exists():
+            return
+        for ws_dir in self._runtime.workspaces_dir.iterdir():
+            if not ws_dir.is_dir():
+                continue
+            recent_path = ws_dir / "recent_tasks.md"
             if recent_path.exists():
                 content = recent_path.read_text()
                 recent_path.write_text(content + summary)
