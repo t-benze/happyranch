@@ -441,6 +441,100 @@ def cmd_manage_repo(args: argparse.Namespace) -> None:
     print(f"ok: {args.action or body['action']} {body['repo_name']}")
 
 
+def _manage_agent_payload_from_file(path: str) -> dict:
+    """Load a manage-agent payload from a JSON file."""
+    import json as _json
+    with open(path) as f:
+        data = _json.load(f)
+    required = ["action", "name"]
+    missing = [k for k in required if not data.get(k)]
+    if missing:
+        raise ValueError(f"manage-agent file missing keys: {missing}")
+    return data
+
+
+def cmd_manage_agent(args: argparse.Namespace) -> None:
+    """Agent callback: enroll, update, or terminate an agent."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    import json as _json
+    if args.from_file:
+        try:
+            body = _manage_agent_payload_from_file(args.from_file)
+        except (OSError, _json.JSONDecodeError, ValueError) as exc:
+            print(f"Error reading manage-agent file {args.from_file}: {exc}")
+            sys.exit(1)
+    else:
+        body = {"action": args.action, "name": args.name}
+        if args.description:
+            body["description"] = args.description
+        if args.system_prompt:
+            body["system_prompt"] = args.system_prompt
+        if args.repos:
+            body["repos"] = _json.loads(args.repos)
+
+    r = client.post("/api/v1/agents/manage", json=body)
+    if not _ok(r):
+        return
+    result = r.json()
+    status = result.get("status", "ok")
+    print(f"ok: {body['action']} {body['name']} (status: {status})")
+
+
+def cmd_enrollments(args: argparse.Namespace) -> None:
+    """List agent enrollment requests."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    params = {}
+    if args.status:
+        params["status"] = args.status
+    r = client.get("/api/v1/agents/enrollments", params=params)
+    if not _ok(r):
+        return
+    enrollments = r.json()["enrollments"]
+    if not enrollments:
+        print("No enrollments found.")
+        return
+    print(f"{'Name':<22} {'Status':<12} {'Description':<40} Created")
+    print("-" * 90)
+    for e in enrollments:
+        desc = e["description"][:37] + "..." if len(e["description"]) > 37 else e["description"]
+        print(f"{e['name']:<22} {e['status']:<12} {desc:<40} {e['created_at'][:19]}")
+
+
+def cmd_approve_agent(args: argparse.Namespace) -> None:
+    """Founder action: approve a pending agent enrollment."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    r = client.post(f"/api/v1/agents/{args.name}/approve", json={})
+    if not _ok(r):
+        return
+    print(f"Approved: {args.name}")
+
+
+def cmd_reject_agent(args: argparse.Namespace) -> None:
+    """Founder action: reject a pending agent enrollment."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    r = client.post(f"/api/v1/agents/{args.name}/reject", json={})
+    if not _ok(r):
+        return
+    print(f"Rejected: {args.name}")
+
+
 # ── parser ───────────────────────────────────────────────────
 
 
@@ -522,6 +616,32 @@ def build_parser() -> argparse.ArgumentParser:
     p_repo.add_argument("--from-file", dest="from_file", default=None,
                          help="Path to JSON file with action/agent/repo_name/url keys")
     p_repo.set_defaults(func=cmd_manage_repo)
+
+    # opc manage-agent
+    p_ma = sub.add_parser("manage-agent", help="Enroll, update, or terminate an agent")
+    p_ma.add_argument("action", nargs="?", default=None, choices=["enroll", "update", "terminate"])
+    p_ma.add_argument("--name", default=None, help="Agent name")
+    p_ma.add_argument("--description", default=None, help="Agent description")
+    p_ma.add_argument("--system-prompt", dest="system_prompt", default=None, help="System prompt")
+    p_ma.add_argument("--repos", default=None, help="JSON dict of repos")
+    p_ma.add_argument("--from-file", dest="from_file", default=None,
+                       help="Path to JSON file with enrollment payload")
+    p_ma.set_defaults(func=cmd_manage_agent)
+
+    # opc enrollments
+    p_enroll = sub.add_parser("enrollments", help="List agent enrollment requests")
+    p_enroll.add_argument("--status", default=None, choices=["pending", "approved", "rejected", "terminated"])
+    p_enroll.set_defaults(func=cmd_enrollments)
+
+    # opc approve-agent
+    p_approve = sub.add_parser("approve-agent", help="Approve a pending agent enrollment")
+    p_approve.add_argument("name", help="Agent name to approve")
+    p_approve.set_defaults(func=cmd_approve_agent)
+
+    # opc reject-agent
+    p_reject = sub.add_parser("reject-agent", help="Reject a pending agent enrollment")
+    p_reject.add_argument("name", help="Agent name to reject")
+    p_reject.set_defaults(func=cmd_reject_agent)
 
     p_rep = sub.add_parser("report-completion", help="Agent callback: report task completion")
     p_rep.add_argument(

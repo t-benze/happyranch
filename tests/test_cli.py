@@ -588,3 +588,128 @@ def test_cmd_manage_repo_from_file(tmp_path):
     assert args_pos[0] == "/api/v1/agents/dev_agent/repos"
     assert kwargs["json"]["action"] == "remove"
     assert kwargs["json"]["repo_name"] == "docs"
+
+
+def test_manage_agent_parser_enroll():
+    parser = build_parser()
+    args = parser.parse_args([
+        "manage-agent", "enroll",
+        "--from-file", "/tmp/enroll.json",
+    ])
+    assert args.command == "manage-agent"
+    assert args.action == "enroll"
+    assert args.from_file == "/tmp/enroll.json"
+
+
+def test_manage_agent_parser_terminate():
+    parser = build_parser()
+    args = parser.parse_args([
+        "manage-agent", "terminate",
+        "--name", "content_writer",
+    ])
+    assert args.action == "terminate"
+    assert args.name == "content_writer"
+
+
+def test_cmd_manage_agent_posts_to_daemon():
+    import argparse
+
+    from src.cli import cmd_manage_agent
+
+    fake = MagicMock()
+    fake.post.return_value.status_code = 200
+    fake.post.return_value.json.return_value = {"ok": True, "status": "pending"}
+    args = argparse.Namespace(
+        from_file=None,
+        action="enroll", name="content_writer",
+        description="Writes guides", system_prompt="You are...",
+        repos=None,
+    )
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_manage_agent(args)
+    args_pos, kwargs = fake.post.call_args
+    assert args_pos[0] == "/api/v1/agents/manage"
+    assert kwargs["json"]["action"] == "enroll"
+    assert kwargs["json"]["name"] == "content_writer"
+
+
+def test_cmd_manage_agent_from_file(tmp_path):
+    import json
+
+    from src.cli import cmd_manage_agent
+
+    payload = {
+        "action": "enroll",
+        "name": "content_writer",
+        "description": "Writes guides",
+        "system_prompt": "You are the Content Writer...",
+    }
+    f = tmp_path / "enroll.json"
+    f.write_text(json.dumps(payload))
+
+    fake = MagicMock()
+    fake.post.return_value.status_code = 200
+    fake.post.return_value.json.return_value = {"ok": True, "status": "pending"}
+    args = MagicMock(
+        from_file=str(f),
+        action=None, name=None, description=None,
+        system_prompt=None, repos=None,
+    )
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_manage_agent(args)
+    args_pos, kwargs = fake.post.call_args
+    assert kwargs["json"]["action"] == "enroll"
+    assert kwargs["json"]["name"] == "content_writer"
+
+
+def test_enrollments_parser():
+    parser = build_parser()
+    args = parser.parse_args(["enrollments", "--status", "pending"])
+    assert args.command == "enrollments"
+    assert args.status == "pending"
+
+
+def test_cmd_enrollments_lists(capsys):
+    from src.cli import cmd_enrollments
+
+    fake = MagicMock()
+    fake.get.return_value.status_code = 200
+    fake.get.return_value.json.return_value = {
+        "enrollments": [
+            {"name": "content_writer", "description": "Writes", "status": "pending",
+             "created_at": "2026-04-17T00:00:00"},
+        ],
+    }
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_enrollments(MagicMock(status="pending"))
+    out = capsys.readouterr().out
+    assert "content_writer" in out
+    assert "pending" in out
+
+
+def test_approve_agent_parser():
+    parser = build_parser()
+    args = parser.parse_args(["approve-agent", "content_writer"])
+    assert args.command == "approve-agent"
+    assert args.name == "content_writer"
+
+
+def test_cmd_approve_agent_posts(capsys):
+    import argparse
+
+    from src.cli import cmd_approve_agent
+
+    fake = MagicMock()
+    fake.post.return_value.status_code = 200
+    fake.post.return_value.json.return_value = {"ok": True}
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_approve_agent(argparse.Namespace(name="content_writer"))
+    fake.post.assert_called_once_with("/api/v1/agents/content_writer/approve", json={})
+    assert "approved" in capsys.readouterr().out.lower()
+
+
+def test_reject_agent_parser():
+    parser = build_parser()
+    args = parser.parse_args(["reject-agent", "content_writer"])
+    assert args.command == "reject-agent"
+    assert args.name == "content_writer"
