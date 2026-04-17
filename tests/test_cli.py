@@ -606,9 +606,13 @@ def test_manage_agent_parser_terminate():
     args = parser.parse_args([
         "manage-agent", "terminate",
         "--name", "content_writer",
+        "--task-id", "TASK-001",
+        "--session-id", "sess-123",
     ])
     assert args.action == "terminate"
     assert args.name == "content_writer"
+    assert args.task_id == "TASK-001"
+    assert args.session_id == "sess-123"
 
 
 def test_cmd_manage_agent_posts_to_daemon():
@@ -622,6 +626,7 @@ def test_cmd_manage_agent_posts_to_daemon():
     args = argparse.Namespace(
         from_file=None,
         action="enroll", name="content_writer",
+        task_id="TASK-001", session_id="sess-123",
         description="Writes guides", system_prompt="You are...",
         repos=None,
     )
@@ -641,6 +646,8 @@ def test_cmd_manage_agent_from_file(tmp_path):
     payload = {
         "action": "enroll",
         "name": "content_writer",
+        "task_id": "TASK-001",
+        "session_id": "sess-123",
         "description": "Writes guides",
         "system_prompt": "You are the Content Writer...",
     }

@@ -32,7 +32,7 @@ The following documents are in the `protocol/` folder.
 - **Agent executor**: Claude Code CLI (`claude -p "<prompt>" --permission-mode auto`) — no CrewAI dependency for now
 - **Daemon**: FastAPI HTTP service (`src/daemon/`) — serves orchestrator work, SSE task events, agent callbacks
 - **CLI**: Thin HTTP client (`src/client/`) that talks to the daemon over localhost
-- **Agent workflow**: Claude Code skills (`protocol/skills/start-task`, `protocol/skills/make-worktree`) — the orchestrator prompt just names the skill and passes parameters
+- **Agent workflow**: Claude Code skills (`protocol/skills/`) — `start-task`, `make-worktree`, `manage-repo`, `manage-agent`. The orchestrator prompt just names the skill and passes parameters
 - **Orchestrator**: Custom Python application (EH-driven orchestration loop, performance scoring)
 - **Data models**: Pydantic v2 + pydantic-settings
 - **Database**: SQLite with WAL mode (audit logs, scorecards, task state)
@@ -104,7 +104,7 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |   |       |-- health.py              # GET /health
 |   |       |-- runtimes.py            # POST /runtimes/init, POST /runtimes/use, GET /runtimes
 |   |       |-- tasks.py               # POST /tasks, GET /tasks, GET /tasks/{id}, SSE /tasks/{id}/events, callbacks
-|   |       |-- agents.py              # GET /agents, POST /agents/init (SSE), POST /agents/{name}/learnings
+|   |       |-- agents.py              # GET /agents, POST /agents/init (SSE), POST /agents/{name}/learnings, POST /agents/manage (enroll/update/terminate), GET /agents/enrollments, POST /agents/{name}/approve, POST /agents/{name}/reject, POST /agents/{name}/repos
 |   |       +-- audit.py               # GET /audit — filtered audit-log view (task/agent/action/since/limit)
 |   |-- orchestrator/
 |   |   |-- orchestrator.py            # EH-driven loop: ask Engineering Head, execute decisions
@@ -114,7 +114,7 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |   |   |-- context_builder.py         # Generates CLAUDE.md + .claude/settings.json + copies skills
 |   |   +-- prompt_loader.py           # Parses system prompts from protocol markdown
 |   |-- infrastructure/
-|   |   |-- database.py                # SQLite (WAL mode), typed CRUD, task_results.status column
+|   |   |-- database.py                # SQLite (WAL mode), typed CRUD, task_results.status column, agent_enrollments table
 |   |   +-- audit_logger.py            # Semantic logging (session, verdict, escalation, orchestration steps)
 |   |-- agents/                        # Agent definitions (future)
 |   |-- crews/                         # Crew definitions (future)
@@ -135,25 +135,17 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |-- opc.yaml                           # Marker file (presence = valid runtime folder)
 |-- opc.db                             # SQLite database
 +-- workspaces/
-    |-- engineering_head/
-    |   |-- agent.yaml                 # Per-agent config (repos, etc.)
-    |   |-- CLAUDE.md                  # Generated from protocol/02-system-prompts-managers.md
-    |   |-- .claude/
-    |   |   |-- settings.json          # Permissions + PreToolUse hook (git pull all repos)
-    |   |   +-- skills/                # start-task + make-worktree copied from protocol/skills/
-    |   |-- repos/                     # Git clones declared in agent.yaml
-    |   |   +-- <name>/                # One dir per entry in agent.yaml `repos:`
-    |   |-- learnings.md
-    |   |-- scorecard.md
-    |   +-- recent_tasks.md
-    |-- product_manager/
-    |   |-- ...
-    |   +-- specs/
-    |-- dev_agent/
-    |   +-- ...
-    +-- payment_agent/
-        |-- ...
-        +-- proposals/
+    +-- <agent_name>/                  # One per agent (dynamic — created by init-agent or approve-agent)
+        |-- agent.yaml                 # Per-agent config (repos, etc.)
+        |-- CLAUDE.md                  # Generated from system prompt (protocol docs or enrollment)
+        |-- .claude/
+        |   |-- settings.json          # Permissions + PreToolUse hook (git pull all repos)
+        |   +-- skills/                # All skills copied from protocol/skills/
+        |-- repos/                     # Git clones declared in agent.yaml
+        |   +-- <name>/                # One dir per entry in agent.yaml `repos:`
+        |-- learnings.md
+        |-- scorecard.md
+        +-- recent_tasks.md
 ```
 
 ## Configuration
@@ -192,7 +184,7 @@ Agents call the orchestrator's CLI (`opc report-completion`, `opc learning`, fut
 
 ## Code Style
 - Type hints on all function signatures
-- Pydantic v2 models for structured data, StrEnum for enumerations
+- Pydantic v2 models for structured data, StrEnum for enumerations (agent names are plain strings, not enums — agents are discovered dynamically from workspaces + enrollments DB)
 - Tests for business logic (escalation rules, scoring, tier calculation)
 - `from __future__ import annotations` in all source files
 

@@ -53,6 +53,8 @@ class ManageAgentAction(StrEnum):
 class ManageAgentBody(BaseModel):
     action: ManageAgentAction
     name: str
+    task_id: str
+    session_id: str
     description: str | None = None
     system_prompt: str | None = None
     repos: dict[str, str] | None = None
@@ -198,6 +200,19 @@ async def manage_repo(agent_name: str, body: ManageRepoBody, request: Request) -
 async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
     state: DaemonState = request.app.state.daemon
     _require_active(state)
+
+    # Only the Engineering Head may manage agents.
+    expected = state.sessions.get_active(body.task_id, "engineering_head")
+    if expected is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="manage-agent requires an active engineering_head session",
+        )
+    if expected != body.session_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="session_id does not match the active engineering_head session",
+        )
 
     if not _VALID_AGENT_NAME.match(body.name):
         raise HTTPException(status_code=422, detail=f"invalid agent name: {body.name!r}")

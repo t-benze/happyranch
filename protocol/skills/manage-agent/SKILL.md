@@ -16,6 +16,8 @@ Manage the agent roster. You can **enroll** a new agent (requires founder approv
    {
      "action": "enroll",
      "name": "content_writer",
+     "task_id": "<task_id>",
+     "session_id": "<session_id>",
      "description": "Writes destination guides and travel articles",
      "system_prompt": "You are the Content Writer. Your responsibilities are...",
      "repos": {"web-content": "https://github.com/t-benze/web-content.git"}
@@ -27,6 +29,8 @@ Manage the agent roster. You can **enroll** a new agent (requires founder approv
    {
      "action": "update",
      "name": "content_writer",
+     "task_id": "<task_id>",
+     "session_id": "<session_id>",
      "description": "Updated description",
      "system_prompt": "Updated system prompt..."
    }
@@ -36,7 +40,9 @@ Manage the agent roster. You can **enroll** a new agent (requires founder approv
    ```json
    {
      "action": "terminate",
-     "name": "content_writer"
+     "name": "content_writer",
+     "task_id": "<task_id>",
+     "session_id": "<session_id>"
    }
    ```
 
@@ -49,6 +55,12 @@ Manage the agent roster. You can **enroll** a new agent (requires founder approv
    The `--from-file` form is mandatory for agent sessions. Multi-line bash
    commands are rejected by the `Bash(opc:*)` permission rule (newlines count
    as command separators).
+
+## Access control
+
+Only the **Engineering Head** may use this skill. The daemon validates that the
+`task_id` and `session_id` belong to an active EH session. Other agents will
+receive a `403 Forbidden` error.
 
 ## What happens
 

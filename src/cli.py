@@ -446,7 +446,7 @@ def _manage_agent_payload_from_file(path: str) -> dict:
     import json as _json
     with open(path) as f:
         data = _json.load(f)
-    required = ["action", "name"]
+    required = ["action", "name", "task_id", "session_id"]
     missing = [k for k in required if not data.get(k)]
     if missing:
         raise ValueError(f"manage-agent file missing keys: {missing}")
@@ -469,7 +469,12 @@ def cmd_manage_agent(args: argparse.Namespace) -> None:
             print(f"Error reading manage-agent file {args.from_file}: {exc}")
             sys.exit(1)
     else:
-        body = {"action": args.action, "name": args.name}
+        body = {
+            "action": args.action,
+            "name": args.name,
+            "task_id": args.task_id,
+            "session_id": args.session_id,
+        }
         if args.description:
             body["description"] = args.description
         if args.system_prompt:
@@ -621,6 +626,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_ma = sub.add_parser("manage-agent", help="Enroll, update, or terminate an agent")
     p_ma.add_argument("action", nargs="?", default=None, choices=["enroll", "update", "terminate"])
     p_ma.add_argument("--name", default=None, help="Agent name")
+    p_ma.add_argument("--task-id", dest="task_id", default=None, help="Active task ID")
+    p_ma.add_argument("--session-id", dest="session_id", default=None, help="Active EH session ID")
     p_ma.add_argument("--description", default=None, help="Agent description")
     p_ma.add_argument("--system-prompt", dest="system_prompt", default=None, help="System prompt")
     p_ma.add_argument("--repos", default=None, help="JSON dict of repos")

@@ -6,16 +6,13 @@ A one-person company (OPC) that provides online tourism information and booking 
 
 OPC runs as a local **HTTP daemon** that dispatches tasks to AI agents running as [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions. The `opc` CLI is a thin client that talks to the daemon. Each agent has a persistent workspace, a performance scorecard, and a defined role within the organization.
 
-### Current: Product & Engineering Crew
+### Agent-Driven Organization
 
 The **Engineering Head** (EH) drives all task execution. When you submit a task, the EH analyzes it and decides what to do at each step — handle it directly, delegate to a team member, or escalate to the founder. There are no hardcoded task chains.
 
-| Agent | Role |
-|-------|------|
-| **Engineering Head** | Manager — analyzes tasks, delegates work, reviews results |
-| **Product Manager** | Writes specs, triages bugs, prioritizes roadmap |
-| **Dev Agent** | Implements features, fixes bugs |
-| **Payment Agent** | Proposes payment flow changes |
+Agents are **dynamic** — the EH can propose new agents via the `manage-agent` skill, and the founder approves enrollment before the agent's workspace is bootstrapped. The roster grows organically as the organization needs new capabilities.
+
+The initial crew (created via `opc init-agent`) includes Engineering Head, Product Manager, Dev Agent, and Payment Agent. Additional agents (e.g., QA Agent, Content Writer) are enrolled through the enrollment flow.
 
 The EH can delegate multiple steps (e.g., PM writes spec, then Dev implements), explore the codebase itself, or escalate if the task requires human judgment. A max of 10 orchestration steps prevents runaway loops.
 
@@ -94,8 +91,44 @@ opc use ~/another-runtime
 | `opc tasks [--limit N]` | List recent tasks (default: 20) |
 | `opc agents [--detail]` | Show agent performance tiers and scorecards |
 | `opc init-agent [name]` | Initialize agent workspaces (all or specific agent) |
+| `opc audit TASK-ID [--json]` | View audit log for a task (or filter by `--agent`, `--action`) |
+| `opc manage-repo add\|remove\|update` | Add, remove, or update a repo in an agent's workspace |
+| `opc manage-agent --from-file F` | Enroll, update, or terminate an agent (used by EH skill) |
+| `opc enrollments [--status S]` | List agent enrollment requests |
+| `opc approve-agent <name>` | Approve a pending enrollment and bootstrap workspace |
+| `opc reject-agent <name>` | Reject a pending enrollment |
 
 The CLI does not take a runtime path — every command operates on whichever runtime is currently active. Use `opc use` to switch.
+
+### Enrolling new agents
+
+The EH can propose new agents during task execution using the `manage-agent` skill. Enrollment requires founder approval:
+
+```bash
+# The EH submits an enrollment request (happens automatically during tasks)
+# opc manage-agent --from-file /tmp/manage-agent-enroll.json
+
+# Founder reviews pending enrollments
+opc enrollments --status pending
+
+# Approve — bootstraps workspace (CLAUDE.md, settings, skills, repo clones)
+opc approve-agent content_writer
+
+# Or reject
+opc reject-agent content_writer
+```
+
+Agent names must be lowercase with underscores only (e.g., `content_writer`, `seo_agent`).
+
+### Managing repos
+
+Agents can request repo changes through the `manage-repo` skill, or the founder can manage them directly:
+
+```bash
+opc manage-repo add --agent dev_agent --repo-name docs --url https://github.com/user/docs.git
+opc manage-repo remove --agent dev_agent --repo-name docs
+opc manage-repo update --agent dev_agent --repo-name docs --url https://github.com/user/docs-v2.git
+```
 
 ### Managing the daemon
 
@@ -151,7 +184,7 @@ Each agent runs in its own persistent workspace inside the runtime directory. Af
 - `agent.yaml` — per-agent configuration (repos, etc.)
 - `CLAUDE.md` — agent identity, system prompt, available repos
 - `.claude/settings.json` — permissions and git-pull hooks
-- `.claude/skills/` — `start-task` and `make-worktree` skills that the agent runs during each session
+- `.claude/skills/` — `start-task`, `make-worktree`, `manage-repo`, and `manage-agent` skills
 - `repos/` — git clones of repositories configured in `agent.yaml` (auto-pulled before each task)
 - `learnings.md` — agent-written insights from past tasks (appended via `opc learning`)
 - `scorecard.md` — performance summary (updated by orchestrator)

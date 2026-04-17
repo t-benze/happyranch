@@ -4,6 +4,14 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+_EH_TASK = "TASK-100"
+_EH_SESSION = "sess-eh-test"
+
+
+def _activate_eh_session(daemon_state) -> None:
+    """Register an active engineering_head session so manage-agent calls succeed."""
+    daemon_state.sessions.set_active(_EH_TASK, "engineering_head", _EH_SESSION)
+
 
 def test_list_agents_returns_tiers(tmp_home, app, daemon_state, auth_headers) -> None:
     # Create at least one workspace so list_agents finds it
@@ -253,11 +261,14 @@ def test_manage_repo_unknown_workspace_returns_404(
 def test_manage_agent_enroll_creates_pending(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
+    _activate_eh_session(daemon_state)
     r = TestClient(app).post(
         "/api/v1/agents/manage",
         json={
             "action": "enroll",
             "name": "content_writer",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
             "description": "Writes destination guides",
             "system_prompt": "You are the Content Writer...",
         },
@@ -273,12 +284,15 @@ def test_manage_agent_enroll_creates_pending(
 def test_manage_agent_enroll_duplicate_returns_409(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
+    _activate_eh_session(daemon_state)
     daemon_state.db.insert_enrollment("content_writer", "desc", "prompt")
     r = TestClient(app).post(
         "/api/v1/agents/manage",
         json={
             "action": "enroll",
             "name": "content_writer",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
             "description": "desc",
             "system_prompt": "prompt",
         },
@@ -290,11 +304,14 @@ def test_manage_agent_enroll_duplicate_returns_409(
 def test_manage_agent_enroll_invalid_name_returns_422(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
+    _activate_eh_session(daemon_state)
     r = TestClient(app).post(
         "/api/v1/agents/manage",
         json={
             "action": "enroll",
             "name": "Content Writer",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
             "description": "desc",
             "system_prompt": "prompt",
         },
@@ -306,6 +323,7 @@ def test_manage_agent_enroll_invalid_name_returns_422(
 def test_manage_agent_update_changes_prompt(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
+    _activate_eh_session(daemon_state)
     daemon_state.db.insert_enrollment("content_writer", "desc", "old prompt")
     daemon_state.db.update_enrollment_status("content_writer", "approved")
     workspace = daemon_state.runtime.workspaces_dir / "content_writer"
@@ -319,6 +337,8 @@ def test_manage_agent_update_changes_prompt(
             json={
                 "action": "update",
                 "name": "content_writer",
+                "task_id": _EH_TASK,
+                "session_id": _EH_SESSION,
                 "system_prompt": "new prompt",
             },
             headers=auth_headers,
@@ -330,6 +350,7 @@ def test_manage_agent_update_changes_prompt(
 def test_manage_agent_terminate_removes_workspace(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
+    _activate_eh_session(daemon_state)
     daemon_state.db.insert_enrollment("content_writer", "desc", "prompt")
     daemon_state.db.update_enrollment_status("content_writer", "approved")
     workspace = daemon_state.runtime.workspaces_dir / "content_writer"
@@ -338,7 +359,12 @@ def test_manage_agent_terminate_removes_workspace(
 
     r = TestClient(app).post(
         "/api/v1/agents/manage",
-        json={"action": "terminate", "name": "content_writer"},
+        json={
+            "action": "terminate",
+            "name": "content_writer",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
         headers=auth_headers,
     )
     assert r.status_code == 200
@@ -349,12 +375,57 @@ def test_manage_agent_terminate_removes_workspace(
 def test_manage_agent_terminate_nonexistent_returns_404(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
+    _activate_eh_session(daemon_state)
     r = TestClient(app).post(
         "/api/v1/agents/manage",
-        json={"action": "terminate", "name": "ghost"},
+        json={
+            "action": "terminate",
+            "name": "ghost",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+        },
         headers=auth_headers,
     )
     assert r.status_code == 404
+
+
+def test_manage_agent_without_eh_session_returns_403(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """Requests without an active EH session are rejected."""
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={
+            "action": "enroll",
+            "name": "rogue_agent",
+            "task_id": "TASK-999",
+            "session_id": "sess-fake",
+            "description": "desc",
+            "system_prompt": "prompt",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 403
+
+
+def test_manage_agent_wrong_session_returns_403(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """Requests with a mismatched session_id are rejected."""
+    _activate_eh_session(daemon_state)
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={
+            "action": "enroll",
+            "name": "rogue_agent",
+            "task_id": _EH_TASK,
+            "session_id": "sess-wrong",
+            "description": "desc",
+            "system_prompt": "prompt",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 403
 
 
 def test_approve_agent_bootstraps_workspace(
