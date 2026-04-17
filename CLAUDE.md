@@ -162,6 +162,10 @@ Operational settings use the `OPC_` environment variable prefix. Runtime paths (
 | `OPC_TIER_GREEN_THRESHOLD` | `0.90` | Acceptance rate for green tier |
 | `OPC_TIER_YELLOW_THRESHOLD` | `0.75` | Acceptance rate for yellow tier |
 
+### Agent permission model
+
+Each agent workspace's `.claude/settings.json` explicitly allows only `Bash(opc:*)` — the orchestrator's CLI. Rationale: `opc report-completion`, `opc learning`, and any future agent-facing subcommand are capabilities the orchestrator exposes to agents and must never be silently blocked by Claude Code's `auto`-mode prompting (a blocked callback manifests as a mystery `rejected` task — see TASK-007 post-mortem). Everything else (Read/Grep/Glob, general Bash, Write) inherits Claude Code's default `auto` behavior. When adding new orchestrator-side capabilities, keep them under the `opc` binary so they stay inside this allow rule; do **not** widen the allow list to cover arbitrary tools.
+
 Repos are configured per agent in `<runtime>/workspaces/<agent>/agent.yaml`:
 ```yaml
 repos:
