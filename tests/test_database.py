@@ -29,6 +29,18 @@ def test_get_nonexistent_task_returns_none(db):
     assert db.get_task("TASK-999") is None
 
 
+def test_list_tasks_empty_returns_empty_list(db):
+    assert db.list_tasks() == []
+
+
+def test_list_tasks_returns_most_recent_first(db):
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.BUG_FIX, brief="Fix it"))
+    db.insert_task(TaskRecord(id="TASK-002", type=TaskType.IMPLEMENT_FEATURE, brief="Build it"))
+    tasks = db.list_tasks()
+    assert len(tasks) == 2
+    assert tasks[0].id == "TASK-002"
+
+
 def test_update_task_status(db):
     task = TaskRecord(
         id="TASK-002",
@@ -133,3 +145,138 @@ def test_next_task_id(db):
     task = TaskRecord(id="TASK-001", type=TaskType.BUG_FIX, brief="test")
     db.insert_task(task)
     assert db.next_task_id() == "TASK-002"
+
+
+def test_get_latest_task_result_filters_by_session_id(db) -> None:
+    db.insert_task_result(
+        task_id="TASK-001", agent="dev_agent", session_id="sess-A",
+        output_summary="early", confidence_score=70,
+    )
+    db.insert_task_result(
+        task_id="TASK-001", agent="dev_agent", session_id="sess-B",
+        output_summary="newer", confidence_score=90,
+    )
+    a = db.get_latest_task_result("TASK-001", "dev_agent", "sess-A")
+    assert a is not None
+    assert a["output_summary"] == "early"
+    b = db.get_latest_task_result("TASK-001", "dev_agent", "sess-B")
+    assert b is not None
+    assert b["output_summary"] == "newer"
+
+
+def test_get_latest_task_result_returns_none_when_missing(db) -> None:
+    assert db.get_latest_task_result("TASK-X", "dev_agent", "sess-Z") is None
+
+
+def test_get_latest_task_result_picks_most_recent_in_session(db) -> None:
+    db.insert_task_result(
+        task_id="TASK-001", agent="dev_agent", session_id="sess-A",
+        output_summary="first", confidence_score=70,
+    )
+    db.insert_task_result(
+        task_id="TASK-001", agent="dev_agent", session_id="sess-A",
+        output_summary="retry", confidence_score=85,
+    )
+    latest = db.get_latest_task_result("TASK-001", "dev_agent", "sess-A")
+    assert latest["output_summary"] == "retry"
+
+
+def _seed_audit(db) -> None:
+    db.insert_audit_log("TASK-001", "dev_agent", "session_start", {"workspace": "/tmp/a"})
+    db.insert_audit_log("TASK-001", "dev_agent", "session_end", {"duration_seconds": 30})
+    db.insert_audit_log("TASK-002", "engineering_head", "session_start", None)
+    db.insert_audit_log("TASK-002", "engineering_head", "escalation", {"reason": "budget"})
+
+
+def test_query_audit_logs_no_filters_returns_all_ascending(db) -> None:
+    _seed_audit(db)
+    rows = db.query_audit_logs()
+    assert [r["id"] for r in rows] == [1, 2, 3, 4]
+
+
+def test_query_audit_logs_filters_by_task_id(db) -> None:
+    _seed_audit(db)
+    rows = db.query_audit_logs(task_id="TASK-001")
+    assert {r["task_id"] for r in rows} == {"TASK-001"}
+    assert len(rows) == 2
+
+
+def test_query_audit_logs_filters_by_agent_and_action(db) -> None:
+    _seed_audit(db)
+    rows = db.query_audit_logs(agent="engineering_head", action="escalation")
+    assert len(rows) == 1
+    assert rows[0]["payload"] == {"reason": "budget"}
+
+
+def test_query_audit_logs_limit_returns_most_recent_chronological(db) -> None:
+    _seed_audit(db)
+    rows = db.query_audit_logs(limit=2)
+    # limit caps to most recent N but preserves chronological (ascending) order
+    assert [r["id"] for r in rows] == [3, 4]
+
+
+def test_query_audit_logs_since_filters_by_timestamp(db) -> None:
+    _seed_audit(db)
+    all_rows = db.query_audit_logs()
+    cutoff = all_rows[2]["timestamp"]  # keep rows #3 and #4
+    rows = db.query_audit_logs(since=cutoff)
+    assert {r["id"] for r in rows} == {3, 4}
+
+
+def test_query_audit_logs_parses_payload_json(db) -> None:
+    _seed_audit(db)
+    rows = db.query_audit_logs(task_id="TASK-001", action="session_end")
+    assert rows[0]["payload"] == {"duration_seconds": 30}
+
+
+def test_insert_enrollment(db):
+    db.insert_enrollment(
+        name="content_writer",
+        description="Writes destination guides",
+        system_prompt="You are the Content Writer...",
+        repos={"web-content": "https://github.com/t-benze/web-content.git"},
+    )
+    e = db.get_enrollment("content_writer")
+    assert e is not None
+    assert e["name"] == "content_writer"
+    assert e["description"] == "Writes destination guides"
+    assert e["status"] == "pending"
+    assert e["repos"] == '{"web-content": "https://github.com/t-benze/web-content.git"}'
+
+
+def test_get_enrollment_missing(db):
+    assert db.get_enrollment("ghost") is None
+
+
+def test_list_enrollments_by_status(db):
+    db.insert_enrollment("a", "desc a", "prompt a")
+    db.insert_enrollment("b", "desc b", "prompt b")
+    db.update_enrollment_status("a", "approved")
+    pending = db.list_enrollments(status="pending")
+    assert len(pending) == 1
+    assert pending[0]["name"] == "b"
+    approved = db.list_enrollments(status="approved")
+    assert len(approved) == 1
+    assert approved[0]["name"] == "a"
+    all_e = db.list_enrollments()
+    assert len(all_e) == 2
+
+
+def test_update_enrollment_status(db):
+    db.insert_enrollment("x", "desc", "prompt")
+    db.update_enrollment_status("x", "approved")
+    assert db.get_enrollment("x")["status"] == "approved"
+
+
+def test_update_enrollment_fields(db):
+    db.insert_enrollment("x", "old desc", "old prompt")
+    db.update_enrollment_fields("x", description="new desc", system_prompt="new prompt", repos={"r": "u"})
+    e = db.get_enrollment("x")
+    assert e["description"] == "new desc"
+    assert e["system_prompt"] == "new prompt"
+
+
+def test_delete_enrollment(db):
+    db.insert_enrollment("x", "desc", "prompt")
+    db.delete_enrollment("x")
+    assert db.get_enrollment("x") is None

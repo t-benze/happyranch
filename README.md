@@ -4,18 +4,15 @@ A one-person company (OPC) that provides online tourism information and booking 
 
 ## How It Works
 
-The system uses a **custom orchestrator** that dispatches tasks to AI agents running as [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions. Each agent has a persistent workspace, a performance scorecard, and a defined role within the organization.
+OPC runs as a local **HTTP daemon** that dispatches tasks to AI agents running as [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions. The `opc` CLI is a thin client that talks to the daemon. Each agent has a persistent workspace, a performance scorecard, and a defined role within the organization.
 
-### Current: Product & Engineering Crew
+### Agent-Driven Organization
 
 The **Engineering Head** (EH) drives all task execution. When you submit a task, the EH analyzes it and decides what to do at each step — handle it directly, delegate to a team member, or escalate to the founder. There are no hardcoded task chains.
 
-| Agent | Role |
-|-------|------|
-| **Engineering Head** | Manager — analyzes tasks, delegates work, reviews results |
-| **Product Manager** | Writes specs, triages bugs, prioritizes roadmap |
-| **Dev Agent** | Implements features, fixes bugs |
-| **Payment Agent** | Proposes payment flow changes |
+Agents are **dynamic** — the EH can propose new agents via the `manage-agent` skill, and the founder approves enrollment before the agent's workspace is bootstrapped. The roster grows organically as the organization needs new capabilities.
+
+The initial crew (created via `opc init-agent`) includes Engineering Head, Product Manager, Dev Agent, and Payment Agent. Additional agents (e.g., QA Agent, Content Writer) are enrolled through the enrollment flow.
 
 The EH can delegate multiple steps (e.g., PM writes spec, then Dev implements), explore the codebase itself, or escalate if the task requires human judgment. A max of 10 orchestration steps prevents runaway loops.
 
@@ -42,25 +39,30 @@ uv run pytest tests/ -v
 ## Usage
 
 ```bash
-# 1. Create a runtime directory (stores database, agent workspaces)
+# 1. Start the daemon (once per machine). It listens on localhost and
+#    stores its auth token + runtime registry under ~/.opc/.
+scripts/daemon.sh start
+
+# 2. Create and activate a runtime directory (stores database, agent workspaces)
 opc init ~/opc-runtime
 
-# 2. Work from inside the runtime directory
-cd ~/opc-runtime
-
-# 3. Initialize all agent workspaces (creates agent.yaml, loads system prompts)
+# 3. Initialize all agent workspaces (creates agent.yaml, loads system prompts,
+#    copies skills, clones repos declared in agent.yaml)
 opc init-agent
 
 # Or initialize a specific agent
 opc init-agent dev_agent
 
-# Run a task (EH decides the approach)
+# Run a task (EH decides the approach). The CLI streams live events until done.
 opc run --brief "Explore how the payment module handles refunds"
 
 # Provide a task type hint to guide the EH
 opc run --task implement_feature --brief "Add Alipay support for international cards"
 opc run --task bug_fix --brief "Payment confirmation emails not sending for HK bookings"
 opc run --task payment_change --brief "Add WeChat Pay as alternative payment method"
+
+# Re-attach to a running task and stream its events
+opc tail TASK-001
 
 # Check task status
 opc status TASK-001
@@ -72,23 +74,71 @@ opc tasks
 opc agents
 opc agents --detail
 
-# Or specify runtime dir explicitly from anywhere
-opc --runtime ~/opc-runtime tasks
+# Switch which runtime directory the daemon is serving
+opc use ~/another-runtime
 ```
 
 ### Commands
 
 | Command | Description |
 |---------|-------------|
-| `opc init <path>` | Create a new runtime directory |
-| `opc run --brief "..."` | Run a task (EH decides approach) |
+| `opc init <path>` | Create a runtime directory and set it as active |
+| `opc use <path>` | Switch the daemon's active runtime directory |
+| `opc run --brief "..."` | Submit a task and stream its events (EH decides approach) |
 | `opc run --task TYPE --brief "..."` | Run with task type hint (`general`, `implement_feature`, `bug_fix`, `payment_change`) |
+| `opc tail TASK-ID` | Stream live events for a running (or historical) task |
 | `opc status TASK-ID` | Show task details, results, and audit log |
 | `opc tasks [--limit N]` | List recent tasks (default: 20) |
 | `opc agents [--detail]` | Show agent performance tiers and scorecards |
 | `opc init-agent [name]` | Initialize agent workspaces (all or specific agent) |
+| `opc audit TASK-ID [--json]` | View audit log for a task (or filter by `--agent`, `--action`) |
+| `opc manage-repo add\|remove\|update` | Add, remove, or update a repo in an agent's workspace |
+| `opc manage-agent --from-file F` | Enroll, update, or terminate an agent (used by EH skill) |
+| `opc enrollments [--status S]` | List agent enrollment requests |
+| `opc approve-agent <name>` | Approve a pending enrollment and bootstrap workspace |
+| `opc reject-agent <name>` | Reject a pending enrollment |
 
-All commands except `init` require a runtime directory. Either `cd` into it or pass `--runtime <path>`.
+The CLI does not take a runtime path — every command operates on whichever runtime is currently active. Use `opc use` to switch.
+
+### Enrolling new agents
+
+The EH can propose new agents during task execution using the `manage-agent` skill. Enrollment requires founder approval:
+
+```bash
+# The EH submits an enrollment request (happens automatically during tasks)
+# opc manage-agent --from-file /tmp/manage-agent-enroll.json
+
+# Founder reviews pending enrollments
+opc enrollments --status pending
+
+# Approve — bootstraps workspace (CLAUDE.md, settings, skills, repo clones)
+opc approve-agent content_writer
+
+# Or reject
+opc reject-agent content_writer
+```
+
+Agent names must be lowercase with underscores only (e.g., `content_writer`, `seo_agent`).
+
+### Managing repos
+
+Agents can request repo changes through the `manage-repo` skill, or the founder can manage them directly:
+
+```bash
+opc manage-repo add --agent dev_agent --repo-name docs --url https://github.com/user/docs.git
+opc manage-repo remove --agent dev_agent --repo-name docs
+opc manage-repo update --agent dev_agent --repo-name docs --url https://github.com/user/docs-v2.git
+```
+
+### Managing the daemon
+
+`scripts/daemon.sh` is a tiny supervisor that records the pid/port under `~/.opc/`:
+
+```bash
+scripts/daemon.sh start    # start in background
+scripts/daemon.sh status   # check if running
+scripts/daemon.sh stop     # graceful shutdown
+```
 
 ## Configuration
 
@@ -134,8 +184,9 @@ Each agent runs in its own persistent workspace inside the runtime directory. Af
 - `agent.yaml` — per-agent configuration (repos, etc.)
 - `CLAUDE.md` — agent identity, system prompt, available repos
 - `.claude/settings.json` — permissions and git-pull hooks
+- `.claude/skills/` — `start-task`, `make-worktree`, `manage-repo`, and `manage-agent` skills
 - `repos/` — git clones of repositories configured in `agent.yaml` (auto-pulled before each task)
-- `learnings.md` — agent-written insights from past tasks
+- `learnings.md` — agent-written insights from past tasks (appended via `opc learning`)
 - `scorecard.md` — performance summary (updated by orchestrator)
 - `recent_tasks.md` — rolling task history
 

@@ -1,5 +1,4 @@
 from src.models import (
-    AgentName,
     CompletionReport,
     NextStep,
     PerformanceTier,
@@ -26,13 +25,6 @@ def test_task_type_values():
     assert TaskType.IMPLEMENT_FEATURE == "implement_feature"
     assert TaskType.BUG_FIX == "bug_fix"
     assert TaskType.PAYMENT_CHANGE == "payment_change"
-
-
-def test_agent_name_values():
-    assert AgentName.ENGINEERING_HEAD == "engineering_head"
-    assert AgentName.PRODUCT_MANAGER == "product_manager"
-    assert AgentName.DEV_AGENT == "dev_agent"
-    assert AgentName.PAYMENT_AGENT == "payment_agent"
 
 
 def test_performance_tier_values():
@@ -92,11 +84,11 @@ def test_completion_report_rejects_invalid_confidence():
 
 def test_task_step_creation():
     step = TaskStep(
-        agent=AgentName.PRODUCT_MANAGER,
+        agent="product_manager",
         action="write_spec",
         description="Write feature specification",
     )
-    assert step.agent == AgentName.PRODUCT_MANAGER
+    assert step.agent == "product_manager"
     assert step.action == "write_spec"
 
 

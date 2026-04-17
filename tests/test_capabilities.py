@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from src.models import AgentName, PerformanceTier, StepRecord
+from src.models import StepRecord
 from src.orchestrator.capabilities import build_capabilities_prompt
 
 
 def test_prompt_includes_brief():
     prompt = build_capabilities_prompt(
         brief="Add Alipay support for international cards",
-        agent_tiers={},
+        agents=[],
         step_number=1,
         max_steps=10,
     )
@@ -15,13 +15,13 @@ def test_prompt_includes_brief():
 
 
 def test_prompt_includes_agent_tiers():
-    tiers = {
-        AgentName.DEV_AGENT: PerformanceTier.YELLOW,
-        AgentName.PRODUCT_MANAGER: PerformanceTier.GREEN,
-    }
+    agents = [
+        {"name": "dev_agent", "description": "Implements features", "tier": "yellow"},
+        {"name": "product_manager", "description": "Writes specs", "tier": "green"},
+    ]
     prompt = build_capabilities_prompt(
         brief="Fix bug",
-        agent_tiers=tiers,
+        agents=agents,
         step_number=1,
         max_steps=10,
     )
@@ -34,7 +34,7 @@ def test_prompt_includes_agent_tiers():
 def test_prompt_includes_step_number():
     prompt = build_capabilities_prompt(
         brief="Explore",
-        agent_tiers={},
+        agents=[],
         step_number=3,
         max_steps=10,
     )
@@ -54,7 +54,7 @@ def test_prompt_includes_prior_steps():
     ]
     prompt = build_capabilities_prompt(
         brief="Add feature",
-        agent_tiers={},
+        agents=[],
         step_number=2,
         max_steps=10,
         prior_steps=prior,
@@ -66,7 +66,7 @@ def test_prompt_includes_prior_steps():
 def test_prompt_no_prior_steps():
     prompt = build_capabilities_prompt(
         brief="Explore",
-        agent_tiers={},
+        agents=[],
         step_number=1,
         max_steps=10,
     )
@@ -76,19 +76,20 @@ def test_prompt_no_prior_steps():
 def test_prompt_includes_available_actions():
     prompt = build_capabilities_prompt(
         brief="Do something",
-        agent_tiers={},
+        agents=[],
         step_number=1,
         max_steps=10,
     )
     assert "delegate" in prompt
     assert "done" in prompt
     assert "escalate" in prompt
+    assert "manage-agent" in prompt
 
 
 def test_prompt_includes_constraints():
     prompt = build_capabilities_prompt(
         brief="Do something",
-        agent_tiers={},
+        agents=[],
         step_number=1,
         max_steps=10,
     )

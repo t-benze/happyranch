@@ -1,22 +1,19 @@
 from __future__ import annotations
 
-from src.models import AgentName, PerformanceTier, StepRecord
-
-AGENT_DESCRIPTIONS: dict[AgentName, str] = {
-    AgentName.PRODUCT_MANAGER: "Writes feature specs, triages bugs, prioritizes roadmap",
-    AgentName.DEV_AGENT: "Implements features, fixes bugs, writes code",
-    AgentName.PAYMENT_AGENT: "Drafts payment change proposals with compliance considerations",
-}
+from src.models import PerformanceTier, StepRecord
 
 
 def build_capabilities_prompt(
     brief: str,
-    agent_tiers: dict[AgentName, PerformanceTier],
+    agents: list[dict],
     step_number: int,
     max_steps: int,
     prior_steps: list[StepRecord] | None = None,
 ) -> str:
-    """Build the prompt sent to the Engineering Head for each decision step."""
+    """Build the prompt sent to the Engineering Head for each decision step.
+
+    ``agents`` is a list of dicts with keys: name, description, tier.
+    """
     sections = [
         "# Task\n",
         brief.strip(),
@@ -29,9 +26,8 @@ def build_capabilities_prompt(
         "|-------|------|------|",
     ]
 
-    for agent, description in AGENT_DESCRIPTIONS.items():
-        tier = agent_tiers.get(agent, PerformanceTier.GREEN)
-        sections.append(f"| {agent} | {description} | {tier.value} |")
+    for agent in agents:
+        sections.append(f"| {agent['name']} | {agent['description']} | {agent['tier']} |")
 
     sections.extend([
         "\n### Available Actions\n",
@@ -48,6 +44,9 @@ def build_capabilities_prompt(
         "```json",
         '{"action": "escalate", "reason": "<why this needs escalation>"}',
         "```\n",
+        "**manage-agent** -- Enroll, update, or terminate an agent:",
+        "Use the manage-agent skill to write a JSON file and call `opc manage-agent --from-file <path>`.",
+        "Enrollment requires founder approval before the agent becomes active.\n",
         "### Constraints\n",
         f"- This is step {step_number} of maximum {max_steps}",
         "- Budget authority: auto-approved up to $200 USD single / $100 USD monthly recurring",

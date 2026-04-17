@@ -51,6 +51,7 @@ class AuditLogger:
             task_id=report.task_id,
             agent=report.agent,
             session_id=session_id,
+            status=report.status,
             output_summary=report.output_summary,
             confidence_score=report.confidence,
             risks_flagged=report.risks_flagged,

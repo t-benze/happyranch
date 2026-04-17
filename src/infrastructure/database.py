@@ -12,7 +12,10 @@ class Database:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(db_path))
+        # FastAPI dispatches sync route handlers on a threadpool, so the
+        # connection is read from threads other than its creator. Serialize
+        # writes via DaemonState.db_lock.
+        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
@@ -59,6 +62,7 @@ class Database:
                 task_id TEXT NOT NULL,
                 agent TEXT NOT NULL,
                 session_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'completed',
                 output_summary TEXT,
                 confidence_score INTEGER,
                 learnings TEXT,
@@ -68,7 +72,26 @@ class Database:
                 estimated_cost REAL,
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS agent_enrollments (
+                name TEXT PRIMARY KEY,
+                description TEXT NOT NULL,
+                system_prompt TEXT NOT NULL,
+                repos TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
         """)
+        # Best-effort migration for DBs created before `status` existed. SQLite
+        # has no IF NOT EXISTS for ADD COLUMN; swallow the duplicate-column
+        # error so this is idempotent across restarts.
+        try:
+            self._conn.execute(
+                "ALTER TABLE task_results ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'"
+            )
+        except sqlite3.OperationalError:
+            pass
 
     def list_tables(self) -> list[str]:
         cursor = self._conn.execute(
@@ -162,6 +185,14 @@ class Database:
         count = cursor.fetchone()["cnt"]
         return f"TASK-{count + 1:03d}"
 
+    def get_nonterminal_task_ids(self) -> list[str]:
+        nonterminal = (TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value)
+        cursor = self._conn.execute(
+            f"SELECT id FROM tasks WHERE status IN ({','.join('?' * len(nonterminal))})",
+            nonterminal,
+        )
+        return [row["id"] for row in cursor.fetchall()]
+
     # --- Audit Log ---
 
     def insert_audit_log(
@@ -216,6 +247,54 @@ class Database:
             result.append(d)
         return result
 
+    def query_audit_logs(
+        self,
+        task_id: str | None = None,
+        agent: str | None = None,
+        action: str | None = None,
+        since: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict]:
+        """Filtered audit-log query used by the /audit route.
+
+        All filters are optional and AND-composed. ``limit`` returns the most
+        recent N rows (ORDER BY id DESC) but the result is re-sorted ascending
+        so callers still see chronological order.
+        """
+        clauses: list[str] = []
+        params: list[object] = []
+        if task_id is not None:
+            clauses.append("task_id = ?")
+            params.append(task_id)
+        if agent is not None:
+            clauses.append("agent = ?")
+            params.append(agent)
+        if action is not None:
+            clauses.append("action = ?")
+            params.append(action)
+        if since is not None:
+            clauses.append("timestamp >= ?")
+            params.append(since)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        if limit is not None:
+            sql = f"SELECT * FROM audit_log {where} ORDER BY id DESC LIMIT ?"
+            params.append(limit)
+        else:
+            sql = f"SELECT * FROM audit_log {where} ORDER BY id ASC"
+        cursor = self._conn.execute(sql, tuple(params))
+        rows = cursor.fetchall()
+        result = []
+        for row in rows:
+            d = dict(row)
+            if d.get("payload"):
+                d["payload"] = json.loads(d["payload"])
+            result.append(d)
+        # When `limit` forces DESC, re-sort ascending so the CLI renders the
+        # oldest-first timeline readers expect.
+        if limit is not None:
+            result.sort(key=lambda d: d["id"])
+        return result
+
     # --- Task Results ---
 
     def insert_task_result(
@@ -225,6 +304,7 @@ class Database:
         session_id: str,
         output_summary: str,
         confidence_score: int,
+        status: str = "completed",
         risks_flagged: list[str] | None = None,
         learnings: str | None = None,
         duration_seconds: int | None = None,
@@ -233,17 +313,18 @@ class Database:
     ) -> None:
         self._conn.execute(
             """INSERT INTO task_results
-               (task_id, agent, session_id, output_summary, confidence_score,
+               (task_id, agent, session_id, status, output_summary, confidence_score,
                 learnings, risks_flagged, duration_seconds, token_count, estimated_cost, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task_id,
                 agent,
                 session_id,
+                status,
                 output_summary,
                 confidence_score,
                 learnings,
-                json.dumps(risks_flagged) if risks_flagged else None,
+                json.dumps(risks_flagged) if risks_flagged is not None else None,
                 duration_seconds,
                 token_count,
                 estimated_cost,
@@ -284,6 +365,23 @@ class Database:
             result.append(d)
         return result
 
+    def get_latest_task_result(
+        self, task_id: str, agent: str, session_id: str,
+    ) -> dict | None:
+        cursor = self._conn.execute(
+            """SELECT * FROM task_results
+               WHERE task_id = ? AND agent = ? AND session_id = ?
+               ORDER BY id DESC LIMIT 1""",
+            (task_id, agent, session_id),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        if d.get("risks_flagged"):
+            d["risks_flagged"] = json.loads(d["risks_flagged"])
+        return d
+
     # --- Scorecards ---
 
     def upsert_scorecard(
@@ -313,6 +411,79 @@ class Database:
         cursor = self._conn.execute("SELECT * FROM scorecards WHERE agent = ?", (agent,))
         row = cursor.fetchone()
         return dict(row) if row else None
+
+    # --- Agent Enrollments ---
+
+    def insert_enrollment(
+        self,
+        name: str,
+        description: str,
+        system_prompt: str,
+        repos: dict[str, str] | None = None,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            "INSERT INTO agent_enrollments (name, description, system_prompt, repos, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, 'pending', ?, ?)",
+            (name, description, system_prompt, json.dumps(repos or {}), now, now),
+        )
+        self._conn.commit()
+
+    def get_enrollment(self, name: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM agent_enrollments WHERE name = ?", (name,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_enrollments(self, status: str | None = None) -> list[dict]:
+        if status:
+            rows = self._conn.execute(
+                "SELECT * FROM agent_enrollments WHERE status = ? ORDER BY created_at",
+                (status,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM agent_enrollments ORDER BY created_at",
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_enrollment_status(self, name: str, status: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            "UPDATE agent_enrollments SET status = ?, updated_at = ? WHERE name = ?",
+            (status, now, name),
+        )
+        self._conn.commit()
+
+    def update_enrollment_fields(
+        self,
+        name: str,
+        description: str | None = None,
+        system_prompt: str | None = None,
+        repos: dict[str, str] | None = None,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        updates = ["updated_at = ?"]
+        params: list = [now]
+        if description is not None:
+            updates.append("description = ?")
+            params.append(description)
+        if system_prompt is not None:
+            updates.append("system_prompt = ?")
+            params.append(system_prompt)
+        if repos is not None:
+            updates.append("repos = ?")
+            params.append(json.dumps(repos))
+        params.append(name)
+        self._conn.execute(
+            f"UPDATE agent_enrollments SET {', '.join(updates)} WHERE name = ?",
+            params,
+        )
+        self._conn.commit()
+
+    def delete_enrollment(self, name: str) -> None:
+        self._conn.execute("DELETE FROM agent_enrollments WHERE name = ?", (name,))
+        self._conn.commit()
 
     def close(self) -> None:
         self._conn.close()
