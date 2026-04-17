@@ -77,7 +77,8 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |   |-- 05*.md
 |   +-- skills/                        # Claude Code skills copied into every agent workspace
 |       |-- start-task/                # Parses injected params, runs role, reports via CLI callback
-|       +-- make-worktree/             # Creates an isolated git worktree under .claude/worktrees/
+|       |-- make-worktree/             # Creates an isolated git worktree under .claude/worktrees/
+|       +-- manage-repo/              # Agent-driven repo add/remove/update via opc manage-repo
 |-- scripts/
 |   +-- daemon.sh                      # Starts the FastAPI daemon (uv run python -m src.daemon)
 |-- src/
@@ -117,7 +118,7 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |   |-- agents/                        # Agent definitions (future)
 |   |-- crews/                         # Crew definitions (future)
 |   +-- tools/                         # Agent tools (future)
-|-- tests/                             # 211 tests (210 unit + 1 integration)
+|-- tests/                             # 233 tests (232 unit + 1 integration)
 |   |-- daemon/                        # Route-level tests for the FastAPI app
 |   |-- integration/                   # End-to-end test with a fake Claude binary
 |   +-- test_*.py                      # Orchestrator, executor, config, skills, etc.
@@ -220,9 +221,10 @@ opc audit --agent engineering_head --limit 10    # recent entries for one agent,
 opc audit TASK-007 --json                        # raw JSON with full payloads
 opc init-agent               # initialize all agent workspaces (repo clones + system prompts + skills)
 opc init-agent dev_agent     # initialize a specific agent
-# Agent-side callbacks (invoked by the start-task skill):
+# Agent-side callbacks (invoked by skills):
 opc report-completion --task-id TASK-001 --session-id <sid> --status completed ...
 opc learning --agent dev_agent --session-id <sid> --task-id TASK-001 --text "..."
+opc manage-repo add --agent dev_agent --repo-name docs --url https://github.com/t-benze/docs.git
 ```
 
 ## Maintaining Documentation
