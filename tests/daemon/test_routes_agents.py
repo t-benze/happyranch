@@ -248,3 +248,172 @@ def test_manage_repo_unknown_workspace_returns_404(
         headers=auth_headers,
     )
     assert r.status_code == 404
+
+
+def test_manage_agent_enroll_creates_pending(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={
+            "action": "enroll",
+            "name": "content_writer",
+            "description": "Writes destination guides",
+            "system_prompt": "You are the Content Writer...",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "pending"
+    e = daemon_state.db.get_enrollment("content_writer")
+    assert e is not None
+    assert e["status"] == "pending"
+
+
+def test_manage_agent_enroll_duplicate_returns_409(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    daemon_state.db.insert_enrollment("content_writer", "desc", "prompt")
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={
+            "action": "enroll",
+            "name": "content_writer",
+            "description": "desc",
+            "system_prompt": "prompt",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+
+
+def test_manage_agent_enroll_invalid_name_returns_422(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={
+            "action": "enroll",
+            "name": "Content Writer",
+            "description": "desc",
+            "system_prompt": "prompt",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 422
+
+
+def test_manage_agent_update_changes_prompt(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    daemon_state.db.insert_enrollment("content_writer", "desc", "old prompt")
+    daemon_state.db.update_enrollment_status("content_writer", "approved")
+    workspace = daemon_state.runtime.workspaces_dir / "content_writer"
+    workspace.mkdir(parents=True)
+
+    with patch("src.daemon.routes.agents.ContextBuilder") as MockCB:
+        mock_ctx = MockCB.return_value
+        mock_ctx.ensure_workspace_ready.return_value = None
+        r = TestClient(app).post(
+            "/api/v1/agents/manage",
+            json={
+                "action": "update",
+                "name": "content_writer",
+                "system_prompt": "new prompt",
+            },
+            headers=auth_headers,
+        )
+    assert r.status_code == 200
+    assert daemon_state.db.get_enrollment("content_writer")["system_prompt"] == "new prompt"
+
+
+def test_manage_agent_terminate_removes_workspace(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    daemon_state.db.insert_enrollment("content_writer", "desc", "prompt")
+    daemon_state.db.update_enrollment_status("content_writer", "approved")
+    workspace = daemon_state.runtime.workspaces_dir / "content_writer"
+    workspace.mkdir(parents=True)
+    (workspace / "CLAUDE.md").write_text("# test")
+
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={"action": "terminate", "name": "content_writer"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert not workspace.exists()
+    assert daemon_state.db.get_enrollment("content_writer")["status"] == "terminated"
+
+
+def test_manage_agent_terminate_nonexistent_returns_404(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={"action": "terminate", "name": "ghost"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 404
+
+
+def test_approve_agent_bootstraps_workspace(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    daemon_state.db.insert_enrollment("content_writer", "desc", "prompt")
+
+    with patch("src.daemon.routes.agents.ContextBuilder") as MockCB:
+        mock_ctx = MockCB.return_value
+        mock_ctx.clone_repo.return_value = True
+        mock_ctx.ensure_workspace_ready.return_value = None
+        mock_ctx.create_agent_dirs.return_value = None
+
+        r = TestClient(app).post(
+            "/api/v1/agents/content_writer/approve",
+            headers=auth_headers,
+        )
+    assert r.status_code == 200
+    assert daemon_state.db.get_enrollment("content_writer")["status"] == "approved"
+    workspace = daemon_state.runtime.workspaces_dir / "content_writer"
+    assert workspace.exists()
+
+
+def test_approve_non_pending_returns_409(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    daemon_state.db.insert_enrollment("content_writer", "desc", "prompt")
+    daemon_state.db.update_enrollment_status("content_writer", "approved")
+    r = TestClient(app).post(
+        "/api/v1/agents/content_writer/approve",
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+
+
+def test_reject_agent(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    daemon_state.db.insert_enrollment("content_writer", "desc", "prompt")
+    r = TestClient(app).post(
+        "/api/v1/agents/content_writer/reject",
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert daemon_state.db.get_enrollment("content_writer")["status"] == "rejected"
+
+
+def test_list_enrollments(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    daemon_state.db.insert_enrollment("a", "desc a", "prompt a")
+    daemon_state.db.insert_enrollment("b", "desc b", "prompt b")
+    daemon_state.db.update_enrollment_status("a", "approved")
+
+    r = TestClient(app).get(
+        "/api/v1/agents/enrollments",
+        params={"status": "pending"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    names = [e["name"] for e in r.json()["enrollments"]]
+    assert names == ["b"]

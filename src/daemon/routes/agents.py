@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
+import re
 import shutil
 from enum import StrEnum
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
@@ -41,6 +42,23 @@ class ManageRepoBody(BaseModel):
     action: RepoAction
     repo_name: str
     url: str | None = None
+
+
+class ManageAgentAction(StrEnum):
+    enroll = "enroll"
+    update = "update"
+    terminate = "terminate"
+
+
+class ManageAgentBody(BaseModel):
+    action: ManageAgentAction
+    name: str
+    description: str | None = None
+    system_prompt: str | None = None
+    repos: dict[str, str] | None = None
+
+
+_VALID_AGENT_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 def _require_active(state: DaemonState) -> None:
@@ -173,6 +191,124 @@ async def manage_repo(agent_name: str, body: ManageRepoBody, request: Request) -
     await asyncio.to_thread(
         ctx.ensure_workspace_ready, workspace, agent_name, agent_prompt,
     )
+    return {"ok": True}
+
+
+@router.post("/agents/manage")
+async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
+    state: DaemonState = request.app.state.daemon
+    _require_active(state)
+
+    if not _VALID_AGENT_NAME.match(body.name):
+        raise HTTPException(status_code=422, detail=f"invalid agent name: {body.name!r}")
+
+    if body.action == ManageAgentAction.enroll:
+        if not body.description or not body.system_prompt:
+            raise HTTPException(status_code=422, detail="description and system_prompt required for enroll")
+        if state.db.get_enrollment(body.name) is not None:
+            raise HTTPException(status_code=409, detail=f"agent {body.name!r} already enrolled")
+        state.db.insert_enrollment(
+            name=body.name,
+            description=body.description,
+            system_prompt=body.system_prompt,
+            repos=body.repos,
+        )
+        return {"ok": True, "status": "pending"}
+
+    elif body.action == ManageAgentAction.update:
+        enrollment = state.db.get_enrollment(body.name)
+        if enrollment is None:
+            raise HTTPException(status_code=404, detail=f"agent {body.name!r} not found")
+        if enrollment["status"] != "approved":
+            raise HTTPException(status_code=409, detail=f"agent {body.name!r} is {enrollment['status']}, not approved")
+        state.db.update_enrollment_fields(
+            body.name,
+            description=body.description,
+            system_prompt=body.system_prompt,
+            repos=body.repos,
+        )
+        if body.system_prompt:
+            workspace = state.runtime.workspaces_dir / body.name
+            if workspace.exists():
+                ctx = ContextBuilder(state.settings)
+                await asyncio.to_thread(
+                    ctx.ensure_workspace_ready, workspace, body.name, body.system_prompt,
+                )
+        return {"ok": True}
+
+    elif body.action == ManageAgentAction.terminate:
+        enrollment = state.db.get_enrollment(body.name)
+        if enrollment is None:
+            raise HTTPException(status_code=404, detail=f"agent {body.name!r} not found")
+        if enrollment["status"] != "approved":
+            raise HTTPException(status_code=409, detail=f"agent {body.name!r} is {enrollment['status']}, not approved")
+        state.db.update_enrollment_status(body.name, "terminated")
+        workspace = state.runtime.workspaces_dir / body.name
+        if workspace.exists():
+            shutil.rmtree(workspace)
+        return {"ok": True}
+
+    raise HTTPException(status_code=422, detail=f"unknown action: {body.action}")
+
+
+@router.get("/agents/enrollments")
+def list_enrollments(
+    request: Request,
+    enrollment_status: str | None = Query(default=None, alias="status"),
+) -> dict:
+    state: DaemonState = request.app.state.daemon
+    _require_active(state)
+    enrollments = state.db.list_enrollments(status=enrollment_status)
+    return {"enrollments": [
+        {"name": e["name"], "description": e["description"], "status": e["status"],
+         "created_at": e["created_at"]}
+        for e in enrollments
+    ]}
+
+
+@router.post("/agents/{agent_name}/approve")
+async def approve_agent(agent_name: str, request: Request) -> dict:
+    state: DaemonState = request.app.state.daemon
+    _require_active(state)
+    enrollment = state.db.get_enrollment(agent_name)
+    if enrollment is None:
+        raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
+    if enrollment["status"] != "pending":
+        raise HTTPException(status_code=409, detail=f"agent is {enrollment['status']}, not pending")
+
+    state.db.update_enrollment_status(agent_name, "approved")
+
+    workspace = state.runtime.workspaces_dir / agent_name
+    workspace.mkdir(parents=True, exist_ok=True)
+    write_default_agent_config(workspace)
+
+    repos = _json.loads(enrollment["repos"]) if enrollment["repos"] else {}
+    if repos:
+        for repo_name, url in repos.items():
+            add_repo(workspace, repo_name, url)
+
+    ctx = ContextBuilder(state.settings)
+    for repo_name, url in repos.items():
+        await asyncio.to_thread(ctx.clone_repo, workspace, repo_name, url)
+
+    await asyncio.to_thread(
+        ctx.ensure_workspace_ready, workspace, agent_name, enrollment["system_prompt"],
+    )
+    await asyncio.to_thread(ctx.create_agent_dirs, workspace, agent_name)
+
+    return {"ok": True}
+
+
+@router.post("/agents/{agent_name}/reject")
+def reject_agent(agent_name: str, request: Request) -> dict:
+    state: DaemonState = request.app.state.daemon
+    _require_active(state)
+    enrollment = state.db.get_enrollment(agent_name)
+    if enrollment is None:
+        raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
+    if enrollment["status"] != "pending":
+        raise HTTPException(status_code=409, detail=f"agent is {enrollment['status']}, not pending")
+    state.db.update_enrollment_status(agent_name, "rejected")
     return {"ok": True}
 
 
