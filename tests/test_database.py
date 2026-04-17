@@ -227,3 +227,56 @@ def test_query_audit_logs_parses_payload_json(db) -> None:
     _seed_audit(db)
     rows = db.query_audit_logs(task_id="TASK-001", action="session_end")
     assert rows[0]["payload"] == {"duration_seconds": 30}
+
+
+def test_insert_enrollment(db):
+    db.insert_enrollment(
+        name="content_writer",
+        description="Writes destination guides",
+        system_prompt="You are the Content Writer...",
+        repos={"web-content": "https://github.com/t-benze/web-content.git"},
+    )
+    e = db.get_enrollment("content_writer")
+    assert e is not None
+    assert e["name"] == "content_writer"
+    assert e["description"] == "Writes destination guides"
+    assert e["status"] == "pending"
+    assert e["repos"] == '{"web-content": "https://github.com/t-benze/web-content.git"}'
+
+
+def test_get_enrollment_missing(db):
+    assert db.get_enrollment("ghost") is None
+
+
+def test_list_enrollments_by_status(db):
+    db.insert_enrollment("a", "desc a", "prompt a")
+    db.insert_enrollment("b", "desc b", "prompt b")
+    db.update_enrollment_status("a", "approved")
+    pending = db.list_enrollments(status="pending")
+    assert len(pending) == 1
+    assert pending[0]["name"] == "b"
+    approved = db.list_enrollments(status="approved")
+    assert len(approved) == 1
+    assert approved[0]["name"] == "a"
+    all_e = db.list_enrollments()
+    assert len(all_e) == 2
+
+
+def test_update_enrollment_status(db):
+    db.insert_enrollment("x", "desc", "prompt")
+    db.update_enrollment_status("x", "approved")
+    assert db.get_enrollment("x")["status"] == "approved"
+
+
+def test_update_enrollment_fields(db):
+    db.insert_enrollment("x", "old desc", "old prompt")
+    db.update_enrollment_fields("x", description="new desc", system_prompt="new prompt", repos={"r": "u"})
+    e = db.get_enrollment("x")
+    assert e["description"] == "new desc"
+    assert e["system_prompt"] == "new prompt"
+
+
+def test_delete_enrollment(db):
+    db.insert_enrollment("x", "desc", "prompt")
+    db.delete_enrollment("x")
+    assert db.get_enrollment("x") is None

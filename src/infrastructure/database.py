@@ -72,6 +72,16 @@ class Database:
                 estimated_cost REAL,
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS agent_enrollments (
+                name TEXT PRIMARY KEY,
+                description TEXT NOT NULL,
+                system_prompt TEXT NOT NULL,
+                repos TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
         """)
         # Best-effort migration for DBs created before `status` existed. SQLite
         # has no IF NOT EXISTS for ADD COLUMN; swallow the duplicate-column
@@ -401,6 +411,79 @@ class Database:
         cursor = self._conn.execute("SELECT * FROM scorecards WHERE agent = ?", (agent,))
         row = cursor.fetchone()
         return dict(row) if row else None
+
+    # --- Agent Enrollments ---
+
+    def insert_enrollment(
+        self,
+        name: str,
+        description: str,
+        system_prompt: str,
+        repos: dict[str, str] | None = None,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            "INSERT INTO agent_enrollments (name, description, system_prompt, repos, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, 'pending', ?, ?)",
+            (name, description, system_prompt, json.dumps(repos or {}), now, now),
+        )
+        self._conn.commit()
+
+    def get_enrollment(self, name: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM agent_enrollments WHERE name = ?", (name,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_enrollments(self, status: str | None = None) -> list[dict]:
+        if status:
+            rows = self._conn.execute(
+                "SELECT * FROM agent_enrollments WHERE status = ? ORDER BY created_at",
+                (status,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM agent_enrollments ORDER BY created_at",
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_enrollment_status(self, name: str, status: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            "UPDATE agent_enrollments SET status = ?, updated_at = ? WHERE name = ?",
+            (status, now, name),
+        )
+        self._conn.commit()
+
+    def update_enrollment_fields(
+        self,
+        name: str,
+        description: str | None = None,
+        system_prompt: str | None = None,
+        repos: dict[str, str] | None = None,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        updates = ["updated_at = ?"]
+        params: list = [now]
+        if description is not None:
+            updates.append("description = ?")
+            params.append(description)
+        if system_prompt is not None:
+            updates.append("system_prompt = ?")
+            params.append(system_prompt)
+        if repos is not None:
+            updates.append("repos = ?")
+            params.append(json.dumps(repos))
+        params.append(name)
+        self._conn.execute(
+            f"UPDATE agent_enrollments SET {', '.join(updates)} WHERE name = ?",
+            params,
+        )
+        self._conn.commit()
+
+    def delete_enrollment(self, name: str) -> None:
+        self._conn.execute("DELETE FROM agent_enrollments WHERE name = ?", (name,))
+        self._conn.commit()
 
     def close(self) -> None:
         self._conn.close()
