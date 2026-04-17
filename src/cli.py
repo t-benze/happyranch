@@ -394,6 +394,54 @@ def cmd_learning(args: argparse.Namespace) -> None:
         return
 
 
+def _manage_repo_payload_from_file(path: str) -> tuple[str, dict]:
+    """Load a manage-repo payload from a JSON file.
+
+    Same pattern as report-completion: single-line `opc` invocation avoids
+    Claude Code's permission matcher splitting on newlines.
+
+    Returns ``(agent, body)`` shaped for the daemon's manage-repo endpoint.
+    """
+    import json as _json
+    with open(path) as f:
+        data = _json.load(f)
+    required = ["action", "agent", "repo_name"]
+    missing = [k for k in required if not data.get(k)]
+    if missing:
+        raise ValueError(f"manage-repo file missing keys: {missing}")
+    body = {"action": data["action"], "repo_name": data["repo_name"]}
+    if data.get("url"):
+        body["url"] = data["url"]
+    return data["agent"], body
+
+
+def cmd_manage_repo(args: argparse.Namespace) -> None:
+    """Agent callback: add, remove, or update a repo in agent.yaml."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    import json as _json
+    if args.from_file:
+        try:
+            agent, body = _manage_repo_payload_from_file(args.from_file)
+        except (OSError, _json.JSONDecodeError, ValueError) as exc:
+            print(f"Error reading manage-repo file {args.from_file}: {exc}")
+            sys.exit(1)
+    else:
+        agent = args.agent
+        body = {"action": args.action, "repo_name": args.repo_name}
+        if args.url:
+            body["url"] = args.url
+
+    r = client.post(f"/api/v1/agents/{agent}/repos", json=body)
+    if not _ok(r):
+        return
+    print(f"ok: {args.action or body['action']} {body['repo_name']}")
+
+
 # ── parser ───────────────────────────────────────────────────
 
 
@@ -464,6 +512,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_init_agent.add_argument("agent", nargs="?", default=None, choices=[a.value for a in AgentName],
                         help="Specific agent to initialize (default: all)")
     p_init_agent.set_defaults(func=cmd_init_agent)
+
+    # opc manage-repo
+    p_repo = sub.add_parser("manage-repo", help="Add, remove, or update a repo in an agent's config")
+    p_repo.add_argument("action", nargs="?", default=None, choices=["add", "remove", "update"],
+                         help="Action to perform")
+    p_repo.add_argument("--agent", default=None, help="Agent name")
+    p_repo.add_argument("--repo-name", dest="repo_name", default=None, help="Repository name")
+    p_repo.add_argument("--url", default=None, help="Repository URL (required for add/update)")
+    p_repo.add_argument("--from-file", dest="from_file", default=None,
+                         help="Path to JSON file with action/agent/repo_name/url keys")
+    p_repo.set_defaults(func=cmd_manage_repo)
 
     p_rep = sub.add_parser("report-completion", help="Agent callback: report task completion")
     p_rep.add_argument(

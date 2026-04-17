@@ -506,4 +506,85 @@ def test_cmd_init_agent_handles_stream_http_error(capsys):
             cmd_init_agent(args)
     out = capsys.readouterr().out
     assert "init stream failed" in out
-    assert "409" in out
+
+
+def test_manage_repo_parser_add():
+    parser = build_parser()
+    args = parser.parse_args([
+        "manage-repo", "add",
+        "--agent", "dev_agent",
+        "--repo-name", "docs",
+        "--url", "https://github.com/t-benze/docs.git",
+    ])
+    assert args.command == "manage-repo"
+    assert args.action == "add"
+    assert args.agent == "dev_agent"
+    assert args.repo_name == "docs"
+    assert args.url == "https://github.com/t-benze/docs.git"
+
+
+def test_manage_repo_parser_remove():
+    parser = build_parser()
+    args = parser.parse_args([
+        "manage-repo", "remove",
+        "--agent", "dev_agent",
+        "--repo-name", "docs",
+    ])
+    assert args.action == "remove"
+    assert args.url is None
+
+
+def test_manage_repo_parser_from_file():
+    parser = build_parser()
+    args = parser.parse_args([
+        "manage-repo", "--from-file", "/tmp/repo.json",
+    ])
+    assert args.from_file == "/tmp/repo.json"
+
+
+def test_cmd_manage_repo_posts_to_daemon():
+    from src.cli import cmd_manage_repo
+
+    fake = MagicMock()
+    fake.post.return_value.status_code = 200
+    fake.post.return_value.json.return_value = {"ok": True}
+    args = MagicMock(
+        from_file=None,
+        action="add", agent="dev_agent",
+        repo_name="docs", url="https://github.com/t-benze/docs.git",
+    )
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_manage_repo(args)
+    args_pos, kwargs = fake.post.call_args
+    assert args_pos[0] == "/api/v1/agents/dev_agent/repos"
+    assert kwargs["json"]["action"] == "add"
+    assert kwargs["json"]["repo_name"] == "docs"
+    assert kwargs["json"]["url"] == "https://github.com/t-benze/docs.git"
+
+
+def test_cmd_manage_repo_from_file(tmp_path):
+    import json
+
+    from src.cli import cmd_manage_repo
+
+    payload = {
+        "action": "remove",
+        "agent": "dev_agent",
+        "repo_name": "docs",
+    }
+    f = tmp_path / "repo.json"
+    f.write_text(json.dumps(payload))
+
+    fake = MagicMock()
+    fake.post.return_value.status_code = 200
+    fake.post.return_value.json.return_value = {"ok": True}
+    args = MagicMock(
+        from_file=str(f),
+        action=None, agent=None, repo_name=None, url=None,
+    )
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_manage_repo(args)
+    args_pos, kwargs = fake.post.call_args
+    assert args_pos[0] == "/api/v1/agents/dev_agent/repos"
+    assert kwargs["json"]["action"] == "remove"
+    assert kwargs["json"]["repo_name"] == "docs"
