@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from fastapi.testclient import TestClient
 
 
@@ -101,3 +103,141 @@ def test_init_unknown_agent_returns_422(tmp_home, app, auth_headers) -> None:
     )
     assert r.status_code == 422
     assert r.json()["detail"]["code"] == "unknown_agent"
+
+
+def test_manage_repo_add_creates_entry_and_clones(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    workspace = daemon_state.runtime.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\n")
+
+    with patch("src.daemon.routes.agents.ContextBuilder") as MockCB:
+        mock_ctx = MockCB.return_value
+        mock_ctx.clone_repo.return_value = True
+        mock_ctx.ensure_workspace_ready.return_value = None
+
+        r = TestClient(app).post(
+            "/api/v1/agents/dev_agent/repos",
+            json={"action": "add", "repo_name": "docs", "url": "https://github.com/t-benze/docs.git"},
+            headers=auth_headers,
+        )
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    mock_ctx.clone_repo.assert_called_once()
+    mock_ctx.ensure_workspace_ready.assert_called_once()
+
+    from src.daemon.agent_config import load_agent_config
+    cfg = load_agent_config(workspace)
+    assert cfg["repos"]["docs"] == "https://github.com/t-benze/docs.git"
+
+
+def test_manage_repo_add_duplicate_returns_409(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    workspace = daemon_state.runtime.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos:\n  docs: https://old.git\n")
+
+    r = TestClient(app).post(
+        "/api/v1/agents/dev_agent/repos",
+        json={"action": "add", "repo_name": "docs", "url": "https://new.git"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+
+
+def test_manage_repo_remove_deletes_entry_and_dir(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    workspace = daemon_state.runtime.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos:\n  docs: https://old.git\n")
+    repo_dir = workspace / "repos" / "docs"
+    repo_dir.mkdir(parents=True)
+    (repo_dir / ".git").mkdir()  # fake git dir
+
+    with patch("src.daemon.routes.agents.ContextBuilder") as MockCB:
+        mock_ctx = MockCB.return_value
+        mock_ctx.ensure_workspace_ready.return_value = None
+
+        r = TestClient(app).post(
+            "/api/v1/agents/dev_agent/repos",
+            json={"action": "remove", "repo_name": "docs"},
+            headers=auth_headers,
+        )
+    assert r.status_code == 200
+    assert not repo_dir.exists()
+
+    from src.daemon.agent_config import load_agent_config
+    cfg = load_agent_config(workspace)
+    assert "docs" not in cfg.get("repos", {})
+
+
+def test_manage_repo_remove_nonexistent_returns_404(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    workspace = daemon_state.runtime.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\n")
+
+    r = TestClient(app).post(
+        "/api/v1/agents/dev_agent/repos",
+        json={"action": "remove", "repo_name": "ghost"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 404
+
+
+def test_manage_repo_update_reclones(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    workspace = daemon_state.runtime.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos:\n  docs: https://old.git\n")
+    repo_dir = workspace / "repos" / "docs"
+    repo_dir.mkdir(parents=True)
+    (repo_dir / ".git").mkdir()
+
+    with patch("src.daemon.routes.agents.ContextBuilder") as MockCB:
+        mock_ctx = MockCB.return_value
+        mock_ctx.clone_repo.return_value = True
+        mock_ctx.ensure_workspace_ready.return_value = None
+
+        r = TestClient(app).post(
+            "/api/v1/agents/dev_agent/repos",
+            json={"action": "update", "repo_name": "docs", "url": "https://new.git"},
+            headers=auth_headers,
+        )
+    assert r.status_code == 200
+    mock_ctx.clone_repo.assert_called_once()
+
+    from src.daemon.agent_config import load_agent_config
+    cfg = load_agent_config(workspace)
+    assert cfg["repos"]["docs"] == "https://new.git"
+
+
+def test_manage_repo_add_missing_url_returns_422(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    workspace = daemon_state.runtime.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\n")
+
+    r = TestClient(app).post(
+        "/api/v1/agents/dev_agent/repos",
+        json={"action": "add", "repo_name": "docs"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 422
+
+
+def test_manage_repo_unknown_workspace_returns_404(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    r = TestClient(app).post(
+        "/api/v1/agents/nonexistent/repos",
+        json={"action": "add", "repo_name": "x", "url": "https://x.git"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 404
