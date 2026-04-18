@@ -115,6 +115,8 @@ opc kb update <slug> --agent <name> --from-file <path>
 opc kb delete <slug> --agent <name> --confirm [--as-founder]
 opc kb precedent --task-id <id> --decision approve|reject --rationale "..." [--slug <s>] --as-founder
 opc kb reindex
+
+opc resolve-escalation --task-id <id> --decision approve|reject --rationale "..."
 ```
 
 ### 4.1 `--from-file` mandatory for `add`/`update`
@@ -159,15 +161,27 @@ Returns slug + title + matched snippet. Plain text by default; `--json` for stru
 - `--as-founder` bypasses the EH restriction (same bearer token today; the flag is intent, not identity).
 - Irreversible unless the runtime is git-initialized. The guideline says this bluntly.
 
-### 4.5 `precedent`
+### 4.5 `resolve-escalation` — founder-only, state transition
 
-Founder-side CLI. Behavior:
+Separate command; one job: move an escalated task to its terminal status and log the founder's rationale. Does **not** touch the KB.
 
-1. Resolve `TASK-<id>`; read its brief, `assigned_agent`, and most-recent `log_escalation` audit row (the escalation reason).
-2. Require task `status = ESCALATED` — else 409 `task_not_escalated`.
-3. Require an escalation audit row — else 400 `no_escalation_record`.
-4. Transition the task `ESCALATED` → `APPROVED` (if `--decision approve`) or `REJECTED` (if `--decision reject`).
-5. Build a precedent entry:
+Behavior:
+
+1. Resolve `TASK-<id>`. Require `status = ESCALATED` — else 409 `task_not_escalated`.
+2. Transition `ESCALATED` → `APPROVED` (if `--decision approve`) or `REJECTED` (if `--decision reject`).
+3. Append a new audit row (`log_escalation_resolved`) with founder decision + rationale so the precedent-writer downstream has a clean record to read.
+
+`--rationale` is required — the audit trail's value is the *why*, not the verdict.
+
+### 4.6 `kb precedent` — founder-only, KB write
+
+Second command; one job: produce a precedent entry from an escalation audit trail. Does **not** touch task state.
+
+Behavior:
+
+1. Resolve `TASK-<id>`; read its brief, `assigned_agent`, and the most-recent `log_escalation` audit row (the escalation reason).
+2. Require at least one escalation audit row exists for the task — else 400 `no_escalation_record`. Task status is *not* checked; a precedent can be captured after-the-fact regardless of whether the task was resolved via `resolve-escalation`, manual DB update, or a future Feishu handler.
+3. Build a precedent entry:
 
    ```yaml
    slug: precedent-<task_id>-<approve|reject>   # or --slug override
@@ -184,9 +198,23 @@ Founder-side CLI. Behavior:
 
    Body is a templated markdown with context / ask / decision / rationale sections.
 
-6. Write via the same `_kb_write` helper as `opc kb add` — uniform collision rules and `_index.md` regeneration.
+4. Write via the same `_kb_write` helper as `opc kb add` — uniform collision rules and `_index.md` regeneration.
 
-**Hook point for future automation.** Feishu-driven escalation resolution (blueprint step 10) imports the same `_kb_write_precedent(task_id, decision, rationale, …)` helper. No second implementation.
+### 4.7 Typical founder flow
+
+Two commands, explicit intent at each step:
+
+```
+opc resolve-escalation --task-id TASK-037 --decision approve \
+    --rationale "Refund justified: vendor error per partner-log, <$250 risk"
+opc kb precedent --task-id TASK-037 --decision approve \
+    --rationale "Refund justified: vendor error per partner-log, <$250 risk" \
+    --as-founder
+```
+
+The founder can skip `kb precedent` for trivial resolutions that don't warrant a precedent. The founder can also call `kb precedent` alone on an already-resolved task (post-hoc precedent capture).
+
+**Hook point for future automation.** Feishu-driven escalation resolution (blueprint step 10) calls both commands in sequence — same two code paths, no third implementation.
 
 ## 5. Agent integration
 
@@ -271,8 +299,9 @@ Validation is daemon-side. The CLI is a thin HTTP client.
 | `get` / `update` / `delete` on missing slug | 404 | `not_found` |
 | `delete` by non-EH, non-founder | 403 | `delete_forbidden` |
 | `delete` without `--confirm` | 400 | `confirm_required` |
-| `precedent` on task not in `ESCALATED` | 409 | `task_not_escalated` |
-| `precedent` with no escalation audit row | 400 | `no_escalation_record` |
+| `resolve-escalation` on task not in `ESCALATED` | 409 | `task_not_escalated` |
+| `resolve-escalation` missing `--rationale` | 400 | `rationale_required` |
+| `kb precedent` with no escalation audit row | 400 | `no_escalation_record` |
 
 ### 6.1 Concurrency
 
@@ -310,7 +339,13 @@ Matches existing test patterns (unit + route + CLI + skill-text + one integratio
 
 ### 7.2 `tests/daemon/test_routes_kb.py` (new route module `src/daemon/routes/kb.py`)
 
-Mirror pattern of `test_routes_tasks.py`. One test per status code branch in §6 table. Includes happy-path tests for `list`, `get`, `search`, `add`, `update`, `delete` (as EH), and `precedent` (task transitions + entry written).
+Mirror pattern of `test_routes_tasks.py`. One test per status code branch in §6 table. Includes happy-path tests for `list`, `get`, `search`, `add`, `update`, `delete` (as EH), and `kb precedent` (entry written, task status unchanged). A separate happy-path test verifies `kb precedent` succeeds on an already-resolved task (post-hoc capture).
+
+### 7.2b `tests/daemon/test_routes_tasks.py` additions (resolve-escalation)
+
+- Happy path: `resolve-escalation` on `ESCALATED` task transitions to `APPROVED`/`REJECTED`, writes `log_escalation_resolved` audit row, does **not** write to `<runtime>/kb/`.
+- 409 `task_not_escalated` when task is in any non-`ESCALATED` status.
+- 400 `rationale_required` when `--rationale` missing.
 
 ### 7.3 `tests/test_cli.py` additions
 
@@ -354,10 +389,12 @@ New files:
 
 Modified files:
 
-- `src/cli.py` — new `opc kb *` subcommands.
+- `src/cli.py` — new `opc kb *` subcommands plus `opc resolve-escalation`.
 - `src/client/client.py` — HTTP client methods for the new routes.
+- `src/daemon/routes/tasks.py` — add `POST /tasks/{id}/resolve-escalation`.
 - `src/daemon/app.py` — register the `kb` router.
 - `src/daemon/state.py` — add `kb_lock`.
+- `src/infrastructure/audit_logger.py` — add `log_escalation_resolved` helper.
 - `src/orchestrator/context_builder.py` — inject Knowledge Base section into generated `CLAUDE.md`.
 - `protocol/skills/start-task/SKILL.md` — add Step 2.5 (Consult KB) and Step 5.5 (Contribute to KB), renumber as needed.
 - `CLAUDE.md` (project) — note KB under the directory layout; add operational section for founders.
