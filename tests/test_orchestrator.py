@@ -639,3 +639,22 @@ def test_task_history_newest_first(mock_run, orchestrator, test_runtime):
     idx2 = hist.index("TASK-002")
     idx1 = hist.index("TASK-001")
     assert idx2 < idx1
+
+
+def test_read_completion_from_db_preserves_artifact_dir(orchestrator):
+    """Reconstructing a CompletionReport from task_results must include
+    artifact_dir so _finalize_task can persist tasks.final_artifact_dir for
+    real agent completions that flow through the daemon callback path."""
+    orchestrator.create_task(TaskType.GENERAL, "Write the report")
+    orchestrator._db.insert_task_result(
+        "TASK-001",
+        "dev_agent",
+        "sess-xyz",
+        output_summary="Report done",
+        confidence_score=85,
+        artifact_dir="artifacts/TASK-001",
+    )
+
+    report = orchestrator._read_completion_from_db("TASK-001", "dev_agent", "sess-xyz")
+    assert report is not None
+    assert report.artifact_dir == "artifacts/TASK-001"

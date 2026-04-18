@@ -74,6 +74,7 @@ class Orchestrator:
             risks_flagged=row.get("risks_flagged") or [],
             dependencies=[],
             suggested_reviewer_focus=[],
+            artifact_dir=row.get("artifact_dir"),
         )
 
     def create_task(self, task_type: TaskType, brief: str) -> str:
