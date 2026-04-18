@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
@@ -14,6 +15,10 @@ from src.daemon.state import DaemonState
 from src.models import TaskRecord, TaskType
 
 router = APIRouter(dependencies=[require_token()])
+
+# Artifacts are fully inlined into the recall response when an agent asks for
+# them, so cap the total to keep one recall under a comfortable prompt budget.
+MAX_ARTIFACT_BYTES = 200 * 1024
 
 
 class SubmitTask(BaseModel):
@@ -62,6 +67,74 @@ def get_task(task_id: str, request: Request) -> dict:
         "results": state.db.get_task_results(task_id),
         "audit_log": state.db.get_audit_logs(task_id),
     }
+
+
+def _read_artifact(
+    workspaces_dir: Path, assigned_agent: str | None, artifact_dir: str | None,
+) -> dict | None:
+    """Return {files, truncated} for the artifact folder, or None if unresolvable.
+
+    Files are read as text; anything that fails decoding (binaries) is skipped.
+    If the total inlined payload would exceed MAX_ARTIFACT_BYTES we flip to a
+    path-only listing with truncated=True so the agent still sees the inventory.
+    """
+    if not assigned_agent or not artifact_dir:
+        return None
+    base = workspaces_dir / assigned_agent / artifact_dir
+    if not base.exists():
+        return {"files": [], "truncated": False}
+    all_files = sorted(f for f in base.rglob("*") if f.is_file())
+    files: list[dict] = []
+    total = 0
+    for f in all_files:
+        try:
+            text = f.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        total += len(text.encode("utf-8"))
+        if total > MAX_ARTIFACT_BYTES:
+            return {
+                "files": [{"path": str(f.relative_to(base))} for f in all_files],
+                "truncated": True,
+            }
+        files.append({"path": str(f.relative_to(base)), "content": text})
+    return {"files": files, "truncated": False}
+
+
+def _recall_node(
+    state: DaemonState, task_id: str, tree: bool, include_artifact: bool,
+) -> dict | None:
+    payload = state.db.get_recall_payload(task_id)
+    if payload is None:
+        return None
+    if include_artifact:
+        payload["artifact"] = _read_artifact(
+            state.runtime.workspaces_dir,
+            payload.get("assigned_agent"),
+            payload.get("artifact_dir"),
+        )
+    if tree:
+        child_ids = payload["children"]
+        payload["children"] = [
+            _recall_node(state, cid, tree=True, include_artifact=include_artifact)
+            for cid in child_ids
+        ]
+    return payload
+
+
+@router.get("/tasks/{task_id}/recall")
+def recall_task(
+    task_id: str,
+    request: Request,
+    tree: bool = False,
+    include_artifact: bool = False,
+) -> dict:
+    state: DaemonState = request.app.state.daemon
+    _require_active(state)
+    node = _recall_node(state, task_id, tree=tree, include_artifact=include_artifact)
+    if node is None:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    return node
 
 
 class CompletionBody(BaseModel):

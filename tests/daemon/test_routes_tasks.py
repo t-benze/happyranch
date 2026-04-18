@@ -223,6 +223,90 @@ def test_completion_persists_artifact_dir(
     assert rows[-1]["artifact_dir"] == f"artifacts/{task_id}"
 
 
+def test_recall_returns_task_payload(tmp_home, app, daemon_state, auth_headers) -> None:
+    from src.models import TaskRecord, TaskStatus, TaskType
+    daemon_state.db.insert_task(
+        TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="Review Q1")
+    )
+    daemon_state.db.update_task(
+        "TASK-001",
+        status=TaskStatus.APPROVED,
+        final_output_summary="Report delivered",
+        final_artifact_dir="artifacts/TASK-001",
+    )
+    r = TestClient(app).get("/api/v1/tasks/TASK-001/recall", headers=auth_headers)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["task_id"] == "TASK-001"
+    assert body["output_summary"] == "Report delivered"
+    assert body["artifact_dir"] == "artifacts/TASK-001"
+    assert body["children"] == []
+
+
+def test_recall_missing_task_returns_404(tmp_home, app, auth_headers) -> None:
+    r = TestClient(app).get("/api/v1/tasks/TASK-404/recall", headers=auth_headers)
+    assert r.status_code == 404
+
+
+def test_recall_idle_returns_409(tmp_home, app_idle, auth_headers) -> None:
+    r = TestClient(app_idle).get("/api/v1/tasks/TASK-001/recall", headers=auth_headers)
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "no_active_runtime"
+
+
+def test_recall_tree_includes_descendants(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    from src.models import TaskRecord, TaskType
+    daemon_state.db.insert_task(
+        TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="root")
+    )
+    daemon_state.db.insert_task(TaskRecord(
+        id="TASK-002", type=TaskType.GENERAL, brief="child",
+        parent_task_id="TASK-001",
+    ))
+    r = TestClient(app).get(
+        "/api/v1/tasks/TASK-001/recall",
+        params={"tree": "true"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["task_id"] == "TASK-001"
+    assert isinstance(body["children"], list)
+    assert body["children"][0]["task_id"] == "TASK-002"
+    # Grandchildren slot is empty but still a list
+    assert body["children"][0]["children"] == []
+
+
+def test_recall_include_artifact_reads_files(
+    tmp_home, app, daemon_state, runtime, auth_headers,
+) -> None:
+    from src.models import TaskRecord, TaskType
+    ws = runtime.workspaces_dir / "dev_agent"
+    artifact = ws / "artifacts" / "TASK-001"
+    artifact.mkdir(parents=True)
+    (artifact / "report.md").write_text("# Q1 report\n\nAll good.")
+    daemon_state.db.insert_task(TaskRecord(
+        id="TASK-001", type=TaskType.GENERAL, brief="b",
+        assigned_agent="dev_agent",
+    ))
+    daemon_state.db.update_task(
+        "TASK-001", final_artifact_dir="artifacts/TASK-001",
+    )
+    r = TestClient(app).get(
+        "/api/v1/tasks/TASK-001/recall",
+        params={"include_artifact": "true"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["artifact"] == {
+        "files": [{"path": "report.md", "content": "# Q1 report\n\nAll good."}],
+        "truncated": False,
+    }
+
+
 def test_events_unknown_task_returns_404(tmp_home, app, auth_headers) -> None:
     """Opening /events for a task the daemon never saw must 404, not hang."""
     r = TestClient(app).get("/api/v1/tasks/TASK-999/events", headers=auth_headers)
