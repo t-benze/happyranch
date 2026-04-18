@@ -280,3 +280,30 @@ def test_delete_enrollment(db):
     db.insert_enrollment("x", "desc", "prompt")
     db.delete_enrollment("x")
     assert db.get_enrollment("x") is None
+
+
+def test_insert_task_with_parent_round_trips(db):
+    parent = TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="root")
+    child = TaskRecord(
+        id="TASK-002", type=TaskType.GENERAL, brief="child", parent_task_id="TASK-001"
+    )
+    db.insert_task(parent)
+    db.insert_task(child)
+    got = db.get_task("TASK-002")
+    assert got.parent_task_id == "TASK-001"
+
+
+def test_get_children_returns_direct_children_only(db):
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="root"))
+    db.insert_task(TaskRecord(
+        id="TASK-002", type=TaskType.GENERAL, brief="c1", parent_task_id="TASK-001"
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-003", type=TaskType.GENERAL, brief="c2", parent_task_id="TASK-001"
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-004", type=TaskType.GENERAL, brief="grandchild", parent_task_id="TASK-002"
+    ))
+    assert db.get_children("TASK-001") == ["TASK-002", "TASK-003"]
+    assert db.get_children("TASK-002") == ["TASK-004"]
+    assert db.get_children("TASK-003") == []

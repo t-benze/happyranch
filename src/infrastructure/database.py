@@ -33,7 +33,8 @@ class Database:
                 revision_count INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                completed_at TEXT
+                completed_at TEXT,
+                parent_task_id TEXT
             );
 
             CREATE TABLE IF NOT EXISTS audit_log (
@@ -92,6 +93,13 @@ class Database:
             )
         except sqlite3.OperationalError:
             pass
+        try:
+            self._conn.execute("ALTER TABLE tasks ADD COLUMN parent_task_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id)"
+        )
 
     def list_tables(self) -> list[str]:
         cursor = self._conn.execute(
@@ -104,8 +112,8 @@ class Database:
     def insert_task(self, task: TaskRecord) -> None:
         self._conn.execute(
             """INSERT INTO tasks (id, type, status, assigned_agent, crew, brief,
-               revision_count, created_at, updated_at, completed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               revision_count, created_at, updated_at, completed_at, parent_task_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task.id,
                 task.type.value,
@@ -117,6 +125,7 @@ class Database:
                 task.created_at.isoformat(),
                 task.updated_at.isoformat(),
                 task.completed_at.isoformat() if task.completed_at else None,
+                task.parent_task_id,
             ),
         )
         self._conn.commit()
@@ -137,6 +146,7 @@ class Database:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             completed_at=row["completed_at"],
+            parent_task_id=row["parent_task_id"],
         )
 
     def list_tasks(self, limit: int = 20) -> list[TaskRecord]:
@@ -155,9 +165,18 @@ class Database:
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
                 completed_at=row["completed_at"],
+                parent_task_id=row["parent_task_id"],
             )
             for row in cursor.fetchall()
         ]
+
+    def get_children(self, parent_task_id: str) -> list[str]:
+        """Return direct children of a task, ordered by creation time."""
+        cursor = self._conn.execute(
+            "SELECT id FROM tasks WHERE parent_task_id = ? ORDER BY created_at",
+            (parent_task_id,),
+        )
+        return [row["id"] for row in cursor.fetchall()]
 
     def update_task(self, task_id: str, **fields: object) -> None:
         allowed = {"status", "assigned_agent", "revision_count", "completed_at"}

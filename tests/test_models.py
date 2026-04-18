@@ -125,3 +125,13 @@ def test_step_record():
 
 def test_task_type_general():
     assert TaskType.GENERAL == "general"
+
+
+def test_task_record_accepts_parent_task_id():
+    t = TaskRecord(id="TASK-002", type=TaskType.GENERAL, brief="child", parent_task_id="TASK-001")
+    assert t.parent_task_id == "TASK-001"
+
+
+def test_task_record_parent_defaults_to_none():
+    t = TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="root")
+    assert t.parent_task_id is None
