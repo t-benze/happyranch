@@ -39,6 +39,19 @@ def test_make_worktree_references_claude_worktrees_path() -> None:
     assert "git worktree add" in body
 
 
+def test_start_task_skill_documents_memory_consult() -> None:
+    body = (SKILLS_ROOT / "start-task" / "SKILL.md").read_text()
+    assert "task_history.md" in body
+    assert "opc recall" in body
+    assert "Consult memory" in body
+
+
+def test_start_task_skill_documents_artifact_convention() -> None:
+    body = (SKILLS_ROOT / "start-task" / "SKILL.md").read_text()
+    assert "artifacts/" in body
+    assert "artifact_dir" in body
+
+
 def test_skill_cli_commands_exist() -> None:
     """Every `opc <subcommand>` referenced by a skill must be a real subcommand."""
     from src.cli import build_parser
