@@ -307,6 +307,71 @@ def test_recall_include_artifact_reads_files(
     }
 
 
+def test_recall_rejects_absolute_artifact_path(
+    tmp_home, app, daemon_state, runtime, auth_headers,
+) -> None:
+    """artifact_dir comes from an agent-supplied completion payload. A buggy or
+    malicious agent that stores an absolute path must not be able to read
+    arbitrary files on the host via /recall?include_artifact=true."""
+    from src.models import TaskRecord, TaskType
+    secret = tmp_home / "secret.txt"
+    secret.write_text("DO NOT LEAK")
+    daemon_state.db.insert_task(TaskRecord(
+        id="TASK-001", type=TaskType.GENERAL, brief="b",
+        assigned_agent="dev_agent",
+    ))
+    daemon_state.db.update_task(
+        "TASK-001", final_artifact_dir=str(tmp_home),
+    )
+    r = TestClient(app).get(
+        "/api/v1/tasks/TASK-001/recall",
+        params={"include_artifact": "true"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    # Must not expose files from outside the assigned agent's workspace.
+    # Either the endpoint returns no artifact payload at all, or an empty one —
+    # but it must never contain secret.txt.
+    artifact = body.get("artifact")
+    contents = "" if not artifact else "".join(
+        f.get("content", "") for f in artifact.get("files", [])
+    )
+    assert "DO NOT LEAK" not in contents
+
+
+def test_recall_rejects_parent_traversal_artifact_path(
+    tmp_home, app, daemon_state, runtime, auth_headers,
+) -> None:
+    """A `..` in artifact_dir must not let an agent read another agent's
+    workspace."""
+    from src.models import TaskRecord, TaskType
+    # dev_agent workspace must exist so `dev_agent/..` can resolve through it.
+    (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
+    other = runtime.workspaces_dir / "other_agent" / "secrets"
+    other.mkdir(parents=True)
+    (other / "token.txt").write_text("SUPERSECRET")
+    daemon_state.db.insert_task(TaskRecord(
+        id="TASK-001", type=TaskType.GENERAL, brief="b",
+        assigned_agent="dev_agent",
+    ))
+    daemon_state.db.update_task(
+        "TASK-001", final_artifact_dir="../other_agent/secrets",
+    )
+    r = TestClient(app).get(
+        "/api/v1/tasks/TASK-001/recall",
+        params={"include_artifact": "true"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    artifact = body.get("artifact")
+    contents = "" if not artifact else "".join(
+        f.get("content", "") for f in artifact.get("files", [])
+    )
+    assert "SUPERSECRET" not in contents
+
+
 def test_events_unknown_task_returns_404(tmp_home, app, auth_headers) -> None:
     """Opening /events for a task the daemon never saw must 404, not hang."""
     r = TestClient(app).get("/api/v1/tasks/TASK-999/events", headers=auth_headers)

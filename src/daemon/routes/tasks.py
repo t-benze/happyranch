@@ -80,7 +80,14 @@ def _read_artifact(
     """
     if not assigned_agent or not artifact_dir:
         return None
-    base = workspaces_dir / assigned_agent / artifact_dir
+    # artifact_dir is agent-supplied via the completion callback. Absolute paths
+    # and `..` segments would let a buggy/malicious agent disclose arbitrary
+    # readable files on the host, so confine the result to the assigned agent's
+    # workspace by resolving both paths and checking containment.
+    agent_root = (workspaces_dir / assigned_agent).resolve()
+    base = (agent_root / artifact_dir).resolve()
+    if not base.is_relative_to(agent_root):
+        return None
     if not base.exists():
         return {"files": [], "truncated": False}
     all_files = sorted(f for f in base.rglob("*") if f.is_file())
