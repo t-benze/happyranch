@@ -84,6 +84,32 @@ class Orchestrator:
         logger.info("Created task %s: %s", task_id, brief)
         return task_id
 
+    def _finalize_task(
+        self,
+        task_id: str,
+        report: CompletionReport | None,
+        override_summary: str | None = None,
+    ) -> None:
+        """Populate tasks.final_output_summary / final_artifact_dir.
+
+        ``override_summary`` wins if set (used for escalation reasons and for
+        the parsed EH 'summary' of root tasks). Otherwise we read from the
+        report. Silent no-op if there's nothing to persist.
+        """
+        summary = override_summary
+        artifact: str | None = None
+        if report is not None:
+            if summary is None:
+                summary = report.output_summary
+            artifact = report.artifact_dir
+        fields: dict[str, object] = {}
+        if summary is not None:
+            fields["final_output_summary"] = summary
+        if artifact is not None:
+            fields["final_artifact_dir"] = artifact
+        if fields:
+            self._db.update_task(task_id, **fields)
+
     def _spawn_delegate_task(
         self, parent_task_id: str, agent: str, prompt: str, task_type: TaskType,
     ) -> str:
@@ -145,6 +171,7 @@ class Orchestrator:
             eh_result, eh_report = self._run_agent(task_id, "engineering_head", eh_prompt)
             if not eh_result.success or eh_report is None:
                 self._db.update_task(task_id, status=TaskStatus.REJECTED)
+                self._finalize_task(task_id, report=None, override_summary="EH session failed")
                 self._update_recent_tasks(task_id)
                 return "rejected"
 
@@ -157,6 +184,7 @@ class Orchestrator:
 
             if next_step.action == "done":
                 self._db.update_task(task_id, status=TaskStatus.APPROVED)
+                self._finalize_task(task_id, report=eh_report, override_summary=next_step.summary)
                 self._log_review_verdicts(task_id, prior_steps)
                 self._update_recent_tasks(task_id)
                 return "approved"
@@ -166,6 +194,10 @@ class Orchestrator:
                 self._audit.log_escalation(
                     task_id, "engineering_head",
                     next_step.reason or "Escalated by Engineering Head",
+                )
+                self._finalize_task(
+                    task_id, report=None,
+                    override_summary=next_step.reason or "Escalated by Engineering Head",
                 )
                 self._update_recent_tasks(task_id)
                 return "escalated"
@@ -228,12 +260,25 @@ class Orchestrator:
                         and not delegate_blocked
                     ),
                 ))
+                self._finalize_task(
+                    child_task_id,
+                    report=delegate_report,
+                    override_summary=(
+                        "Agent session failed" if delegate_report is None
+                        else f"blocked: {delegate_report.output_summary}" if delegate_blocked
+                        else None
+                    ),
+                )
 
         # Max steps exceeded — escalate
         self._db.update_task(task_id, status=TaskStatus.ESCALATED)
         self._audit.log_escalation(
             task_id, "orchestrator",
             f"Max orchestration steps ({max_steps}) exceeded",
+        )
+        self._finalize_task(
+            task_id, report=None,
+            override_summary=f"Max orchestration steps ({max_steps}) exceeded",
         )
         self._update_recent_tasks(task_id)
         return "escalated"

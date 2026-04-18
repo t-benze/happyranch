@@ -532,3 +532,48 @@ def test_delegate_spawns_child_task(mock_run, orchestrator, test_runtime):
     assert child.assigned_agent == "dev_agent"
     assert child.brief == "Implement Alipay integration"
     assert orchestrator._db.get_children("TASK-001") == ["TASK-002"]
+
+
+@patch.object(Orchestrator, "_run_agent")
+def test_finalize_root_task_parses_eh_summary(mock_run, orchestrator, test_runtime):
+    _setup_workspaces(test_runtime)
+    mock_run.return_value = _make_eh_decision("TASK-001", {
+        "action": "done",
+        "summary": "Reviewed Q1 metrics. Three risks, five actions.",
+    })
+    task_id = orchestrator.create_task(TaskType.GENERAL, "Review Q1")
+    orchestrator.run_task(task_id)
+    task = orchestrator._db.get_task(task_id)
+    assert task.final_output_summary == "Reviewed Q1 metrics. Three risks, five actions."
+
+
+@patch.object(Orchestrator, "_run_agent")
+def test_finalize_child_task_from_worker_report(mock_run, orchestrator, test_runtime):
+    _setup_workspaces(test_runtime)
+    calls = 0
+    def side_effect(task_id, agent, prompt):
+        nonlocal calls
+        calls += 1
+        if agent == "engineering_head":
+            if calls == 1:
+                return _make_eh_decision(task_id, {
+                    "action": "delegate",
+                    "agent": "dev_agent",
+                    "prompt": "Implement Alipay",
+                })
+            return _make_eh_decision(task_id, {"action": "done", "summary": "good"})
+        return (
+            ExecutorResult(success=True, duration_seconds=10, session_id="sess-w"),
+            CompletionReport(
+                task_id=task_id, agent=agent, status="completed", confidence=85,
+                output_summary="Alipay integration shipped",
+                artifact_dir="artifacts/TASK-002",
+            ),
+        )
+    mock_run.side_effect = side_effect
+
+    orchestrator.create_task(TaskType.GENERAL, "Add Alipay")
+    orchestrator.run_task("TASK-001")
+    child = orchestrator._db.get_task("TASK-002")
+    assert child.final_output_summary == "Alipay integration shipped"
+    assert child.final_artifact_dir == "artifacts/TASK-002"
