@@ -73,6 +73,7 @@ class Database:
                 duration_seconds INTEGER,
                 token_count INTEGER,
                 estimated_cost REAL,
+                artifact_dir TEXT,
                 created_at TEXT NOT NULL
             );
 
@@ -105,6 +106,7 @@ class Database:
         for ddl in (
             "ALTER TABLE tasks ADD COLUMN final_output_summary TEXT",
             "ALTER TABLE tasks ADD COLUMN final_artifact_dir TEXT",
+            "ALTER TABLE task_results ADD COLUMN artifact_dir TEXT",
         ):
             try:
                 self._conn.execute(ddl)
@@ -346,12 +348,14 @@ class Database:
         duration_seconds: int | None = None,
         token_count: int | None = None,
         estimated_cost: float | None = None,
+        artifact_dir: str | None = None,
     ) -> None:
         self._conn.execute(
             """INSERT INTO task_results
                (task_id, agent, session_id, status, output_summary, confidence_score,
-                learnings, risks_flagged, duration_seconds, token_count, estimated_cost, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                learnings, risks_flagged, duration_seconds, token_count, estimated_cost,
+                artifact_dir, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task_id,
                 agent,
@@ -364,6 +368,7 @@ class Database:
                 duration_seconds,
                 token_count,
                 estimated_cost,
+                artifact_dir,
                 datetime.now(timezone.utc).isoformat(),
             ),
         )

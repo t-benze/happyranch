@@ -135,3 +135,18 @@ def test_task_record_accepts_parent_task_id():
 def test_task_record_parent_defaults_to_none():
     t = TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="root")
     assert t.parent_task_id is None
+
+
+def test_completion_report_accepts_artifact_dir():
+    r = CompletionReport(
+        task_id="TASK-001", agent="dev_agent", status="completed",
+        confidence=80, output_summary="done", artifact_dir="artifacts/TASK-001",
+    )
+    assert r.artifact_dir == "artifacts/TASK-001"
+
+
+def test_completion_report_artifact_defaults_to_none():
+    r = CompletionReport(
+        task_id="T", agent="a", status="completed", confidence=0, output_summary="",
+    )
+    assert r.artifact_dir is None

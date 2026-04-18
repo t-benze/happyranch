@@ -293,6 +293,25 @@ def test_insert_task_with_parent_round_trips(db):
     assert got.parent_task_id == "TASK-001"
 
 
+def test_insert_task_result_stores_artifact_dir(db):
+    db.insert_task_result(
+        task_id="TASK-001", agent="dev_agent", session_id="s1",
+        output_summary="done", confidence_score=80,
+        artifact_dir="artifacts/TASK-001",
+    )
+    rows = db.get_task_results("TASK-001")
+    assert rows[0]["artifact_dir"] == "artifacts/TASK-001"
+
+
+def test_insert_task_result_artifact_optional(db):
+    db.insert_task_result(
+        task_id="TASK-002", agent="dev_agent", session_id="s2",
+        output_summary="done", confidence_score=80,
+    )
+    rows = db.get_task_results("TASK-002")
+    assert rows[0]["artifact_dir"] is None
+
+
 def test_update_task_sets_final_summary_and_artifact(db):
     db.insert_task(TaskRecord(id="TASK-010", type=TaskType.GENERAL, brief="b"))
     db.update_task(

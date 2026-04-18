@@ -66,6 +66,7 @@ class CompletionReport(BaseModel):
     risks_flagged: list[str] = Field(default_factory=list)
     dependencies: list[str] = Field(default_factory=list)
     suggested_reviewer_focus: list[str] = Field(default_factory=list)
+    artifact_dir: str | None = None
 
 
 class TaskStep(BaseModel):
