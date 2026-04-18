@@ -73,6 +73,7 @@ class CompletionBody(BaseModel):
     risks_flagged: list[str] = []
     dependencies: list[str] = []
     suggested_reviewer_focus: list[str] = []
+    artifact_dir: str | None = None
 
 
 @router.get("/tasks/{task_id}/events")
@@ -119,6 +120,7 @@ async def submit_completion(task_id: str, body: CompletionBody, request: Request
             output_summary=body.output_summary,
             confidence_score=body.confidence,
             risks_flagged=body.risks_flagged,
+            artifact_dir=body.artifact_dir,
         )
     # Clear the tracker so a duplicate POST for the same session is rejected as
     # unknown_session rather than silently persisting a second row.

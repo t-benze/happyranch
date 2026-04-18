@@ -197,6 +197,32 @@ def test_completion_preserves_empty_risks_flagged(
     assert latest["risks_flagged"] == []
 
 
+def test_completion_persists_artifact_dir(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    sub = TestClient(app).post(
+        "/api/v1/tasks",
+        json={"type": "general", "brief": "x"},
+        headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    daemon_state.sessions.set_active(task_id, "dev_agent", "sess-a")
+
+    r = TestClient(app).post(
+        f"/api/v1/tasks/{task_id}/completion",
+        json={
+            "session_id": "sess-a", "agent": "dev_agent",
+            "status": "completed", "confidence": 80,
+            "output_summary": "Wrote Q1 report",
+            "artifact_dir": f"artifacts/{task_id}",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    rows = daemon_state.db.get_task_results(task_id)
+    assert rows[-1]["artifact_dir"] == f"artifacts/{task_id}"
+
+
 def test_events_unknown_task_returns_404(tmp_home, app, auth_headers) -> None:
     """Opening /events for a task the daemon never saw must 404, not hang."""
     r = TestClient(app).get("/api/v1/tasks/TASK-999/events", headers=auth_headers)

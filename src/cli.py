@@ -330,6 +330,8 @@ def _completion_payload_from_file(path: str) -> tuple[str, dict]:
         "dependencies": data.get("dependencies") or [],
         "suggested_reviewer_focus": data.get("reviewer_focus") or [],
     }
+    if data.get("artifact_dir"):
+        body["artifact_dir"] = data["artifact_dir"]
     return data["task_id"], body
 
 
@@ -373,6 +375,8 @@ def cmd_report_completion(args: argparse.Namespace) -> None:
             "dependencies": args.dependencies or [],
             "suggested_reviewer_focus": args.reviewer_focus or [],
         }
+        if args.artifact_dir:
+            body["artifact_dir"] = args.artifact_dir
     r = client.post(f"/api/v1/tasks/{task_id}/completion", json=body)
     if not _ok(r):
         return
@@ -668,6 +672,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_rep.add_argument("--risks", action="append", default=[])
     p_rep.add_argument("--dependencies", action="append", default=[])
     p_rep.add_argument("--reviewer-focus", action="append", default=[], dest="reviewer_focus")
+    p_rep.add_argument("--artifact-dir", dest="artifact_dir", default=None,
+                       help="Relative path to the artifact directory under the agent workspace")
     p_rep.set_defaults(func=cmd_report_completion)
 
     p_learn = sub.add_parser("learning", help="Agent callback: append a learning")

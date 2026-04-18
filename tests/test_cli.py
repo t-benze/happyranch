@@ -309,6 +309,37 @@ def test_cmd_report_completion_from_file_posts_loaded_body(tmp_path):
     assert body["suggested_reviewer_focus"] == ["signature canonicalization"]
 
 
+def test_completion_payload_from_file_accepts_artifact_dir(tmp_path):
+    import json as _json
+    from src.cli import _completion_payload_from_file
+
+    path = tmp_path / "c.json"
+    path.write_text(_json.dumps({
+        "task_id": "TASK-001",
+        "session_id": "s",
+        "agent": "dev_agent",
+        "status": "completed",
+        "summary": "done",
+        "artifact_dir": "artifacts/TASK-001",
+    }))
+    task_id, body = _completion_payload_from_file(str(path))
+    assert task_id == "TASK-001"
+    assert body["artifact_dir"] == "artifacts/TASK-001"
+
+
+def test_completion_payload_from_file_artifact_optional(tmp_path):
+    import json as _json
+    from src.cli import _completion_payload_from_file
+
+    path = tmp_path / "c.json"
+    path.write_text(_json.dumps({
+        "task_id": "T", "session_id": "s", "agent": "a",
+        "status": "completed", "summary": "done",
+    }))
+    _, body = _completion_payload_from_file(str(path))
+    assert body.get("artifact_dir") is None
+
+
 def test_report_completion_parser_accepts_from_file_alone():
     """With --from-file, none of --task-id/--session-id/... are required."""
     parser = build_parser()

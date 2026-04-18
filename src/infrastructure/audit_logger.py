@@ -58,6 +58,7 @@ class AuditLogger:
             duration_seconds=duration_seconds,
             token_count=token_count,
             estimated_cost=estimated_cost,
+            artifact_dir=report.artifact_dir,
         )
 
     def log_review_verdict(
