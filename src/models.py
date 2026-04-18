@@ -49,6 +49,8 @@ class TaskRecord(BaseModel):
     crew: str = "product_engineering"
     brief: str
     parent_task_id: str | None = None
+    final_output_summary: str | None = None
+    final_artifact_dir: str | None = None
     revision_count: int = 0
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)

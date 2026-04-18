@@ -293,6 +293,25 @@ def test_insert_task_with_parent_round_trips(db):
     assert got.parent_task_id == "TASK-001"
 
 
+def test_update_task_sets_final_summary_and_artifact(db):
+    db.insert_task(TaskRecord(id="TASK-010", type=TaskType.GENERAL, brief="b"))
+    db.update_task(
+        "TASK-010",
+        final_output_summary="Produced Q1 report",
+        final_artifact_dir="artifacts/TASK-010",
+    )
+    got = db.get_task("TASK-010")
+    assert got.final_output_summary == "Produced Q1 report"
+    assert got.final_artifact_dir == "artifacts/TASK-010"
+
+
+def test_final_fields_default_to_none(db):
+    db.insert_task(TaskRecord(id="TASK-011", type=TaskType.GENERAL, brief="b"))
+    got = db.get_task("TASK-011")
+    assert got.final_output_summary is None
+    assert got.final_artifact_dir is None
+
+
 def test_get_children_returns_direct_children_only(db):
     db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="root"))
     db.insert_task(TaskRecord(

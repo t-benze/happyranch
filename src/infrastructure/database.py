@@ -34,7 +34,9 @@ class Database:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 completed_at TEXT,
-                parent_task_id TEXT
+                parent_task_id TEXT,
+                final_output_summary TEXT,
+                final_artifact_dir TEXT
             );
 
             CREATE TABLE IF NOT EXISTS audit_log (
@@ -100,6 +102,14 @@ class Database:
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id)"
         )
+        for ddl in (
+            "ALTER TABLE tasks ADD COLUMN final_output_summary TEXT",
+            "ALTER TABLE tasks ADD COLUMN final_artifact_dir TEXT",
+        ):
+            try:
+                self._conn.execute(ddl)
+            except sqlite3.OperationalError:
+                pass
 
     def list_tables(self) -> list[str]:
         cursor = self._conn.execute(
@@ -147,6 +157,8 @@ class Database:
             updated_at=row["updated_at"],
             completed_at=row["completed_at"],
             parent_task_id=row["parent_task_id"],
+            final_output_summary=row["final_output_summary"],
+            final_artifact_dir=row["final_artifact_dir"],
         )
 
     def list_tasks(self, limit: int = 20) -> list[TaskRecord]:
@@ -166,6 +178,8 @@ class Database:
                 updated_at=row["updated_at"],
                 completed_at=row["completed_at"],
                 parent_task_id=row["parent_task_id"],
+                final_output_summary=row["final_output_summary"],
+                final_artifact_dir=row["final_artifact_dir"],
             )
             for row in cursor.fetchall()
         ]
@@ -179,7 +193,10 @@ class Database:
         return [row["id"] for row in cursor.fetchall()]
 
     def update_task(self, task_id: str, **fields: object) -> None:
-        allowed = {"status", "assigned_agent", "revision_count", "completed_at"}
+        allowed = {
+            "status", "assigned_agent", "revision_count", "completed_at",
+            "final_output_summary", "final_artifact_dir",
+        }
         updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
         if not updates:
             return
