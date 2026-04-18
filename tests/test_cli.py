@@ -751,3 +751,62 @@ def test_reject_agent_parser():
     args = parser.parse_args(["reject-agent", "content_writer"])
     assert args.command == "reject-agent"
     assert args.name == "content_writer"
+
+
+def test_cli_recall_parses_flags():
+    parser = build_parser()
+    args = parser.parse_args(["recall", "TASK-001", "--tree", "--fetch-artifact"])
+    assert args.command == "recall"
+    assert args.task_id == "TASK-001"
+    assert args.tree is True
+    assert args.fetch_artifact is True
+
+
+def test_cli_recall_defaults():
+    parser = build_parser()
+    args = parser.parse_args(["recall", "TASK-001"])
+    assert args.task_id == "TASK-001"
+    assert args.tree is False
+    assert args.fetch_artifact is False
+
+
+def test_cmd_recall_prints_payload(capsys):
+    import argparse
+    import json as _json
+    from src.cli import cmd_recall
+
+    fake = MagicMock()
+    fake.get.return_value.status_code = 200
+    fake.get.return_value.json.return_value = {"task_id": "TASK-001", "brief": "hi"}
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_recall(argparse.Namespace(task_id="TASK-001", tree=False, fetch_artifact=False))
+    fake.get.assert_called_once_with("/api/v1/tasks/TASK-001/recall", params={})
+    out = capsys.readouterr().out
+    assert _json.loads(out)["task_id"] == "TASK-001"
+
+
+def test_cmd_recall_forwards_tree_and_artifact_params():
+    import argparse
+    from src.cli import cmd_recall
+
+    fake = MagicMock()
+    fake.get.return_value.status_code = 200
+    fake.get.return_value.json.return_value = {}
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_recall(argparse.Namespace(task_id="TASK-001", tree=True, fetch_artifact=True))
+    fake.get.assert_called_once_with(
+        "/api/v1/tasks/TASK-001/recall",
+        params={"tree": "true", "include_artifact": "true"},
+    )
+
+
+def test_cmd_recall_404_exits(capsys):
+    import argparse
+    from src.cli import cmd_recall
+
+    fake = MagicMock()
+    fake.get.return_value.status_code = 404
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        with pytest.raises(SystemExit):
+            cmd_recall(argparse.Namespace(task_id="TASK-404", tree=False, fetch_artifact=False))
+    assert "not found" in capsys.readouterr().out.lower()

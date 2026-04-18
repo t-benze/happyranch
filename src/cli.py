@@ -544,6 +544,34 @@ def cmd_reject_agent(args: argparse.Namespace) -> None:
     print(f"Rejected: {args.name}")
 
 
+def cmd_recall(args: argparse.Namespace) -> None:
+    """Fetch a task's brief, canonical outcome, and optionally artifact files.
+
+    Prints the daemon's JSON response as-is — agents consume it through the
+    start-task skill, humans pipe it to ``jq``. A 404 is treated as an error
+    and the process exits 1 so agent scripts can detect missing tasks.
+    """
+    import json as _json
+
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    params: dict[str, str] = {}
+    if args.tree:
+        params["tree"] = "true"
+    if args.fetch_artifact:
+        params["include_artifact"] = "true"
+    r = client.get(f"/api/v1/tasks/{args.task_id}/recall", params=params)
+    if r.status_code == 404:
+        print(f"Task {args.task_id} not found.")
+        sys.exit(1)
+    if not _ok(r):
+        return
+    print(_json.dumps(r.json(), indent=2))
+
+
 # ── parser ───────────────────────────────────────────────────
 
 
@@ -653,6 +681,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_reject = sub.add_parser("reject-agent", help="Reject a pending agent enrollment")
     p_reject.add_argument("name", help="Agent name to reject")
     p_reject.set_defaults(func=cmd_reject_agent)
+
+    # opc recall
+    p_recall = sub.add_parser(
+        "recall",
+        help="Recall a task: brief, outcome, optional artifact contents",
+    )
+    p_recall.add_argument("task_id", help="Task ID (e.g. TASK-001)")
+    p_recall.add_argument("--tree", action="store_true",
+                          help="Include the full subtree of child tasks")
+    p_recall.add_argument("--fetch-artifact", dest="fetch_artifact",
+                          action="store_true",
+                          help="Inline artifact file contents (capped at 200KB)")
+    p_recall.set_defaults(func=cmd_recall)
 
     p_rep = sub.add_parser("report-completion", help="Agent callback: report task completion")
     p_rep.add_argument(
