@@ -194,6 +194,39 @@ class Database:
         )
         return [row["id"] for row in cursor.fetchall()]
 
+    def list_agent_tasks(self, agent: str, limit: int = 50) -> list[TaskRecord]:
+        """Return tasks assigned to an agent, newest-first.
+
+        Orders by the latest available timestamp (completed_at > updated_at >
+        created_at) as a lexicographic string compare — our ISO-8601 values
+        include microseconds and +00:00 which SQLite's ``datetime()`` parser
+        rejects, but they sort correctly as raw strings.
+        """
+        cursor = self._conn.execute(
+            """SELECT * FROM tasks WHERE assigned_agent = ?
+               ORDER BY COALESCE(completed_at, updated_at, created_at) DESC
+               LIMIT ?""",
+            (agent, limit),
+        )
+        return [
+            TaskRecord(
+                id=row["id"],
+                type=row["type"],
+                status=row["status"],
+                assigned_agent=row["assigned_agent"],
+                crew=row["crew"],
+                brief=row["brief"],
+                revision_count=row["revision_count"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+                completed_at=row["completed_at"],
+                parent_task_id=row["parent_task_id"],
+                final_output_summary=row["final_output_summary"],
+                final_artifact_dir=row["final_artifact_dir"],
+            )
+            for row in cursor.fetchall()
+        ]
+
     def update_task(self, task_id: str, **fields: object) -> None:
         allowed = {
             "status", "assigned_agent", "revision_count", "completed_at",

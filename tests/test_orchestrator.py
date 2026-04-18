@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 from unittest.mock import patch
 
@@ -76,7 +77,7 @@ def _setup_workspaces(runtime, agents: list[str] | None = None):
     for agent in (agents or _DEFAULT_AGENTS):
         ws = runtime.workspaces_dir / agent
         ws.mkdir(parents=True, exist_ok=True)
-        (ws / "recent_tasks.md").write_text(f"# Recent Tasks: {agent}\n\n")
+        (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
         skill = ws / ".claude" / "skills" / "start-task"
         skill.mkdir(parents=True, exist_ok=True)
         (skill / "SKILL.md").write_text("# start-task\n")
@@ -577,3 +578,64 @@ def test_finalize_child_task_from_worker_report(mock_run, orchestrator, test_run
     child = orchestrator._db.get_task("TASK-002")
     assert child.final_output_summary == "Alipay integration shipped"
     assert child.final_artifact_dir == "artifacts/TASK-002"
+
+
+@patch.object(Orchestrator, "_run_agent")
+def test_task_history_written_per_agent_only(mock_run, orchestrator, test_runtime):
+    _setup_workspaces(test_runtime)
+    calls = 0
+    def side_effect(task_id, agent, prompt):
+        nonlocal calls
+        calls += 1
+        if agent == "engineering_head":
+            if calls == 1:
+                return _make_eh_decision(task_id, {
+                    "action": "delegate", "agent": "dev_agent",
+                    "prompt": "Implement Alipay",
+                })
+            return _make_eh_decision(task_id, {"action": "done", "summary": "shipped"})
+        return _make_agent_result(task_id, agent, summary="dev did it")
+    mock_run.side_effect = side_effect
+
+    orchestrator.create_task(TaskType.GENERAL, "Add Alipay support")
+    orchestrator.run_task("TASK-001")
+
+    eh_hist = (test_runtime.workspaces_dir / "engineering_head" / "task_history.md").read_text()
+    dev_hist = (test_runtime.workspaces_dir / "dev_agent" / "task_history.md").read_text()
+    pm_hist = (test_runtime.workspaces_dir / "product_manager" / "task_history.md").read_text()
+
+    assert "TASK-001" in eh_hist
+    assert "TASK-002" in dev_hist
+    assert "TASK-001" not in dev_hist
+    assert "TASK-002" not in pm_hist
+
+
+@patch.object(Orchestrator, "_run_agent")
+def test_task_history_entry_format(mock_run, orchestrator, test_runtime):
+    _setup_workspaces(test_runtime)
+    mock_run.return_value = _make_eh_decision("TASK-001", {
+        "action": "done", "summary": "Reviewed Q1. Three risks, five actions.",
+    })
+    orchestrator.create_task(TaskType.GENERAL, "Review Q1 project status")
+    orchestrator.run_task("TASK-001")
+
+    hist = (test_runtime.workspaces_dir / "engineering_head" / "task_history.md").read_text()
+    assert re.search(r"\*\*TASK-001\*\* \(\d{4}-\d{2}-\d{2}, approved\) — Review Q1", hist)
+    assert "Outcome: Reviewed Q1. Three risks, five actions." in hist
+    assert "Artifact:" not in hist
+
+
+@patch.object(Orchestrator, "_run_agent")
+def test_task_history_newest_first(mock_run, orchestrator, test_runtime):
+    _setup_workspaces(test_runtime)
+    mock_run.return_value = _make_eh_decision("TASK-001", {"action": "done", "summary": "first"})
+    orchestrator.create_task(TaskType.GENERAL, "First task")
+    orchestrator.run_task("TASK-001")
+    mock_run.return_value = _make_eh_decision("TASK-002", {"action": "done", "summary": "second"})
+    orchestrator.create_task(TaskType.GENERAL, "Second task")
+    orchestrator.run_task("TASK-002")
+
+    hist = (test_runtime.workspaces_dir / "engineering_head" / "task_history.md").read_text()
+    idx2 = hist.index("TASK-002")
+    idx1 = hist.index("TASK-001")
+    assert idx2 < idx1
