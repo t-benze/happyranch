@@ -194,6 +194,38 @@ class Database:
         )
         return [row["id"] for row in cursor.fetchall()]
 
+    def get_recall_payload(self, task_id: str) -> dict | None:
+        """Return a flat dict suitable for the /recall endpoint, or None.
+
+        ``children`` is the list of direct child task ids — the route layer
+        promotes them to full payloads when ``tree=true``.
+        """
+        task = self.get_task(task_id)
+        if task is None:
+            return None
+        created_at = (
+            task.created_at.isoformat()
+            if hasattr(task.created_at, "isoformat")
+            else task.created_at
+        )
+        completed_at = (
+            task.completed_at.isoformat()
+            if hasattr(task.completed_at, "isoformat")
+            else task.completed_at
+        )
+        return {
+            "task_id": task.id,
+            "parent_task_id": task.parent_task_id,
+            "assigned_agent": task.assigned_agent,
+            "brief": task.brief,
+            "status": task.status.value,
+            "created_at": created_at,
+            "completed_at": completed_at,
+            "output_summary": task.final_output_summary,
+            "artifact_dir": task.final_artifact_dir,
+            "children": self.get_children(task.id),
+        }
+
     def list_agent_tasks(self, agent: str, limit: int = 50) -> list[TaskRecord]:
         """Return tasks assigned to an agent, newest-first.
 

@@ -345,3 +345,27 @@ def test_get_children_returns_direct_children_only(db):
     assert db.get_children("TASK-001") == ["TASK-002", "TASK-003"]
     assert db.get_children("TASK-002") == ["TASK-004"]
     assert db.get_children("TASK-003") == []
+
+
+def test_get_recall_payload_returns_task_with_children(db):
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="root"))
+    db.insert_task(TaskRecord(
+        id="TASK-002", type=TaskType.GENERAL, brief="child", parent_task_id="TASK-001"
+    ))
+    db.update_task(
+        "TASK-001",
+        final_output_summary="All done",
+        final_artifact_dir="artifacts/TASK-001",
+    )
+    payload = db.get_recall_payload("TASK-001")
+    assert payload is not None
+    assert payload["task_id"] == "TASK-001"
+    assert payload["parent_task_id"] is None
+    assert payload["brief"] == "root"
+    assert payload["output_summary"] == "All done"
+    assert payload["artifact_dir"] == "artifacts/TASK-001"
+    assert payload["children"] == ["TASK-002"]
+
+
+def test_get_recall_payload_missing_task_returns_none(db):
+    assert db.get_recall_payload("TASK-404") is None
