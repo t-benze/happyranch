@@ -84,6 +84,25 @@ class Orchestrator:
         logger.info("Created task %s: %s", task_id, brief)
         return task_id
 
+    def _spawn_delegate_task(
+        self, parent_task_id: str, agent: str, prompt: str, task_type: TaskType,
+    ) -> str:
+        """Persist a child task for a delegated work unit.
+
+        Inherits ``task_type`` from the parent so downstream consumers see a
+        consistent type across the tree.
+        """
+        child_id = self._db.next_task_id()
+        child = TaskRecord(
+            id=child_id,
+            type=task_type,
+            brief=prompt,
+            assigned_agent=agent,
+            parent_task_id=parent_task_id,
+        )
+        self._db.insert_task(child)
+        return child_id
+
     def run_task(self, task_id: str) -> str:
         """Run a task through the EH-driven orchestration loop.
 
@@ -173,11 +192,18 @@ class Orchestrator:
                     ))
                     continue
 
+                child_task_id = self._spawn_delegate_task(
+                    parent_task_id=task_id,
+                    agent=next_step.agent,
+                    prompt=next_step.prompt or "",
+                    task_type=task.type,
+                )
+
                 delegate_result, delegate_report = self._run_agent(
-                    task_id, next_step.agent, next_step.prompt or "",
+                    child_task_id, next_step.agent, next_step.prompt or "",
                 )
                 if delegate_result.success and delegate_report is not None:
-                    self._log_step_result(task_id, delegate_result, delegate_report)
+                    self._log_step_result(child_task_id, delegate_result, delegate_report)
 
                 # A "blocked" completion is a real signal from the agent that
                 # the work did not finish. Treat it as unsuccessful so the EH

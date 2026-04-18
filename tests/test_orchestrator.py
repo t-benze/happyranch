@@ -496,3 +496,39 @@ def test_run_agent_fails_fast_when_workspace_missing_skill(orchestrator, test_ru
     assert "opc init-agent engineering_head" in msg
     # The executor must never have been invoked against a broken workspace.
     assert not (eh_workspace / ".claude" / "skills" / "start-task" / "SKILL.md").exists()
+
+
+@patch.object(Orchestrator, "_run_agent")
+def test_delegate_spawns_child_task(mock_run, orchestrator, test_runtime):
+    _setup_workspaces(test_runtime)
+    calls = 0
+
+    def side_effect(task_id, agent, prompt):
+        nonlocal calls
+        calls += 1
+        if agent == "engineering_head":
+            if calls == 1:
+                return _make_eh_decision(task_id, {
+                    "action": "delegate",
+                    "agent": "dev_agent",
+                    "prompt": "Implement Alipay integration",
+                })
+            return _make_eh_decision(task_id, {
+                "action": "done", "summary": "Dev agent delivered."
+            })
+        # Worker completions should carry the CHILD task id, not the root.
+        assert task_id == "TASK-002", f"expected child id, got {task_id}"
+        return _make_agent_result(task_id, agent)
+
+    mock_run.side_effect = side_effect
+
+    root_id = orchestrator.create_task(TaskType.GENERAL, "Add Alipay")
+    assert root_id == "TASK-001"
+    orchestrator.run_task(root_id)
+
+    child = orchestrator._db.get_task("TASK-002")
+    assert child is not None
+    assert child.parent_task_id == "TASK-001"
+    assert child.assigned_agent == "dev_agent"
+    assert child.brief == "Implement Alipay integration"
+    assert orchestrator._db.get_children("TASK-001") == ["TASK-002"]
