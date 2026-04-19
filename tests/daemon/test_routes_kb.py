@@ -333,11 +333,12 @@ def test_kb_precedent_does_not_transition_task_status(tmp_home, app, runtime, au
     _seed_escalated_task(app, task_id="TASK-038")
     state = app.state.daemon
     client = TestClient(app)
-    client.post(
+    r = client.post(
         "/api/v1/kb/precedent",
         json={"task_id": "TASK-038", "decision": "approve", "rationale": "r"},
         headers=auth_headers,
     )
+    assert r.status_code == 200, r.text
     assert state.db.get_task("TASK-038").status == TaskStatus.ESCALATED
 
 

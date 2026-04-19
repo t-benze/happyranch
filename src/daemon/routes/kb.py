@@ -16,6 +16,7 @@ from src.infrastructure.kb_store import (
     NotFound,
     SlugExists,
 )
+from src.models import TaskType
 
 router = APIRouter(dependencies=[require_token()])
 
@@ -195,10 +196,10 @@ async def reindex_kb(request: Request) -> dict:
     return {"ok": True}
 
 
-_TOPIC_FOR_TASK_TYPE = {
-    "payment_change": "payment",
-    "bug_fix": "engineering",
-    "implement_feature": "engineering",
+_TOPIC_FOR_TASK_TYPE: dict[TaskType, str] = {
+    TaskType.PAYMENT_CHANGE: "payment",
+    TaskType.BUG_FIX: "engineering",
+    TaskType.IMPLEMENT_FEATURE: "engineering",
 }
 
 
@@ -218,7 +219,10 @@ async def precedent_kb(body: KBPrecedentBody, request: Request) -> dict:
         raise HTTPException(status_code=400, detail={"code": "rationale_required"})
     task = state.db.get_task(body.task_id)
     if task is None:
-        raise HTTPException(status_code=404, detail=f"task {body.task_id} not found")
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "task_not_found", "task_id": body.task_id},
+        )
 
     escalation_rows = [
         r for r in state.db.get_audit_logs(body.task_id) if r["action"] == "escalation"
@@ -231,7 +235,7 @@ async def precedent_kb(body: KBPrecedentBody, request: Request) -> dict:
 
     default_slug = f"precedent-{body.task_id.lower().replace('_', '-')}-{body.decision}"
     slug = body.slug or default_slug
-    topic = _TOPIC_FOR_TASK_TYPE.get(str(task.type), "general")
+    topic = _TOPIC_FOR_TASK_TYPE.get(task.type, "general")
     title = f"{task.brief} — {body.decision}"
     entry_body = (
         f"# Precedent: {task.brief}\n\n"
