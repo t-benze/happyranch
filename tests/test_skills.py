@@ -52,6 +52,22 @@ def test_start_task_skill_documents_artifact_convention() -> None:
     assert "artifact_dir" in body
 
 
+def test_start_task_skill_documents_kb_consult() -> None:
+    body = (SKILLS_ROOT / "start-task" / "SKILL.md").read_text()
+    assert "Consult the knowledge base" in body
+    assert "opc kb list" in body
+    assert "opc kb search" in body
+    assert "opc kb get" in body
+
+
+def test_start_task_skill_documents_kb_contribute() -> None:
+    body = (SKILLS_ROOT / "start-task" / "SKILL.md").read_text()
+    assert "Contribute to the KB" in body or "Contribute to KB" in body
+    assert "opc kb add" in body
+    # Mandatory `--from-file` pattern — Bash(opc:*) permission rule
+    assert "--from-file" in body
+
+
 def test_skill_cli_commands_exist() -> None:
     """Every `opc <subcommand>` referenced by a skill must be a real subcommand."""
     from src.cli import build_parser

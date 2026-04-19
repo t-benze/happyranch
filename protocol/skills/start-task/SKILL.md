@@ -32,17 +32,61 @@ Parameters:
       Add `--tree` if you need the child tasks too.
    3. If the brief does not reference prior work, skip this step. Do not pull history speculatively.
 
-3. **Plan and execute.** Treat `role_guidance` as your primary instruction. If repo writes are needed, invoke the **make-worktree** skill first.
+3. **Consult the knowledge base.** Before planning, check for durable knowledge relevant to this task.
+
+   Run either:
+
+   ```bash
+   opc kb list --topic <guess>                # browse a topic
+   opc kb search "<terms from brief>"         # keyword search
+   ```
+
+   Fetch full entries with:
+
+   ```bash
+   opc kb get <slug>
+   ```
+
+   **Consult triggers** — scan the KB whenever your brief touches:
+   - regulatory / compliance rules (visa, PCI-DSS, PIPL, PDPO, PDPA);
+   - partner APIs, integration quirks, rate limits;
+   - payment flows, refund policies;
+   - any topic where a past escalation likely set precedent.
+
+   If nothing matches, proceed. If something matches, treat it as authoritative unless the brief explicitly contradicts it — in which case escalate rather than silently override.
+
+4. **Plan and execute.** Treat `role_guidance` as your primary instruction. If repo writes are needed, invoke the **make-worktree** skill first.
 
    If the task produces a standalone document (report, plan, analysis), write its files under `artifacts/<task_id>/` in your workspace root — **not** inside any repo or worktree. Capture the relative path (e.g. `artifacts/TASK-001`) and include it as `artifact_dir` in your completion payload so future sessions can retrieve it via `opc recall <task_id>`.
 
-4. **Report mid-task learnings (optional).** Whenever you discover something reusable for future tasks:
+5. **Report mid-task learnings (optional).** Whenever you discover something reusable for future tasks:
 
    ```bash
    opc learning --task-id <task_id> --session-id <session_id> --agent <your_agent_name> --text "..."
    ```
 
-5. **Report completion.** When you finish (success or blocker), write a JSON
+6. **Contribute to the KB (optional).** Before reporting completion, ask yourself: did I discover or confirm durable, cross-agent-relevant knowledge that isn't already in the KB?
+
+   **Contribute YES if any are true:**
+   - Factual rule other agents would need (API rate limit, regulatory deadline, partner contract term).
+   - You consulted the KB and an entry was wrong or outdated — update it.
+   - A non-trivial procedural decision worth preserving as a mini-SOP (not a one-off workaround).
+
+   **Contribute NO if:**
+   - The info is specific to this task (→ task artifact).
+   - It's your own operational preference (use the learning callback — see Step 5).
+   - It's already in `protocol/` docs.
+   - The info has a <12-month useful lifespan.
+
+   Write `/tmp/kb-<slug>.md` with YAML frontmatter (`slug`, `title`, `type`, `topic`, optional `tags`, `source_task`) followed by a markdown body, then:
+
+   ```bash
+   opc kb add --agent <your_agent_name> --from-file /tmp/kb-<slug>.md
+   ```
+
+   For updates: `opc kb update <slug> --agent <you> --from-file /tmp/kb-<slug>.md`. Resolve collision 409s by updating the existing entry instead of forcing a sibling. The `--from-file` pattern is mandatory — multi-line `opc` payloads are rejected by the agent's `Bash(opc:*)` permission rule.
+
+7. **Report completion.** When you finish (success or blocker), write a JSON
    payload to a file and invoke `opc report-completion --from-file <path>` as
    a single-line command. The file form is mandatory: multi-line bash commands
    with backslash continuations are rejected by the agent's Claude Code
@@ -76,7 +120,7 @@ Parameters:
    opc report-completion --from-file /tmp/completion-<task_id>.json
    ```
 
-6. **Cleanup.** Always run worktree cleanup as the final step, even on the blocker path. The make-worktree skill describes how.
+8. **Cleanup.** Always run worktree cleanup as the final step, even on the blocker path. The make-worktree skill describes how.
 
 ## Error handling
 
