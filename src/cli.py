@@ -708,6 +708,7 @@ def cmd_kb_precedent(args: argparse.Namespace) -> None:
         "task_id": args.task_id,
         "decision": args.decision,
         "rationale": args.rationale,
+        "as_founder": args.as_founder,
     }
     if args.slug:
         body["slug"] = args.slug
@@ -927,6 +928,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_kb_prec.add_argument("--decision", required=True, choices=["approve", "reject"])
     p_kb_prec.add_argument("--rationale", required=True)
     p_kb_prec.add_argument("--slug")
+    p_kb_prec.add_argument("--as-founder", action="store_true")
     p_kb_prec.set_defaults(func=cmd_kb_precedent)
 
     # opc resolve-escalation

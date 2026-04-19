@@ -211,11 +211,19 @@ class KBPrecedentBody(BaseModel):
     decision: str
     rationale: str
     slug: Optional[str] = None
+    as_founder: bool = False
 
 
 @router.post("/kb/precedent")
 async def precedent_kb(body: KBPrecedentBody, request: Request) -> dict:
     state: DaemonState = _require_active(request.app.state.daemon)
+    # Founder-only per spec §4.6. `as_founder` is intent, not identity —
+    # real auth awaits the Feishu integration (blueprint step 10).
+    if not body.as_founder:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "as_founder_required"},
+        )
     if body.decision not in ("approve", "reject"):
         raise HTTPException(status_code=400, detail={"code": "invalid_decision"})
     if not body.rationale.strip():

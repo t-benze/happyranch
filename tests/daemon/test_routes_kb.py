@@ -315,6 +315,7 @@ def test_kb_precedent_writes_entry_from_audit_row(tmp_home, app, runtime, auth_h
             "task_id": "TASK-037",
             "decision": "approve",
             "rationale": "Vendor error per partner-log, <$250 risk",
+            "as_founder": True,
         },
         headers=auth_headers,
     )
@@ -335,7 +336,7 @@ def test_kb_precedent_does_not_transition_task_status(tmp_home, app, runtime, au
     client = TestClient(app)
     r = client.post(
         "/api/v1/kb/precedent",
-        json={"task_id": "TASK-038", "decision": "approve", "rationale": "r"},
+        json={"task_id": "TASK-038", "decision": "approve", "rationale": "r", "as_founder": True},
         headers=auth_headers,
     )
     assert r.status_code == 200, r.text
@@ -357,7 +358,7 @@ def test_kb_precedent_post_hoc_on_resolved_task(tmp_home, app, runtime, auth_hea
     client = TestClient(app)
     r = client.post(
         "/api/v1/kb/precedent",
-        json={"task_id": "TASK-039", "decision": "approve", "rationale": "Auth granted."},
+        json={"task_id": "TASK-039", "decision": "approve", "rationale": "Auth granted.", "as_founder": True},
         headers=auth_headers,
     )
     assert r.status_code == 200
@@ -373,7 +374,7 @@ def test_kb_precedent_rejects_task_without_escalation(tmp_home, app, auth_header
     client = TestClient(app)
     r = client.post(
         "/api/v1/kb/precedent",
-        json={"task_id": "TASK-040", "decision": "approve", "rationale": "r"},
+        json={"task_id": "TASK-040", "decision": "approve", "rationale": "r", "as_founder": True},
         headers=auth_headers,
     )
     assert r.status_code == 400
@@ -390,8 +391,24 @@ def test_kb_precedent_honors_slug_override(tmp_home, app, runtime, auth_headers)
             "decision": "approve",
             "rationale": "r",
             "slug": "precedent-large-refund-policy",
+            "as_founder": True,
         },
         headers=auth_headers,
     )
     assert r.status_code == 200
     assert r.json()["slug"] == "precedent-large-refund-policy"
+
+
+def test_kb_precedent_requires_as_founder_flag(tmp_home, app, runtime, auth_headers):
+    """Per spec §4.6, `opc kb precedent` requires --as-founder. The flag is
+    intent, not identity — real auth awaits the Feishu integration — but the
+    gate must exist so founder-only writes can't happen by accident."""
+    _seed_escalated_task(app, task_id="TASK-042")
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/kb/precedent",
+        json={"task_id": "TASK-042", "decision": "approve", "rationale": "r"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 403
+    assert r.json()["detail"]["code"] == "as_founder_required"
