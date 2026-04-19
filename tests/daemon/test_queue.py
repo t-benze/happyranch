@@ -53,3 +53,23 @@ async def test_queue_start_workers_spawns_n_tasks_and_stop_cancels_them():
 
     await q.stop()
     assert all(t.done() for t in q._worker_tasks)
+
+
+def test_daemon_state_carries_a_task_queue(tmp_path):
+    from src.config import Settings
+    from src.daemon.state import DaemonState
+    from src.daemon.queue import TaskQueue
+    from src.runtime import RuntimeDir
+    rt = RuntimeDir.init(tmp_path / "rt")
+    state = DaemonState.from_runtime(rt, Settings())
+    assert isinstance(state.queue, TaskQueue)
+
+
+def test_daemon_state_terminal_event_map_covers_new_statuses(tmp_path):
+    from src.daemon.state import DaemonState
+    from src.models import TaskStatus
+    assert DaemonState._TERMINAL_STATUS_TO_EVENT == {
+        TaskStatus.COMPLETED: "task_complete",
+        TaskStatus.FAILED: "task_failed",
+        TaskStatus.BLOCKED: "task_blocked",
+    }

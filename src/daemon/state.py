@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from src.config import Settings
 from src.daemon.event_bus import EventBus
 from src.daemon.sessions import SessionTracker
+from src.daemon.queue import TaskQueue
 from src.infrastructure.database import Database
 from src.models import TaskStatus
 from src.runtime import RuntimeDir
@@ -17,10 +18,9 @@ class DaemonState:
     """Holds the active runtime, its DB, and the asyncio resources."""
 
     _TERMINAL_STATUS_TO_EVENT = {
-        TaskStatus.APPROVED: "task_complete",
         TaskStatus.COMPLETED: "task_complete",
-        TaskStatus.REJECTED: "task_rejected",
-        TaskStatus.ESCALATED: "task_escalated",
+        TaskStatus.FAILED: "task_failed",
+        TaskStatus.BLOCKED: "task_blocked",
     }
 
     runtime: RuntimeDir | None
@@ -29,6 +29,7 @@ class DaemonState:
     db_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     kb_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     sessions: SessionTracker = field(default_factory=SessionTracker)
+    queue: TaskQueue = field(default_factory=TaskQueue)
     event_bus: EventBus = field(init=False)
 
     def __post_init__(self) -> None:
