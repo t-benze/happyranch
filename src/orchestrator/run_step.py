@@ -125,6 +125,47 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
         # parent stays blocked(DELEGATED) until this task reaches a terminal.
         return
 
+    if decision.action == "delegate":
+        err = _validate_delegate(orch, decision)
+        if err is not None:
+            _fail(orch, task_id, note=f"invalid delegate: {err}")
+            _enqueue_parent_if_waiting(orch, task_id)
+            return
+        from src.models import TaskRecord
+        child_id = db.next_task_id()
+        db.insert_task(TaskRecord(
+            id=child_id,
+            type=task.type,
+            brief=decision.prompt or "",
+            assigned_agent=decision.agent,
+            parent_task_id=task_id,
+            status=TaskStatus.PENDING,
+        ))
+        db.update_task(
+            task_id,
+            status=TaskStatus.BLOCKED,
+            block_kind=BlockKind.DELEGATED,
+            note=f"Delegated to {decision.agent} (child={child_id})",
+        )
+        if orch._queue is not None:
+            orch._queue.put_nowait(child_id)
+        return
+
+    # ---- 8. Unknown action ----
+    _fail(orch, task_id, note=f"unknown action: {decision.action}")
+    _enqueue_parent_if_waiting(orch, task_id)
+
+
+def _validate_delegate(orch: "Orchestrator", decision) -> str | None:
+    """Return a human-readable error string if the delegate decision is
+    unusable, or None if it's good to spawn."""
+    if not decision.agent:
+        return "missing agent name"
+    workspace = orch._runtime.workspaces_dir / decision.agent
+    if not workspace.exists():
+        return f"no workspace for agent {decision.agent!r}"
+    return None
+
 
 def _default_agent_for_root(task) -> str:
     """Root tasks default to the Engineering Head as their assigned agent."""

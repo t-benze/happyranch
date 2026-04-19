@@ -197,3 +197,72 @@ def test_run_step_escalate_parks_blocked_and_leaves_parent_parked(
     # Audit row
     escalations = [a for a in db.get_audit_logs("T-CHD") if a["action"] == "escalation"]
     assert any("needs founder" in e["payload"]["reason"] for e in escalations)
+
+
+def test_run_step_delegate_spawns_child_and_blocks_self(
+    runtime, db, monkeypatch,
+):
+    import asyncio
+    import json
+    from src.orchestrator.orchestrator import Orchestrator
+
+    (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
+
+    db.insert_task(TaskRecord(id="T-1", type=TaskType.GENERAL, brief="root",
+                              assigned_agent="engineering_head"))
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    q: asyncio.Queue = asyncio.Queue()
+    orch._queue = q
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(
+            output_summary=json.dumps({
+                "action": "delegate",
+                "agent": "dev_agent",
+                "prompt": "Write a PR",
+            }),
+        )
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    orch.run_step("T-1")
+
+    # Parent now blocked(DELEGATED)
+    parent = db.get_task("T-1")
+    assert parent.status == TaskStatus.BLOCKED
+    assert parent.block_kind == BlockKind.DELEGATED
+    assert "dev_agent" in (parent.note or "")
+
+    # Exactly one child exists, is pending, and is enqueued
+    children = db.get_children("T-1")
+    assert len(children) == 1
+    child_id = children[0]
+    child = db.get_task(child_id)
+    assert child.status == TaskStatus.PENDING
+    assert child.assigned_agent == "dev_agent"
+    assert child.brief == "Write a PR"
+    assert child.parent_task_id == "T-1"
+    assert q.get_nowait() == child_id
+
+
+def test_run_step_invalid_delegate_fails_task(runtime, db, monkeypatch):
+    """A delegate with no agent name is unrecoverable — fail the task and
+    notify the parent (which may itself be root — no-op in that case)."""
+    import asyncio
+    import json
+    from src.orchestrator.orchestrator import Orchestrator
+
+    db.insert_task(TaskRecord(id="T-1", type=TaskType.GENERAL, brief="x",
+                              assigned_agent="engineering_head"))
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    orch._queue = asyncio.Queue()
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(
+            output_summary=json.dumps({"action": "delegate", "prompt": "x"}),
+        )
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    orch.run_step("T-1")
+    t = db.get_task("T-1")
+    assert t.status == TaskStatus.FAILED
+    assert t.note and "invalid delegate" in t.note

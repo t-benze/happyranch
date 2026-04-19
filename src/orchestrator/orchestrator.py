@@ -55,6 +55,7 @@ class Orchestrator:
             claude_cli_path=settings.claude_cli_path,
             permission_mode=settings.permission_mode,
         )
+        self._queue: "asyncio.Queue[str] | None" = None  # wired by daemon
 
     def _build_session_id(self) -> str:
         return f"sess-{uuid.uuid4().hex}"
