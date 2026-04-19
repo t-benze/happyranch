@@ -1,81 +1,21 @@
-"""Daemon-side task runner that wraps the blocking Orchestrator."""
+"""Task enqueue entry point for the daemon.
+
+The old `TaskRunner` wrapped a synchronous `Orchestrator.run_task` call in a
+thread. Under the async queue model, task submission just pushes the task ID
+onto `state.queue` and worker coroutines (started at daemon boot) invoke
+`Orchestrator.run_step` one step at a time.
+"""
 from __future__ import annotations
 
-import asyncio
-import logging
-from typing import Callable
-
-from src.config import Settings
 from src.daemon.state import DaemonState
-from src.infrastructure.database import Database
-from src.models import TaskStatus
-from src.orchestrator.orchestrator import Orchestrator
-from src.runtime import RuntimeDir
-
-logger = logging.getLogger("opc.daemon.runner")
-
-_OUTCOME_TO_EVENT = {
-    "approved": "task_complete",
-    "rejected": "task_rejected",
-    "escalated": "task_escalated",
-}
 
 
-class TaskRunner:
-    """Snapshot of (runtime, db, settings) at construction time, decoupled from
-    live `DaemonState` mutation. The event bus + session tracker are still
-    looked up live on `state` because they're singletons that don't change on
-    runtime swap."""
+def enqueue_task(state: DaemonState, task_id: str) -> None:
+    """Push a task onto the daemon's work queue.
 
-    def __init__(
-        self,
-        state: DaemonState,
-        orchestrator_factory: Callable[[RuntimeDir, Database, Settings], Orchestrator] | None = None,
-    ) -> None:
-        assert state.db is not None and state.runtime is not None, \
-            "TaskRunner cannot be constructed in idle mode"
-        # Snapshot the runtime/db/settings now. Even if state.runtime swaps
-        # later (which the activate guard should prevent anyway), this runner
-        # keeps operating against the runtime the task was created in.
-        self._runtime: RuntimeDir = state.runtime
-        self._db: Database = state.db
-        self._settings: Settings = state.settings
-        self._sessions = state.sessions
-        self._event_bus = state.event_bus
-        self._make_orchestrator = orchestrator_factory or self._default_factory
-
-    @staticmethod
-    def _default_factory(runtime: RuntimeDir, db: Database, settings: Settings) -> Orchestrator:
-        return Orchestrator(db=db, settings=settings, runtime=runtime)
-
-    async def run(self, task_id: str) -> None:
-        orchestrator = self._make_orchestrator(self._runtime, self._db, self._settings)
-
-        # Patch the orchestrator's per-spawn callback into SessionTracker.
-        original_run_agent = orchestrator._run_agent
-        sessions = self._sessions
-
-        def _wrapped_run_agent(task_id_, agent, prompt):
-            def _on_started(t, a, s):
-                sessions.set_active(t, a, s)
-            return original_run_agent(task_id_, agent, prompt, on_session_started=_on_started)
-
-        orchestrator._run_agent = _wrapped_run_agent  # type: ignore[assignment]
-
-        try:
-            outcome = await asyncio.to_thread(orchestrator.run_task, task_id)
-        except Exception as exc:
-            logger.exception("task %s crashed in runner", task_id)
-            # Orchestrator sets IN_PROGRESS at entry and only flips to a
-            # terminal status on its normal returns. A crash leaves the row
-            # stuck — flip to ESCALATED so it stops blocking runtime activate.
-            self._db.update_task(task_id, status=TaskStatus.ESCALATED)
-            await self._event_bus.publish(task_id, {
-                "type": "task_escalated", "reason": f"runner crash: {exc}",
-            })
-            return
-
-        await self._event_bus.publish(task_id, {
-            "type": _OUTCOME_TO_EVENT.get(outcome, "task_complete"),
-            "outcome": outcome,
-        })
+    Raises RuntimeError if the daemon is idle (no runtime). The /tasks route
+    already gates on is_idle, so this is a defensive backstop for direct callers.
+    """
+    if state.is_idle:
+        raise RuntimeError("daemon is idle — no active runtime")
+    state.queue.enqueue(task_id)

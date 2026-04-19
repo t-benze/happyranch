@@ -1,7 +1,6 @@
 """Task submission and inspection endpoints."""
 from __future__ import annotations
 
-import asyncio
 import json as _json
 from pathlib import Path
 
@@ -10,7 +9,7 @@ from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from src.daemon.auth import require_token
-from src.daemon.runner import TaskRunner
+from src.daemon.runner import enqueue_task
 from src.daemon.state import DaemonState
 from src.models import TaskRecord, TaskType
 
@@ -42,8 +41,7 @@ async def submit_task(body: SubmitTask, request: Request) -> dict:
         task_id = state.db.next_task_id()
         state.db.insert_task(TaskRecord(id=task_id, type=body.type, brief=body.brief))
 
-    runner = TaskRunner(state=state)
-    asyncio.create_task(runner.run(task_id))  # TODO(task-26): track these tasks so shutdown can cancel/await them.
+    enqueue_task(state, task_id)
     return {"task_id": task_id}
 
 
