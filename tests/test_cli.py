@@ -810,3 +810,41 @@ def test_cmd_recall_404_exits(capsys):
         with pytest.raises(SystemExit):
             cmd_recall(argparse.Namespace(task_id="TASK-404", tree=False, fetch_artifact=False))
     assert "not found" in capsys.readouterr().out.lower()
+
+
+def test_cli_has_kb_subcommands():
+    from src.cli import build_parser
+    parser = build_parser()
+    sub = next(a for a in parser._actions if a.__class__.__name__ == "_SubParsersAction")
+    assert "kb" in sub.choices
+    kb = sub.choices["kb"]
+    kb_sub = next(a for a in kb._actions if a.__class__.__name__ == "_SubParsersAction")
+    for name in ("list", "get", "search", "add", "update", "delete", "reindex", "precedent"):
+        assert name in kb_sub.choices, f"missing kb subcommand: {name}"
+
+
+def test_cli_has_resolve_escalation():
+    from src.cli import build_parser
+    parser = build_parser()
+    sub = next(a for a in parser._actions if a.__class__.__name__ == "_SubParsersAction")
+    assert "resolve-escalation" in sub.choices
+
+
+def test_kb_add_requires_from_file():
+    from src.cli import build_parser
+    parser = build_parser()
+    # parse_args raises SystemExit(2) on missing required args
+    import pytest as _pytest
+    with _pytest.raises(SystemExit):
+        parser.parse_args(["kb", "add", "--agent", "dev_agent"])
+
+
+def test_kb_delete_parses_confirm_and_as_founder():
+    from src.cli import build_parser
+    parser = build_parser()
+    ns = parser.parse_args([
+        "kb", "delete", "alipay-refund", "--agent", "engineering_head",
+        "--confirm", "--as-founder",
+    ])
+    assert ns.confirm is True
+    assert ns.as_founder is True
