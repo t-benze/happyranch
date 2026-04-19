@@ -344,10 +344,23 @@ class Database:
         return f"TASK-{count + 1:03d}"
 
     def get_nonterminal_task_ids(self) -> list[str]:
-        nonterminal = (TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value)
+        nonterminal = (
+            TaskStatus.PENDING.value,
+            TaskStatus.IN_PROGRESS.value,
+            TaskStatus.BLOCKED.value,
+        )
         cursor = self._conn.execute(
             f"SELECT id FROM tasks WHERE status IN ({','.join('?' * len(nonterminal))})",
             nonterminal,
+        )
+        return [row["id"] for row in cursor.fetchall()]
+
+    def list_blocked_with_kind(self, kind) -> list[str]:
+        """Return IDs of tasks in status=blocked with the given block_kind."""
+        kind_value = kind.value if hasattr(kind, "value") else kind
+        cursor = self._conn.execute(
+            "SELECT id FROM tasks WHERE status = 'blocked' AND block_kind = ?",
+            (kind_value,),
         )
         return [row["id"] for row in cursor.fetchall()]
 

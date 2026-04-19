@@ -406,3 +406,39 @@ def test_update_task_can_clear_block_kind_to_none(tmp_path):
     t = db.get_task("TASK-001")
     assert t.block_kind is None
     assert t.note is None
+
+
+def test_get_nonterminal_task_ids_includes_blocked(tmp_path):
+    from src.infrastructure.database import Database
+    from src.models import TaskRecord, TaskStatus, TaskType, BlockKind
+
+    db = Database(tmp_path / "opc.db")
+    for tid, status, bk in [
+        ("T-PEN", TaskStatus.PENDING, None),
+        ("T-INP", TaskStatus.IN_PROGRESS, None),
+        ("T-BKD", TaskStatus.BLOCKED, BlockKind.DELEGATED),
+        ("T-BKE", TaskStatus.BLOCKED, BlockKind.ESCALATED),
+        ("T-CMP", TaskStatus.COMPLETED, None),
+        ("T-FAI", TaskStatus.FAILED, None),
+    ]:
+        db.insert_task(TaskRecord(id=tid, type=TaskType.GENERAL, brief="x"))
+        db.update_task(tid, status=status, block_kind=bk)
+
+    ids = set(db.get_nonterminal_task_ids())
+    assert ids == {"T-PEN", "T-INP", "T-BKD", "T-BKE"}
+
+
+def test_list_blocked_with_kind(tmp_path):
+    from src.infrastructure.database import Database
+    from src.models import TaskRecord, TaskStatus, TaskType, BlockKind
+
+    db = Database(tmp_path / "opc.db")
+    db.insert_task(TaskRecord(id="T-1", type=TaskType.GENERAL, brief="x"))
+    db.insert_task(TaskRecord(id="T-2", type=TaskType.GENERAL, brief="y"))
+    db.update_task("T-1", status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED)
+    db.update_task("T-2", status=TaskStatus.BLOCKED, block_kind=BlockKind.ESCALATED)
+
+    ids = set(db.list_blocked_with_kind(BlockKind.DELEGATED))
+    assert ids == {"T-1"}
+    ids = set(db.list_blocked_with_kind(BlockKind.ESCALATED))
+    assert ids == {"T-2"}
