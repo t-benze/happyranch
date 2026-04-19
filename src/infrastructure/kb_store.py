@@ -85,6 +85,14 @@ class KBDuplicate:
     similarity: float
 
 
+@dataclass
+class KBSearchHit:
+    slug: str
+    title: str
+    snippet: str
+    score: int  # higher = better
+
+
 class KBStore:
     def __init__(self, root: Path) -> None:
         self._root = root
@@ -192,6 +200,68 @@ class KBStore:
         stamped.updated_at = now
         self._atomic_write(target, self._serialize(stamped))
         return stamped
+
+    def delete_entry(self, slug: str) -> None:
+        path = self.path_for(slug)
+        if not path.exists():
+            raise NotFound(slug)
+        path.unlink()
+
+    def search(self, query: str, limit: int = 20) -> list[KBSearchHit]:
+        q = query.lower().strip()
+        if not q:
+            return []
+        hits: list[KBSearchHit] = []
+        for path in sorted(self._root.glob("*.md")):
+            if path.name == "_index.md":
+                continue
+            try:
+                entry = self._parse(path.read_text())
+            except InvalidEntry:
+                continue
+            score = 0
+            snippet = ""
+            if q in entry.title.lower():
+                score = 10
+                snippet = entry.title
+            elif q in entry.body.lower():
+                score = 5
+                snippet = self._snippet(entry.body, q)
+            elif any(q in t.lower() for t in entry.tags) or q in entry.topic.lower():
+                score = 2
+                snippet = f"topic={entry.topic} tags={entry.tags}"
+            if score > 0:
+                hits.append(KBSearchHit(
+                    slug=entry.slug, title=entry.title, snippet=snippet, score=score
+                ))
+        hits.sort(key=lambda h: h.score, reverse=True)
+        return hits[:limit]
+
+    @staticmethod
+    def _snippet(body: str, q: str, width: int = 80) -> str:
+        idx = body.lower().find(q)
+        if idx < 0:
+            return body[:width]
+        start = max(0, idx - width // 2)
+        end = min(len(body), idx + width // 2)
+        return body[start:end].replace("\n", " ")
+
+    def regenerate_index(self) -> None:
+        summaries = self.list_entries()
+        groups: dict[str, list[KBSummary]] = {}
+        for s in summaries:
+            groups.setdefault(s.topic, []).append(s)
+        for topic in groups:
+            groups[topic].sort(key=lambda s: s.slug)
+        lines = ["# Knowledge Base Index", ""]
+        for topic in sorted(groups.keys()):
+            lines.append(f"## {topic}")
+            lines.append("")
+            for s in groups[topic]:
+                lines.append(f"- `{s.slug}` — {s.title}")
+            lines.append("")
+        index_path = self._root / "_index.md"
+        self._atomic_write(index_path, "\n".join(lines).rstrip() + "\n")
 
     def _serialize(self, entry: KBEntry) -> str:
         fm: dict = {

@@ -239,3 +239,76 @@ def test_find_near_duplicates_returns_empty_on_distinct(store: KBStore):
         agent="dev_agent",
     )
     assert store.find_near_duplicates(title="Restaurant opening hours", tags=[]) == []
+
+
+def test_search_ranks_title_hits_above_body_hits(store: KBStore):
+    store.write_entry(
+        KBEntry(
+            slug="alipay-body",
+            title="Unrelated title about transit",
+            type="reference",
+            topic="payment",
+            body="# x\n\nRefund flow on Alipay v3 endpoint.\n",
+        ),
+        agent="dev_agent",
+    )
+    store.write_entry(
+        KBEntry(
+            slug="alipay-title",
+            title="Alipay refund endpoint reference",
+            type="reference",
+            topic="payment",
+            body="# x\n\nBody says nothing useful.\n",
+        ),
+        agent="dev_agent",
+    )
+    hits = store.search("Alipay refund")
+    assert hits[0].slug == "alipay-title"  # title hit ranks first
+
+
+def test_search_returns_empty_on_no_match(store: KBStore):
+    store.write_entry(
+        KBEntry(slug="a", title="t", type="reference", topic="x", body="# nothing here\n"),
+        agent="dev_agent",
+    )
+    assert store.search("QuantumFluxCapacitor") == []
+
+
+def test_delete_entry_removes_file(store: KBStore):
+    store.write_entry(
+        KBEntry(slug="rm-me", title="t", type="reference", topic="x", body="# x\n"),
+        agent="dev_agent",
+    )
+    assert store.path_for("rm-me").exists()
+    store.delete_entry("rm-me")
+    assert not store.path_for("rm-me").exists()
+
+
+def test_delete_entry_raises_notfound(store: KBStore):
+    with pytest.raises(NotFound):
+        store.delete_entry("ghost")
+
+
+def test_regenerate_index_groups_by_topic_alphabetical(store: KBStore):
+    for slug, topic in [
+        ("visa-b", "visa"),
+        ("visa-a", "visa"),
+        ("pay-c", "payment"),
+    ]:
+        store.write_entry(
+            KBEntry(slug=slug, title=slug.title(), type="reference", topic=topic, body="# x\n"),
+            agent="dev_agent",
+        )
+    store.regenerate_index()
+    index = (store.root / "_index.md").read_text()
+    # Topics alphabetized; within topic slugs alphabetized; both topics present
+    assert index.index("## payment") < index.index("## visa")
+    assert index.index("`visa-a`") < index.index("`visa-b`")
+    assert "`pay-c`" in index
+
+
+def test_regenerate_index_handles_empty_store(tmp_path: Path):
+    empty = KBStore(tmp_path / "empty-kb")
+    empty.regenerate_index()
+    index = (empty.root / "_index.md").read_text()
+    assert "Knowledge Base Index" in index
