@@ -139,6 +139,7 @@ class KBStore:
         return stamped
 
     def read_entry(self, slug: str) -> KBEntry:
+        self.validate_slug(slug)
         path = self.path_for(slug)
         if not path.exists():
             raise NotFound(slug)
@@ -202,6 +203,7 @@ class KBStore:
         return stamped
 
     def delete_entry(self, slug: str) -> None:
+        self.validate_slug(slug)
         path = self.path_for(slug)
         if not path.exists():
             raise NotFound(slug)
