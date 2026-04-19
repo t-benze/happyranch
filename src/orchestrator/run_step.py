@@ -113,6 +113,18 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
         _enqueue_parent_if_waiting(orch, task_id)
         return
 
+    if decision.action == "escalate":
+        reason = decision.reason or "Escalated"
+        db.update_task(
+            task_id,
+            status=TaskStatus.BLOCKED,
+            block_kind=BlockKind.ESCALATED,
+            note=reason,
+        )
+        orch._audit.log_escalation(task_id, agent, reason)
+        # parent stays blocked(DELEGATED) until this task reaches a terminal.
+        return
+
 
 def _default_agent_for_root(task) -> str:
     """Root tasks default to the Engineering Head as their assigned agent."""

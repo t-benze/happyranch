@@ -155,3 +155,45 @@ def test_run_step_done_completes_task_and_enqueues_parent(
     # Parent should be enqueued
     assert q.qsize() == 1
     assert q.get_nowait() == "T-PAR"
+
+
+def test_run_step_escalate_parks_blocked_and_leaves_parent_parked(
+    runtime, db, monkeypatch,
+):
+    import asyncio
+    import json
+    from src.orchestrator.orchestrator import Orchestrator
+
+    db.insert_task(TaskRecord(id="T-PAR", type=TaskType.GENERAL, brief="p",
+                              assigned_agent="engineering_head"))
+    db.update_task("T-PAR", status=TaskStatus.BLOCKED,
+                   block_kind=BlockKind.DELEGATED, note="waiting")
+    db.insert_task(TaskRecord(
+        id="T-CHD", type=TaskType.GENERAL, brief="c",
+        assigned_agent="engineering_head", parent_task_id="T-PAR",
+    ))
+
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    q: asyncio.Queue = asyncio.Queue()
+    orch._queue = q
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(
+            output_summary=json.dumps({"action": "escalate", "reason": "needs founder"}),
+        )
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    orch.run_step("T-CHD")
+
+    child = db.get_task("T-CHD")
+    assert child.status == TaskStatus.BLOCKED
+    assert child.block_kind == BlockKind.ESCALATED
+    assert child.note == "needs founder"
+
+    # Parent stays parked — escalation is NOT a terminal for sibling-summing.
+    assert q.qsize() == 0
+    assert db.get_task("T-PAR").status == TaskStatus.BLOCKED
+
+    # Audit row
+    escalations = [a for a in db.get_audit_logs("T-CHD") if a["action"] == "escalation"]
+    assert any("needs founder" in e["payload"]["reason"] for e in escalations)
