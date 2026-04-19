@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 from typing import AsyncIterator, Callable
 
-_TERMINAL_TYPES = {"task_complete", "task_escalated", "task_rejected"}
+_TERMINAL_TYPES = {"task_complete", "task_failed", "task_blocked"}
 
 
 class EventBus:

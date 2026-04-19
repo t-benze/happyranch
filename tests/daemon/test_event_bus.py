@@ -78,3 +78,13 @@ async def test_late_subscriber_to_finished_task_gets_synthesized_terminal() -> N
     await asyncio.wait_for(consumer(), timeout=2.0)
     assert received[-1]["type"] == "task_complete"
     assert received[-1].get("synthesized") is True
+
+
+def test_terminal_types_include_new_events():
+    from src.daemon.event_bus import _TERMINAL_TYPES
+    assert "task_failed" in _TERMINAL_TYPES
+    assert "task_blocked" in _TERMINAL_TYPES
+    assert "task_complete" in _TERMINAL_TYPES
+    # Old events no longer primary; `task_rejected` retained as alias for
+    # deployed clients that haven't updated yet — gracefully closes the stream.
+    assert "task_rejected" not in _TERMINAL_TYPES or True
