@@ -116,7 +116,7 @@ workspaces/
 Shared across all agents. Org charter, SOPs, brand guidelines, partner directory, regulatory summaries. Read-only for most agents, write access scoped per role.
 
 **2. Agent-specific memory (learnings file)**
-Each agent accumulates its own operational learnings. The QA Agent records "DSAL website is more reliable than MGTO for Macau visa info." The Content Writer records "always include UnionPay as a payment option for mainland content." These files persist across sessions and are loaded as context at session start.
+Each agent accumulates its own operational learnings. The Content QA records "DSAL website is more reliable than MGTO for Macau visa info." The Content Writer records "always include UnionPay as a payment option for mainland content." These files persist across sessions and are loaded as context at session start.
 
 After each task, the orchestrator prompts the agent: "Based on this task, are there any new learnings to record?" Responses are appended to the learnings file. Over time, when the file gets long, the orchestrator periodically asks the agent to consolidate and prune it.
 
@@ -184,7 +184,7 @@ Session terminates — agent no longer running
 
 **Typical session duration:** 1-5 minutes for most tasks. Complex tasks (Dev Agent implementing a feature, Compliance Agent running a full audit) may take 10-30 minutes.
 
-**Which agents use this mode:** Content Writer, QA Agent, SEO Agent, Dev Agent, Payment Agent, Partner Liaison, Compliance Agent, and all 4 Manager Agents for their review/approval tasks.
+**Which agents use this mode:** Content Writer, Content QA, SEO Agent, Dev Agent, Payment Agent, QA Engineer, Partner Liaison, Compliance Agent, and all 4 Manager Agents for their review/approval tasks.
 
 #### Mode 2: Scheduled (recurring tasks on a cron)
 Some work happens on a fixed schedule. The orchestrator's scheduler triggers these sessions at configured times. The session runs, completes its task, and shuts down — same as on-demand, but the trigger is a clock instead of a task queue.
@@ -197,7 +197,7 @@ Some work happens on a fixed schedule. The orchestrator's scheduler triggers the
 | Daily 9:15 AM | Product Manager | Generate and send daily report |
 | Daily 9:30 AM | Ops Manager | Generate and send daily report |
 | Daily 9:45 AM | CX Manager | Generate and send daily report |
-| Every Friday | QA Agent | Content freshness audit — flag guides older than 90 days |
+| Every Friday | Content QA | Content freshness audit — flag guides older than 90 days |
 | Every Monday | SEO Agent | Weekly keyword ranking report |
 | 1st of month | Compliance Agent | Monthly regulatory scan across 3 jurisdictions |
 | 1st of month | Ops Manager | Monthly partner SLA compliance review |
@@ -225,7 +225,7 @@ The orchestrator controls how many agent sessions run simultaneously. On a Mac M
 | Priority queue | Tier 1 escalations and founder-initiated tasks jump the queue |
 | Session timeout | 30 minutes max — if an agent session hasn't completed, kill it and escalate |
 
-This means if the Content Writer is drafting a guide and the QA Agent needs to review something else simultaneously, both can run. But if a third task arrives, it waits in the queue. The orchestrator logs queue wait times — if tasks are regularly waiting, it's a signal to either optimize agent session speed or increase concurrency.
+This means if the Content Writer is drafting a guide and the Content QA needs to review something else simultaneously, both can run. But if a third task arrives, it waits in the queue. The orchestrator logs queue wait times — if tasks are regularly waiting, it's a signal to either optimize agent session speed or increase concurrency.
 
 ### Cost profile
 

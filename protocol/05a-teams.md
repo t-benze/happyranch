@@ -27,14 +27,14 @@ How the org design maps to the runtime (Python daemon + Claude Code agent sessio
 ### Team 1: Content Team
 
 **Manager Agent**: Content Manager
-**Worker Agents**: Content Writer, SEO Agent, QA Agent
+**Worker Agents**: Content Writer, SEO Agent, Content QA
 
 **Typical task flow**:
 1. Content Manager receives a brief (from editorial calendar or CX feedback)
 2. Content Manager delegates writing task to Content Writer
 3. Content Writer produces draft with completion report
-4. Content Manager routes draft to QA Agent for review
-5. QA Agent returns verdict: PASS / REVISE / REJECT
+4. Content Manager routes draft to Content QA for review
+5. Content QA returns verdict: PASS / REVISE / REJECT
 6. If REVISE → back to Content Writer with specific issues (max 2 rounds, then escalate)
 7. If REJECT → Content Manager escalates to founder
 8. If PASS → Content Manager makes final approval decision
@@ -43,31 +43,32 @@ How the org design maps to the runtime (Python daemon + Claude Code agent sessio
 **Tasks owned by this team**:
 
 - `write_content`: Content Writer. Input = brief + content type + audience. Output = draft with sources cited and completion report.
-- `qa_review`: QA Agent. Input = draft from write_content (passed in the delegate prompt). Output = structured verdict with checklist, issues, suggestions, and completion report.
+- `qa_review`: Content QA. Input = draft from write_content (passed in the delegate prompt). Output = structured verdict with checklist, issues, suggestions, and completion report.
 - `seo_optimize`: SEO Agent. Input = approved content. Output = title tag, meta description, schema markup recommendations, internal linking suggestions.
 
-**Revision loop**: If QA returns REVISE, the manager's next orchestration step delegates back to Content Writer with the revision feedback injected into the prompt. Revision count is tracked on the `TaskRecord`; after two rounds the manager escalates.
+**Revision loop**: If Content QA returns REVISE, the manager's next orchestration step delegates back to Content Writer with the revision feedback injected into the prompt. Revision count is tracked on the `TaskRecord`; after two rounds the manager escalates.
 
 ---
 
 ### Team 2: Product & Engineering Team
 
 **Manager Agent**: Engineering Head
-**Worker Agents**: Product Manager, Dev Agent, Payment Agent
+**Worker Agents**: Product Manager, Dev Agent, Payment Agent, QA Engineer
 
 **Typical task flows**:
 
-- *Feature development*: Engineering Head receives feature request → assigns Product Manager to write spec → routes spec to Dev Agent for implementation → Engineering Head reviews result
-- *Bug fix*: Engineering Head receives bug report → assigns Product Manager to triage (severity, repro, priority) → routes triage to Dev Agent for fix → Engineering Head verifies
-- *Payment flow change*: Engineering Head assigns Payment Agent to draft proposal → cross-audit requested (stubbed until Ops Team is built — auto-approved) → Engineering Head reviews proposal
+- *Feature development*: Engineering Head receives feature request → assigns Product Manager to write spec → routes spec to Dev Agent for implementation → routes diff to QA Engineer for verification → Engineering Head reviews the QA verdict and reconciles with the spec
+- *Bug fix*: Engineering Head receives bug report → assigns Product Manager to triage (severity, repro, priority) → routes triage to Dev Agent for fix → routes fix to QA Engineer for regression + acceptance testing → Engineering Head verifies
+- *Payment flow change*: Engineering Head assigns Payment Agent to draft proposal → cross-audit requested (stubbed until Ops Team is built — auto-approved) → QA Engineer exercises the updated flow end-to-end → Engineering Head reviews proposal + QA verdict
 
-**Revision loop**: In all flows, the revision targets the worker who produced the output. Engineering Head decides who needs to revise. Max 2 rounds before escalation to founder.
+**Revision loop**: In all flows, the revision targets the worker who produced the output (Dev Agent, Payment Agent, or Product Manager as appropriate). QA Engineer returns PASS / REVISE / BLOCK; REVISE loops back to the relevant producer. Engineering Head decides who needs to revise. Max 2 rounds before escalation to founder.
 
 **Tasks owned by this team**:
 
 - `implement_feature`: Product Manager writes spec (input = feature request), then Dev Agent implements (input = spec). Output = implementation description, test results, deployment readiness, completion report.
 - `bug_fix`: Product Manager triages (input = bug report), then Dev Agent fixes (input = triage report). Output = fix description, root cause, test verification, completion report.
 - `payment_change`: Payment Agent. Input = change request. Output = change proposal with compliance considerations, completion report. **Note**: This task would normally trigger a cross-team audit from the Compliance Agent. Until Ops Team is built, the cross-audit is stubbed (logged and auto-approved).
+- `qa_verify`: QA Engineer. Input = diff or change proposal plus the originating spec. Output = PASS / REVISE / BLOCK verdict with test-run logs, regression notes, and coverage-gap list. Completion report.
 
 ---
 
@@ -127,10 +128,16 @@ Agents running as Claude Code sessions have native access to file system, shell,
 - `search_web(query)` — research destinations, verify facts
 - `check_source(url)` — verify an official source is current
 
-### QA Agent
+### Content QA
 - `search_web(query)` — verify claims against official sources
 - `check_url(url)` — test if a link is live
 - `check_exchange_rate(from, to)` — verify currency conversions
+
+### QA Engineer
+- `run_tests(scope)` — execute unit/integration/E2E suites against the change
+- `check_performance(url)` — measure page load and API latency against the budget
+- `diff_coverage(base, head)` — report coverage delta and missing branches
+- `exercise_flow(flow_name)` — drive booking/payment/i18n flows end-to-end
 
 ### SEO Agent
 - `keyword_research(seed_keywords)` — find tourist intent queries

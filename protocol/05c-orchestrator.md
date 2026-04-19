@@ -162,7 +162,7 @@ There are four types of permission blocks, each handled differently:
 
 #### Type 4: Ambiguous or novel situation
 **What**: Agent encounters something not covered by existing permissions or SOPs.
-**Example**: QA Agent discovers content that might be politically sensitive but isn't sure. Compliance Agent finds a regulation that could be interpreted two ways.
+**Example**: Content QA discovers content that might be politically sensitive but isn't sure. Compliance Agent finds a regulation that could be interpreted two ways.
 **Response**: Agent calls `escalate(category="novel", severity="medium", summary="...")` with its best assessment and a recommendation.
 **Task state**: Moves to `waiting_for_guidance`.
 **Orchestrator action**: Routes to founder. The agent's recommendation is included so the founder can often just approve/deny rather than research from scratch.

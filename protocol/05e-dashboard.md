@@ -42,11 +42,11 @@ The landing page — what's happening right now.
 │  │   3 days ago   │     │    (Ops Mgr) waiting 1h      │ │
 │  └────────────────┘     └──────────────────────────────┘ │
 │                                                          │
-│  ACTIVE TASKS BY CREW                                    │
+│  ACTIVE TASKS BY TEAM                                    │
 │  ┌──────────────────────────────────────────────────────┐│
 │  │ Content Team                                         ││
 │  │   ● Content Writer: Drafting "Shenzhen day trip"     ││
-│  │   ○ QA Agent: Idle (waiting for draft)               ││
+│  │   ○ Content QA: Idle (waiting for draft)               ││
 │  │   ○ SEO Agent: Idle                                  ││
 │  │                                                      ││
 │  │ Product Team                                         ││
@@ -82,7 +82,7 @@ Rolling 30-day performance for every agent.
 │  Agent            Tier    Acceptance  Revision  Errors   │
 │  ─────────────────────────────────────────────────────   │
 │  Content Writer   🟢 92%    92%        6%       2       │
-│  QA Agent         🟢 96%    96%        3%       0       │
+│  Content QA         🟢 96%    96%        3%       0       │
 │  SEO Agent        🟢 91%    91%        7%       1       │
 │  Dev Agent        🟢 94%    94%        4%       1       │
 │  Payment Agent    🟢 98%    98%        2%       0       │
@@ -97,7 +97,7 @@ Rolling 30-day performance for every agent.
 │  Agent            Avg Confidence  Actual Accuracy  Gap   │
 │  ─────────────────────────────────────────────────────   │
 │  Content Writer       85%             88%          -3%   │
-│  QA Agent             90%             92%          -2%   │
+│  Content QA             90%             92%          -2%   │
 │  Support Agent        78%             72%          +6% ⚠ │
 │                                                          │
 │  ⚠ Support Agent is overconfident — flags issues as      │
@@ -124,7 +124,7 @@ Searchable, filterable log of every action in the system.
 │    Confidence: 82                                        │
 │    Status: Submitted for QA review                       │
 │                                                          │
-│  Apr 11, 14:15  QA Agent  reviewed_content_pass          │
+│  Apr 11, 14:15  Content QA  reviewed_content_pass          │
 │    Task: Macau visa guide (v2)                           │
 │    Verdict: PASS                                         │
 │    Checklist: 10/10 items verified                       │
@@ -223,7 +223,7 @@ Charts showing how the org is performing over time.
 │  AGENT PERFORMANCE OVER TIME                             │
 │  ┌──────────────────────────────────────────────────────┐│
 │  │  100%|     ·····●·····●·····●   Content Writer      ││
-│  │   90%|  ●·····●·····●          QA Agent             ││
+│  │   90%|  ●·····●·····●          Content QA             ││
 │  │   80%|                ●····●·  Support Agent ⚠      ││
 │  │   70%|  ·                                           ││
 │  │      +----+----+----+----+----                      ││
@@ -258,13 +258,13 @@ Engineering-level observability for debugging and cost tracking — fully self-h
 │  Input: 134,200  |  Output: 48,200                      │
 │  Estimated cost: $4.82                                   │
 │                                                          │
-│  RECENT CREW RUNS                                        │
+│  RECENT TEAM RUNS                                        │
 │  ─────────────────────────────────────────────────────   │
 │  ▶ RUN-087  Content Team  14:32  ✅ 3m 22s  $0.84      │
 │    ├── Content Writer  write_content     2m 10s  $0.52  │
 │    │   └── LLM: 3 calls, 12,400 tokens                 │
 │    │   └── Tools: search_web (2x), check_source (1x)   │
-│    ├── QA Agent  qa_review               0m 48s  $0.24  │
+│    ├── Content QA  qa_review               0m 48s  $0.24  │
 │    │   └── LLM: 2 calls, 5,200 tokens                  │
 │    │   └── Tools: check_url (4x), check_exchange_rate   │
 │    └── Content Manager  manager_review   0m 24s  $0.08  │
@@ -276,9 +276,9 @@ Engineering-level observability for debugging and cost tracking — fully self-h
 │                                                          │
 │  ▶ RUN-085  Content Team  12:00  ⚠ 5m 44s  $1.62       │
 │    ├── Content Writer  write_content     2m 30s  $0.58  │
-│    ├── QA Agent  qa_review  → REVISE     0m 55s  $0.26  │
+│    ├── Content QA  qa_review  → REVISE     0m 55s  $0.26  │
 │    ├── Content Writer  revision_1        1m 45s  $0.52  │
-│    └── QA Agent  qa_review  → PASS       0m 34s  $0.18  │
+│    └── Content QA  qa_review  → PASS       0m 34s  $0.18  │
 │    Note: 1 revision round (currency info outdated)      │
 │                                                          │
 │  [Click any run for full trace detail]                   │
@@ -328,7 +328,7 @@ The dashboard and Feishu are two views of the same data. Quick commands in Feish
 
 ## 4. Suggested Implementation Order
 
-1. **Content Team only** — the simplest, most self-contained unit. Content Writer + QA Agent + Content Manager with hierarchical process. Get the basic write → review → approve flow working.
+1. **Content Team only** — the simplest, most self-contained unit. Content Writer + Content QA + Content Manager with hierarchical process. Get the basic write → review → approve flow working.
 
 2. **Agent executor abstraction** — build the layer that can spawn a coding-agent session (start with one provider, e.g., Claude Code) with the right context files. This is the foundation for everything else.
 

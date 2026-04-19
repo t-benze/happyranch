@@ -197,7 +197,7 @@ def test_kb_update_preserves_authored_by(tmp_home, app, runtime, auth_headers):
     r = client.post(
         "/api/v1/kb/alipay-refund-endpoint",
         json={
-            "agent": "qa_agent",
+            "agent": "qa_engineer",
             "slug": "alipay-refund-endpoint",
             "title": "Alipay v3 refund endpoint — updated",
             "type": "reference",
@@ -210,7 +210,7 @@ def test_kb_update_preserves_authored_by(tmp_home, app, runtime, auth_headers):
     assert r.status_code == 200
     got = client.get("/api/v1/kb/alipay-refund-endpoint", headers=auth_headers).json()
     assert got["authored_by"] == "dev_agent"
-    assert got["updated_by"] == "qa_agent"
+    assert got["updated_by"] == "qa_engineer"
 
 
 def test_kb_update_404_on_missing(tmp_home, app, auth_headers):

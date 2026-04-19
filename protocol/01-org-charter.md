@@ -67,7 +67,7 @@ Provide the most reliable, up-to-date, and actionable tourism information and bo
 - Visa information must link to official government sources
 - Transport instructions must include specific stops/stations, not just route names
 - All content reviewed for accuracy every 90 days minimum
-- QA Agent must verify every piece before publication
+- Content QA must verify every piece before publication
 
 ## Escalation Philosophy
 Agents should resolve what they can within their authority. Escalate early rather than late for:

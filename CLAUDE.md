@@ -6,7 +6,7 @@ A one-person company (OPC) that provides online tourism information and booking 
 ## Architecture Summary
 - **Layer 1**: Founder (human) — sets rules, handles escalations, reviews weekly dashboard
 - **Layer 2**: 4 Manager Agents — Content Manager, Engineering Head, Operations Manager, CX Manager
-- **Layer 3**: 9 Worker Agents — Content Writer, SEO Agent, QA Agent, Product Manager, Dev Agent, Payment Agent, Partner Liaison, Compliance Agent, Support Agent
+- **Layer 3**: 10 Worker Agents — Content Writer, SEO Agent, Content QA, Product Manager, Dev Agent, Payment Agent, QA Engineer, Partner Liaison, Compliance Agent, Support Agent
 - **Infrastructure**: Audit Logger, Escalation Router, Knowledge Base
 
 Agents operate autonomously within defined authority. Managers cross-audit each other (peer review). No agent both proposes and approves consequential actions (maker-checker pattern).
@@ -17,7 +17,7 @@ The following documents are in the `protocol/` folder.
 
 - `01-org-charter.md` — Mission, brand voice, risk tolerance, budget caps, partner standards, compliance requirements across 3 jurisdictions
 - `02-system-prompts-managers.md` — Full system prompts for all 4 manager agents with accountability contracts and performance tiers
-- `03-system-prompts-workers.md` — Full system prompts for all 8 worker agents with accountability contracts and performance tiers
+- `03-system-prompts-workers.md` — Full system prompts for all 9 worker agents (incl. QA Engineer and Content QA) with accountability contracts and performance tiers
 - `04-escalation-rules.md` — 12 routing rules (priority-ordered), manager-resolvable categories, peer audit triggers, structured request/response formats
 - `05-team-blueprint.md` — Index pointing to the split blueprint documents:
   - `05a-teams.md` — Concept mapping, team definitions, agent tools, runtime responsibilities
@@ -42,12 +42,12 @@ The following documents are in the `protocol/` folder.
 - **Hosting**: Local Mac Mini
 
 ## Implementation Order (follow this sequence)
-1. ~~**Product & Engineering Team**~~ done — Engineering Head + Product Manager + Dev Agent + Payment Agent with Claude Code executor. EH-driven orchestration loop (EH decides each step: delegate, handle directly, or escalate). Audit logging, agent memory, performance scoring all implemented.
+1. ~~**Product & Engineering Team**~~ done — Engineering Head + Product Manager + Dev Agent + Payment Agent + QA Engineer with Claude Code executor. EH-driven orchestration loop (EH decides each step: delegate, handle directly, or escalate). Audit logging, agent memory, performance scoring all implemented.
 2. ~~**Audit logging**~~ done — SQLite-backed audit logger with session start/end, completion reports, orchestration steps, escalations.
 3. ~~**EH-driven orchestration**~~ done — Engineering Head analyzes each task and decides the approach. No hardcoded task chains. Max 10 orchestration steps before escalation.
 4. ~~**Agent memory**~~ done — Persistent workspaces with CLAUDE.md, learnings.md, scorecard.md, task_history.md. Context builder regenerates identity on tier changes.
 5. ~~**Performance scoring**~~ done — Rolling 30-day scorecards, green/yellow/red tiers, exposed to EH via capabilities prompt.
-6. **Content Team** — Content Writer + QA Agent + SEO Agent + Content Manager.
+6. **Content Team** — Content Writer + Content QA + SEO Agent + Content Manager.
 7. **Ops Team** — Partner Liaison + Compliance Agent + Operations Manager. Enables real cross-team audits for payment changes.
 8. **Inter-Team communication** — Orchestrator routes tasks between Teams.
 9. **CX Team** — Support Agent may run as persistent agent for real-time chat, not batch.

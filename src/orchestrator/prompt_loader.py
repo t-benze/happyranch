@@ -11,6 +11,8 @@ _AGENT_SOURCES: dict[str, tuple[str, str]] = {
     "product_manager": ("03-system-prompts-workers.md", "Product Manager"),
     "dev_agent": ("03-system-prompts-workers.md", "Dev Agent"),
     "payment_agent": ("03-system-prompts-workers.md", "Payment Agent"),
+    "qa_engineer": ("03-system-prompts-workers.md", "QA Engineer"),
+    "content_qa": ("03-system-prompts-workers.md", "Content QA"),
 }
 
 

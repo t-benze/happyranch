@@ -188,7 +188,7 @@ Blocked:
 
 Team health:
   Content Writer: Green (92%) — on track
-  QA Agent: Green (96%)
+  Content QA: Green (96%)
   SEO Agent: Green (91%)
 
 Upcoming this week:
@@ -250,7 +250,7 @@ Team Health:
 
 Agent Scorecards:
   Content Writer: Green (92%)
-  QA Agent: Green (96%)
+  Content QA: Green (96%)
   Support Agent: Yellow (82%) — up from 78%
   All others: Green
 

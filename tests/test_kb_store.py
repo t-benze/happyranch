@@ -173,11 +173,11 @@ def test_update_entry_preserves_author_stamps_updated_by(store: KBStore):
         topic="x",
         body="# second\n",
     )
-    updated = store.update_entry(revised, agent="qa_agent")
+    updated = store.update_entry(revised, agent="qa_engineer")
     assert updated.title == "t revised"
     assert updated.authored_by == "dev_agent"
     assert updated.authored_at == original.authored_at
-    assert updated.updated_by == "qa_agent"
+    assert updated.updated_by == "qa_engineer"
     assert updated.updated_at >= original.updated_at
 
 
