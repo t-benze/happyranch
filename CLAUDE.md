@@ -19,8 +19,8 @@ The following documents are in the `protocol/` folder.
 - `02-system-prompts-managers.md` — Full system prompts for all 4 manager agents with accountability contracts and performance tiers
 - `03-system-prompts-workers.md` — Full system prompts for all 8 worker agents with accountability contracts and performance tiers
 - `04-escalation-rules.md` — 12 routing rules (priority-ordered), manager-resolvable categories, peer audit triggers, structured request/response formats
-- `05-crewai-blueprint.md` — Index pointing to the split blueprint documents:
-  - `05a-crews.md` — Concept mapping, crew definitions, agent tools, CrewAI boundary
+- `05-team-blueprint.md` — Index pointing to the split blueprint documents:
+  - `05a-teams.md` — Concept mapping, team definitions, agent tools, runtime responsibilities
   - `05b-agent-runtime.md` — Executor model, memory architecture, lifecycle & scheduling
   - `05c-orchestrator.md` — Orchestrator responsibilities, performance tiers, permissions, task state machine
   - `05d-feishu.md` — Founder interaction via Feishu, bot architecture, notification tiers
@@ -30,7 +30,7 @@ The following documents are in the `protocol/` folder.
 ## Tech Stack
 - **Language**: Python 3.11+ (currently running 3.13)
 - **Package manager**: `uv`
-- **Agent executor**: Claude Code CLI (`claude -p "<prompt>" --permission-mode auto`) — no CrewAI dependency for now
+- **Agent executor**: Claude Code CLI (`claude -p "<prompt>" --permission-mode auto`) — no third-party agent framework dependency
 - **Daemon**: FastAPI HTTP service (`src/daemon/`) — serves orchestrator work, SSE task events, agent callbacks
 - **CLI**: Thin HTTP client (`src/client/`) that talks to the daemon over localhost
 - **Agent workflow**: Claude Code skills (`protocol/skills/`) — `start-task`, `make-worktree`, `manage-repo`, `manage-agent`. The orchestrator prompt just names the skill and passes parameters
@@ -42,15 +42,15 @@ The following documents are in the `protocol/` folder.
 - **Hosting**: Local Mac Mini
 
 ## Implementation Order (follow this sequence)
-1. ~~**Product & Engineering Crew**~~ done — Engineering Head + Product Manager + Dev Agent + Payment Agent with Claude Code executor. EH-driven orchestration loop (EH decides each step: delegate, handle directly, or escalate). Audit logging, agent memory, performance scoring all implemented.
+1. ~~**Product & Engineering Team**~~ done — Engineering Head + Product Manager + Dev Agent + Payment Agent with Claude Code executor. EH-driven orchestration loop (EH decides each step: delegate, handle directly, or escalate). Audit logging, agent memory, performance scoring all implemented.
 2. ~~**Audit logging**~~ done — SQLite-backed audit logger with session start/end, completion reports, orchestration steps, escalations.
 3. ~~**EH-driven orchestration**~~ done — Engineering Head analyzes each task and decides the approach. No hardcoded task chains. Max 10 orchestration steps before escalation.
-4. ~~**Agent memory**~~ done — Persistent workspaces with CLAUDE.md, learnings.md, scorecard.md, recent_tasks.md. Context builder regenerates identity on tier changes.
+4. ~~**Agent memory**~~ done — Persistent workspaces with CLAUDE.md, learnings.md, scorecard.md, task_history.md. Context builder regenerates identity on tier changes.
 5. ~~**Performance scoring**~~ done — Rolling 30-day scorecards, green/yellow/red tiers, exposed to EH via capabilities prompt.
-6. **Content Crew** — Content Writer + QA Agent + SEO Agent + Content Manager.
-7. **Ops Crew** — Partner Liaison + Compliance Agent + Operations Manager. Enables real cross-crew audits for payment changes.
-8. **Inter-Crew communication** — Orchestrator routes tasks between Crews.
-9. **CX Crew** — Support Agent may run as persistent agent for real-time chat, not batch.
+6. **Content Team** — Content Writer + QA Agent + SEO Agent + Content Manager.
+7. **Ops Team** — Partner Liaison + Compliance Agent + Operations Manager. Enables real cross-team audits for payment changes.
+8. **Inter-Team communication** — Orchestrator routes tasks between Teams.
+9. **CX Team** — Support Agent may run as persistent agent for real-time chat, not batch.
 10. **Feishu integration** — Bot architecture, notification tiers, reply parsing.
 11. **Founder dashboard** — Aggregate audit logs, escalation summaries, scorecards into weekly view.
 
@@ -120,7 +120,6 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |   |   |-- audit_logger.py            # Semantic logging (session, verdict, escalation, orchestration steps, escalation_resolved)
 |   |   +-- kb_store.py                # Knowledge base: slug validation, atomic entry write, list/read/update/delete, search, _index.md regeneration, near-duplicate detection
 |   |-- agents/                        # Agent definitions (future)
-|   |-- crews/                         # Crew definitions (future)
 |   +-- tools/                         # Agent tools (future)
 |-- tests/                             # ~362 tests (unit + a couple of integration)
 |   |-- daemon/                        # Route-level tests for the FastAPI app

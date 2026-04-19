@@ -1,12 +1,12 @@
 # Orchestrator: Routing, Permissions & State
 
-The custom application layer that sits above CrewAI — task routing, inter-crew communication, performance tiers, permissions, and the task state machine.
+The application layer that drives the organization — task routing, inter-team communication, performance tiers, permissions, and the task state machine.
 
 ---
 
 ## 1. Orchestrator Responsibilities
 
-The orchestrator is the glue that sits above CrewAI. It is NOT a CrewAI concept — it's your application code.
+The orchestrator is the application code that ties everything together. It spawns Claude Code agent sessions, feeds manager decisions back into a loop, routes work between teams, and persists every step.
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -18,41 +18,41 @@ The orchestrator is the glue that sits above CrewAI. It is NOT a CrewAI concept 
 │  └──────────┘  └──────────┘  └───────────────┘  │
 │                                                   │
 │  ┌──────────┐  ┌──────────┐  ┌───────────────┐  │
-│  │Inter-Crew │  │ Knowledge│  │   Founder     │  │
+│  │Inter-Team │  │ Knowledge│  │   Founder     │  │
 │  │  Comms    │  │   Base   │  │  Dashboard    │  │
 │  └──────────┘  └──────────┘  └───────────────┘  │
 │                                                   │
 │  ┌──────────────────────────────────────────┐    │
 │  │         Agent Executor Abstraction        │    │
-│  │  Claude Code │ Codex │ OpenCode │ Native  │    │
+│  │   Claude Code │ Codex │ OpenCode │ …      │    │
 │  └──────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────┘
         │              │              │
    ┌────▼────┐   ┌────▼────┐   ┌────▼────┐   ┌────▼────┐
    │ Content  │   │ Product │   │   Ops   │   │   CX    │
-   │  Crew    │   │  Crew   │   │  Crew   │   │  Crew   │
+   │  Team    │   │  Team   │   │  Team   │   │  Team   │
    └─────────┘   └─────────┘   └─────────┘   └─────────┘
 ```
 
 ### What the orchestrator does
 
-**1. Receives work requests** and routes them to the right Crew. A new content brief goes to Content Crew. A partner application goes to Ops Crew. A bug report goes to the Product & Engineering Crew.
+**1. Receives work requests** and routes them to the right Team. A new content brief goes to Content Team. A partner application goes to Ops Team. A bug report goes to the Product & Engineering Team.
 
-**2. Manages inter-Crew communication.** When the Content Crew publishes a guide, it notifies the CX Crew so Support Agent knows about new content. When the Product & Engineering Crew changes a payment flow, it triggers a cross-audit task in the Ops Crew. These are not internal to any one Crew — the orchestrator handles the handoff.
+**2. Manages inter-Team communication.** When the Content Team publishes a guide, it notifies the CX Team so Support Agent knows about new content. When the Product & Engineering Team changes a payment flow, it triggers a cross-audit task in the Ops Team. These are not internal to any one Team — the orchestrator handles the handoff.
 
-**3. Runs the escalation router.** When an agent calls the `escalate` tool, the orchestrator evaluates the 12 escalation rules (from `04-escalation-rules.md`) and either routes to the relevant manager's Crew or sends a notification to the founder.
+**3. Runs the escalation router.** When an agent calls the `escalate` tool, the orchestrator evaluates the 12 escalation rules (from `04-escalation-rules.md`) and either routes to the relevant manager's Team or sends a notification to the founder.
 
-**4. Manages the revision loop.** When QA returns REVISE, the orchestrator tracks the revision count and either re-triggers the Content Crew with feedback or escalates after max rounds.
+**4. Manages the revision loop.** When QA returns REVISE, the orchestrator tracks the revision count and either re-triggers the Content Team with feedback or escalates after max rounds.
 
-**5. Runs post-execution scoring.** After each Crew run completes, the orchestrator extracts completion reports, QA verdicts, and revision history, then updates the agent scorecards. It adjusts the next Crew run's configuration based on performance tiers (e.g., adding extra review steps for yellow/red agents).
+**5. Runs post-execution scoring.** After each Team run completes, the orchestrator extracts completion reports, QA verdicts, and revision history, then updates the agent scorecards. It adjusts the next Team run's configuration based on performance tiers (e.g., adding extra review steps for yellow/red agents).
 
 **6. Assembles agent context.** Before each session, the orchestrator gathers the system prompt, learnings file, scorecard, team health, and task-specific context, then writes them into the agent's workspace in the format expected by the configured executor.
 
 **7. Provides the founder dashboard.** Aggregates audit logs, escalation summaries, agent scorecards, and team health metrics into a weekly report.
 
-### Inter-Crew communication patterns
+### Inter-Team communication patterns
 
-| Trigger | From Crew | To Crew | Payload |
+| Trigger | From Team | To Team | Payload |
 |---------|-----------|---------|---------|
 | Content published | Content | CX | New guide summary + URL for Support Agent |
 | Payment flow change proposed | Product | Ops | Change spec for Compliance Agent cross-audit |
@@ -65,18 +65,18 @@ The orchestrator is the glue that sits above CrewAI. It is NOT a CrewAI concept 
 ### Implementation approach
 
 The orchestrator is a Python application that:
-- Instantiates the 4 Crews with their agents and task templates
+- Instantiates the 4 Teams with their agents and task templates
 - Exposes an API (or CLI) for submitting work requests
 - Maintains state in a database (SQLite for prototype, PostgreSQL for production)
 - Runs agent sessions via the executor abstraction (not all running simultaneously)
-- Listens for escalation signals and inter-crew communication
+- Listens for escalation signals and inter-team communication
 - Persists audit logs, scorecards, and agent memory
 
 ---
 
-## 2. Performance Tier Impact on Crew Configuration
+## 2. Performance Tier Impact on Team Configuration
 
-The orchestrator dynamically adjusts how Crews run based on agent performance tiers.
+The orchestrator dynamically adjusts how Teams run based on agent performance tiers.
 
 ### Green tier (>90% acceptance)
 - Standard flow: task → agent executes → next step
@@ -84,16 +84,16 @@ The orchestrator dynamically adjusts how Crews run based on agent performance ti
 
 ### Yellow tier (75-90%)
 - Manager agent reviews ALL output before it proceeds
-- In CrewAI terms: add an explicit `manager_review` Task after the agent's Task
+- In TeamAI terms: add an explicit `manager_review` Task after the agent's Task
 
 ### Red tier (<75%)
 - Double review: supervisor + peer manager
-- In CrewAI terms: add TWO review Tasks — one for the supervising manager, one for the peer-audit manager (from a different Crew, routed by the orchestrator)
+- In TeamAI terms: add TWO review Tasks — one for the supervising manager, one for the peer-audit manager (from a different Team, routed by the orchestrator)
 - Agent scope reduced: only assigned simpler task variants
 - Founder receives weekly performance report for this agent
 
 ### How this works in practice
-The orchestrator maintains a scorecard per agent. Before kicking off a Crew run, it checks relevant agent tiers and adjusts the Task chain:
+The orchestrator maintains a scorecard per agent. Before kicking off a Team run, it checks relevant agent tiers and adjusts the Task chain:
 
 ```
 Standard (Green):  write_content → qa_review → done
@@ -101,7 +101,7 @@ Yellow Writer:     write_content → manager_pre_review → qa_review → done
 Red Writer:        write_content → manager_pre_review → peer_review → qa_review → done
 ```
 
-The Crew is instantiated with the appropriate Task list each time. This is not something CrewAI handles automatically — your orchestrator builds the Task list dynamically.
+The Team is instantiated with the appropriate Task list each time. This is not something TeamAI handles automatically — your orchestrator builds the Task list dynamically.
 
 ---
 
@@ -149,15 +149,15 @@ There are four types of permission blocks, each handled differently:
 **Example**: CX Manager tries to approve a $200 refund (above $150 limit). Ops Manager wants to agree to a 6-month partner contract (above 3-month limit).
 **Response**: Agent calls `escalate(category="budget", severity="medium", summary="Refund of $200 requested by tourist for cancelled tour. Exceeds my $150 authority.")`.
 **Task state**: Moves to `waiting_for_approval`. The agent completes all other work on the task and submits a completion report with the pending approval clearly noted.
-**Orchestrator action**: Routes the escalation per the 12 rules in `04-escalation-rules.md`. Creates a founder notification with the agent's summary and recommendation. Holds the specific blocked step (not the entire Crew).
+**Orchestrator action**: Routes the escalation per the 12 rules in `04-escalation-rules.md`. Creates a founder notification with the agent's summary and recommendation. Holds the specific blocked step (not the entire Team).
 **Resolution**: Founder approves or denies via the dashboard. Orchestrator resumes the task with the decision injected into context.
 
 #### Type 3: Needs another agent's work
-**What**: The task has a cross-agent or cross-crew dependency.
+**What**: The task has a cross-agent or cross-team dependency.
 **Example**: Payment Agent proposes a payment flow change, but it needs Compliance Agent review before Engineering Head can approve. Dev Agent needs to implement a feature that requires a partner API endpoint, but Partner Liaison hasn't onboarded that partner yet.
 **Response**: Agent identifies the dependency in its completion report: "Blocked on: Compliance Agent cross-audit of this payment flow change. Cannot proceed until PCI-DSS and cross-border compliance is verified."
 **Task state**: Moves to `blocked_on_dependency`.
-**Orchestrator action**: Reads the dependency from the completion report. Spawns the required agent session (Compliance Agent in the Ops Crew) with the dependency context. The blocking task is queued, not abandoned.
+**Orchestrator action**: Reads the dependency from the completion report. Spawns the required agent session (Compliance Agent in the Ops Team) with the dependency context. The blocking task is queued, not abandoned.
 **Resolution**: Once the dependency agent completes its work, the orchestrator resumes the blocked task with the dependency result injected into context.
 
 #### Type 4: Ambiguous or novel situation
@@ -219,8 +219,8 @@ Blocked tasks don't wait forever:
 | Block type | Default timeout | On timeout |
 |---|---|---|
 | Waiting for founder approval | 24 hours | Re-notify founder + flag in dashboard as urgent |
-| Blocked on dependency (same crew) | 2 hours | Escalate to manager agent |
-| Blocked on dependency (cross-crew) | 4 hours | Escalate to both managers |
+| Blocked on dependency (same team) | 2 hours | Escalate to manager agent |
+| Blocked on dependency (cross-team) | 4 hours | Escalate to both managers |
 | Waiting for guidance (novel situation) | 24 hours | Re-notify founder + agent proceeds with conservative default if one exists |
 
 The orchestrator runs a background check every 15 minutes for timed-out tasks. If a founder approval times out twice (48 hours total), the task is flagged as critical on the dashboard and the orchestrator sends a notification through whatever channel the founder has configured (email, Feishu, SMS).

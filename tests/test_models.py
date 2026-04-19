@@ -48,7 +48,7 @@ def test_task_record_creation():
     assert record.status == TaskStatus.PENDING
     assert record.revision_count == 0
     assert record.assigned_agent is None
-    assert record.crew == "product_engineering"
+    assert record.team == "product_engineering"
     assert record.completed_at is None
     assert record.created_at is not None
     assert record.updated_at is not None

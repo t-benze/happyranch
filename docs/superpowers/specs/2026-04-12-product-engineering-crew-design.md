@@ -1,10 +1,12 @@
-# Product & Engineering Crew — Implementation Spec
+# Product & Engineering Team — Implementation Spec
 
-Steps 1-6 of the OPC implementation: a working crew with orchestrator, audit logging, revision loop, agent memory, and performance scoring.
+Steps 1-6 of the OPC implementation: a working team with orchestrator, audit logging, revision loop, agent memory, and performance scoring.
+
+> Historical note (2026-04): this spec was originally filed as "Product & Engineering Crew"; the concept was renamed to **Team** during the CrewAI cleanup. Filename preserved for traceability.
 
 ---
 
-## 1. Crew Composition
+## 1. Team Composition
 
 | Agent | Role | Type |
 |-------|------|------|
@@ -244,7 +246,7 @@ Single SQLite file. Four tables.
 | type | TEXT | implement_feature / bug_fix / payment_change |
 | status | TEXT | pending / in_progress / completed / in_review / revise / approved / rejected / escalated |
 | assigned_agent | TEXT | Current agent working on this step |
-| crew | TEXT | "product_engineering" |
+| team | TEXT | "product_engineering" (column originally named `crew`; renamed during the CrewAI cleanup with an `ALTER TABLE ... RENAME COLUMN` migration) |
 | brief | TEXT | Task description |
 | revision_count | INTEGER | Default 0, max 2 |
 | created_at | TEXT | ISO 8601 |
@@ -302,7 +304,7 @@ Single SQLite file. Four tables.
 Python CLI:
 
 ```
-python scripts/run_product_crew.py --task implement_feature --brief "Add Alipay support for international cards"
+python scripts/run_product_team.py --task implement_feature --brief "Add Alipay support for international cards"
 ```
 
 ### Core loop
@@ -352,19 +354,19 @@ implement_feature (Dev Agent Red):
   PM writes spec → Dev implements → Engineering Head pre-review → Ops Manager peer review → Engineering Head final review
 ```
 
-Note: Ops Manager peer review is not available until Ops Crew is built. For now, Red tier adds an extra Engineering Head review step instead.
+Note: Ops Manager peer review is not available until Ops Team is built. For now, Red tier adds an extra Engineering Head review step instead.
 
 ---
 
-## 9. Cross-Crew Audit Stub
+## 9. Cross-Team Audit Stub
 
-The `payment_change` task flow normally requires a Compliance Agent cross-audit from the Ops Crew. Until Ops Crew is built:
+The `payment_change` task flow normally requires a Compliance Agent cross-audit from the Ops Team. Until Ops Team is built:
 
 - The orchestrator logs `"cross_audit_requested"` in the audit_log
 - The audit is auto-approved with a placeholder result
-- The Engineering Head's review context includes a note: "Cross-audit stubbed — Compliance Agent review pending Ops Crew implementation"
+- The Engineering Head's review context includes a note: "Cross-audit stubbed — Compliance Agent review pending Ops Team implementation"
 
-This exercises the cross-crew communication interface so it's ready when Ops Crew comes online.
+This exercises the cross-team communication interface so it's ready when Ops Team comes online.
 
 ---
 
@@ -372,8 +374,8 @@ This exercises the cross-crew communication interface so it's ready when Ops Cre
 
 - Feishu integration (Step 7+)
 - Knowledge base / RAG (Step 8)
-- Content Crew, Ops Crew, CX Crew (Steps 6-9)
-- Real cross-crew audits (requires Ops Crew)
+- Content Team, Ops Team, CX Team (Steps 6-9)
+- Real cross-team audits (requires Ops Team)
 - Founder dashboard (Step 11)
 - Additional executors (Codex, OpenCode)
 - Persistent Support Agent

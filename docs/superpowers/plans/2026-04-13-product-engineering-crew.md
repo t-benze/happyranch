@@ -1,12 +1,14 @@
-# Product & Engineering Crew Implementation Plan
+# Product & Engineering Team Implementation Plan
+
+> **Historical note (2026-04-19):** This document was originally filed as "Product & Engineering Team" and referenced CrewAI as a possible framework. Both concepts were dropped: the internal term "crew" is now "team" throughout the codebase, and the orchestrator uses a plain Claude Code subprocess executor (no third-party agent framework). Filename kept for history; body updated for the new terminology. Some code snippets here preserve the original `crew` column name to match the migration that renamed it in SQLite.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a working Python orchestrator that spawns Claude Code agent sessions for the Product & Engineering Crew (Engineering Head, Product Manager, Dev Agent, Payment Agent), with audit logging, revision loop, agent memory, and performance scoring.
+**Goal:** Build a working Python orchestrator that spawns Claude Code agent sessions for the Product & Engineering Team (Engineering Head, Product Manager, Dev Agent, Payment Agent), with audit logging, revision loop, agent memory, and performance scoring.
 
 **Architecture:** A Python CLI application that manages task lifecycle via SQLite. For each task step, it assembles context into an agent's workspace, spawns `claude -p` with `--permission-mode auto`, reads the completion report, scores the agent, and routes output to the next step or back for revision. All agents run as isolated Claude Code sessions from persistent workspace directories.
 
-**Tech Stack:** Python 3.11+, Pydantic v2 (structured data), SQLite (persistence), subprocess (Claude Code executor), pytest (testing). No CrewAI needed yet -- the orchestrator handles task routing directly.
+**Tech Stack:** Python 3.11+, Pydantic v2 (structured data), SQLite (persistence), subprocess (Claude Code executor), pytest (testing). The orchestrator handles task routing directly -- no third-party agent framework.
 
 **Spec:** `docs/superpowers/specs/2026-04-12-product-engineering-crew-design.md` (the source of truth for all requirements).
 
@@ -44,7 +46,7 @@ tests/
   test_executor.py            Executor tests (mocked subprocess)
   test_orchestrator.py        Integration tests (mocked executor)
 scripts/
-  run_product_crew.py         CLI entry point: argparse -> orchestrator
+  run_product_team.py         CLI entry point: argparse -> orchestrator
 ```
 
 Each file has a single responsibility. Files that change together (e.g., models used by database) are co-located in the same package.
@@ -61,7 +63,7 @@ Each file has a single responsibility. Files that change together (e.g., models 
 - Create: `src/infrastructure/__init__.py`
 - Create: `src/orchestrator/__init__.py`
 - Create: `src/agents/__init__.py`
-- Create: `src/crews/__init__.py`
+- Create: `src/teams/__init__.py (note: dropped — no `src/teams/` directory exists in the final implementation; teams live implicitly in agent workspaces)`
 - Create: `src/tools/__init__.py`
 - Create: `tests/__init__.py`
 - Create: `tests/conftest.py`
@@ -95,7 +97,7 @@ dev = [
 testpaths = ["tests"]
 ```
 
-Note: `crewai` and `anthropic` dependencies are not needed yet. The orchestrator spawns `claude` as a subprocess and doesn't use the Anthropic Python SDK directly. Add them later when needed.
+Note: no third-party agent framework is needed. The orchestrator spawns `claude` as a subprocess and doesn't use the Anthropic Python SDK directly. Add dependencies later only if needed.
 
 - [ ] **Step 2: Create empty `__init__.py` files**
 
@@ -104,7 +106,7 @@ Create these files, all empty:
 - `src/infrastructure/__init__.py`
 - `src/orchestrator/__init__.py`
 - `src/agents/__init__.py`
-- `src/crews/__init__.py`
+- `src/teams/__init__.py (note: dropped — no `src/teams/` directory exists in the final implementation; teams live implicitly in agent workspaces)`
 - `src/tools/__init__.py`
 - `tests/__init__.py`
 
@@ -218,7 +220,7 @@ def test_task_record_creation():
     assert record.status == TaskStatus.PENDING
     assert record.revision_count == 0
     assert record.assigned_agent is None
-    assert record.crew == "product_engineering"
+    assert record.team == "product_engineering"
     assert record.completed_at is None
     assert record.created_at is not None
     assert record.updated_at is not None
@@ -322,7 +324,7 @@ class TaskRecord(BaseModel):
     type: TaskType
     status: TaskStatus = TaskStatus.PENDING
     assigned_agent: str | None = None
-    crew: str = "product_engineering"
+    team: str = "product_engineering"
     brief: str
     revision_count: int = 0
     created_at: datetime = Field(default_factory=_now)
@@ -584,7 +586,7 @@ class Database:
                 type TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending',
                 assigned_agent TEXT,
-                crew TEXT NOT NULL DEFAULT 'product_engineering',
+                team TEXT NOT NULL DEFAULT 'product_engineering',
                 brief TEXT NOT NULL,
                 revision_count INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
@@ -639,7 +641,7 @@ class Database:
 
     def insert_task(self, task: TaskRecord) -> None:
         self._conn.execute(
-            """INSERT INTO tasks (id, type, status, assigned_agent, crew, brief,
+            """INSERT INTO tasks (id, type, status, assigned_agent, team, brief,
                revision_count, created_at, updated_at, completed_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
@@ -647,7 +649,7 @@ class Database:
                 task.type.value,
                 task.status.value,
                 task.assigned_agent,
-                task.crew,
+                task.team,
                 task.brief,
                 task.revision_count,
                 task.created_at.isoformat(),
@@ -667,7 +669,7 @@ class Database:
             type=row["type"],
             status=row["status"],
             assigned_agent=row["assigned_agent"],
-            crew=row["crew"],
+            team=row["team"],
             brief=row["brief"],
             revision_count=row["revision_count"],
             created_at=row["created_at"],
@@ -1060,7 +1062,7 @@ class AuditLogger:
             payload={
                 "task_type": task_type,
                 "auto_approved": True,
-                "note": "Cross-audit stubbed -- Compliance Agent review pending Ops Crew implementation",
+                "note": "Cross-audit stubbed -- Compliance Agent review pending Ops Team implementation",
             },
         )
 ```
@@ -2373,7 +2375,7 @@ git commit -m "feat: agent executor spawns claude -p sessions and reads completi
 - Create: `src/orchestrator/orchestrator.py`
 - Create: `tests/test_orchestrator.py`
 
-The main coordination loop. Receives task requests, creates DB records, builds tier-dependent task chains, spawns executor sessions step by step, handles review verdicts via the revision loop, logs everything, and manages cross-crew audit stubs. This integrates all previous modules.
+The main coordination loop. Receives task requests, creates DB records, builds tier-dependent task chains, spawns executor sessions step by step, handles review verdicts via the revision loop, logs everything, and manages cross-team audit stubs. This integrates all previous modules.
 
 - [ ] **Step 1: Write failing tests**
 
@@ -2610,7 +2612,7 @@ from src.orchestrator.task_router import build_task_chain
 logger = logging.getLogger(__name__)
 
 
-# System prompts for Product & Engineering Crew agents.
+# System prompts for Product & Engineering Team agents.
 # In production these are read from the markdown docs; here we store short
 # versions as defaults so the orchestrator can function without the docs.
 _DEFAULT_SYSTEM_PROMPTS: dict[str, str] = {
@@ -2860,7 +2862,7 @@ git commit -m "feat: main orchestrator with task lifecycle, review loop, and cro
 ## Task 10: CLI Script and Agent Workspace Bootstrap
 
 **Files:**
-- Create: `scripts/run_product_crew.py`
+- Create: `scripts/run_product_team.py`
 - Create: `tests/test_cli.py`
 
 The CLI entry point that exposes the orchestrator to the command line. Also validates that workspaces can be bootstrapped.
@@ -2879,11 +2881,11 @@ from src.models import TaskType
 def test_parse_args():
     # Import inline to avoid config issues
     sys.argv = [
-        "run_product_crew.py",
+        "run_product_team.py",
         "--task", "implement_feature",
         "--brief", "Add Alipay support for international cards",
     ]
-    from scripts.run_product_crew import parse_args
+    from scripts.run_product_team import parse_args
 
     args = parse_args()
     assert args.task == "implement_feature"
@@ -2892,11 +2894,11 @@ def test_parse_args():
 
 def test_parse_args_bug_fix():
     sys.argv = [
-        "run_product_crew.py",
+        "run_product_team.py",
         "--task", "bug_fix",
         "--brief", "Fix broken payment links",
     ]
-    from scripts.run_product_crew import parse_args
+    from scripts.run_product_team import parse_args
 
     args = parse_args()
     assert args.task == "bug_fix"
@@ -2907,11 +2909,11 @@ def test_parse_args_bug_fix():
 Run: `cd /Users/tangbz/projects/my-opc && python -m pytest tests/test_cli.py -v`
 Expected: FAIL with `ModuleNotFoundError`
 
-- [ ] **Step 3: Create `scripts/run_product_crew.py`**
+- [ ] **Step 3: Create `scripts/run_product_team.py`**
 
 ```python
 #!/usr/bin/env python3
-"""CLI entry point for running Product & Engineering Crew tasks."""
+"""CLI entry point for running Product & Engineering Team tasks."""
 from __future__ import annotations
 
 import argparse
@@ -2930,7 +2932,7 @@ from src.orchestrator.orchestrator import Orchestrator
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run a Product & Engineering Crew task"
+        description="Run a Product & Engineering Team task"
     )
     parser.add_argument(
         "--task",
@@ -3003,8 +3005,8 @@ Expected: All 2 tests PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-git add scripts/run_product_crew.py tests/test_cli.py
-git commit -m "feat: CLI entry point for running Product & Engineering Crew tasks"
+git add scripts/run_product_team.py tests/test_cli.py
+git commit -m "feat: CLI entry point for running Product & Engineering Team tasks"
 ```
 
 ---
@@ -3025,14 +3027,14 @@ If any tests fail, fix them before proceeding.
 
 - [ ] **Step 3: Run the CLI with `--help` to verify it's wired up**
 
-Run: `cd /Users/tangbz/projects/my-opc && python scripts/run_product_crew.py --help`
+Run: `cd /Users/tangbz/projects/my-opc && python scripts/run_product_team.py --help`
 Expected: Help text showing `--task`, `--brief`, `--db`, and `--verbose` options.
 
 - [ ] **Step 4: Final commit if any fixes were needed**
 
 ```bash
 git add -A
-git commit -m "fix: test suite passing for Product & Engineering Crew implementation"
+git commit -m "fix: test suite passing for Product & Engineering Team implementation"
 ```
 
 ---

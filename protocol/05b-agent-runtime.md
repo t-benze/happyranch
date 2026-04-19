@@ -8,7 +8,7 @@ How agents are spawned, how they remember across sessions, and when they run.
 
 ### Every agent runs as a coding-agent session
 
-Each agent in the organization is not just an LLM call — it's a full coding-agent session that can read files, write files, run commands, search the web, and interact with APIs. The CrewAI layer orchestrates *when* each session runs, *what context* it gets, and *how* outputs flow between them.
+Each agent in the organization is not just an LLM call — it's a full coding-agent session that can read files, write files, run commands, search the web, and interact with APIs. The orchestrator layer decides *when* each session runs, *what context* it gets, and *how* outputs flow between them.
 
 ### Claude Code as primary executor
 
@@ -62,7 +62,7 @@ Write restrictions are role-based but minimal:
 
 ### Provider-agnostic executor abstraction (future)
 
-The executor interface is designed to support additional backends later (Codex, OpenCode, crewai-native). Swapping an agent from one executor to another will be a one-line config change. For now, all agents use Claude Code.
+The executor interface is designed to support additional backends later (Codex, OpenCode, other coding-agent CLIs). Swapping an agent from one executor to another will be a one-line config change. For now, all agents use Claude Code.
 
 ---
 
@@ -210,7 +210,7 @@ The Support Agent is the one exception. Tourists need real-time help and the res
 
 **Option A: True persistent session.** The Support Agent runs as a long-lived agent session that waits for incoming inquiries. Advantages: instant response, no cold start. Disadvantages: continuous LLM session cost, needs health monitoring and auto-restart.
 
-**Option B: Fast on-demand with warm-up.** The Support Agent is spun up on-demand like other agents, but with optimizations to reduce cold start: pre-assembled context kept ready, lightweight executor (crewai-native) for simple queries, full executor only for complex ones. If 10-20 second startup is acceptable within the 5-minute response window, this avoids the cost of a persistent session.
+**Option B: Fast on-demand with warm-up.** The Support Agent is spun up on-demand like other agents, but with optimizations to reduce cold start: pre-assembled context kept ready, a lightweight executor for simple queries, full executor only for complex ones. If 10-20 second startup is acceptable within the 5-minute response window, this avoids the cost of a persistent session.
 
 **Recommendation:** Start with Option B (fast on-demand). Switch to Option A only if response time is consistently too slow or if support volume justifies the cost.
 
@@ -233,8 +233,8 @@ With on-demand sessions, daily cost scales with actual work, not idle time:
 
 | Phase | Estimated daily sessions | Estimated daily LLM cost |
 |---|---|---|
-| Phase 1 (Content Crew only) | 5-10 sessions | $3-8 |
-| Phase 2 (+ Product/Ops Crews) | 15-25 sessions | $8-20 |
-| Full org (all 4 Crews active) | 25-40 sessions | $15-35 |
+| Phase 1 (Content Team only) | 5-10 sessions | $3-8 |
+| Phase 2 (+ Product/Ops Teams) | 15-25 sessions | $8-20 |
+| Full org (all 4 Teams active) | 25-40 sessions | $15-35 |
 
 These are rough estimates assuming Claude Sonnet pricing. Actual costs depend on task complexity, revision rounds, and which executor is used. The dashboard's cost tracking page (Page 6) gives you real-time visibility.

@@ -8,8 +8,8 @@ The self-hosted dashboard for org-wide visibility, plus the recommended build se
 
 The Feishu chats are for real-time interaction — conversations, approvals, daily updates. The dashboard is for when you want the big picture: how is the org performing, what happened recently, where are the trends going, and what's the full audit trail. It runs as a local web app on your Mac Mini, accessible from any device on your network.
 
-### Self-Hosted, No CrewAI AMP
-This dashboard replaces CrewAI's cloud-based AMP platform entirely. CrewAI AMP is **not used** — all data stays on your Mac Mini. The open-source CrewAI framework provides task callbacks that the orchestrator hooks into to capture execution data (agent decisions, task timelines, tool usage, LLM calls). This data is written to your local database alongside the business-level metrics (scorecards, escalation history, calibration insights). One dashboard covers both engineering observability and business performance — no cloud dependency, no data leaving your infrastructure, full compliance with PIPL/PDPO/PDPA.
+### Fully Self-Hosted
+All data stays on your Mac Mini — no third-party observability service. The orchestrator records execution data (agent decisions, task timelines, tool usage, LLM calls) directly to SQLite alongside the business-level metrics (scorecards, escalation history, calibration insights). One dashboard covers both engineering observability and business performance — no cloud dependency, no data leaving your infrastructure, full compliance with PIPL/PDPO/PDPA.
 
 ### Tech Stack
 - **Backend**: FastAPI (Python) — reads from the same SQLite database the orchestrator writes to
@@ -17,7 +17,7 @@ This dashboard replaces CrewAI's cloud-based AMP platform entirely. CrewAI AMP i
 - **Hosting**: Runs on your Mac Mini alongside the orchestrator, served on a local port (e.g., `http://mac-mini.local:8080`)
 - **Auth**: Simple token or password gate (this is a local network app, not public-facing)
 - **Refresh**: Auto-refreshes every 60 seconds, or manual refresh
-- **Observability**: CrewAI task callbacks → orchestrator → SQLite (no external tracing service needed). Optionally add OpenTelemetry with a self-hosted Jaeger/Grafana if you want richer execution traces later
+- **Observability**: Orchestrator hooks (session_start / session_end / orchestration_step / completion_report audit events) → SQLite (no external tracing service needed). Optionally add OpenTelemetry with a self-hosted Jaeger/Grafana if you want richer execution traces later
 
 ---
 
@@ -44,20 +44,20 @@ The landing page — what's happening right now.
 │                                                          │
 │  ACTIVE TASKS BY CREW                                    │
 │  ┌──────────────────────────────────────────────────────┐│
-│  │ Content Crew                                         ││
+│  │ Content Team                                         ││
 │  │   ● Content Writer: Drafting "Shenzhen day trip"     ││
 │  │   ○ QA Agent: Idle (waiting for draft)               ││
 │  │   ○ SEO Agent: Idle                                  ││
 │  │                                                      ││
-│  │ Product Crew                                         ││
+│  │ Product Team                                         ││
 │  │   ● Dev Agent: Implementing mobile perf fixes        ││
 │  │   ○ Payment Agent: Idle                              ││
 │  │                                                      ││
-│  │ Ops Crew                                             ││
+│  │ Ops Team                                             ││
 │  │   ● Partner Liaison: Vetting Macau hotel candidates  ││
 │  │   ○ Compliance Agent: Idle                           ││
 │  │                                                      ││
-│  │ CX Crew                                              ││
+│  │ CX Team                                              ││
 │  │   ● Support Agent: Handling inquiries (3 active)     ││
 │  └──────────────────────────────────────────────────────┘│
 │                                                          │
@@ -243,14 +243,14 @@ The "Founder Involvement" section is key — it shows whether the system is tren
 
 Data sources: all databases (task history, performance tracker, escalation logs, audit trail)
 
-### Page 6: Execution Traces (replaces CrewAI AMP)
+### Page 6: Execution Traces
 
-Engineering-level observability for debugging and cost tracking. This is what CrewAI AMP would have provided, but self-hosted.
+Engineering-level observability for debugging and cost tracking — fully self-hosted, no third-party tracing service.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
 │  Execution Traces                      [Today ▼]        │
-│  Filter: [Crew ▼] [Agent ▼] [Status ▼] [Search...]     │
+│  Filter: [Team ▼] [Agent ▼] [Status ▼] [Search...]     │
 ├──────────────────────────────────────────────────────────┤
 │                                                          │
 │  COST SUMMARY (today)                                    │
@@ -260,7 +260,7 @@ Engineering-level observability for debugging and cost tracking. This is what Cr
 │                                                          │
 │  RECENT CREW RUNS                                        │
 │  ─────────────────────────────────────────────────────   │
-│  ▶ RUN-087  Content Crew  14:32  ✅ 3m 22s  $0.84      │
+│  ▶ RUN-087  Content Team  14:32  ✅ 3m 22s  $0.84      │
 │    ├── Content Writer  write_content     2m 10s  $0.52  │
 │    │   └── LLM: 3 calls, 12,400 tokens                 │
 │    │   └── Tools: search_web (2x), check_source (1x)   │
@@ -270,11 +270,11 @@ Engineering-level observability for debugging and cost tracking. This is what Cr
 │    └── Content Manager  manager_review   0m 24s  $0.08  │
 │        └── LLM: 1 call, 2,100 tokens                   │
 │                                                          │
-│  ▶ RUN-086  CX Crew  13:15  ✅ 1m 05s  $0.31           │
+│  ▶ RUN-086  CX Team  13:15  ✅ 1m 05s  $0.31           │
 │    ├── Support Agent  handle_inquiry     0m 52s  $0.28  │
 │    └── CX Manager  (not invoked — resolved by agent)    │
 │                                                          │
-│  ▶ RUN-085  Content Crew  12:00  ⚠ 5m 44s  $1.62       │
+│  ▶ RUN-085  Content Team  12:00  ⚠ 5m 44s  $1.62       │
 │    ├── Content Writer  write_content     2m 30s  $0.58  │
 │    ├── QA Agent  qa_review  → REVISE     0m 55s  $0.26  │
 │    ├── Content Writer  revision_1        1m 45s  $0.52  │
@@ -296,9 +296,9 @@ Engineering-level observability for debugging and cost tracking. This is what Cr
 └──────────────────────────────────────────────────────────┘
 ```
 
-Clicking a run expands the full trace: every LLM call with input/output, tool invocations with arguments and results, timing breakdown, token counts, and the executor used (Claude Code, Codex, etc.). This is captured via CrewAI's task callbacks — the orchestrator hooks `on_task_start`, `on_task_end`, `on_tool_use`, and logs everything to SQLite.
+Clicking a run expands the full trace: every LLM call with input/output, tool invocations with arguments and results, timing breakdown, token counts, and the executor used (Claude Code, Codex, etc.). This is captured via the orchestrator's audit hooks (`session_start`, `session_end`, `orchestration_step`, `completion_report`) and logged to SQLite.
 
-Data sources: orchestrator execution logs (captured via CrewAI callbacks), LLM usage tracking
+Data sources: orchestrator audit log (session/step/completion events), LLM usage tracking
 
 ---
 
@@ -316,9 +316,9 @@ The dashboard backend exposes a REST API that the frontend consumes. This same A
 | `GET /api/escalations?period=` | Escalation history with calibration insights |
 | `GET /api/trends?period=7d` | Aggregated metrics for charts |
 | `GET /api/health` | Team health summary (same data as Feishu `health` command) |
-| `GET /api/traces?crew=&date=` | Execution traces with LLM calls, tool usage, timing |
-| `GET /api/traces/{run_id}` | Full trace detail for a specific crew run |
-| `GET /api/costs?period=7d` | LLM cost breakdown by agent, crew, and time period |
+| `GET /api/traces?team=&date=` | Execution traces with LLM calls, tool usage, timing |
+| `GET /api/traces/{run_id}` | Full trace detail for a specific team run |
+| `GET /api/costs?period=7d` | LLM cost breakdown by agent, team, and time period |
 
 ### Connection to Feishu
 
@@ -328,7 +328,7 @@ The dashboard and Feishu are two views of the same data. Quick commands in Feish
 
 ## 4. Suggested Implementation Order
 
-1. **Content Crew only** — the simplest, most self-contained unit. Content Writer + QA Agent + Content Manager with hierarchical process. Get the basic write → review → approve flow working.
+1. **Content Team only** — the simplest, most self-contained unit. Content Writer + QA Agent + Content Manager with hierarchical process. Get the basic write → review → approve flow working.
 
 2. **Agent executor abstraction** — build the layer that can spawn a coding-agent session (start with one provider, e.g., Claude Code) with the right context files. This is the foundation for everything else.
 
@@ -338,18 +338,18 @@ The dashboard and Feishu are two views of the same data. Quick commands in Feish
 
 5. **Add agent memory** — implement the learnings file write-back, scorecard injection, and periodic consolidation.
 
-6. **Add performance scoring** — after each Crew run, score the agents. Start displaying scorecards. Implement tier-based task chain adjustment.
+6. **Add performance scoring** — after each Team run, score the agents. Start displaying scorecards. Implement tier-based task chain adjustment.
 
 7. **Add Feishu bot integration** — set up the OPC Hub app bot and 4 manager webhook bots. Create the 7 group chats. Implement daily reports (Tier 3), standard approvals (Tier 2), reply parsing, and the decision-routing loop. Test with the Content Manager group chat first.
 
 8. **Add the knowledge base** — RAG access to org charter, guides, and SOPs. Scoped read/write per agent.
 
-9. **Stand up Crew 2 (Product) and Crew 3 (Ops)** — these are more complex due to cross-crew dependencies (Compliance Agent cross-auditing Payment Agent).
+9. **Stand up Team 2 (Product) and Team 3 (Ops)** — these are more complex due to cross-team dependencies (Compliance Agent cross-auditing Payment Agent).
 
-10. **Add inter-Crew communication** — the orchestrator routes cross-crew tasks.
+10. **Add inter-Team communication** — the orchestrator routes cross-team tasks.
 
-11. **Stand up CX Crew** — with the Support Agent as a persistent session for real-time chat or inside CrewAI for review workflows.
+11. **Stand up CX Team** — with the Support Agent as a persistent session for real-time chat (running outside the standard task loop) while still reporting into the CX Team for review workflows.
 
 12. **Add additional executor support** — once the abstraction is solid with one provider, add Codex and OpenCode as options.
 
-13. **Build the founder dashboard** — FastAPI backend exposing the REST API, React or static HTML frontend with the 6 pages (live status, scorecards, work log, escalation history, trends, execution traces). Connect the Feishu quick commands to the same API endpoints. No CrewAI AMP dependency — all data captured via CrewAI callbacks and stored locally.
+13. **Build the founder dashboard** — FastAPI backend exposing the REST API, React or static HTML frontend with the 6 pages (live status, scorecards, work log, escalation history, trends, execution traces). Connect the Feishu quick commands to the same API endpoints. No third-party observability dependency — all data captured via orchestrator audit hooks and stored locally.

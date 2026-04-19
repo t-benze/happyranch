@@ -46,7 +46,7 @@ class TaskRecord(BaseModel):
     type: TaskType
     status: TaskStatus = TaskStatus.PENDING
     assigned_agent: str | None = None
-    crew: str = "product_engineering"
+    team: str = "product_engineering"
     brief: str
     parent_task_id: str | None = None
     final_output_summary: str | None = None

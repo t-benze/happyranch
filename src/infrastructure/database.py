@@ -28,7 +28,7 @@ class Database:
                 type TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending',
                 assigned_agent TEXT,
-                crew TEXT NOT NULL DEFAULT 'product_engineering',
+                team TEXT NOT NULL DEFAULT 'product_engineering',
                 brief TEXT NOT NULL,
                 revision_count INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
@@ -107,6 +107,9 @@ class Database:
             "ALTER TABLE tasks ADD COLUMN final_output_summary TEXT",
             "ALTER TABLE tasks ADD COLUMN final_artifact_dir TEXT",
             "ALTER TABLE task_results ADD COLUMN artifact_dir TEXT",
+            # crew → team rename (SQLite >= 3.25). Idempotent: fails on
+            # DBs where the column is already `team` or already renamed.
+            "ALTER TABLE tasks RENAME COLUMN crew TO team",
         ):
             try:
                 self._conn.execute(ddl)
@@ -123,7 +126,7 @@ class Database:
 
     def insert_task(self, task: TaskRecord) -> None:
         self._conn.execute(
-            """INSERT INTO tasks (id, type, status, assigned_agent, crew, brief,
+            """INSERT INTO tasks (id, type, status, assigned_agent, team, brief,
                revision_count, created_at, updated_at, completed_at, parent_task_id)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
@@ -131,7 +134,7 @@ class Database:
                 task.type.value,
                 task.status.value,
                 task.assigned_agent,
-                task.crew,
+                task.team,
                 task.brief,
                 task.revision_count,
                 task.created_at.isoformat(),
@@ -152,7 +155,7 @@ class Database:
             type=row["type"],
             status=row["status"],
             assigned_agent=row["assigned_agent"],
-            crew=row["crew"],
+            team=row["team"],
             brief=row["brief"],
             revision_count=row["revision_count"],
             created_at=row["created_at"],
@@ -173,7 +176,7 @@ class Database:
                 type=row["type"],
                 status=row["status"],
                 assigned_agent=row["assigned_agent"],
-                crew=row["crew"],
+                team=row["team"],
                 brief=row["brief"],
                 revision_count=row["revision_count"],
                 created_at=row["created_at"],
@@ -246,7 +249,7 @@ class Database:
                 type=row["type"],
                 status=row["status"],
                 assigned_agent=row["assigned_agent"],
-                crew=row["crew"],
+                team=row["team"],
                 brief=row["brief"],
                 revision_count=row["revision_count"],
                 created_at=row["created_at"],

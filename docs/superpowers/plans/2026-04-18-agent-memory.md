@@ -1,5 +1,7 @@
 # Agent Memory Implementation Plan
 
+> **Historical note (2026-04-19):** Some SQL snippets below reference a `crew` column on the `tasks` table. That column has since been renamed to `team` via an `ALTER TABLE ... RENAME COLUMN` migration. The snippets are kept as-is to match the code that was written at the time; read `crew` as `team` in current code.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Give each agent a per-agent memory of the tasks it has performed so it can recall prior work when a new brief references past activity.
@@ -116,7 +118,7 @@ Update `insert_task` to include the new column:
 ```python
     def insert_task(self, task: TaskRecord) -> None:
         self._conn.execute(
-            """INSERT INTO tasks (id, type, status, assigned_agent, crew, brief,
+            """INSERT INTO tasks (id, type, status, assigned_agent, team, brief,
                revision_count, created_at, updated_at, completed_at, parent_task_id)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
@@ -124,7 +126,7 @@ Update `insert_task` to include the new column:
                 task.type.value,
                 task.status.value,
                 task.assigned_agent,
-                task.crew,
+                task.team,
                 task.brief,
                 task.revision_count,
                 task.created_at.isoformat(),
@@ -144,7 +146,7 @@ Update `get_task` (and `list_tasks`) to read `parent_task_id` from the row and p
             type=row["type"],
             status=row["status"],
             assigned_agent=row["assigned_agent"],
-            crew=row["crew"],
+            team=row["team"],
             brief=row["brief"],
             revision_count=row["revision_count"],
             created_at=row["created_at"],
@@ -1096,7 +1098,7 @@ Use the rebuild-from-DB version. Then add `list_agent_tasks` to `database.py`:
                 type=row["type"],
                 status=row["status"],
                 assigned_agent=row["assigned_agent"],
-                crew=row["crew"],
+                team=row["team"],
                 brief=row["brief"],
                 revision_count=row["revision_count"],
                 created_at=row["created_at"],

@@ -106,7 +106,7 @@ class AuditLogger:
             payload={
                 "task_type": task_type,
                 "auto_approved": True,
-                "note": "Cross-audit stubbed -- Compliance Agent review pending Ops Crew implementation",
+                "note": "Cross-audit stubbed -- Compliance Agent review pending Ops Team implementation",
             },
         )
 

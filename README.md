@@ -12,7 +12,7 @@ The **Engineering Head** (EH) drives all task execution. When you submit a task,
 
 Agents are **dynamic** — the EH can propose new agents via the `manage-agent` skill, and the founder approves enrollment before the agent's workspace is bootstrapped. The roster grows organically as the organization needs new capabilities.
 
-The initial crew (created via `opc init-agent`) includes Engineering Head, Product Manager, Dev Agent, and Payment Agent. Additional agents (e.g., QA Agent, Content Writer) are enrolled through the enrollment flow.
+The initial team (created via `opc init-agent`) includes Engineering Head, Product Manager, Dev Agent, and Payment Agent. Additional agents (e.g., QA Agent, Content Writer) are enrolled through the enrollment flow.
 
 The EH can delegate multiple steps (e.g., PM writes spec, then Dev implements), explore the codebase itself, or escalate if the task requires human judgment. A max of 10 orchestration steps prevents runaway loops.
 
@@ -203,14 +203,14 @@ Each agent runs in its own persistent workspace inside the runtime directory. Af
 - `repos/` — git clones of repositories configured in `agent.yaml` (auto-pulled before each task)
 - `learnings.md` — agent-written insights from past tasks (appended via `opc learning`)
 - `scorecard.md` — performance summary (updated by orchestrator)
-- `recent_tasks.md` — rolling task history
+- `task_history.md` — rolling per-agent task history
 
 ## Roadmap
 
-- [ ] Content Crew (Content Writer, QA Agent, SEO Agent, Content Manager)
-- [ ] Ops Crew (Partner Liaison, Compliance Agent, Operations Manager)
-- [ ] Inter-crew communication and cross-crew audits
-- [ ] CX Crew (Support Agent for real-time chat)
+- [ ] Content Team (Content Writer, QA Agent, SEO Agent, Content Manager)
+- [ ] Ops Team (Partner Liaison, Compliance Agent, Operations Manager)
+- [ ] Inter-team communication and cross-team audits
+- [ ] CX Team (Support Agent for real-time chat)
 - [ ] Feishu integration (founder notifications and reply parsing)
 - [ ] Founder dashboard (aggregated audit logs, scorecards, escalation summaries)
 

@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-19
 **Status:** Draft, pending implementation plan.
-**Relates to:** Implementation order step 8 in `CLAUDE.md`; blueprint references in `protocol/05a-crews.md`, `protocol/05b-agent-runtime.md`, `protocol/05e-dashboard.md`.
+**Relates to:** Implementation order step 8 in `CLAUDE.md`; blueprint references in `protocol/05a-teams.md`, `protocol/05b-agent-runtime.md`, `protocol/05e-dashboard.md`.
 
 ## 1. Goal
 
