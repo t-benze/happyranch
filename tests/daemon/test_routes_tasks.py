@@ -378,6 +378,80 @@ def test_events_unknown_task_returns_404(tmp_home, app, auth_headers) -> None:
     assert r.status_code == 404
 
 
+def test_resolve_escalation_transitions_escalated_task(tmp_home, app, runtime, auth_headers):
+    from src.models import TaskRecord, TaskType, TaskStatus
+    state = app.state.daemon
+    state.db.insert_task(TaskRecord(
+        id="TASK-042", type=TaskType.GENERAL, brief="Large refund",
+        status=TaskStatus.ESCALATED,
+    ))
+    state.db.insert_audit_log(
+        task_id="TASK-042", agent="cx_manager", action="escalation",
+        payload={"reason": "Amount exceeds CX cap"},
+    )
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/tasks/TASK-042/resolve-escalation",
+        json={"decision": "approve", "rationale": "Vendor error, <$250 risk"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    got = state.db.get_task("TASK-042")
+    assert got.status == TaskStatus.APPROVED
+    rows = state.db.get_audit_logs("TASK-042")
+    assert any(row["action"] == "escalation_resolved" for row in rows)
+    # KB untouched
+    assert not (runtime.root / "kb").exists() or not list((runtime.root / "kb").glob("*.md"))
+
+
+def test_resolve_escalation_reject_decision(tmp_home, app, auth_headers):
+    from src.models import TaskRecord, TaskType, TaskStatus
+    state = app.state.daemon
+    state.db.insert_task(TaskRecord(
+        id="TASK-043", type=TaskType.GENERAL, brief="x", status=TaskStatus.ESCALATED,
+    ))
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/tasks/TASK-043/resolve-escalation",
+        json={"decision": "reject", "rationale": "Policy violation"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert state.db.get_task("TASK-043").status == TaskStatus.REJECTED
+
+
+def test_resolve_escalation_rejects_non_escalated_task(tmp_home, app, auth_headers):
+    from src.models import TaskRecord, TaskType, TaskStatus
+    state = app.state.daemon
+    state.db.insert_task(TaskRecord(
+        id="TASK-044", type=TaskType.GENERAL, brief="x", status=TaskStatus.COMPLETED,
+    ))
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/tasks/TASK-044/resolve-escalation",
+        json={"decision": "approve", "rationale": "r"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "task_not_escalated"
+
+
+def test_resolve_escalation_requires_rationale(tmp_home, app, auth_headers):
+    from src.models import TaskRecord, TaskType, TaskStatus
+    state = app.state.daemon
+    state.db.insert_task(TaskRecord(
+        id="TASK-045", type=TaskType.GENERAL, brief="x", status=TaskStatus.ESCALATED,
+    ))
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/tasks/TASK-045/resolve-escalation",
+        json={"decision": "approve", "rationale": ""},
+        headers=auth_headers,
+    )
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "rationale_required"
+
+
 def test_events_stream_yields_completion(tmp_home, app, daemon_state, auth_headers) -> None:
     sub = TestClient(app).post(
         "/api/v1/tasks",

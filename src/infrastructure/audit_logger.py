@@ -88,6 +88,16 @@ class AuditLogger:
             payload={"reason": reason},
         )
 
+    def log_escalation_resolved(
+        self, task_id: str, decision: str, rationale: str
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="founder",
+            action="escalation_resolved",
+            payload={"decision": decision, "rationale": rationale},
+        )
+
     def log_cross_audit_stub(self, task_id: str, task_type: str) -> None:
         self._db.insert_audit_log(
             task_id=task_id,

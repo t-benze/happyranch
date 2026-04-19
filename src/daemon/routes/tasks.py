@@ -217,3 +217,38 @@ async def submit_completion(task_id: str, body: CompletionBody, request: Request
         "status": body.status,
     })
     return {"ok": True}
+
+
+class ResolveEscalationBody(BaseModel):
+    decision: str  # "approve" | "reject"
+    rationale: str
+
+
+@router.post("/tasks/{task_id}/resolve-escalation")
+async def resolve_escalation(
+    task_id: str, body: ResolveEscalationBody, request: Request
+) -> dict:
+    from src.infrastructure.audit_logger import AuditLogger
+    from src.models import TaskStatus
+
+    state: DaemonState = request.app.state.daemon
+    _require_active(state)
+    if not body.rationale.strip():
+        raise HTTPException(status_code=400, detail={"code": "rationale_required"})
+    if body.decision not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail={"code": "invalid_decision"})
+    task = state.db.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    if task.status != TaskStatus.ESCALATED:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "task_not_escalated", "current_status": task.status.value},
+        )
+    new_status = TaskStatus.APPROVED if body.decision == "approve" else TaskStatus.REJECTED
+    async with state.db_lock:
+        state.db.update_task(task_id, status=new_status)
+        AuditLogger(state.db).log_escalation_resolved(
+            task_id=task_id, decision=body.decision, rationale=body.rationale
+        )
+    return {"ok": True, "task_id": task_id, "new_status": new_status.value}
