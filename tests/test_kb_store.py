@@ -10,6 +10,7 @@ from src.infrastructure.kb_store import (
     SlugExists,
     InvalidSlug,
     InvalidEntry,
+    NotFound,
 )
 
 
@@ -121,3 +122,73 @@ def test_write_entry_server_stamps_override_agent_supplied(store: KBStore):
     written = store.write_entry(entry, agent="dev_agent")
     assert written.authored_by == "dev_agent"
     assert written.authored_at != "1970-01-01T00:00:00Z"
+
+
+def test_list_entries_returns_summaries(store: KBStore):
+    for slug, topic, typ in [
+        ("visa-a", "visa", "reference"),
+        ("visa-b", "visa", "reference"),
+        ("pay-c", "payment", "reference"),
+        ("precedent-d", "payment", "precedent"),
+    ]:
+        store.write_entry(
+            KBEntry(slug=slug, title=slug.title(), type=typ, topic=topic, body="# x\n"),
+            agent="dev_agent",
+        )
+    summaries = store.list_entries()
+    assert len(summaries) == 4
+    assert {s.slug for s in summaries} == {"visa-a", "visa-b", "pay-c", "precedent-d"}
+
+
+def test_list_entries_filter_by_topic(store: KBStore):
+    for slug, topic in [("visa-a", "visa"), ("pay-c", "payment")]:
+        store.write_entry(
+            KBEntry(slug=slug, title=slug, type="reference", topic=topic, body="# x\n"),
+            agent="dev_agent",
+        )
+    assert [s.slug for s in store.list_entries(topic="visa")] == ["visa-a"]
+
+
+def test_list_entries_filter_by_type(store: KBStore):
+    store.write_entry(
+        KBEntry(slug="ref-a", title="t", type="reference", topic="x", body="# x\n"),
+        agent="dev_agent",
+    )
+    store.write_entry(
+        KBEntry(slug="prec-a", title="t", type="precedent", topic="x", body="# x\n"),
+        agent="dev_agent",
+    )
+    assert [s.slug for s in store.list_entries(type="precedent")] == ["prec-a"]
+
+
+def test_update_entry_preserves_author_stamps_updated_by(store: KBStore):
+    original = store.write_entry(
+        KBEntry(slug="u1", title="t", type="reference", topic="x", body="# first\n"),
+        agent="dev_agent",
+    )
+    revised = KBEntry(
+        slug="u1",
+        title="t revised",
+        type="reference",
+        topic="x",
+        body="# second\n",
+    )
+    updated = store.update_entry(revised, agent="qa_agent")
+    assert updated.title == "t revised"
+    assert updated.authored_by == "dev_agent"
+    assert updated.authored_at == original.authored_at
+    assert updated.updated_by == "qa_agent"
+    assert updated.updated_at >= original.updated_at
+
+
+def test_update_entry_raises_notfound_on_missing_slug(store: KBStore):
+    with pytest.raises(NotFound):
+        store.update_entry(
+            KBEntry(slug="missing", title="t", type="reference", topic="x", body="# x\n"),
+            agent="dev_agent",
+        )
+
+
+def test_read_entry_raises_notfound_on_missing_slug(store: KBStore):
+    with pytest.raises(NotFound):
+        store.read_entry("ghost")

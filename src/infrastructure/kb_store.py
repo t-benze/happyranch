@@ -67,6 +67,16 @@ class KBEntry:
     founder_rationale: Optional[str] = None
 
 
+@dataclass
+class KBSummary:
+    slug: str
+    title: str
+    type: str
+    topic: str
+    tags: list[str]
+    updated_at: Optional[str]
+
+
 class KBStore:
     def __init__(self, root: Path) -> None:
         self._root = root
@@ -117,6 +127,47 @@ class KBStore:
         if not path.exists():
             raise NotFound(slug)
         return self._parse(path.read_text())
+
+    def list_entries(
+        self, topic: Optional[str] = None, type: Optional[str] = None  # noqa: A002
+    ) -> list[KBSummary]:
+        out: list[KBSummary] = []
+        for path in sorted(self._root.glob("*.md")):
+            if path.name == "_index.md":
+                continue
+            try:
+                entry = self._parse(path.read_text())
+            except InvalidEntry:
+                continue
+            if topic is not None and entry.topic != topic:
+                continue
+            if type is not None and entry.type != type:
+                continue
+            out.append(KBSummary(
+                slug=entry.slug,
+                title=entry.title,
+                type=entry.type,
+                topic=entry.topic,
+                tags=entry.tags,
+                updated_at=entry.updated_at,
+            ))
+        return out
+
+    def update_entry(self, entry: KBEntry, agent: str) -> KBEntry:
+        self.validate_slug(entry.slug)
+        self._validate_entry_structure(entry)
+        target = self.path_for(entry.slug)
+        if not target.exists():
+            raise NotFound(entry.slug)
+        existing = self._parse(target.read_text())
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        stamped = KBEntry(**{**entry.__dict__})
+        stamped.authored_by = existing.authored_by
+        stamped.authored_at = existing.authored_at
+        stamped.updated_by = agent
+        stamped.updated_at = now
+        self._atomic_write(target, self._serialize(stamped))
+        return stamped
 
     def _serialize(self, entry: KBEntry) -> str:
         fm: dict = {
