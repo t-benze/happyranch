@@ -116,6 +116,41 @@ class Database:
             except sqlite3.OperationalError:
                 pass
 
+        # --- Task-status redesign migration (idempotent) ---
+        # Add new columns; swallow duplicate errors on subsequent startups.
+        for ddl in (
+            "ALTER TABLE tasks ADD COLUMN block_kind TEXT",
+            "ALTER TABLE tasks ADD COLUMN note TEXT",
+            "ALTER TABLE tasks ADD COLUMN orchestration_step_count INTEGER DEFAULT 0",
+        ):
+            try:
+                self._conn.execute(ddl)
+            except sqlite3.OperationalError:
+                pass
+
+        # One-shot data remap. Guard with a sentinel so re-runs are no-ops.
+        applied = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks' "
+            "AND sql LIKE '%block_kind%'"
+        ).fetchone()
+        if applied is not None:
+            # Fold final_output_summary → note where not already set.
+            self._conn.execute(
+                "UPDATE tasks SET note = final_output_summary "
+                "WHERE note IS NULL AND final_output_summary IS NOT NULL"
+            )
+            # Old-world → new-world status mapping. Each UPDATE is narrow so
+            # re-running is a no-op (no rows match the WHERE clause the 2nd time).
+            self._conn.execute("UPDATE tasks SET status='completed' WHERE status='approved'")
+            self._conn.execute("UPDATE tasks SET status='failed'    WHERE status='rejected'")
+            self._conn.execute(
+                "UPDATE tasks SET status='blocked', block_kind='escalated' "
+                "WHERE status='escalated'"
+            )
+            # Normalize dead legacy values.
+            self._conn.execute("UPDATE tasks SET status='failed' WHERE status='in_review'")
+            self._conn.commit()
+
     def list_tables(self) -> list[str]:
         cursor = self._conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
