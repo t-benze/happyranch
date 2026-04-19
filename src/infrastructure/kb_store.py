@@ -10,6 +10,7 @@ import re
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Optional
 
@@ -75,6 +76,13 @@ class KBSummary:
     topic: str
     tags: list[str]
     updated_at: Optional[str]
+
+
+@dataclass
+class KBDuplicate:
+    slug: str
+    title: str
+    similarity: float
 
 
 class KBStore:
@@ -151,6 +159,22 @@ class KBStore:
                 tags=entry.tags,
                 updated_at=entry.updated_at,
             ))
+        return out
+
+    def find_near_duplicates(
+        self, title: str, tags: list[str], threshold: float = 0.7, min_tag_overlap: int = 2
+    ) -> list[KBDuplicate]:
+        tag_set = set(tags)
+        out: list[KBDuplicate] = []
+        norm_title = title.lower().strip()
+        for summary in self.list_entries():
+            sim = SequenceMatcher(None, norm_title, summary.title.lower().strip()).ratio()
+            overlap = len(tag_set & set(summary.tags))
+            if sim >= threshold or overlap >= min_tag_overlap:
+                out.append(KBDuplicate(
+                    slug=summary.slug, title=summary.title, similarity=round(sim, 3)
+                ))
+        out.sort(key=lambda c: c.similarity, reverse=True)
         return out
 
     def update_entry(self, entry: KBEntry, agent: str) -> KBEntry:

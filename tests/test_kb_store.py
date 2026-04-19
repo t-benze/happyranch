@@ -192,3 +192,50 @@ def test_update_entry_raises_notfound_on_missing_slug(store: KBStore):
 def test_read_entry_raises_notfound_on_missing_slug(store: KBStore):
     with pytest.raises(NotFound):
         store.read_entry("ghost")
+
+
+def test_find_near_duplicates_title_similarity(store: KBStore):
+    store.write_entry(
+        KBEntry(
+            slug="alipay-refund-endpoint",
+            title="Alipay v3 refund endpoint quirks",
+            type="reference",
+            topic="payment",
+            body="# x\n",
+        ),
+        agent="dev_agent",
+    )
+    candidates = store.find_near_duplicates(
+        title="Alipay v3 refund endpoint gotchas", tags=["alipay"]
+    )
+    assert len(candidates) >= 1
+    assert candidates[0].slug == "alipay-refund-endpoint"
+    assert candidates[0].similarity > 0.7
+
+
+def test_find_near_duplicates_tag_overlap(store: KBStore):
+    store.write_entry(
+        KBEntry(
+            slug="payment-a",
+            title="Nothing alike here at all",
+            type="reference",
+            topic="payment",
+            tags=["alipay", "refund", "v3"],
+            body="# x\n",
+        ),
+        agent="dev_agent",
+    )
+    # Title dissimilar but 2 tags overlap → still a candidate
+    candidates = store.find_near_duplicates(
+        title="Totally different subject matter",
+        tags=["alipay", "refund"],
+    )
+    assert [c.slug for c in candidates] == ["payment-a"]
+
+
+def test_find_near_duplicates_returns_empty_on_distinct(store: KBStore):
+    store.write_entry(
+        KBEntry(slug="visa-a", title="Visa rule A", type="reference", topic="visa", body="# x\n"),
+        agent="dev_agent",
+    )
+    assert store.find_near_duplicates(title="Restaurant opening hours", tags=[]) == []
