@@ -4,10 +4,18 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request, status
+from pydantic import BaseModel
 
 from src.daemon.auth import require_token
 from src.daemon.state import DaemonState
-from src.infrastructure.kb_store import KBStore, NotFound
+from src.infrastructure.kb_store import (
+    InvalidEntry,
+    InvalidSlug,
+    KBEntry,
+    KBStore,
+    NotFound,
+    SlugExists,
+)
 
 router = APIRouter(dependencies=[require_token()])
 
@@ -84,3 +92,167 @@ def get_kb(slug: str, request: Request) -> dict:
         "supersedes": entry.supersedes,
         "body": entry.body,
     }
+
+
+class KBAddBody(BaseModel):
+    agent: str
+    slug: str
+    title: str
+    type: str
+    topic: str
+    body: str
+    tags: list[str] = []
+    source_task: Optional[str] = None
+    supersedes: Optional[str] = None
+    force_new_sibling: bool = False
+
+
+class KBUpdateBody(BaseModel):
+    agent: str
+    slug: str
+    title: str
+    type: str
+    topic: str
+    body: str
+    tags: list[str] = []
+    source_task: Optional[str] = None
+    supersedes: Optional[str] = None
+
+
+def _raise_invalid_entry(exc: InvalidEntry) -> None:
+    code = exc.code
+    status_code = 413 if code == "entry_too_large" else 400
+    raise HTTPException(status_code=status_code, detail={"code": code, "message": str(exc)})
+
+
+def _kb_write(
+    state: DaemonState, entry: KBEntry, agent: str, force_new_sibling: bool
+) -> KBEntry:
+    store = _store(state)
+    try:
+        store.validate_slug(entry.slug)
+    except InvalidSlug as exc:
+        raise HTTPException(status_code=400, detail={"code": "invalid_slug", "message": str(exc)})
+    if store.path_for(entry.slug).exists():
+        existing = store.read_entry(entry.slug)
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "slug_exists", "slug": entry.slug, "existing_title": existing.title},
+        )
+    if not force_new_sibling:
+        dups = store.find_near_duplicates(title=entry.title, tags=entry.tags)
+        if dups:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "near_duplicate",
+                    "candidates": [
+                        {"slug": d.slug, "title": d.title, "similarity": d.similarity}
+                        for d in dups
+                    ],
+                    "suggestion": "update",
+                },
+            )
+    try:
+        written = store.write_entry(entry, agent=agent)
+    except SlugExists as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "slug_exists", "slug": exc.slug, "existing_title": exc.existing_title},
+        )
+    except InvalidEntry as exc:
+        _raise_invalid_entry(exc)
+    try:
+        store.regenerate_index()
+    except Exception:  # noqa: BLE001 — regen is non-fatal per spec §6.3
+        pass
+    return written
+
+
+@router.post("/kb")
+async def add_kb(body: KBAddBody, request: Request) -> dict:
+    state: DaemonState = _require_active(request.app.state.daemon)
+    entry = KBEntry(
+        slug=body.slug,
+        title=body.title,
+        type=body.type,
+        topic=body.topic,
+        tags=body.tags,
+        body=body.body,
+        source_task=body.source_task,
+        supersedes=body.supersedes,
+    )
+    async with state.kb_lock:
+        written = _kb_write(state, entry, agent=body.agent, force_new_sibling=body.force_new_sibling)
+    return {"slug": written.slug, "updated_at": written.updated_at}
+
+
+@router.post("/kb/reindex")
+async def reindex_kb(request: Request) -> dict:
+    state: DaemonState = _require_active(request.app.state.daemon)
+    async with state.kb_lock:
+        _store(state).regenerate_index()
+    return {"ok": True}
+
+
+@router.post("/kb/{slug}")
+async def update_kb(slug: str, body: KBUpdateBody, request: Request) -> dict:
+    state: DaemonState = _require_active(request.app.state.daemon)
+    if body.slug != slug:
+        raise HTTPException(status_code=400, detail={"code": "slug_mismatch"})
+    store = _store(state)
+    entry = KBEntry(
+        slug=body.slug,
+        title=body.title,
+        type=body.type,
+        topic=body.topic,
+        tags=body.tags,
+        body=body.body,
+        source_task=body.source_task,
+        supersedes=body.supersedes,
+    )
+    async with state.kb_lock:
+        try:
+            store.validate_slug(entry.slug)
+        except InvalidSlug as exc:
+            raise HTTPException(status_code=400, detail={"code": "invalid_slug", "message": str(exc)})
+        try:
+            updated = store.update_entry(entry, agent=body.agent)
+        except NotFound:
+            raise HTTPException(status_code=404, detail={"code": "not_found", "slug": slug})
+        except InvalidEntry as exc:
+            _raise_invalid_entry(exc)
+        try:
+            store.regenerate_index()
+        except Exception:  # noqa: BLE001
+            pass
+    return {"slug": updated.slug, "updated_at": updated.updated_at, "updated_by": updated.updated_by}
+
+
+@router.delete("/kb/{slug}")
+async def delete_kb(
+    slug: str,
+    request: Request,
+    agent: str,
+    confirm: bool = False,
+    as_founder: bool = False,
+) -> dict:
+    state: DaemonState = _require_active(request.app.state.daemon)
+    if not as_founder and agent != "engineering_head":
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "delete_forbidden", "required": "engineering_head"},
+        )
+    if not confirm:
+        raise HTTPException(status_code=400, detail={"code": "confirm_required"})
+    store = _store(state)
+    async with state.kb_lock:
+        try:
+            store.delete_entry(slug)
+        except NotFound:
+            raise HTTPException(status_code=404, detail={"code": "not_found", "slug": slug})
+        try:
+            store.regenerate_index()
+        except Exception:  # noqa: BLE001
+            pass
+    return {"ok": True, "slug": slug}
