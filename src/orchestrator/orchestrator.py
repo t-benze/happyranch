@@ -302,19 +302,46 @@ class Orchestrator:
         return "escalated"
 
     def _parse_next_step(self, report: CompletionReport | None) -> NextStep:
-        """Parse the Engineering Head's decision from its completion report."""
+        """Parse the Engineering Head's decision from its completion report.
+
+        The EH must return a single JSON object in ``output_summary``. Anything
+        else — prose, empty, JSON-in-a-sentence, valid JSON with the wrong
+        schema — escalates to the founder. We refuse to guess intent from
+        prose: a prior silent-approve fallback was the root cause of TASK-013
+        and TASK-016, where "Delegating to dev_agent..." was interpreted as
+        "done" and the worker never ran.
+        """
         if report is None:
             return NextStep(action="escalate", reason="No completion report from Engineering Head")
-        text = report.output_summary
+        text = report.output_summary or ""
+        stripped = text.strip()
+        if not stripped:
+            return NextStep(
+                action="escalate",
+                reason="EH returned an empty output_summary; no decision to act on.",
+            )
         try:
-            data = json.loads(text)
+            data = json.loads(stripped)
         except (json.JSONDecodeError, TypeError, ValueError):
-            # Plain text output — treat as "done" with the text as summary
-            return NextStep(action="done", summary=text)
+            preview = stripped.replace("\n", " ")[:200]
+            return NextStep(
+                action="escalate",
+                reason=(
+                    "EH returned non-JSON output_summary; decision cannot be parsed. "
+                    f"Preview: {preview!r}"
+                ),
+            )
+        if not isinstance(data, dict):
+            return NextStep(
+                action="escalate",
+                reason=(
+                    "EH output_summary parsed as non-object JSON; expected a decision "
+                    f"object. Got: {type(data).__name__}"
+                ),
+            )
         try:
             return NextStep(**data)
         except (KeyError, ValueError, ValidationError) as exc:
-            # Valid JSON but invalid schema — don't silently approve
             return NextStep(
                 action="escalate",
                 reason=f"Malformed EH decision: {exc}",

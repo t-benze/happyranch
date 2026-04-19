@@ -330,8 +330,13 @@ def test_delegate_blocked_report_treated_as_failure(mock_run, orchestrator, test
 
 
 @patch.object(Orchestrator, "_run_agent")
-def test_eh_plain_text_output_treated_as_done(mock_run, orchestrator, test_runtime):
-    """If EH returns plain text (not JSON), treat it as done with that text."""
+def test_eh_plain_text_output_escalates(mock_run, orchestrator, test_runtime):
+    """If EH returns plain text (not JSON), escalate — do NOT silently approve.
+
+    The orchestrator cannot distinguish between "EH handled it and this is the
+    summary" and "EH meant to delegate but wrote prose instead of JSON." The
+    only safe behavior is to surface the parse failure to the founder.
+    """
     _setup_workspaces(test_runtime)
 
     mock_run.return_value = (
@@ -352,7 +357,114 @@ def test_eh_plain_text_output_treated_as_done(mock_run, orchestrator, test_runti
     task_id = orchestrator.create_task(TaskType.GENERAL, "Explore payments")
     result = orchestrator.run_task(task_id)
 
-    assert result == "approved"
+    assert result == "escalated"
+    task = orchestrator._db.get_task(task_id)
+    assert task.status == TaskStatus.ESCALATED
+    # The escalation reason must name the parse failure so the founder sees
+    # why the task stopped, not just "EH said something".
+    assert task.final_output_summary is not None
+    assert "non-JSON" in task.final_output_summary or "not valid JSON" in task.final_output_summary
+
+
+@patch.object(Orchestrator, "_run_agent")
+def test_eh_prose_announcing_delegation_escalates_without_spawning_child(
+    mock_run, orchestrator, test_runtime,
+):
+    """Regression for TASK-013 / TASK-016: EH wrote prose like "Delegating to
+    dev_agent..." and the orchestrator silently approved the root task without
+    ever invoking the worker.
+
+    The orchestrator must escalate AND must not spawn a child task / call the
+    delegate agent.
+    """
+    _setup_workspaces(test_runtime)
+
+    call_count = 0
+
+    def mock_side_effect(task_id, agent, prompt):
+        nonlocal call_count
+        call_count += 1
+        if agent == "engineering_head":
+            return (
+                ExecutorResult(
+                    success=True, duration_seconds=30, session_id=f"sess-eh-{call_count}",
+                ),
+                CompletionReport(
+                    task_id=task_id,
+                    agent="engineering_head",
+                    status="completed",
+                    confidence=90,
+                    output_summary=(
+                        "Triaged GitHub issue #93. Delegating end-to-end "
+                        "implementation to dev_agent with a staged plan."
+                    ),
+                ),
+            )
+        # Worker must never be called — the point of the fix is that prose
+        # never becomes a real delegation.
+        raise AssertionError(f"worker {agent!r} must not be invoked on a parse failure")
+
+    mock_run.side_effect = mock_side_effect
+
+    task_id = orchestrator.create_task(TaskType.GENERAL, "Fix issue #93")
+    result = orchestrator.run_task(task_id)
+
+    assert result == "escalated"
+    # No child task was spawned.
+    assert orchestrator._db.get_children(task_id) == []
+    # The EH was called exactly once — no retry loop on parse failures.
+    assert call_count == 1
+
+
+@patch.object(Orchestrator, "_run_agent")
+def test_eh_empty_output_escalates(mock_run, orchestrator, test_runtime):
+    """An empty output_summary is not a valid decision — escalate, don't approve."""
+    _setup_workspaces(test_runtime)
+
+    mock_run.return_value = (
+        ExecutorResult(success=True, duration_seconds=5, session_id="sess-eh"),
+        CompletionReport(
+            task_id="TASK-001",
+            agent="engineering_head",
+            status="completed",
+            confidence=0,
+            output_summary="",
+        ),
+    )
+
+    task_id = orchestrator.create_task(TaskType.GENERAL, "Explore")
+    result = orchestrator.run_task(task_id)
+
+    assert result == "escalated"
+
+
+@patch.object(Orchestrator, "_run_agent")
+def test_eh_json_wrapped_in_prose_escalates(mock_run, orchestrator, test_runtime):
+    """Prose with an embedded JSON object (e.g. "Here's my decision: {...}")
+    must NOT be accepted — json.loads on the whole string will fail and we
+    must escalate rather than guess which substring was the "real" decision.
+    """
+    _setup_workspaces(test_runtime)
+
+    mock_run.return_value = (
+        ExecutorResult(success=True, duration_seconds=5, session_id="sess-eh"),
+        CompletionReport(
+            task_id="TASK-001",
+            agent="engineering_head",
+            status="completed",
+            confidence=80,
+            output_summary=(
+                'Here is my decision: {"action": "delegate", "agent": "dev_agent", '
+                '"prompt": "implement it"}'
+            ),
+        ),
+    )
+
+    task_id = orchestrator.create_task(TaskType.GENERAL, "Add feature")
+    result = orchestrator.run_task(task_id)
+
+    assert result == "escalated"
+    assert orchestrator._db.get_children(task_id) == []
 
 
 @patch.object(Orchestrator, "_run_agent")

@@ -95,3 +95,54 @@ def test_prompt_includes_constraints():
     )
     assert "$200" in prompt
     assert "founder" in prompt.lower()
+
+
+def test_prompt_frames_json_as_mandatory():
+    """The prompt must clearly mark JSON-only output as non-negotiable.
+
+    Regression for TASK-013 / TASK-016: EH wrote prose "Delegating to X..."
+    and the orchestrator silently approved. The prompt was partly at fault
+    — it asked for JSON in one sentence, buried among other content.
+    """
+    prompt = build_capabilities_prompt(
+        brief="Do something",
+        agents=[],
+        step_number=1,
+        max_steps=10,
+    )
+    # Mandatory language — something unmistakable, not a soft request.
+    lowered = prompt.lower()
+    assert "mandatory" in lowered or "must" in lowered or "required" in lowered
+    # The failure mode must be stated: prose = task fails / escalates.
+    assert "prose" in lowered or "plain text" in lowered or "not json" in lowered
+
+
+def test_prompt_shows_wrong_example():
+    """The prompt must show a concrete 'WRONG' example of prose so EH sees
+    exactly the failure mode to avoid, not just the right answer."""
+    prompt = build_capabilities_prompt(
+        brief="Do something",
+        agents=[],
+        step_number=1,
+        max_steps=10,
+    )
+    # "WRONG" or "BAD" label on a prose example — so the LLM cannot miss
+    # the contrast between acceptable and unacceptable output.
+    assert ("WRONG" in prompt) or ("BAD" in prompt) or ("DO NOT" in prompt)
+
+
+def test_prompt_warns_that_prose_escalates():
+    """The prompt must tell the EH the actual consequence of writing prose:
+    the task escalates to the founder. Consequence-framing is stronger than
+    "please write JSON"."""
+    prompt = build_capabilities_prompt(
+        brief="Do something",
+        agents=[],
+        step_number=1,
+        max_steps=10,
+    )
+    lowered = prompt.lower()
+    assert "escalate" in lowered and (
+        "prose" in lowered or "plain text" in lowered or "non-json" in lowered
+        or "not json" in lowered
+    )

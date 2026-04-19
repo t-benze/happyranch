@@ -148,6 +148,54 @@ def test_cmd_tasks_calls_list_endpoint(capsys):
     assert "TASK-001" in capsys.readouterr().out
 
 
+def test_cmd_tasks_shows_assigned_agent_column(capsys):
+    """The table must surface which agent owns each task so the founder can
+    see at a glance whether a root task is being handled by EH or a worker
+    (and, for child tasks, which worker). Without this, distinguishing EH
+    orchestrations from actual worker runs requires drilling into `opc status`.
+    """
+    from src.cli import cmd_tasks
+
+    fake = MagicMock()
+    fake.get.return_value.status_code = 200
+    fake.get.return_value.json.return_value = {"tasks": [
+        {
+            "id": "TASK-020", "type": "bug_fix", "status": "in_progress",
+            "brief": "Fix the save button",
+            "assigned_agent": "dev_agent",
+        },
+        {
+            "id": "TASK-018", "type": "bug_fix", "status": "in_progress",
+            "brief": "Re-dispatch of TASK-017",
+            "assigned_agent": "engineering_head",
+        },
+        {
+            "id": "TASK-021", "type": "general", "status": "pending",
+            "brief": "Not yet assigned",
+            "assigned_agent": None,
+        },
+    ]}
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        args = MagicMock(limit=20)
+        cmd_tasks(args)
+
+    out = capsys.readouterr().out
+    # Header
+    assert "Agent" in out
+    # Worker task shows the worker
+    assert "dev_agent" in out
+    # EH-owned root task shows EH
+    assert "engineering_head" in out
+    # Pending / unassigned renders a placeholder, not an empty slot
+    # (makes eyeballing which tasks haven't started yet easy)
+    lines = out.splitlines()
+    pending_line = next(line for line in lines if "TASK-021" in line)
+    # The pending task must have an Agent cell of some kind, not be silently
+    # shortened. Either '-' or 'None' — test accepts either, but one must exist
+    # between the status column and the brief.
+    assert " - " in pending_line or " none " in pending_line.lower()
+
+
 def test_cmd_tasks_idle_daemon_prints_friendly_message(capsys):
     """409 no_active_runtime should produce a sentence, not raw JSON."""
     from src.cli import cmd_tasks

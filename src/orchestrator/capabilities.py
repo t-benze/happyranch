@@ -30,8 +30,16 @@ def build_capabilities_prompt(
         sections.append(f"| {agent['name']} | {agent['description']} | {agent['tier']} |")
 
     sections.extend([
-        "\n### Available Actions\n",
-        "Return your decision as a JSON object in your completion report's `output_summary` field.\n",
+        "\n### Response Format (MANDATORY)\n",
+        "Your completion report's `output_summary` MUST be a single JSON object and "
+        "nothing else. No prose before or after. No markdown code fences. No "
+        "explanation wrapping the JSON.\n",
+        "If you write prose (e.g. \"Delegating to dev_agent...\") instead of a JSON "
+        "object, the orchestrator CANNOT act on your intent. Your task will escalate "
+        "to the founder with a non-JSON parse-failure reason, and the agent you "
+        "\"delegated to\" will never run. This is the single most common EH failure "
+        "mode — do not announce the action, emit it.\n",
+        "Choose EXACTLY ONE of the shapes below:\n",
         '**delegate** -- Assign work to an agent:',
         "```json",
         '{"action": "delegate", "agent": "<agent_name>", "prompt": "<detailed instructions for the agent>"}',
@@ -44,9 +52,19 @@ def build_capabilities_prompt(
         "```json",
         '{"action": "escalate", "reason": "<why this needs escalation>"}',
         "```\n",
+        "#### WRONG — this is prose and will escalate your task\n",
+        "```",
+        "Triaged issue #93. Delegating end-to-end implementation to dev_agent with a staged plan.",
+        "```\n",
+        "#### RIGHT — same intent, JSON only\n",
+        "```json",
+        '{"action": "delegate", "agent": "dev_agent", "prompt": "Implement issue #93: ..."}',
+        "```\n",
         "**manage-agent** -- Enroll, update, or terminate an agent:",
         "Use the manage-agent skill to write a JSON file and call `opc manage-agent --from-file <path>`.",
-        "Enrollment requires founder approval before the agent becomes active.\n",
+        "Enrollment requires founder approval before the agent becomes active. "
+        "This is a side-channel capability, not one of the three decision shapes above — "
+        "your `output_summary` still has to be one of delegate/done/escalate.\n",
         "### Constraints\n",
         f"- This is step {step_number} of maximum {max_steps}",
         "- Budget authority: auto-approved up to $200 USD single / $100 USD monthly recurring",

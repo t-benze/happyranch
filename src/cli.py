@@ -147,11 +147,12 @@ def cmd_tasks(args: argparse.Namespace) -> None:
     if not tasks:
         print("No tasks found.")
         return
-    print(f"{'ID':<12} {'Type':<20} {'Status':<12}  Brief")
-    print("-" * 76)
+    print(f"{'ID':<12} {'Type':<20} {'Status':<12} {'Agent':<18} Brief")
+    print("-" * 96)
     for t in tasks:
         brief = t["brief"][:40] + "..." if len(t["brief"]) > 40 else t["brief"]
-        print(f"{t['id']:<12} {t['type']:<20} {t['status']:<12}  {brief}")
+        agent = t.get("assigned_agent") or "-"
+        print(f"{t['id']:<12} {t['type']:<20} {t['status']:<12} {agent:<18} {brief}")
 
 
 def cmd_status(args: argparse.Namespace) -> None:
