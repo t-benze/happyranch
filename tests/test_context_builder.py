@@ -194,6 +194,29 @@ def test_generated_claude_md_contains_kb_section(tmp_path):
     )
     body = (workspace / "CLAUDE.md").read_text()
     assert "## Knowledge Base" in body
-    assert "opc kb" in body
+    assert "opc kb list" in body
+    assert "opc kb search" in body
+    assert "opc kb get" in body
+    assert "opc kb add --agent" in body
+    assert "opc kb update" in body
+    assert "--from-file" in body
     assert "Consult" in body
     assert "Contribute" in body
+
+
+def test_generated_claude_md_contains_task_recall_section(tmp_path):
+    from src.config import Settings
+
+    builder = ContextBuilder(Settings())
+    workspace = tmp_path / "ws"
+    builder.write_claude_md(
+        workspace=workspace,
+        agent_name="dev_agent",
+        system_prompt="You are dev_agent.",
+    )
+    body = (workspace / "CLAUDE.md").read_text()
+    assert "## Task Recall" in body
+    assert "opc recall" in body
+    assert "--tree" in body
+    assert "--fetch-artifact" in body
+    assert "task_history.md" in body
