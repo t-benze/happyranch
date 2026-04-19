@@ -82,6 +82,37 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
         _enqueue_parent_if_waiting(orch, task_id)
         return
 
+    # ---- 5. Classify outcome ----
+    if not result.success or report is None:
+        _fail(orch, task_id, note="agent session failed")
+        _enqueue_parent_if_waiting(orch, task_id)
+        return
+
+    orch._log_step_result(task_id, result, report)
+
+    if report.status == "blocked":
+        _fail(orch, task_id, note=f"self-blocked: {report.output_summary}")
+        _enqueue_parent_if_waiting(orch, task_id)
+        return
+
+    # ---- 6. Parse next step (reuses the existing parser) ----
+    decision = orch._parse_next_step(report)
+
+    orch._audit.log_orchestration_step(
+        task_id, next_count, decision.model_dump(exclude_none=True),
+    )
+
+    # ---- 7. Dispatch on action ----
+    if decision.action == "done":
+        _complete(
+            orch, task_id,
+            note=decision.summary or report.output_summary,
+            artifact_dir=report.artifact_dir,
+        )
+        orch._tracker.update_scorecard(agent)
+        _enqueue_parent_if_waiting(orch, task_id)
+        return
+
 
 def _default_agent_for_root(task) -> str:
     """Root tasks default to the Engineering Head as their assigned agent."""

@@ -97,3 +97,61 @@ def test_run_step_transitions_pending_to_in_progress_and_increments_count(
     assert captured["count"] == 1
     assert captured["block_kind"] is None
     assert captured["note"] is None
+
+
+def _make_report(output_summary: str, status: str = "completed",
+                 artifact_dir: str | None = None):
+    from src.models import CompletionReport
+    return CompletionReport(
+        task_id="T-IGNORED", agent="engineering_head", status=status,
+        confidence=80, output_summary=output_summary, artifact_dir=artifact_dir,
+    )
+
+
+def _make_result(success: bool = True, duration: int = 1):
+    from src.orchestrator.executor import ExecutorResult
+    return ExecutorResult(
+        success=success, session_id="sess-x", duration_seconds=duration,
+    )
+
+
+def test_run_step_done_completes_task_and_enqueues_parent(
+    runtime, db, monkeypatch,
+):
+    import asyncio
+    import json
+    from src.orchestrator.orchestrator import Orchestrator
+
+    # Parent in blocked(DELEGATED), child in pending.
+    db.insert_task(TaskRecord(id="T-PAR", type=TaskType.GENERAL, brief="parent",
+                              assigned_agent="engineering_head"))
+    db.update_task("T-PAR", status=TaskStatus.BLOCKED,
+                   block_kind=BlockKind.DELEGATED, note="waiting")
+    db.insert_task(TaskRecord(
+        id="T-CHD", type=TaskType.GENERAL, brief="child",
+        assigned_agent="engineering_head", parent_task_id="T-PAR",
+    ))
+
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10),
+                        runtime=runtime)
+    # Wire a fake queue
+    q: asyncio.Queue = asyncio.Queue()
+    orch._queue = q
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(
+            output_summary=json.dumps({"action": "done", "summary": "Looks great"}),
+            artifact_dir="artifacts/run-1",
+        )
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    orch.run_step("T-CHD")
+
+    child = db.get_task("T-CHD")
+    assert child.status == TaskStatus.COMPLETED
+    assert child.note == "Looks great"
+    assert child.final_artifact_dir == "artifacts/run-1"
+
+    # Parent should be enqueued
+    assert q.qsize() == 1
+    assert q.get_nowait() == "T-PAR"
