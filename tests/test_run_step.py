@@ -66,3 +66,34 @@ def test_run_step_over_budget_parks_escalated(runtime, db):
     ]
     assert len(escalations) == 1
     assert "max steps" in escalations[0]["payload"]["reason"]
+
+
+def test_run_step_transitions_pending_to_in_progress_and_increments_count(
+    runtime, db, monkeypatch,
+):
+    """On pickup, run_step must flip to in_progress, clear block fields,
+    and increment the step counter exactly once — BEFORE invoking the agent."""
+    from src.orchestrator.orchestrator import Orchestrator, WorkspaceNotInitialized
+
+    db.insert_task(TaskRecord(
+        id="T-1", type=TaskType.GENERAL, brief="x", assigned_agent="engineering_head",
+    ))
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10), runtime=runtime)
+
+    # Force _run_agent to raise so we can inspect the DB state mid-flight.
+    captured: dict = {}
+    def fail(task_id, agent, prompt, on_session_started=None):
+        t = db.get_task(task_id)
+        captured["status"] = t.status
+        captured["count"] = t.orchestration_step_count
+        captured["block_kind"] = t.block_kind
+        captured["note"] = t.note
+        raise WorkspaceNotInitialized("fake")
+    monkeypatch.setattr(orch, "_run_agent", fail)
+
+    orch.run_step("T-1")
+
+    assert captured["status"] == TaskStatus.IN_PROGRESS
+    assert captured["count"] == 1
+    assert captured["block_kind"] is None
+    assert captured["note"] is None

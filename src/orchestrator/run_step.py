@@ -59,3 +59,136 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
         )
         orch._audit.log_escalation(task_id, "orchestrator", reason)
         return
+
+    # ---- 3. Atomic transition: unblock + increment + mark in_progress ----
+    db.update_task(
+        task_id,
+        status=TaskStatus.IN_PROGRESS,
+        block_kind=None,
+        note=None,
+        orchestration_step_count=next_count,
+    )
+
+    # ---- 4. Run the agent subprocess ----
+    agent = task.assigned_agent or _default_agent_for_root(task)
+    if task.assigned_agent is None:
+        db.update_task(task_id, assigned_agent=agent)
+
+    prompt = _build_agent_prompt(orch, task, agent)
+    try:
+        result, report = orch._run_agent(task_id, agent, prompt)
+    except Exception as exc:
+        _fail(orch, task_id, note=f"agent invocation failed: {exc}")
+        _enqueue_parent_if_waiting(orch, task_id)
+        return
+
+
+def _default_agent_for_root(task) -> str:
+    """Root tasks default to the Engineering Head as their assigned agent."""
+    return "engineering_head"
+
+
+def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
+    """Build the capabilities prompt for an EH decision step, or pass the
+    brief verbatim for a worker. Prior steps are rebuilt from the DB so this
+    works identically on first pickup and on post-delegation resumption."""
+    from src.orchestrator.capabilities import build_capabilities_prompt
+    if agent != "engineering_head":
+        return task.brief
+    agent_names, tiers = _list_candidate_agents(orch)
+    agents_for_prompt = []
+    for name in agent_names:
+        enrollment = orch._db.get_enrollment(name)
+        desc = enrollment["description"] if enrollment else name
+        tier = tiers.get(name)
+        agents_for_prompt.append({
+            "name": name,
+            "description": desc,
+            "tier": tier.value if tier else "green",
+        })
+    prior_steps = _build_prior_steps_from_db(orch, task.id)
+    return build_capabilities_prompt(
+        brief=task.brief,
+        agents=agents_for_prompt,
+        step_number=task.orchestration_step_count + 1,  # 1-indexed for EH display
+        max_steps=orch._settings.max_orchestration_steps,
+        prior_steps=prior_steps,
+    )
+
+
+def _list_candidate_agents(orch: "Orchestrator"):
+    """Return (agent_names, tiers_map) — same shape as orchestrator used."""
+    if orch._runtime.workspaces_dir.exists():
+        names = [
+            d.name for d in orch._runtime.workspaces_dir.iterdir()
+            if d.is_dir() and d.name != "engineering_head"
+        ]
+    else:
+        names = []
+    tiers = orch._tracker.get_all_tiers(names)
+    return names, tiers
+
+
+def _build_prior_steps_from_db(orch: "Orchestrator", task_id: str):
+    """Reconstruct StepRecord[] for the EH by reading children's terminal
+    outcomes from the DB. Only direct children of `task_id` count — each child
+    is one past orchestration step. Order: creation order, 1-indexed."""
+    from src.models import StepRecord
+    steps: list[StepRecord] = []
+    for i, child_id in enumerate(orch._db.get_children(task_id), start=1):
+        child = orch._db.get_task(child_id)
+        if child is None:
+            continue
+        success = child.status == TaskStatus.COMPLETED
+        steps.append(StepRecord(
+            step_number=i,
+            agent=child.assigned_agent or "unknown",
+            action=f"delegate: {(child.brief or '')[:100]}",
+            result_summary=child.note or "(no summary)",
+            success=success,
+        ))
+    return steps
+
+
+def _complete(orch: "Orchestrator", task_id: str, *, note: str, artifact_dir: str | None = None) -> None:
+    from datetime import datetime, timezone
+    orch._db.update_task(
+        task_id,
+        status=TaskStatus.COMPLETED,
+        block_kind=None,
+        note=note,
+        final_artifact_dir=artifact_dir,
+        completed_at=datetime.now(timezone.utc).isoformat(),
+    )
+    orch._update_task_history(task_id)
+
+
+def _fail(orch: "Orchestrator", task_id: str, *, note: str) -> None:
+    from datetime import datetime, timezone
+    orch._db.update_task(
+        task_id,
+        status=TaskStatus.FAILED,
+        block_kind=None,
+        note=note,
+        completed_at=datetime.now(timezone.utc).isoformat(),
+    )
+    orch._update_task_history(task_id)
+
+
+def _enqueue_parent_if_waiting(orch: "Orchestrator", task_id: str) -> None:
+    """Idempotent: enqueue the parent only if it is actually waiting on
+    THIS lineage (blocked+DELEGATED) AND all its children are now terminal."""
+    task = orch._db.get_task(task_id)
+    if task is None or task.parent_task_id is None:
+        return
+    parent = orch._db.get_task(task.parent_task_id)
+    if parent is None or parent.status != TaskStatus.BLOCKED:
+        return
+    if parent.block_kind != BlockKind.DELEGATED:
+        return
+    siblings = [orch._db.get_task(cid) for cid in orch._db.get_children(parent.id)]
+    if any(s is None or s.status not in TERMINAL_STATES for s in siblings):
+        return
+    queue = getattr(orch, "_queue", None)
+    if queue is not None:
+        queue.put_nowait(parent.id)
