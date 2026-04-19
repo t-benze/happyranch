@@ -266,3 +266,51 @@ def test_run_step_invalid_delegate_fails_task(runtime, db, monkeypatch):
     t = db.get_task("T-1")
     assert t.status == TaskStatus.FAILED
     assert t.note and "invalid delegate" in t.note
+
+
+def test_run_step_session_failure_fails_task_and_notifies_parent(
+    runtime, db, monkeypatch,
+):
+    import asyncio
+    from src.orchestrator.orchestrator import Orchestrator
+
+    db.insert_task(TaskRecord(id="T-PAR", type=TaskType.GENERAL, brief="p",
+                              assigned_agent="engineering_head"))
+    db.update_task("T-PAR", status=TaskStatus.BLOCKED,
+                   block_kind=BlockKind.DELEGATED, note="waiting")
+    db.insert_task(TaskRecord(
+        id="T-CHD", type=TaskType.GENERAL, brief="c",
+        assigned_agent="engineering_head", parent_task_id="T-PAR",
+    ))
+
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    q: asyncio.Queue = asyncio.Queue()
+    orch._queue = q
+
+    monkeypatch.setattr(orch, "_run_agent",
+                        lambda *a, **k: (_make_result(success=False), None))
+
+    orch.run_step("T-CHD")
+    child = db.get_task("T-CHD")
+    assert child.status == TaskStatus.FAILED
+    assert "session failed" in (child.note or "")
+    assert q.get_nowait() == "T-PAR"
+
+
+def test_run_step_worker_self_blocked_fails_task(runtime, db, monkeypatch):
+    import asyncio
+    from src.orchestrator.orchestrator import Orchestrator
+
+    db.insert_task(TaskRecord(id="T-1", type=TaskType.GENERAL, brief="x",
+                              assigned_agent="engineering_head"))
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    orch._queue = asyncio.Queue()
+
+    monkeypatch.setattr(orch, "_run_agent",
+                        lambda *a, **k: (_make_result(), _make_report(
+                            output_summary="ran out of tokens", status="blocked")))
+
+    orch.run_step("T-1")
+    t = db.get_task("T-1")
+    assert t.status == TaskStatus.FAILED
+    assert t.note and t.note.startswith("self-blocked:")
