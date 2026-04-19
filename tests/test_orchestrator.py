@@ -1,11 +1,9 @@
 import json
 import re
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from src.config import Settings
 from src.infrastructure.database import Database
 from src.models import (
     CompletionReport,
@@ -14,7 +12,6 @@ from src.models import (
 )
 from src.orchestrator.executor import ExecutorResult
 from src.orchestrator.orchestrator import Orchestrator
-from src.runtime import RuntimeDir
 
 
 def _make_eh_decision(task_id: str, decision: dict):
@@ -53,18 +50,6 @@ def _make_agent_result(task_id: str, agent: str, summary: str = "Work done"):
     )
 
 
-def _make_failed_result(task_id: str):
-    return (
-        ExecutorResult(
-            success=False,
-            duration_seconds=10,
-            session_id="sess-fail",
-            error="Session failed",
-        ),
-        None,
-    )
-
-
 @pytest.fixture
 def orchestrator(test_settings, test_runtime):
     db = Database(test_runtime.db_path)
@@ -83,6 +68,12 @@ def _setup_workspaces(runtime, agents: list[str] | None = None):
         (skill / "SKILL.md").write_text("# start-task\n")
 
 
+def test_orchestrator_no_longer_has_run_task():
+    """run_task was removed in favor of the async run_step queue model."""
+    from src.orchestrator.orchestrator import Orchestrator
+    assert not hasattr(Orchestrator, "run_task")
+
+
 def test_create_task(orchestrator):
     task_id = orchestrator.create_task(TaskType.GENERAL, "Explore the codebase")
     assert task_id == "TASK-001"
@@ -97,480 +88,19 @@ def test_create_task_with_type(orchestrator):
     assert task.type == TaskType.IMPLEMENT_FEATURE
 
 
-@patch.object(Orchestrator, "_run_agent")
-def test_eh_handles_directly(mock_run, orchestrator, test_runtime):
-    """EH explores and returns done on first step -- no delegation."""
-    _setup_workspaces(test_runtime)
-
-    mock_run.return_value = _make_eh_decision("TASK-001", {
-        "action": "done",
-        "summary": "Explored the payment system. Refunds use Stripe API v3.",
-    })
-
-    task_id = orchestrator.create_task(TaskType.GENERAL, "How do refunds work?")
-    result = orchestrator.run_task(task_id)
-
-    assert result == "approved"
-    assert mock_run.call_count == 1
-    # Only EH was called, no workers
-    call_agent = mock_run.call_args_list[0][0][1]
-    assert call_agent == "engineering_head"
-
-
-@patch.object(Orchestrator, "_run_agent")
-def test_eh_delegates_then_done(mock_run, orchestrator, test_runtime):
-    """EH delegates to dev_agent, then approves the result."""
-    _setup_workspaces(test_runtime)
-
-    call_count = 0
-
-    def mock_side_effect(task_id, agent, prompt):
-        nonlocal call_count
-        call_count += 1
-        if agent == "engineering_head":
-            if call_count == 1:
-                return _make_eh_decision(task_id, {
-                    "action": "delegate",
-                    "agent": "dev_agent",
-                    "prompt": "Implement the Alipay integration",
-                })
-            else:
-                return _make_eh_decision(task_id, {
-                    "action": "done",
-                    "summary": "Dev agent implemented Alipay. Looks good.",
-                })
-        return _make_agent_result(task_id, agent)
-
-    mock_run.side_effect = mock_side_effect
-
-    task_id = orchestrator.create_task(TaskType.GENERAL, "Add Alipay support")
-    result = orchestrator.run_task(task_id)
-
-    assert result == "approved"
-    assert call_count == 3  # EH decide + dev_agent work + EH decide
-
-
-@patch.object(Orchestrator, "_run_agent")
-def test_eh_multi_step_delegation(mock_run, orchestrator, test_runtime):
-    """EH delegates to PM, then to Dev, then approves."""
-    _setup_workspaces(test_runtime)
-
-    eh_calls = 0
-
-    def mock_side_effect(task_id, agent, prompt):
-        nonlocal eh_calls
-        if agent == "engineering_head":
-            eh_calls += 1
-            if eh_calls == 1:
-                return _make_eh_decision(task_id, {
-                    "action": "delegate",
-                    "agent": "product_manager",
-                    "prompt": "Write a spec for Alipay integration",
-                })
-            elif eh_calls == 2:
-                return _make_eh_decision(task_id, {
-                    "action": "delegate",
-                    "agent": "dev_agent",
-                    "prompt": "Implement based on the spec",
-                })
-            else:
-                return _make_eh_decision(task_id, {
-                    "action": "done",
-                    "summary": "Feature complete",
-                })
-        return _make_agent_result(task_id, agent)
-
-    mock_run.side_effect = mock_side_effect
-
-    task_id = orchestrator.create_task(TaskType.GENERAL, "Add Alipay support")
-    result = orchestrator.run_task(task_id)
-
-    assert result == "approved"
-    task = orchestrator._db.get_task(task_id)
-    assert task.status == TaskStatus.APPROVED
-
-
-@patch.object(Orchestrator, "_run_agent")
-def test_eh_escalates(mock_run, orchestrator, test_runtime):
-    _setup_workspaces(test_runtime)
-
-    mock_run.return_value = _make_eh_decision("TASK-001", {
-        "action": "escalate",
-        "reason": "This involves China/HK political content",
-    })
-
-    task_id = orchestrator.create_task(TaskType.GENERAL, "Write about HK relations")
-    result = orchestrator.run_task(task_id)
-
-    assert result == "escalated"
-    task = orchestrator._db.get_task(task_id)
-    assert task.status == TaskStatus.ESCALATED
-
-
-@patch.object(Orchestrator, "_run_agent")
-def test_max_steps_exceeded(mock_run, test_settings, test_runtime):
-    """EH keeps delegating until max steps is reached."""
-    test_settings.max_orchestration_steps = 3
-    db = Database(test_runtime.db_path)
-    orchestrator = Orchestrator(db=db, settings=test_settings, runtime=test_runtime)
-    _setup_workspaces(test_runtime)
-
-    def mock_side_effect(task_id, agent, prompt):
-        if agent == "engineering_head":
-            return _make_eh_decision(task_id, {
-                "action": "delegate",
-                "agent": "dev_agent",
-                "prompt": "Try again",
-            })
-        return _make_agent_result(task_id, agent)
-
-    mock_run.side_effect = mock_side_effect
-
-    task_id = orchestrator.create_task(TaskType.GENERAL, "Infinite loop task")
-    result = orchestrator.run_task(task_id)
-
-    assert result == "escalated"
-    task = orchestrator._db.get_task(task_id)
-    assert task.status == TaskStatus.ESCALATED
-
-
-@patch.object(Orchestrator, "_run_agent")
-def test_eh_session_fails(mock_run, orchestrator, test_runtime):
-    """If the EH session itself fails, task is rejected."""
-    _setup_workspaces(test_runtime)
-    mock_run.return_value = _make_failed_result("TASK-001")
-
-    task_id = orchestrator.create_task(TaskType.GENERAL, "Do something")
-    result = orchestrator.run_task(task_id)
-
-    assert result == "rejected"
-
-
-@patch.object(Orchestrator, "_run_agent")
-def test_delegate_agent_fails_eh_sees_failure(mock_run, orchestrator, test_runtime):
-    """When a delegated agent fails, EH sees the failure and can decide."""
-    _setup_workspaces(test_runtime)
-
-    call_count = 0
-
-    def mock_side_effect(task_id, agent, prompt):
-        nonlocal call_count
-        call_count += 1
-        if agent == "engineering_head":
-            if call_count == 1:
-                return _make_eh_decision(task_id, {
-                    "action": "delegate",
-                    "agent": "dev_agent",
-                    "prompt": "Implement feature",
-                })
-            else:
-                # EH sees the failure and escalates
-                return _make_eh_decision(task_id, {
-                    "action": "escalate",
-                    "reason": "Dev agent failed, need human help",
-                })
-        # dev_agent fails
-        return _make_failed_result(task_id)
-
-    mock_run.side_effect = mock_side_effect
-
-    task_id = orchestrator.create_task(TaskType.GENERAL, "Add feature")
-    result = orchestrator.run_task(task_id)
-
-    assert result == "escalated"
-
-
-@patch.object(Orchestrator, "_run_agent")
-def test_delegate_blocked_report_treated_as_failure(mock_run, orchestrator, test_runtime):
-    """A worker returning status=blocked must surface to EH as a failed step,
-    not as a silent success."""
-    _setup_workspaces(test_runtime)
-
-    call_count = 0
-    recorded_prior: list = []
-
-    def mock_side_effect(task_id, agent, prompt):
-        nonlocal call_count
-        call_count += 1
-        if agent == "engineering_head":
-            if call_count == 1:
-                return _make_eh_decision(task_id, {
-                    "action": "delegate",
-                    "agent": "dev_agent",
-                    "prompt": "Implement feature",
-                })
-            # Capture what EH sees on its second decision round.
-            recorded_prior.append(prompt)
-            return _make_eh_decision(task_id, {
-                "action": "escalate",
-                "reason": "Worker blocked",
-            })
-        # dev_agent returns a blocked completion.
-        return (
-            ExecutorResult(success=True, duration_seconds=10, session_id="sess-dev"),
-            CompletionReport(
-                task_id=task_id,
-                agent=agent,
-                status="blocked",
-                confidence=0,
-                output_summary="needs missing credentials",
-            ),
-        )
-
-    mock_run.side_effect = mock_side_effect
-
-    task_id = orchestrator.create_task(TaskType.GENERAL, "Add feature")
-    result = orchestrator.run_task(task_id)
-
-    assert result == "escalated"
-    # The second EH prompt must include the failed-step record so the EH can
-    # react to the block. The prior-steps section prefixes failures explicitly.
-    eh_second_prompt = recorded_prior[0]
-    assert "blocked" in eh_second_prompt.lower()
-
-
-@patch.object(Orchestrator, "_run_agent")
-def test_eh_plain_text_output_escalates(mock_run, orchestrator, test_runtime):
-    """If EH returns plain text (not JSON), escalate — do NOT silently approve.
-
-    The orchestrator cannot distinguish between "EH handled it and this is the
-    summary" and "EH meant to delegate but wrote prose instead of JSON." The
-    only safe behavior is to surface the parse failure to the founder.
-    """
-    _setup_workspaces(test_runtime)
-
-    mock_run.return_value = (
-        ExecutorResult(
-            success=True,
-            duration_seconds=30,
-            session_id="sess-eh",
-        ),
-        CompletionReport(
-            task_id="TASK-001",
-            agent="engineering_head",
-            status="completed",
-            confidence=85,
-            output_summary="I explored the codebase. The payment module uses Stripe.",
-        ),
-    )
-
-    task_id = orchestrator.create_task(TaskType.GENERAL, "Explore payments")
-    result = orchestrator.run_task(task_id)
-
-    assert result == "escalated"
-    task = orchestrator._db.get_task(task_id)
-    assert task.status == TaskStatus.ESCALATED
-    # The escalation reason must name the parse failure so the founder sees
-    # why the task stopped, not just "EH said something".
-    assert task.final_output_summary is not None
-    assert "non-JSON" in task.final_output_summary or "not valid JSON" in task.final_output_summary
-
-
-@patch.object(Orchestrator, "_run_agent")
-def test_eh_prose_announcing_delegation_escalates_without_spawning_child(
-    mock_run, orchestrator, test_runtime,
-):
-    """Regression for TASK-013 / TASK-016: EH wrote prose like "Delegating to
-    dev_agent..." and the orchestrator silently approved the root task without
-    ever invoking the worker.
-
-    The orchestrator must escalate AND must not spawn a child task / call the
-    delegate agent.
-    """
-    _setup_workspaces(test_runtime)
-
-    call_count = 0
-
-    def mock_side_effect(task_id, agent, prompt):
-        nonlocal call_count
-        call_count += 1
-        if agent == "engineering_head":
-            return (
-                ExecutorResult(
-                    success=True, duration_seconds=30, session_id=f"sess-eh-{call_count}",
-                ),
-                CompletionReport(
-                    task_id=task_id,
-                    agent="engineering_head",
-                    status="completed",
-                    confidence=90,
-                    output_summary=(
-                        "Triaged GitHub issue #93. Delegating end-to-end "
-                        "implementation to dev_agent with a staged plan."
-                    ),
-                ),
-            )
-        # Worker must never be called — the point of the fix is that prose
-        # never becomes a real delegation.
-        raise AssertionError(f"worker {agent!r} must not be invoked on a parse failure")
-
-    mock_run.side_effect = mock_side_effect
-
-    task_id = orchestrator.create_task(TaskType.GENERAL, "Fix issue #93")
-    result = orchestrator.run_task(task_id)
-
-    assert result == "escalated"
-    # No child task was spawned.
-    assert orchestrator._db.get_children(task_id) == []
-    # The EH was called exactly once — no retry loop on parse failures.
-    assert call_count == 1
-
-
-@patch.object(Orchestrator, "_run_agent")
-def test_eh_empty_output_escalates(mock_run, orchestrator, test_runtime):
-    """An empty output_summary is not a valid decision — escalate, don't approve."""
-    _setup_workspaces(test_runtime)
-
-    mock_run.return_value = (
-        ExecutorResult(success=True, duration_seconds=5, session_id="sess-eh"),
-        CompletionReport(
-            task_id="TASK-001",
-            agent="engineering_head",
-            status="completed",
-            confidence=0,
-            output_summary="",
-        ),
-    )
-
-    task_id = orchestrator.create_task(TaskType.GENERAL, "Explore")
-    result = orchestrator.run_task(task_id)
-
-    assert result == "escalated"
-
-
-@patch.object(Orchestrator, "_run_agent")
-def test_eh_json_wrapped_in_prose_escalates(mock_run, orchestrator, test_runtime):
-    """Prose with an embedded JSON object (e.g. "Here's my decision: {...}")
-    must NOT be accepted — json.loads on the whole string will fail and we
-    must escalate rather than guess which substring was the "real" decision.
-    """
-    _setup_workspaces(test_runtime)
-
-    mock_run.return_value = (
-        ExecutorResult(success=True, duration_seconds=5, session_id="sess-eh"),
-        CompletionReport(
-            task_id="TASK-001",
-            agent="engineering_head",
-            status="completed",
-            confidence=80,
-            output_summary=(
-                'Here is my decision: {"action": "delegate", "agent": "dev_agent", '
-                '"prompt": "implement it"}'
-            ),
-        ),
-    )
-
-    task_id = orchestrator.create_task(TaskType.GENERAL, "Add feature")
-    result = orchestrator.run_task(task_id)
-
-    assert result == "escalated"
-    assert orchestrator._db.get_children(task_id) == []
-
-
-@patch.object(Orchestrator, "_run_agent")
-def test_audit_log_records_orchestration_steps(mock_run, orchestrator, test_runtime):
-    """Orchestration steps are logged to the audit trail."""
-    _setup_workspaces(test_runtime)
-
-    mock_run.return_value = _make_eh_decision("TASK-001", {
-        "action": "done",
-        "summary": "All good",
-    })
-
-    task_id = orchestrator.create_task(TaskType.GENERAL, "Check something")
-    orchestrator.run_task(task_id)
-
-    logs = orchestrator._db.get_audit_logs(task_id)
-    orch_steps = [l for l in logs if l["action"] == "orchestration_step"]
-    assert len(orch_steps) == 1
-    assert orch_steps[0]["payload"]["decision"]["action"] == "done"
-
-
-@patch.object(Orchestrator, "_run_agent")
-def test_malformed_eh_json_escalates(mock_run, orchestrator, test_runtime):
-    """Valid JSON with invalid schema should escalate, not auto-approve."""
-    _setup_workspaces(test_runtime)
-
-    # EH returns valid JSON but missing required 'agent' field for delegate action
-    mock_run.return_value = (
-        ExecutorResult(
-            success=True,
-            duration_seconds=30,
-            session_id="sess-eh",
-        ),
-        CompletionReport(
-            task_id="TASK-001",
-            agent="engineering_head",
-            status="completed",
-            confidence=90,
-            output_summary=json.dumps({"action": "delegate"}),
-        ),
-    )
-
-    task_id = orchestrator.create_task(TaskType.GENERAL, "Do something")
-    result = orchestrator.run_task(task_id)
-
-    # Should escalate (malformed decision), NOT auto-approve
-    assert result == "escalated"
-    task = orchestrator._db.get_task(task_id)
-    assert task.status == TaskStatus.ESCALATED
-
-
-@patch.object(Orchestrator, "_run_agent")
-def test_review_verdicts_logged_for_delegated_agents(mock_run, orchestrator, test_runtime):
-    """When EH approves, review_verdict entries are logged for delegated agents."""
-    _setup_workspaces(test_runtime)
-
-    call_count = 0
-
-    def mock_side_effect(task_id, agent, prompt):
-        nonlocal call_count
-        call_count += 1
-        if agent == "engineering_head":
-            if call_count == 1:
-                return _make_eh_decision(task_id, {
-                    "action": "delegate",
-                    "agent": "dev_agent",
-                    "prompt": "Implement feature",
-                })
-            else:
-                return _make_eh_decision(task_id, {
-                    "action": "done",
-                    "summary": "Looks good",
-                })
-        return _make_agent_result(task_id, agent)
-
-    mock_run.side_effect = mock_side_effect
-
-    task_id = orchestrator.create_task(TaskType.GENERAL, "Add feature")
-    orchestrator.run_task(task_id)
-
-    logs = orchestrator._db.get_audit_logs(task_id)
-    verdicts = [l for l in logs if l["action"] == "review_verdict"]
-    assert len(verdicts) == 1
-    assert verdicts[0]["payload"]["reviewed_agent"] == "dev_agent"
-    assert verdicts[0]["payload"]["verdict"] == "approved"
-
-
 def test_task_metadata_in_agent_prompt(orchestrator, test_runtime, monkeypatch):
-    """Agent prompts should include task_id, session_id, and brief."""
+    """Agent prompts should include task_id, session_id, and brief.
+
+    Covers the prompt-assembly contract in `_run_agent` — the start-task skill
+    parses these keys out of the injected parameters block.
+    """
     _setup_workspaces(test_runtime)
 
     task_id = orchestrator.create_task(TaskType.GENERAL, "Explore payments")
 
-    # Fix the session_id so we can pre-insert the DB row
+    # Fix the session_id so the prompt is deterministic.
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
 
-    # Pre-insert the completion result that _read_completion_from_db will find
-    orchestrator._db.insert_task_result(
-        task_id,
-        "engineering_head",
-        "sess-eh",
-        output_summary=json.dumps({"action": "done", "summary": "Done"}),
-        confidence_score=90,
-    )
-
-    # Mock the executor.run to capture the prompt and return a valid result
     with patch.object(orchestrator._executor, "run") as mock_executor_run:
         mock_executor_run.return_value = ExecutorResult(
             success=True,
@@ -578,10 +108,8 @@ def test_task_metadata_in_agent_prompt(orchestrator, test_runtime, monkeypatch):
             session_id="sess-eh",
         )
 
-        orchestrator.run_task(task_id)
+        orchestrator._run_agent(task_id, "engineering_head", "Decide what to do next")
 
-        # Check that the prompt passed to executor.run follows the start-task
-        # SKILL parsing contract (see protocol/skills/start-task/SKILL.md).
         call_kwargs = mock_executor_run.call_args
         prompt = call_kwargs[1]["prompt"] if "prompt" in call_kwargs[1] else call_kwargs[0][1]
         assert "Use the start-task skill" in prompt
@@ -602,7 +130,7 @@ def test_run_agent_fails_fast_when_workspace_missing_skill(orchestrator, test_ru
     assert not eh_workspace.exists()
 
     with pytest.raises(WorkspaceNotInitialized) as exc_info:
-        orchestrator.run_task(task_id)
+        orchestrator._run_agent(task_id, "engineering_head", "any prompt")
 
     msg = str(exc_info.value)
     assert "engineering_head" in msg
@@ -611,141 +139,66 @@ def test_run_agent_fails_fast_when_workspace_missing_skill(orchestrator, test_ru
     assert not (eh_workspace / ".claude" / "skills" / "start-task" / "SKILL.md").exists()
 
 
-@patch.object(Orchestrator, "_run_agent")
-def test_delegate_spawns_child_task(mock_run, orchestrator, test_runtime):
+def test_task_history_written_per_agent_only(orchestrator, test_runtime):
+    """_update_task_history writes the file to the assigned_agent's workspace only."""
     _setup_workspaces(test_runtime)
-    calls = 0
-
-    def side_effect(task_id, agent, prompt):
-        nonlocal calls
-        calls += 1
-        if agent == "engineering_head":
-            if calls == 1:
-                return _make_eh_decision(task_id, {
-                    "action": "delegate",
-                    "agent": "dev_agent",
-                    "prompt": "Implement Alipay integration",
-                })
-            return _make_eh_decision(task_id, {
-                "action": "done", "summary": "Dev agent delivered."
-            })
-        # Worker completions should carry the CHILD task id, not the root.
-        assert task_id == "TASK-002", f"expected child id, got {task_id}"
-        return _make_agent_result(task_id, agent)
-
-    mock_run.side_effect = side_effect
-
-    root_id = orchestrator.create_task(TaskType.GENERAL, "Add Alipay")
-    assert root_id == "TASK-001"
-    orchestrator.run_task(root_id)
-
-    child = orchestrator._db.get_task("TASK-002")
-    assert child is not None
-    assert child.parent_task_id == "TASK-001"
-    assert child.assigned_agent == "dev_agent"
-    assert child.brief == "Implement Alipay integration"
-    assert orchestrator._db.get_children("TASK-001") == ["TASK-002"]
-
-
-@patch.object(Orchestrator, "_run_agent")
-def test_finalize_root_task_parses_eh_summary(mock_run, orchestrator, test_runtime):
-    _setup_workspaces(test_runtime)
-    mock_run.return_value = _make_eh_decision("TASK-001", {
-        "action": "done",
-        "summary": "Reviewed Q1 metrics. Three risks, five actions.",
-    })
-    task_id = orchestrator.create_task(TaskType.GENERAL, "Review Q1")
-    orchestrator.run_task(task_id)
-    task = orchestrator._db.get_task(task_id)
-    assert task.final_output_summary == "Reviewed Q1 metrics. Three risks, five actions."
-
-
-@patch.object(Orchestrator, "_run_agent")
-def test_finalize_child_task_from_worker_report(mock_run, orchestrator, test_runtime):
-    _setup_workspaces(test_runtime)
-    calls = 0
-    def side_effect(task_id, agent, prompt):
-        nonlocal calls
-        calls += 1
-        if agent == "engineering_head":
-            if calls == 1:
-                return _make_eh_decision(task_id, {
-                    "action": "delegate",
-                    "agent": "dev_agent",
-                    "prompt": "Implement Alipay",
-                })
-            return _make_eh_decision(task_id, {"action": "done", "summary": "good"})
-        return (
-            ExecutorResult(success=True, duration_seconds=10, session_id="sess-w"),
-            CompletionReport(
-                task_id=task_id, agent=agent, status="completed", confidence=85,
-                output_summary="Alipay integration shipped",
-                artifact_dir="artifacts/TASK-002",
-            ),
-        )
-    mock_run.side_effect = side_effect
-
-    orchestrator.create_task(TaskType.GENERAL, "Add Alipay")
-    orchestrator.run_task("TASK-001")
-    child = orchestrator._db.get_task("TASK-002")
-    assert child.final_output_summary == "Alipay integration shipped"
-    assert child.final_artifact_dir == "artifacts/TASK-002"
-
-
-@patch.object(Orchestrator, "_run_agent")
-def test_task_history_written_per_agent_only(mock_run, orchestrator, test_runtime):
-    _setup_workspaces(test_runtime)
-    calls = 0
-    def side_effect(task_id, agent, prompt):
-        nonlocal calls
-        calls += 1
-        if agent == "engineering_head":
-            if calls == 1:
-                return _make_eh_decision(task_id, {
-                    "action": "delegate", "agent": "dev_agent",
-                    "prompt": "Implement Alipay",
-                })
-            return _make_eh_decision(task_id, {"action": "done", "summary": "shipped"})
-        return _make_agent_result(task_id, agent, summary="dev did it")
-    mock_run.side_effect = side_effect
 
     orchestrator.create_task(TaskType.GENERAL, "Add Alipay support")
-    orchestrator.run_task("TASK-001")
+    orchestrator._db.update_task(
+        "TASK-001",
+        assigned_agent="dev_agent",
+        status=TaskStatus.COMPLETED,
+        note="dev did it",
+    )
+    orchestrator._update_task_history("TASK-001")
 
-    eh_hist = (test_runtime.workspaces_dir / "engineering_head" / "task_history.md").read_text()
     dev_hist = (test_runtime.workspaces_dir / "dev_agent" / "task_history.md").read_text()
     pm_hist = (test_runtime.workspaces_dir / "product_manager" / "task_history.md").read_text()
 
-    assert "TASK-001" in eh_hist
-    assert "TASK-002" in dev_hist
-    assert "TASK-001" not in dev_hist
-    assert "TASK-002" not in pm_hist
+    assert "TASK-001" in dev_hist
+    assert "TASK-001" not in pm_hist
 
 
-@patch.object(Orchestrator, "_run_agent")
-def test_task_history_entry_format(mock_run, orchestrator, test_runtime):
+def test_task_history_entry_format(orchestrator, test_runtime):
+    """task_history.md entries follow the `**TASK-id** (date, status) — brief` format."""
     _setup_workspaces(test_runtime)
-    mock_run.return_value = _make_eh_decision("TASK-001", {
-        "action": "done", "summary": "Reviewed Q1. Three risks, five actions.",
-    })
+
     orchestrator.create_task(TaskType.GENERAL, "Review Q1 project status")
-    orchestrator.run_task("TASK-001")
+    orchestrator._db.update_task(
+        "TASK-001",
+        assigned_agent="engineering_head",
+        status=TaskStatus.COMPLETED,
+        note="Reviewed Q1. Three risks, five actions.",
+    )
+    orchestrator._update_task_history("TASK-001")
 
     hist = (test_runtime.workspaces_dir / "engineering_head" / "task_history.md").read_text()
-    assert re.search(r"\*\*TASK-001\*\* \(\d{4}-\d{2}-\d{2}, approved\) — Review Q1", hist)
+    assert re.search(r"\*\*TASK-001\*\* \(\d{4}-\d{2}-\d{2}, completed\) — Review Q1", hist)
     assert "Outcome: Reviewed Q1. Three risks, five actions." in hist
     assert "Artifact:" not in hist
 
 
-@patch.object(Orchestrator, "_run_agent")
-def test_task_history_newest_first(mock_run, orchestrator, test_runtime):
+def test_task_history_newest_first(orchestrator, test_runtime):
+    """task_history.md lists entries newest-first."""
     _setup_workspaces(test_runtime)
-    mock_run.return_value = _make_eh_decision("TASK-001", {"action": "done", "summary": "first"})
+
     orchestrator.create_task(TaskType.GENERAL, "First task")
-    orchestrator.run_task("TASK-001")
-    mock_run.return_value = _make_eh_decision("TASK-002", {"action": "done", "summary": "second"})
+    orchestrator._db.update_task(
+        "TASK-001",
+        assigned_agent="engineering_head",
+        status=TaskStatus.COMPLETED,
+        note="first",
+    )
+    orchestrator._update_task_history("TASK-001")
+
     orchestrator.create_task(TaskType.GENERAL, "Second task")
-    orchestrator.run_task("TASK-002")
+    orchestrator._db.update_task(
+        "TASK-002",
+        assigned_agent="engineering_head",
+        status=TaskStatus.COMPLETED,
+        note="second",
+    )
+    orchestrator._update_task_history("TASK-002")
 
     hist = (test_runtime.workspaces_dir / "engineering_head" / "task_history.md").read_text()
     idx2 = hist.index("TASK-002")
@@ -755,8 +208,7 @@ def test_task_history_newest_first(mock_run, orchestrator, test_runtime):
 
 def test_read_completion_from_db_preserves_artifact_dir(orchestrator):
     """Reconstructing a CompletionReport from task_results must include
-    artifact_dir so _finalize_task can persist tasks.final_artifact_dir for
-    real agent completions that flow through the daemon callback path."""
+    artifact_dir so the daemon-callback path can persist tasks.final_artifact_dir."""
     orchestrator.create_task(TaskType.GENERAL, "Write the report")
     orchestrator._db.insert_task_result(
         "TASK-001",

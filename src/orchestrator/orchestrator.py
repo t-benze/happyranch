@@ -14,13 +14,10 @@ from src.runtime import RuntimeDir
 from src.models import (
     CompletionReport,
     NextStep,
-    PerformanceTier,
     StepRecord,
     TaskRecord,
-    TaskStatus,
     TaskType,
 )
-from src.orchestrator.capabilities import build_capabilities_prompt
 from src.orchestrator.executor import AgentExecutor, ExecutorResult
 from src.orchestrator.performance_tracker import PerformanceTracker
 
@@ -86,51 +83,6 @@ class Orchestrator:
         logger.info("Created task %s: %s", task_id, brief)
         return task_id
 
-    def _finalize_task(
-        self,
-        task_id: str,
-        report: CompletionReport | None,
-        override_summary: str | None = None,
-    ) -> None:
-        """Populate tasks.final_output_summary / final_artifact_dir.
-
-        ``override_summary`` wins if set (used for escalation reasons and for
-        the parsed EH 'summary' of root tasks). Otherwise we read from the
-        report. Silent no-op if there's nothing to persist.
-        """
-        summary = override_summary
-        artifact: str | None = None
-        if report is not None:
-            if summary is None:
-                summary = report.output_summary
-            artifact = report.artifact_dir
-        fields: dict[str, object] = {}
-        if summary is not None:
-            fields["final_output_summary"] = summary
-        if artifact is not None:
-            fields["final_artifact_dir"] = artifact
-        if fields:
-            self._db.update_task(task_id, **fields)
-
-    def _spawn_delegate_task(
-        self, parent_task_id: str, agent: str, prompt: str, task_type: TaskType,
-    ) -> str:
-        """Persist a child task for a delegated work unit.
-
-        Inherits ``task_type`` from the parent so downstream consumers see a
-        consistent type across the tree.
-        """
-        child_id = self._db.next_task_id()
-        child = TaskRecord(
-            id=child_id,
-            type=task_type,
-            brief=prompt,
-            assigned_agent=agent,
-            parent_task_id=parent_task_id,
-        )
-        self._db.insert_task(child)
-        return child_id
-
     def run_step(self, task_id: str) -> None:
         """Advance a task one agent-subprocess worth.
 
@@ -139,177 +91,6 @@ class Orchestrator:
         """
         from src.orchestrator.run_step import run_step_impl
         run_step_impl(self, task_id)
-
-    def run_task(self, task_id: str) -> str:
-        """Run a task through the EH-driven orchestration loop.
-
-        The Engineering Head decides each step: delegate to a worker,
-        handle directly, or escalate. The loop continues until the EH
-        says "done", "escalate", or the max steps guardrail fires.
-        """
-        task = self._db.get_task(task_id)
-        if task is None:
-            raise ValueError(f"Task {task_id} not found")
-
-        self._db.update_task(task_id, status=TaskStatus.IN_PROGRESS)
-        # EH owns every root task — record it up front so task_history.md
-        # attributes the work to engineering_head even if EH handles directly
-        # (no delegation) and regardless of terminal outcome.
-        if task.assigned_agent is None:
-            self._db.update_task(task_id, assigned_agent="engineering_head")
-
-        # Build dynamic agent list from workspaces
-        agent_names = [
-            d.name for d in self._runtime.workspaces_dir.iterdir()
-            if d.is_dir() and d.name != "engineering_head"
-        ] if self._runtime.workspaces_dir.exists() else []
-        tiers = self._tracker.get_all_tiers(agent_names)
-
-        prior_steps: list[StepRecord] = []
-        max_steps = self._settings.max_orchestration_steps
-
-        for step_num in range(1, max_steps + 1):
-            # Ask the Engineering Head what to do next
-            agents_for_prompt = []
-            for name in agent_names:
-                enrollment = self._db.get_enrollment(name)
-                desc = enrollment["description"] if enrollment else name
-                tier = tiers.get(name, PerformanceTier.GREEN)
-                agents_for_prompt.append({"name": name, "description": desc, "tier": tier.value})
-            eh_prompt = build_capabilities_prompt(
-                brief=task.brief,
-                agents=agents_for_prompt,
-                step_number=step_num,
-                max_steps=max_steps,
-                prior_steps=prior_steps,
-            )
-
-            eh_result, eh_report = self._run_agent(task_id, "engineering_head", eh_prompt)
-            if not eh_result.success or eh_report is None:
-                self._db.update_task(task_id, status=TaskStatus.REJECTED)
-                self._finalize_task(task_id, report=None, override_summary="EH session failed")
-                self._update_task_history(task_id)
-                return "rejected"
-
-            self._log_step_result(task_id, eh_result, eh_report)
-            next_step = self._parse_next_step(eh_report)
-
-            self._audit.log_orchestration_step(
-                task_id, step_num, next_step.model_dump(exclude_none=True),
-            )
-
-            if next_step.action == "done":
-                self._db.update_task(task_id, status=TaskStatus.APPROVED)
-                self._finalize_task(task_id, report=eh_report, override_summary=next_step.summary)
-                self._log_review_verdicts(task_id, prior_steps)
-                self._update_task_history(task_id)
-                return "approved"
-
-            if next_step.action == "escalate":
-                self._db.update_task(task_id, status=TaskStatus.ESCALATED)
-                self._audit.log_escalation(
-                    task_id, "engineering_head",
-                    next_step.reason or "Escalated by Engineering Head",
-                )
-                self._finalize_task(
-                    task_id, report=None,
-                    override_summary=next_step.reason or "Escalated by Engineering Head",
-                )
-                self._update_task_history(task_id)
-                return "escalated"
-
-            if next_step.action == "delegate":
-                if next_step.agent is None:
-                    prior_steps.append(StepRecord(
-                        step_number=step_num,
-                        agent="unknown",
-                        action="delegate: missing agent name",
-                        result_summary="Delegate action had no agent specified",
-                        success=False,
-                    ))
-                    continue
-
-                delegate_workspace = self._runtime.workspaces_dir / next_step.agent
-                if not delegate_workspace.exists():
-                    prior_steps.append(StepRecord(
-                        step_number=step_num,
-                        agent=next_step.agent,
-                        action=f"delegate: {(next_step.prompt or '')[:100]}",
-                        result_summary=f"No workspace for agent: {next_step.agent!r}",
-                        success=False,
-                    ))
-                    continue
-
-                child_task_id = self._spawn_delegate_task(
-                    parent_task_id=task_id,
-                    agent=next_step.agent,
-                    prompt=next_step.prompt or "",
-                    task_type=task.type,
-                )
-
-                delegate_result, delegate_report = self._run_agent(
-                    child_task_id, next_step.agent, next_step.prompt or "",
-                )
-                if delegate_result.success and delegate_report is not None:
-                    self._log_step_result(child_task_id, delegate_result, delegate_report)
-
-                # A "blocked" completion is a real signal from the agent that
-                # the work did not finish. Treat it as unsuccessful so the EH
-                # sees it as a failed step on the next decision.
-                delegate_blocked = (
-                    delegate_report is not None and delegate_report.status == "blocked"
-                )
-                if delegate_report is None:
-                    result_summary = "Agent session failed"
-                elif delegate_blocked:
-                    result_summary = f"blocked: {delegate_report.output_summary}"
-                else:
-                    result_summary = delegate_report.output_summary
-                prior_steps.append(StepRecord(
-                    step_number=step_num,
-                    agent=next_step.agent,
-                    action=f"delegate: {(next_step.prompt or '')[:100]}",
-                    result_summary=result_summary,
-                    success=(
-                        delegate_result.success
-                        and delegate_report is not None
-                        and not delegate_blocked
-                    ),
-                ))
-                self._finalize_task(
-                    child_task_id,
-                    report=delegate_report,
-                    override_summary=(
-                        "Agent session failed" if delegate_report is None
-                        else f"blocked: {delegate_report.output_summary}" if delegate_blocked
-                        else None
-                    ),
-                )
-                # Each completed sub-task becomes an entry in the worker's
-                # per-agent history — drilling in via `opc recall <child>` is
-                # how the agent retrieves brief + outcome later.
-                self._db.update_task(
-                    child_task_id,
-                    status=(
-                        TaskStatus.APPROVED
-                        if delegate_result.success and delegate_report is not None and not delegate_blocked
-                        else TaskStatus.REJECTED
-                    ),
-                )
-                self._update_task_history(child_task_id)
-
-        # Max steps exceeded — escalate
-        self._db.update_task(task_id, status=TaskStatus.ESCALATED)
-        self._audit.log_escalation(
-            task_id, "orchestrator",
-            f"Max orchestration steps ({max_steps}) exceeded",
-        )
-        self._finalize_task(
-            task_id, report=None,
-            override_summary=f"Max orchestration steps ({max_steps}) exceeded",
-        )
-        self._update_task_history(task_id)
-        return "escalated"
 
     def _parse_next_step(self, report: CompletionReport | None) -> NextStep:
         """Parse the Engineering Head's decision from its completion report.
@@ -461,7 +242,7 @@ class Orchestrator:
             date = t.completed_at or t.updated_at or t.created_at
             date_str = date.date().isoformat() if hasattr(date, "date") else str(date)[:10]
             brief = (t.brief or "").replace("\n", " ").strip()[:120]
-            outcome = (t.final_output_summary or "").replace("\n", " ").strip()[:160]
+            outcome = (t.note or "").replace("\n", " ").strip()[:160]
             lines.append(f"- **{t.id}** ({date_str}, {t.status.value}) — {brief}")
             lines.append(f"  - Outcome: {outcome}" if outcome else "  - Outcome: (none)")
             if t.final_artifact_dir:
