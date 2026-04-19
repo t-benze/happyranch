@@ -180,3 +180,20 @@ def test_claude_md_drops_task_brief_and_completion_report(test_settings, tmp_pat
     text = (workspace / "CLAUDE.md").read_text()
     assert "Current Task" not in text
     assert "completion_report.json" not in text
+
+
+def test_generated_claude_md_contains_kb_section(tmp_path):
+    from src.config import Settings
+
+    builder = ContextBuilder(Settings())
+    workspace = tmp_path / "ws"
+    builder.write_claude_md(
+        workspace=workspace,
+        agent_name="dev_agent",
+        system_prompt="You are dev_agent.",
+    )
+    body = (workspace / "CLAUDE.md").read_text()
+    assert "## Knowledge Base" in body
+    assert "opc kb" in body
+    assert "Consult" in body
+    assert "Contribute" in body
