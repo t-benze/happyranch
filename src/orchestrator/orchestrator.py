@@ -130,6 +130,15 @@ class Orchestrator:
         self._db.insert_task(child)
         return child_id
 
+    def run_step(self, task_id: str) -> None:
+        """Advance a task one agent-subprocess worth.
+
+        Contract: task MUST be PENDING or BLOCKED(DELEGATED)-with-all-children-
+        terminal. Anything else is a stale enqueue and is silently ignored.
+        """
+        from src.orchestrator.run_step import run_step_impl
+        run_step_impl(self, task_id)
+
     def run_task(self, task_id: str) -> str:
         """Run a task through the EH-driven orchestration loop.
 
