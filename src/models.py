@@ -11,10 +11,13 @@ from pydantic import BaseModel, Field
 class TaskStatus(StrEnum):
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
+    BLOCKED = "blocked"
     COMPLETED = "completed"
-    IN_REVIEW = "in_review"
-    APPROVED = "approved"
-    REJECTED = "rejected"
+    FAILED = "failed"
+
+
+class BlockKind(StrEnum):
+    DELEGATED = "delegated"
     ESCALATED = "escalated"
 
 

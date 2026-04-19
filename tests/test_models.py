@@ -150,3 +150,15 @@ def test_completion_report_artifact_defaults_to_none():
         task_id="T", agent="a", status="completed", confidence=0, output_summary="",
     )
     assert r.artifact_dir is None
+
+
+def test_task_status_has_five_values():
+    from src.models import TaskStatus
+    assert {s.value for s in TaskStatus} == {
+        "pending", "in_progress", "blocked", "completed", "failed",
+    }
+
+
+def test_block_kind_has_delegated_and_escalated():
+    from src.models import BlockKind
+    assert {b.value for b in BlockKind} == {"delegated", "escalated"}
