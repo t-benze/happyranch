@@ -91,3 +91,18 @@ def test_log_orchestration_step(db):
     assert logs[0]["action"] == "orchestration_step"
     assert logs[0]["payload"]["step_number"] == 1
     assert logs[0]["payload"]["decision"]["action"] == "delegate"
+
+
+def test_log_escalation_resolved_persists_decision_and_rationale(db):
+    logger = AuditLogger(db)
+    logger.log_escalation_resolved(
+        task_id="TASK-042",
+        decision="approve",
+        rationale="Refund justified: vendor error per partner-log",
+    )
+    rows = db.get_audit_logs("TASK-042")
+    matches = [r for r in rows if r["action"] == "escalation_resolved"]
+    assert len(matches) == 1
+    assert matches[0]["payload"]["decision"] == "approve"
+    assert "Refund justified" in matches[0]["payload"]["rationale"]
+    assert matches[0]["agent"] == "founder"

@@ -130,6 +130,21 @@ opc manage-repo remove --agent dev_agent --repo-name docs
 opc manage-repo update --agent dev_agent --repo-name docs --url https://github.com/user/docs-v2.git
 ```
 
+### Knowledge base
+
+```bash
+opc kb list [--topic <t>] [--type reference|precedent]
+opc kb get <slug>
+opc kb search "<query>"
+opc kb add    --agent <you> --from-file /tmp/kb-<slug>.md
+opc kb update <slug> --agent <you> --from-file /tmp/kb-<slug>.md
+opc kb delete <slug> --agent <you> --confirm [--as-founder]
+opc kb reindex
+opc kb precedent --task-id <id> --decision approve|reject --rationale "..." [--slug <s>]
+
+opc resolve-escalation --task-id <id> --decision approve|reject --rationale "..."
+```
+
 ### Managing the daemon
 
 `scripts/daemon.sh` is a tiny supervisor that records the pid/port under `~/.opc/`:

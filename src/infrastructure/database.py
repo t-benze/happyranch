@@ -33,7 +33,10 @@ class Database:
                 revision_count INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                completed_at TEXT
+                completed_at TEXT,
+                parent_task_id TEXT,
+                final_output_summary TEXT,
+                final_artifact_dir TEXT
             );
 
             CREATE TABLE IF NOT EXISTS audit_log (
@@ -70,6 +73,7 @@ class Database:
                 duration_seconds INTEGER,
                 token_count INTEGER,
                 estimated_cost REAL,
+                artifact_dir TEXT,
                 created_at TEXT NOT NULL
             );
 
@@ -92,6 +96,22 @@ class Database:
             )
         except sqlite3.OperationalError:
             pass
+        try:
+            self._conn.execute("ALTER TABLE tasks ADD COLUMN parent_task_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id)"
+        )
+        for ddl in (
+            "ALTER TABLE tasks ADD COLUMN final_output_summary TEXT",
+            "ALTER TABLE tasks ADD COLUMN final_artifact_dir TEXT",
+            "ALTER TABLE task_results ADD COLUMN artifact_dir TEXT",
+        ):
+            try:
+                self._conn.execute(ddl)
+            except sqlite3.OperationalError:
+                pass
 
     def list_tables(self) -> list[str]:
         cursor = self._conn.execute(
@@ -104,8 +124,8 @@ class Database:
     def insert_task(self, task: TaskRecord) -> None:
         self._conn.execute(
             """INSERT INTO tasks (id, type, status, assigned_agent, crew, brief,
-               revision_count, created_at, updated_at, completed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               revision_count, created_at, updated_at, completed_at, parent_task_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task.id,
                 task.type.value,
@@ -117,6 +137,7 @@ class Database:
                 task.created_at.isoformat(),
                 task.updated_at.isoformat(),
                 task.completed_at.isoformat() if task.completed_at else None,
+                task.parent_task_id,
             ),
         )
         self._conn.commit()
@@ -137,6 +158,9 @@ class Database:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             completed_at=row["completed_at"],
+            parent_task_id=row["parent_task_id"],
+            final_output_summary=row["final_output_summary"],
+            final_artifact_dir=row["final_artifact_dir"],
         )
 
     def list_tasks(self, limit: int = 20) -> list[TaskRecord]:
@@ -155,12 +179,91 @@ class Database:
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
                 completed_at=row["completed_at"],
+                parent_task_id=row["parent_task_id"],
+                final_output_summary=row["final_output_summary"],
+                final_artifact_dir=row["final_artifact_dir"],
+            )
+            for row in cursor.fetchall()
+        ]
+
+    def get_children(self, parent_task_id: str) -> list[str]:
+        """Return direct children of a task, ordered by creation time."""
+        cursor = self._conn.execute(
+            "SELECT id FROM tasks WHERE parent_task_id = ? ORDER BY created_at",
+            (parent_task_id,),
+        )
+        return [row["id"] for row in cursor.fetchall()]
+
+    def get_recall_payload(self, task_id: str) -> dict | None:
+        """Return a flat dict suitable for the /recall endpoint, or None.
+
+        ``children`` is the list of direct child task ids — the route layer
+        promotes them to full payloads when ``tree=true``.
+        """
+        task = self.get_task(task_id)
+        if task is None:
+            return None
+        created_at = (
+            task.created_at.isoformat()
+            if hasattr(task.created_at, "isoformat")
+            else task.created_at
+        )
+        completed_at = (
+            task.completed_at.isoformat()
+            if hasattr(task.completed_at, "isoformat")
+            else task.completed_at
+        )
+        return {
+            "task_id": task.id,
+            "parent_task_id": task.parent_task_id,
+            "assigned_agent": task.assigned_agent,
+            "brief": task.brief,
+            "status": task.status.value,
+            "created_at": created_at,
+            "completed_at": completed_at,
+            "output_summary": task.final_output_summary,
+            "artifact_dir": task.final_artifact_dir,
+            "children": self.get_children(task.id),
+        }
+
+    def list_agent_tasks(self, agent: str, limit: int = 50) -> list[TaskRecord]:
+        """Return tasks assigned to an agent, newest-first.
+
+        Orders by the latest available timestamp (completed_at > updated_at >
+        created_at) as a lexicographic string compare — our ISO-8601 values
+        include microseconds and +00:00 which SQLite's ``datetime()`` parser
+        rejects, but they sort correctly as raw strings.
+        """
+        cursor = self._conn.execute(
+            """SELECT * FROM tasks WHERE assigned_agent = ?
+               ORDER BY COALESCE(completed_at, updated_at, created_at) DESC
+               LIMIT ?""",
+            (agent, limit),
+        )
+        return [
+            TaskRecord(
+                id=row["id"],
+                type=row["type"],
+                status=row["status"],
+                assigned_agent=row["assigned_agent"],
+                crew=row["crew"],
+                brief=row["brief"],
+                revision_count=row["revision_count"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+                completed_at=row["completed_at"],
+                parent_task_id=row["parent_task_id"],
+                final_output_summary=row["final_output_summary"],
+                final_artifact_dir=row["final_artifact_dir"],
             )
             for row in cursor.fetchall()
         ]
 
     def update_task(self, task_id: str, **fields: object) -> None:
-        allowed = {"status", "assigned_agent", "revision_count", "completed_at"}
+        allowed = {
+            "status", "assigned_agent", "revision_count", "completed_at",
+            "final_output_summary", "final_artifact_dir",
+        }
         updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
         if not updates:
             return
@@ -310,12 +413,14 @@ class Database:
         duration_seconds: int | None = None,
         token_count: int | None = None,
         estimated_cost: float | None = None,
+        artifact_dir: str | None = None,
     ) -> None:
         self._conn.execute(
             """INSERT INTO task_results
                (task_id, agent, session_id, status, output_summary, confidence_score,
-                learnings, risks_flagged, duration_seconds, token_count, estimated_cost, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                learnings, risks_flagged, duration_seconds, token_count, estimated_cost,
+                artifact_dir, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task_id,
                 agent,
@@ -328,6 +433,7 @@ class Database:
                 duration_seconds,
                 token_count,
                 estimated_cost,
+                artifact_dir,
                 datetime.now(timezone.utc).isoformat(),
             ),
         )

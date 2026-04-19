@@ -27,6 +27,7 @@ class DaemonState:
     db: Database | None
     settings: Settings
     db_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    kb_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     sessions: SessionTracker = field(default_factory=SessionTracker)
     event_bus: EventBus = field(init=False)
 

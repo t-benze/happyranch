@@ -58,6 +58,7 @@ class AuditLogger:
             duration_seconds=duration_seconds,
             token_count=token_count,
             estimated_cost=estimated_cost,
+            artifact_dir=report.artifact_dir,
         )
 
     def log_review_verdict(
@@ -85,6 +86,16 @@ class AuditLogger:
             agent=agent,
             action="escalation",
             payload={"reason": reason},
+        )
+
+    def log_escalation_resolved(
+        self, task_id: str, decision: str, rationale: str
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="founder",
+            action="escalation_resolved",
+            payload={"decision": decision, "rationale": rationale},
         )
 
     def log_cross_audit_stub(self, task_id: str, task_type: str) -> None:

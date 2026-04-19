@@ -134,18 +134,21 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 <runtime-dir>/                         # Created by `opc init <path>`
 |-- opc.yaml                           # Marker file (presence = valid runtime folder)
 |-- opc.db                             # SQLite database
-+-- workspaces/
-    +-- <agent_name>/                  # One per agent (dynamic — created by init-agent or approve-agent)
-        |-- agent.yaml                 # Per-agent config (repos, etc.)
-        |-- CLAUDE.md                  # Generated from system prompt (protocol docs or enrollment)
-        |-- .claude/
-        |   |-- settings.json          # Permissions + PreToolUse hook (git pull all repos)
-        |   +-- skills/                # All skills copied from protocol/skills/
-        |-- repos/                     # Git clones declared in agent.yaml
-        |   +-- <name>/                # One dir per entry in agent.yaml `repos:`
-        |-- learnings.md
-        |-- scorecard.md
-        +-- recent_tasks.md
+|-- workspaces/
+|   +-- <agent_name>/                  # One per agent (dynamic — created by init-agent or approve-agent)
+|       |-- agent.yaml                 # Per-agent config (repos, etc.)
+|       |-- CLAUDE.md                  # Generated from system prompt (protocol docs or enrollment)
+|       |-- .claude/
+|       |   |-- settings.json          # Permissions + PreToolUse hook (git pull all repos)
+|       |   +-- skills/                # All skills copied from protocol/skills/
+|       |-- repos/                     # Git clones declared in agent.yaml
+|       |   +-- <name>/                # One dir per entry in agent.yaml `repos:`
+|       |-- learnings.md
+|       |-- scorecard.md
+|       +-- recent_tasks.md
++-- kb/                                # Shared knowledge base (see protocol/06-knowledge-base.md)
+    |-- _index.md                      # Regenerated after every write
+    +-- <slug>.md                      # Flat; filename = slug
 ```
 
 ## Configuration
@@ -228,6 +231,14 @@ opc enrollments [--status pending]     # list enrollment requests
 opc approve-agent <name>               # approve and bootstrap workspace
 opc reject-agent <name>                # reject enrollment
 ```
+
+## Knowledge Base
+
+Shared precedents + domain reference live under `<runtime>/kb/`. Any agent can
+read; any agent can write (via `opc kb add --from-file`); only Engineering Head
+deletes. Full rules: `protocol/06-knowledge-base.md`. The founder records
+precedents via the two-command flow `opc resolve-escalation ...` (state
+transition) followed by `opc kb precedent ...` (KB write).
 
 ## Maintaining Documentation
 - **README.md** is for end users of the system — only usage-related content (setup, CLI commands, configuration, agent workspaces). No developer internals, code style, directory layout, or implementation details.

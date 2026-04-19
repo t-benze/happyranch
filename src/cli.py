@@ -330,6 +330,8 @@ def _completion_payload_from_file(path: str) -> tuple[str, dict]:
         "dependencies": data.get("dependencies") or [],
         "suggested_reviewer_focus": data.get("reviewer_focus") or [],
     }
+    if data.get("artifact_dir"):
+        body["artifact_dir"] = data["artifact_dir"]
     return data["task_id"], body
 
 
@@ -373,6 +375,8 @@ def cmd_report_completion(args: argparse.Namespace) -> None:
             "dependencies": args.dependencies or [],
             "suggested_reviewer_focus": args.reviewer_focus or [],
         }
+        if args.artifact_dir:
+            body["artifact_dir"] = args.artifact_dir
     r = client.post(f"/api/v1/tasks/{task_id}/completion", json=body)
     if not _ok(r):
         return
@@ -540,6 +544,192 @@ def cmd_reject_agent(args: argparse.Namespace) -> None:
     print(f"Rejected: {args.name}")
 
 
+def cmd_recall(args: argparse.Namespace) -> None:
+    """Fetch a task's brief, canonical outcome, and optionally artifact files.
+
+    Prints the daemon's JSON response as-is — agents consume it through the
+    start-task skill, humans pipe it to ``jq``. A 404 is treated as an error
+    and the process exits 1 so agent scripts can detect missing tasks.
+    """
+    import json as _json
+
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    params: dict[str, str] = {}
+    if args.tree:
+        params["tree"] = "true"
+    if args.fetch_artifact:
+        params["include_artifact"] = "true"
+    r = client.get(f"/api/v1/tasks/{args.task_id}/recall", params=params)
+    if r.status_code == 404:
+        print(f"Task {args.task_id} not found.")
+        sys.exit(1)
+    if not _ok(r):
+        return
+    print(_json.dumps(r.json(), indent=2))
+
+
+def _read_markdown_payload(path: str) -> dict:
+    """Parse `/tmp/kb-<slug>.md` into the daemon's add/update JSON body.
+
+    The file is the full entry (frontmatter + body); the daemon stamps
+    `authored_*` / `updated_*` itself.
+    """
+    import yaml as _yaml
+    with open(path) as f:
+        text = f.read()
+    if not text.startswith("---"):
+        raise ValueError("missing frontmatter")
+    if text.count("---") < 2:
+        raise ValueError("missing closing '---' fence")
+    _, fm_text, body = text.split("---", 2)
+    fm = _yaml.safe_load(fm_text) or {}
+    required = ("slug", "title", "type", "topic")
+    missing = [k for k in required if not fm.get(k)]
+    if missing:
+        raise ValueError(f"frontmatter missing keys: {missing}")
+    return {
+        "slug": fm["slug"],
+        "title": fm["title"],
+        "type": fm["type"],
+        "topic": fm["topic"],
+        "tags": list(fm.get("tags") or []),
+        "source_task": fm.get("source_task"),
+        "supersedes": fm.get("supersedes"),
+        "body": body.lstrip("\n"),
+    }
+
+
+def cmd_kb_list(args: argparse.Namespace) -> None:
+    client = OpcClient.from_env()
+    params = {}
+    if args.topic:
+        params["topic"] = args.topic
+    if args.type:
+        params["type"] = args.type
+    r = client.get("/api/v1/kb", params=params)
+    if not _ok(r):
+        return
+    for e in r.json()["entries"]:
+        print(f"{e['slug']:40s}  [{e['type']}/{e['topic']}]  {e['title']}")
+
+
+def cmd_kb_get(args: argparse.Namespace) -> None:
+    client = OpcClient.from_env()
+    r = client.get(f"/api/v1/kb/{args.slug}")
+    if not _ok(r):
+        return
+    e = r.json()
+    print(f"# {e['title']}")
+    print(f"(slug={e['slug']}, type={e['type']}, topic={e['topic']}, "
+          f"authored_by={e['authored_by']}, updated_at={e['updated_at']})")
+    print()
+    print(e["body"])
+
+
+def cmd_kb_search(args: argparse.Namespace) -> None:
+    client = OpcClient.from_env()
+    r = client.get("/api/v1/kb/search", params={"q": args.query, "limit": args.limit})
+    if not _ok(r):
+        return
+    hits = r.json()["hits"]
+    if args.json:
+        import json as _json
+        print(_json.dumps(hits, indent=2))
+        return
+    if not hits:
+        print("no matches")
+        return
+    for h in hits:
+        print(f"{h['slug']:40s}  {h['title']}")
+        print(f"    {h['snippet']}")
+
+
+def cmd_kb_add(args: argparse.Namespace) -> None:
+    client = OpcClient.from_env()
+    try:
+        body = _read_markdown_payload(args.from_file)
+    except (OSError, ValueError) as exc:
+        print(f"Error reading {args.from_file}: {exc}")
+        sys.exit(1)
+    body["agent"] = args.agent
+    body["force_new_sibling"] = args.force_new_sibling
+    r = client.post("/api/v1/kb", json=body)
+    if not _ok(r):
+        return
+    print(f"ok: added {r.json()['slug']}")
+
+
+def cmd_kb_update(args: argparse.Namespace) -> None:
+    client = OpcClient.from_env()
+    try:
+        body = _read_markdown_payload(args.from_file)
+    except (OSError, ValueError) as exc:
+        print(f"Error reading {args.from_file}: {exc}")
+        sys.exit(1)
+    if body["slug"] != args.slug:
+        print(f"Error: slug in file ({body['slug']!r}) does not match CLI arg ({args.slug!r})")
+        sys.exit(1)
+    body["agent"] = args.agent
+    r = client.post(f"/api/v1/kb/{args.slug}", json=body)
+    if not _ok(r):
+        return
+    print(f"ok: updated {r.json()['slug']}")
+
+
+def cmd_kb_delete(args: argparse.Namespace) -> None:
+    client = OpcClient.from_env()
+    # OpcClient only wraps `get`/`post`; hit `._client` directly for DELETE
+    # rather than expanding the client API for a single caller. If a second
+    # DELETE ships later, promote this into a proper `client.delete(...)`.
+    r = client._client.delete(
+        f"/api/v1/kb/{args.slug}",
+        params={"agent": args.agent, "confirm": args.confirm, "as_founder": args.as_founder},
+    )
+    if not _ok(r):
+        return
+    print(f"ok: deleted {args.slug}")
+
+
+def cmd_kb_reindex(args: argparse.Namespace) -> None:
+    client = OpcClient.from_env()
+    r = client.post("/api/v1/kb/reindex")
+    if not _ok(r):
+        return
+    print("ok: reindexed")
+
+
+def cmd_kb_precedent(args: argparse.Namespace) -> None:
+    client = OpcClient.from_env()
+    body = {
+        "task_id": args.task_id,
+        "decision": args.decision,
+        "rationale": args.rationale,
+        "as_founder": args.as_founder,
+    }
+    if args.slug:
+        body["slug"] = args.slug
+    r = client.post("/api/v1/kb/precedent", json=body)
+    if not _ok(r):
+        return
+    print(f"ok: wrote precedent {r.json()['slug']}")
+
+
+def cmd_resolve_escalation(args: argparse.Namespace) -> None:
+    client = OpcClient.from_env()
+    r = client.post(
+        f"/api/v1/tasks/{args.task_id}/resolve-escalation",
+        json={"decision": args.decision, "rationale": args.rationale},
+    )
+    if not _ok(r):
+        return
+    body = r.json()
+    print(f"ok: {args.task_id} -> {body['new_status']}")
+
+
 # ── parser ───────────────────────────────────────────────────
 
 
@@ -650,6 +840,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_reject.add_argument("name", help="Agent name to reject")
     p_reject.set_defaults(func=cmd_reject_agent)
 
+    # opc recall
+    p_recall = sub.add_parser(
+        "recall",
+        help="Recall a task: brief, outcome, optional artifact contents",
+    )
+    p_recall.add_argument("task_id", help="Task ID (e.g. TASK-001)")
+    p_recall.add_argument("--tree", action="store_true",
+                          help="Include the full subtree of child tasks")
+    p_recall.add_argument("--fetch-artifact", dest="fetch_artifact",
+                          action="store_true",
+                          help="Inline artifact file contents (capped at 200KB)")
+    p_recall.set_defaults(func=cmd_recall)
+
     p_rep = sub.add_parser("report-completion", help="Agent callback: report task completion")
     p_rep.add_argument(
         "--from-file", dest="from_file", default=None,
@@ -668,6 +871,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_rep.add_argument("--risks", action="append", default=[])
     p_rep.add_argument("--dependencies", action="append", default=[])
     p_rep.add_argument("--reviewer-focus", action="append", default=[], dest="reviewer_focus")
+    p_rep.add_argument("--artifact-dir", dest="artifact_dir", default=None,
+                       help="Relative path to the artifact directory under the agent workspace")
     p_rep.set_defaults(func=cmd_report_completion)
 
     p_learn = sub.add_parser("learning", help="Agent callback: append a learning")
@@ -676,6 +881,62 @@ def build_parser() -> argparse.ArgumentParser:
     p_learn.add_argument("--agent", required=True)
     p_learn.add_argument("--text", required=True)
     p_learn.set_defaults(func=cmd_learning)
+
+    # opc kb ...
+    p_kb = sub.add_parser("kb", help="Shared knowledge base")
+    kb_sub = p_kb.add_subparsers(dest="kb_command", required=True)
+
+    p_kb_list = kb_sub.add_parser("list", help="List KB entries")
+    p_kb_list.add_argument("--topic")
+    p_kb_list.add_argument("--type", choices=["reference", "precedent"])
+    p_kb_list.set_defaults(func=cmd_kb_list)
+
+    p_kb_get = kb_sub.add_parser("get", help="Read a KB entry")
+    p_kb_get.add_argument("slug")
+    p_kb_get.set_defaults(func=cmd_kb_get)
+
+    p_kb_search = kb_sub.add_parser("search", help="Search KB entries")
+    p_kb_search.add_argument("query")
+    p_kb_search.add_argument("--limit", type=int, default=20)
+    p_kb_search.add_argument("--json", action="store_true")
+    p_kb_search.set_defaults(func=cmd_kb_search)
+
+    p_kb_add = kb_sub.add_parser("add", help="Add a KB entry from a markdown file")
+    p_kb_add.add_argument("--agent", required=True)
+    p_kb_add.add_argument("--from-file", required=True)
+    p_kb_add.add_argument("--force-new-sibling", action="store_true")
+    p_kb_add.set_defaults(func=cmd_kb_add)
+
+    p_kb_update = kb_sub.add_parser("update", help="Update an existing KB entry")
+    p_kb_update.add_argument("slug")
+    p_kb_update.add_argument("--agent", required=True)
+    p_kb_update.add_argument("--from-file", required=True)
+    p_kb_update.set_defaults(func=cmd_kb_update)
+
+    p_kb_delete = kb_sub.add_parser("delete", help="Delete a KB entry (EH only)")
+    p_kb_delete.add_argument("slug")
+    p_kb_delete.add_argument("--agent", required=True)
+    p_kb_delete.add_argument("--confirm", action="store_true")
+    p_kb_delete.add_argument("--as-founder", action="store_true")
+    p_kb_delete.set_defaults(func=cmd_kb_delete)
+
+    p_kb_reindex = kb_sub.add_parser("reindex", help="Regenerate _index.md")
+    p_kb_reindex.set_defaults(func=cmd_kb_reindex)
+
+    p_kb_prec = kb_sub.add_parser("precedent", help="Record a precedent from an escalated task")
+    p_kb_prec.add_argument("--task-id", required=True)
+    p_kb_prec.add_argument("--decision", required=True, choices=["approve", "reject"])
+    p_kb_prec.add_argument("--rationale", required=True)
+    p_kb_prec.add_argument("--slug")
+    p_kb_prec.add_argument("--as-founder", action="store_true")
+    p_kb_prec.set_defaults(func=cmd_kb_precedent)
+
+    # opc resolve-escalation
+    p_resolve = sub.add_parser("resolve-escalation", help="Resolve an escalated task (founder only)")
+    p_resolve.add_argument("--task-id", required=True)
+    p_resolve.add_argument("--decision", required=True, choices=["approve", "reject"])
+    p_resolve.add_argument("--rationale", required=True)
+    p_resolve.set_defaults(func=cmd_resolve_escalation)
 
     return parser
 

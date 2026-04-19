@@ -88,7 +88,15 @@ class ContextBuilder:
             "## Persistent Files\n",
             "- `learnings.md` -- your accumulated operational learnings",
             "- `scorecard.md` -- read-only, updated by orchestrator",
-            "- `recent_tasks.md` -- read-only, updated by orchestrator\n",
+            "- `task_history.md` -- read-only, updated by orchestrator\n",
+            "## Knowledge Base\n",
+            "The org maintains a shared, agent-contributed knowledge base at",
+            "`<runtime>/kb/` covering precedents and domain reference.",
+            "Consult it at task start (see the **Consult the knowledge base** step",
+            "in the start-task skill) for anything regulatory, partner-API, payment,",
+            "or precedent-shaped. Contribute back via `opc kb add --agent <you>",
+            "--from-file <path>` when you discover durable cross-agent knowledge.",
+            "Everyone reads everything; only the Engineering Head deletes.\n",
             "## Workflow\n",
             "Every task arrives via the orchestrator's prompt. Use the **start-task** skill",
             "(in `.claude/skills/start-task/`) to parse parameters and report completion via",
@@ -117,16 +125,23 @@ class ContextBuilder:
     ) -> None:
         """Make sure an agent workspace has every file the orchestrator requires.
 
-        Persistent files (learnings, scorecard, recent tasks) are created only if
+        Persistent files (learnings, scorecard, task history) are created only if
         missing. CLAUDE.md, settings.json, and the skills tree are always
         regenerated so workspaces carried over from older code self-heal.
         """
         workspace.mkdir(parents=True, exist_ok=True)
 
+        # Migrate legacy recent_tasks.md → task_history.md in place so no
+        # history is lost on workspaces created before the rename.
+        legacy = workspace / "recent_tasks.md"
+        renamed = workspace / "task_history.md"
+        if legacy.exists() and not renamed.exists():
+            legacy.rename(renamed)
+
         for filename, default_content in [
             ("learnings.md", f"# Learnings: {agent_name}\n\n"),
             ("scorecard.md", "# Scorecard\n\nNo performance data yet. Tier: green (default)\n"),
-            ("recent_tasks.md", f"# Recent Tasks: {agent_name}\n\n"),
+            ("task_history.md", f"# Task History: {agent_name}\n\n"),
         ]:
             path = workspace / filename
             if not path.exists():

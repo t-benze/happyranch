@@ -280,3 +280,92 @@ def test_delete_enrollment(db):
     db.insert_enrollment("x", "desc", "prompt")
     db.delete_enrollment("x")
     assert db.get_enrollment("x") is None
+
+
+def test_insert_task_with_parent_round_trips(db):
+    parent = TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="root")
+    child = TaskRecord(
+        id="TASK-002", type=TaskType.GENERAL, brief="child", parent_task_id="TASK-001"
+    )
+    db.insert_task(parent)
+    db.insert_task(child)
+    got = db.get_task("TASK-002")
+    assert got.parent_task_id == "TASK-001"
+
+
+def test_insert_task_result_stores_artifact_dir(db):
+    db.insert_task_result(
+        task_id="TASK-001", agent="dev_agent", session_id="s1",
+        output_summary="done", confidence_score=80,
+        artifact_dir="artifacts/TASK-001",
+    )
+    rows = db.get_task_results("TASK-001")
+    assert rows[0]["artifact_dir"] == "artifacts/TASK-001"
+
+
+def test_insert_task_result_artifact_optional(db):
+    db.insert_task_result(
+        task_id="TASK-002", agent="dev_agent", session_id="s2",
+        output_summary="done", confidence_score=80,
+    )
+    rows = db.get_task_results("TASK-002")
+    assert rows[0]["artifact_dir"] is None
+
+
+def test_update_task_sets_final_summary_and_artifact(db):
+    db.insert_task(TaskRecord(id="TASK-010", type=TaskType.GENERAL, brief="b"))
+    db.update_task(
+        "TASK-010",
+        final_output_summary="Produced Q1 report",
+        final_artifact_dir="artifacts/TASK-010",
+    )
+    got = db.get_task("TASK-010")
+    assert got.final_output_summary == "Produced Q1 report"
+    assert got.final_artifact_dir == "artifacts/TASK-010"
+
+
+def test_final_fields_default_to_none(db):
+    db.insert_task(TaskRecord(id="TASK-011", type=TaskType.GENERAL, brief="b"))
+    got = db.get_task("TASK-011")
+    assert got.final_output_summary is None
+    assert got.final_artifact_dir is None
+
+
+def test_get_children_returns_direct_children_only(db):
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="root"))
+    db.insert_task(TaskRecord(
+        id="TASK-002", type=TaskType.GENERAL, brief="c1", parent_task_id="TASK-001"
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-003", type=TaskType.GENERAL, brief="c2", parent_task_id="TASK-001"
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-004", type=TaskType.GENERAL, brief="grandchild", parent_task_id="TASK-002"
+    ))
+    assert db.get_children("TASK-001") == ["TASK-002", "TASK-003"]
+    assert db.get_children("TASK-002") == ["TASK-004"]
+    assert db.get_children("TASK-003") == []
+
+
+def test_get_recall_payload_returns_task_with_children(db):
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="root"))
+    db.insert_task(TaskRecord(
+        id="TASK-002", type=TaskType.GENERAL, brief="child", parent_task_id="TASK-001"
+    ))
+    db.update_task(
+        "TASK-001",
+        final_output_summary="All done",
+        final_artifact_dir="artifacts/TASK-001",
+    )
+    payload = db.get_recall_payload("TASK-001")
+    assert payload is not None
+    assert payload["task_id"] == "TASK-001"
+    assert payload["parent_task_id"] is None
+    assert payload["brief"] == "root"
+    assert payload["output_summary"] == "All done"
+    assert payload["artifact_dir"] == "artifacts/TASK-001"
+    assert payload["children"] == ["TASK-002"]
+
+
+def test_get_recall_payload_missing_task_returns_none(db):
+    assert db.get_recall_payload("TASK-404") is None

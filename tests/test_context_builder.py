@@ -60,7 +60,8 @@ def test_build_claude_md_contains_persistent_file_pointers(test_settings, tmp_di
     content = (workspace / "CLAUDE.md").read_text()
     assert "learnings.md" in content
     assert "scorecard.md" in content
-    assert "recent_tasks.md" in content
+    assert "task_history.md" in content
+    assert "recent_tasks.md" not in content
 
 
 
@@ -74,9 +75,29 @@ def test_ensure_workspace_ready_creates_persistent_files(test_settings, tmp_dir)
     )
     assert (workspace / "learnings.md").exists()
     assert (workspace / "scorecard.md").exists()
-    assert (workspace / "recent_tasks.md").exists()
+    assert (workspace / "task_history.md").exists()
+    assert not (workspace / "recent_tasks.md").exists()
     assert (workspace / "CLAUDE.md").exists()
     assert (workspace / ".claude" / "settings.json").exists()
+
+
+def test_ensure_workspace_ready_migrates_recent_tasks_to_task_history(test_settings, tmp_dir):
+    """Workspaces carried over from before the rename should have their
+    recent_tasks.md renamed in place so no history is lost."""
+    builder = ContextBuilder(test_settings)
+    workspace = tmp_dir / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "recent_tasks.md").write_text(
+        "# Recent Tasks: dev_agent\n\n- TASK-001 old entry\n"
+    )
+    builder.ensure_workspace_ready(
+        workspace=workspace,
+        agent_name="dev_agent",
+        system_prompt="You are the Dev Agent.",
+    )
+    assert not (workspace / "recent_tasks.md").exists()
+    migrated = (workspace / "task_history.md").read_text()
+    assert "TASK-001 old entry" in migrated
 
 
 def test_build_claude_md_points_at_agent_yaml_for_repos(test_settings, tmp_dir):
@@ -159,3 +180,20 @@ def test_claude_md_drops_task_brief_and_completion_report(test_settings, tmp_pat
     text = (workspace / "CLAUDE.md").read_text()
     assert "Current Task" not in text
     assert "completion_report.json" not in text
+
+
+def test_generated_claude_md_contains_kb_section(tmp_path):
+    from src.config import Settings
+
+    builder = ContextBuilder(Settings())
+    workspace = tmp_path / "ws"
+    builder.write_claude_md(
+        workspace=workspace,
+        agent_name="dev_agent",
+        system_prompt="You are dev_agent.",
+    )
+    body = (workspace / "CLAUDE.md").read_text()
+    assert "## Knowledge Base" in body
+    assert "opc kb" in body
+    assert "Consult" in body
+    assert "Contribute" in body

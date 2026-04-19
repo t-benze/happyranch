@@ -309,6 +309,37 @@ def test_cmd_report_completion_from_file_posts_loaded_body(tmp_path):
     assert body["suggested_reviewer_focus"] == ["signature canonicalization"]
 
 
+def test_completion_payload_from_file_accepts_artifact_dir(tmp_path):
+    import json as _json
+    from src.cli import _completion_payload_from_file
+
+    path = tmp_path / "c.json"
+    path.write_text(_json.dumps({
+        "task_id": "TASK-001",
+        "session_id": "s",
+        "agent": "dev_agent",
+        "status": "completed",
+        "summary": "done",
+        "artifact_dir": "artifacts/TASK-001",
+    }))
+    task_id, body = _completion_payload_from_file(str(path))
+    assert task_id == "TASK-001"
+    assert body["artifact_dir"] == "artifacts/TASK-001"
+
+
+def test_completion_payload_from_file_artifact_optional(tmp_path):
+    import json as _json
+    from src.cli import _completion_payload_from_file
+
+    path = tmp_path / "c.json"
+    path.write_text(_json.dumps({
+        "task_id": "T", "session_id": "s", "agent": "a",
+        "status": "completed", "summary": "done",
+    }))
+    _, body = _completion_payload_from_file(str(path))
+    assert body.get("artifact_dir") is None
+
+
 def test_report_completion_parser_accepts_from_file_alone():
     """With --from-file, none of --task-id/--session-id/... are required."""
     parser = build_parser()
@@ -720,3 +751,100 @@ def test_reject_agent_parser():
     args = parser.parse_args(["reject-agent", "content_writer"])
     assert args.command == "reject-agent"
     assert args.name == "content_writer"
+
+
+def test_cli_recall_parses_flags():
+    parser = build_parser()
+    args = parser.parse_args(["recall", "TASK-001", "--tree", "--fetch-artifact"])
+    assert args.command == "recall"
+    assert args.task_id == "TASK-001"
+    assert args.tree is True
+    assert args.fetch_artifact is True
+
+
+def test_cli_recall_defaults():
+    parser = build_parser()
+    args = parser.parse_args(["recall", "TASK-001"])
+    assert args.task_id == "TASK-001"
+    assert args.tree is False
+    assert args.fetch_artifact is False
+
+
+def test_cmd_recall_prints_payload(capsys):
+    import argparse
+    import json as _json
+    from src.cli import cmd_recall
+
+    fake = MagicMock()
+    fake.get.return_value.status_code = 200
+    fake.get.return_value.json.return_value = {"task_id": "TASK-001", "brief": "hi"}
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_recall(argparse.Namespace(task_id="TASK-001", tree=False, fetch_artifact=False))
+    fake.get.assert_called_once_with("/api/v1/tasks/TASK-001/recall", params={})
+    out = capsys.readouterr().out
+    assert _json.loads(out)["task_id"] == "TASK-001"
+
+
+def test_cmd_recall_forwards_tree_and_artifact_params():
+    import argparse
+    from src.cli import cmd_recall
+
+    fake = MagicMock()
+    fake.get.return_value.status_code = 200
+    fake.get.return_value.json.return_value = {}
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_recall(argparse.Namespace(task_id="TASK-001", tree=True, fetch_artifact=True))
+    fake.get.assert_called_once_with(
+        "/api/v1/tasks/TASK-001/recall",
+        params={"tree": "true", "include_artifact": "true"},
+    )
+
+
+def test_cmd_recall_404_exits(capsys):
+    import argparse
+    from src.cli import cmd_recall
+
+    fake = MagicMock()
+    fake.get.return_value.status_code = 404
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        with pytest.raises(SystemExit):
+            cmd_recall(argparse.Namespace(task_id="TASK-404", tree=False, fetch_artifact=False))
+    assert "not found" in capsys.readouterr().out.lower()
+
+
+def test_cli_has_kb_subcommands():
+    from src.cli import build_parser
+    parser = build_parser()
+    sub = next(a for a in parser._actions if a.__class__.__name__ == "_SubParsersAction")
+    assert "kb" in sub.choices
+    kb = sub.choices["kb"]
+    kb_sub = next(a for a in kb._actions if a.__class__.__name__ == "_SubParsersAction")
+    for name in ("list", "get", "search", "add", "update", "delete", "reindex", "precedent"):
+        assert name in kb_sub.choices, f"missing kb subcommand: {name}"
+
+
+def test_cli_has_resolve_escalation():
+    from src.cli import build_parser
+    parser = build_parser()
+    sub = next(a for a in parser._actions if a.__class__.__name__ == "_SubParsersAction")
+    assert "resolve-escalation" in sub.choices
+
+
+def test_kb_add_requires_from_file():
+    from src.cli import build_parser
+    parser = build_parser()
+    # parse_args raises SystemExit(2) on missing required args
+    import pytest as _pytest
+    with _pytest.raises(SystemExit):
+        parser.parse_args(["kb", "add", "--agent", "dev_agent"])
+
+
+def test_kb_delete_parses_confirm_and_as_founder():
+    from src.cli import build_parser
+    parser = build_parser()
+    ns = parser.parse_args([
+        "kb", "delete", "alipay-refund", "--agent", "engineering_head",
+        "--confirm", "--as-founder",
+    ])
+    assert ns.confirm is True
+    assert ns.as_founder is True

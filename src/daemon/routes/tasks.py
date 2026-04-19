@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
@@ -14,6 +15,10 @@ from src.daemon.state import DaemonState
 from src.models import TaskRecord, TaskType
 
 router = APIRouter(dependencies=[require_token()])
+
+# Artifacts are fully inlined into the recall response when an agent asks for
+# them, so cap the total to keep one recall under a comfortable prompt budget.
+MAX_ARTIFACT_BYTES = 200 * 1024
 
 
 class SubmitTask(BaseModel):
@@ -64,6 +69,81 @@ def get_task(task_id: str, request: Request) -> dict:
     }
 
 
+def _read_artifact(
+    workspaces_dir: Path, assigned_agent: str | None, artifact_dir: str | None,
+) -> dict | None:
+    """Return {files, truncated} for the artifact folder, or None if unresolvable.
+
+    Files are read as text; anything that fails decoding (binaries) is skipped.
+    If the total inlined payload would exceed MAX_ARTIFACT_BYTES we flip to a
+    path-only listing with truncated=True so the agent still sees the inventory.
+    """
+    if not assigned_agent or not artifact_dir:
+        return None
+    # artifact_dir is agent-supplied via the completion callback. Absolute paths
+    # and `..` segments would let a buggy/malicious agent disclose arbitrary
+    # readable files on the host, so confine the result to the assigned agent's
+    # workspace by resolving both paths and checking containment.
+    agent_root = (workspaces_dir / assigned_agent).resolve()
+    base = (agent_root / artifact_dir).resolve()
+    if not base.is_relative_to(agent_root):
+        return None
+    if not base.exists():
+        return {"files": [], "truncated": False}
+    all_files = sorted(f for f in base.rglob("*") if f.is_file())
+    files: list[dict] = []
+    total = 0
+    for f in all_files:
+        try:
+            text = f.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        total += len(text.encode("utf-8"))
+        if total > MAX_ARTIFACT_BYTES:
+            return {
+                "files": [{"path": str(f.relative_to(base))} for f in all_files],
+                "truncated": True,
+            }
+        files.append({"path": str(f.relative_to(base)), "content": text})
+    return {"files": files, "truncated": False}
+
+
+def _recall_node(
+    state: DaemonState, task_id: str, tree: bool, include_artifact: bool,
+) -> dict | None:
+    payload = state.db.get_recall_payload(task_id)
+    if payload is None:
+        return None
+    if include_artifact:
+        payload["artifact"] = _read_artifact(
+            state.runtime.workspaces_dir,
+            payload.get("assigned_agent"),
+            payload.get("artifact_dir"),
+        )
+    if tree:
+        child_ids = payload["children"]
+        payload["children"] = [
+            _recall_node(state, cid, tree=True, include_artifact=include_artifact)
+            for cid in child_ids
+        ]
+    return payload
+
+
+@router.get("/tasks/{task_id}/recall")
+def recall_task(
+    task_id: str,
+    request: Request,
+    tree: bool = False,
+    include_artifact: bool = False,
+) -> dict:
+    state: DaemonState = request.app.state.daemon
+    _require_active(state)
+    node = _recall_node(state, task_id, tree=tree, include_artifact=include_artifact)
+    if node is None:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    return node
+
+
 class CompletionBody(BaseModel):
     session_id: str
     agent: str
@@ -73,6 +153,7 @@ class CompletionBody(BaseModel):
     risks_flagged: list[str] = []
     dependencies: list[str] = []
     suggested_reviewer_focus: list[str] = []
+    artifact_dir: str | None = None
 
 
 @router.get("/tasks/{task_id}/events")
@@ -119,6 +200,7 @@ async def submit_completion(task_id: str, body: CompletionBody, request: Request
             output_summary=body.output_summary,
             confidence_score=body.confidence,
             risks_flagged=body.risks_flagged,
+            artifact_dir=body.artifact_dir,
         )
     # Clear the tracker so a duplicate POST for the same session is rejected as
     # unknown_session rather than silently persisting a second row.
@@ -135,3 +217,38 @@ async def submit_completion(task_id: str, body: CompletionBody, request: Request
         "status": body.status,
     })
     return {"ok": True}
+
+
+class ResolveEscalationBody(BaseModel):
+    decision: str  # "approve" | "reject"
+    rationale: str
+
+
+@router.post("/tasks/{task_id}/resolve-escalation")
+async def resolve_escalation(
+    task_id: str, body: ResolveEscalationBody, request: Request
+) -> dict:
+    from src.infrastructure.audit_logger import AuditLogger
+    from src.models import TaskStatus
+
+    state: DaemonState = request.app.state.daemon
+    _require_active(state)
+    if not body.rationale.strip():
+        raise HTTPException(status_code=400, detail={"code": "rationale_required"})
+    if body.decision not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail={"code": "invalid_decision"})
+    task = state.db.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    if task.status != TaskStatus.ESCALATED:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "task_not_escalated", "current_status": task.status.value},
+        )
+    new_status = TaskStatus.APPROVED if body.decision == "approve" else TaskStatus.REJECTED
+    async with state.db_lock:
+        state.db.update_task(task_id, status=new_status)
+        AuditLogger(state.db).log_escalation_resolved(
+            task_id=task_id, decision=body.decision, rationale=body.rationale
+        )
+    return {"ok": True, "task_id": task_id, "new_status": new_status.value}

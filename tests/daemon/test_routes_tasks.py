@@ -197,10 +197,259 @@ def test_completion_preserves_empty_risks_flagged(
     assert latest["risks_flagged"] == []
 
 
+def test_completion_persists_artifact_dir(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    sub = TestClient(app).post(
+        "/api/v1/tasks",
+        json={"type": "general", "brief": "x"},
+        headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    daemon_state.sessions.set_active(task_id, "dev_agent", "sess-a")
+
+    r = TestClient(app).post(
+        f"/api/v1/tasks/{task_id}/completion",
+        json={
+            "session_id": "sess-a", "agent": "dev_agent",
+            "status": "completed", "confidence": 80,
+            "output_summary": "Wrote Q1 report",
+            "artifact_dir": f"artifacts/{task_id}",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    rows = daemon_state.db.get_task_results(task_id)
+    assert rows[-1]["artifact_dir"] == f"artifacts/{task_id}"
+
+
+def test_recall_returns_task_payload(tmp_home, app, daemon_state, auth_headers) -> None:
+    from src.models import TaskRecord, TaskStatus, TaskType
+    daemon_state.db.insert_task(
+        TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="Review Q1")
+    )
+    daemon_state.db.update_task(
+        "TASK-001",
+        status=TaskStatus.APPROVED,
+        final_output_summary="Report delivered",
+        final_artifact_dir="artifacts/TASK-001",
+    )
+    r = TestClient(app).get("/api/v1/tasks/TASK-001/recall", headers=auth_headers)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["task_id"] == "TASK-001"
+    assert body["output_summary"] == "Report delivered"
+    assert body["artifact_dir"] == "artifacts/TASK-001"
+    assert body["children"] == []
+
+
+def test_recall_missing_task_returns_404(tmp_home, app, auth_headers) -> None:
+    r = TestClient(app).get("/api/v1/tasks/TASK-404/recall", headers=auth_headers)
+    assert r.status_code == 404
+
+
+def test_recall_idle_returns_409(tmp_home, app_idle, auth_headers) -> None:
+    r = TestClient(app_idle).get("/api/v1/tasks/TASK-001/recall", headers=auth_headers)
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "no_active_runtime"
+
+
+def test_recall_tree_includes_descendants(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    from src.models import TaskRecord, TaskType
+    daemon_state.db.insert_task(
+        TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="root")
+    )
+    daemon_state.db.insert_task(TaskRecord(
+        id="TASK-002", type=TaskType.GENERAL, brief="child",
+        parent_task_id="TASK-001",
+    ))
+    r = TestClient(app).get(
+        "/api/v1/tasks/TASK-001/recall",
+        params={"tree": "true"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["task_id"] == "TASK-001"
+    assert isinstance(body["children"], list)
+    assert body["children"][0]["task_id"] == "TASK-002"
+    # Grandchildren slot is empty but still a list
+    assert body["children"][0]["children"] == []
+
+
+def test_recall_include_artifact_reads_files(
+    tmp_home, app, daemon_state, runtime, auth_headers,
+) -> None:
+    from src.models import TaskRecord, TaskType
+    ws = runtime.workspaces_dir / "dev_agent"
+    artifact = ws / "artifacts" / "TASK-001"
+    artifact.mkdir(parents=True)
+    (artifact / "report.md").write_text("# Q1 report\n\nAll good.")
+    daemon_state.db.insert_task(TaskRecord(
+        id="TASK-001", type=TaskType.GENERAL, brief="b",
+        assigned_agent="dev_agent",
+    ))
+    daemon_state.db.update_task(
+        "TASK-001", final_artifact_dir="artifacts/TASK-001",
+    )
+    r = TestClient(app).get(
+        "/api/v1/tasks/TASK-001/recall",
+        params={"include_artifact": "true"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["artifact"] == {
+        "files": [{"path": "report.md", "content": "# Q1 report\n\nAll good."}],
+        "truncated": False,
+    }
+
+
+def test_recall_rejects_absolute_artifact_path(
+    tmp_home, app, daemon_state, runtime, auth_headers,
+) -> None:
+    """artifact_dir comes from an agent-supplied completion payload. A buggy or
+    malicious agent that stores an absolute path must not be able to read
+    arbitrary files on the host via /recall?include_artifact=true."""
+    from src.models import TaskRecord, TaskType
+    secret = tmp_home / "secret.txt"
+    secret.write_text("DO NOT LEAK")
+    daemon_state.db.insert_task(TaskRecord(
+        id="TASK-001", type=TaskType.GENERAL, brief="b",
+        assigned_agent="dev_agent",
+    ))
+    daemon_state.db.update_task(
+        "TASK-001", final_artifact_dir=str(tmp_home),
+    )
+    r = TestClient(app).get(
+        "/api/v1/tasks/TASK-001/recall",
+        params={"include_artifact": "true"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    # Must not expose files from outside the assigned agent's workspace.
+    # Either the endpoint returns no artifact payload at all, or an empty one —
+    # but it must never contain secret.txt.
+    artifact = body.get("artifact")
+    contents = "" if not artifact else "".join(
+        f.get("content", "") for f in artifact.get("files", [])
+    )
+    assert "DO NOT LEAK" not in contents
+
+
+def test_recall_rejects_parent_traversal_artifact_path(
+    tmp_home, app, daemon_state, runtime, auth_headers,
+) -> None:
+    """A `..` in artifact_dir must not let an agent read another agent's
+    workspace."""
+    from src.models import TaskRecord, TaskType
+    # dev_agent workspace must exist so `dev_agent/..` can resolve through it.
+    (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
+    other = runtime.workspaces_dir / "other_agent" / "secrets"
+    other.mkdir(parents=True)
+    (other / "token.txt").write_text("SUPERSECRET")
+    daemon_state.db.insert_task(TaskRecord(
+        id="TASK-001", type=TaskType.GENERAL, brief="b",
+        assigned_agent="dev_agent",
+    ))
+    daemon_state.db.update_task(
+        "TASK-001", final_artifact_dir="../other_agent/secrets",
+    )
+    r = TestClient(app).get(
+        "/api/v1/tasks/TASK-001/recall",
+        params={"include_artifact": "true"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    artifact = body.get("artifact")
+    contents = "" if not artifact else "".join(
+        f.get("content", "") for f in artifact.get("files", [])
+    )
+    assert "SUPERSECRET" not in contents
+
+
 def test_events_unknown_task_returns_404(tmp_home, app, auth_headers) -> None:
     """Opening /events for a task the daemon never saw must 404, not hang."""
     r = TestClient(app).get("/api/v1/tasks/TASK-999/events", headers=auth_headers)
     assert r.status_code == 404
+
+
+def test_resolve_escalation_transitions_escalated_task(tmp_home, app, runtime, auth_headers):
+    from src.models import TaskRecord, TaskType, TaskStatus
+    state = app.state.daemon
+    state.db.insert_task(TaskRecord(
+        id="TASK-042", type=TaskType.GENERAL, brief="Large refund",
+        status=TaskStatus.ESCALATED,
+    ))
+    state.db.insert_audit_log(
+        task_id="TASK-042", agent="cx_manager", action="escalation",
+        payload={"reason": "Amount exceeds CX cap"},
+    )
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/tasks/TASK-042/resolve-escalation",
+        json={"decision": "approve", "rationale": "Vendor error, <$250 risk"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    got = state.db.get_task("TASK-042")
+    assert got.status == TaskStatus.APPROVED
+    rows = state.db.get_audit_logs("TASK-042")
+    assert any(row["action"] == "escalation_resolved" for row in rows)
+    # KB untouched
+    assert not (runtime.root / "kb").exists() or not list((runtime.root / "kb").glob("*.md"))
+
+
+def test_resolve_escalation_reject_decision(tmp_home, app, auth_headers):
+    from src.models import TaskRecord, TaskType, TaskStatus
+    state = app.state.daemon
+    state.db.insert_task(TaskRecord(
+        id="TASK-043", type=TaskType.GENERAL, brief="x", status=TaskStatus.ESCALATED,
+    ))
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/tasks/TASK-043/resolve-escalation",
+        json={"decision": "reject", "rationale": "Policy violation"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert state.db.get_task("TASK-043").status == TaskStatus.REJECTED
+
+
+def test_resolve_escalation_rejects_non_escalated_task(tmp_home, app, auth_headers):
+    from src.models import TaskRecord, TaskType, TaskStatus
+    state = app.state.daemon
+    state.db.insert_task(TaskRecord(
+        id="TASK-044", type=TaskType.GENERAL, brief="x", status=TaskStatus.COMPLETED,
+    ))
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/tasks/TASK-044/resolve-escalation",
+        json={"decision": "approve", "rationale": "r"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "task_not_escalated"
+
+
+def test_resolve_escalation_requires_rationale(tmp_home, app, auth_headers):
+    from src.models import TaskRecord, TaskType, TaskStatus
+    state = app.state.daemon
+    state.db.insert_task(TaskRecord(
+        id="TASK-045", type=TaskType.GENERAL, brief="x", status=TaskStatus.ESCALATED,
+    ))
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/tasks/TASK-045/resolve-escalation",
+        json={"decision": "approve", "rationale": ""},
+        headers=auth_headers,
+    )
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "rationale_required"
 
 
 def test_events_stream_yields_completion(tmp_home, app, daemon_state, auth_headers) -> None:
