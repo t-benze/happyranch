@@ -26,7 +26,7 @@ def test_build_settings_json_with_repos(test_settings, tmp_dir):
     workspace.mkdir(parents=True)
     builder.write_settings_json(workspace, repo_names=["my-opc", "web-app"])
     data = json.loads((workspace / ".claude" / "settings.json").read_text())
-    hook_cmd = data["hooks"]["PreToolUse"][0]["command"]
+    hook_cmd = data["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
     assert "repos/my-opc" in hook_cmd
     assert "repos/web-app" in hook_cmd
 
@@ -111,7 +111,7 @@ def test_ensure_workspace_ready_detects_cloned_repos(test_settings, tmp_dir):
         repo_dir.mkdir(parents=True)
     builder.ensure_workspace_ready(workspace, "dev_agent", "You are the Dev Agent.")
     settings_data = json.loads((workspace / ".claude" / "settings.json").read_text())
-    hook_cmd = settings_data["hooks"]["PreToolUse"][0]["command"]
+    hook_cmd = settings_data["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
     assert "repos/my-opc" in hook_cmd
     assert "repos/web-app" in hook_cmd
 

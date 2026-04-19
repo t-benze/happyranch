@@ -23,8 +23,13 @@ def _build_settings_json(repo_names: list[str]) -> dict:
             "PreToolUse": [
                 {
                     "matcher": "Bash|Read|Grep|Glob",
-                    "command": pull_cmds,
-                    "runOnce": True,
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": pull_cmds,
+                            "once": True,
+                        }
+                    ],
                 }
             ]
         }
