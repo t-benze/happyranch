@@ -74,7 +74,7 @@ Parameters:
 
    **Contribute NO if:**
    - The info is specific to this task (→ task artifact).
-   - It's your own operational preference (use the learning callback — see Step 5).
+   - It's your own operational preference (record it via the mid-task learning callback instead).
    - It's already in `protocol/` docs.
    - The info has a <12-month useful lifespan.
 
