@@ -25,6 +25,7 @@ The following documents are in the `protocol/` folder.
   - `05c-orchestrator.md` — Orchestrator responsibilities, performance tiers, permissions, task state machine
   - `05d-feishu.md` — Founder interaction via Feishu, bot architecture, notification tiers
   - `05e-dashboard.md` — Dashboard layout, API endpoints, implementation order
+- `06-knowledge-base.md` — Shared KB rules: entry schema, author/founder write paths, precedent workflow, search, index regeneration
 
 ## Tech Stack
 - **Language**: Python 3.11+ (currently running 3.13)
@@ -36,7 +37,7 @@ The following documents are in the `protocol/` folder.
 - **Orchestrator**: Custom Python application (EH-driven orchestration loop, performance scoring)
 - **Data models**: Pydantic v2 + pydantic-settings
 - **Database**: SQLite with WAL mode (audit logs, scorecards, task state)
-- **Knowledge base**: Vector store with RAG (planned — not yet implemented)
+- **Knowledge base**: File-backed markdown under `<runtime>/kb/` with atomic writes, substring/tag search, and regenerated `_index.md` (see `src/infrastructure/kb_store.py`). Vector store / RAG not yet added
 - **LLM**: Anthropic Claude via Claude Code CLI
 - **Hosting**: Local Mac Mini
 
@@ -103,9 +104,10 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |   |   +-- routes/
 |   |       |-- health.py              # GET /health
 |   |       |-- runtimes.py            # POST /runtimes/init, POST /runtimes/use, GET /runtimes
-|   |       |-- tasks.py               # POST /tasks, GET /tasks, GET /tasks/{id}, SSE /tasks/{id}/events, callbacks
+|   |       |-- tasks.py               # POST /tasks, GET /tasks, GET /tasks/{id}, SSE /tasks/{id}/events, GET /tasks/{id}/recall, POST /tasks/{id}/resolve-escalation, callbacks
 |   |       |-- agents.py              # GET /agents, POST /agents/init (SSE), POST /agents/{name}/learnings, POST /agents/manage (enroll/update/terminate), GET /agents/enrollments, POST /agents/{name}/approve, POST /agents/{name}/reject, POST /agents/{name}/repos
-|   |       +-- audit.py               # GET /audit — filtered audit-log view (task/agent/action/since/limit)
+|   |       |-- audit.py               # GET /audit — filtered audit-log view (task/agent/action/since/limit)
+|   |       +-- kb.py                  # Knowledge base: GET /kb, /kb/{slug}, /kb/search; POST /kb, /kb/{slug}, /kb/reindex, /kb/precedent; DELETE /kb/{slug}
 |   |-- orchestrator/
 |   |   |-- orchestrator.py            # EH-driven loop: ask Engineering Head, execute decisions
 |   |   |-- capabilities.py            # Builds capabilities prompt for EH decision sessions
@@ -114,12 +116,13 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |   |   |-- context_builder.py         # Generates CLAUDE.md + .claude/settings.json + copies skills
 |   |   +-- prompt_loader.py           # Parses system prompts from protocol markdown
 |   |-- infrastructure/
-|   |   |-- database.py                # SQLite (WAL mode), typed CRUD, task_results.status column, agent_enrollments table
-|   |   +-- audit_logger.py            # Semantic logging (session, verdict, escalation, orchestration steps)
+|   |   |-- database.py                # SQLite (WAL mode), typed CRUD, task_results.status column, agent_enrollments table, parent_task_id / final_output_summary / final_artifact_dir on tasks
+|   |   |-- audit_logger.py            # Semantic logging (session, verdict, escalation, orchestration steps, escalation_resolved)
+|   |   +-- kb_store.py                # Knowledge base: slug validation, atomic entry write, list/read/update/delete, search, _index.md regeneration, near-duplicate detection
 |   |-- agents/                        # Agent definitions (future)
 |   |-- crews/                         # Crew definitions (future)
 |   +-- tools/                         # Agent tools (future)
-|-- tests/                             # 258 tests (257 unit + 1 integration)
+|-- tests/                             # ~362 tests (unit + a couple of integration)
 |   |-- daemon/                        # Route-level tests for the FastAPI app
 |   |-- integration/                   # End-to-end test with a fake Claude binary
 |   +-- test_*.py                      # Orchestrator, executor, config, skills, etc.
@@ -145,7 +148,7 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |       |   +-- <name>/                # One dir per entry in agent.yaml `repos:`
 |       |-- learnings.md
 |       |-- scorecard.md
-|       +-- recent_tasks.md
+|       +-- task_history.md            # Per-agent history (renamed from recent_tasks.md; legacy files auto-migrated)
 +-- kb/                                # Shared knowledge base (see protocol/06-knowledge-base.md)
     |-- _index.md                      # Regenerated after every write
     +-- <slug>.md                      # Flat; filename = slug
@@ -221,6 +224,17 @@ opc audit --agent engineering_head --limit 10    # recent entries for one agent,
 opc audit TASK-007 --json                        # raw JSON with full payloads
 opc init-agent               # initialize all agent workspaces (repo clones + system prompts + skills)
 opc init-agent dev_agent     # initialize a specific agent
+opc recall TASK-001 [--tree] [--fetch-artifact <relpath>]   # fetch task brief + artifact tree/content
+# Knowledge base (read: any; write: any via --from-file; delete: engineering_head; precedent: founder):
+opc kb list [--topic <t>] [--type reference|precedent]
+opc kb get <slug>
+opc kb search <query> [--limit N]
+opc kb add --from-file /tmp/kb-<slug>.md --author <agent>
+opc kb update <slug> --from-file /tmp/kb-<slug>.md --author <agent>
+opc kb delete <slug> --author engineering_head
+opc kb reindex
+opc kb precedent --task-id TASK-001 --as-founder --from-file /tmp/kb-<slug>.md   # founder-only; follows resolve-escalation
+opc resolve-escalation TASK-001 --disposition <...>                              # founder state transition (precedes kb precedent)
 # Agent-side callbacks (invoked by skills):
 opc report-completion --task-id TASK-001 --session-id <sid> --status completed ...
 opc learning --agent dev_agent --session-id <sid> --task-id TASK-001 --text "..."
@@ -238,7 +252,18 @@ Shared precedents + domain reference live under `<runtime>/kb/`. Any agent can
 read; any agent can write (via `opc kb add --from-file`); only Engineering Head
 deletes. Full rules: `protocol/06-knowledge-base.md`. The founder records
 precedents via the two-command flow `opc resolve-escalation ...` (state
-transition) followed by `opc kb precedent ...` (KB write).
+transition) followed by `opc kb precedent --as-founder ...` (KB write, founder-only
+per spec §4.6).
+
+The context builder injects a "Knowledge Base" section into every agent's
+generated CLAUDE.md (see `context_builder._build_claude_md`). The `start-task`
+skill has explicit **Consult KB** and **Contribute to KB** steps.
+
+Also stock tech stack references: **knowledge base is now implemented**
+(`src/infrastructure/kb_store.py` + `src/daemon/routes/kb.py`) — file-backed
+markdown entries with atomic writes, a `kb_lock` in daemon state to serialize
+writes, substring/tag search, and `_index.md` regeneration after every write.
+No vector store yet.
 
 ## Maintaining Documentation
 - **README.md** is for end users of the system — only usage-related content (setup, CLI commands, configuration, agent workspaces). No developer internals, code style, directory layout, or implementation details.
