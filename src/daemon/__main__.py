@@ -43,6 +43,9 @@ def _build_state(settings: Settings) -> DaemonState:
     runtime = RuntimeDir.load(reg.active)
     state = DaemonState.from_runtime(runtime, settings)
     _escalate_in_flight_tasks(state.db)
+    # Worker-pool bootstrap is deferred to the FastAPI lifespan startup
+    # event because we need a running event loop. See `create_app` →
+    # lifespan.
     return state
 
 

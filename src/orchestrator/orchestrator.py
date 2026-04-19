@@ -54,6 +54,14 @@ class Orchestrator:
         )
         self._queue: "asyncio.Queue[str] | None" = None  # wired by daemon
 
+    def attach_queue(self, queue) -> None:
+        """Daemon boot wires its TaskQueue so run_step can enqueue follow-ups.
+
+        Decoupled from __init__ because tests construct an Orchestrator
+        without a daemon, and because TaskQueue is owned by DaemonState, not
+        the Orchestrator."""
+        self._queue = queue
+
     def _build_session_id(self) -> str:
         return f"sess-{uuid.uuid4().hex}"
 
