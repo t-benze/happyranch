@@ -43,3 +43,26 @@ def test_run_step_noop_on_blocked_escalated(runtime, db):
     t = db.get_task("T-1")
     assert t.status == TaskStatus.BLOCKED
     assert t.block_kind == BlockKind.ESCALATED
+
+
+def test_run_step_over_budget_parks_escalated(runtime, db):
+    from src.orchestrator.orchestrator import Orchestrator
+    settings = Settings(max_orchestration_steps=3)
+    db.insert_task(TaskRecord(
+        id="T-1", type=TaskType.GENERAL, brief="x", assigned_agent="engineering_head",
+    ))
+    db.update_task("T-1", orchestration_step_count=3)  # already at the cap
+
+    orch = Orchestrator(db=db, settings=settings, runtime=runtime)
+    orch.run_step("T-1")
+
+    t = db.get_task("T-1")
+    assert t.status == TaskStatus.BLOCKED
+    assert t.block_kind == BlockKind.ESCALATED
+    assert t.note and "max steps" in t.note
+    # Audit row
+    escalations = [
+        a for a in db.get_audit_logs("T-1") if a["action"] == "escalation"
+    ]
+    assert len(escalations) == 1
+    assert "max steps" in escalations[0]["payload"]["reason"]

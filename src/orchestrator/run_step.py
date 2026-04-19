@@ -46,4 +46,16 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
         )
         return
 
-    # Further steps are added in subsequent tasks.
+    # ---- 2. Budget guard (persisted, survives restarts) ----
+    max_steps = orch._settings.max_orchestration_steps
+    next_count = task.orchestration_step_count + 1
+    if next_count > max_steps:
+        reason = f"max steps ({max_steps}) exceeded"
+        db.update_task(
+            task_id,
+            status=TaskStatus.BLOCKED,
+            block_kind=BlockKind.ESCALATED,
+            note=reason,
+        )
+        orch._audit.log_escalation(task_id, "orchestrator", reason)
+        return
