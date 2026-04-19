@@ -162,3 +162,23 @@ def test_task_status_has_five_values():
 def test_block_kind_has_delegated_and_escalated():
     from src.models import BlockKind
     assert {b.value for b in BlockKind} == {"delegated", "escalated"}
+
+
+def test_task_record_has_new_columns():
+    from src.models import TaskRecord, TaskType
+    t = TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="x")
+    assert t.block_kind is None
+    assert t.note is None
+    assert t.orchestration_step_count == 0
+
+
+def test_task_record_accepts_block_kind():
+    from src.models import TaskRecord, TaskType, TaskStatus, BlockKind
+    t = TaskRecord(
+        id="TASK-001", type=TaskType.GENERAL, brief="x",
+        status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED,
+        note="Delegated to dev_agent", orchestration_step_count=3,
+    )
+    assert t.block_kind == BlockKind.DELEGATED
+    assert t.note == "Delegated to dev_agent"
+    assert t.orchestration_step_count == 3
