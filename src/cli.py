@@ -583,6 +583,8 @@ def _read_markdown_payload(path: str) -> dict:
         text = f.read()
     if not text.startswith("---"):
         raise ValueError("missing frontmatter")
+    if text.count("---") < 2:
+        raise ValueError("missing closing '---' fence")
     _, fm_text, body = text.split("---", 2)
     fm = _yaml.safe_load(fm_text) or {}
     required = ("slug", "title", "type", "topic")
@@ -925,7 +927,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_kb_prec.add_argument("--decision", required=True, choices=["approve", "reject"])
     p_kb_prec.add_argument("--rationale", required=True)
     p_kb_prec.add_argument("--slug")
-    p_kb_prec.add_argument("--as-founder", action="store_true")
     p_kb_prec.set_defaults(func=cmd_kb_precedent)
 
     # opc resolve-escalation

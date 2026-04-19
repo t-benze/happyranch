@@ -1,10 +1,13 @@
 """Shared knowledge-base endpoints."""
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
+
+_log = logging.getLogger(__name__)
 
 from src.daemon.auth import require_token
 from src.daemon.state import DaemonState
@@ -166,7 +169,7 @@ def _kb_write(
     try:
         store.regenerate_index()
     except Exception:  # noqa: BLE001 — regen is non-fatal per spec §6.3
-        pass
+        _log.warning("kb _index.md regeneration failed after write", exc_info=True)
     return written
 
 
@@ -292,8 +295,8 @@ async def update_kb(slug: str, body: KBUpdateBody, request: Request) -> dict:
             _raise_invalid_entry(exc)
         try:
             store.regenerate_index()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception:  # noqa: BLE001 — regen is non-fatal per spec §6.3
+            _log.warning("kb _index.md regeneration failed after write", exc_info=True)
     return {"slug": updated.slug, "updated_at": updated.updated_at, "updated_by": updated.updated_by}
 
 
@@ -321,6 +324,6 @@ async def delete_kb(
             raise HTTPException(status_code=404, detail={"code": "not_found", "slug": slug})
         try:
             store.regenerate_index()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception:  # noqa: BLE001 — regen is non-fatal per spec §6.3
+            _log.warning("kb _index.md regeneration failed after write", exc_info=True)
     return {"ok": True, "slug": slug}
