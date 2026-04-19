@@ -195,6 +195,70 @@ async def reindex_kb(request: Request) -> dict:
     return {"ok": True}
 
 
+_TOPIC_FOR_TASK_TYPE = {
+    "payment_change": "payment",
+    "bug_fix": "engineering",
+    "implement_feature": "engineering",
+}
+
+
+class KBPrecedentBody(BaseModel):
+    task_id: str
+    decision: str
+    rationale: str
+    slug: Optional[str] = None
+
+
+@router.post("/kb/precedent")
+async def precedent_kb(body: KBPrecedentBody, request: Request) -> dict:
+    state: DaemonState = _require_active(request.app.state.daemon)
+    if body.decision not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail={"code": "invalid_decision"})
+    if not body.rationale.strip():
+        raise HTTPException(status_code=400, detail={"code": "rationale_required"})
+    task = state.db.get_task(body.task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"task {body.task_id} not found")
+
+    escalation_rows = [
+        r for r in state.db.get_audit_logs(body.task_id) if r["action"] == "escalation"
+    ]
+    if not escalation_rows:
+        raise HTTPException(
+            status_code=400, detail={"code": "no_escalation_record", "task_id": body.task_id},
+        )
+    escalation_reason = escalation_rows[-1]["payload"].get("reason", "")
+
+    default_slug = f"precedent-{body.task_id.lower().replace('_', '-')}-{body.decision}"
+    slug = body.slug or default_slug
+    topic = _TOPIC_FOR_TASK_TYPE.get(str(task.type), "general")
+    title = f"{task.brief} — {body.decision}"
+    entry_body = (
+        f"# Precedent: {task.brief}\n\n"
+        f"## Context\n\n"
+        f"- Task: `{body.task_id}`\n"
+        f"- Brief: {task.brief}\n\n"
+        f"## Escalation reason\n\n{escalation_reason}\n\n"
+        f"## Decision\n\n{body.decision}\n\n"
+        f"## Rationale\n\n{body.rationale}\n"
+    )
+    entry = KBEntry(
+        slug=slug,
+        title=title,
+        type="precedent",
+        topic=topic,
+        tags=["precedent", body.decision],
+        body=entry_body,
+        source_task=body.task_id,
+        escalation_reason=escalation_reason,
+        founder_decision=body.decision,
+        founder_rationale=body.rationale,
+    )
+    async with state.kb_lock:
+        written = _kb_write(state, entry, agent="founder", force_new_sibling=True)
+    return {"slug": written.slug, "task_id": body.task_id}
+
+
 @router.post("/kb/{slug}")
 async def update_kb(slug: str, body: KBUpdateBody, request: Request) -> dict:
     state: DaemonState = _require_active(request.app.state.daemon)

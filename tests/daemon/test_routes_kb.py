@@ -289,3 +289,108 @@ def test_kb_reindex_rebuilds_index(tmp_home, app, runtime, auth_headers):
     r = client.post("/api/v1/kb/reindex", headers=auth_headers)
     assert r.status_code == 200
     assert index_path.exists()
+
+
+def _seed_escalated_task(
+    app, task_id: str = "TASK-037", brief: str = "Large refund for custom itinerary",
+    reason: str = "Amount exceeds CX cap",
+) -> None:
+    from src.models import TaskRecord, TaskType, TaskStatus
+    state = app.state.daemon
+    state.db.insert_task(TaskRecord(
+        id=task_id, type=TaskType.GENERAL, brief=brief, status=TaskStatus.ESCALATED,
+    ))
+    state.db.insert_audit_log(
+        task_id=task_id, agent="cx_manager", action="escalation",
+        payload={"reason": reason},
+    )
+
+
+def test_kb_precedent_writes_entry_from_audit_row(tmp_home, app, runtime, auth_headers):
+    _seed_escalated_task(app)
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/kb/precedent",
+        json={
+            "task_id": "TASK-037",
+            "decision": "approve",
+            "rationale": "Vendor error per partner-log, <$250 risk",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    slug = r.json()["slug"]
+    assert slug.startswith("precedent-task-037")
+    got = client.get(f"/api/v1/kb/{slug}", headers=auth_headers).json()
+    assert got["type"] == "precedent"
+    assert got["source_task"] == "TASK-037"
+    assert "Amount exceeds CX cap" in got["body"]
+    assert "Vendor error" in got["body"]
+
+
+def test_kb_precedent_does_not_transition_task_status(tmp_home, app, runtime, auth_headers):
+    from src.models import TaskStatus
+    _seed_escalated_task(app, task_id="TASK-038")
+    state = app.state.daemon
+    client = TestClient(app)
+    client.post(
+        "/api/v1/kb/precedent",
+        json={"task_id": "TASK-038", "decision": "approve", "rationale": "r"},
+        headers=auth_headers,
+    )
+    assert state.db.get_task("TASK-038").status == TaskStatus.ESCALATED
+
+
+def test_kb_precedent_post_hoc_on_resolved_task(tmp_home, app, runtime, auth_headers):
+    """Founder can write a precedent for an already-resolved task."""
+    from src.models import TaskRecord, TaskType, TaskStatus
+    state = app.state.daemon
+    state.db.insert_task(TaskRecord(
+        id="TASK-039", type=TaskType.GENERAL, brief="Partner change",
+        status=TaskStatus.APPROVED,
+    ))
+    state.db.insert_audit_log(
+        task_id="TASK-039", agent="ops_manager", action="escalation",
+        payload={"reason": "Partner contract change outside authority"},
+    )
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/kb/precedent",
+        json={"task_id": "TASK-039", "decision": "approve", "rationale": "Auth granted."},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+
+
+def test_kb_precedent_rejects_task_without_escalation(tmp_home, app, auth_headers):
+    from src.models import TaskRecord, TaskType, TaskStatus
+    state = app.state.daemon
+    state.db.insert_task(TaskRecord(
+        id="TASK-040", type=TaskType.GENERAL, brief="x", status=TaskStatus.COMPLETED,
+    ))
+    # No escalation audit row
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/kb/precedent",
+        json={"task_id": "TASK-040", "decision": "approve", "rationale": "r"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "no_escalation_record"
+
+
+def test_kb_precedent_honors_slug_override(tmp_home, app, runtime, auth_headers):
+    _seed_escalated_task(app, task_id="TASK-041")
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/kb/precedent",
+        json={
+            "task_id": "TASK-041",
+            "decision": "approve",
+            "rationale": "r",
+            "slug": "precedent-large-refund-policy",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert r.json()["slug"] == "precedent-large-refund-policy"
