@@ -162,8 +162,9 @@ class Database:
     def insert_task(self, task: TaskRecord) -> None:
         self._conn.execute(
             """INSERT INTO tasks (id, type, status, assigned_agent, team, brief,
-               revision_count, created_at, updated_at, completed_at, parent_task_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               revision_count, created_at, updated_at, completed_at, parent_task_id,
+               block_kind, note, orchestration_step_count)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task.id,
                 task.type.value,
@@ -176,6 +177,9 @@ class Database:
                 task.updated_at.isoformat(),
                 task.completed_at.isoformat() if task.completed_at else None,
                 task.parent_task_id,
+                task.block_kind.value if task.block_kind else None,
+                task.note,
+                task.orchestration_step_count,
             ),
         )
         self._conn.commit()
@@ -197,7 +201,9 @@ class Database:
             updated_at=row["updated_at"],
             completed_at=row["completed_at"],
             parent_task_id=row["parent_task_id"],
-            final_output_summary=row["final_output_summary"],
+            block_kind=row["block_kind"],
+            note=row["note"],
+            orchestration_step_count=row["orchestration_step_count"] or 0,
             final_artifact_dir=row["final_artifact_dir"],
         )
 
@@ -218,7 +224,9 @@ class Database:
                 updated_at=row["updated_at"],
                 completed_at=row["completed_at"],
                 parent_task_id=row["parent_task_id"],
-                final_output_summary=row["final_output_summary"],
+                block_kind=row["block_kind"],
+                note=row["note"],
+                orchestration_step_count=row["orchestration_step_count"] or 0,
                 final_artifact_dir=row["final_artifact_dir"],
             )
             for row in cursor.fetchall()
@@ -259,7 +267,7 @@ class Database:
             "status": task.status.value,
             "created_at": created_at,
             "completed_at": completed_at,
-            "output_summary": task.final_output_summary,
+            "output_summary": task.note,
             "artifact_dir": task.final_artifact_dir,
             "children": self.get_children(task.id),
         }
@@ -291,7 +299,9 @@ class Database:
                 updated_at=row["updated_at"],
                 completed_at=row["completed_at"],
                 parent_task_id=row["parent_task_id"],
-                final_output_summary=row["final_output_summary"],
+                block_kind=row["block_kind"],
+                note=row["note"],
+                orchestration_step_count=row["orchestration_step_count"] or 0,
                 final_artifact_dir=row["final_artifact_dir"],
             )
             for row in cursor.fetchall()
@@ -300,15 +310,22 @@ class Database:
     def update_task(self, task_id: str, **fields: object) -> None:
         allowed = {
             "status", "assigned_agent", "revision_count", "completed_at",
-            "final_output_summary", "final_artifact_dir",
+            "block_kind", "note", "orchestration_step_count",
+            "final_artifact_dir",
         }
-        updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
+        # NOTE: filter on membership, not on None-ness — block_kind must be
+        # resettable to NULL when a task unblocks.
+        updates: dict[str, object] = {}
+        for k, v in fields.items():
+            if k not in allowed:
+                continue
+            if hasattr(v, "value"):
+                updates[k] = v.value
+            else:
+                updates[k] = v
         if not updates:
             return
         updates["updated_at"] = datetime.now(timezone.utc).isoformat()
-        for k, v in updates.items():
-            if hasattr(v, "value"):
-                updates[k] = v.value
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = list(updates.values()) + [task_id]
         self._conn.execute(f"UPDATE tasks SET {set_clause} WHERE id = ?", values)

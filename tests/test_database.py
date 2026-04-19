@@ -316,18 +316,18 @@ def test_update_task_sets_final_summary_and_artifact(db):
     db.insert_task(TaskRecord(id="TASK-010", type=TaskType.GENERAL, brief="b"))
     db.update_task(
         "TASK-010",
-        final_output_summary="Produced Q1 report",
+        note="Produced Q1 report",
         final_artifact_dir="artifacts/TASK-010",
     )
     got = db.get_task("TASK-010")
-    assert got.final_output_summary == "Produced Q1 report"
+    assert got.note == "Produced Q1 report"
     assert got.final_artifact_dir == "artifacts/TASK-010"
 
 
 def test_final_fields_default_to_none(db):
     db.insert_task(TaskRecord(id="TASK-011", type=TaskType.GENERAL, brief="b"))
     got = db.get_task("TASK-011")
-    assert got.final_output_summary is None
+    assert got.note is None
     assert got.final_artifact_dir is None
 
 
@@ -354,7 +354,7 @@ def test_get_recall_payload_returns_task_with_children(db):
     ))
     db.update_task(
         "TASK-001",
-        final_output_summary="All done",
+        note="All done",
         final_artifact_dir="artifacts/TASK-001",
     )
     payload = db.get_recall_payload("TASK-001")
@@ -369,3 +369,40 @@ def test_get_recall_payload_returns_task_with_children(db):
 
 def test_get_recall_payload_missing_task_returns_none(db):
     assert db.get_recall_payload("TASK-404") is None
+
+
+def test_update_task_writes_block_kind_and_note(tmp_path):
+    from src.infrastructure.database import Database
+    from src.models import TaskRecord, TaskStatus, TaskType, BlockKind
+
+    db = Database(tmp_path / "opc.db")
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="x"))
+    db.update_task(
+        "TASK-001",
+        status=TaskStatus.BLOCKED,
+        block_kind=BlockKind.DELEGATED,
+        note="Delegated to dev_agent",
+        orchestration_step_count=2,
+    )
+    t = db.get_task("TASK-001")
+    assert t.status == TaskStatus.BLOCKED
+    assert t.block_kind == BlockKind.DELEGATED
+    assert t.note == "Delegated to dev_agent"
+    assert t.orchestration_step_count == 2
+
+
+def test_update_task_can_clear_block_kind_to_none(tmp_path):
+    """When a task unblocks, block_kind and note must be nulled — the existing
+    update_task `v is not None` filter would silently drop these writes."""
+    from src.infrastructure.database import Database
+    from src.models import TaskRecord, TaskStatus, TaskType, BlockKind
+
+    db = Database(tmp_path / "opc.db")
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="x"))
+    db.update_task("TASK-001", status=TaskStatus.BLOCKED,
+                   block_kind=BlockKind.DELEGATED, note="x")
+    db.update_task("TASK-001", status=TaskStatus.IN_PROGRESS,
+                   block_kind=None, note=None)
+    t = db.get_task("TASK-001")
+    assert t.block_kind is None
+    assert t.note is None
