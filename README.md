@@ -1,6 +1,6 @@
 # OPC — AI-Powered Tourism Organization
 
-A one-person company (OPC) that provides online tourism information and booking services for foreign tourists visiting mainland China, Hong Kong SAR, and Macau SAR. The entire operation is run by AI agents supervised by a single human founder.
+A one-person company (OPC) that provides online tourism information and booking services for foreign tourists visiting Hong Kong SAR and Macau SAR. The entire operation is run by AI agents supervised by a single human founder.
 
 ## How It Works
 

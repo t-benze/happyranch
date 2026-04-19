@@ -40,7 +40,7 @@ The KB lives at `<runtime>/kb/`, a peer of `workspaces/` and `opc.db`:
 ├── workspaces/
 └── kb/
     ├── _index.md
-    ├── mainland-visa-tourist-90day.md
+    ├── hk-visa-tourist-90day.md
     ├── alipay-refund-endpoint.md
     └── precedent-refund-200usd-custom-itinerary.md
 ```
@@ -60,11 +60,11 @@ YAML frontmatter + markdown body.
 
 ```markdown
 ---
-slug: mainland-visa-tourist-90day
-title: Mainland China tourist visa (90-day L-visa)
+slug: hk-visa-tourist-90day
+title: Hong Kong tourist visa (90-day visa-free entry)
 type: reference                       # reference | precedent
 topic: visa                           # single kebab-case token, free-form; drives grouping in _index.md
-tags: [mainland, tourist, 90-day]     # list[str], optional
+tags: [hong-kong, tourist, 90-day]    # list[str], optional
 authored_by: compliance_agent         # stamped server-side from --agent flag
 authored_at: 2026-04-19T10:22:00Z     # stamped server-side
 updated_by: compliance_agent          # stamped server-side
@@ -73,7 +73,7 @@ source_task: TASK-037                 # optional; the task that produced the kno
 supersedes: null                      # optional slug; explicit deprecation pointer
 ---
 
-# Mainland China tourist visa (90-day L-visa)
+# Hong Kong tourist visa (90-day visa-free entry)
 
 <markdown body, ≤32 KiB>
 ```
@@ -91,7 +91,7 @@ Machine-generated. Regenerated inside the write lock after every successful `add
 
 ## visa
 
-- `mainland-visa-tourist-90day` — Mainland China tourist visa (90-day L-visa)
+- `hk-visa-tourist-90day` — Hong Kong tourist visa (90-day visa-free entry)
 - `macau-visa-transit` — Macau transit visa rules
 
 ## payment
@@ -229,7 +229,7 @@ Slots in after the existing "Consult memory" step and before "Plan and execute":
 > Run `opc kb list --topic <guess>` or `opc kb search "<terms from brief>"` to see whether durable knowledge relevant to this task already exists. Fetch full entries with `opc kb get <slug>`.
 >
 > **Consult triggers** — scan the KB whenever your brief touches:
-> - regulatory / compliance rules (visa, PCI-DSS, PIPL, PDPO, PDPA);
+> - regulatory / compliance rules (visa, PCI-DSS, PDPO, PDPA);
 > - partner APIs, integration quirks, rate limits;
 > - payment flows, refund policies;
 > - any topic where a past escalation likely set precedent.

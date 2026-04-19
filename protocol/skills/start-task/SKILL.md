@@ -48,7 +48,7 @@ Parameters:
    ```
 
    **Consult triggers** — scan the KB whenever your brief touches:
-   - regulatory / compliance rules (visa, PCI-DSS, PIPL, PDPO, PDPA);
+   - regulatory / compliance rules (visa, PCI-DSS, PDPO, PDPA);
    - partner APIs, integration quirks, rate limits;
    - payment flows, refund policies;
    - any topic where a past escalation likely set precedent.

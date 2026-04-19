@@ -32,12 +32,12 @@ def test_agent_writes_other_agent_reads(tmp_path: Path, monkeypatch):
         "/api/v1/kb",
         json={
             "agent": "compliance_agent",
-            "slug": "mainland-visa-90day",
-            "title": "Mainland China tourist L-visa (90-day)",
+            "slug": "hk-visa-90day",
+            "title": "Hong Kong tourist visa (90-day)",
             "type": "reference",
             "topic": "visa",
-            "tags": ["mainland", "tourist"],
-            "body": "# Mainland China tourist L-visa (90-day)\n\nEligibility, fees, processing time.\n",
+            "tags": ["hong-kong", "tourist"],
+            "body": "# Hong Kong tourist visa (90-day)\n\nEligibility, fees, processing time.\n",
             "force_new_sibling": False,
         },
         headers=headers,
@@ -46,11 +46,11 @@ def test_agent_writes_other_agent_reads(tmp_path: Path, monkeypatch):
 
     # Agent B searches and reads
     r_search = client.get(
-        "/api/v1/kb/search", params={"q": "tourist L-visa"}, headers=headers
+        "/api/v1/kb/search", params={"q": "tourist visa"}, headers=headers
     )
     assert r_search.status_code == 200
     hits = r_search.json()["hits"]
-    assert hits and hits[0]["slug"] == "mainland-visa-90day"
+    assert hits and hits[0]["slug"] == "hk-visa-90day"
 
     r_get = client.get(f"/api/v1/kb/{hits[0]['slug']}", headers=headers)
     assert r_get.status_code == 200

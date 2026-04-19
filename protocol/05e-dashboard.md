@@ -9,7 +9,7 @@ The self-hosted dashboard for org-wide visibility, plus the recommended build se
 The Feishu chats are for real-time interaction — conversations, approvals, daily updates. The dashboard is for when you want the big picture: how is the org performing, what happened recently, where are the trends going, and what's the full audit trail. It runs as a local web app on your Mac Mini, accessible from any device on your network.
 
 ### Fully Self-Hosted
-All data stays on your Mac Mini — no third-party observability service. The orchestrator records execution data (agent decisions, task timelines, tool usage, LLM calls) directly to SQLite alongside the business-level metrics (scorecards, escalation history, calibration insights). One dashboard covers both engineering observability and business performance — no cloud dependency, no data leaving your infrastructure, full compliance with PIPL/PDPO/PDPA.
+All data stays on your Mac Mini — no third-party observability service. The orchestrator records execution data (agent decisions, task timelines, tool usage, LLM calls) directly to SQLite alongside the business-level metrics (scorecards, escalation history, calibration insights). One dashboard covers both engineering observability and business performance — no cloud dependency, no data leaving your infrastructure, full compliance with PDPO (HK) and PDPA (Macau). Mainland China is out of scope, so PIPL/CSL/DSL do not apply.
 
 ### Tech Stack
 - **Backend**: FastAPI (Python) — reads from the same SQLite database the orchestrator writes to

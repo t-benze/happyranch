@@ -382,12 +382,11 @@ Sometimes a conversation with a manager leads to new work:
 ```
 Founder (in Product Manager group chat):
   Tourists are complaining that the booking page is slow on mobile
-  in mainland China. Can you investigate?
+  on Hong Kong 4G. Can you investigate?
 
 Product Manager: I'll have Dev Agent run a performance audit focusing
-on mobile + China network conditions. Likely causes are CDN routing,
-unoptimized images, or third-party scripts being blocked by the
-Great Firewall. I'll report back within 24 hours.
+on mobile + HK carrier network conditions. Likely causes are CDN routing,
+unoptimized images, or partner API latency. I'll report back within 24 hours.
 ```
 
 The Product Manager creates a new task (performance audit), assigns it to the Dev Agent, and tracks it. The orchestrator logs the founder's original message as the task origin. The Product Manager's next daily report will include this task's progress.

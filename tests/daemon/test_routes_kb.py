@@ -22,12 +22,12 @@ def _seed_kb(runtime_root: Path, agent: str = "dev_agent") -> KBStore:
     )
     store.write_entry(
         KBEntry(
-            slug="mainland-visa-90day",
-            title="Mainland China tourist L-visa",
+            slug="hk-visa-90day",
+            title="Hong Kong tourist visa",
             type="reference",
             topic="visa",
-            tags=["mainland"],
-            body="# Mainland China tourist L-visa\n\nRules.\n",
+            tags=["hong-kong"],
+            body="# Hong Kong tourist visa\n\nRules.\n",
         ),
         agent=agent,
     )
@@ -40,7 +40,7 @@ def test_kb_list_returns_all_entries(tmp_home, app, runtime, auth_headers):
     r = client.get("/api/v1/kb", headers=auth_headers)
     assert r.status_code == 200
     slugs = [e["slug"] for e in r.json()["entries"]]
-    assert set(slugs) == {"alipay-refund-endpoint", "mainland-visa-90day"}
+    assert set(slugs) == {"alipay-refund-endpoint", "hk-visa-90day"}
 
 
 def test_kb_list_filter_by_topic(tmp_home, app, runtime, auth_headers):
@@ -48,7 +48,7 @@ def test_kb_list_filter_by_topic(tmp_home, app, runtime, auth_headers):
     client = TestClient(app)
     r = client.get("/api/v1/kb?topic=visa", headers=auth_headers)
     assert r.status_code == 200
-    assert [e["slug"] for e in r.json()["entries"]] == ["mainland-visa-90day"]
+    assert [e["slug"] for e in r.json()["entries"]] == ["hk-visa-90day"]
 
 
 def test_kb_list_filter_by_type(tmp_home, app, runtime, auth_headers):

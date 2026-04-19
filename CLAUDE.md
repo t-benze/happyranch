@@ -1,7 +1,7 @@
 # Project: OPC Multi-Agent Tourism Organization
 
 ## What This Is
-A one-person company (OPC) that provides online tourism information and booking services for foreign tourists visiting mainland China, Hong Kong SAR, and Macau SAR. The entire operation is run by AI agents supervised by a single human founder.
+A one-person company (OPC) that provides online tourism information and booking services for foreign tourists visiting Hong Kong SAR and Macau SAR. The entire operation is run by AI agents supervised by a single human founder.
 
 ## Architecture Summary
 - **Layer 1**: Founder (human) — sets rules, handles escalations, reviews weekly dashboard
@@ -55,7 +55,7 @@ The following documents are in the `protocol/` folder.
 11. **Founder dashboard** — Aggregate audit logs, escalation summaries, scorecards into weekly view.
 
 ## Key Constraints
-- **Three jurisdictions**: Mainland China (PIPL, CSL, DSL), Hong Kong (PDPO), Macau (PDPA) — all must be complied with simultaneously
+- **Two jurisdictions**: Hong Kong (PDPO), Macau (PDPA) — both must be complied with simultaneously. Mainland China is explicitly out of scope (PIPL/CSL/DSL do not apply).
 - **PCI-DSS**: No raw card data storage — ever
 - **Political sensitivity**: Any content about China/HK/Macau relations escalates to founder
 - **Budget authority**: Auto-approved up to $200 USD single / $100/month recurring. Above that -> founder
