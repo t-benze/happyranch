@@ -116,7 +116,7 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |   |   |-- context_builder.py         # Generates CLAUDE.md + .claude/settings.json + copies skills
 |   |   +-- prompt_loader.py           # Parses system prompts from protocol markdown
 |   |-- infrastructure/
-|   |   |-- database.py                # SQLite (WAL mode), typed CRUD, task_results.status column, agent_enrollments table, parent_task_id / final_output_summary / final_artifact_dir on tasks
+|   |   |-- database.py                # SQLite (WAL mode), typed CRUD, task_results.status column, agent_enrollments table, parent_task_id / note / final_artifact_dir / block_kind on tasks
 |   |   |-- audit_logger.py            # Semantic logging (session, verdict, escalation, orchestration steps, escalation_resolved)
 |   |   +-- kb_store.py                # Knowledge base: slug validation, atomic entry write, list/read/update/delete, search, _index.md regeneration, near-duplicate detection
 |   |-- agents/                        # Agent definitions (future)
@@ -169,7 +169,7 @@ Operational settings use the `OPC_` environment variable prefix. Runtime paths (
 
 ### Agent permission model
 
-Each agent workspace's `.claude/settings.json` explicitly allows only `Bash(opc:*)` — the orchestrator's CLI. Rationale: `opc report-completion`, `opc learning`, and any future agent-facing subcommand are capabilities the orchestrator exposes to agents and must never be silently blocked by Claude Code's `auto`-mode prompting (a blocked callback manifests as a mystery `rejected` task — see TASK-007 post-mortem). Everything else (Read/Grep/Glob, general Bash, Write) inherits Claude Code's default `auto` behavior. When adding new orchestrator-side capabilities, keep them under the `opc` binary so they stay inside this allow rule; do **not** widen the allow list to cover arbitrary tools.
+Each agent workspace's `.claude/settings.json` explicitly allows only `Bash(opc:*)` — the orchestrator's CLI. Rationale: `opc report-completion`, `opc learning`, and any future agent-facing subcommand are capabilities the orchestrator exposes to agents and must never be silently blocked by Claude Code's `auto`-mode prompting (a blocked callback manifests as a mystery `failed` task — see TASK-007 post-mortem). Everything else (Read/Grep/Glob, general Bash, Write) inherits Claude Code's default `auto` behavior. When adding new orchestrator-side capabilities, keep them under the `opc` binary so they stay inside this allow rule; do **not** widen the allow list to cover arbitrary tools.
 
 Repos are configured per agent in `<runtime>/workspaces/<agent>/agent.yaml`:
 ```yaml
@@ -196,6 +196,14 @@ Agents call the orchestrator's CLI (`opc report-completion`, `opc learning`, fut
 - Pydantic v2 models for structured data, StrEnum for enumerations (agent names are plain strings, not enums — agents are discovered dynamically from workspaces + enrollments DB)
 - Tests for business logic (escalation rules, scoring, tier calculation)
 - `from __future__ import annotations` in all source files
+
+## Task status vocabularies
+
+Note: agents self-report `status="completed"|"blocked"` via `opc report-completion`
+(the worker's view of its session). The orchestrator-owned `TaskStatus` lives on
+the `tasks` row and is distinct: it takes one of `{pending, in_progress,
+blocked, completed, failed}` based on orchestration classification, with
+`block_kind` (`delegated` | `escalated`) specifying the reason.
 
 ## Running Tests
 ```bash
