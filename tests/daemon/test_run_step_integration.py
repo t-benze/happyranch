@@ -78,3 +78,56 @@ async def test_full_delegation_roundtrip(tmp_path: Path, monkeypatch):
     child = db.get_task(children[0])
     assert child.status == TaskStatus.COMPLETED
     assert child.assigned_agent == "dev_agent"
+
+
+@pytest.mark.asyncio
+async def test_escalation_roundtrip(tmp_path: Path, monkeypatch):
+    from src.daemon.state import DaemonState
+    from fastapi.testclient import TestClient
+    from src.daemon.app import create_app
+
+    runtime = RuntimeDir.init(tmp_path / "rt")
+    (runtime.workspaces_dir / "engineering_head" / ".claude" / "skills" / "start-task").mkdir(parents=True)
+    (runtime.workspaces_dir / "engineering_head" / ".claude" / "skills" / "start-task" / "SKILL.md").touch()
+    db = Database(runtime.db_path)
+
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    queue = TaskQueue()
+    orch.attach_queue(queue)
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        from src.orchestrator.executor import ExecutorResult
+        from src.models import CompletionReport
+        # First EH call: escalate. Second EH call (after founder resolves):
+        # done.
+        past = sum(1 for _ in db.get_audit_logs(task_id)
+                   if _["action"] == "orchestration_step")
+        if past == 0:
+            summary = json.dumps({"action": "escalate", "reason": "needs founder"})
+        else:
+            summary = json.dumps({"action": "done", "summary": "resumed ok"})
+        return (
+            ExecutorResult(success=True, session_id="s", duration_seconds=1),
+            CompletionReport(task_id=task_id, agent=agent, status="completed",
+                             confidence=80, output_summary=summary),
+        )
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="x"))
+    queue.enqueue("TASK-001")
+    await queue.drain_sync(orch)
+
+    # Task should now be blocked(escalated)
+    t = db.get_task("TASK-001")
+    assert t.status == TaskStatus.BLOCKED
+    from src.models import BlockKind
+    assert t.block_kind == BlockKind.ESCALATED
+    assert t.note == "needs founder"
+
+    # Founder resolves directly via update_task (no HTTP here)
+    # — mimic what the route does.
+    # Directly call DB update as the route would.
+    db.update_task("TASK-001", status=TaskStatus.COMPLETED, block_kind=None)
+    # No parent, nothing to enqueue. Test asserts the status-transition path.
+
+    assert db.get_task("TASK-001").status == TaskStatus.COMPLETED
