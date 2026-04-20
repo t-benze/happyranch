@@ -95,12 +95,19 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
         _enqueue_parent_if_waiting(orch, task_id)
         return
 
-    # ---- 6. Parse next step (reuses the existing parser) ----
-    decision = orch._parse_next_step(report)
-
-    orch._audit.log_orchestration_step(
-        task_id, next_count, decision.model_dump(exclude_none=True),
-    )
+    # ---- 6. Parse next step ----
+    # Only the Engineering Head speaks the NextStep JSON protocol. Worker
+    # completions are plain prose/summary payloads — treating them as EH
+    # decisions reclassifies every non-JSON output_summary as `escalate`
+    # (see P1 in 2026-04-20 review).
+    if agent == "engineering_head":
+        decision = orch._parse_next_step(report)
+        orch._audit.log_orchestration_step(
+            task_id, next_count, decision.model_dump(exclude_none=True),
+        )
+    else:
+        from src.models import NextStep
+        decision = NextStep(action="done", summary=report.output_summary)
 
     # ---- 7. Dispatch on action ----
     if decision.action == "done":
@@ -109,7 +116,6 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
             note=decision.summary or report.output_summary,
             artifact_dir=report.artifact_dir,
         )
-        orch._tracker.update_scorecard(agent)
         _enqueue_parent_if_waiting(orch, task_id)
         return
 
@@ -244,6 +250,7 @@ def _complete(orch: "Orchestrator", task_id: str, *, note: str, artifact_dir: st
         final_artifact_dir=artifact_dir,
         completed_at=datetime.now(timezone.utc).isoformat(),
     )
+    _log_verdict_if_delegated(orch, task_id, success=True)
     orch._update_task_history(task_id)
 
 
@@ -256,7 +263,35 @@ def _fail(orch: "Orchestrator", task_id: str, *, note: str) -> None:
         note=note,
         completed_at=datetime.now(timezone.utc).isoformat(),
     )
+    _log_verdict_if_delegated(orch, task_id, success=False)
     orch._update_task_history(task_id)
+
+
+def _log_verdict_if_delegated(
+    orch: "Orchestrator", task_id: str, *, success: bool,
+) -> None:
+    """Emit the implicit EH review_verdict + refresh the worker scorecard.
+
+    The Engineering Head is the implicit reviewer of every delegated child:
+    a COMPLETED child is an "approved" delegation, a FAILED child is
+    "rejected". PerformanceTracker reads these rows to compute tiers, so
+    skipping them leaves every delegated agent on stale performance data
+    (see P1 in 2026-04-20 review).
+    """
+    task = orch._db.get_task(task_id)
+    if task is None or task.parent_task_id is None:
+        return
+    agent = task.assigned_agent
+    if not agent or agent in ("engineering_head", "orchestrator", "unknown"):
+        return
+    orch._audit.log_review_verdict(
+        task_id=task_id,
+        reviewer="engineering_head",
+        verdict="approved" if success else "rejected",
+        feedback=task.note,
+        reviewed_agent=agent,
+    )
+    orch._tracker.update_scorecard(agent)
 
 
 def _enqueue_parent_if_waiting(orch: "Orchestrator", task_id: str) -> None:

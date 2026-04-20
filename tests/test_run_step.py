@@ -314,3 +314,119 @@ def test_run_step_worker_self_blocked_fails_task(runtime, db, monkeypatch):
     t = db.get_task("T-1")
     assert t.status == TaskStatus.FAILED
     assert t.note and t.note.startswith("self-blocked:")
+
+
+def test_run_step_worker_completion_is_done_not_parsed_as_eh_decision(
+    runtime, db, monkeypatch,
+):
+    """P1 regression: workers don't speak the NextStep JSON protocol. A plain
+    prose output_summary from a delegated worker must be treated as `done`,
+    not escalated as "non-JSON EH decision"."""
+    import asyncio
+    from src.orchestrator.orchestrator import Orchestrator
+
+    # Parent (EH) delegated to dev_agent (worker).
+    db.insert_task(TaskRecord(id="T-PAR", type=TaskType.GENERAL, brief="p",
+                              assigned_agent="engineering_head"))
+    db.update_task("T-PAR", status=TaskStatus.BLOCKED,
+                   block_kind=BlockKind.DELEGATED, note="waiting")
+    db.insert_task(TaskRecord(
+        id="T-CHD", type=TaskType.GENERAL, brief="c",
+        assigned_agent="dev_agent", parent_task_id="T-PAR",
+    ))
+
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    q: asyncio.Queue = asyncio.Queue()
+    orch._queue = q
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(
+            output_summary="Shipped the PR — see branch feat/x",
+            artifact_dir="artifacts/run-1",
+        )
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    orch.run_step("T-CHD")
+
+    child = db.get_task("T-CHD")
+    assert child.status == TaskStatus.COMPLETED
+    assert child.block_kind is None
+    assert child.note == "Shipped the PR — see branch feat/x"
+    assert child.final_artifact_dir == "artifacts/run-1"
+    # Parent wakes on the child terminal.
+    assert q.get_nowait() == "T-PAR"
+
+
+def test_run_step_delegated_worker_emits_review_verdict_and_scorecard(
+    runtime, db, monkeypatch,
+):
+    """P1 regression: tiers are computed from review_verdict audit rows. When
+    a delegated worker reaches a terminal state, the EH's implicit verdict
+    (approved on COMPLETED, rejected on FAILED) must be logged — otherwise
+    every delegated agent stays on stale performance data."""
+    import asyncio
+    from src.orchestrator.orchestrator import Orchestrator
+
+    db.insert_task(TaskRecord(id="T-PAR", type=TaskType.GENERAL, brief="p",
+                              assigned_agent="engineering_head"))
+    db.update_task("T-PAR", status=TaskStatus.BLOCKED,
+                   block_kind=BlockKind.DELEGATED, note="waiting")
+    db.insert_task(TaskRecord(
+        id="T-OK", type=TaskType.GENERAL, brief="ok",
+        assigned_agent="dev_agent", parent_task_id="T-PAR",
+    ))
+    db.insert_task(TaskRecord(
+        id="T-BAD", type=TaskType.GENERAL, brief="bad",
+        assigned_agent="dev_agent", parent_task_id="T-PAR",
+    ))
+
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    orch._queue = asyncio.Queue()
+
+    # Success path.
+    monkeypatch.setattr(orch, "_run_agent",
+                        lambda *a, **k: (_make_result(), _make_report(
+                            output_summary="done")))
+    orch.run_step("T-OK")
+
+    # Failure path (session failed, no report).
+    monkeypatch.setattr(orch, "_run_agent",
+                        lambda *a, **k: (_make_result(success=False), None))
+    orch.run_step("T-BAD")
+
+    ok_verdicts = [a for a in db.get_audit_logs("T-OK")
+                   if a["action"] == "review_verdict"]
+    bad_verdicts = [a for a in db.get_audit_logs("T-BAD")
+                    if a["action"] == "review_verdict"]
+    assert len(ok_verdicts) == 1
+    assert ok_verdicts[0]["agent"] == "engineering_head"
+    assert ok_verdicts[0]["payload"]["verdict"] == "approved"
+    assert ok_verdicts[0]["payload"]["reviewed_agent"] == "dev_agent"
+    assert len(bad_verdicts) == 1
+    assert bad_verdicts[0]["payload"]["verdict"] == "rejected"
+    assert bad_verdicts[0]["payload"]["reviewed_agent"] == "dev_agent"
+    # Scorecard persisted for the delegated worker.
+    assert db.get_scorecard("dev_agent") is not None
+
+
+def test_run_step_root_eh_task_skips_review_verdict(runtime, db, monkeypatch):
+    """Root tasks (no parent) are EH-assigned and must NOT produce verdict
+    rows — the EH is not reviewing itself."""
+    import asyncio
+    import json
+    from src.orchestrator.orchestrator import Orchestrator
+
+    db.insert_task(TaskRecord(id="T-ROOT", type=TaskType.GENERAL, brief="r",
+                              assigned_agent="engineering_head"))
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    orch._queue = asyncio.Queue()
+
+    monkeypatch.setattr(orch, "_run_agent",
+                        lambda *a, **k: (_make_result(), _make_report(
+                            output_summary=json.dumps(
+                                {"action": "done", "summary": "ok"}))))
+    orch.run_step("T-ROOT")
+
+    verdicts = [a for a in db.get_audit_logs("T-ROOT")
+                if a["action"] == "review_verdict"]
+    assert verdicts == []

@@ -244,8 +244,14 @@ async def resolve_escalation(
             detail={"code": "task_not_escalated", "current_status": task.status.value},
         )
     new_status = TaskStatus.COMPLETED if body.decision == "approve" else TaskStatus.FAILED
+    # Overwrite `note` with the resolution so that a resumed parent EH sees the
+    # founder's rationale (via _build_prior_steps_from_db) instead of the stale
+    # escalation reason the child originally parked with.
+    resolved_note = f"Founder {body.decision}d: {body.rationale}"
     async with state.db_lock:
-        state.db.update_task(task_id, status=new_status, block_kind=None)
+        state.db.update_task(
+            task_id, status=new_status, block_kind=None, note=resolved_note,
+        )
         AuditLogger(state.db).log_escalation_resolved(
             task_id=task_id, decision=body.decision, rationale=body.rationale
         )

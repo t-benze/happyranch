@@ -461,6 +461,29 @@ def test_resolve_escalation_reject_transitions_to_failed(client_with_runtime):
     assert t.block_kind is None
 
 
+def test_resolve_escalation_overwrites_note_with_rationale(client_with_runtime):
+    """P2 regression: _build_prior_steps_from_db surfaces child.note as the
+    result summary shown to a resumed parent EH. After founder resolution the
+    note must reflect the disposition/rationale, not the stale escalation
+    reason the task parked with."""
+    from src.models import TaskRecord, TaskStatus, TaskType, BlockKind
+    client, state = client_with_runtime
+    state.db.insert_task(TaskRecord(id="T-1", type=TaskType.GENERAL, brief="x"))
+    state.db.update_task("T-1", status=TaskStatus.BLOCKED,
+                         block_kind=BlockKind.ESCALATED,
+                         note="Original escalation reason")
+
+    r = client.post(
+        "/api/v1/tasks/T-1/resolve-escalation",
+        json={"decision": "approve", "rationale": "proceed with caveats"},
+    )
+    assert r.status_code == 200
+    t = state.db.get_task("T-1")
+    assert t.status == TaskStatus.COMPLETED
+    assert t.note and "proceed with caveats" in t.note
+    assert "Original escalation reason" not in (t.note or "")
+
+
 def test_resolve_escalation_enqueues_parent_if_waiting(client_with_runtime):
     from src.models import TaskRecord, TaskStatus, TaskType, BlockKind
     client, state = client_with_runtime
