@@ -896,3 +896,53 @@ def test_kb_delete_parses_confirm_and_as_founder():
     ])
     assert ns.confirm is True
     assert ns.as_founder is True
+
+
+def test_cmd_tasks_shows_block_kind_when_present(capsys):
+    """A blocked task should show its block_kind alongside status."""
+    from src.cli import cmd_tasks
+    from argparse import Namespace
+    from unittest.mock import MagicMock, patch
+
+    client = MagicMock()
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = {"tasks": [
+        {"id": "T-1", "type": "general", "status": "blocked",
+         "assigned_agent": "engineering_head", "brief": "waiting",
+         "block_kind": "delegated"},
+        {"id": "T-2", "type": "general", "status": "completed",
+         "assigned_agent": "engineering_head", "brief": "done",
+         "block_kind": None},
+    ]}
+    client.get.return_value = response
+    with patch("src.cli.OpcClient.from_env", return_value=client):
+        cmd_tasks(Namespace(limit=10))
+    out = capsys.readouterr().out
+    assert "blocked(delegated)" in out or "blocked (delegated)" in out
+    assert "completed" in out
+
+
+def test_cmd_status_shows_note(capsys):
+    from src.cli import cmd_status
+    from argparse import Namespace
+    from unittest.mock import MagicMock, patch
+
+    client = MagicMock()
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = {
+        "task": {
+            "id": "T-1", "type": "general", "status": "completed",
+            "assigned_agent": "engineering_head", "brief": "b",
+            "created_at": "2026-04-19T00:00:00", "updated_at": "2026-04-19T00:00:00",
+            "note": "Feature landed",
+        },
+        "results": [],
+        "audit_log": [],
+    }
+    client.get.return_value = response
+    with patch("src.cli.OpcClient.from_env", return_value=client):
+        cmd_status(Namespace(task_id="T-1"))
+    out = capsys.readouterr().out
+    assert "Feature landed" in out

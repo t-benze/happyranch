@@ -147,12 +147,15 @@ def cmd_tasks(args: argparse.Namespace) -> None:
     if not tasks:
         print("No tasks found.")
         return
-    print(f"{'ID':<12} {'Type':<20} {'Status':<12} {'Agent':<18} Brief")
-    print("-" * 96)
+    print(f"{'ID':<12} {'Type':<20} {'Status':<22} {'Agent':<18} Brief")
+    print("-" * 106)
     for t in tasks:
         brief = t["brief"][:40] + "..." if len(t["brief"]) > 40 else t["brief"]
         agent = t.get("assigned_agent") or "-"
-        print(f"{t['id']:<12} {t['type']:<20} {t['status']:<12} {agent:<18} {brief}")
+        status = t["status"]
+        if t.get("block_kind"):
+            status = f"{status}({t['block_kind']})"
+        print(f"{t['id']:<12} {t['type']:<20} {status:<22} {agent:<18} {brief}")
 
 
 def cmd_status(args: argparse.Namespace) -> None:
@@ -177,6 +180,10 @@ def cmd_status(args: argparse.Namespace) -> None:
     print(f"Brief:      {task['brief']}")
     print(f"Created:    {task['created_at']}")
     print(f"Updated:    {task['updated_at']}")
+    if task.get("block_kind"):
+        print(f"Block kind: {task['block_kind']}")
+    if task.get("note"):
+        print(f"Note:       {task['note']}")
     if body.get("results"):
         print(f"\nResults ({len(body['results'])}):")
         for r_ in body["results"]:
