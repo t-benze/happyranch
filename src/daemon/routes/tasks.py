@@ -227,7 +227,7 @@ async def resolve_escalation(
     task_id: str, body: ResolveEscalationBody, request: Request
 ) -> dict:
     from src.infrastructure.audit_logger import AuditLogger
-    from src.models import TaskStatus
+    from src.models import BlockKind, TaskStatus
 
     state: DaemonState = request.app.state.daemon
     _require_active(state)
@@ -238,15 +238,21 @@ async def resolve_escalation(
     task = state.db.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
-    if task.status != TaskStatus.ESCALATED:
+    if task.status != TaskStatus.BLOCKED or task.block_kind != BlockKind.ESCALATED:
         raise HTTPException(
             status_code=409,
             detail={"code": "task_not_escalated", "current_status": task.status.value},
         )
-    new_status = TaskStatus.APPROVED if body.decision == "approve" else TaskStatus.REJECTED
+    new_status = TaskStatus.COMPLETED if body.decision == "approve" else TaskStatus.FAILED
     async with state.db_lock:
-        state.db.update_task(task_id, status=new_status)
+        state.db.update_task(task_id, status=new_status, block_kind=None)
         AuditLogger(state.db).log_escalation_resolved(
             task_id=task_id, decision=body.decision, rationale=body.rationale
         )
+    # Wake the parent (if any) so it can re-invoke the EH with the resolved outcome.
+    from src.orchestrator.run_step import _enqueue_parent_if_waiting
+    class _Shim:
+        _db = state.db
+        _queue = state.queue
+    _enqueue_parent_if_waiting(_Shim(), task_id)
     return {"ok": True, "task_id": task_id, "new_status": new_status.value}

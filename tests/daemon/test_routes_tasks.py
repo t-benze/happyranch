@@ -1,15 +1,6 @@
 from __future__ import annotations
 
-import pytest
 from fastapi.testclient import TestClient
-
-
-@pytest.fixture(autouse=True)
-def stub_runner(monkeypatch):
-    """Don't actually run tasks during route tests."""
-    async def fake_run(self, task_id):
-        return None
-    monkeypatch.setattr("src.daemon.runner.TaskRunner.run", fake_run)
 
 
 def test_submit_task_returns_id(tmp_home, app, auth_headers) -> None:
@@ -472,3 +463,78 @@ def test_events_stream_yields_completion(tmp_home, app, daemon_state, auth_heade
         assert r.status_code == 200
         body = b"".join(r.iter_bytes())
     assert b"task_complete" in body
+
+
+def test_resolve_escalation_rejects_non_blocked_task(client_with_runtime):
+    """Under the new model, the precondition is (status=BLOCKED AND
+    block_kind=ESCALATED). A task that is merely BLOCKED(DELEGATED) must 409."""
+    from src.models import TaskRecord, TaskStatus, TaskType, BlockKind
+    client, state = client_with_runtime
+    state.db.insert_task(TaskRecord(id="T-1", type=TaskType.GENERAL, brief="x"))
+    state.db.update_task("T-1", status=TaskStatus.BLOCKED,
+                         block_kind=BlockKind.DELEGATED, note="waiting")
+
+    r = client.post(
+        "/api/v1/tasks/T-1/resolve-escalation",
+        json={"decision": "approve", "rationale": "ok"},
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "task_not_escalated"
+
+
+def test_resolve_escalation_approve_transitions_to_completed(client_with_runtime):
+    from src.models import TaskRecord, TaskStatus, TaskType, BlockKind
+    client, state = client_with_runtime
+    state.db.insert_task(TaskRecord(id="T-1", type=TaskType.GENERAL, brief="x"))
+    state.db.update_task("T-1", status=TaskStatus.BLOCKED,
+                         block_kind=BlockKind.ESCALATED, note="halted")
+
+    r = client.post(
+        "/api/v1/tasks/T-1/resolve-escalation",
+        json={"decision": "approve", "rationale": "ok"},
+    )
+    assert r.status_code == 200
+    t = state.db.get_task("T-1")
+    assert t.status == TaskStatus.COMPLETED
+    assert t.block_kind is None
+
+
+def test_resolve_escalation_reject_transitions_to_failed(client_with_runtime):
+    from src.models import TaskRecord, TaskStatus, TaskType, BlockKind
+    client, state = client_with_runtime
+    state.db.insert_task(TaskRecord(id="T-1", type=TaskType.GENERAL, brief="x"))
+    state.db.update_task("T-1", status=TaskStatus.BLOCKED,
+                         block_kind=BlockKind.ESCALATED, note="halted")
+
+    r = client.post(
+        "/api/v1/tasks/T-1/resolve-escalation",
+        json={"decision": "reject", "rationale": "nope"},
+    )
+    assert r.status_code == 200
+    t = state.db.get_task("T-1")
+    assert t.status == TaskStatus.FAILED
+    assert t.block_kind is None
+
+
+def test_resolve_escalation_enqueues_parent_if_waiting(client_with_runtime):
+    from src.models import TaskRecord, TaskStatus, TaskType, BlockKind
+    client, state = client_with_runtime
+    state.db.insert_task(TaskRecord(id="T-PAR", type=TaskType.GENERAL, brief="p"))
+    state.db.update_task("T-PAR", status=TaskStatus.BLOCKED,
+                         block_kind=BlockKind.DELEGATED, note="waiting")
+    state.db.insert_task(TaskRecord(
+        id="T-CHD", type=TaskType.GENERAL, brief="c", parent_task_id="T-PAR"))
+    state.db.update_task("T-CHD", status=TaskStatus.BLOCKED,
+                         block_kind=BlockKind.ESCALATED, note="halt")
+
+    # Drain queue before the request so we only see post-resolve puts.
+    while not state.queue._queue.empty():
+        state.queue._queue.get_nowait()
+
+    r = client.post(
+        "/api/v1/tasks/T-CHD/resolve-escalation",
+        json={"decision": "approve", "rationale": "ok"},
+    )
+    assert r.status_code == 200
+    # Parent now enqueued
+    assert state.queue._queue.get_nowait() == "T-PAR"

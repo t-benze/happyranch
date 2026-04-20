@@ -47,3 +47,20 @@ def app_idle(daemon_state_idle: DaemonState):
 @pytest.fixture
 def auth_headers() -> dict:
     return {"Authorization": f"Bearer {paths_mod.read_token()}"}
+
+
+@pytest.fixture
+def client_with_runtime(tmp_home, daemon_state: DaemonState):
+    """TestClient bound to a runtime-backed app, without triggering lifespan.
+
+    Yields (TestClient, DaemonState) so tests can both issue HTTP requests
+    and read/write the DB directly. Lifespan is NOT triggered because the
+    TestClient is used without `with` — this keeps the worker pool dormant
+    so tests don't race against background task execution.
+    """
+    from fastapi.testclient import TestClient
+    app = create_app(daemon_state)
+    client = TestClient(app)
+    # Attach auth token to every request automatically.
+    client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+    yield client, daemon_state
