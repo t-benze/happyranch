@@ -4,8 +4,12 @@ import json
 import logging
 import uuid
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
+
+if TYPE_CHECKING:
+    from src.daemon.sessions import SessionTracker
 
 from src.config import Settings
 from src.infrastructure.audit_logger import AuditLogger
@@ -53,6 +57,7 @@ class Orchestrator:
             permission_mode=settings.permission_mode,
         )
         self._queue: "asyncio.Queue[str] | None" = None  # wired by daemon
+        self._sessions: "SessionTracker | None" = None  # wired by daemon
 
     def attach_queue(self, queue) -> None:
         """Daemon boot wires its TaskQueue so run_step can enqueue follow-ups.
@@ -61,6 +66,14 @@ class Orchestrator:
         without a daemon, and because TaskQueue is owned by DaemonState, not
         the Orchestrator."""
         self._queue = queue
+
+    def attach_sessions(self, tracker: "SessionTracker") -> None:
+        """Daemon boot wires its SessionTracker so each spawned subprocess is
+        registered as the active session for (task_id, agent) BEFORE the
+        agent's `opc report-completion` callback can land. Without this, the
+        completion endpoint rejects every callback as `unknown_session` (409)
+        and the task fails silently with note="agent session failed"."""
+        self._sessions = tracker
 
     def _build_session_id(self) -> str:
         return f"sess-{uuid.uuid4().hex}"
@@ -194,6 +207,8 @@ class Orchestrator:
             f"{_indent(prompt, '    ')}\n"
         )
 
+        if self._sessions is not None:
+            self._sessions.set_active(task_id, agent_name, session_id)
         if on_session_started is not None:
             on_session_started(task_id, agent_name, session_id)
 

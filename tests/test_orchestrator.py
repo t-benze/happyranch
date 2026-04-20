@@ -81,6 +81,57 @@ def test_task_metadata_in_agent_prompt(orchestrator, test_runtime, monkeypatch):
         assert "role_guidance:" in prompt
 
 
+def test_run_agent_registers_active_session_when_tracker_attached(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """Regression for the 8581f26 bug: when the daemon's SessionTracker is
+    attached, `_run_agent` must call `set_active(task_id, agent, session_id)`
+    BEFORE the subprocess starts. Without this, the agent's
+    `opc report-completion` callback hits 409 unknown_session and the task
+    silently fails with note='agent session failed'."""
+    from src.daemon.sessions import SessionTracker
+
+    _setup_workspaces(test_runtime)
+    tracker = SessionTracker()
+    orchestrator.attach_sessions(tracker)
+
+    task_id = orchestrator.create_task(TaskType.GENERAL, "Explore payments")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
+
+    with patch.object(orchestrator._executor, "run") as mock_executor_run:
+        mock_executor_run.return_value = ExecutorResult(
+            success=True, duration_seconds=1, session_id="sess-eh",
+        )
+        orchestrator._run_agent(task_id, "engineering_head", "any prompt")
+
+    assert tracker.get_active(task_id, "engineering_head") == "sess-eh"
+
+
+def test_run_agent_skips_session_registration_when_tracker_not_attached(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """Tests construct an Orchestrator without attaching a tracker. The call
+    must not raise, and the explicit `on_session_started` callback path must
+    still fire so legacy test fixtures keep working."""
+    _setup_workspaces(test_runtime)
+    assert orchestrator._sessions is None
+
+    task_id = orchestrator.create_task(TaskType.GENERAL, "Explore payments")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
+    captured: list[tuple[str, str, str]] = []
+
+    with patch.object(orchestrator._executor, "run") as mock_executor_run:
+        mock_executor_run.return_value = ExecutorResult(
+            success=True, duration_seconds=1, session_id="sess-eh",
+        )
+        orchestrator._run_agent(
+            task_id, "engineering_head", "any prompt",
+            on_session_started=lambda t, a, s: captured.append((t, a, s)),
+        )
+
+    assert captured == [(task_id, "engineering_head", "sess-eh")]
+
+
 def test_run_agent_fails_fast_when_workspace_missing_skill(orchestrator, test_runtime):
     """Workspace bootstrap is an explicit, operator-driven step. If the
     start-task skill file is missing, the orchestrator should raise an

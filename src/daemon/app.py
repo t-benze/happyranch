@@ -16,6 +16,7 @@ async def _lifespan(app: FastAPI):
     if not state.is_idle:
         orch = Orchestrator(db=state.db, settings=state.settings, runtime=state.runtime)
         orch.attach_queue(state.queue)
+        orch.attach_sessions(state.sessions)
         state.queue.start_workers(orch, n=3)
     try:
         yield
