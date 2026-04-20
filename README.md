@@ -64,8 +64,8 @@ opc run --task payment_change --brief "Add WeChat Pay as alternative payment met
 # Re-attach to a running task and stream its events
 opc tail TASK-001
 
-# Check task status
-opc status TASK-001
+# Check task details (status, block_kind, note, results, audit log)
+opc details TASK-001
 
 # List recent tasks
 opc tasks
@@ -87,7 +87,7 @@ opc use ~/another-runtime
 | `opc run --brief "..."` | Submit a task and stream its events (EH decides approach) |
 | `opc run --task TYPE --brief "..."` | Run with task type hint (`general`, `implement_feature`, `bug_fix`, `payment_change`) |
 | `opc tail TASK-ID` | Stream live events for a running (or historical) task |
-| `opc status TASK-ID` | Show task details, results, and audit log |
+| `opc details TASK-ID` | Show task details (status, block_kind, note, results, audit log) |
 | `opc tasks [--limit N]` | List recent tasks (default: 20) |
 | `opc agents [--detail]` | Show agent performance tiers and scorecards |
 | `opc init-agent [name]` | Initialize agent workspaces (all or specific agent) |

@@ -158,7 +158,7 @@ def cmd_tasks(args: argparse.Namespace) -> None:
         print(f"{t['id']:<12} {t['type']:<20} {status:<22} {agent:<18} {brief}")
 
 
-def cmd_status(args: argparse.Namespace) -> None:
+def cmd_details(args: argparse.Namespace) -> None:
     """Show status of a specific task."""
     try:
         client = OpcClient.from_env()
@@ -768,10 +768,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--brief", required=True, help="Task description")
     p_run.set_defaults(func=cmd_run)
 
-    # opc status
-    p_status = sub.add_parser("status", help="Show task status")
-    p_status.add_argument("task_id", help="Task ID (e.g. TASK-001)")
-    p_status.set_defaults(func=cmd_status)
+    # opc details
+    p_details = sub.add_parser("details", help="Show task details")
+    p_details.add_argument("task_id", help="Task ID (e.g. TASK-001)")
+    p_details.set_defaults(func=cmd_details)
 
     # opc tail
     p_tail = sub.add_parser("tail", help="Stream events for an existing task")

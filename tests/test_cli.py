@@ -17,10 +17,10 @@ def test_run_subcommand():
     assert args.brief == "Add Alipay support"
 
 
-def test_status_subcommand():
+def test_details_subcommand():
     parser = build_parser()
-    args = parser.parse_args(["status", "TASK-001"])
-    assert args.command == "status"
+    args = parser.parse_args(["details", "TASK-001"])
+    assert args.command == "details"
     assert args.task_id == "TASK-001"
 
 
@@ -152,7 +152,7 @@ def test_cmd_tasks_shows_assigned_agent_column(capsys):
     """The table must surface which agent owns each task so the founder can
     see at a glance whether a root task is being handled by EH or a worker
     (and, for child tasks, which worker). Without this, distinguishing EH
-    orchestrations from actual worker runs requires drilling into `opc status`.
+    orchestrations from actual worker runs requires drilling into `opc details`.
     """
     from src.cli import cmd_tasks
 
@@ -212,15 +212,15 @@ def test_cmd_tasks_idle_daemon_prints_friendly_message(capsys):
     assert "opc use" in out
 
 
-def test_cmd_status_handles_404(capsys):
-    from src.cli import cmd_status
+def test_cmd_details_handles_404(capsys):
+    from src.cli import cmd_details
 
     fake = MagicMock()
     fake.get.return_value.status_code = 404
     with patch("src.cli.OpcClient.from_env", return_value=fake):
         args = MagicMock(task_id="TASK-X")
         with pytest.raises(SystemExit):
-            cmd_status(args)
+            cmd_details(args)
     assert "not found" in capsys.readouterr().out
 
 
@@ -923,8 +923,8 @@ def test_cmd_tasks_shows_block_kind_when_present(capsys):
     assert "completed" in out
 
 
-def test_cmd_status_shows_note(capsys):
-    from src.cli import cmd_status
+def test_cmd_details_shows_note(capsys):
+    from src.cli import cmd_details
     from argparse import Namespace
     from unittest.mock import MagicMock, patch
 
@@ -943,6 +943,6 @@ def test_cmd_status_shows_note(capsys):
     }
     client.get.return_value = response
     with patch("src.cli.OpcClient.from_env", return_value=client):
-        cmd_status(Namespace(task_id="T-1"))
+        cmd_details(Namespace(task_id="T-1"))
     out = capsys.readouterr().out
     assert "Feature landed" in out

@@ -42,8 +42,8 @@ scripts/opc run --task payment_change    --brief "Add WeChat Pay as an option"
 # Reattach to a running (or historical) task and stream its events
 scripts/opc tail TASK-001
 
-# Snapshot: status, results, last event, audit summary
-scripts/opc status TASK-001
+# Snapshot: status, block_kind, note, results, last event, audit summary
+scripts/opc details TASK-001
 
 # Recent tasks (default 20)
 scripts/opc tasks
@@ -153,10 +153,10 @@ scripts/opc recall TASK-012 --tree                       # what did it produce
 scripts/opc recall TASK-012 --fetch-artifact report.md   # read a specific artifact
 ```
 
-**Diagnose a rejected task**
+**Diagnose a failed task**
 ```bash
-scripts/opc status TASK-007
-scripts/opc audit  TASK-007 --json | jq '.[] | select(.action == "escalation")'
+scripts/opc details TASK-007
+scripts/opc audit   TASK-007 --json | jq '.[] | select(.action == "escalation")'
 ```
 
 **Onboard a new agent proposed by the EH**
