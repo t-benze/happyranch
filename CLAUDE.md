@@ -34,7 +34,7 @@ The following documents are in the `protocol/` folder.
 - **Daemon**: FastAPI HTTP service (`src/daemon/`) — serves orchestrator work, SSE task events, agent callbacks
 - **CLI**: Thin HTTP client (`src/client/`) that talks to the daemon over localhost
 - **Agent workflow**: Claude Code skills (`protocol/skills/`) — `start-task`, `make-worktree`, `manage-repo`, `manage-agent`. The orchestrator prompt just names the skill and passes parameters
-- **Orchestrator**: Custom Python application (EH-driven orchestration loop, performance scoring)
+- **Orchestrator**: Custom Python application. `run_step` is the only primitive — each invocation advances one task by one subprocess call; an async `TaskQueue` + worker pool (`src/daemon/queue.py`) drives re-enqueues across steps. EH drives decisions; performance scoring derived from implicit review verdicts on delegated work
 - **Data models**: Pydantic v2 + pydantic-settings
 - **Database**: SQLite with WAL mode (audit logs, scorecards, task state)
 - **Knowledge base**: File-backed markdown under `<runtime>/kb/` with atomic writes, substring/tag search, and regenerated `_index.md` (see `src/infrastructure/kb_store.py`). Vector store / RAG not yet added
@@ -97,7 +97,8 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |   |   |-- auth.py                    # Bearer-token dependency (~/.opc/auth_token)
 |   |   |-- paths.py                   # ~/.opc/ home paths (auth token, runtimes.yaml)
 |   |   |-- runtimes.py                # Runtime registry (runtimes.yaml, set/get active)
-|   |   |-- runner.py                  # TaskRunner — runs orchestrator in a thread, snapshots runtime/db
+|   |   |-- runner.py                  # enqueue_task() — thin entry that pushes a task_id onto state.queue
+|   |   |-- queue.py                   # Async TaskQueue + worker pool (bridges FastAPI event loop to sync run_step)
 |   |   |-- sessions.py                # Active-session tracker (task_id,agent) -> session_id
 |   |   |-- event_bus.py               # Per-task event pub/sub with DB replay + synthesized terminals
 |   |   |-- agent_config.py            # Read/write workspaces/<agent>/agent.yaml
@@ -109,7 +110,8 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |   |       |-- audit.py               # GET /audit — filtered audit-log view (task/agent/action/since/limit)
 |   |       +-- kb.py                  # Knowledge base: GET /kb, /kb/{slug}, /kb/search; POST /kb, /kb/{slug}, /kb/reindex, /kb/precedent; DELETE /kb/{slug}
 |   |-- orchestrator/
-|   |   |-- orchestrator.py            # EH-driven loop: ask Engineering Head, execute decisions
+|   |   |-- orchestrator.py            # Orchestrator facade: holds deps, exposes run_step (no more run_task)
+|   |   |-- run_step.py                # Single-step primitive — advance one task by one subprocess call
 |   |   |-- capabilities.py            # Builds capabilities prompt for EH decision sessions
 |   |   |-- executor.py                # Spawns `claude -p` subprocess with session_id
 |   |   |-- performance_tracker.py     # 30-day rolling scorecards, tier calculation
@@ -121,7 +123,7 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |   |   +-- kb_store.py                # Knowledge base: slug validation, atomic entry write, list/read/update/delete, search, _index.md regeneration, near-duplicate detection
 |   |-- agents/                        # Agent definitions (future)
 |   +-- tools/                         # Agent tools (future)
-|-- tests/                             # ~362 tests (unit + a couple of integration)
+|-- tests/                             # ~390 tests (unit + a couple of integration)
 |   |-- daemon/                        # Route-level tests for the FastAPI app
 |   |-- integration/                   # End-to-end test with a fake Claude binary
 |   +-- test_*.py                      # Orchestrator, executor, config, skills, etc.
@@ -236,12 +238,12 @@ opc recall TASK-001 [--tree] [--fetch-artifact <relpath>]   # fetch task brief +
 opc kb list [--topic <t>] [--type reference|precedent]
 opc kb get <slug>
 opc kb search <query> [--limit N]
-opc kb add --from-file /tmp/kb-<slug>.md --author <agent>
-opc kb update <slug> --from-file /tmp/kb-<slug>.md --author <agent>
-opc kb delete <slug> --author engineering_head
+opc kb add --agent <you> --from-file /tmp/kb-<slug>.md
+opc kb update <slug> --agent <you> --from-file /tmp/kb-<slug>.md
+opc kb delete <slug> --agent <you> --confirm [--as-founder]
 opc kb reindex
-opc kb precedent --task-id TASK-001 --as-founder --from-file /tmp/kb-<slug>.md   # founder-only; follows resolve-escalation
-opc resolve-escalation TASK-001 --disposition <...>                              # founder state transition (precedes kb precedent)
+opc kb precedent --task-id TASK-001 --decision approve|reject --rationale "..." [--slug <s>] --as-founder   # founder-only; follows resolve-escalation
+opc resolve-escalation --task-id TASK-001 --decision approve|reject --rationale "..."                       # founder state transition (precedes kb precedent)
 # Agent-side callbacks (invoked by skills):
 opc report-completion --task-id TASK-001 --session-id <sid> --status completed ...
 opc learning --agent dev_agent --session-id <sid> --task-id TASK-001 --text "..."
