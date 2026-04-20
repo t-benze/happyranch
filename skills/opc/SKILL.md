@@ -44,6 +44,10 @@ scripts/opc tail TASK-001
 
 # Snapshot: status, block_kind, note, results, last event, audit summary
 scripts/opc details TASK-001
+# Task status is one of {pending, in_progress, blocked, completed, failed}.
+# When status=blocked the block_kind is either `delegated` (waiting on child
+# tasks) or `escalated` (waiting on founder). `note` carries the human-readable
+# reason or the founder's resolution rationale.
 
 # Recent tasks (default 20)
 scripts/opc tasks
@@ -93,27 +97,31 @@ scripts/opc kb search "<terms>"
 scripts/opc kb add    --agent <you> --from-file /tmp/kb-<slug>.md
 scripts/opc kb update <slug> --agent <you> --from-file /tmp/kb-<slug>.md
 
-# Delete — engineering_head only (per spec §4.6)
-scripts/opc kb delete <slug> --author engineering_head
+# Delete — engineering_head only by default; --as-founder bypasses the role check
+scripts/opc kb delete <slug> --agent <you> --confirm [--as-founder]
 
 # Regenerate _index.md (usually unnecessary — happens automatically after every write)
 scripts/opc kb reindex
 
 # Founder-only: record a precedent from an escalation. Must follow
 # `resolve-escalation` in that order (state transition first, KB write second).
-scripts/opc kb precedent --task-id TASK-N --as-founder --from-file /tmp/kb-<slug>.md
+# The entry body is built from the resolution — no --from-file needed.
+scripts/opc kb precedent --task-id TASK-N --decision approve|reject \
+    --rationale "…" [--slug <s>] --as-founder
 ```
 
-KB payload files use YAML frontmatter (`slug`, `title`, `type`, `topic`, optional `tags`, `source_task`) followed by a markdown body.
+`kb add` / `kb update` payload files use YAML frontmatter (`slug`, `title`, `type`, `topic`, optional `tags`, `source_task`) followed by a markdown body.
 
 ## Founder Escalation Resolution
 
 ```bash
-# State transition — founder marks an escalated task resolved with a disposition.
-scripts/opc resolve-escalation TASK-N --disposition "<what the founder decided>"
+# State transition — founder approves or rejects an escalated task with a rationale.
+# Task ends up in status=completed (approve) or status=failed (reject); block_kind cleared.
+scripts/opc resolve-escalation --task-id TASK-N --decision approve|reject --rationale "…"
 
 # Then (if the decision is worth preserving as precedent):
-scripts/opc kb precedent --task-id TASK-N --as-founder --from-file /tmp/kb-<slug>.md
+scripts/opc kb precedent --task-id TASK-N --decision approve|reject \
+    --rationale "…" [--slug <s>] --as-founder
 ```
 
 The two-command flow is mandatory — `kb precedent` will reject writes that aren't backed by a resolved escalation audit entry.
@@ -167,14 +175,13 @@ scripts/opc approve-agent <name>        # bootstraps workspace + clones repos
 
 **Record a founder-resolved precedent**
 ```bash
-scripts/opc resolve-escalation TASK-N --disposition "…"
-# Draft KB entry in /tmp/kb-<slug>.md, then:
-scripts/opc kb precedent --task-id TASK-N --as-founder --from-file /tmp/kb-<slug>.md
+scripts/opc resolve-escalation --task-id TASK-N --decision approve|reject --rationale "…"
+scripts/opc kb precedent        --task-id TASK-N --decision approve|reject --rationale "…" --as-founder
 ```
 
 ## Safety Rules
 
-- **Safe (no confirmation):** `run`, `tail`, `status`, `tasks`, `recall`, `audit`, `agents`, `enrollments`, `init-agent`, `kb list`, `kb get`, `kb search`, `kb reindex`
+- **Safe (no confirmation):** `run`, `tail`, `details`, `tasks`, `recall`, `audit`, `agents`, `enrollments`, `init-agent`, `kb list`, `kb get`, `kb search`, `kb reindex`
 - **Confirm with user first:**
   - `use` — changes which runtime the daemon serves (affects all subsequent commands)
   - `approve-agent` / `reject-agent` — irreversible enrollment state changes
@@ -191,6 +198,8 @@ scripts/opc kb precedent --task-id TASK-N --as-founder --from-file /tmp/kb-<slug
 
 - **`Connection refused` on any command** → daemon not running. Start it: `<project>/scripts/daemon.sh start`.
 - **`no active runtime`** → `scripts/opc use <path>` (or `scripts/opc init <path>` if new).
-- **Task silently ends as `rejected`** → likely a blocked agent callback. Check `scripts/opc audit <id>` for the session_end event; the TASK-007/008/009 post-mortem in the project's CLAUDE.md explains the `Bash(opc:*)` allowlist requirement.
+- **Task silently ends as `failed`** → likely a blocked agent callback. Check `scripts/opc audit <id>` for the session_end event; the TASK-007/008/009 post-mortem in the project's CLAUDE.md explains the `Bash(opc:*)` allowlist requirement.
+- **Task sits in `blocked(delegated)` forever** → a child task hasn't finished or its terminal event never arrived. `scripts/opc tasks` shows children; drill in with `scripts/opc details <child>`. The parent auto-resumes when the last child terminates.
+- **Task is in `blocked(escalated)`** → waiting on founder resolution. Read the `note` field via `scripts/opc details <id>`, then use the two-command founder flow above.
 - **`kb precedent` returns 4xx with "no resolved escalation"** → run `scripts/opc resolve-escalation <task-id> --disposition …` first.
 - **`No such file or directory`** / `uv: command not found` → install `uv` and ensure the project root resolution is working (set `OPC_PROJECT_DIR` if the skill is in an unusual location). Shim calls `uv --project` under the hood; nothing else is expected on PATH.
