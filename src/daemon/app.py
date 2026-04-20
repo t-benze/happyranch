@@ -10,14 +10,30 @@ from src.daemon.state import DaemonState
 from src.orchestrator.orchestrator import Orchestrator
 
 
+def ensure_workers_started(state: DaemonState) -> None:
+    """Construct the orchestrator and start the worker pool, if not already.
+
+    Idempotent: safe to call repeatedly. Needed because the daemon may boot
+    idle (no active runtime) and have a runtime swapped in later via
+    POST /runtimes/register — without this helper the lifespan's one-shot
+    bootstrap would leave workers unstarted and every submitted task would
+    sit in the queue forever (manifests in tests as httpx.ReadError on the
+    SSE stream after heartbeat churn).
+    """
+    if state.is_idle:
+        return
+    if state.queue.is_running():
+        return
+    orch = Orchestrator(db=state.db, settings=state.settings, runtime=state.runtime)
+    orch.attach_queue(state.queue)
+    orch.attach_sessions(state.sessions)
+    state.queue.start_workers(orch, n=3)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     state: DaemonState = app.state.daemon
-    if not state.is_idle:
-        orch = Orchestrator(db=state.db, settings=state.settings, runtime=state.runtime)
-        orch.attach_queue(state.queue)
-        orch.attach_sessions(state.sessions)
-        state.queue.start_workers(orch, n=3)
+    ensure_workers_started(state)
     try:
         yield
     finally:

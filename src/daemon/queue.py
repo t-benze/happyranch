@@ -51,6 +51,13 @@ class TaskQueue:
                 asyncio.create_task(self._worker_loop(orch))
             )
 
+    def is_running(self) -> bool:
+        """True if at least one worker coroutine is live.
+
+        The app-level bootstrap uses this to decide whether a deferred
+        start (e.g. after a runtime swap) still needs to spawn workers."""
+        return any(not t.done() for t in self._worker_tasks)
+
     async def stop(self, *, timeout: float = 5.0) -> None:
         """Graceful shutdown: stop accepting work, cancel workers."""
         self._stopping = True

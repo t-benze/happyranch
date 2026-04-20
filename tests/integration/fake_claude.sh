@@ -12,13 +12,17 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Extract task_id and session_id from the start-task SKILL's Parameters block.
+# Extract task_id, session_id, and agent name from the start-task SKILL's
+# Parameters block. The agent name appears in the prompt's first line:
+# "You are <agent>. Use the start-task skill to handle this task."
 TASK_ID=$(echo "$PROMPT" | awk -F': ' '/^[[:space:]]*task_id: /{gsub(/^[[:space:]]*/, "", $0); print $2; exit}')
 SESSION_ID=$(echo "$PROMPT" | awk -F': ' '/^[[:space:]]*session_id: /{gsub(/^[[:space:]]*/, "", $0); print $2; exit}')
+AGENT=$(echo "$PROMPT" | awk '/^You are /{sub(/^You are /, "", $0); sub(/\..*$/, "", $0); print; exit}')
 
-# If a plan file exists, source it (it can call opc).
+# If a plan file exists, source it (it can call opc). Pass the agent name as
+# $3 so plans can branch on which agent is currently running.
 if [[ -n "${FAKE_CLAUDE_PLAN:-}" && -f "$FAKE_CLAUDE_PLAN" ]]; then
-    bash "$FAKE_CLAUDE_PLAN" "$TASK_ID" "$SESSION_ID"
+    bash "$FAKE_CLAUDE_PLAN" "$TASK_ID" "$SESSION_ID" "$AGENT"
 fi
 
 exit 0

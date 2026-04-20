@@ -24,6 +24,21 @@ def runtime(tmp_path: Path) -> Path:
     return rt.root
 
 
+def seed_workspace(runtime_root: Path, agent: str) -> Path:
+    """Create the minimum workspace layout needed for `_run_agent`.
+
+    The orchestrator's WorkspaceNotInitialized guard only checks the
+    start-task SKILL.md marker — we don't need a real CLAUDE.md,
+    settings.json, or task_history.md for the fake Claude binary to
+    succeed, because `fake_claude.sh` parses task_id/session_id out of the
+    prompt instead of running the skill."""
+    ws = runtime_root / "workspaces" / agent
+    skill_dir = ws / ".claude" / "skills" / "start-task"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text("# start-task (test stub)\n")
+    return ws
+
+
 @pytest.fixture
 def fake_claude(tmp_path: Path) -> Path:
     src = Path(__file__).parent / "fake_claude.sh"

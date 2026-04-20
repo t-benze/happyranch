@@ -45,7 +45,9 @@ def list_runtimes(request: Request) -> dict:
 
 
 @router.post("/runtimes/register")
-def register_runtime(body: RuntimePath, request: Request) -> dict:
+async def register_runtime(body: RuntimePath, request: Request) -> dict:
+    from src.daemon.app import ensure_workers_started
+
     daemon: DaemonState = request.app.state.daemon
     path = Path(body.path).expanduser()
     if not path.exists():
@@ -56,11 +58,18 @@ def register_runtime(body: RuntimePath, request: Request) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     _swap_active_runtime(daemon, path.resolve())
+    # If the daemon booted idle, workers weren't started in the lifespan.
+    # Start them now that a runtime is present — otherwise enqueued tasks
+    # sit forever and SSE streams stall. Must happen on the running event
+    # loop, which is why this route is async.
+    ensure_workers_started(daemon)
     return list_runtimes(request)
 
 
 @router.post("/runtimes/activate")
 async def activate_runtime(body: RuntimePath, request: Request) -> dict:
+    from src.daemon.app import ensure_workers_started
+
     daemon: DaemonState = request.app.state.daemon
     path = Path(body.path).expanduser().resolve()
     state = reg.load()
@@ -77,4 +86,5 @@ async def activate_runtime(body: RuntimePath, request: Request) -> dict:
                 )
         reg.activate(path)
         _swap_active_runtime(daemon, path)
+    ensure_workers_started(daemon)
     return list_runtimes(request)

@@ -209,8 +209,21 @@ blocked, completed, failed}` based on orchestration classification, with
 
 ## Running Tests
 ```bash
-uv run pytest tests/ -v
+uv run pytest tests/ -v                  # unit tests only (default)
+uv run pytest tests/ -v -m integration   # end-to-end tests (spawns a real daemon)
+uv run pytest tests/ -v -m ""            # both
 ```
+
+Integration tests are excluded by default (`addopts = "-m 'not integration'"`)
+because they spawn a real daemon process and a fake Claude binary, which
+makes them slower and slightly more brittle than the in-process unit tests.
+They are isolated from the developer's real `~/.opc/` via the `OPC_DAEMON_HOME`
+env redirect — they will not touch your live runtime, audit DB, or pid files.
+
+Run them locally before any change that touches the daemon lifespan,
+SessionTracker, or callback routes — that's the surface area where the
+unit tests have repeatedly failed to catch regressions (see commit 8581f26
+post-mortem). CI should run them on every PR for the same reason.
 
 ## Running the Daemon + CLI
 
