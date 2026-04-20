@@ -17,22 +17,52 @@ import uvicorn
 from src.config import Settings
 from src.daemon import paths, runtimes
 from src.daemon.app import create_app
+from src.daemon.queue import TaskQueue
 from src.daemon.state import DaemonState
 from src.infrastructure.audit_logger import AuditLogger
 from src.infrastructure.database import Database
-from src.models import TaskStatus
+from src.models import BlockKind, TaskStatus
 from src.runtime import RuntimeDir
 
 logger = logging.getLogger("opc.daemon")
 
 
-def _escalate_in_flight_tasks(db: Database) -> None:
-    """Mark nonterminal tasks (PENDING + IN_PROGRESS) as escalated — daemon restart
-    kills any in-flight spawn and orphans queued runners. No resumption in Spec 1."""
+def _sweep_on_startup(db: Database, queue: TaskQueue) -> None:
+    """Post-restart recovery:
+      - in_progress rows → failed (we killed the subprocess)
+      - pending rows → re-enqueue (lost the original POST enqueue)
+      - blocked(DELEGATED) with all children terminal → re-enqueue parent
+      - blocked(ESCALATED) → leave alone (founder owns these)
+    """
     audit = AuditLogger(db)
+
     for task_id in db.get_nonterminal_task_ids():
-        db.update_task(task_id, status=TaskStatus.ESCALATED)
-        audit.log_escalation(task_id, "daemon", "daemon restarted mid-task")
+        t = db.get_task(task_id)
+        if t is None:
+            continue
+        if t.status == TaskStatus.IN_PROGRESS:
+            db.update_task(task_id, status=TaskStatus.FAILED, note="daemon restart")
+            audit.log_escalation(task_id, "daemon", "daemon restarted mid-task")
+            # Notify parent if this failure unblocks it
+            parent_id = t.parent_task_id
+            if parent_id is not None:
+                parent = db.get_task(parent_id)
+                if (parent is not None and parent.status == TaskStatus.BLOCKED
+                        and parent.block_kind == BlockKind.DELEGATED):
+                    children = [db.get_task(cid) for cid in db.get_children(parent_id)]
+                    if all(c is not None and c.status in {TaskStatus.COMPLETED,
+                                                         TaskStatus.FAILED}
+                           for c in children):
+                        queue.enqueue(parent_id)
+        elif t.status == TaskStatus.PENDING:
+            queue.enqueue(task_id)
+        elif t.status == TaskStatus.BLOCKED and t.block_kind == BlockKind.DELEGATED:
+            children = [db.get_task(cid) for cid in db.get_children(task_id)]
+            if all(c is not None and c.status in {TaskStatus.COMPLETED,
+                                                  TaskStatus.FAILED}
+                   for c in children):
+                queue.enqueue(task_id)
+        # blocked(ESCALATED) falls through: founder owns the transition.
 
 
 def _build_state(settings: Settings) -> DaemonState:
@@ -42,7 +72,7 @@ def _build_state(settings: Settings) -> DaemonState:
         return DaemonState.idle(settings)
     runtime = RuntimeDir.load(reg.active)
     state = DaemonState.from_runtime(runtime, settings)
-    _escalate_in_flight_tasks(state.db)
+    _sweep_on_startup(state.db, state.queue)
     # Worker-pool bootstrap is deferred to the FastAPI lifespan startup
     # event because we need a running event loop. See `create_app` →
     # lifespan.
