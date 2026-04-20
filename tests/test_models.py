@@ -15,10 +15,8 @@ def test_task_status_values():
     assert TaskStatus.PENDING == "pending"
     assert TaskStatus.IN_PROGRESS == "in_progress"
     assert TaskStatus.COMPLETED == "completed"
-    assert TaskStatus.IN_REVIEW == "in_review"
-    assert TaskStatus.APPROVED == "approved"
-    assert TaskStatus.REJECTED == "rejected"
-    assert TaskStatus.ESCALATED == "escalated"
+    assert TaskStatus.BLOCKED == "blocked"
+    assert TaskStatus.FAILED == "failed"
 
 
 def test_task_type_values():

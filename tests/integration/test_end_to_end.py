@@ -52,7 +52,7 @@ def test_register_and_run_completes_via_callback(live_daemon, runtime, tmp_path)
             if not line.startswith("data: "):
                 continue
             event = json.loads(line.removeprefix("data: "))
-            if event.get("type") in ("task_complete", "task_escalated", "task_rejected"):
+            if event.get("type") in ("task_complete", "task_blocked", "task_failed"):
                 outcome = event.get("type")
                 break
     assert outcome == "task_complete"
@@ -60,5 +60,5 @@ def test_register_and_run_completes_via_callback(live_daemon, runtime, tmp_path)
     # Confirm DB has a task_result tagged with a session_id
     r = httpx.get(f"{base}/tasks/{task_id}", headers=_auth_headers(), timeout=5.0)
     body = r.json()
-    assert body["task"]["status"] == "approved"
+    assert body["task"]["status"] == "completed"
     assert any(res["session_id"] for res in body["results"])

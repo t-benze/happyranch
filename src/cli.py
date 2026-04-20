@@ -121,7 +121,7 @@ def _stream_task_events(client: OpcClient, task_id: str) -> None:
                 continue
             etype = event.get("type", "?")
             print(f"[{etype}] {event}")
-            if etype in ("task_complete", "task_escalated", "task_rejected"):
+            if etype in ("task_complete", "task_blocked", "task_failed"):
                 return
     except httpx.HTTPStatusError as exc:
         # OpcClient.stream calls raise_for_status(), so a 404 (e.g. unknown

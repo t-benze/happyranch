@@ -1,4 +1,3 @@
-import json
 import re
 from unittest.mock import patch
 
@@ -6,48 +5,11 @@ import pytest
 
 from src.infrastructure.database import Database
 from src.models import (
-    CompletionReport,
     TaskStatus,
     TaskType,
 )
 from src.orchestrator.executor import ExecutorResult
 from src.orchestrator.orchestrator import Orchestrator
-
-
-def _make_eh_decision(task_id: str, decision: dict):
-    """Simulate the Engineering Head returning a NextStep decision."""
-    return (
-        ExecutorResult(
-            success=True,
-            duration_seconds=30,
-            session_id="sess-eh",
-        ),
-        CompletionReport(
-            task_id=task_id,
-            agent="engineering_head",
-            status="completed",
-            confidence=90,
-            output_summary=json.dumps(decision),
-        ),
-    )
-
-
-def _make_agent_result(task_id: str, agent: str, summary: str = "Work done"):
-    """Simulate a worker agent completing its task."""
-    return (
-        ExecutorResult(
-            success=True,
-            duration_seconds=60,
-            session_id="sess-worker",
-        ),
-        CompletionReport(
-            task_id=task_id,
-            agent=agent,
-            status="completed",
-            confidence=85,
-            output_summary=summary,
-        ),
-    )
 
 
 @pytest.fixture

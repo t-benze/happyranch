@@ -295,11 +295,14 @@ def _seed_escalated_task(
     app, task_id: str = "TASK-037", brief: str = "Large refund for custom itinerary",
     reason: str = "Amount exceeds CX cap",
 ) -> None:
-    from src.models import TaskRecord, TaskType, TaskStatus
+    from src.models import BlockKind, TaskRecord, TaskStatus, TaskType
     state = app.state.daemon
     state.db.insert_task(TaskRecord(
-        id=task_id, type=TaskType.GENERAL, brief=brief, status=TaskStatus.ESCALATED,
+        id=task_id, type=TaskType.GENERAL, brief=brief,
     ))
+    state.db.update_task(
+        task_id, status=TaskStatus.BLOCKED, block_kind=BlockKind.ESCALATED,
+    )
     state.db.insert_audit_log(
         task_id=task_id, agent="cx_manager", action="escalation",
         payload={"reason": reason},
@@ -340,7 +343,10 @@ def test_kb_precedent_does_not_transition_task_status(tmp_home, app, runtime, au
         headers=auth_headers,
     )
     assert r.status_code == 200, r.text
-    assert state.db.get_task("TASK-038").status == TaskStatus.ESCALATED
+    got = state.db.get_task("TASK-038")
+    assert got.status == TaskStatus.BLOCKED
+    from src.models import BlockKind
+    assert got.block_kind == BlockKind.ESCALATED
 
 
 def test_kb_precedent_post_hoc_on_resolved_task(tmp_home, app, runtime, auth_headers):
@@ -349,7 +355,7 @@ def test_kb_precedent_post_hoc_on_resolved_task(tmp_home, app, runtime, auth_hea
     state = app.state.daemon
     state.db.insert_task(TaskRecord(
         id="TASK-039", type=TaskType.GENERAL, brief="Partner change",
-        status=TaskStatus.APPROVED,
+        status=TaskStatus.COMPLETED,
     ))
     state.db.insert_audit_log(
         task_id="TASK-039", agent="ops_manager", action="escalation",

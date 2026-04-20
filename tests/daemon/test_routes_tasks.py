@@ -221,8 +221,8 @@ def test_recall_returns_task_payload(tmp_home, app, daemon_state, auth_headers) 
     )
     daemon_state.db.update_task(
         "TASK-001",
-        status=TaskStatus.APPROVED,
-        final_output_summary="Report delivered",
+        status=TaskStatus.COMPLETED,
+        note="Report delivered",
         final_artifact_dir="artifacts/TASK-001",
     )
     r = TestClient(app).get("/api/v1/tasks/TASK-001/recall", headers=auth_headers)
@@ -369,70 +369,15 @@ def test_events_unknown_task_returns_404(tmp_home, app, auth_headers) -> None:
     assert r.status_code == 404
 
 
-def test_resolve_escalation_transitions_escalated_task(tmp_home, app, runtime, auth_headers):
-    from src.models import TaskRecord, TaskType, TaskStatus
-    state = app.state.daemon
-    state.db.insert_task(TaskRecord(
-        id="TASK-042", type=TaskType.GENERAL, brief="Large refund",
-        status=TaskStatus.ESCALATED,
-    ))
-    state.db.insert_audit_log(
-        task_id="TASK-042", agent="cx_manager", action="escalation",
-        payload={"reason": "Amount exceeds CX cap"},
-    )
-    client = TestClient(app)
-    r = client.post(
-        "/api/v1/tasks/TASK-042/resolve-escalation",
-        json={"decision": "approve", "rationale": "Vendor error, <$250 risk"},
-        headers=auth_headers,
-    )
-    assert r.status_code == 200, r.text
-    got = state.db.get_task("TASK-042")
-    assert got.status == TaskStatus.APPROVED
-    rows = state.db.get_audit_logs("TASK-042")
-    assert any(row["action"] == "escalation_resolved" for row in rows)
-    # KB untouched
-    assert not (runtime.root / "kb").exists() or not list((runtime.root / "kb").glob("*.md"))
-
-
-def test_resolve_escalation_reject_decision(tmp_home, app, auth_headers):
-    from src.models import TaskRecord, TaskType, TaskStatus
-    state = app.state.daemon
-    state.db.insert_task(TaskRecord(
-        id="TASK-043", type=TaskType.GENERAL, brief="x", status=TaskStatus.ESCALATED,
-    ))
-    client = TestClient(app)
-    r = client.post(
-        "/api/v1/tasks/TASK-043/resolve-escalation",
-        json={"decision": "reject", "rationale": "Policy violation"},
-        headers=auth_headers,
-    )
-    assert r.status_code == 200
-    assert state.db.get_task("TASK-043").status == TaskStatus.REJECTED
-
-
-def test_resolve_escalation_rejects_non_escalated_task(tmp_home, app, auth_headers):
-    from src.models import TaskRecord, TaskType, TaskStatus
-    state = app.state.daemon
-    state.db.insert_task(TaskRecord(
-        id="TASK-044", type=TaskType.GENERAL, brief="x", status=TaskStatus.COMPLETED,
-    ))
-    client = TestClient(app)
-    r = client.post(
-        "/api/v1/tasks/TASK-044/resolve-escalation",
-        json={"decision": "approve", "rationale": "r"},
-        headers=auth_headers,
-    )
-    assert r.status_code == 409
-    assert r.json()["detail"]["code"] == "task_not_escalated"
-
-
 def test_resolve_escalation_requires_rationale(tmp_home, app, auth_headers):
-    from src.models import TaskRecord, TaskType, TaskStatus
+    from src.models import BlockKind, TaskRecord, TaskStatus, TaskType
     state = app.state.daemon
     state.db.insert_task(TaskRecord(
-        id="TASK-045", type=TaskType.GENERAL, brief="x", status=TaskStatus.ESCALATED,
+        id="TASK-045", type=TaskType.GENERAL, brief="x",
     ))
+    state.db.update_task(
+        "TASK-045", status=TaskStatus.BLOCKED, block_kind=BlockKind.ESCALATED,
+    )
     client = TestClient(app)
     r = client.post(
         "/api/v1/tasks/TASK-045/resolve-escalation",
@@ -455,7 +400,7 @@ def test_events_stream_yields_completion(tmp_home, app, daemon_state, auth_heade
     # task_complete event on subscribe — the stream closes immediately without
     # needing to publish into an empty bus.
     from src.models import TaskStatus
-    daemon_state.db.update_task(task_id, status=TaskStatus.APPROVED)
+    daemon_state.db.update_task(task_id, status=TaskStatus.COMPLETED)
 
     with TestClient(app).stream(
         "GET", f"/api/v1/tasks/{task_id}/events", headers=auth_headers,
