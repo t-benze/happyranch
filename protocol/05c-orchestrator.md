@@ -170,47 +170,36 @@ There are four types of permission blocks, each handled differently:
 
 ### Task state machine
 
+#### States (5)
+- **pending** — created; no agent subprocess started yet.
+- **in_progress** — an agent subprocess is running *right now* for this task.
+- **blocked** — suspended, awaiting an external event. Requires `block_kind`:
+  - `delegated` — waiting on one or more child tasks to terminate.
+  - `escalated` — waiting on the founder (via `opc resolve-escalation`).
+- **completed** — terminal, success.
+- **failed** — terminal, unsuccessful.
+
+#### Transitions
+
 ```
-                    ┌──────────┐
-                    │ PENDING  │
-                    └────┬─────┘
-                         │ assigned to agent
-                    ┌────▼─────┐
-                    │IN_PROGRESS│
-                    └────┬─────┘
-                         │
-              ┌──────────┼──────────────┐
-              │          │              │
-     ┌────────▼───┐ ┌───▼────┐ ┌──────▼──────────┐
-     │ WAITING_FOR│ │BLOCKED │ │   COMPLETED     │
-     │ _APPROVAL  │ │_ON_DEP │ │  (with report)  │
-     └────────┬───┘ └───┬────┘ └──────┬──────────┘
-              │         │             │
-              │ approved│ dep resolved│
-              │         │             │
-     ┌────────▼─────────▼──┐   ┌─────▼──────┐
-     │   RESUMED           │   │  IN_REVIEW  │
-     │ (re-enters agent    │   │ (supervisor)│
-     │  with new context)  │   └─────┬──────┘
-     └─────────┬───────────┘         │
-               │                ┌────┼─────────┐
-               └──► loops back │    │          │
-                    to         │    │          │
-                 IN_PROGRESS ┌─▼──┐ ▼    ┌────▼────┐
-                             │PASS│ │    │ REVISE  │
-                             └──┬─┘ │    └────┬────┘
-                                │   │         │ (back to
-                         ┌──────▼┐  │         │ IN_PROGRESS,
-                         │APPROVED│  │         │ max 2 rounds)
-                         └───────┘  │         │
-                                ┌───▼───┐     │
-                                │REJECT │     │
-                                └───┬───┘     │
-                                    │         │
-                              ┌─────▼─────┐   │
-                              │ ESCALATED │◄──┘ (after max rounds)
-                              └───────────┘
+pending → (run_step pickup) → in_progress → { completed | failed | blocked(delegated) | blocked(escalated) }
+
+blocked(delegated) → (child terminates, sibling sweep clears) → in_progress (re-entry)
+blocked(escalated) → (POST /resolve-escalation approve) → completed
+blocked(escalated) → (POST /resolve-escalation reject)  → failed
 ```
+
+#### Execution model
+
+The orchestrator exposes exactly one primitive: `Orchestrator.run_step(task_id)`.
+It picks up a task that is `pending` or `blocked(delegated)` with all children
+terminal, invokes its `assigned_agent` once, classifies the result, persists
+the transition, and enqueues the next task to advance. Recursion is via queue
+re-entry — no loops inside `run_step`.
+
+Budget: each `run_step` call increments `orchestration_step_count` persisted
+on the task. When the count exceeds `max_orchestration_steps` the task parks
+in `blocked(escalated)` for founder review.
 
 ### Timeout handling
 
