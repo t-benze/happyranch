@@ -428,3 +428,65 @@ def test_cancel_sigterms_running_subprocess_and_marks_task_failed(
         f"{base}/audit?task_id={task_id}", headers=_auth_headers(), timeout=5.0,
     ).json()["entries"]
     assert any(a.get("action") == "task_cancelled" for a in audit), audit
+
+
+def test_revisit_roundtrip_creates_new_root_and_completes(
+    live_daemon,
+    runtime,
+    fake_plan_env,
+):
+    """End-to-end: predecessor task escalates -> POST /revisit directly ->
+    fake EH on the new root returns done -> new root reaches `completed`,
+    predecessor stays `blocked(escalated)`. CLI is bypassed because the
+    integration harness runs non-TTY (the CLI would refuse)."""
+    port = live_daemon
+    base = f"http://127.0.0.1:{port}/api/v1"
+
+    # Marker file switches behavior: first EH call escalates (predecessor),
+    # every subsequent EH call (new root) returns done.
+    marker = fake_plan_env.parent / "eh_revisit_marker"
+    fake_plan_env.write_text(
+        '#!/usr/bin/env bash\n'
+        'set -e\n'
+        'task_id=$1; session_id=$2; agent=$3\n'
+        f'marker="{marker}"\n'
+        'if [[ -f "$marker" ]]; then\n'
+        '  summary=\'{"action":"done","summary":"revisit succeeded"}\'\n'
+        'else\n'
+        '  touch "$marker"\n'
+        '  summary=\'{"action":"escalate","reason":"need founder call"}\'\n'
+        'fi\n'
+        'opc report-completion \\\n'
+        '  --task-id "$task_id" --session-id "$session_id" \\\n'
+        '  --agent "$agent" --status completed --confidence 90 \\\n'
+        '  --summary "$summary"\n'
+    )
+    fake_plan_env.chmod(0o755)
+
+    seed_workspace(runtime, "engineering_head")
+
+    # Step 1: predecessor escalates -> blocked(escalated).
+    task_id = _submit_task(base, brief="Revisit me")
+    assert _wait_for_terminal_status(base, task_id, timeout=30.0) == "blocked"
+
+    # Step 2: revisit via HTTP (integration harness is non-TTY).
+    r = httpx.post(
+        f"{base}/tasks/{task_id}/revisit",
+        json={"founder_note": "try again"},
+        headers=_auth_headers(),
+        timeout=5.0,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    new_id = body["new_root_task_id"]
+    assert body["predecessor_status"] == "blocked-escalated"
+    assert body["predecessor_root_task_id"] == task_id
+
+    # Step 3: new root reaches `completed` (fake EH returns done on 2nd call).
+    assert _wait_for_terminal_status(base, new_id, timeout=30.0) == "completed"
+
+    # Step 4: predecessor is frozen at blocked(escalated).
+    r_pre = httpx.get(f"{base}/tasks/{task_id}", headers=_auth_headers(), timeout=5.0)
+    pre_task = r_pre.json()["task"]
+    assert pre_task["status"] == "blocked"
+    assert pre_task["block_kind"] == "escalated"
