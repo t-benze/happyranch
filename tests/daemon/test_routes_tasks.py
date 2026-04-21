@@ -844,3 +844,73 @@ def test_revisit_rejects_ineligible_predecessor(
     assert detail["predecessor_status"] == status
     # No new task row was created.
     assert len(db.list_tasks()) == 1
+
+
+def test_revisit_lineage_too_deep_returns_500(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """A 21-hop ancestor chain is pathological; the endpoint guards with 500."""
+    from src.models import TaskRecord, TaskStatus, TaskType
+    db = daemon_state.db
+    db.insert_task(TaskRecord(id="TASK-000", type=TaskType.GENERAL, brief="root"))
+    db.update_task("TASK-000", status=TaskStatus.FAILED)
+    prev = "TASK-000"
+    for i in range(1, 25):
+        tid = f"TASK-{i:03d}"
+        db.insert_task(TaskRecord(
+            id=tid, type=TaskType.GENERAL, brief=f"t{i}", parent_task_id=prev,
+        ))
+        db.update_task(tid, status=TaskStatus.FAILED)
+        prev = tid
+    r = TestClient(app).post(
+        f"/api/v1/tasks/{prev}/revisit", json={}, headers=auth_headers,
+    )
+    assert r.status_code == 500
+    assert r.json()["detail"]["code"] == "lineage_too_deep"
+
+
+def test_revisit_concurrent_on_same_predecessor_both_succeed(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """Two sequential POSTs against the same failed predecessor both succeed;
+    predecessor ends with two revisit_spawned audit entries."""
+    from src.models import TaskRecord, TaskStatus, TaskType
+    db = daemon_state.db
+    db.insert_task(TaskRecord(id="TASK-052", type=TaskType.GENERAL, brief="x"))
+    db.update_task("TASK-052", status=TaskStatus.FAILED)
+
+    client = TestClient(app)
+    r1 = client.post("/api/v1/tasks/TASK-052/revisit", json={}, headers=auth_headers)
+    r2 = client.post("/api/v1/tasks/TASK-052/revisit", json={}, headers=auth_headers)
+    assert r1.status_code == 200 and r2.status_code == 200
+    id1 = r1.json()["new_root_task_id"]
+    id2 = r2.json()["new_root_task_id"]
+    assert id1 != id2
+
+    spawned = [
+        e for e in db.get_audit_logs("TASK-052") if e["action"] == "revisit_spawned"
+    ]
+    assert sorted(e["payload"]["new_root"] for e in spawned) == sorted([id1, id2])
+
+
+def test_revisit_a_revisit_chain_of_chains(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """TASK-P → TASK-N (via revisit) → TASK-N' (revisit of TASK-N)."""
+    from src.models import TaskRecord, TaskStatus, TaskType
+    db = daemon_state.db
+    db.insert_task(TaskRecord(id="TASK-052", type=TaskType.GENERAL, brief="x"))
+    db.update_task("TASK-052", status=TaskStatus.FAILED)
+    client = TestClient(app)
+    r1 = client.post("/api/v1/tasks/TASK-052/revisit", json={}, headers=auth_headers)
+    id_n = r1.json()["new_root_task_id"]
+    # Mark the new root as failed so it's revisit-eligible.
+    db.update_task(id_n, status=TaskStatus.FAILED, note="also failed")
+    r2 = client.post(f"/api/v1/tasks/{id_n}/revisit", json={}, headers=auth_headers)
+    id_n2 = r2.json()["new_root_task_id"]
+
+    assert id_n != id_n2
+    # Second revisit's revisit_of points at id_n, not the original TASK-052.
+    logs_n2 = db.get_audit_logs(id_n2)
+    ro = next(e for e in logs_n2 if e["action"] == "revisit_of")
+    assert ro["payload"]["predecessor_root"] == id_n
