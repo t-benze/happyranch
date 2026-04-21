@@ -175,6 +175,31 @@ Operational settings use the `OPC_` environment variable prefix. Runtime paths (
 
 Each workspace declares an `executor` in `agent.yaml`. Supported values are `claude` and `codex`; missing values in older workspaces default to `claude`.
 
+If the Engineering Head wants to enroll a new Codex-backed worker, the
+`opc manage-agent --from-file ...` payload should set `"executor": "codex"`.
+Example:
+
+```json
+{
+  "action": "enroll",
+  "name": "dev_agent_codex",
+  "task_id": "TASK-123",
+  "session_id": "sess-abc123",
+  "description": "Implements product and platform changes as a Codex-backed developer agent.",
+  "system_prompt": "You are the Dev Agent. Your responsibilities are...",
+  "executor": "codex",
+  "repos": {
+    "my-opc": "https://github.com/t-benze/my-opc.git"
+  }
+}
+```
+
+Founder approval stays unchanged (`opc approve-agent <name>`), but the approved
+workspace will be bootstrapped as a Codex workspace: `agent.yaml` keeps
+`executor: codex`, the readiness marker becomes `AGENTS.md`, and the
+Claude-specific `.claude/settings.json` path is not the primary bootstrap
+surface.
+
 Repos are configured per agent in `<runtime>/workspaces/<agent>/agent.yaml`:
 ```yaml
 repos:

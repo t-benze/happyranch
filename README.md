@@ -122,6 +122,34 @@ opc reject-agent content_writer
 
 Agent names must be lowercase with underscores only (e.g., `content_writer`, `seo_agent`).
 
+To enroll a new developer agent that runs on Codex instead of Claude, the EH's
+`manage-agent` payload should include `executor: "codex"`:
+
+```json
+{
+  "action": "enroll",
+  "name": "dev_agent_codex",
+  "task_id": "TASK-123",
+  "session_id": "sess-abc123",
+  "description": "Implements product and platform changes as a Codex-backed developer agent.",
+  "system_prompt": "You are the Dev Agent. Your responsibilities are...",
+  "executor": "codex",
+  "repos": {
+    "my-opc": "https://github.com/t-benze/my-opc.git"
+  }
+}
+```
+
+The founder still approves it the same way:
+
+```bash
+opc approve-agent dev_agent_codex
+```
+
+After approval, the new workspace will have `executor: codex` in `agent.yaml`
+and will be bootstrapped with `AGENTS.md` instead of a Claude-only workspace
+surface.
+
 ### Managing repos
 
 Agents can request repo changes through the `manage-repo` skill, or the founder can manage them directly:
