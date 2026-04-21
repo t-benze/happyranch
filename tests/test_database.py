@@ -1,3 +1,5 @@
+import threading
+
 import pytest
 
 from src.infrastructure.database import Database, LineageTooDeep
@@ -490,3 +492,56 @@ def test_walk_ancestors_raises_when_over_limit(db):
         prev = tid
     with pytest.raises(LineageTooDeep):
         db.walk_ancestors(prev, max_hops=20)
+
+
+def test_concurrent_access_from_multiple_threads_is_safe(db):
+    """Regression test: sqlite3 raises InterfaceError when two threads use the
+    same connection concurrently. The daemon exposes this shape — route
+    handlers run on the event loop while `run_step` runs in a threadpool
+    worker, and both touch the single shared `Database`. Without internal
+    serialization, a concurrent `opc revisit` + SSE tail hits
+    `sqlite3.InterfaceError: bad parameter or other API misuse` on
+    `GET /tasks/{id}/events` (observed on TASK-061, daemon.log 688-746).
+    """
+    for i in range(10):
+        db.insert_task(TaskRecord(
+            id=f"TASK-{i:03d}", type=TaskType.GENERAL, brief=f"task {i}",
+        ))
+
+    errors: list[BaseException] = []
+    ITERATIONS = 200
+
+    def reader() -> None:
+        try:
+            for i in range(ITERATIONS):
+                db.get_task(f"TASK-{i % 10:03d}")
+                db.list_tasks(limit=10)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    def writer() -> None:
+        try:
+            for i in range(ITERATIONS):
+                db.insert_audit_log(
+                    task_id=f"TASK-{i % 10:03d}",
+                    agent="test_agent",
+                    action="test_action",
+                    payload={"i": i},
+                )
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=reader),
+        threading.Thread(target=reader),
+        threading.Thread(target=writer),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == [], (
+        f"Concurrent Database access raised {len(errors)} exceptions, "
+        f"first: {type(errors[0]).__name__}: {errors[0]}"
+    )

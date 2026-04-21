@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import functools
 import json
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -12,13 +14,33 @@ class LineageTooDeep(Exception):
     """Ancestor walk exceeded the safety bound; indicates data corruption."""
 
 
+def _synchronized(method):
+    """Serialize every public ``Database`` call through ``self._lock``.
+
+    Why: the daemon shares ONE sqlite3 connection across the event-loop thread
+    (async routes) and the threadpool thread running ``Orchestrator.run_step``
+    (see ``src/daemon/queue.py``). ``DaemonState.db_lock`` is an ``asyncio.Lock``
+    and can't serialize against threads; ``check_same_thread=False`` on the
+    connection allows cross-thread access but not concurrent cursor/exec ops —
+    overlap raises ``sqlite3.InterfaceError`` or hands back rows with None-valued
+    columns. A ``threading.RLock`` inside ``Database`` closes that gap without
+    per-thread connections or a migration.
+    """
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class Database:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        # FastAPI dispatches sync route handlers on a threadpool, so the
-        # connection is read from threads other than its creator. Serialize
-        # writes via DaemonState.db_lock.
+        # See `_synchronized` for the threading model. RLock (not Lock) because
+        # e.g. `walk_ancestors` → `get_task` and `get_recall_payload` → `get_task`
+        # both re-enter public methods while already holding the lock.
+        self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -162,6 +184,7 @@ class Database:
             self._conn.execute("UPDATE tasks SET status='failed' WHERE status='in_review'")
             self._conn.commit()
 
+    @_synchronized
     def list_tables(self) -> list[str]:
         cursor = self._conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
@@ -170,6 +193,7 @@ class Database:
 
     # --- Tasks ---
 
+    @_synchronized
     def insert_task(self, task: TaskRecord) -> None:
         self._conn.execute(
             """INSERT INTO tasks (id, type, status, assigned_agent, team, brief,
@@ -195,6 +219,7 @@ class Database:
         )
         self._conn.commit()
 
+    @_synchronized
     def get_task(self, task_id: str) -> TaskRecord | None:
         cursor = self._conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
         row = cursor.fetchone()
@@ -219,6 +244,7 @@ class Database:
             cancelled_at=row["cancelled_at"],
         )
 
+    @_synchronized
     def list_tasks(self, limit: int = 20) -> list[TaskRecord]:
         cursor = self._conn.execute(
             "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)
@@ -245,6 +271,7 @@ class Database:
             for row in cursor.fetchall()
         ]
 
+    @_synchronized
     def get_children(self, parent_task_id: str) -> list[str]:
         """Return direct children of a task, ordered by creation time."""
         cursor = self._conn.execute(
@@ -253,6 +280,7 @@ class Database:
         )
         return [row["id"] for row in cursor.fetchall()]
 
+    @_synchronized
     def walk_ancestors(self, task_id: str, max_hops: int = 20) -> list[TaskRecord]:
         """Return [task, parent, ..., root] by following parent_task_id.
 
@@ -274,6 +302,7 @@ class Database:
             raise LineageTooDeep(f"walk from {task_id} exceeded {max_hops} hops")
         return chain
 
+    @_synchronized
     def get_recall_payload(self, task_id: str) -> dict | None:
         """Return a flat dict suitable for the /recall endpoint, or None.
 
@@ -306,6 +335,7 @@ class Database:
             "children": self.get_children(task.id),
         }
 
+    @_synchronized
     def list_agent_tasks(self, agent: str, limit: int = 50) -> list[TaskRecord]:
         """Return tasks assigned to an agent, newest-first.
 
@@ -342,6 +372,7 @@ class Database:
             for row in cursor.fetchall()
         ]
 
+    @_synchronized
     def update_task(self, task_id: str, **fields: object) -> None:
         allowed = {
             "status", "assigned_agent", "revision_count", "completed_at",
@@ -366,6 +397,7 @@ class Database:
         self._conn.execute(f"UPDATE tasks SET {set_clause} WHERE id = ?", values)
         self._conn.commit()
 
+    @_synchronized
     def increment_revision_count(self, task_id: str) -> None:
         self._conn.execute(
             "UPDATE tasks SET revision_count = revision_count + 1, updated_at = ? WHERE id = ?",
@@ -373,11 +405,13 @@ class Database:
         )
         self._conn.commit()
 
+    @_synchronized
     def next_task_id(self) -> str:
         cursor = self._conn.execute("SELECT COUNT(*) as cnt FROM tasks")
         count = cursor.fetchone()["cnt"]
         return f"TASK-{count + 1:03d}"
 
+    @_synchronized
     def get_nonterminal_task_ids(self) -> list[str]:
         nonterminal = (
             TaskStatus.PENDING.value,
@@ -390,6 +424,7 @@ class Database:
         )
         return [row["id"] for row in cursor.fetchall()]
 
+    @_synchronized
     def list_blocked_with_kind(self, kind) -> list[str]:
         """Return IDs of tasks in status=blocked with the given block_kind."""
         kind_value = kind.value if hasattr(kind, "value") else kind
@@ -401,6 +436,7 @@ class Database:
 
     # --- Audit Log ---
 
+    @_synchronized
     def insert_audit_log(
         self,
         task_id: str,
@@ -420,6 +456,7 @@ class Database:
         )
         self._conn.commit()
 
+    @_synchronized
     def get_audit_logs(self, task_id: str) -> list[dict]:
         cursor = self._conn.execute(
             "SELECT * FROM audit_log WHERE task_id = ? ORDER BY id", (task_id,)
@@ -433,6 +470,7 @@ class Database:
             result.append(d)
         return result
 
+    @_synchronized
     def get_audit_logs_by_action(self, action: str, since: str | None = None) -> list[dict]:
         """Get audit logs filtered by action, optionally since a date."""
         if since:
@@ -453,6 +491,7 @@ class Database:
             result.append(d)
         return result
 
+    @_synchronized
     def query_audit_logs(
         self,
         task_id: str | None = None,
@@ -503,6 +542,7 @@ class Database:
 
     # --- Task Results ---
 
+    @_synchronized
     def insert_task_result(
         self,
         task_id: str,
@@ -542,6 +582,7 @@ class Database:
         )
         self._conn.commit()
 
+    @_synchronized
     def get_task_results(self, task_id: str) -> list[dict]:
         cursor = self._conn.execute(
             "SELECT * FROM task_results WHERE task_id = ? ORDER BY id", (task_id,)
@@ -555,6 +596,7 @@ class Database:
             result.append(d)
         return result
 
+    @_synchronized
     def get_agent_task_results(self, agent: str, since: str | None = None) -> list[dict]:
         if since:
             cursor = self._conn.execute(
@@ -574,6 +616,7 @@ class Database:
             result.append(d)
         return result
 
+    @_synchronized
     def get_latest_task_result(
         self, task_id: str, agent: str, session_id: str,
     ) -> dict | None:
@@ -593,6 +636,7 @@ class Database:
 
     # --- Scorecards ---
 
+    @_synchronized
     def upsert_scorecard(
         self,
         agent: str,
@@ -616,6 +660,7 @@ class Database:
         )
         self._conn.commit()
 
+    @_synchronized
     def get_scorecard(self, agent: str) -> dict | None:
         cursor = self._conn.execute("SELECT * FROM scorecards WHERE agent = ?", (agent,))
         row = cursor.fetchone()
@@ -623,6 +668,7 @@ class Database:
 
     # --- Agent Enrollments ---
 
+    @_synchronized
     def insert_enrollment(
         self,
         name: str,
@@ -639,12 +685,14 @@ class Database:
         )
         self._conn.commit()
 
+    @_synchronized
     def get_enrollment(self, name: str) -> dict | None:
         row = self._conn.execute(
             "SELECT * FROM agent_enrollments WHERE name = ?", (name,),
         ).fetchone()
         return dict(row) if row else None
 
+    @_synchronized
     def list_enrollments(self, status: str | None = None) -> list[dict]:
         if status:
             rows = self._conn.execute(
@@ -657,6 +705,7 @@ class Database:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    @_synchronized
     def update_enrollment_status(self, name: str, status: str) -> None:
         now = datetime.now(timezone.utc).isoformat()
         self._conn.execute(
@@ -665,6 +714,7 @@ class Database:
         )
         self._conn.commit()
 
+    @_synchronized
     def update_enrollment_fields(
         self,
         name: str,
@@ -695,9 +745,11 @@ class Database:
         )
         self._conn.commit()
 
+    @_synchronized
     def delete_enrollment(self, name: str) -> None:
         self._conn.execute("DELETE FROM agent_enrollments WHERE name = ?", (name,))
         self._conn.commit()
 
+    @_synchronized
     def close(self) -> None:
         self._conn.close()
