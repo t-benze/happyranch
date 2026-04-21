@@ -4,7 +4,9 @@
 **Author:** Founder + Claude Opus
 **Date:** 2026-04-21
 **Supersedes:** — (new feature)
-**Related:** `fix(orchestrator): cascade-fail delegated chain + executor diagnostics` (2f5756e) — this design is the counterweight to that commit's no-retry policy.
+**Related:**
+- `fix(orchestrator): cascade-fail delegated chain + executor diagnostics` (2f5756e) — this design is the counterweight to that commit's no-retry policy.
+- `feat(daemon): opc cancel — SIGTERM + cascade + race-safe DB` (a4e7c1c) — revisit composes with cancel: cancel + revisit is the recovery path for wedged `blocked(delegated)` roots, and revisit must clear `cancelled_at` on the root so `run_step`'s cancellation short-circuit doesn't drop the re-enqueued task.
 
 ## 1. Problem
 
@@ -16,7 +18,7 @@ We need a founder-initiated mechanism that lets the Engineering Head see the pri
 
 ## 2. Non-Goals
 
-- **No `opc cancel`.** Revisiting a `blocked(delegated)` root (where children are still in-flight) requires the founder to first cancel siblings. That's a separate feature; this spec rejects revisits of such roots.
+- **No reviving in-flight work.** `blocked(delegated)` roots — where children are still running — are rejected. The founder must first `opc cancel` the subtree (landed on main as of a4e7c1c), which flips the root to `failed + cancelled_at != NULL`, making it revisit-eligible.
 - **No schema migration.** No `attempt_number` column, no new tables. Revisit state is carried entirely by the existing `tasks` row and `audit_log` table.
 - **No UI beyond CLI.** The founder reads revisit history through the existing `opc audit` command.
 - **No retry limit.** Revisits are stackable; a revisit whose second attempt also cascade-fails can itself be revisited. Trusting the founder.
@@ -67,6 +69,8 @@ Content-Type: application/json
 }
 ```
 
+`prior_root_status` is one of `"failed"`, `"failed-cancelled"`, or `"blocked-escalated"` — matches the value that will appear in the EH prompt header.
+
 **404** — unknown `task_id`.
 
 **409 `cannot_revisit`** — root is in an ineligible state. Body:
@@ -99,9 +103,11 @@ POST /tasks/TASK-X/revisit
        • write audit entry to TASK-R: action="revisit_requested",
          payload={flagged: TASK-X, cascade: [TASK-R, …, TASK-X],
                   prior_status: "failed" | "blocked",
+                  prior_cancelled: bool,
                   founder_note: str | null}
        • update tasks SET status='pending', block_kind=NULL,
-         note='revisit requested for TASK-X' WHERE id=TASK-R
+         cancelled_at=NULL, note='revisit requested for TASK-X'
+         WHERE id=TASK-R
    │
    ├─ (outside db_lock) enqueue_task(state, TASK-R)
    │
@@ -114,9 +120,9 @@ CLI streams TASK-R's events via existing SSE pipe
 
 ### 4.1 State Semantics
 
-- **TASK-R (root)** — mutated in-place. Status flips `failed → pending → in_progress → … → (terminal again)`. Audit log accumulates: original attempt's session_starts/ends, then `revisit_requested`, then attempt-2 session_starts/ends. A single coherent task row with multiple lifecycles.
+- **TASK-R (root)** — mutated in-place. Status flips `failed → pending → in_progress → … → (terminal again)`. If the root was cancelled (`cancelled_at != NULL`), `cancelled_at` is cleared to `NULL` — otherwise `run_step`'s cancellation short-circuit (`run_step.py:40-42`) would silently drop the re-enqueued task. Audit log accumulates: original attempt's session_starts/ends, then `revisit_requested`, then attempt-2 session_starts/ends. A single coherent task row with multiple lifecycles.
 
-- **TASK-X and all frozen descendants** — never mutated by revisit. Their FAILED (or COMPLETED) status + notes remain visible via `opc details` for the EH to inspect during its decision step. They stay parented to the same root.
+- **TASK-X and all frozen descendants** — never mutated by revisit. Their FAILED (or COMPLETED) status + notes — including any `cancelled_at` timestamps from a prior `opc cancel` — remain visible via `opc details` for the EH to inspect during its decision step. They stay parented to the same root. (Descendants stay cancelled; only the root is un-cancelled so it can re-enter the orchestration loop.)
 
 - **New work the EH delegates post-revisit** — becomes brand-new child tasks under TASK-R (new IDs). Sibling-of-spirit to the frozen ones, same `parent_task_id`.
 
@@ -137,10 +143,12 @@ If yes, prepend a 4-line (or 5-line with founder note) header to the prompt:
 ```
 REVISIT: founder flagged TASK-X for re-examination.
 Cascade chain (root → flagged): TASK-R → TASK-A → TASK-B → TASK-X
-Root prior status: failed   (or: blocked-escalated)
+Root prior status: failed   (or: failed-cancelled, blocked-escalated)
 Founder note: <text>        (omitted if --note not provided)
 Investigate via `opc details <id>` and `opc audit <id>` before deciding.
 ```
+
+`failed-cancelled` signals that the prior attempt was aborted by `opc cancel`, not by its own failure. This matters because cancelled subtrees may have left incomplete work in external systems (half-written files, open PRs) — the EH should use `opc audit <id>` to read the `cancel_requested` audit entry and its `reason` field before deciding.
 
 After the EH writes its first post-revisit `orchestration_step`, the latest-step timestamp exceeds the revisit entry → the header disappears on subsequent cycles. Purely timestamp-based; no explicit consumed flag, no new column.
 
@@ -150,14 +158,15 @@ The EH then investigates at whatever depth it deems fit (its workspace permissio
 
 All validation happens server-side, inside `state.db_lock`, before the mutation:
 
-| Root state              | Action                                                               |
-| ----------------------- | -------------------------------------------------------------------- |
-| `failed`                | **Allow.** Clean revival case.                                       |
-| `blocked(escalated)`    | **Allow.** Founder withdraws escalation and retries in its stead.    |
-| `blocked(delegated)`    | **Reject 409.** Siblings in-flight; revisit would race their terminal callbacks. Requires `opc cancel` (future work) first. |
-| `in_progress`           | **Reject 409.** EH mid-step; mutating the row would corrupt the run. |
-| `pending`               | **Reject 409.** Already queued; nothing to revisit.                  |
-| `completed`             | **Reject 409.** No failure to revisit. Founder should use fresh `opc run`. |
+| Root state                                   | Action                                                               |
+| -------------------------------------------- | -------------------------------------------------------------------- |
+| `failed` + `cancelled_at IS NULL`            | **Allow.** Clean revival case (cascade-failure or agent-reported failure). |
+| `failed` + `cancelled_at IS NOT NULL`        | **Allow.** Founder-cancelled subtree; revisit un-cancels the root (descendants stay cancelled). |
+| `blocked(escalated)`                         | **Allow.** Founder withdraws escalation and retries in its stead.    |
+| `blocked(delegated)`                         | **Reject 409.** Siblings in-flight; revisit would race their terminal callbacks. Founder must `opc cancel <root>` first, then revisit. |
+| `in_progress`                                | **Reject 409.** EH mid-step; mutating the row would corrupt the run. Cancel first if truly wedged. |
+| `pending`                                    | **Reject 409.** Already queued; nothing to revisit.                  |
+| `completed`                                  | **Reject 409.** No failure to revisit. Founder should use fresh `opc run`. |
 
 **Ancestor walk:** follow `parent_task_id` until NULL. Hard-cap at 20 hops (defensive; real lineages are 2-4 deep). Overrun → 500 `lineage_too_deep`.
 
@@ -165,8 +174,8 @@ All validation happens server-side, inside `state.db_lock`, before the mutation:
 
 Inside `async with state.db_lock`:
 
-1. **Insert `revisit_requested` audit entry** *first*. If the subsequent update fails, we at least have a record of founder intent.
-2. **UPDATE tasks** row: `status='pending'`, `block_kind=NULL`, `note='revisit requested for TASK-X'`.
+1. **Insert `revisit_requested` audit entry** *first*. If the subsequent update fails, we at least have a record of founder intent. Payload includes `prior_cancelled: bool` so post-hoc audit reads can distinguish "revived a cancelled root" from "revived a naturally-failed root" without re-reading the tasks row.
+2. **UPDATE tasks** row: `status='pending'`, `block_kind=NULL`, `cancelled_at=NULL`, `note='revisit requested for TASK-X'`. **The `cancelled_at=NULL` clear is load-bearing** — `run_step` short-circuits on any non-NULL `cancelled_at` (see `run_step.py:40-42`), so failing to clear it would leave the queue event to be silently dropped, stranding the root in `pending` forever.
 
 Outside the lock:
 
@@ -180,27 +189,30 @@ Outside the lock:
 4. **Revisit → revisit.** Attempt-2 cascade-fails again; founder revisits same root again. Audit log now has two `revisit_requested` entries. Prompt builder uses the *latest* one for the header. All prior entries remain visible via `opc audit`.
 5. **Revisit a task whose root was successfully revisited and completed.** Root status is `completed` → 409. Founder should use `opc run` with a fresh brief.
 6. **Concurrent revisits on the same root.** Both land inside `db_lock` sequentially. First succeeds (root `failed → pending`). Second sees `pending` → 409. No race.
+7. **Cancel → revisit.** Founder cancels a wedged in-flight root via `opc cancel`, which flips it to `failed + cancelled_at != NULL + block_kind=None` (per `routes/tasks.py` cancel endpoint). Revisit accepts this state, clears `cancelled_at`, emits the `failed-cancelled` prior-status header to the EH, and enqueues. Descendants remain cancelled — they are historical record, not work to resume.
+8. **Cancel → revisit → new cancel.** After revisit, the root runs again. If the founder cancels this second attempt, `cancelled_at` gets set again, `run_step` starts short-circuiting, and the root becomes revisit-eligible again via the same code path. Symmetric with edge case 4 (revisit → revisit).
 
 ## 8. Test Plan
 
 ### Unit tests (in-process, `tests/`)
 
 1. `test_revisit_walks_cascade_to_root` — leaf → chain → root resolution.
-2. `test_revisit_flips_failed_root` — root `failed` → `pending`, audit entry written, queue gains root.
+2. `test_revisit_flips_failed_root` — root `failed` (not cancelled) → `pending`, audit entry written, queue gains root, `cancelled_at` stays `NULL`.
 3. `test_revisit_flips_escalated_root` — root `blocked(escalated)` → `pending`, `block_kind` cleared.
-4. `test_revisit_rejects_ineligible_states` — parameterized over `in_progress`, `pending`, `completed`, `blocked(delegated)` → 409 with structured reason.
-5. `test_revisit_missing_task` — 404.
-6. `test_revisit_prompt_injection_on_first_step` — `revisit_requested` present, no later `orchestration_step` → EH prompt contains the 4-line header.
-7. `test_revisit_prompt_no_reinjection_after_first_step` — after one `orchestration_step` lands, header disappears from next EH prompt.
-8. `test_revisit_founder_note_in_header` — `--note` round-trips to the 5th prompt line.
-9. `test_revisit_cascade_fail_still_applies_in_second_attempt` — revived attempt's child fails → cascade still cascades root back to `FAILED`. Second `revisit_requested` entry can then trigger another revival.
-10. `test_revisit_descendants_unchanged` — frozen tasks' `status`, `note`, `block_kind` unmodified after revisit.
-11. `test_revisit_flagged_task_is_root` — `TASK-R` itself; cascade single-element.
-12. `test_revisit_lineage_too_deep` — fabricate a 21-hop chain; expect 500.
+4. `test_revisit_clears_cancelled_at_on_cancelled_root` — root `failed + cancelled_at != NULL` → `pending`, `cancelled_at` is `NULL`, `prior_cancelled=True` in audit payload, header shows `failed-cancelled`. **Also** verifies `run_step` actually picks up the re-enqueued task (regression guard against the short-circuit bug).
+5. `test_revisit_rejects_ineligible_states` — parameterized over `in_progress`, `pending`, `completed`, `blocked(delegated)` → 409 with structured reason.
+6. `test_revisit_missing_task` — 404.
+7. `test_revisit_prompt_injection_on_first_step` — `revisit_requested` present, no later `orchestration_step` → EH prompt contains the 4-line header.
+8. `test_revisit_prompt_no_reinjection_after_first_step` — after one `orchestration_step` lands, header disappears from next EH prompt.
+9. `test_revisit_founder_note_in_header` — `--note` round-trips to the 5th prompt line.
+10. `test_revisit_cascade_fail_still_applies_in_second_attempt` — revived attempt's child fails → cascade still cascades root back to `FAILED`. Second `revisit_requested` entry can then trigger another revival.
+11. `test_revisit_descendants_unchanged` — frozen tasks' `status`, `note`, `block_kind`, `cancelled_at` unmodified after revisit (descendants of a cancelled root stay cancelled).
+12. `test_revisit_flagged_task_is_root` — `TASK-R` itself; cascade single-element.
+13. `test_revisit_lineage_too_deep` — fabricate a 21-hop chain; expect 500.
 
 ### Integration test (`tests/integration/`)
 
-13. `test_revisit_roundtrip_completes` — submit task → fake EH delegates to dev_agent → dev_agent fails → cascade-fail fires → `opc revisit <child>` → fake EH (reads `revisit_requested` via a plan-env flag) returns `{"action": "done"}` → root reaches `completed`. Full end-to-end through the real daemon, fake Claude binary, and SSE stream.
+14. `test_revisit_roundtrip_completes` — submit task → fake EH delegates to dev_agent → dev_agent fails → cascade-fail fires → `opc revisit <child>` → fake EH (reads `revisit_requested` via a plan-env flag) returns `{"action": "done"}` → root reaches `completed`. Full end-to-end through the real daemon, fake Claude binary, and SSE stream.
 
 ## 9. Implementation Scope (estimate)
 
