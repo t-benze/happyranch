@@ -995,6 +995,68 @@ def test_cmd_talk_start_conflict_exits_with_message(capsys):
     assert "already" in out.lower() or "open talk" in out.lower()
 
 
+def test_talk_end_parses():
+    parser = build_parser()
+    args = parser.parse_args([
+        "talk", "end", "--talk-id", "TALK-001", "--from-file", "/tmp/x.json",
+    ])
+    assert args.command == "talk"
+    assert args.talk_command == "end"
+    assert args.talk_id == "TALK-001"
+    assert args.from_file == "/tmp/x.json"
+
+
+def test_cmd_talk_end_success(tmp_path, capsys):
+    import json
+    from argparse import Namespace
+
+    from src.cli import cmd_talk_end
+
+    payload = {
+        "summary": "ok",
+        "topic_list": [],
+        "transcript_markdown": "t",
+        "learnings": [{"text": "x"}, {"text": "y"}, {"text": "z"}],
+        "kb_slugs": [],
+    }
+    payload_path = tmp_path / "end.json"
+    payload_path.write_text(json.dumps(payload))
+
+    fake = MagicMock()
+    fake.post.return_value.status_code = 200
+    fake.post.return_value.json.return_value = {
+        "talk_id": "TALK-007",
+        "status": "closed",
+        "new_learnings_count": 3,
+        "transcript_path": "/r/talks/TALK-007.md",
+    }
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        args = Namespace(talk_id="TALK-007", from_file=str(payload_path))
+        cmd_talk_end(args)
+    fake.post.assert_called_once_with(
+        "/api/v1/talks/TALK-007/end", json=payload
+    )
+    out = capsys.readouterr().out
+    assert "TALK-007" in out
+    assert "closed" in out.lower() or "ok" in out.lower()
+
+
+def test_cmd_talk_end_missing_file(tmp_path, capsys):
+    from argparse import Namespace
+
+    from src.cli import cmd_talk_end
+
+    missing = tmp_path / "does-not-exist.json"
+    fake = MagicMock()
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        args = Namespace(talk_id="TALK-007", from_file=str(missing))
+        with pytest.raises(SystemExit):
+            cmd_talk_end(args)
+    out = capsys.readouterr().out
+    assert "Error reading" in out
+    fake.post.assert_not_called()
+
+
 def test_cmd_details_shows_note(capsys):
     from src.cli import cmd_details
     from argparse import Namespace

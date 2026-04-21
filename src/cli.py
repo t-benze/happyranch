@@ -767,6 +767,24 @@ def cmd_talk_abandon(args: argparse.Namespace) -> None:
     print(f"ok: abandoned {args.talk_id}")
 
 
+def cmd_talk_end(args: argparse.Namespace) -> None:
+    import json as _json
+    client = OpcClient.from_env()
+    try:
+        body = _json.loads(Path(args.from_file).read_text())
+    except (OSError, ValueError) as exc:
+        print(f"Error reading {args.from_file}: {exc}")
+        sys.exit(1)
+    r = client.post(f"/api/v1/talks/{args.talk_id}/end", json=body)
+    if not _ok(r):
+        return
+    resp = r.json()
+    print(
+        f"ok: closed {resp['talk_id']} — {resp['new_learnings_count']} learnings, "
+        f"transcript at {resp['transcript_path']}"
+    )
+
+
 def cmd_resolve_escalation(args: argparse.Namespace) -> None:
     client = OpcClient.from_env()
     r = client.post(
@@ -1037,6 +1055,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_talk_abandon.add_argument("--talk-id", required=True)
     p_talk_abandon.add_argument("--reason", default="manual")
     p_talk_abandon.set_defaults(func=cmd_talk_abandon)
+
+    p_talk_end = talk_sub.add_parser("end", help="End a talk (agent callback)")
+    p_talk_end.add_argument("--talk-id", required=True)
+    p_talk_end.add_argument("--from-file", required=True)
+    p_talk_end.set_defaults(func=cmd_talk_end)
 
     # opc resolve-escalation
     p_resolve = sub.add_parser("resolve-escalation", help="Resolve an escalated task (founder only)")
