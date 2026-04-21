@@ -117,7 +117,7 @@ def test_skill_cli_commands_exist() -> None:
                 idx = line.find("opc ")
                 tokens = line[idx + 4:].split()
                 if tokens:
-                    referenced.add(tokens[0])
+                    referenced.add(tokens[0].rstrip("`,."))
     referenced -= {"<subcommand>"}
     missing = referenced - known
     assert not missing, f"skills reference missing CLI commands: {missing}"
