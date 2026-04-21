@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from src.daemon import paths as paths_mod
+from src.daemon import runtimes as runtimes_mod
 from src.runtime import RuntimeDir
 
 
@@ -49,7 +50,16 @@ def fake_claude(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def fake_plan_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def fake_codex(tmp_path: Path) -> Path:
+    src = Path(__file__).parent / "fake_codex.sh"
+    dst = tmp_path / "fake_codex.sh"
+    dst.write_bytes(src.read_bytes())
+    dst.chmod(0o755)
+    return dst
+
+
+@pytest.fixture
+def fake_claude_plan_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Pre-declare FAKE_CLAUDE_PLAN so the daemon inherits it at launch time.
 
     The test body writes the plan script at this path AFTER the daemon is up,
@@ -63,12 +73,69 @@ def fake_plan_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture
-def live_daemon(tmp_home, fake_claude, fake_plan_env, monkeypatch):
+def fake_codex_plan_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Pre-declare FAKE_CODEX_PLAN so the daemon inherits it at launch time."""
+    plan_path = tmp_path / "plan_codex.sh"
+    monkeypatch.setenv("FAKE_CODEX_PLAN", str(plan_path))
+    return plan_path
+
+
+@pytest.fixture
+def fake_plan_env(fake_claude_plan_env: Path) -> Path:
+    """Backward-compatible alias for the Claude plan env fixture."""
+    return fake_claude_plan_env
+
+
+@pytest.fixture
+def live_daemon(
+    tmp_home,
+    runtime,
+    fake_claude,
+    fake_codex,
+    fake_claude_plan_env,
+    fake_codex_plan_env,
+    monkeypatch,
+):
     """Start the daemon via scripts/daemon.sh and stop it after the test."""
     monkeypatch.setenv("OPC_CLAUDE_CLI_PATH", str(fake_claude))
+    monkeypatch.setenv("OPC_CODEX_CLI_PATH", str(fake_codex))
+    from src.daemon import runtimes as runtimes_mod
+
+    runtimes_mod.register(runtime)
     script = Path(__file__).resolve().parent.parent.parent / "scripts" / "daemon.sh"
     subprocess.run([str(script), "start"], check=True)
     # Wait for /health to respond
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if paths_mod.port_file().exists():
+            port = paths_mod.port_file().read_text().strip()
+            try:
+                r = httpx.get(f"http://127.0.0.1:{port}/api/v1/health", timeout=1.0)
+                if r.status_code == 200:
+                    yield port
+                    break
+            except httpx.HTTPError:
+                pass
+        time.sleep(0.2)
+    else:
+        raise RuntimeError("daemon failed to start")
+    subprocess.run([str(script), "stop"], check=False)
+
+
+@pytest.fixture
+def live_daemon_idle(
+    tmp_home,
+    fake_claude,
+    fake_codex,
+    fake_claude_plan_env,
+    fake_codex_plan_env,
+    monkeypatch,
+):
+    """Start the daemon with no active runtime registered yet."""
+    monkeypatch.setenv("OPC_CLAUDE_CLI_PATH", str(fake_claude))
+    monkeypatch.setenv("OPC_CODEX_CLI_PATH", str(fake_codex))
+    script = Path(__file__).resolve().parent.parent.parent / "scripts" / "daemon.sh"
+    subprocess.run([str(script), "start"], check=True)
     deadline = time.time() + 5
     while time.time() < deadline:
         if paths_mod.port_file().exists():

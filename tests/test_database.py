@@ -235,6 +235,7 @@ def test_insert_enrollment(db):
         description="Writes destination guides",
         system_prompt="You are the Content Writer...",
         repos={"web-content": "https://github.com/t-benze/web-content.git"},
+        executor="codex",
     )
     e = db.get_enrollment("content_writer")
     assert e is not None
@@ -242,6 +243,13 @@ def test_insert_enrollment(db):
     assert e["description"] == "Writes destination guides"
     assert e["status"] == "pending"
     assert e["repos"] == '{"web-content": "https://github.com/t-benze/web-content.git"}'
+    assert e["executor"] == "codex"
+
+
+def test_insert_enrollment_defaults_executor_to_claude(db):
+    db.insert_enrollment("x", "desc", "prompt")
+    e = db.get_enrollment("x")
+    assert e["executor"] == "claude"
 
 
 def test_get_enrollment_missing(db):
@@ -270,10 +278,17 @@ def test_update_enrollment_status(db):
 
 def test_update_enrollment_fields(db):
     db.insert_enrollment("x", "old desc", "old prompt")
-    db.update_enrollment_fields("x", description="new desc", system_prompt="new prompt", repos={"r": "u"})
+    db.update_enrollment_fields(
+        "x",
+        description="new desc",
+        system_prompt="new prompt",
+        repos={"r": "u"},
+        executor="codex",
+    )
     e = db.get_enrollment("x")
     assert e["description"] == "new desc"
     assert e["system_prompt"] == "new prompt"
+    assert e["executor"] == "codex"
 
 
 def test_delete_enrollment(db):

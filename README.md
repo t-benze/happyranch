@@ -4,7 +4,7 @@ A one-person company (OPC) that provides online tourism information and booking 
 
 ## How It Works
 
-OPC runs as a local **HTTP daemon** that dispatches tasks to AI agents running as [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions. The `opc` CLI is a thin client that talks to the daemon. Each agent has a persistent workspace, a performance scorecard, and a defined role within the organization.
+OPC runs as a local **HTTP daemon** that dispatches tasks to AI agents running as coding-agent CLI sessions. The `opc` CLI is a thin client that talks to the daemon. Each agent has a persistent workspace, a performance scorecard, and a defined role within the organization. Executor selection is per-agent: some agents may run on [Claude Code](https://docs.anthropic.com/en/docs/claude-code) while others run on Codex.
 
 ### Agent-Driven Organization
 
@@ -20,7 +20,9 @@ The EH can delegate multiple steps (e.g., PM writes spec, then Dev implements), 
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/) (package manager)
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
+- At least one supported agent CLI installed and authenticated:
+  - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)
+  - Codex CLI
 
 ## Setup
 
@@ -111,7 +113,7 @@ The EH can propose new agents during task execution using the `manage-agent` ski
 # Founder reviews pending enrollments
 opc enrollments --status pending
 
-# Approve — bootstraps workspace (CLAUDE.md, settings, skills, repo clones)
+# Approve — bootstraps workspace files, skills, and repo clones
 opc approve-agent content_writer
 
 # Or reject
@@ -162,6 +164,7 @@ Operational settings use the `OPC_` environment variable prefix. Runtime paths (
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OPC_CLAUDE_CLI_PATH` | `claude` | Path to Claude Code CLI |
+| `OPC_CODEX_CLI_PATH` | `codex` | Path to Codex CLI |
 | `OPC_PERMISSION_MODE` | `auto` | Claude Code permission mode |
 | `OPC_MAX_ORCHESTRATION_STEPS` | `10` | Max EH decision steps before escalation |
 | `OPC_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout (30 min) |
@@ -173,10 +176,13 @@ Operational settings use the `OPC_` environment variable prefix. Runtime paths (
 Each agent has an `agent.yaml` in its workspace (`<runtime>/workspaces/<agent>/agent.yaml`). Created automatically by `opc init-agent` with empty defaults:
 
 ```yaml
+executor: claude
 repos:
   web-app: https://github.com/user/web-app.git
   docs: https://github.com/user/docs.git
 ```
+
+`executor` may be `claude` or `codex`. If omitted in an older workspace, it defaults to `claude`.
 
 Repos are cloned into the agent's workspace on `opc init-agent` and auto-pulled before each task.
 
@@ -196,10 +202,11 @@ Tier information is exposed to the EH in its capabilities prompt, so it influenc
 
 Each agent runs in its own persistent workspace inside the runtime directory. After running `opc init-agent`, each workspace contains:
 
-- `agent.yaml` — per-agent configuration (repos, etc.)
-- `CLAUDE.md` — agent identity, system prompt, available repos
-- `.claude/settings.json` — permissions and git-pull hooks
-- `.claude/skills/` — `start-task`, `make-worktree`, `manage-repo`, and `manage-agent` skills
+- `agent.yaml` — per-agent configuration (`executor`, repos, etc.)
+- `CLAUDE.md` — Claude workspaces: agent identity, system prompt, available repos
+- `AGENTS.md` — Codex workspaces: agent identity, system prompt, available repos
+- `.claude/settings.json` — Claude workspaces: permissions and git-pull hooks
+- `.claude/skills/` — shared skills copied into the workspace
 - `repos/` — git clones of repositories configured in `agent.yaml` (auto-pulled before each task)
 - `learnings.md` — agent-written insights from past tasks (appended via `opc learning`)
 - `scorecard.md` — performance summary (updated by orchestrator)

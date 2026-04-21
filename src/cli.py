@@ -491,6 +491,9 @@ def cmd_manage_agent(args: argparse.Namespace) -> None:
             body["description"] = args.description
         if args.system_prompt:
             body["system_prompt"] = args.system_prompt
+        executor = getattr(args, "executor", None)
+        if executor is not None:
+            body["executor"] = executor
         if args.repos:
             body["repos"] = _json.loads(args.repos)
 
@@ -828,6 +831,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_ma.add_argument("--session-id", dest="session_id", default=None, help="Active EH session ID")
     p_ma.add_argument("--description", default=None, help="Agent description")
     p_ma.add_argument("--system-prompt", dest="system_prompt", default=None, help="System prompt")
+    p_ma.add_argument("--executor", default=None, help="Agent executor (default: claude)")
     p_ma.add_argument("--repos", default=None, help="JSON dict of repos")
     p_ma.add_argument("--from-file", dest="from_file", default=None,
                        help="Path to JSON file with enrollment payload")

@@ -6,7 +6,7 @@ The application layer that drives the organization — task routing, inter-team 
 
 ## 1. Orchestrator Responsibilities
 
-The orchestrator is the application code that ties everything together. It spawns Claude Code agent sessions, feeds manager decisions back into a loop, routes work between teams, and persists every step.
+The orchestrator is the application code that ties everything together. It spawns executor-backed agent sessions, feeds manager decisions back into a loop, routes work between teams, and persists every step.
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -107,16 +107,16 @@ The Team is instantiated with the appropriate Task list each time. This is not s
 
 ## 3. Permission and Authority Model
 
-### Approach: Claude Code native permissions + system prompt guardrails
+### Approach: executor-native sandboxing + system prompt guardrails
 
-All agents run with `claude --permission-mode auto`. Permissions are generous — agents can read, write, and execute freely within their workspace. The `.claude/settings.json` in each workspace auto-allows all standard tools.
+Agents run through their configured executor. Claude sessions use `claude --permission-mode auto` plus a narrow `Bash(opc:*)` allow rule for callbacks. Codex sessions use `codex exec` with the configured sandbox mode. Permissions are otherwise generous — agents can read, write, and execute within their workspace.
 
 **Founder-concern boundaries** (the only things that truly need restricting) are enforced through two layers:
 
-1. **System prompt** — each agent's `CLAUDE.md` explicitly states what it cannot do. The agent is instructed to call `escalate()` when it encounters these boundaries.
+1. **System prompt** — each agent's bootstrap doc (`CLAUDE.md` or `AGENTS.md`) explicitly states what it cannot do. The agent is instructed to call `escalate()` when it encounters these boundaries.
 2. **Orchestrator post-session review** — the orchestrator inspects completion reports and audit logs for violations. If an agent somehow bypasses its system prompt instructions, the orchestrator catches it and escalates.
 
-This approach avoids building a complex custom permission layer. Claude Code's `--permission-mode auto` eliminates approval friction, while the system prompt provides the "soft" guardrails and the orchestrator provides the "hard" backstop.
+This approach avoids building a complex custom permission layer. The executor handles low-level sandboxing, while the system prompt provides the "soft" guardrails and the orchestrator provides the "hard" backstop.
 
 ### What counts as a founder-concern boundary
 

@@ -1,67 +1,33 @@
 from __future__ import annotations
 
-import json
 import logging
-import shutil
 import subprocess
 from pathlib import Path
 
 from src.config import Settings
+from src.orchestrator.workspace_adapters import (
+    ClaudeWorkspaceAdapter,
+    CodexWorkspaceAdapter,
+)
 
 logger = logging.getLogger(__name__)
-
-
-def _build_settings_json(repo_names: list[str]) -> dict:
-    """Build .claude/settings.json with a git pull hook for all repos."""
-    if repo_names:
-        # Pull all repos on first tool use
-        pull_cmds = " && ".join(
-            f"(cd repos/{name} && git pull --ff-only 2>/dev/null; true)"
-            for name in repo_names
-        )
-        hooks = {
-            "PreToolUse": [
-                {
-                    "matcher": "Bash|Read|Grep|Glob",
-                    "hooks": [
-                        {
-                            "type": "command",
-                            "command": pull_cmds,
-                            "once": True,
-                        }
-                    ],
-                }
-            ]
-        }
-    else:
-        hooks = {}
-
-    return {
-        "permissions": {
-            # The orchestrator's CLI (`opc …`) is the agent's only sanctioned
-            # side-effect channel — report-completion, learning, etc. Pin it
-            # open so callbacks can't be silently blocked by auto-mode
-            # prompting. Everything else falls under Claude Code's default
-            # auto-mode behavior (read-only tools run, writes/arbitrary Bash
-            # prompt).
-            "allow": ["Bash(opc:*)"]
-        },
-        "hooks": hooks,
-    }
 
 
 class ContextBuilder:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
+        self._claude = ClaudeWorkspaceAdapter(settings)
+        self._codex = CodexWorkspaceAdapter(settings)
+
+    def _adapter(self, provider: str = "claude"):
+        if provider == "claude":
+            return self._claude
+        if provider == "codex":
+            return self._codex
+        raise ValueError(f"unknown workspace provider: {provider}")
 
     def write_settings_json(self, workspace: Path, repo_names: list[str] | None = None) -> None:
-        """Write .claude/settings.json to workspace."""
-        claude_dir = workspace / ".claude"
-        claude_dir.mkdir(parents=True, exist_ok=True)
-        settings_data = _build_settings_json(repo_names or [])
-        (claude_dir / "settings.json").write_text(
-            json.dumps(settings_data, indent=2) + "\n"
-        )
+        self._claude.write_settings_json(workspace, repo_names=repo_names)
 
     def write_claude_md(
         self,
@@ -76,113 +42,26 @@ class ContextBuilder:
         inline — CLAUDE.md just points at ``agent.yaml`` as the source of
         truth so the repo list doesn't drift between the two files.
         """
-        workspace.mkdir(parents=True, exist_ok=True)
-        sections = [
-            f"# Agent: {agent_name}\n",
-            "## System Prompt\n",
-            system_prompt.strip() + "\n",
-            "## Available Repositories\n",
-            "See `agent.yaml` in this workspace for the authoritative list of",
-            "repositories cloned under `repos/`. Each is kept fresh via the",
-            "PreToolUse hook in `.claude/settings.json`.\n",
-            "## Persistent Files\n",
-            "- `learnings.md` -- your accumulated operational learnings",
-            "- `scorecard.md` -- read-only, updated by orchestrator",
-            "- `task_history.md` -- read-only, updated by orchestrator\n",
-            "## Knowledge Base (shared across agents)\n",
-            "Path: `<runtime>/kb/`. Read: everyone. Write: any agent (via `--from-file`).",
-            "Delete: engineering_head only. Full rules: `protocol/06-knowledge-base.md`.",
-            "The **start-task** skill's *Consult KB* and *Contribute to KB* steps are",
-            "mandatory — do not skip them.\n",
-            "Read:",
-            "```",
-            "opc kb list [--topic <t>] [--type reference|precedent]",
-            "opc kb search \"<keywords>\"",
-            "opc kb get <slug>",
-            "```\n",
-            "Write (durable, cross-agent knowledge only — regulations, partner-API quirks,",
-            "payment flows, precedents; **not** task-specific notes):",
-            "```",
-            "opc kb add --agent <you> --from-file /tmp/kb-<slug>.md",
-            "opc kb update <slug> --agent <you> --from-file /tmp/kb-<slug>.md",
-            "```",
-            "Payload file needs YAML frontmatter (`slug`, `title`, `type`, `topic`,",
-            "optional `tags`, `source_task`) followed by a markdown body. The `--from-file`",
-            "form is mandatory — multi-line `opc` invocations are blocked by the",
-            "`Bash(opc:*)` permission rule.\n",
-            "## Task Recall\n",
-            "Past task context (brief, completion summary, artifacts) is retrievable via:",
-            "```",
-            "opc recall <task_id>                              # brief + final summary",
-            "opc recall <task_id> --tree                       # list files under artifacts/<task_id>/",
-            "opc recall <task_id> --fetch-artifact <relpath>   # read one artifact",
-            "```",
-            "Use when the current brief references a prior task, when you need to revisit",
-            "your own earlier output before reworking, or when a KB precedent points to",
-            "`source_task: TASK-xyz`. Your own recent activity is also summarized in",
-            "`task_history.md` at the workspace root.\n",
-            "## Workflow\n",
-            "Every task arrives via the orchestrator's prompt. Use the **start-task** skill",
-            "(in `.claude/skills/start-task/`) to parse parameters and report completion via",
-            "`opc report-completion`. Mid-task learnings go through `opc learning`.\n",
-        ]
-        (workspace / "CLAUDE.md").write_text("\n".join(sections))
+        self._claude.write_claude_md(workspace, agent_name, system_prompt, repo_names=repo_names)
 
-    def _copy_skills(self, workspace: Path) -> None:
-        """Copy protocol/skills/ tree into workspace/.claude/skills/."""
-        src = self._settings.get_protocol_dir() / "skills"
-        if not src.exists():
-            return
-        dst = workspace / ".claude" / "skills"
-        dst.mkdir(parents=True, exist_ok=True)
-        for child in src.iterdir():
-            target = dst / child.name
-            if target.exists():
-                shutil.rmtree(target)
-            shutil.copytree(child, target)
+    def write_agents_md(
+        self,
+        workspace: Path,
+        agent_name: str,
+        system_prompt: str,
+        repo_names: list[str] | None = None,
+    ) -> None:
+        self._codex.write_agents_md(workspace, agent_name, system_prompt, repo_names=repo_names)
 
     def ensure_workspace_ready(
         self,
         workspace: Path,
         agent_name: str,
         system_prompt: str,
+        provider: str = "claude",
     ) -> None:
-        """Make sure an agent workspace has every file the orchestrator requires.
-
-        Persistent files (learnings, scorecard, task history) are created only if
-        missing. CLAUDE.md, settings.json, and the skills tree are always
-        regenerated so workspaces carried over from older code self-heal.
-        """
-        workspace.mkdir(parents=True, exist_ok=True)
-
-        # Migrate legacy recent_tasks.md → task_history.md in place so no
-        # history is lost on workspaces created before the rename.
-        legacy = workspace / "recent_tasks.md"
-        renamed = workspace / "task_history.md"
-        if legacy.exists() and not renamed.exists():
-            legacy.rename(renamed)
-
-        for filename, default_content in [
-            ("learnings.md", f"# Learnings: {agent_name}\n\n"),
-            ("scorecard.md", "# Scorecard\n\nNo performance data yet. Tier: green (default)\n"),
-            ("task_history.md", f"# Task History: {agent_name}\n\n"),
-        ]:
-            path = workspace / filename
-            if not path.exists():
-                path.write_text(default_content)
-
-        # Detect cloned repos
-        repos_dir = workspace / "repos"
-        repo_names = []
-        if repos_dir.exists():
-            repo_names = sorted(
-                d.name for d in repos_dir.iterdir()
-                if d.is_dir() and (d / ".git").exists()
-            )
-
-        self.write_claude_md(workspace, agent_name, system_prompt, repo_names=repo_names)
-        self._copy_skills(workspace)
-        self.write_settings_json(workspace, repo_names=repo_names)
+        """Make sure an agent workspace has every file the orchestrator requires."""
+        self._adapter(provider).ensure_workspace_ready(workspace, agent_name, system_prompt)
 
     def clone_repo(self, workspace: Path, name: str, url: str) -> bool:
         """Clone a repo into workspace/repos/<name>/. Returns True on success."""

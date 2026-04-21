@@ -174,6 +174,22 @@ def test_ensure_workspace_ready_without_skills_dir_is_noop(test_settings, tmp_pa
     assert not (workspace / ".claude" / "skills").exists()
 
 
+def test_ensure_workspace_ready_can_bootstrap_codex_workspace(test_settings, tmp_path):
+    workspace = tmp_path / "workspace"
+    ContextBuilder(test_settings).ensure_workspace_ready(
+        workspace,
+        "dev_agent",
+        "system prompt",
+        provider="codex",
+    )
+    assert (workspace / "AGENTS.md").exists()
+    assert not (workspace / "CLAUDE.md").exists()
+    assert not (workspace / ".claude").exists()
+    body = (workspace / "AGENTS.md").read_text()
+    assert ".claude/settings.json" not in body
+    assert "PreToolUse" not in body
+
+
 def test_claude_md_drops_task_brief_and_completion_report(test_settings, tmp_path):
     workspace = tmp_path / "workspace"
     ContextBuilder(test_settings).write_claude_md(workspace, "dev_agent", "system prompt")

@@ -4,11 +4,13 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from src.config import Settings
 from src.daemon.queue import TaskQueue
+from src.daemon.agent_config import load_agent_config
 from src.infrastructure.database import Database
 from src.models import TaskRecord, TaskStatus, TaskType
 from src.orchestrator.orchestrator import Orchestrator
@@ -131,3 +133,88 @@ async def test_escalation_roundtrip(tmp_path: Path, monkeypatch):
     # No parent, nothing to enqueue. Test asserts the status-transition path.
 
     assert db.get_task("TASK-001").status == TaskStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_init_agents_uses_enrollment_executor_for_workspace_bootstrap(
+    tmp_path: Path,
+    monkeypatch,
+):
+    from fastapi.testclient import TestClient
+    from src.daemon.app import create_app
+    from src.daemon.state import DaemonState
+    from src.daemon.paths import ensure_token
+    from src.daemon import runtimes as runtimes_mod
+
+    runtime = RuntimeDir.init(tmp_path / "rt")
+    db = Database(runtime.db_path)
+    db.insert_enrollment("content_writer", "desc", "prompt", executor="codex")
+    settings = Settings(project_root=Path("/Users/tangbz/projects/my-opc/.worktrees/codex-executor"))
+
+    daemon_home = tmp_path / "home"
+    monkeypatch.setenv("OPC_DAEMON_HOME", str(daemon_home))
+    token = ensure_token()
+    runtimes_mod.register(runtime.root)
+
+    state = DaemonState.from_runtime(runtime, settings)
+    app = create_app(state)
+
+    with patch("src.daemon.routes.agents.ContextBuilder") as MockCB:
+        mock_ctx = MockCB.return_value
+        mock_ctx.clone_repo.return_value = True
+        mock_ctx.ensure_workspace_ready.return_value = None
+        mock_ctx.create_agent_dirs.return_value = None
+
+        response = TestClient(app).post(
+            "/api/v1/agents/init",
+            json={"agent": "content_writer"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 200
+    workspace = runtime.workspaces_dir / "content_writer"
+    cfg = load_agent_config(workspace)
+    assert cfg["executor"] == "codex"
+    assert mock_ctx.ensure_workspace_ready.call_args.kwargs["provider"] == "codex"
+
+
+@pytest.mark.asyncio
+async def test_approve_agent_uses_provider_specific_workspace_bootstrap(
+    tmp_path: Path,
+    monkeypatch,
+):
+    from fastapi.testclient import TestClient
+    from src.daemon.app import create_app
+    from src.daemon.state import DaemonState
+    from src.daemon.paths import ensure_token
+    from src.daemon import runtimes as runtimes_mod
+
+    runtime = RuntimeDir.init(tmp_path / "rt")
+    db = Database(runtime.db_path)
+    db.insert_enrollment("content_writer", "desc", "prompt", executor="codex")
+    settings = Settings(project_root=Path("/Users/tangbz/projects/my-opc/.worktrees/codex-executor"))
+
+    daemon_home = tmp_path / "home"
+    monkeypatch.setenv("OPC_DAEMON_HOME", str(daemon_home))
+    token = ensure_token()
+    runtimes_mod.register(runtime.root)
+
+    state = DaemonState.from_runtime(runtime, settings)
+    app = create_app(state)
+
+    with patch("src.daemon.routes.agents.ContextBuilder") as MockCB:
+        mock_ctx = MockCB.return_value
+        mock_ctx.clone_repo.return_value = True
+        mock_ctx.ensure_workspace_ready.return_value = None
+        mock_ctx.create_agent_dirs.return_value = None
+
+        response = TestClient(app).post(
+            "/api/v1/agents/content_writer/approve",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 200
+    workspace = runtime.workspaces_dir / "content_writer"
+    cfg = load_agent_config(workspace)
+    assert cfg["executor"] == "codex"
+    assert mock_ctx.ensure_workspace_ready.call_args.kwargs["provider"] == "codex"

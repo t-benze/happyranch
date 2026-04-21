@@ -10,16 +10,16 @@ How agents are spawned, how they remember across sessions, and when they run.
 
 Each agent in the organization is not just an LLM call — it's a full coding-agent session that can read files, write files, run commands, search the web, and interact with APIs. The orchestrator layer decides *when* each session runs, *what context* it gets, and *how* outputs flow between them.
 
-### Claude Code as primary executor
+### Per-agent executor selection
 
-All agents run as Claude Code sessions (`claude -p` with `--permission-mode auto`). This gives every agent full coding-agent capabilities: file system access, shell commands, web search, and git operations. Claude Code's native permission system handles tool approval.
+Agents run through a configured coding-agent CLI. Today the runtime supports Claude Code (`claude -p` with `--permission-mode auto`) and Codex (`codex exec --json -`). This gives every agent full coding-agent capabilities: file system access, shell commands, web search, and git operations. Executor selection is stored per workspace in `agent.yaml`, so some agents can stay on Claude while others use Codex.
 
 Each agent's configuration specifies context and workspace:
 
 ```
 agent_config:
   dev_agent:
-    executor: claude-code
+    executor: claude
     system_prompt: 03-system-prompts-workers.md#dev-agent
     workspace: workspaces/dev_agent/
     context_files:
@@ -30,17 +30,17 @@ agent_config:
     permission_mode: auto
 ```
 
-### Context injection via CLAUDE.md
+### Context injection via executor bootstrap docs
 
-The orchestrator assembles each agent's context into a `CLAUDE.md` file placed in the workspace root. This is regenerated at the start of every session. It includes:
+The orchestrator assembles each agent's context into an executor-specific bootstrap file placed in the workspace root. Claude workspaces use `CLAUDE.md`; Codex workspaces use `AGENTS.md`. This file is regenerated at the start of every session. It includes:
 - Agent system prompt (role, accountability contract, performance tiers)
 - Relevant org charter sections
 - Pointer to the agent's persistent learnings and scorecard files
 - Task-specific brief (the actual assignment)
 
-### Permission enforcement via .claude/settings.json
+### Permission enforcement and callbacks
 
-Each workspace has a `.claude/settings.json` that configures Claude Code's auto-allowed tools. Agents run with `--permission-mode auto` — permissions are generous. Agents can read, write, and execute freely within their workspace and the cloned codebase.
+Claude workspaces have a `.claude/settings.json` that configures Claude Code's auto-allowed tools. Codex workspaces do not use that file. Across executors, agents call back through the same single-line `opc ... --from-file` contract. Agents can read, write, and execute freely within their workspace and the cloned codebase, subject to the executor's sandbox mode and the orchestrator's workflow rules.
 
 **Only founder-concern boundaries are restricted** (as defined in the org charter):
 - No `git push` to `main` / production deploy
@@ -48,7 +48,7 @@ Each workspace has a `.claude/settings.json` that configures Claude Code's auto-
 - No raw payment card data storage (PCI-DSS)
 - No publishing content touching political sensitivity
 
-These guardrails are enforced by the agent's system prompt (in `CLAUDE.md`) and the orchestrator's post-session review — not by Claude Code deny rules. If an agent violates a founder-concern boundary, the orchestrator catches it and escalates.
+These guardrails are enforced by the agent's system prompt (in `CLAUDE.md` or `AGENTS.md`) and the orchestrator's post-session review — not by provider-specific deny rules. If an agent violates a founder-concern boundary, the orchestrator catches it and escalates.
 
 ### Full codebase access
 
@@ -60,9 +60,9 @@ Write restrictions are role-based but minimal:
 - Product Manager: writes specs to workspace, no code commits
 - Engineering Head: reviews only, no direct code changes
 
-### Provider-agnostic executor abstraction (future)
+### Executor abstraction
 
-The executor interface is designed to support additional backends later (Codex, OpenCode, other coding-agent CLIs). Swapping an agent from one executor to another will be a one-line config change. For now, all agents use Claude Code.
+The executor interface supports multiple backends now. Claude and Codex are implemented; additional coding-agent CLIs can be added behind the same abstraction. Swapping an agent from one executor to another is a one-line config change in `agent.yaml`.
 
 ---
 
@@ -73,13 +73,14 @@ Coding-agent sessions are stateless — context is lost when a session ends. Age
 
 ### Solution: persistent workspaces with file-based memory
 
-Every agent has a **persistent workspace directory** that survives across sessions. The workspace contains the agent's memory files, any work products it creates (specs, code, proposals), and a cloned copy of the project repo. The orchestrator regenerates `CLAUDE.md` and `.claude/settings.json` at session start, but everything else persists.
+Every agent has a **persistent workspace directory** that survives across sessions. The workspace contains the agent's memory files, any work products it creates (specs, code, proposals), and a cloned copy of the project repo. The orchestrator regenerates the executor bootstrap file (`CLAUDE.md` or `AGENTS.md`) and Claude settings when applicable at session start, but everything else persists.
 
 ```
 workspaces/
 ├── engineering_head/
-│   ├── CLAUDE.md                # Regenerated each session
-│   ├── .claude/settings.json    # Permission config
+│   ├── agent.yaml               # Includes executor + repos
+│   ├── CLAUDE.md or AGENTS.md   # Regenerated each session
+│   ├── .claude/settings.json    # Claude-only permission config
 │   ├── learnings.md             # Persists across sessions
 │   ├── scorecard.md             # Updated by orchestrator after each task
 │   ├── recent_tasks.md          # Rolling summary of last N tasks
@@ -125,7 +126,7 @@ The performance tracker generates a scorecard summary after each task. This is i
 
 ### How context gets assembled at session start
 
-The orchestrator regenerates `CLAUDE.md` in the agent's workspace with:
+The orchestrator regenerates the bootstrap document in the agent's workspace with:
 
 ```
 1. System prompt (from 02/03-system-prompts-*.md)
@@ -135,7 +136,7 @@ The orchestrator regenerates `CLAUDE.md` in the agent's workspace with:
 5. Task-specific context (brief, prior drafts, QA feedback, etc.)
 ```
 
-The agent's persistent files (learnings, scorecard, prior work products) are already in the workspace — `CLAUDE.md` just references them. The orchestrator also runs `git pull` on the repo clone to ensure fresh code.
+The agent's persistent files (learnings, scorecard, prior work products) are already in the workspace — the bootstrap document just references them. The orchestrator also runs `git pull` on the repo clone to ensure fresh code.
 
 ### Write-back protocol
 
