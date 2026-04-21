@@ -315,6 +315,44 @@ markdown entries with atomic writes, a `kb_lock` in daemon state to serialize
 writes, substring/tag search, and `_index.md` regeneration after every write.
 No vector store yet.
 
+## Revisit (founder recovery)
+
+`opc revisit <task-id>` is a founder-initiated primitive that spawns a **new
+root task** inheriting the brief + task_type of a terminal predecessor. The
+existing lineage stays frozen (read-only history) — nothing in the old tree
+is mutated. Design doc: `docs/superpowers/specs/2026-04-21-opc-revisit-design.md`.
+
+Eligibility — predecessor root must be one of:
+- `failed` (orchestrator gave up)
+- `failed` + `cancelled_at != NULL` (founder-cancelled; normalized as
+  `failed-cancelled` on the wire)
+- `blocked(escalated)` (waiting on founder forever)
+- `completed` (re-run an already-finished task, e.g. to retry against new code)
+
+Anything else (`pending`, `in_progress`, `blocked(delegated)`) returns
+**409 `cannot_revisit`** with the predecessor's current status.
+
+Architecture — the predecessor ↔ new-root link lives entirely in `audit_log`;
+no schema migration, no new columns. Inside `state.db_lock` the endpoint
+atomically:
+1. walks ancestors via `walk_ancestors(task_id, max_hops=20)` to find the root
+2. inserts the new root `TaskRecord` (same `brief` + `type`, fresh `id`)
+3. logs `revisit_of` on the new root (payload: `predecessor_root`, `flagged`,
+   `cascade`, `prior_status`, `founder_note`)
+4. logs `revisit_spawned` on the predecessor root
+5. enqueues the new root outside the lock
+
+First EH step injection — on the new root's first `orchestration_step`,
+`_revisit_header_if_applicable(orch, task_id)` prepends a 5-6 line context
+header to the EH prompt. Detected by: `revisit_of` audit entry present AND
+no `orchestration_step` entry yet. Header points the EH at
+`opc details` / `opc audit` / `opc recall` for the frozen predecessor.
+
+Why TTY-gated — no `--yes` bypass, no scripted callers. The CLI (`cmd_revisit`
+in `src/cli.py`) hard-requires `sys.stdin.isatty() and sys.stdout.isatty()`
+then prompts `Continue? [y/N]`. Agent sessions run headless (no TTY), so the
+only way a revisit lands in the audit log is if a human typed it.
+
 ## Maintaining Documentation
 - **README.md** is for end users of the system — only usage-related content (setup, CLI commands, configuration, agent workspaces). No developer internals, code style, directory layout, or implementation details.
 - **CLAUDE.md** is for developers and AI agents working on the codebase — architecture, code patterns, directory layout, implementation order.

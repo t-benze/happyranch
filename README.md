@@ -176,6 +176,17 @@ opc resolve-escalation --task-id <id> --decision approve|reject --rationale "...
 opc revisit TASK-052 [--note "..."]   # founder: spawn a new root that inherits a terminal predecessor's brief
 ```
 
+`opc revisit` takes any task id in a lineage, walks to its root, and — if the
+root ended `failed`, `failed-cancelled`, `blocked(escalated)`, or `completed` —
+spawns a fresh root inheriting the original brief and task type. The old tree
+stays frozen (read-only history); the new root's Engineering Head gets a
+prompt-header pointer back to it so it can inspect what happened via
+`opc details` / `opc audit` / `opc recall`.
+
+Revisit is **TTY-gated** — no `--yes` bypass, no scripted invocations. The CLI
+refuses if stdin/stdout aren't a terminal and requires a `y` at the
+`Continue? [y/N]` confirmation prompt. Only humans can trigger it.
+
 ### Managing the daemon
 
 `scripts/daemon.sh` is a tiny supervisor that records the pid/port under `~/.opc/`:
