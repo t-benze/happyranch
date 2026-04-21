@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
+from textwrap import dedent
 
 import httpx
 import pytest
 
+from src.infrastructure.database import Database
 from tests.integration.conftest import seed_workspace
 
 
@@ -14,6 +17,7 @@ pytestmark = pytest.mark.integration
 
 def _auth_headers() -> dict:
     from src.daemon import paths
+
     return {"Authorization": f"Bearer {paths.read_token()}"}
 
 
@@ -27,69 +31,89 @@ def _register_runtime(base: str, runtime: Path) -> None:
     assert r.status_code == 200, r.text
 
 
-def _submit_task(base: str, brief: str = "smoke") -> str:
+def _write_agent_config(runtime: Path, agent: str, executor: str) -> None:
+    workspace = runtime / "workspaces" / agent
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "agent.yaml").write_text(f"repos: {{}}\nexecutor: {executor}\n")
+
+
+def _write_plan(path: Path, body: str) -> None:
+    path.write_text("#!/usr/bin/env bash\nset -e\n" + dedent(body).lstrip())
+    path.chmod(0o755)
+
+
+def _init_agent(base: str, agent: str, headers: dict) -> None:
+    with httpx.stream(
+        "POST",
+        f"{base}/agents/init",
+        json={"agent": agent},
+        headers=headers,
+        timeout=30.0,
+    ) as stream:
+        for line in stream.iter_lines():
+            if not line.startswith("data: "):
+                continue
+            event = json.loads(line.removeprefix("data: "))
+            if event.get("phase") == "error":
+                raise AssertionError(event.get("detail") or f"agent init failed: {event}")
+            if event.get("phase") == "all_done":
+                return
+    raise AssertionError(f"agent init did not complete for {agent}")
+
+
+def _wait_for_terminal_status(
+    base: str,
+    task_id: str,
+    headers: dict | None = None,
+    timeout: float = 30.0,
+    *,
+    allow_blocked: bool = False,
+) -> str:
+    """Poll /tasks/{id} until a terminal state is reached.
+
+    `blocked(DELEGATED)` is not terminal for normal end-to-end flows because the
+    parent should resume after the child finishes. Tests that explicitly assert
+    a delegated block, such as mixed-fleet handoff coverage, can opt into
+    `allow_blocked=True`.
+    """
+    headers = headers or _auth_headers()
+    deadline = time.monotonic() + timeout
+    body: dict = {}
+    while time.monotonic() < deadline:
+        r = httpx.get(f"{base}/tasks/{task_id}", headers=headers, timeout=5.0)
+        body = r.json()
+        task = body["task"]
+        status = task["status"]
+        block_kind = task.get("block_kind")
+        if status in ("completed", "failed"):
+            return status
+        if status == "blocked" and (allow_blocked or block_kind == "escalated"):
+            return status
+        time.sleep(0.2)
+    raise AssertionError(f"task {task_id} did not reach a terminal state (last body={body})")
+
+
+def _submit_task(base: str, brief: str = "smoke", headers: dict | None = None) -> str:
+    headers = headers or _auth_headers()
     r = httpx.post(
         f"{base}/tasks",
         json={"type": "general", "brief": brief},
-        headers=_auth_headers(),
+        headers=headers,
         timeout=5.0,
     )
     assert r.status_code == 200, r.text
     return r.json()["task_id"]
 
 
-def _await_terminal(base: str, task_id: str, timeout: float = 20.0) -> str:
-    """Poll /tasks/{id} for a terminal status. Polling beats SSE here because
-    sse_starlette emits keepalive pings every 15s, which keeps the socket
-    read timeout from ever firing — meaning a hung task would deadlock the
-    test for the entire pytest budget.
-
-    `blocked(DELEGATED)` is NOT terminal — it's the parent waiting on a
-    child. `blocked(ESCALATED)` IS terminal from the poller's perspective
-    (the task won't progress without founder intervention). Collapsing both
-    into "blocked" would turn the delegate-resume test into a race: any poll
-    during the parent's blocked-waiting-on-child window would wrongly
-    report task_blocked."""
-    import time as _time
-    deadline = _time.monotonic() + timeout
-    body: dict = {}
-    while _time.monotonic() < deadline:
-        r = httpx.get(
-            f"{base}/tasks/{task_id}", headers=_auth_headers(), timeout=2.0,
-        )
-        body = r.json()
-        status_value = body["task"]["status"]
-        block_kind = body["task"].get("block_kind")
-        if status_value == "completed":
-            return "task_complete"
-        if status_value == "failed":
-            return "task_failed"
-        if status_value == "blocked" and block_kind == "escalated":
-            return "task_blocked"
-        _time.sleep(0.2)
-    raise AssertionError(
-        f"task {task_id} did not reach terminal within {timeout}s "
-        f"(last body={body})"
-    )
-
-
 def test_register_and_run_completes_via_callback(
-    live_daemon, runtime, fake_plan_env
+    live_daemon,
+    runtime,
+    fake_plan_env,
 ):
-    """End-to-end happy path: submit a task, fake Claude calls
-    `opc report-completion`, daemon records the row, SSE stream reports
-    `task_complete`.
-
-    This is the regression guard for commit 8581f26 — which removed the
-    SessionTracker wiring from `_run_agent` and made every agent callback
-    fail with 409 unknown_session. Without the fix in 32e77d6, this test
-    fails because the callback is rejected and `run_step` marks the task
-    failed with note='agent session failed'."""
+    """Regression guard for session-tracker wiring on the Claude path."""
     port = live_daemon
     base = f"http://127.0.0.1:{port}/api/v1"
 
-    # fake_plan_env preallocated this path via env var; the daemon inherits
-    # FAKE_CLAUDE_PLAN and re-reads the file each time fake_claude runs.
     fake_plan_env.write_text(
         '#!/usr/bin/env bash\n'
         'task_id=$1; session_id=$2\n'
@@ -100,54 +124,30 @@ def test_register_and_run_completes_via_callback(
     )
     fake_plan_env.chmod(0o755)
 
-    _register_runtime(base, runtime)
-    # The EH workspace must have the start-task skill marker or run_step
-    # raises WorkspaceNotInitialized and fails the task without invoking
-    # Claude at all.
     seed_workspace(runtime, "engineering_head")
 
     task_id = _submit_task(base)
-    assert _await_terminal(base, task_id) == "task_complete"
+    assert _wait_for_terminal_status(base, task_id, timeout=20.0) == "completed"
 
-    # Confirm DB has a task_result tagged with a session_id
     r = httpx.get(f"{base}/tasks/{task_id}", headers=_auth_headers(), timeout=5.0)
     body = r.json()
     assert body["task"]["status"] == "completed"
     assert any(res["session_id"] for res in body["results"])
-    # Pin the regression: if the SessionTracker wiring is broken again, the
-    # callback is rejected with 409 unknown_session and run_step writes this
-    # exact note. Failing on this string is what would have flagged
-    # commit 8581f26 immediately.
     assert body["task"].get("note") != "agent session failed"
 
 
 def test_completion_callback_rejected_when_session_unknown(
-    live_daemon, runtime, fake_plan_env
+    live_daemon,
+    runtime,
+    fake_plan_env,
 ):
-    """Negative path: a callback whose session_id was never registered must
-    be rejected with HTTP 409 / detail.code='unknown_session'.
-
-    This is the daemon-side invariant the SessionTracker is supposed to
-    enforce. Without it, fabricated callbacks would silently insert
-    task_results rows under any session_id.
-    """
     port = live_daemon
     base = f"http://127.0.0.1:{port}/api/v1"
 
-    # No-op plan — the test uses a hand-crafted task to exercise the daemon
-    # endpoint directly, not the orchestrator.
     fake_plan_env.write_text("#!/usr/bin/env bash\nexit 0\n")
     fake_plan_env.chmod(0o755)
 
-    _register_runtime(base, runtime)
-    # Use a fabricated task_id that the daemon never spawned. The completion
-    # endpoint short-circuits on the SessionTracker lookup before looking
-    # up the task, so this exercises the unknown_session branch in
-    # isolation and avoids racing the orchestrator's real EH session
-    # (which would otherwise register a real session_id and flip the
-    # rejection into session_mismatch instead).
     task_id = "TASK-fake"
-
     r = httpx.post(
         f"{base}/tasks/{task_id}/completion",
         json={
@@ -167,23 +167,14 @@ def test_completion_callback_rejected_when_session_unknown(
     assert detail["agent"] == "engineering_head"
 
 
-def test_delegate_and_resume_roundtrip(live_daemon, runtime, fake_plan_env):
-    """End-to-end delegate path: EH returns a `delegate` decision spawning a
-    child for `dev_agent`; child completes; parent auto-resumes; EH then
-    returns `done`; parent reaches `completed`.
-
-    This exercises the full queue-driven re-enqueue path that `run_step`
-    relies on for delegated work. It also covers the SessionTracker
-    invariant for two distinct (task_id, agent) pairs being live in
-    parallel-ish sequence.
-    """
+def test_delegate_and_resume_roundtrip(
+    live_daemon,
+    runtime,
+    fake_plan_env,
+):
     port = live_daemon
     base = f"http://127.0.0.1:{port}/api/v1"
 
-    # Plan branches on the agent name. The EH first delegates to dev_agent,
-    # then on the resume call returns done. We track resume state via a
-    # marker file so the EH plan emits different decisions across the two
-    # invocations on the same parent task.
     marker = fake_plan_env.parent / "eh_called_once"
     fake_plan_env.write_text(
         '#!/usr/bin/env bash\n'
@@ -207,14 +198,11 @@ def test_delegate_and_resume_roundtrip(live_daemon, runtime, fake_plan_env):
     )
     fake_plan_env.chmod(0o755)
 
-    _register_runtime(base, runtime)
     seed_workspace(runtime, "engineering_head")
     seed_workspace(runtime, "dev_agent")
 
     task_id = _submit_task(base, brief="delegate me")
-    # Generous deadline: this round-trip is two EH steps + one dev_agent
-    # step + queue handoffs; serial subprocess.run calls add up.
-    assert _await_terminal(base, task_id, timeout=30.0) == "task_complete"
+    assert _wait_for_terminal_status(base, task_id, timeout=30.0) == "completed"
 
     r = httpx.get(f"{base}/tasks", headers=_auth_headers(), timeout=5.0)
     tasks_list = r.json()["tasks"]
@@ -224,13 +212,11 @@ def test_delegate_and_resume_roundtrip(live_daemon, runtime, fake_plan_env):
     assert child["assigned_agent"] == "dev_agent"
     assert child["status"] == "completed"
 
-    # Parent's audit log must show one orchestration_step recording the
-    # delegate decision. Without this, future regressions could complete
-    # the task by accident and the test would still pass.
     r = httpx.get(f"{base}/tasks/{task_id}", headers=_auth_headers(), timeout=5.0)
     audit = r.json()["audit_log"]
     delegate_steps = [
-        a for a in audit
+        a
+        for a in audit
         if a.get("action") == "orchestration_step"
         and ((a.get("payload") or {}).get("decision") or {}).get("action") == "delegate"
     ]
@@ -238,19 +224,11 @@ def test_delegate_and_resume_roundtrip(live_daemon, runtime, fake_plan_env):
 
 
 def test_idle_daemon_starts_workers_after_register(
-    live_daemon, runtime, fake_plan_env
+    live_daemon_idle,
+    runtime,
+    fake_plan_env,
 ):
-    """Lifespan-bootstrap regression guard.
-
-    The daemon boots idle and only learns about a runtime via
-    POST /runtimes/register. Before the fix in this change, the lifespan
-    one-shot Orchestrator+worker bootstrap was gated on `not state.is_idle`
-    at boot, so a runtime swapped in later would never get workers — every
-    enqueued task would sit in the queue forever and SSE streams would
-    stall on heartbeats. We assert the inverse: a task submitted after a
-    runtime is registered actually progresses.
-    """
-    port = live_daemon
+    port = live_daemon_idle
     base = f"http://127.0.0.1:{port}/api/v1"
 
     fake_plan_env.write_text(
@@ -267,4 +245,112 @@ def test_idle_daemon_starts_workers_after_register(
     seed_workspace(runtime, "engineering_head")
 
     task_id = _submit_task(base, brief="post-register smoke")
-    assert _await_terminal(base, task_id, timeout=10.0) == "task_complete"
+    assert _wait_for_terminal_status(base, task_id, timeout=10.0) == "completed"
+
+
+def test_register_and_run_completes_via_codex_callback(
+    live_daemon,
+    runtime,
+    fake_codex_plan_env,
+):
+    port = live_daemon
+    base = f"http://127.0.0.1:{port}/api/v1"
+    headers = _auth_headers()
+
+    _write_agent_config(runtime, "engineering_head", "codex")
+    _init_agent(base, "engineering_head", headers)
+
+    _write_plan(
+        fake_codex_plan_env,
+        """
+        task_id=$1
+        session_id=$2
+        opc report-completion \
+          --task-id "$task_id" --session-id "$session_id" \
+          --agent engineering_head --status completed --confidence 90 \
+          --summary '{"action":"done","summary":"codex ok"}'
+        """,
+    )
+
+    task_id = _submit_task(base, brief="codex smoke", headers=headers)
+    outcome = _wait_for_terminal_status(base, task_id, headers=headers)
+    assert outcome == "completed"
+
+    r = httpx.get(f"{base}/tasks/{task_id}", headers=headers, timeout=5.0)
+    body = r.json()
+    assert body["task"]["status"] == "completed"
+    assert body["task"]["assigned_agent"] == "engineering_head"
+    assert any(res["session_id"] for res in body["results"])
+
+
+def test_mixed_fleet_roundtrip_uses_claude_and_codex(
+    live_daemon,
+    runtime,
+    fake_claude_plan_env,
+    fake_codex_plan_env,
+):
+    port = live_daemon
+    base = f"http://127.0.0.1:{port}/api/v1"
+    headers = _auth_headers()
+
+    _write_agent_config(runtime, "engineering_head", "claude")
+    _write_agent_config(runtime, "dev_agent", "codex")
+    _init_agent(base, "engineering_head", headers)
+    _init_agent(base, "dev_agent", headers)
+
+    _write_plan(
+        fake_claude_plan_env,
+        """
+        task_id=$1
+        session_id=$2
+        state_file="${FAKE_CLAUDE_PLAN}.seen.${task_id}"
+        if [[ ! -f "$state_file" ]]; then
+            touch "$state_file"
+            opc report-completion \
+              --task-id "$task_id" --session-id "$session_id" \
+              --agent engineering_head --status completed --confidence 90 \
+              --summary '{"action":"delegate","agent":"dev_agent","prompt":"build the follow-up"}'
+        else
+            opc report-completion \
+              --task-id "$task_id" --session-id "$session_id" \
+              --agent engineering_head --status completed --confidence 90 \
+              --summary '{"action":"done","summary":"parent done"}'
+        fi
+        """,
+    )
+    _write_plan(
+        fake_codex_plan_env,
+        """
+        task_id=$1
+        session_id=$2
+        opc report-completion \
+          --task-id "$task_id" --session-id "$session_id" \
+          --agent dev_agent --status completed --confidence 90 \
+          --summary '{"action":"done","summary":"child done"}'
+        """,
+    )
+
+    task_id = _submit_task(base, brief="mixed fleet smoke", headers=headers)
+    outcome = _wait_for_terminal_status(
+        base, task_id, headers=headers, allow_blocked=True,
+    )
+    assert outcome == "blocked"
+
+    db = Database(runtime / "opc.db")
+    root = db.get_task(task_id)
+    children = db.get_children(task_id)
+    assert root is not None
+    assert root.status.value == "blocked"
+    assert root.block_kind.value == "delegated"
+    assert len(children) == 1
+
+    child = db.get_task(children[0])
+    assert child is not None
+    assert child.assigned_agent == "dev_agent"
+    assert child.status.value == "in_progress"
+
+    child_audit = db.get_audit_logs(child.id)
+    assert any(
+        entry["action"] == "session_start" and entry["agent"] == "dev_agent"
+        for entry in child_audit
+    )

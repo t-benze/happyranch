@@ -1,6 +1,6 @@
 # Teams, Agents & Tools
 
-How the org design maps to the runtime (Python daemon + Claude Code agent sessions + SQLite) and what each agent can do.
+How the org design maps to the runtime (Python daemon + executor-backed agent sessions + SQLite) and what each agent can do.
 
 ---
 
@@ -8,7 +8,7 @@ How the org design maps to the runtime (Python daemon + Claude Code agent sessio
 
 | Your Org Concept | Runtime Primitive | Notes |
 |---|---|---|
-| Worker Agent (e.g., Content Writer) | Persistent agent workspace + Claude Code session | `<runtime>/workspaces/<agent>/` holds CLAUDE.md, settings, skills, repos. Each task spawns a headless `claude -p` session against that workspace |
+| Worker Agent (e.g., Content Writer) | Persistent agent workspace + configured executor session | `<runtime>/workspaces/<agent>/` holds `agent.yaml`, skills, repos, and executor-specific bootstrap files (`CLAUDE.md` for Claude or `AGENTS.md` for Codex). Each task spawns a headless session using that agent's configured executor |
 | Manager Agent (e.g., Content Manager) | Same as a worker, but with an EH-style orchestration prompt | Managers decide at each step: handle, delegate, escalate. Engineering Head is the first manager implemented; others follow the same pattern |
 | Content task (e.g., "write Macau visa guide") | `TaskRecord` row + brief | Tasks have a type hint (`implement_feature`, `bug_fix`, `payment_change`, `general`) that steers the manager's decision, not a hardcoded chain |
 | QA review of that content | Second agent session triggered by the manager's orchestration decision | Maker-checker preserved — the manager delegates to a different agent via the `delegate` action |
@@ -115,7 +115,7 @@ How the org design maps to the runtime (Python daemon + Claude Code agent sessio
 
 ## 3. Tools Each Agent Gets
 
-Agents running as Claude Code sessions have native access to file system, shell, and web. The tools below are *additional* capabilities the orchestrator exposes to each agent — either as `opc` CLI subcommands reachable through the `Bash(opc:*)` allow rule or as future MCP tools.
+Agents running as coding-agent sessions have native access to file system, shell, and web. The tools below are *additional* capabilities the orchestrator exposes to each agent — either as `opc` CLI subcommands or as future MCP tools. Claude sessions use the narrow `Bash(opc:*)` allow rule; Codex sessions use the same `opc` callback contract without the Claude-specific matcher behavior.
 
 ### Shared tools (all agents)
 - `read_knowledge_base(topic)` — query the org charter, SOPs, brand guidelines (currently: `opc kb list/get/search`)
@@ -177,9 +177,9 @@ Agents running as Claude Code sessions have native access to file system, shell,
 Unlike frameworks that bake in task chaining, revision loops, and manager-delegation semantics, the runtime here is hand-rolled Python — which means the orchestrator owns all of it explicitly. This is deliberate: the manager agent (Engineering Head today, others later) decides each step dynamically rather than following a static task graph.
 
 **The orchestrator owns:**
-- Spawning `claude -p` subprocess sessions per agent workspace (see `src/orchestrator/executor.py`)
+- Spawning provider-specific subprocess sessions per agent workspace (see `src/orchestrator/executors.py`)
 - Running the EH-driven decision loop (ask manager → execute `delegate` / `done` / `escalate` → feed the result back as history)
-- Agent workspace provisioning: CLAUDE.md, `.claude/settings.json`, copied skills, repo clones (`src/orchestrator/context_builder.py`)
+- Agent workspace provisioning: executor-specific bootstrap docs (`CLAUDE.md` or `AGENTS.md`), Claude settings when applicable, copied skills, repo clones (`src/orchestrator/context_builder.py`, `src/orchestrator/workspace_adapters.py`)
 - Task state machine (`pending` → `in_progress` → `completed`/`rejected`/`escalated`) and the 10-step runaway guard
 - Founder interaction surface (Feishu bot + dashboard — both still planned; today the CLI + SSE stream covers it)
 - Inter-team task routing (e.g., Product → Ops cross-audit)
@@ -191,7 +191,7 @@ Unlike frameworks that bake in task chaining, revision loops, and manager-delega
 - Real-time support (future: Support Agent as a persistent session rather than per-task spawn)
 
 **What lives inside the agent workspace** (not the orchestrator):
-- The agent's identity and role prompt (`CLAUDE.md`)
+- The agent's identity and role prompt (`CLAUDE.md` or `AGENTS.md`, depending on executor)
 - Skills that codify procedure (`start-task`, `make-worktree`, `manage-repo`, `manage-agent`)
 - Learnings, scorecard, and task history files
 - Agent-scoped repos

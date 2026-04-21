@@ -11,7 +11,14 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from src.daemon.agent_config import add_repo, load_agent_config, remove_repo, update_repo_url, write_default_agent_config
+from src.daemon.agent_config import (
+    add_repo,
+    load_agent_config,
+    remove_repo,
+    set_executor,
+    update_repo_url,
+    write_default_agent_config,
+)
 from src.daemon.auth import require_token
 from src.daemon.state import DaemonState
 from src.models import PerformanceTier
@@ -58,6 +65,7 @@ class ManageAgentBody(BaseModel):
     description: str | None = None
     system_prompt: str | None = None
     repos: dict[str, str] | None = None
+    executor: str | None = None
 
 
 _VALID_AGENT_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -114,8 +122,14 @@ async def init_agents(body: InitBody, request: Request):
             workspace.mkdir(parents=True, exist_ok=True)
             yield {"data": _json.dumps({"agent": agent_name, "phase": "starting"})}
             try:
+                had_agent_config = (workspace / "agent.yaml").exists()
                 write_default_agent_config(workspace)
-                repos = load_agent_config(workspace).get("repos") or {}
+                enrollment = state.db.get_enrollment(agent_name)
+                if not had_agent_config and enrollment is not None:
+                    set_executor(workspace, enrollment.get("executor"))
+                cfg = load_agent_config(workspace)
+                provider = cfg.get("executor") or "claude"
+                repos = cfg.get("repos") or {}
                 for repo_name, url in repos.items():
                     yield {"data": _json.dumps({
                         "agent": agent_name, "phase": "repo_cloning",
@@ -129,10 +143,10 @@ async def init_agents(body: InitBody, request: Request):
                         "phase": "repo_ready" if ok else "repo_failed",
                         "repo": repo_name,
                     })}
-                enrollment = state.db.get_enrollment(agent_name)
                 sys_prompt = enrollment["system_prompt"] if enrollment else prompts.get(agent_name, "")
                 await asyncio.to_thread(
                     ctx.ensure_workspace_ready, workspace, agent_name, sys_prompt,
+                    provider=provider,
                 )
                 await asyncio.to_thread(
                     ctx.create_agent_dirs, workspace, agent_name,
@@ -227,6 +241,7 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
             description=body.description,
             system_prompt=body.system_prompt,
             repos=body.repos,
+            executor=body.executor,
         )
         return {"ok": True, "status": "pending"}
 
@@ -241,6 +256,7 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
             description=body.description,
             system_prompt=body.system_prompt,
             repos=body.repos,
+            executor=body.executor,
         )
         if body.system_prompt:
             workspace = state.runtime.workspaces_dir / body.name
@@ -249,6 +265,10 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
                 await asyncio.to_thread(
                     ctx.ensure_workspace_ready, workspace, body.name, body.system_prompt,
                 )
+        if body.executor is not None:
+            workspace = state.runtime.workspaces_dir / body.name
+            if workspace.exists():
+                await asyncio.to_thread(set_executor, workspace, body.executor)
         return {"ok": True}
 
     elif body.action == ManageAgentAction.terminate:
@@ -296,6 +316,7 @@ async def approve_agent(agent_name: str, request: Request) -> dict:
     workspace = state.runtime.workspaces_dir / agent_name
     workspace.mkdir(parents=True, exist_ok=True)
     write_default_agent_config(workspace)
+    set_executor(workspace, enrollment["executor"])
 
     repos = _json.loads(enrollment["repos"]) if enrollment["repos"] else {}
     if repos:
@@ -307,7 +328,11 @@ async def approve_agent(agent_name: str, request: Request) -> dict:
         await asyncio.to_thread(ctx.clone_repo, workspace, repo_name, url)
 
     await asyncio.to_thread(
-        ctx.ensure_workspace_ready, workspace, agent_name, enrollment["system_prompt"],
+        ctx.ensure_workspace_ready,
+        workspace,
+        agent_name,
+        enrollment["system_prompt"],
+        provider=load_agent_config(workspace).get("executor") or "claude",
     )
     await asyncio.to_thread(ctx.create_agent_dirs, workspace, agent_name)
 

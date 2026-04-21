@@ -9,6 +9,7 @@ from src.daemon.agent_config import (
     add_repo,
     load_agent_config,
     remove_repo,
+    set_executor,
     update_repo_url,
     write_default_agent_config,
 )
@@ -19,6 +20,7 @@ def test_add_repo_creates_entry(tmp_path: Path) -> None:
     add_repo(tmp_path, "web-app", "https://github.com/t-benze/web-app.git")
     cfg = load_agent_config(tmp_path)
     assert cfg["repos"]["web-app"] == "https://github.com/t-benze/web-app.git"
+    assert cfg["executor"] == "claude"
 
 
 def test_add_repo_duplicate_raises(tmp_path: Path) -> None:
@@ -34,6 +36,7 @@ def test_add_repo_initializes_repos_if_missing(tmp_path: Path) -> None:
     add_repo(tmp_path, "docs", "https://github.com/t-benze/docs.git")
     cfg = load_agent_config(tmp_path)
     assert cfg["repos"]["docs"] == "https://github.com/t-benze/docs.git"
+    assert cfg["executor"] == "claude"
 
 
 def test_remove_repo_deletes_entry(tmp_path: Path) -> None:
@@ -62,3 +65,16 @@ def test_update_repo_url_nonexistent_raises(tmp_path: Path) -> None:
     write_default_agent_config(tmp_path)
     with pytest.raises(KeyError, match="web-app"):
         update_repo_url(tmp_path, "web-app", "https://new.git")
+
+
+def test_load_agent_config_defaults_executor_when_missing(tmp_path: Path) -> None:
+    (tmp_path / "agent.yaml").write_text(yaml.dump({"repos": {}}))
+    cfg = load_agent_config(tmp_path)
+    assert cfg["executor"] == "claude"
+
+
+def test_set_executor_updates_agent_yaml(tmp_path: Path) -> None:
+    write_default_agent_config(tmp_path)
+    set_executor(tmp_path, "codex")
+    cfg = load_agent_config(tmp_path)
+    assert cfg["executor"] == "codex"

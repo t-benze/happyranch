@@ -46,15 +46,15 @@ Manage the repositories cloned into your `repos/` directory. You can **add** a n
    opc manage-repo --from-file /tmp/manage-repo-<unique>.json
    ```
 
-   The `--from-file` form is mandatory for agent sessions. Multi-line bash
-   commands are rejected by the `Bash(opc:*)` permission rule (newlines count
-   as command separators).
+   The `--from-file` form is mandatory for agent sessions. In Claude sessions,
+   multi-line bash commands are rejected by the `Bash(opc:*)` permission rule
+   because newlines count as command separators.
 
 ## What happens
 
-- **add**: writes the entry to `agent.yaml`, clones the repo into `repos/<name>/`, and regenerates `.claude/settings.json` so the PreToolUse git-pull hook covers the new repo.
-- **remove**: deletes the entry from `agent.yaml`, removes the `repos/<name>/` directory, and regenerates `.claude/settings.json`.
-- **update**: updates the URL in `agent.yaml`, deletes the old clone, re-clones from the new URL, and regenerates `.claude/settings.json`.
+- **add**: writes the entry to `agent.yaml`, clones the repo into `repos/<name>/`, and refreshes executor workspace metadata. Claude workspaces also regenerate `.claude/settings.json` so the git-pull hook covers the new repo.
+- **remove**: deletes the entry from `agent.yaml`, removes the `repos/<name>/` directory, and refreshes executor workspace metadata.
+- **update**: updates the URL in `agent.yaml`, deletes the old clone, re-clones from the new URL, and refreshes executor workspace metadata.
 
 ## Error handling
 
