@@ -506,3 +506,151 @@ def test_resolve_escalation_enqueues_parent_if_waiting(client_with_runtime):
     assert r.status_code == 200
     # Parent now enqueued
     assert state.queue._queue.get_nowait() == "T-PAR"
+
+
+# -------- /tasks/{id}/cancel --------
+
+
+def test_cancel_404_when_task_missing(client_with_runtime):
+    client, _state = client_with_runtime
+    r = client.post("/api/v1/tasks/TASK-404/cancel", json={"rationale": ""})
+    assert r.status_code == 404
+
+
+def test_cancel_409_when_already_terminal(client_with_runtime):
+    from src.models import TaskRecord, TaskStatus, TaskType
+    client, state = client_with_runtime
+    state.db.insert_task(TaskRecord(id="T-DONE", type=TaskType.GENERAL, brief="x"))
+    state.db.update_task("T-DONE", status=TaskStatus.COMPLETED, note="ok")
+
+    r = client.post("/api/v1/tasks/T-DONE/cancel", json={"rationale": "too late"})
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "task_already_terminal"
+
+
+def test_cancel_marks_task_failed_with_cancelled_at_and_note(client_with_runtime):
+    from src.models import TaskRecord, TaskStatus, TaskType
+    client, state = client_with_runtime
+    state.db.insert_task(TaskRecord(id="T-1", type=TaskType.GENERAL, brief="x"))
+
+    r = client.post(
+        "/api/v1/tasks/T-1/cancel", json={"rationale": "rerouting"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["cancelled"] == ["T-1"]
+    # No subprocess was attached so nothing to SIGTERM.
+    assert body["killed"] == []
+
+    t = state.db.get_task("T-1")
+    assert t.status == TaskStatus.FAILED
+    assert t.cancelled_at is not None
+    assert t.completed_at is not None
+    assert t.note == "cancelled by founder: rerouting"
+
+
+def test_cancel_cascades_down_subtree(client_with_runtime):
+    """Default cascade=True must cancel every non-terminal descendant and
+    leave already-terminal siblings untouched."""
+    from src.models import TaskRecord, TaskStatus, TaskType, BlockKind
+    client, state = client_with_runtime
+    state.db.insert_task(TaskRecord(id="T-P", type=TaskType.GENERAL, brief="parent"))
+    state.db.update_task(
+        "T-P", status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED,
+    )
+    state.db.insert_task(TaskRecord(
+        id="T-C1", type=TaskType.GENERAL, brief="running",
+        parent_task_id="T-P",
+    ))
+    # Sibling finished long ago — must not be touched.
+    state.db.insert_task(TaskRecord(
+        id="T-C2", type=TaskType.GENERAL, brief="done",
+        parent_task_id="T-P",
+    ))
+    state.db.update_task("T-C2", status=TaskStatus.COMPLETED, note="already done")
+    # Grandchild under the running branch — should also be cancelled.
+    state.db.insert_task(TaskRecord(
+        id="T-G", type=TaskType.GENERAL, brief="grand",
+        parent_task_id="T-C1",
+    ))
+
+    r = client.post("/api/v1/tasks/T-P/cancel", json={"rationale": "abort"})
+    assert r.status_code == 200
+    cancelled = set(r.json()["cancelled"])
+    assert cancelled == {"T-P", "T-C1", "T-G"}
+
+    assert state.db.get_task("T-P").status == TaskStatus.FAILED
+    assert state.db.get_task("T-C1").status == TaskStatus.FAILED
+    assert state.db.get_task("T-G").status == TaskStatus.FAILED
+    # Sibling that was already terminal is untouched.
+    t_c2 = state.db.get_task("T-C2")
+    assert t_c2.status == TaskStatus.COMPLETED
+    assert t_c2.cancelled_at is None
+    assert t_c2.note == "already done"
+
+
+def test_cancel_no_cascade_cancels_only_target(client_with_runtime):
+    from src.models import TaskRecord, TaskStatus, TaskType
+    client, state = client_with_runtime
+    state.db.insert_task(TaskRecord(id="T-P", type=TaskType.GENERAL, brief="parent"))
+    state.db.insert_task(TaskRecord(
+        id="T-C", type=TaskType.GENERAL, brief="child",
+        parent_task_id="T-P",
+    ))
+
+    r = client.post(
+        "/api/v1/tasks/T-P/cancel",
+        json={"rationale": "", "cascade": False},
+    )
+    assert r.status_code == 200
+    assert r.json()["cancelled"] == ["T-P"]
+    assert state.db.get_task("T-P").status == TaskStatus.FAILED
+    # Child must NOT be cancelled.
+    assert state.db.get_task("T-C").status == TaskStatus.PENDING
+
+
+def test_cancel_sigterms_live_pids_and_returns_them(client_with_runtime, monkeypatch):
+    """The SessionTracker's pid half is the /cancel → SIGTERM bridge. Pin
+    that the route reads from iter_task_pids, calls os.kill(pid, SIGTERM),
+    and clears the tracker entry on the way out."""
+    import signal as _signal
+    from src.daemon.routes import tasks as tasks_route
+    from src.models import TaskRecord, TaskType
+
+    client, state = client_with_runtime
+    state.db.insert_task(TaskRecord(id="T-1", type=TaskType.GENERAL, brief="x"))
+    state.sessions.set_active("T-1", "dev_agent", "sess-1")
+    state.sessions.set_pid("T-1", "dev_agent", 99999)
+
+    kills: list[tuple[int, int]] = []
+
+    def fake_kill(pid: int, sig: int) -> None:
+        kills.append((pid, sig))
+
+    monkeypatch.setattr(tasks_route.os, "kill", fake_kill)
+
+    r = client.post("/api/v1/tasks/T-1/cancel", json={"rationale": ""})
+    assert r.status_code == 200
+    body = r.json()
+    assert kills == [(99999, _signal.SIGTERM)]
+    assert body["killed"] == [
+        {"task_id": "T-1", "agent": "dev_agent", "pid": 99999}
+    ]
+    # Tracker cleared so a late completion callback is rejected as unknown_session.
+    assert state.sessions.get_active("T-1", "dev_agent") is None
+    assert state.sessions.get_pid("T-1", "dev_agent") is None
+
+
+def test_cancel_records_audit_entry(client_with_runtime):
+    from src.models import TaskRecord, TaskType
+    client, state = client_with_runtime
+    state.db.insert_task(TaskRecord(id="T-1", type=TaskType.GENERAL, brief="x"))
+
+    r = client.post("/api/v1/tasks/T-1/cancel", json={"rationale": "wrong path"})
+    assert r.status_code == 200
+    entries = state.db.get_audit_logs("T-1")
+    cancelled = [e for e in entries if e["action"] == "task_cancelled"]
+    assert len(cancelled) == 1
+    assert cancelled[0]["agent"] == "founder"
+    assert cancelled[0]["payload"]["rationale"] == "wrong path"
+    assert cancelled[0]["payload"]["cascade"] is True

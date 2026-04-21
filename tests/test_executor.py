@@ -2,7 +2,20 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from src.config import Settings
-from src.orchestrator.executors import ClaudeExecutor, CodexExecutor, ExecutorResult
+from src.orchestrator.executors import (
+    AgentExecutor,
+    ClaudeExecutor,
+    CodexExecutor,
+    ExecutorResult,
+)
+
+
+def _popen_mock(returncode: int = 0, stdout: str = "", stderr: str = "", pid: int = 4242):
+    proc = MagicMock()
+    proc.pid = pid
+    proc.returncode = returncode
+    proc.communicate.return_value = (stdout, stderr)
+    return proc
 
 
 @patch("src.orchestrator.executors.subprocess")
@@ -10,10 +23,7 @@ def test_claude_executor_launches_with_current_semantics(mock_subprocess, tmp_pa
     workspace = tmp_path / "dev_agent"
     workspace.mkdir()
 
-    mock_process = MagicMock()
-    mock_process.returncode = 0
-    mock_process.stdout = "Agent output"
-    mock_subprocess.run.return_value = mock_process
+    mock_subprocess.Popen.return_value = _popen_mock(stdout="Agent output")
 
     executor = ClaudeExecutor(claude_cli_path="claude", permission_mode="auto")
     result = executor.run(
@@ -28,7 +38,7 @@ def test_claude_executor_launches_with_current_semantics(mock_subprocess, tmp_pa
         session_id=result.session_id,
     )
 
-    call_args = mock_subprocess.run.call_args
+    call_args = mock_subprocess.Popen.call_args
     cmd = call_args[0][0]
     assert cmd[:2] == ["claude", "-p"]
     assert "--permission-mode" in cmd
@@ -42,10 +52,7 @@ def test_codex_executor_launches_exec_with_explicit_sandbox(mock_subprocess, tmp
     workspace = tmp_path / "dev_agent"
     workspace.mkdir()
 
-    mock_process = MagicMock()
-    mock_process.returncode = 0
-    mock_process.stdout = "Agent output"
-    mock_subprocess.run.return_value = mock_process
+    mock_subprocess.Popen.return_value = _popen_mock(stdout="Agent output")
 
     executor = CodexExecutor(codex_cli_path="codex", sandbox_mode="workspace-write")
     result = executor.run(
@@ -55,7 +62,9 @@ def test_codex_executor_launches_exec_with_explicit_sandbox(mock_subprocess, tmp
     )
 
     assert result.success is True
-    call_args = mock_subprocess.run.call_args
+    assert result.session_id is not None
+
+    call_args = mock_subprocess.Popen.call_args
     cmd = call_args[0][0]
     assert cmd[:2] == ["codex", "exec"]
     assert "--sandbox" in cmd
@@ -63,7 +72,10 @@ def test_codex_executor_launches_exec_with_explicit_sandbox(mock_subprocess, tmp
     assert "--skip-git-repo-check" in cmd
     assert "--json" in cmd
     assert cmd[-1] == "-"
-    assert call_args.kwargs["input"] == "Implement Alipay support"
+    # Prompt is passed through communicate(input=...), not Popen(input=...).
+    assert mock_subprocess.Popen.return_value.communicate.call_args.kwargs[
+        "input"
+    ] == "Implement Alipay support"
 
 
 @patch("src.orchestrator.executors.subprocess")
@@ -71,11 +83,9 @@ def test_codex_executor_returns_failure_on_nonzero_exit(mock_subprocess, tmp_pat
     workspace = tmp_path / "dev_agent"
     workspace.mkdir()
 
-    mock_process = MagicMock()
-    mock_process.returncode = 2
-    mock_process.stdout = ""
-    mock_process.stderr = "fatal: missing workspace"
-    mock_subprocess.run.return_value = mock_process
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=2, stdout="", stderr="fatal: missing workspace",
+    )
 
     executor = CodexExecutor(codex_cli_path="codex", sandbox_mode="workspace-write")
     result = executor.run(
@@ -102,8 +112,16 @@ def test_codex_executor_timeout(mock_subprocess, tmp_path):
     workspace = tmp_path / "dev_agent"
     workspace.mkdir()
 
+    mock_process = MagicMock()
+    mock_process.pid = 4242
+    # First communicate() call raises TimeoutExpired; second (after kill)
+    # drains the pipes successfully.
+    mock_process.communicate.side_effect = [
+        subprocess.TimeoutExpired(cmd="codex", timeout=30),
+        ("", ""),
+    ]
     mock_subprocess.TimeoutExpired = subprocess.TimeoutExpired
-    mock_subprocess.run.side_effect = subprocess.TimeoutExpired(cmd="codex", timeout=30)
+    mock_subprocess.Popen.return_value = mock_process
 
     executor = CodexExecutor(codex_cli_path="codex", sandbox_mode="workspace-write")
     result = executor.run(
@@ -114,3 +132,26 @@ def test_codex_executor_timeout(mock_subprocess, tmp_path):
 
     assert result.success is False
     assert "timed out" in result.error.lower()
+    assert mock_process.kill.called
+
+
+@patch("src.orchestrator.executors.subprocess")
+def test_run_invokes_on_started_with_pid(mock_subprocess, tmp_path):
+    """The /cancel feature depends on the executor handing the pid over to
+    SessionTracker BEFORE communicate() blocks. Pin that contract for both
+    executor classes — the common shape is in _run_command."""
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+
+    mock_subprocess.Popen.return_value = _popen_mock(pid=9123)
+
+    executor = AgentExecutor(claude_cli_path="claude", permission_mode="auto")
+    received: list[int] = []
+    executor.run(
+        workspace=workspace,
+        prompt="x",
+        timeout_seconds=30,
+        on_started=lambda pid: received.append(pid),
+    )
+
+    assert received == [9123]

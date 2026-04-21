@@ -31,6 +31,16 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
     if task is None:
         return
 
+    # Cancellation short-circuit. Once /cancel marks a task FAILED + sets
+    # cancelled_at, any late queue event (e.g., the parent auto-resume after
+    # the SIGTERM'd child's audit arrives) must be a no-op. Checking status
+    # alone isn't enough — blocked(DELEGATED) parents get cancelled too, and
+    # the terminal-state test runs in step 1 below. Re-check before returning
+    # so we don't enter the in_progress transition.
+    if task.cancelled_at is not None:
+        logger.debug("run_step %s: cancelled, skipping", task_id)
+        return
+
     # ---- 1. Verify entry state ----
     if task.status == TaskStatus.PENDING:
         pass  # eligible
@@ -242,6 +252,13 @@ def _build_prior_steps_from_db(orch: "Orchestrator", task_id: str):
 
 def _complete(orch: "Orchestrator", task_id: str, *, note: str, artifact_dir: str | None = None) -> None:
     from datetime import datetime, timezone
+    # Idempotence guard: /cancel may have already taken this task to FAILED
+    # between Popen return and here. Don't resurrect a cancelled task back to
+    # COMPLETED just because the subprocess happened to finish cleanly before
+    # SIGTERM arrived.
+    existing = orch._db.get_task(task_id)
+    if existing is not None and existing.status in TERMINAL_STATES:
+        return
     orch._db.update_task(
         task_id,
         status=TaskStatus.COMPLETED,
@@ -256,6 +273,13 @@ def _complete(orch: "Orchestrator", task_id: str, *, note: str, artifact_dir: st
 
 def _fail(orch: "Orchestrator", task_id: str, *, note: str) -> None:
     from datetime import datetime, timezone
+    # Idempotence guard — same rationale as _complete. When /cancel SIGTERMs
+    # the subprocess, run_step re-enters via the post-execution classifier and
+    # tries to write a "session failed (rc=-15; ...)" note. That must NOT
+    # overwrite the founder's "cancelled by founder: ..." note.
+    existing = orch._db.get_task(task_id)
+    if existing is not None and existing.status in TERMINAL_STATES:
+        return
     orch._db.update_task(
         task_id,
         status=TaskStatus.FAILED,

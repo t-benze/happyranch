@@ -256,11 +256,20 @@ class Orchestrator:
         self._audit.log_session_start(task_id, agent_name, str(workspace))
         self._db.update_task(task_id, assigned_agent=agent_name)
 
+        # Capture pid into SessionTracker the moment Popen returns so the
+        # /cancel route can SIGTERM the subprocess mid-session without racing
+        # the set_active() call above. Works for both Claude and Codex
+        # executors because both delegate to executors._run_command.
+        def _on_started(pid: int) -> None:
+            if self._sessions is not None:
+                self._sessions.set_pid(task_id, agent_name, pid)
+
         result = executor.run(
             workspace=workspace,
             prompt=full_prompt,
             session_id=session_id,
             timeout_seconds=self._settings.session_timeout_seconds,
+            on_started=_on_started,
         )
         self._audit.log_session_end(task_id, agent_name, result.duration_seconds)
 

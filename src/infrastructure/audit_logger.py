@@ -98,6 +98,16 @@ class AuditLogger:
             payload={"decision": decision, "rationale": rationale},
         )
 
+    def log_task_cancelled(
+        self, task_id: str, rationale: str, cascade: bool,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="founder",
+            action="task_cancelled",
+            payload={"rationale": rationale, "cascade": cascade},
+        )
+
     def log_cross_audit_stub(self, task_id: str, task_type: str) -> None:
         self._db.insert_audit_log(
             task_id=task_id,

@@ -354,3 +354,77 @@ def test_mixed_fleet_roundtrip_uses_claude_and_codex(
         entry["action"] == "session_start" and entry["agent"] == "dev_agent"
         for entry in child_audit
     )
+
+
+def test_cancel_sigterms_running_subprocess_and_marks_task_failed(
+    live_daemon, runtime, fake_plan_env
+):
+    """End-to-end cancel: submit a task, let fake_claude hang (sleep), hit
+    /tasks/{id}/cancel while the subprocess is alive, and verify:
+      1. The route returns ok with a killed pid list.
+      2. The task row ends up status=failed, note='cancelled by founder: ...',
+         cancelled_at populated.
+      3. The post-Popen classifier's stray `session failed rc=-15` note does
+         NOT overwrite the founder's note (idempotence guard in _fail).
+    """
+    import time as _time
+
+    port = live_daemon
+    base = f"http://127.0.0.1:{port}/api/v1"
+
+    # Plan: sleep 10s. We'll cancel within that window. When the subprocess
+    # gets SIGTERM'd, `set -e` causes a non-zero exit; run_step's classifier
+    # then tries to write "agent session failed rc=-15" — but our idempotence
+    # guard must stop it.
+    fake_plan_env.write_text(
+        '#!/usr/bin/env bash\n'
+        'set -e\n'
+        'sleep 10\n'
+    )
+    fake_plan_env.chmod(0o755)
+
+    seed_workspace(runtime, "engineering_head")
+
+    task_id = _submit_task(base, brief="cancel me")
+
+    # Wait for the subprocess to actually start (status flips to in_progress).
+    deadline = _time.monotonic() + 5.0
+    while _time.monotonic() < deadline:
+        r = httpx.get(f"{base}/tasks/{task_id}", headers=_auth_headers(), timeout=2.0)
+        if r.json()["task"]["status"] == "in_progress":
+            break
+        _time.sleep(0.1)
+    else:
+        raise AssertionError("task never reached in_progress before cancel")
+
+    # Cancel it.
+    r = httpx.post(
+        f"{base}/tasks/{task_id}/cancel",
+        json={"rationale": "enough", "cascade": True},
+        headers=_auth_headers(),
+        timeout=5.0,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert task_id in body["cancelled"]
+    # The sleeping fake_claude subprocess must have been SIGTERM'd — we saw
+    # its pid via SessionTracker and delivered a signal to it.
+    assert len(body["killed"]) >= 1, body
+
+    # Final task row: founder's note + cancelled_at, status failed.
+    assert _wait_for_terminal_status(base, task_id, timeout=15.0) == "failed"
+    r = httpx.get(f"{base}/tasks/{task_id}", headers=_auth_headers(), timeout=2.0)
+    task_body = r.json()["task"]
+    assert task_body["status"] == "failed"
+    assert task_body.get("cancelled_at") is not None
+    assert task_body.get("note", "").startswith("cancelled by founder:"), task_body
+    # Pin the race-lock invariant: the run_step classifier's post-Popen
+    # "session failed rc=-15" note must NOT have overwritten the founder's.
+    assert "rc=" not in (task_body.get("note") or "")
+
+    # Audit trail has a task_cancelled entry recorded.
+    audit = httpx.get(
+        f"{base}/audit?task_id={task_id}", headers=_auth_headers(), timeout=5.0,
+    ).json()["entries"]
+    assert any(a.get("action") == "task_cancelled" for a in audit), audit

@@ -60,6 +60,7 @@ class TaskRecord(BaseModel):
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
     completed_at: datetime | None = None
+    cancelled_at: datetime | None = None
 
 
 class CompletionReport(BaseModel):

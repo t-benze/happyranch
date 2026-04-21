@@ -513,3 +513,89 @@ def test_run_step_root_eh_task_skips_review_verdict(runtime, db, monkeypatch):
     verdicts = [a for a in db.get_audit_logs("T-ROOT")
                 if a["action"] == "review_verdict"]
     assert verdicts == []
+
+
+def test_run_step_skips_task_with_cancelled_at(runtime, db, monkeypatch):
+    """Entry guard: once /cancel stamps cancelled_at on a row, a late queue
+    entry must be a silent no-op — no in_progress transition, no _run_agent
+    call, no step-count increment. The row stays exactly as /cancel left it."""
+    from datetime import datetime, timezone
+
+    from src.orchestrator.orchestrator import Orchestrator
+
+    db.insert_task(TaskRecord(
+        id="T-CNL", type=TaskType.GENERAL, brief="x",
+        assigned_agent="engineering_head",
+    ))
+    # /cancel's phase-1 writes: FAILED + cancelled_at + founder note.
+    now = datetime.now(timezone.utc).isoformat()
+    db.update_task(
+        "T-CNL",
+        status=TaskStatus.FAILED,
+        block_kind=None,
+        note="cancelled by founder: enough",
+        cancelled_at=now,
+        completed_at=now,
+    )
+
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    called = {"n": 0}
+    def sentinel(*a, **k):
+        called["n"] += 1
+        raise AssertionError("_run_agent must not be called after cancel")
+    monkeypatch.setattr(orch, "_run_agent", sentinel)
+
+    orch.run_step("T-CNL")
+
+    t = db.get_task("T-CNL")
+    assert t.status == TaskStatus.FAILED
+    assert t.note == "cancelled by founder: enough"
+    assert t.cancelled_at is not None
+    assert t.orchestration_step_count == 0
+    assert called["n"] == 0
+
+
+def test_fail_idempotent_on_terminal_task(runtime, db):
+    """The post-Popen classifier must not overwrite the founder's note.
+    After /cancel flips the row to FAILED, a stray _fail() call (from the
+    run_step that was mid-flight when SIGTERM arrived) must no-op."""
+    from src.orchestrator.orchestrator import Orchestrator
+    from src.orchestrator.run_step import _fail
+
+    db.insert_task(TaskRecord(id="T-1", type=TaskType.GENERAL, brief="x",
+                              assigned_agent="dev_agent"))
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    db.update_task("T-1", status=TaskStatus.FAILED, block_kind=None,
+                   note="cancelled by founder: stop", cancelled_at=now,
+                   completed_at=now)
+
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    _fail(orch, "T-1", note="agent session failed rc=-15")
+
+    t = db.get_task("T-1")
+    assert t.status == TaskStatus.FAILED
+    assert t.note == "cancelled by founder: stop"  # unchanged
+
+
+def test_complete_idempotent_on_terminal_task(runtime, db):
+    """If the subprocess happened to finish cleanly just before SIGTERM,
+    _complete must not resurrect the cancelled row back to COMPLETED."""
+    from src.orchestrator.orchestrator import Orchestrator
+    from src.orchestrator.run_step import _complete
+
+    db.insert_task(TaskRecord(id="T-1", type=TaskType.GENERAL, brief="x",
+                              assigned_agent="dev_agent"))
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    db.update_task("T-1", status=TaskStatus.FAILED, block_kind=None,
+                   note="cancelled by founder: stop", cancelled_at=now,
+                   completed_at=now)
+
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    _complete(orch, "T-1", note="looks great", artifact_dir="artifacts/run-1")
+
+    t = db.get_task("T-1")
+    assert t.status == TaskStatus.FAILED
+    assert t.note == "cancelled by founder: stop"
+    assert t.final_artifact_dir is None  # unchanged

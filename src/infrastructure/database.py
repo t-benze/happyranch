@@ -124,6 +124,11 @@ class Database:
             "ALTER TABLE tasks ADD COLUMN block_kind TEXT",
             "ALTER TABLE tasks ADD COLUMN note TEXT",
             "ALTER TABLE tasks ADD COLUMN orchestration_step_count INTEGER DEFAULT 0",
+            # cancelled_at: founder-initiated cancellation marker. Distinct
+            # from completed_at/status=failed so run_step can recognise a
+            # SIGTERM'd session as "cancelled" (not a retryable failure) and
+            # idempotent _fail calls don't overwrite the founder's note.
+            "ALTER TABLE tasks ADD COLUMN cancelled_at TEXT",
         ):
             try:
                 self._conn.execute(ddl)
@@ -207,6 +212,7 @@ class Database:
             note=row["note"],
             orchestration_step_count=row["orchestration_step_count"] or 0,
             final_artifact_dir=row["final_artifact_dir"],
+            cancelled_at=row["cancelled_at"],
         )
 
     def list_tasks(self, limit: int = 20) -> list[TaskRecord]:
@@ -230,6 +236,7 @@ class Database:
                 note=row["note"],
                 orchestration_step_count=row["orchestration_step_count"] or 0,
                 final_artifact_dir=row["final_artifact_dir"],
+                cancelled_at=row["cancelled_at"],
             )
             for row in cursor.fetchall()
         ]
@@ -305,6 +312,7 @@ class Database:
                 note=row["note"],
                 orchestration_step_count=row["orchestration_step_count"] or 0,
                 final_artifact_dir=row["final_artifact_dir"],
+                cancelled_at=row["cancelled_at"],
             )
             for row in cursor.fetchall()
         ]
@@ -313,7 +321,7 @@ class Database:
         allowed = {
             "status", "assigned_agent", "revision_count", "completed_at",
             "block_kind", "note", "orchestration_step_count",
-            "final_artifact_dir",
+            "final_artifact_dir", "cancelled_at",
         }
         # NOTE: filter on membership, not on None-ness — block_kind must be
         # resettable to NULL when a task unblocks.

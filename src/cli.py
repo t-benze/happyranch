@@ -741,6 +741,46 @@ def cmd_resolve_escalation(args: argparse.Namespace) -> None:
     print(f"ok: {args.task_id} -> {body['new_status']}")
 
 
+def cmd_cancel(args: argparse.Namespace) -> None:
+    """Founder action: cancel a task and (by default) its delegated subtree."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    r = client.post(
+        f"/api/v1/tasks/{args.task_id}/cancel",
+        json={"rationale": args.rationale or "", "cascade": not args.no_cascade},
+    )
+    if r.status_code == 404:
+        print(f"Task {args.task_id} not found.")
+        sys.exit(1)
+    if r.status_code == 409:
+        detail = {}
+        try:
+            detail = r.json().get("detail", {})
+        except ValueError:
+            pass
+        if detail.get("code") == "task_already_terminal":
+            print(
+                f"Task {args.task_id} is already {detail.get('current_status')}; "
+                "nothing to cancel."
+            )
+            sys.exit(1)
+        # fall through to generic error handler
+    if not _ok(r):
+        return
+    body = r.json()
+    cancelled = body.get("cancelled") or []
+    killed = body.get("killed") or []
+    print(f"Cancelled {len(cancelled)} task(s): {', '.join(cancelled)}")
+    if killed:
+        for k in killed:
+            print(f"  SIGTERM -> {k['task_id']} ({k['agent']}, pid={k['pid']})")
+    else:
+        print("  No live subprocesses attached.")
+
+
 # ── parser ───────────────────────────────────────────────────
 
 
@@ -949,6 +989,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_resolve.add_argument("--decision", required=True, choices=["approve", "reject"])
     p_resolve.add_argument("--rationale", required=True)
     p_resolve.set_defaults(func=cmd_resolve_escalation)
+
+    # opc cancel — founder-initiated; cascades by default.
+    p_cancel = sub.add_parser(
+        "cancel",
+        help="Cancel a task (founder): SIGTERMs live subprocesses and cascades down the subtree",
+    )
+    p_cancel.add_argument("task_id", help="Task ID to cancel (e.g. TASK-052)")
+    p_cancel.add_argument(
+        "--rationale", default="",
+        help="Optional founder note recorded on every cancelled row",
+    )
+    p_cancel.add_argument(
+        "--no-cascade", action="store_true",
+        help="Cancel only this task, not its descendants "
+             "(dangerous: leaves any live children parentless)",
+    )
+    p_cancel.set_defaults(func=cmd_cancel)
 
     return parser
 

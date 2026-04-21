@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,35 +24,49 @@ def _run_command(
     session_id: str | None,
     timeout_seconds: int,
     input_text: str | None = None,
+    on_started: Callable[[int], None] | None = None,
 ) -> ExecutorResult:
     sid = session_id or f"sess-{uuid.uuid4().hex}"
     workspace.mkdir(parents=True, exist_ok=True)
     start_time = time.monotonic()
+    # Popen (not subprocess.run) because the daemon needs the pid handed to
+    # SessionTracker BEFORE we block in communicate(), so /cancel can SIGTERM
+    # the process mid-session. stdin=PIPE unconditionally — Codex reads its
+    # prompt from stdin; Claude ignores it when nothing is written.
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(workspace),
+        stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if on_started is not None:
+        on_started(proc.pid)
     try:
-        completed = subprocess.run(
-            cmd,
-            cwd=str(workspace),
-            capture_output=True,
-            text=True,
-            input=input_text,
-            timeout=timeout_seconds,
-        )
+        _stdout, stderr = proc.communicate(input=input_text, timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
+        proc.kill()
+        # Drain pipes so we don't leak FDs on the retry-free path.
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
         return ExecutorResult(
             success=False,
             duration_seconds=int(time.monotonic() - start_time),
             session_id=sid,
             error=f"Session timed out after {timeout_seconds} seconds",
         )
-    if completed.returncode != 0:
-        error_summary = (completed.stderr or completed.stdout or "").strip()
+    if proc.returncode != 0:
+        error_summary = (stderr or _stdout or "").strip()
         if error_summary:
             error_summary = f": {error_summary}"
         return ExecutorResult(
             success=False,
             duration_seconds=int(time.monotonic() - start_time),
             session_id=sid,
-            error=f"Command exited with code {completed.returncode}{error_summary}",
+            error=f"Command exited with code {proc.returncode}{error_summary}",
         )
     return ExecutorResult(
         success=True,
@@ -71,6 +86,7 @@ class ClaudeExecutor:
         prompt: str,
         session_id: str | None = None,
         timeout_seconds: int = 1800,
+        on_started: Callable[[int], None] | None = None,
     ) -> ExecutorResult:
         # The workspace's .claude/settings.json `permissions.allow` list is not
         # honoured in headless `-p` mode (observed empirically: Claude Code
@@ -87,7 +103,9 @@ class ClaudeExecutor:
             "--allowedTools",
             "Bash(opc *)",
         ]
-        return _run_command(cmd, workspace, session_id, timeout_seconds)
+        return _run_command(
+            cmd, workspace, session_id, timeout_seconds, on_started=on_started,
+        )
 
 
 class CodexExecutor:
@@ -101,6 +119,7 @@ class CodexExecutor:
         prompt: str,
         session_id: str | None = None,
         timeout_seconds: int = 1800,
+        on_started: Callable[[int], None] | None = None,
     ) -> ExecutorResult:
         cmd = [
             self._cli_path,
@@ -117,6 +136,7 @@ class CodexExecutor:
             session_id,
             timeout_seconds,
             input_text=prompt,
+            on_started=on_started,
         )
 
 
