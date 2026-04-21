@@ -96,7 +96,7 @@ def test_full_talk_lifecycle(live_daemon, runtime: Path) -> None:
     transcript_file = runtime / "talks" / f"{tid}.md"
     assert transcript_file.exists(), transcript_file
     transcript_text = transcript_file.read_text()
-    assert ("## turn 1" in transcript_text) or ("Codex > Claude" in transcript_text)
+    assert "## turn 1" in transcript_text
 
     # 7. learnings.md was written to the agent's workspace.
     learnings_file = runtime / "workspaces" / "dev_agent" / "learnings.md"
