@@ -42,25 +42,34 @@ def _await_terminal(base: str, task_id: str, timeout: float = 20.0) -> str:
     """Poll /tasks/{id} for a terminal status. Polling beats SSE here because
     sse_starlette emits keepalive pings every 15s, which keeps the socket
     read timeout from ever firing — meaning a hung task would deadlock the
-    test for the entire pytest budget."""
+    test for the entire pytest budget.
+
+    `blocked(DELEGATED)` is NOT terminal — it's the parent waiting on a
+    child. `blocked(ESCALATED)` IS terminal from the poller's perspective
+    (the task won't progress without founder intervention). Collapsing both
+    into "blocked" would turn the delegate-resume test into a race: any poll
+    during the parent's blocked-waiting-on-child window would wrongly
+    report task_blocked."""
     import time as _time
     deadline = _time.monotonic() + timeout
+    body: dict = {}
     while _time.monotonic() < deadline:
         r = httpx.get(
             f"{base}/tasks/{task_id}", headers=_auth_headers(), timeout=2.0,
         )
         body = r.json()
         status_value = body["task"]["status"]
+        block_kind = body["task"].get("block_kind")
         if status_value == "completed":
             return "task_complete"
         if status_value == "failed":
             return "task_failed"
-        if status_value == "blocked":
+        if status_value == "blocked" and block_kind == "escalated":
             return "task_blocked"
         _time.sleep(0.2)
     raise AssertionError(
         f"task {task_id} did not reach terminal within {timeout}s "
-        f"(last status={status_value!r}, note={body['task'].get('note')!r})"
+        f"(last body={body})"
     )
 
 

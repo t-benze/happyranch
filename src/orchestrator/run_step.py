@@ -84,7 +84,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
 
     # ---- 5. Classify outcome ----
     if not result.success or report is None:
-        _fail(orch, task_id, note="agent session failed")
+        _fail(orch, task_id, note=_session_failed_note(result, report))
         _enqueue_parent_if_waiting(orch, task_id)
         return
 
@@ -295,8 +295,18 @@ def _log_verdict_if_delegated(
 
 
 def _enqueue_parent_if_waiting(orch: "Orchestrator", task_id: str) -> None:
-    """Idempotent: enqueue the parent only if it is actually waiting on
-    THIS lineage (blocked+DELEGATED) AND all its children are now terminal."""
+    """Idempotent: advance the parent only if it's actually waiting on THIS
+    lineage (blocked+DELEGATED) AND all its children are now terminal.
+
+    Two outcomes:
+      - every child COMPLETED → enqueue parent for its next EH decision step.
+      - any child FAILED → cascade-fail the parent with a referencing note
+        and recurse up. No retry: the EH does not get another decision step
+        after a failed delegation. The alternative (re-enqueueing so the EH
+        can "try again") has historically produced runs of 6+ failed
+        retries on the same brief (TASK-033..038, TASK-041..045), burning
+        tokens and masking the real failure mode.
+    """
     task = orch._db.get_task(task_id)
     if task is None or task.parent_task_id is None:
         return
@@ -308,6 +318,44 @@ def _enqueue_parent_if_waiting(orch: "Orchestrator", task_id: str) -> None:
     siblings = [orch._db.get_task(cid) for cid in orch._db.get_children(parent.id)]
     if any(s is None or s.status not in TERMINAL_STATES for s in siblings):
         return
+
+    failed = [s for s in siblings if s.status == TaskStatus.FAILED]
+    if failed:
+        first = failed[0]
+        _fail(
+            orch, parent.id,
+            note=f"delegated child {first.id} failed: {first.note or '(no note)'}",
+        )
+        _enqueue_parent_if_waiting(orch, parent.id)
+        return
+
     queue = getattr(orch, "_queue", None)
     if queue is not None:
         queue.put_nowait(parent.id)
+
+
+def _session_failed_note(result, report) -> str:
+    """Build an enriched `agent session failed` note.
+
+    The pre-TASK-045 version wrote a bare constant string, so when the
+    Claude subprocess finished without calling `opc report-completion`
+    there was no trace of WHY — rc, stderr, and stdout were all dropped
+    on the floor. Now we surface rc and the tail of stderr (or stdout,
+    if stderr is empty) so the next class-of-TASK-045 failure is
+    self-diagnosing from the audit trail alone.
+    """
+    bits: list[str] = []
+    rc = getattr(result, "returncode", None)
+    bits.append(f"rc={rc}" if rc is not None else "rc=?")
+    err = (getattr(result, "stderr_tail", "") or "").strip()
+    out = (getattr(result, "stdout_tail", "") or "").strip()
+    preview_src, label = (err, "stderr") if err else (out, "stdout") if out else ("", "")
+    if label:
+        preview = preview_src.replace("\n", " ")[-300:]
+        bits.append(f"{label}: {preview}")
+    error_str = getattr(result, "error", None)
+    if error_str:
+        bits.append(error_str)
+    if report is None and getattr(result, "success", False):
+        bits.append("no completion callback")
+    return f"agent session failed ({'; '.join(bits)})"
