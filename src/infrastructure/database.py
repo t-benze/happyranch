@@ -8,6 +8,10 @@ from pathlib import Path
 from src.models import TaskRecord, TaskStatus
 
 
+class LineageTooDeep(Exception):
+    """Ancestor walk exceeded the safety bound; indicates data corruption."""
+
+
 class Database:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -248,6 +252,27 @@ class Database:
             (parent_task_id,),
         )
         return [row["id"] for row in cursor.fetchall()]
+
+    def walk_ancestors(self, task_id: str, max_hops: int = 20) -> list[TaskRecord]:
+        """Return [task, parent, ..., root] by following parent_task_id.
+
+        Raises LineageTooDeep if the walk exceeds max_hops (defensive bound;
+        real lineages are 2-4 deep). A missing intermediate task truncates the
+        walk silently — callers see the chain they could reconstruct.
+        """
+        chain: list[TaskRecord] = []
+        current_id: str | None = task_id
+        for _ in range(max_hops):
+            if current_id is None:
+                return chain
+            task = self.get_task(current_id)
+            if task is None:
+                return chain
+            chain.append(task)
+            current_id = task.parent_task_id
+        if current_id is not None:
+            raise LineageTooDeep(f"walk from {task_id} exceeded {max_hops} hops")
+        return chain
 
     def get_recall_payload(self, task_id: str) -> dict | None:
         """Return a flat dict suitable for the /recall endpoint, or None.

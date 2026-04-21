@@ -1,4 +1,6 @@
-from src.infrastructure.database import Database
+import pytest
+
+from src.infrastructure.database import Database, LineageTooDeep
 from src.models import TaskRecord, TaskStatus, TaskType
 
 
@@ -457,3 +459,34 @@ def test_list_blocked_with_kind(tmp_path):
     assert ids == {"T-1"}
     ids = set(db.list_blocked_with_kind(BlockKind.ESCALATED))
     assert ids == {"T-2"}
+
+
+def test_walk_ancestors_leaf_to_root_returns_chain(db):
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="root"))
+    db.insert_task(TaskRecord(
+        id="TASK-002", type=TaskType.GENERAL, brief="mid", parent_task_id="TASK-001",
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-003", type=TaskType.GENERAL, brief="leaf", parent_task_id="TASK-002",
+    ))
+    chain = db.walk_ancestors("TASK-003")
+    assert [t.id for t in chain] == ["TASK-003", "TASK-002", "TASK-001"]
+
+
+def test_walk_ancestors_root_returns_single_element(db):
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="root"))
+    chain = db.walk_ancestors("TASK-001")
+    assert [t.id for t in chain] == ["TASK-001"]
+
+
+def test_walk_ancestors_raises_when_over_limit(db):
+    db.insert_task(TaskRecord(id="TASK-000", type=TaskType.GENERAL, brief="root"))
+    prev = "TASK-000"
+    for i in range(1, 25):  # 24 descendants + root = 25 hops
+        tid = f"TASK-{i:03d}"
+        db.insert_task(TaskRecord(
+            id=tid, type=TaskType.GENERAL, brief=f"t{i}", parent_task_id=prev,
+        ))
+        prev = tid
+    with pytest.raises(LineageTooDeep):
+        db.walk_ancestors(prev, max_hops=20)
