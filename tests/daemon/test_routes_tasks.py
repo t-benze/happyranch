@@ -654,3 +654,66 @@ def test_cancel_records_audit_entry(client_with_runtime):
     assert cancelled[0]["agent"] == "founder"
     assert cancelled[0]["payload"]["rationale"] == "wrong path"
     assert cancelled[0]["payload"]["cascade"] is True
+
+
+def test_revisit_creates_new_root_from_failed_predecessor(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """Revisit a failed root: new root inherits brief/task_type, both audit
+    entries are written, predecessor row stays exactly as it was."""
+    from src.models import TaskRecord, TaskStatus, TaskType
+    db = daemon_state.db
+    db.insert_task(TaskRecord(
+        id="TASK-052", type=TaskType.IMPLEMENT_FEATURE, brief="Add Alipay support",
+    ))
+    db.update_task(
+        "TASK-052",
+        status=TaskStatus.FAILED,
+        note="delegated child TASK-058 failed: rc=1",
+        completed_at="2026-04-21T00:00:00+00:00",
+    )
+    pre_snapshot = db.get_task("TASK-052")
+
+    r = TestClient(app).post(
+        "/api/v1/tasks/TASK-052/revisit",
+        json={"founder_note": "PR #103 already merged"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    new_id = body["new_root_task_id"]
+    assert new_id.startswith("TASK-")
+    assert body["predecessor_root_task_id"] == "TASK-052"
+    assert body["flagged_task_id"] == "TASK-052"
+    assert body["cascade"] == ["TASK-052"]
+    assert body["predecessor_status"] == "failed"
+
+    # New root row
+    new_root = db.get_task(new_id)
+    assert new_root is not None
+    assert new_root.parent_task_id is None
+    assert new_root.status == TaskStatus.PENDING
+    assert new_root.brief == "Add Alipay support"
+    assert new_root.type == TaskType.IMPLEMENT_FEATURE
+    assert new_root.orchestration_step_count == 0
+    assert new_root.cancelled_at is None
+
+    # revisit_of on new root
+    new_logs = db.get_audit_logs(new_id)
+    revisit_of = next(e for e in new_logs if e["action"] == "revisit_of")
+    assert revisit_of["payload"]["predecessor_root"] == "TASK-052"
+    assert revisit_of["payload"]["prior_status"] == "failed"
+    assert revisit_of["payload"]["founder_note"] == "PR #103 already merged"
+
+    # revisit_spawned on predecessor
+    pre_logs = db.get_audit_logs("TASK-052")
+    spawned = next(e for e in pre_logs if e["action"] == "revisit_spawned")
+    assert spawned["payload"]["new_root"] == new_id
+
+    # Predecessor otherwise untouched
+    post_snapshot = db.get_task("TASK-052")
+    assert post_snapshot.status == pre_snapshot.status
+    assert post_snapshot.note == pre_snapshot.note
+    assert post_snapshot.completed_at == pre_snapshot.completed_at
+    assert post_snapshot.cancelled_at == pre_snapshot.cancelled_at
+    assert post_snapshot.orchestration_step_count == pre_snapshot.orchestration_step_count

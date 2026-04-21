@@ -284,6 +284,125 @@ class CancelBody(BaseModel):
 _TERMINAL_TASK_STATUSES = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED})
 
 
+class RevisitBody(BaseModel):
+    founder_note: str | None = None
+
+
+# Predecessor-root states that revisit accepts. Everything else is 409.
+# `failed-cancelled` is not a DB value — it's the normalized label for
+# (status=failed, cancelled_at!=NULL) that the response body returns and
+# the EH prompt header surfaces.
+_REVISIT_ELIGIBLE_STATUSES = frozenset({
+    TaskStatus.FAILED, TaskStatus.COMPLETED,
+})
+
+
+def _classify_predecessor_status(task: TaskRecord) -> str | None:
+    """Return the normalized prior_status label, or None if ineligible.
+
+    Maps DB shape → the 4-valued spec vocabulary:
+      failed + cancelled_at != NULL  → 'failed-cancelled'
+      failed + cancelled_at == NULL  → 'failed'
+      blocked(escalated)             → 'blocked-escalated'
+      completed                      → 'completed'
+    """
+    from src.models import BlockKind
+    if task.status == TaskStatus.FAILED:
+        return "failed-cancelled" if task.cancelled_at is not None else "failed"
+    if task.status == TaskStatus.COMPLETED:
+        return "completed"
+    if task.status == TaskStatus.BLOCKED and task.block_kind == BlockKind.ESCALATED:
+        return "blocked-escalated"
+    return None
+
+
+@router.post("/tasks/{task_id}/revisit")
+async def revisit_task(
+    task_id: str, body: RevisitBody, request: Request,
+) -> dict:
+    """Founder-initiated: spawn a fresh root that inherits the predecessor's
+    brief and references it via audit-log entries.
+
+    The predecessor root (the ancestor we walk up to) MUST be in a terminal-ish
+    state — see `_classify_predecessor_status`. The flagged task (the id the
+    founder gave us) can be in any state; only the root's status is validated.
+    """
+    from src.infrastructure.audit_logger import AuditLogger
+    from src.infrastructure.database import LineageTooDeep
+
+    state: DaemonState = request.app.state.daemon
+    _require_active(state)
+
+    flagged = state.db.get_task(task_id)
+    if flagged is None:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+
+    # Walk to the predecessor root. Defensive bound guards against corrupt cycles.
+    try:
+        chain = state.db.walk_ancestors(task_id, max_hops=20)
+    except LineageTooDeep as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "lineage_too_deep", "reason": str(exc)},
+        )
+    if not chain:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    predecessor = chain[-1]  # root is last; chain is [flagged, ..., root]
+
+    prior_status = _classify_predecessor_status(predecessor)
+    if prior_status is None:
+        from src.models import BlockKind as _BK
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "cannot_revisit",
+                "reason": f"predecessor {predecessor.id} is {predecessor.status.value}",
+                "predecessor_root_task_id": predecessor.id,
+                "predecessor_status": predecessor.status.value,
+                "block_kind": (
+                    predecessor.block_kind.value
+                    if isinstance(predecessor.block_kind, _BK) else None
+                ),
+            },
+        )
+
+    # cascade: [predecessor_root, ..., flagged]. chain is [flagged, ..., root],
+    # so reverse it. When flagged == root, this is a single-element list.
+    cascade = [t.id for t in reversed(chain)]
+
+    async with state.db_lock:
+        new_id = state.db.next_task_id()
+        state.db.insert_task(TaskRecord(
+            id=new_id,
+            type=predecessor.type,
+            brief=predecessor.brief,
+            status=TaskStatus.PENDING,
+            parent_task_id=None,
+        ))
+        audit = AuditLogger(state.db)
+        audit.log_revisit_of(
+            task_id=new_id,
+            predecessor_root=predecessor.id,
+            flagged=task_id,
+            cascade=cascade,
+            prior_status=prior_status,
+            founder_note=body.founder_note,
+        )
+        audit.log_revisit_spawned(
+            predecessor_task_id=predecessor.id, new_root=new_id,
+        )
+
+    enqueue_task(state, new_id)
+
+    return {
+        "new_root_task_id": new_id,
+        "predecessor_root_task_id": predecessor.id,
+        "flagged_task_id": task_id,
+        "cascade": cascade,
+        "predecessor_status": prior_status,
+    }
+
+
 @router.post("/tasks/{task_id}/cancel")
 async def cancel_task(
     task_id: str, body: CancelBody, request: Request,
