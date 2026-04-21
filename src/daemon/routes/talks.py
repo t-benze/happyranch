@@ -78,6 +78,46 @@ def _talk_to_dict(t: TalkRecord, include_transcript: str | None = None) -> dict:
 _INLINE_TRANSCRIPT_MAX_BYTES = 256 * 1024  # spec §11 default: inline unless >256 KiB.
 
 
+class AbandonBody(BaseModel):
+    reason: str
+
+
+@router.post("/talks/{talk_id}/resume")
+async def resume_talk(talk_id: str, request: Request) -> dict:
+    state: DaemonState = _require_active(request.app.state.daemon)
+    async with state.db_lock:
+        talk = state.db.get_talk(talk_id)
+        if talk is None:
+            raise HTTPException(status_code=404, detail={"code": "not_found", "talk_id": talk_id})
+        if talk.status != TalkStatus.OPEN:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "talk_not_open", "status": talk.status.value},
+            )
+    AuditLogger(state.db).log_talk_resumed(talk_id, talk.agent_name)
+    return {
+        "talk_id": talk_id,
+        "started_at": talk.started_at.isoformat(),
+    }
+
+
+@router.post("/talks/{talk_id}/abandon")
+async def abandon_talk(talk_id: str, body: AbandonBody, request: Request) -> dict:
+    state: DaemonState = _require_active(request.app.state.daemon)
+    async with state.db_lock:
+        talk = state.db.get_talk(talk_id)
+        if talk is None:
+            raise HTTPException(status_code=404, detail={"code": "not_found", "talk_id": talk_id})
+        if talk.status != TalkStatus.OPEN:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "talk_not_open", "status": talk.status.value},
+            )
+        state.db.update_talk(talk_id, status=TalkStatus.ABANDONED)
+    AuditLogger(state.db).log_talk_abandoned(talk_id, talk.agent_name, reason=body.reason)
+    return {"talk_id": talk_id, "status": "abandoned"}
+
+
 @router.get("/talks/{talk_id}")
 def get_talk(talk_id: str, request: Request) -> dict:
     state: DaemonState = _require_active(request.app.state.daemon)
