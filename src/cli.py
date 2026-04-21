@@ -729,6 +729,44 @@ def cmd_kb_precedent(args: argparse.Namespace) -> None:
     print(f"ok: wrote precedent {r.json()['slug']}")
 
 
+def cmd_talk_start(args: argparse.Namespace) -> None:
+    client = OpcClient.from_env()
+    r = client.post("/api/v1/talks", json={"agent_name": args.agent})
+    if r.status_code == 409:
+        detail = r.json().get("detail", {})
+        if detail.get("code") == "talk_already_open":
+            print(
+                f"An open talk with {args.agent} already exists: "
+                f"{detail['prior_open_talk_id']} (started {detail.get('prior_started_at')}). "
+                f"Use `opc talk resume --talk-id {detail['prior_open_talk_id']}` "
+                f"or `opc talk abandon --talk-id {detail['prior_open_talk_id']} --reason orphan`."
+            )
+            sys.exit(1)
+    if not _ok(r):
+        return
+    body = r.json()
+    print(f"{body['talk_id']} (started {body['started_at']})")
+
+
+def cmd_talk_resume(args: argparse.Namespace) -> None:
+    client = OpcClient.from_env()
+    r = client.post(f"/api/v1/talks/{args.talk_id}/resume")
+    if not _ok(r):
+        return
+    print(f"ok: resumed {args.talk_id}")
+
+
+def cmd_talk_abandon(args: argparse.Namespace) -> None:
+    client = OpcClient.from_env()
+    r = client.post(
+        f"/api/v1/talks/{args.talk_id}/abandon",
+        json={"reason": args.reason or "manual"},
+    )
+    if not _ok(r):
+        return
+    print(f"ok: abandoned {args.talk_id}")
+
+
 def cmd_resolve_escalation(args: argparse.Namespace) -> None:
     client = OpcClient.from_env()
     r = client.post(
@@ -982,6 +1020,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_kb_prec.add_argument("--slug")
     p_kb_prec.add_argument("--as-founder", action="store_true")
     p_kb_prec.set_defaults(func=cmd_kb_precedent)
+
+    # opc talk ...
+    p_talk = sub.add_parser("talk", help="Founder↔agent conversation flow")
+    talk_sub = p_talk.add_subparsers(dest="talk_command", required=True)
+
+    p_talk_start = talk_sub.add_parser("start", help="Start a new talk")
+    p_talk_start.add_argument("--agent", required=True)
+    p_talk_start.set_defaults(func=cmd_talk_start)
+
+    p_talk_resume = talk_sub.add_parser("resume", help="Resume an open talk")
+    p_talk_resume.add_argument("--talk-id", required=True)
+    p_talk_resume.set_defaults(func=cmd_talk_resume)
+
+    p_talk_abandon = talk_sub.add_parser("abandon", help="Abandon an open talk")
+    p_talk_abandon.add_argument("--talk-id", required=True)
+    p_talk_abandon.add_argument("--reason", default="manual")
+    p_talk_abandon.set_defaults(func=cmd_talk_abandon)
 
     # opc resolve-escalation
     p_resolve = sub.add_parser("resolve-escalation", help="Resolve an escalated task (founder only)")

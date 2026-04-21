@@ -923,6 +923,78 @@ def test_cmd_tasks_shows_block_kind_when_present(capsys):
     assert "completed" in out
 
 
+def test_talk_start_parses():
+    parser = build_parser()
+    args = parser.parse_args(["talk", "start", "--agent", "dev_agent"])
+    assert args.command == "talk"
+    assert args.talk_command == "start"
+    assert args.agent == "dev_agent"
+
+
+def test_talk_resume_parses():
+    parser = build_parser()
+    args = parser.parse_args(["talk", "resume", "--talk-id", "TALK-001"])
+    assert args.command == "talk"
+    assert args.talk_command == "resume"
+    assert args.talk_id == "TALK-001"
+
+
+def test_talk_abandon_parses():
+    parser = build_parser()
+    args = parser.parse_args([
+        "talk", "abandon", "--talk-id", "TALK-001", "--reason", "orphan",
+    ])
+    assert args.command == "talk"
+    assert args.talk_command == "abandon"
+    assert args.talk_id == "TALK-001"
+    assert args.reason == "orphan"
+
+
+def test_talk_abandon_parses_default_reason():
+    parser = build_parser()
+    args = parser.parse_args(["talk", "abandon", "--talk-id", "TALK-001"])
+    assert args.reason == "manual"
+
+
+def test_cmd_talk_start_prints_id(capsys):
+    from src.cli import cmd_talk_start
+
+    fake = MagicMock()
+    fake.post.return_value.status_code = 200
+    fake.post.return_value.json.return_value = {
+        "talk_id": "TALK-007",
+        "started_at": "2026-04-21T10:00:00+00:00",
+    }
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        args = MagicMock(agent="dev_agent")
+        cmd_talk_start(args)
+    fake.post.assert_called_once_with("/api/v1/talks", json={"agent_name": "dev_agent"})
+    out = capsys.readouterr().out
+    assert "TALK-007" in out
+
+
+def test_cmd_talk_start_conflict_exits_with_message(capsys):
+    from src.cli import cmd_talk_start
+
+    fake = MagicMock()
+    fake.post.return_value.status_code = 409
+    fake.post.return_value.json.return_value = {
+        "detail": {
+            "code": "talk_already_open",
+            "prior_open_talk_id": "TALK-003",
+            "prior_started_at": "2026-04-20T09:00:00+00:00",
+        },
+    }
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        args = MagicMock(agent="dev_agent")
+        with pytest.raises(SystemExit):
+            cmd_talk_start(args)
+    out = capsys.readouterr().out
+    assert "TALK-003" in out
+    # Friendly message should mention "already" or "open talk"
+    assert "already" in out.lower() or "open talk" in out.lower()
+
+
 def test_cmd_details_shows_note(capsys):
     from src.cli import cmd_details
     from argparse import Namespace
