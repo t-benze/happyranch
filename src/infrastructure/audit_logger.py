@@ -169,3 +169,52 @@ class AuditLogger:
             action="revisit_spawned",
             payload={"new_root": new_root},
         )
+
+    # NOTE: audit_log.task_id is NOT NULL. Talk events reuse that column as a
+    # generic "scope id" and store the talk id (TALK-NNN). Readers that filter
+    # by talk id pass it in place of task_id.
+
+    def log_talk_started(
+        self, talk_id: str, agent_name: str, resumed_from: str | None,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=talk_id,
+            agent=agent_name,
+            action="talk_started",
+            payload={"resumed_from": resumed_from},
+        )
+
+    def log_talk_resumed(self, talk_id: str, agent_name: str) -> None:
+        self._db.insert_audit_log(
+            task_id=talk_id,
+            agent=agent_name,
+            action="talk_resumed",
+            payload={},
+        )
+
+    def log_talk_abandoned(
+        self, talk_id: str, agent_name: str, reason: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=talk_id,
+            agent=agent_name,
+            action="talk_abandoned",
+            payload={"reason": reason},
+        )
+
+    def log_talk_ended(
+        self,
+        talk_id: str,
+        agent_name: str,
+        new_learnings_count: int,
+        new_kb_slugs: list[str],
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=talk_id,
+            agent=agent_name,
+            action="talk_ended",
+            payload={
+                "new_learnings_count": new_learnings_count,
+                "new_kb_slugs": new_kb_slugs,
+            },
+        )

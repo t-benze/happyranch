@@ -53,6 +53,7 @@ The following documents are in the `protocol/` folder.
 9. **CX Team** — Support Agent may run as persistent agent for real-time chat, not batch.
 10. **Feishu integration** — Bot architecture, notification tiers, reply parsing.
 11. **Founder dashboard** — Aggregate audit logs, escalation summaries, scorecards into weekly view.
+12. ~~**Talk flow**~~ done — founder↔agent conversations with SQLite-tracked talks, transcripts under `<runtime>/talks/`, end-of-talk learnings + KB entries.
 
 ## Key Constraints
 - **Two jurisdictions**: Hong Kong (PDPO), Macau (PDPA) — both must be complied with simultaneously. Mainland China is explicitly out of scope (PIPL/CSL/DSL do not apply).
@@ -108,7 +109,8 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |   |       |-- tasks.py               # POST /tasks, GET /tasks, GET /tasks/{id}, SSE /tasks/{id}/events, GET /tasks/{id}/recall, POST /tasks/{id}/resolve-escalation, POST /tasks/{id}/revisit, callbacks
 |   |       |-- agents.py              # GET /agents, POST /agents/init (SSE), POST /agents/{name}/learnings, POST /agents/manage (enroll/update/terminate), GET /agents/enrollments, POST /agents/{name}/approve, POST /agents/{name}/reject, POST /agents/{name}/repos
 |   |       |-- audit.py               # GET /audit — filtered audit-log view (task/agent/action/since/limit)
-|   |       +-- kb.py                  # Knowledge base: GET /kb, /kb/{slug}, /kb/search; POST /kb, /kb/{slug}, /kb/reindex, /kb/precedent; DELETE /kb/{slug}
+|   |       |-- kb.py                  # Knowledge base: GET /kb, /kb/{slug}, /kb/search; POST /kb, /kb/{slug}, /kb/reindex, /kb/precedent; DELETE /kb/{slug}
+|   |       +-- talks.py               # /talks — first-class founder↔agent conversations
 |   |-- orchestrator/
 |   |   |-- orchestrator.py            # Orchestrator facade: holds deps, exposes run_step (no more run_task)
 |   |   |-- run_step.py                # Single-step primitive — advance one task by one subprocess call
@@ -121,7 +123,8 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |   |-- infrastructure/
 |   |   |-- database.py                # SQLite (WAL mode), typed CRUD, task_results.status column, agent_enrollments table, parent_task_id / note / final_artifact_dir / block_kind on tasks
 |   |   |-- audit_logger.py            # Semantic logging (session, verdict, escalation, orchestration steps, escalation_resolved)
-|   |   +-- kb_store.py                # Knowledge base: slug validation, atomic entry write, list/read/update/delete, search, _index.md regeneration, near-duplicate detection
+|   |   |-- kb_store.py                # Knowledge base: slug validation, atomic entry write, list/read/update/delete, search, _index.md regeneration, near-duplicate detection
+|   |   +-- talk_store.py              # Transcript file writer: atomic, per-talk markdown
 |   |-- agents/                        # Agent definitions (future)
 |   +-- tools/                         # Agent tools (future)
 |-- tests/                             # ~390 tests (unit + a couple of integration)
@@ -151,9 +154,11 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |       |-- learnings.md
 |       |-- scorecard.md
 |       +-- task_history.md            # Per-agent history (renamed from recent_tasks.md; legacy files auto-migrated)
-+-- kb/                                # Shared knowledge base (see protocol/06-knowledge-base.md)
-    |-- _index.md                      # Regenerated after every write
-    +-- <slug>.md                      # Flat; filename = slug
+|-- kb/                                # Shared knowledge base (see protocol/06-knowledge-base.md)
+|   |-- _index.md                      # Regenerated after every write
+|   +-- <slug>.md                      # Flat; filename = slug
++-- talks/                             # Transcript files written at /talk end
+    +-- TALK-NNN.md
 ```
 
 ## Configuration
@@ -285,6 +290,14 @@ opc kb reindex
 opc kb precedent --task-id TASK-001 --decision approve|reject --rationale "..." [--slug <s>] --as-founder   # founder-only; follows resolve-escalation
 opc resolve-escalation --task-id TASK-001 --decision approve|reject --rationale "..."                       # founder state transition (precedes kb precedent)
 opc revisit TASK-052 [--note "..."]                             # founder: spawn NEW root that inherits the predecessor's brief (TTY-gated)
+# Talk flow (founder↔agent conversations):
+opc talk start --agent <name>
+opc talk resume --talk-id TALK-001
+opc talk abandon --talk-id TALK-001 [--reason <why>]
+opc talk end --talk-id TALK-001 --from-file /tmp/talk-end-TALK-001.json
+opc talk status [--agent <name>]
+opc talk list [--agent <name>] [--limit N]
+opc talk show TALK-001
 # Agent-side callbacks (invoked by skills):
 opc report-completion --task-id TASK-001 --session-id <sid> --status completed ...
 opc learning --agent dev_agent --session-id <sid> --task-id TASK-001 --text "..."

@@ -97,3 +97,22 @@ class StepRecord(BaseModel):
     action: str
     result_summary: str
     success: bool
+
+
+class TalkStatus(StrEnum):
+    OPEN = "open"
+    CLOSED = "closed"
+    ABANDONED = "abandoned"
+
+
+class TalkRecord(BaseModel):
+    id: str
+    agent_name: str
+    status: TalkStatus = TalkStatus.OPEN
+    started_at: datetime = Field(default_factory=_now)
+    ended_at: datetime | None = None
+    summary: str | None = None
+    topic_list: list[str] = Field(default_factory=list)
+    new_learnings_count: int = 0
+    new_kb_slugs: list[str] = Field(default_factory=list)
+    transcript_path: str | None = None
