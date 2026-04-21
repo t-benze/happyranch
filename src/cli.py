@@ -785,6 +785,62 @@ def cmd_talk_end(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_talk_status(args: argparse.Namespace) -> None:
+    client = OpcClient.from_env()
+    params = {"status": "open"}
+    if args.agent:
+        params["agent"] = args.agent
+    r = client.get("/api/v1/talks", params=params)
+    if not _ok(r):
+        return
+    talks = r.json()["talks"]
+    if not talks:
+        print("no open talks")
+        return
+    for t in talks:
+        print(f"{t['talk_id']}  agent={t['agent_name']}  started={t['started_at']}")
+
+
+def cmd_talk_list(args: argparse.Namespace) -> None:
+    client = OpcClient.from_env()
+    params = {"limit": args.limit}
+    if args.agent:
+        params["agent"] = args.agent
+    r = client.get("/api/v1/talks", params=params)
+    if not _ok(r):
+        return
+    for t in r.json()["talks"]:
+        print(
+            f"{t['talk_id']:10s}  {t['status']:10s}  {t['agent_name']:20s}  "
+            f"{t.get('ended_at') or t['started_at']}  "
+            f"learnings={t['new_learnings_count']}"
+        )
+
+
+def cmd_talk_show(args: argparse.Namespace) -> None:
+    import json as _json
+    client = OpcClient.from_env()
+    r = client.get(f"/api/v1/talks/{args.talk_id}")
+    if not _ok(r):
+        return
+    t = r.json()
+    if args.json:
+        print(_json.dumps(t, indent=2))
+        return
+    print(f"# {t['talk_id']} — {t['agent_name']}")
+    print(
+        f"status={t['status']} started={t['started_at']} ended={t.get('ended_at')}"
+    )
+    print(f"topics: {t.get('topic_list')}")
+    print(f"learnings: {t['new_learnings_count']}  kb_slugs: {t.get('new_kb_slugs')}")
+    if t.get("summary"):
+        print("\n## Summary\n")
+        print(t["summary"])
+    if t.get("transcript"):
+        print("\n## Transcript\n")
+        print(t["transcript"])
+
+
 def cmd_resolve_escalation(args: argparse.Namespace) -> None:
     client = OpcClient.from_env()
     r = client.post(
@@ -1060,6 +1116,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_talk_end.add_argument("--talk-id", required=True)
     p_talk_end.add_argument("--from-file", required=True)
     p_talk_end.set_defaults(func=cmd_talk_end)
+
+    p_talk_status = talk_sub.add_parser("status", help="List open talks")
+    p_talk_status.add_argument("--agent")
+    p_talk_status.set_defaults(func=cmd_talk_status)
+
+    p_talk_list = talk_sub.add_parser("list", help="List recent talks")
+    p_talk_list.add_argument("--agent")
+    p_talk_list.add_argument("--limit", type=int, default=20)
+    p_talk_list.set_defaults(func=cmd_talk_list)
+
+    p_talk_show = talk_sub.add_parser("show", help="Show a talk's metadata + transcript")
+    p_talk_show.add_argument("talk_id")
+    p_talk_show.add_argument("--json", action="store_true", help="Emit raw JSON instead of human output")
+    p_talk_show.set_defaults(func=cmd_talk_show)
 
     # opc resolve-escalation
     p_resolve = sub.add_parser("resolve-escalation", help="Resolve an escalated task (founder only)")

@@ -1057,6 +1057,169 @@ def test_cmd_talk_end_missing_file(tmp_path, capsys):
     fake.post.assert_not_called()
 
 
+def test_talk_status_parses():
+    parser = build_parser()
+    args = parser.parse_args(["talk", "status", "--agent", "dev_agent"])
+    assert args.command == "talk"
+    assert args.talk_command == "status"
+    assert args.agent == "dev_agent"
+
+
+def test_talk_list_parses_defaults():
+    parser = build_parser()
+    args = parser.parse_args(["talk", "list"])
+    assert args.command == "talk"
+    assert args.talk_command == "list"
+    assert args.agent is None
+    assert args.limit == 20
+
+
+def test_talk_list_parses_with_limit():
+    parser = build_parser()
+    args = parser.parse_args(["talk", "list", "--limit", "5"])
+    assert args.limit == 5
+
+
+def test_talk_show_parses():
+    parser = build_parser()
+    args = parser.parse_args(["talk", "show", "TALK-007"])
+    assert args.command == "talk"
+    assert args.talk_command == "show"
+    assert args.talk_id == "TALK-007"
+    assert args.json is False
+
+
+def test_talk_show_json_flag():
+    parser = build_parser()
+    args = parser.parse_args(["talk", "show", "TALK-007", "--json"])
+    assert args.json is True
+
+
+def test_cmd_talk_status_prints_open_talks(capsys):
+    from argparse import Namespace
+
+    from src.cli import cmd_talk_status
+
+    fake = MagicMock()
+    fake.get.return_value.status_code = 200
+    fake.get.return_value.json.return_value = {
+        "talks": [
+            {
+                "talk_id": "TALK-001",
+                "agent_name": "dev_agent",
+                "started_at": "2026-04-21T10:00:00+00:00",
+            }
+        ]
+    }
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_talk_status(Namespace(agent="dev_agent"))
+    fake.get.assert_called_once_with(
+        "/api/v1/talks", params={"status": "open", "agent": "dev_agent"}
+    )
+    out = capsys.readouterr().out
+    assert "TALK-001" in out
+    assert "dev_agent" in out
+
+
+def test_cmd_talk_status_empty(capsys):
+    from argparse import Namespace
+
+    from src.cli import cmd_talk_status
+
+    fake = MagicMock()
+    fake.get.return_value.status_code = 200
+    fake.get.return_value.json.return_value = {"talks": []}
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_talk_status(Namespace(agent=None))
+    out = capsys.readouterr().out
+    assert "no open talks" in out
+
+
+def test_cmd_talk_list_uses_limit(capsys):
+    from argparse import Namespace
+
+    from src.cli import cmd_talk_list
+
+    fake = MagicMock()
+    fake.get.return_value.status_code = 200
+    fake.get.return_value.json.return_value = {
+        "talks": [
+            {
+                "talk_id": "TALK-042",
+                "status": "closed",
+                "agent_name": "dev_agent",
+                "started_at": "2026-04-20T10:00:00+00:00",
+                "ended_at": "2026-04-20T11:00:00+00:00",
+                "new_learnings_count": 2,
+            }
+        ]
+    }
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_talk_list(Namespace(agent="dev_agent", limit=5))
+    fake.get.assert_called_once_with(
+        "/api/v1/talks", params={"limit": 5, "agent": "dev_agent"}
+    )
+    out = capsys.readouterr().out
+    assert "TALK-042" in out
+
+
+def test_cmd_talk_show_human(capsys):
+    from argparse import Namespace
+
+    from src.cli import cmd_talk_show
+
+    fake = MagicMock()
+    fake.get.return_value.status_code = 200
+    fake.get.return_value.json.return_value = {
+        "talk_id": "TALK-007",
+        "agent_name": "dev_agent",
+        "status": "closed",
+        "started_at": "2026-04-21T10:00:00+00:00",
+        "ended_at": "2026-04-21T11:00:00+00:00",
+        "topic_list": ["testing", "cli"],
+        "summary": "We discussed testing.",
+        "transcript": "founder: hi\nagent: hello",
+        "new_learnings_count": 3,
+        "new_kb_slugs": ["abc-123"],
+    }
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_talk_show(Namespace(talk_id="TALK-007", json=False))
+    out = capsys.readouterr().out
+    assert "TALK-007" in out
+    assert "## Summary" in out
+    assert "## Transcript" in out
+    assert "testing" in out
+
+
+def test_cmd_talk_show_json_mode(capsys):
+    import json as _json
+    from argparse import Namespace
+
+    from src.cli import cmd_talk_show
+
+    payload = {
+        "talk_id": "TALK-007",
+        "agent_name": "dev_agent",
+        "status": "closed",
+        "started_at": "2026-04-21T10:00:00+00:00",
+        "ended_at": "2026-04-21T11:00:00+00:00",
+        "topic_list": ["testing"],
+        "summary": "We discussed testing.",
+        "transcript": "founder: hi\nagent: hello",
+        "new_learnings_count": 3,
+        "new_kb_slugs": ["abc-123"],
+    }
+    fake = MagicMock()
+    fake.get.return_value.status_code = 200
+    fake.get.return_value.json.return_value = payload
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_talk_show(Namespace(talk_id="TALK-007", json=True))
+    out = capsys.readouterr().out
+    data = _json.loads(out)
+    assert data["talk_id"] == "TALK-007"
+    assert data["agent_name"] == "dev_agent"
+
+
 def test_cmd_details_shows_note(capsys):
     from src.cli import cmd_details
     from argparse import Namespace
