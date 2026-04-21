@@ -106,3 +106,38 @@ def test_log_escalation_resolved_persists_decision_and_rationale(db):
     assert matches[0]["payload"]["decision"] == "approve"
     assert "Refund justified" in matches[0]["payload"]["rationale"]
     assert matches[0]["agent"] == "founder"
+
+
+def test_log_talk_started(db):
+    AuditLogger(db).log_talk_started("TALK-001", "dev_agent", resumed_from=None)
+    rows = db.get_audit_logs("TALK-001")
+    assert len(rows) == 1
+    assert rows[0]["action"] == "talk_started"
+    assert rows[0]["agent"] == "dev_agent"
+    assert rows[0]["payload"] == {"resumed_from": None}
+
+
+def test_log_talk_resumed(db):
+    AuditLogger(db).log_talk_resumed("TALK-001", "dev_agent")
+    rows = db.get_audit_logs("TALK-001")
+    assert rows[0]["action"] == "talk_resumed"
+
+
+def test_log_talk_abandoned(db):
+    AuditLogger(db).log_talk_abandoned("TALK-001", "dev_agent", reason="orphan_at_new_start")
+    rows = db.get_audit_logs("TALK-001")
+    assert rows[0]["action"] == "talk_abandoned"
+    assert rows[0]["payload"]["reason"] == "orphan_at_new_start"
+
+
+def test_log_talk_ended(db):
+    AuditLogger(db).log_talk_ended(
+        "TALK-001",
+        "dev_agent",
+        new_learnings_count=2,
+        new_kb_slugs=["alipay-refund"],
+    )
+    rows = db.get_audit_logs("TALK-001")
+    assert rows[0]["action"] == "talk_ended"
+    assert rows[0]["payload"]["new_learnings_count"] == 2
+    assert rows[0]["payload"]["new_kb_slugs"] == ["alipay-refund"]
