@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -809,3 +810,37 @@ def test_revisit_missing_task_returns_404(
         "/api/v1/tasks/TASK-NOPE/revisit", json={}, headers=auth_headers,
     )
     assert r.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "status,block_kind,note",
+    [
+        ("in_progress", None, "working"),
+        ("pending", None, None),
+        ("blocked", "delegated", "Delegated to dev_agent (child=TASK-053)"),
+    ],
+)
+def test_revisit_rejects_ineligible_predecessor(
+    tmp_home, app, daemon_state, auth_headers, status, block_kind, note,
+) -> None:
+    """Revisit must reject predecessors whose history isn't final yet."""
+    from src.models import BlockKind, TaskRecord, TaskStatus, TaskType
+    db = daemon_state.db
+    db.insert_task(TaskRecord(id="TASK-052", type=TaskType.GENERAL, brief="x"))
+    bk = BlockKind(block_kind) if block_kind else None
+    db.update_task(
+        "TASK-052",
+        status=TaskStatus(status),
+        block_kind=bk,
+        note=note,
+    )
+    r = TestClient(app).post(
+        "/api/v1/tasks/TASK-052/revisit", json={}, headers=auth_headers,
+    )
+    assert r.status_code == 409
+    detail = r.json()["detail"]
+    assert detail["code"] == "cannot_revisit"
+    assert detail["predecessor_root_task_id"] == "TASK-052"
+    assert detail["predecessor_status"] == status
+    # No new task row was created.
+    assert len(db.list_tasks()) == 1
