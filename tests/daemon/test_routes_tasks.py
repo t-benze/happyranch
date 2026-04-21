@@ -717,3 +717,95 @@ def test_revisit_creates_new_root_from_failed_predecessor(
     assert post_snapshot.completed_at == pre_snapshot.completed_at
     assert post_snapshot.cancelled_at == pre_snapshot.cancelled_at
     assert post_snapshot.orchestration_step_count == pre_snapshot.orchestration_step_count
+
+
+def test_revisit_walks_cascade_to_root(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """Flag a leaf; endpoint walks parent_task_id to the predecessor root."""
+    from src.models import TaskRecord, TaskStatus, TaskType
+    db = daemon_state.db
+    db.insert_task(TaskRecord(id="TASK-052", type=TaskType.GENERAL, brief="root"))
+    db.insert_task(TaskRecord(
+        id="TASK-053", type=TaskType.GENERAL, brief="mid", parent_task_id="TASK-052",
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-058", type=TaskType.GENERAL, brief="leaf", parent_task_id="TASK-053",
+    ))
+    db.update_task("TASK-052", status=TaskStatus.FAILED, note="cascade")
+    db.update_task("TASK-053", status=TaskStatus.FAILED, note="child failed")
+    db.update_task("TASK-058", status=TaskStatus.FAILED, note="rc=1")
+
+    r = TestClient(app).post(
+        "/api/v1/tasks/TASK-058/revisit", json={}, headers=auth_headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["predecessor_root_task_id"] == "TASK-052"
+    assert body["flagged_task_id"] == "TASK-058"
+    assert body["cascade"] == ["TASK-052", "TASK-053", "TASK-058"]
+
+
+def test_revisit_handles_cancelled_predecessor(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    from src.models import TaskRecord, TaskStatus, TaskType
+    db = daemon_state.db
+    db.insert_task(TaskRecord(id="TASK-052", type=TaskType.GENERAL, brief="x"))
+    db.update_task(
+        "TASK-052",
+        status=TaskStatus.FAILED,
+        note="cancelled by founder: stuck",
+        cancelled_at="2026-04-21T00:00:00+00:00",
+    )
+    r = TestClient(app).post(
+        "/api/v1/tasks/TASK-052/revisit", json={}, headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert r.json()["predecessor_status"] == "failed-cancelled"
+
+
+def test_revisit_handles_escalated_predecessor(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    from src.models import BlockKind, TaskRecord, TaskStatus, TaskType
+    db = daemon_state.db
+    db.insert_task(TaskRecord(id="TASK-052", type=TaskType.GENERAL, brief="x"))
+    db.update_task(
+        "TASK-052",
+        status=TaskStatus.BLOCKED,
+        block_kind=BlockKind.ESCALATED,
+        note="halted",
+    )
+    r = TestClient(app).post(
+        "/api/v1/tasks/TASK-052/revisit", json={}, headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert r.json()["predecessor_status"] == "blocked-escalated"
+    # Predecessor stays blocked(escalated) — revisit is not resolve-escalation.
+    pre = db.get_task("TASK-052")
+    assert pre.status == TaskStatus.BLOCKED
+    assert pre.block_kind == BlockKind.ESCALATED
+
+
+def test_revisit_handles_completed_predecessor(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    from src.models import TaskRecord, TaskStatus, TaskType
+    db = daemon_state.db
+    db.insert_task(TaskRecord(id="TASK-052", type=TaskType.GENERAL, brief="x"))
+    db.update_task("TASK-052", status=TaskStatus.COMPLETED, note="ok")
+    r = TestClient(app).post(
+        "/api/v1/tasks/TASK-052/revisit", json={}, headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert r.json()["predecessor_status"] == "completed"
+
+
+def test_revisit_missing_task_returns_404(
+    tmp_home, app, auth_headers,
+) -> None:
+    r = TestClient(app).post(
+        "/api/v1/tasks/TASK-NOPE/revisit", json={}, headers=auth_headers,
+    )
+    assert r.status_code == 404
