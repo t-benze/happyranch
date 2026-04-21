@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 import json as _json
+import logging
+import os
+import signal
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, status
@@ -11,7 +15,9 @@ from sse_starlette.sse import EventSourceResponse
 from src.daemon.auth import require_token
 from src.daemon.runner import enqueue_task
 from src.daemon.state import DaemonState
-from src.models import TaskRecord, TaskType
+from src.models import TaskRecord, TaskStatus, TaskType
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[require_token()])
 
@@ -262,3 +268,122 @@ async def resolve_escalation(
         _queue = state.queue
     _enqueue_parent_if_waiting(_Shim(), task_id)
     return {"ok": True, "task_id": task_id, "new_status": new_status.value}
+
+
+class CancelBody(BaseModel):
+    rationale: str = ""
+    # Default cascades down the delegated subtree. The caller can ask for a
+    # point-cancel with cascade=False but it's dangerous: a parent waiting on
+    # a live child is cancelled while the child keeps running, leaving the
+    # child with no observer for its eventual completion. Surfaced as a flag
+    # rather than removed entirely because there are narrow cases (rogue-agent
+    # isolation) where targeting a single node is right.
+    cascade: bool = True
+
+
+_TERMINAL_TASK_STATUSES = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED})
+
+
+@router.post("/tasks/{task_id}/cancel")
+async def cancel_task(
+    task_id: str, body: CancelBody, request: Request,
+) -> dict:
+    """Founder-initiated cancel of a task and (by default) its descendants.
+
+    Order of operations matters. We stamp the DB row *before* sending SIGTERM
+    so that run_step's post-Popen classifier — which re-enters with a
+    subprocess rc=-15 looking like a normal failure — observes
+    ``status=FAILED`` and ``cancelled_at != NULL`` and short-circuits instead
+    of overwriting the founder's note with "agent session failed (rc=-15)".
+
+    The corresponding idempotence guards in ``_complete`` / ``_fail`` are the
+    other half of the race lock.
+    """
+    from src.infrastructure.audit_logger import AuditLogger
+
+    state: DaemonState = request.app.state.daemon
+    _require_active(state)
+
+    root = state.db.get_task(task_id)
+    if root is None:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    if root.status in _TERMINAL_TASK_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "task_already_terminal", "current_status": root.status.value},
+        )
+
+    # BFS subtree walk (cascade=True) or single-task (cascade=False). Only
+    # non-terminal rows are collected — anything already COMPLETED/FAILED
+    # stays untouched.
+    to_cancel: list[str] = []
+    stack = [task_id]
+    while stack:
+        tid = stack.pop()
+        t = state.db.get_task(tid)
+        if t is None or t.status in _TERMINAL_TASK_STATUSES:
+            continue
+        to_cancel.append(tid)
+        if body.cascade:
+            stack.extend(state.db.get_children(tid))
+
+    now = datetime.now(timezone.utc).isoformat()
+    rationale = body.rationale.strip()
+    note = f"cancelled by founder: {rationale}" if rationale else "cancelled by founder"
+
+    # Phase 1: DB writes + audit under the lock, to serialise with run_step
+    # transitions. Collect PIDs while we hold the lock — we'll SIGTERM outside.
+    pids_to_kill: list[tuple[str, str, int]] = []
+    audit = AuditLogger(state.db)
+    async with state.db_lock:
+        for tid in to_cancel:
+            state.db.update_task(
+                tid,
+                status=TaskStatus.FAILED,
+                block_kind=None,
+                note=note,
+                cancelled_at=now,
+                completed_at=now,
+            )
+            for agent, pid in state.sessions.iter_task_pids(tid):
+                pids_to_kill.append((tid, agent, pid))
+            audit.log_task_cancelled(
+                task_id=tid, rationale=rationale, cascade=body.cascade,
+            )
+
+    # Phase 2: deliver SIGTERM to any live subprocesses attached to cancelled
+    # tasks. os.kill runs outside the db_lock so a slow signal delivery can't
+    # stall concurrent DB writers. ProcessLookupError means the subprocess
+    # already exited — fine, the DB row is already in its terminal shape.
+    killed: list[dict] = []
+    for tid, agent, pid in pids_to_kill:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            killed.append({"task_id": tid, "agent": agent, "pid": pid})
+        except ProcessLookupError:
+            pass
+        except OSError as exc:
+            logger.warning(
+                "cancel %s: os.kill(%s, SIGTERM) failed: %s", tid, pid, exc,
+            )
+        # Clear the tracker entry so a parent auto-resume (if one gets
+        # enqueued via run_step's dependent-child check) can't find a stale
+        # pid and mis-route a subsequent cancel.
+        state.sessions.clear(tid, agent)
+
+    # Phase 3: publish terminal events for any live SSE tails. EventBus
+    # recognises `task_failed` as terminal (see _TERMINAL_TYPES in
+    # event_bus.py) and closes the stream on the observer side.
+    for tid in to_cancel:
+        await state.event_bus.publish(tid, {
+            "type": "task_failed",
+            "outcome": "cancelled",
+            "task_id": tid,
+        })
+
+    return {
+        "ok": True,
+        "task_id": task_id,
+        "cancelled": to_cancel,
+        "killed": killed,
+    }

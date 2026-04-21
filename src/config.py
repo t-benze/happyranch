@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     claude_cli_path: str = "claude"
     permission_mode: str = "auto"
 
+    # Codex executor
+    codex_cli_path: str = "codex"
+    codex_sandbox_mode: str = "workspace-write"
+
     # Protocol docs (relative to project_root)
     protocol_dir: str = "protocol"
 

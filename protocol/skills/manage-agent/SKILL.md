@@ -20,6 +20,7 @@ Manage the agent roster. You can **enroll** a new agent (requires founder approv
      "session_id": "<session_id>",
      "description": "Writes destination guides and travel articles",
      "system_prompt": "You are the Content Writer. Your responsibilities are...",
+     "executor": "codex",
      "repos": {"web-content": "https://github.com/t-benze/web-content.git"}
    }
    ```
@@ -31,8 +32,9 @@ Manage the agent roster. You can **enroll** a new agent (requires founder approv
      "name": "content_writer",
      "task_id": "<task_id>",
      "session_id": "<session_id>",
-     "description": "Updated description",
-     "system_prompt": "Updated system prompt..."
+      "description": "Updated description",
+     "system_prompt": "Updated system prompt...",
+     "executor": "claude"
    }
    ```
 
@@ -52,9 +54,9 @@ Manage the agent roster. You can **enroll** a new agent (requires founder approv
    opc manage-agent --from-file /tmp/manage-agent-<unique>.json
    ```
 
-   The `--from-file` form is mandatory for agent sessions. Multi-line bash
-   commands are rejected by the `Bash(opc:*)` permission rule (newlines count
-   as command separators).
+   The `--from-file` form is mandatory for agent sessions. In Claude sessions,
+   multi-line bash commands are rejected by the `Bash(opc:*)` permission rule
+   because newlines count as command separators.
 
 ## Access control
 
@@ -64,8 +66,8 @@ receive a `403 Forbidden` error.
 
 ## What happens
 
-- **enroll**: Creates a pending enrollment request. The founder must run `opc approve-agent <name>` before the agent's workspace is bootstrapped and the agent becomes available for delegation.
-- **update**: Updates the agent's description, system prompt, or repos in the enrollment registry. If the system prompt changes, the workspace's CLAUDE.md is regenerated. Only works on approved agents.
+- **enroll**: Creates a pending enrollment request. You may optionally specify `executor: "claude"` or `executor: "codex"`; if omitted, it defaults to `claude`. The founder must run `opc approve-agent <name>` before the agent's workspace is bootstrapped and the agent becomes available for delegation.
+- **update**: Updates the agent's description, system prompt, executor, or repos in the enrollment registry. If the system prompt or executor changes, the workspace bootstrap files are regenerated. Only works on approved agents.
 - **terminate**: Marks the agent as terminated and deletes its workspace directory. Only works on approved agents.
 
 ## Agent naming

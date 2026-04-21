@@ -268,9 +268,14 @@ def test_run_step_invalid_delegate_fails_task(runtime, db, monkeypatch):
     assert t.note and "invalid delegate" in t.note
 
 
-def test_run_step_session_failure_fails_task_and_notifies_parent(
+def test_run_step_session_failure_cascades_to_parent_no_retry(
     runtime, db, monkeypatch,
 ):
+    """No-retry policy: when a delegated child fails, the parent must FAIL
+    too with a cascading note. The EH does not get another decision step —
+    the alternative (re-enqueueing the parent) has historically produced
+    runs of 6+ failed retries on the same brief (TASK-033..038, TASK-041..045).
+    """
     import asyncio
     from src.orchestrator.orchestrator import Orchestrator
 
@@ -291,10 +296,88 @@ def test_run_step_session_failure_fails_task_and_notifies_parent(
                         lambda *a, **k: (_make_result(success=False), None))
 
     orch.run_step("T-CHD")
+
     child = db.get_task("T-CHD")
     assert child.status == TaskStatus.FAILED
     assert "session failed" in (child.note or "")
-    assert q.get_nowait() == "T-PAR"
+
+    parent = db.get_task("T-PAR")
+    assert parent.status == TaskStatus.FAILED
+    assert parent.block_kind is None
+    assert "T-CHD" in (parent.note or "")
+    assert "delegated child" in (parent.note or "")
+    assert q.qsize() == 0
+
+
+def test_run_step_session_failure_cascades_up_chain(
+    runtime, db, monkeypatch,
+):
+    """No-retry policy bubbles through the full ancestor chain: a failing
+    grandchild fails its parent, which fails its grandparent, and so on.
+    """
+    import asyncio
+    from src.orchestrator.orchestrator import Orchestrator
+
+    db.insert_task(TaskRecord(id="T-ROOT", type=TaskType.GENERAL, brief="r",
+                              assigned_agent="engineering_head"))
+    db.update_task("T-ROOT", status=TaskStatus.BLOCKED,
+                   block_kind=BlockKind.DELEGATED, note="waiting")
+    db.insert_task(TaskRecord(
+        id="T-MID", type=TaskType.GENERAL, brief="m",
+        assigned_agent="engineering_head", parent_task_id="T-ROOT",
+    ))
+    db.update_task("T-MID", status=TaskStatus.BLOCKED,
+                   block_kind=BlockKind.DELEGATED, note="waiting")
+    db.insert_task(TaskRecord(
+        id="T-LEAF", type=TaskType.GENERAL, brief="l",
+        assigned_agent="dev_agent", parent_task_id="T-MID",
+    ))
+
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    orch._queue = asyncio.Queue()
+    monkeypatch.setattr(orch, "_run_agent",
+                        lambda *a, **k: (_make_result(success=False), None))
+
+    orch.run_step("T-LEAF")
+
+    assert db.get_task("T-LEAF").status == TaskStatus.FAILED
+    assert db.get_task("T-MID").status == TaskStatus.FAILED
+    assert db.get_task("T-ROOT").status == TaskStatus.FAILED
+    assert orch._queue.qsize() == 0
+
+
+def test_run_step_session_failure_note_includes_diagnostics(
+    runtime, db, monkeypatch,
+):
+    """The `agent session failed` note must include rc and a stderr tail
+    so post-mortems don't need to grep daemon.log. TASK-044/045 class of
+    failure (subprocess exits without calling back) is the motivating case.
+    """
+    from src.orchestrator.executor import ExecutorResult
+    from src.orchestrator.orchestrator import Orchestrator
+
+    db.insert_task(TaskRecord(id="T-1", type=TaskType.GENERAL, brief="x",
+                              assigned_agent="engineering_head"))
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    import asyncio
+    orch._queue = asyncio.Queue()
+
+    result = ExecutorResult(
+        success=True,  # rc=0 but no report — the TASK-045 signature
+        duration_seconds=703,
+        session_id="sess-x",
+        returncode=0,
+        stdout_tail="wrote ExplorePage.tsx\n",
+        stderr_tail="",
+    )
+    monkeypatch.setattr(orch, "_run_agent", lambda *a, **k: (result, None))
+
+    orch.run_step("T-1")
+
+    note = db.get_task("T-1").note or ""
+    assert "rc=0" in note
+    assert "no completion callback" in note
+    assert "wrote ExplorePage.tsx" in note
 
 
 def test_run_step_worker_self_blocked_fails_task(runtime, db, monkeypatch):
@@ -430,3 +513,89 @@ def test_run_step_root_eh_task_skips_review_verdict(runtime, db, monkeypatch):
     verdicts = [a for a in db.get_audit_logs("T-ROOT")
                 if a["action"] == "review_verdict"]
     assert verdicts == []
+
+
+def test_run_step_skips_task_with_cancelled_at(runtime, db, monkeypatch):
+    """Entry guard: once /cancel stamps cancelled_at on a row, a late queue
+    entry must be a silent no-op — no in_progress transition, no _run_agent
+    call, no step-count increment. The row stays exactly as /cancel left it."""
+    from datetime import datetime, timezone
+
+    from src.orchestrator.orchestrator import Orchestrator
+
+    db.insert_task(TaskRecord(
+        id="T-CNL", type=TaskType.GENERAL, brief="x",
+        assigned_agent="engineering_head",
+    ))
+    # /cancel's phase-1 writes: FAILED + cancelled_at + founder note.
+    now = datetime.now(timezone.utc).isoformat()
+    db.update_task(
+        "T-CNL",
+        status=TaskStatus.FAILED,
+        block_kind=None,
+        note="cancelled by founder: enough",
+        cancelled_at=now,
+        completed_at=now,
+    )
+
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    called = {"n": 0}
+    def sentinel(*a, **k):
+        called["n"] += 1
+        raise AssertionError("_run_agent must not be called after cancel")
+    monkeypatch.setattr(orch, "_run_agent", sentinel)
+
+    orch.run_step("T-CNL")
+
+    t = db.get_task("T-CNL")
+    assert t.status == TaskStatus.FAILED
+    assert t.note == "cancelled by founder: enough"
+    assert t.cancelled_at is not None
+    assert t.orchestration_step_count == 0
+    assert called["n"] == 0
+
+
+def test_fail_idempotent_on_terminal_task(runtime, db):
+    """The post-Popen classifier must not overwrite the founder's note.
+    After /cancel flips the row to FAILED, a stray _fail() call (from the
+    run_step that was mid-flight when SIGTERM arrived) must no-op."""
+    from src.orchestrator.orchestrator import Orchestrator
+    from src.orchestrator.run_step import _fail
+
+    db.insert_task(TaskRecord(id="T-1", type=TaskType.GENERAL, brief="x",
+                              assigned_agent="dev_agent"))
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    db.update_task("T-1", status=TaskStatus.FAILED, block_kind=None,
+                   note="cancelled by founder: stop", cancelled_at=now,
+                   completed_at=now)
+
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    _fail(orch, "T-1", note="agent session failed rc=-15")
+
+    t = db.get_task("T-1")
+    assert t.status == TaskStatus.FAILED
+    assert t.note == "cancelled by founder: stop"  # unchanged
+
+
+def test_complete_idempotent_on_terminal_task(runtime, db):
+    """If the subprocess happened to finish cleanly just before SIGTERM,
+    _complete must not resurrect the cancelled row back to COMPLETED."""
+    from src.orchestrator.orchestrator import Orchestrator
+    from src.orchestrator.run_step import _complete
+
+    db.insert_task(TaskRecord(id="T-1", type=TaskType.GENERAL, brief="x",
+                              assigned_agent="dev_agent"))
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    db.update_task("T-1", status=TaskStatus.FAILED, block_kind=None,
+                   note="cancelled by founder: stop", cancelled_at=now,
+                   completed_at=now)
+
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    _complete(orch, "T-1", note="looks great", artifact_dir="artifacts/run-1")
+
+    t = db.get_task("T-1")
+    assert t.status == TaskStatus.FAILED
+    assert t.note == "cancelled by founder: stop"
+    assert t.final_artifact_dir is None  # unchanged

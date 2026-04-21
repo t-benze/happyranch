@@ -82,6 +82,7 @@ class Database:
                 description TEXT NOT NULL,
                 system_prompt TEXT NOT NULL,
                 repos TEXT NOT NULL DEFAULT '{}',
+                executor TEXT NOT NULL DEFAULT 'claude',
                 status TEXT NOT NULL DEFAULT 'pending',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -107,6 +108,7 @@ class Database:
             "ALTER TABLE tasks ADD COLUMN final_output_summary TEXT",
             "ALTER TABLE tasks ADD COLUMN final_artifact_dir TEXT",
             "ALTER TABLE task_results ADD COLUMN artifact_dir TEXT",
+            "ALTER TABLE agent_enrollments ADD COLUMN executor TEXT NOT NULL DEFAULT 'claude'",
             # crew → team rename (SQLite >= 3.25). Idempotent: fails on
             # DBs where the column is already `team` or already renamed.
             "ALTER TABLE tasks RENAME COLUMN crew TO team",
@@ -122,6 +124,11 @@ class Database:
             "ALTER TABLE tasks ADD COLUMN block_kind TEXT",
             "ALTER TABLE tasks ADD COLUMN note TEXT",
             "ALTER TABLE tasks ADD COLUMN orchestration_step_count INTEGER DEFAULT 0",
+            # cancelled_at: founder-initiated cancellation marker. Distinct
+            # from completed_at/status=failed so run_step can recognise a
+            # SIGTERM'd session as "cancelled" (not a retryable failure) and
+            # idempotent _fail calls don't overwrite the founder's note.
+            "ALTER TABLE tasks ADD COLUMN cancelled_at TEXT",
         ):
             try:
                 self._conn.execute(ddl)
@@ -205,6 +212,7 @@ class Database:
             note=row["note"],
             orchestration_step_count=row["orchestration_step_count"] or 0,
             final_artifact_dir=row["final_artifact_dir"],
+            cancelled_at=row["cancelled_at"],
         )
 
     def list_tasks(self, limit: int = 20) -> list[TaskRecord]:
@@ -228,6 +236,7 @@ class Database:
                 note=row["note"],
                 orchestration_step_count=row["orchestration_step_count"] or 0,
                 final_artifact_dir=row["final_artifact_dir"],
+                cancelled_at=row["cancelled_at"],
             )
             for row in cursor.fetchall()
         ]
@@ -303,6 +312,7 @@ class Database:
                 note=row["note"],
                 orchestration_step_count=row["orchestration_step_count"] or 0,
                 final_artifact_dir=row["final_artifact_dir"],
+                cancelled_at=row["cancelled_at"],
             )
             for row in cursor.fetchall()
         ]
@@ -311,7 +321,7 @@ class Database:
         allowed = {
             "status", "assigned_agent", "revision_count", "completed_at",
             "block_kind", "note", "orchestration_step_count",
-            "final_artifact_dir",
+            "final_artifact_dir", "cancelled_at",
         }
         # NOTE: filter on membership, not on None-ness — block_kind must be
         # resettable to NULL when a task unblocks.
@@ -594,12 +604,13 @@ class Database:
         description: str,
         system_prompt: str,
         repos: dict[str, str] | None = None,
+        executor: str | None = None,
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         self._conn.execute(
-            "INSERT INTO agent_enrollments (name, description, system_prompt, repos, status, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, 'pending', ?, ?)",
-            (name, description, system_prompt, json.dumps(repos or {}), now, now),
+            "INSERT INTO agent_enrollments (name, description, system_prompt, repos, executor, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
+            (name, description, system_prompt, json.dumps(repos or {}), executor or "claude", now, now),
         )
         self._conn.commit()
 
@@ -635,6 +646,7 @@ class Database:
         description: str | None = None,
         system_prompt: str | None = None,
         repos: dict[str, str] | None = None,
+        executor: str | None = None,
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         updates = ["updated_at = ?"]
@@ -648,6 +660,9 @@ class Database:
         if repos is not None:
             updates.append("repos = ?")
             params.append(json.dumps(repos))
+        if executor is not None:
+            updates.append("executor = ?")
+            params.append(executor)
         params.append(name)
         self._conn.execute(
             f"UPDATE agent_enrollments SET {', '.join(updates)} WHERE name = ?",

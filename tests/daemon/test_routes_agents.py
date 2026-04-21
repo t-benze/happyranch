@@ -271,6 +271,7 @@ def test_manage_agent_enroll_creates_pending(
             "session_id": _EH_SESSION,
             "description": "Writes destination guides",
             "system_prompt": "You are the Content Writer...",
+            "executor": "codex",
         },
         headers=auth_headers,
     )
@@ -279,6 +280,7 @@ def test_manage_agent_enroll_creates_pending(
     e = daemon_state.db.get_enrollment("content_writer")
     assert e is not None
     assert e["status"] == "pending"
+    assert e["executor"] == "codex"
 
 
 def test_manage_agent_enroll_duplicate_returns_409(
@@ -337,14 +339,46 @@ def test_manage_agent_update_changes_prompt(
             json={
                 "action": "update",
                 "name": "content_writer",
-                "task_id": _EH_TASK,
-                "session_id": _EH_SESSION,
-                "system_prompt": "new prompt",
-            },
-            headers=auth_headers,
-        )
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+            "system_prompt": "new prompt",
+            "executor": "codex",
+        },
+        headers=auth_headers,
+    )
     assert r.status_code == 200
-    assert daemon_state.db.get_enrollment("content_writer")["system_prompt"] == "new prompt"
+    enrollment = daemon_state.db.get_enrollment("content_writer")
+    assert enrollment["system_prompt"] == "new prompt"
+    assert enrollment["executor"] == "codex"
+
+
+def test_manage_agent_update_persists_executor_to_workspace(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    _activate_eh_session(daemon_state)
+    daemon_state.db.insert_enrollment("content_writer", "desc", "old prompt")
+    daemon_state.db.update_enrollment_status("content_writer", "approved")
+    workspace = daemon_state.runtime.workspaces_dir / "content_writer"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\n")
+
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={
+            "action": "update",
+            "name": "content_writer",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+            "executor": "codex",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+
+    from src.daemon.agent_config import load_agent_config
+
+    cfg = load_agent_config(workspace)
+    assert cfg["executor"] == "codex"
 
 
 def test_manage_agent_terminate_removes_workspace(
@@ -431,7 +465,7 @@ def test_manage_agent_wrong_session_returns_403(
 def test_approve_agent_bootstraps_workspace(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
-    daemon_state.db.insert_enrollment("content_writer", "desc", "prompt")
+    daemon_state.db.insert_enrollment("content_writer", "desc", "prompt", executor="codex")
 
     with patch("src.daemon.routes.agents.ContextBuilder") as MockCB:
         mock_ctx = MockCB.return_value
@@ -447,6 +481,11 @@ def test_approve_agent_bootstraps_workspace(
     assert daemon_state.db.get_enrollment("content_writer")["status"] == "approved"
     workspace = daemon_state.runtime.workspaces_dir / "content_writer"
     assert workspace.exists()
+
+    from src.daemon.agent_config import load_agent_config
+
+    cfg = load_agent_config(workspace)
+    assert cfg["executor"] == "codex"
 
 
 def test_approve_non_pending_returns_409(

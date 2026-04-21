@@ -14,7 +14,13 @@ class ExecutorResult:
     success: bool
     duration_seconds: int
     session_id: str
+    returncode: int | None = None
+    stdout_tail: str = ""
+    stderr_tail: str = ""
     error: str | None = None
+
+
+_TAIL_BYTES = 2000
 
 
 class AgentExecutor:
@@ -45,7 +51,7 @@ class AgentExecutor:
         workspace.mkdir(parents=True, exist_ok=True)
         start_time = time.monotonic()
         try:
-            subprocess.run(
+            proc = subprocess.run(
                 cmd,
                 cwd=str(workspace),
                 capture_output=True,
@@ -57,10 +63,22 @@ class AgentExecutor:
                 success=False,
                 duration_seconds=int(time.monotonic() - start_time),
                 session_id=sid,
+                returncode=None,
+                stdout_tail="",
+                stderr_tail="",
                 error=f"Session timed out after {timeout_seconds} seconds",
             )
+        duration = int(time.monotonic() - start_time)
+        rc = proc.returncode
         return ExecutorResult(
-            success=True,
-            duration_seconds=int(time.monotonic() - start_time),
+            # `success` previously meant "no TimeoutExpired" — every non-zero
+            # rc still looked successful, which is what let TASK-044/045
+            # silently fail with no trace. Tie success to rc==0 so the
+            # run_step classifier treats a crashed subprocess as a failure.
+            success=(rc == 0),
+            duration_seconds=duration,
             session_id=sid,
+            returncode=rc,
+            stdout_tail=(proc.stdout or "")[-_TAIL_BYTES:],
+            stderr_tail=(proc.stderr or "")[-_TAIL_BYTES:],
         )

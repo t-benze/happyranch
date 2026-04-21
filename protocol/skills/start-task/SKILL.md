@@ -84,14 +84,14 @@ Parameters:
    opc kb add --agent <your_agent_name> --from-file /tmp/kb-<slug>.md
    ```
 
-   For updates: `opc kb update <slug> --agent <you> --from-file /tmp/kb-<slug>.md`. Resolve collision 409s by updating the existing entry instead of forcing a sibling. The `--from-file` pattern is mandatory — multi-line `opc` payloads are rejected by the agent's `Bash(opc:*)` permission rule.
+   For updates: `opc kb update <slug> --agent <you> --from-file /tmp/kb-<slug>.md`. Resolve collision 409s by updating the existing entry instead of forcing a sibling. The `--from-file` pattern is mandatory across executors; in Claude sessions multi-line `opc` payloads are rejected by the `Bash(opc:*)` permission rule.
 
 7. **Report completion.** When you finish (success or blocker), write a JSON
    payload to a file and invoke `opc report-completion --from-file <path>` as
-   a single-line command. The file form is mandatory: multi-line bash commands
-   with backslash continuations are rejected by the agent's Claude Code
-   permission rule (newlines count as command separators, and only the first
-   subcommand matches `Bash(opc:*)`).
+   a single-line command. The file form is mandatory across executors. In
+   Claude sessions, multi-line bash commands with backslash continuations are
+   rejected by the permission rule because newlines count as command
+   separators and only the first subcommand matches `Bash(opc:*)`.
 
    Use the Write tool to create `/tmp/completion-<task_id>.json` with this shape:
 

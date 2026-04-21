@@ -4,6 +4,7 @@ import json
 import logging
 import uuid
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
@@ -12,6 +13,7 @@ if TYPE_CHECKING:
     from src.daemon.sessions import SessionTracker
 
 from src.config import Settings
+from src.daemon.agent_config import load_agent_config
 from src.infrastructure.audit_logger import AuditLogger
 from src.infrastructure.database import Database
 from src.runtime import RuntimeDir
@@ -22,7 +24,7 @@ from src.models import (
     TaskRecord,
     TaskType,
 )
-from src.orchestrator.executor import AgentExecutor, ExecutorResult
+from src.orchestrator.executors import ClaudeExecutor, CodexExecutor, ExecutorResult
 from src.orchestrator.performance_tracker import PerformanceTracker
 
 logger = logging.getLogger(__name__)
@@ -52,10 +54,6 @@ class Orchestrator:
         self._runtime = runtime
         self._audit = AuditLogger(db)
         self._tracker = PerformanceTracker(db, settings)
-        self._executor = AgentExecutor(
-            claude_cli_path=settings.claude_cli_path,
-            permission_mode=settings.permission_mode,
-        )
         self._queue: "asyncio.Queue[str] | None" = None  # wired by daemon
         self._sessions: "SessionTracker | None" = None  # wired by daemon
 
@@ -77,6 +75,52 @@ class Orchestrator:
 
     def _build_session_id(self) -> str:
         return f"sess-{uuid.uuid4().hex}"
+
+    def _resolve_executor_name(self, agent_name: str) -> str:
+        workspace = self._runtime.workspaces_dir / agent_name
+        cfg = load_agent_config(workspace)
+        return cfg.get("executor") or "claude"
+
+    def _readiness_marker(self, workspace: Path, provider: str) -> Path:
+        if provider == "codex":
+            return workspace / "AGENTS.md"
+        return workspace / ".claude" / "skills" / "start-task" / "SKILL.md"
+
+    def _build_executor(self, provider: str):
+        if provider == "codex":
+            return CodexExecutor(
+                codex_cli_path=self._settings.codex_cli_path,
+                sandbox_mode=self._settings.codex_sandbox_mode,
+            )
+        return ClaudeExecutor(
+            claude_cli_path=self._settings.claude_cli_path,
+            permission_mode=self._settings.permission_mode,
+        )
+
+    def _build_agent_prompt(
+        self,
+        provider: str,
+        agent_name: str,
+        task_id: str,
+        session_id: str,
+        brief: str,
+        prompt: str,
+    ) -> str:
+        intro = (
+            f"You are {agent_name}. Use the injected task parameters directly to handle this task.\n"
+            if provider == "codex"
+            else f"You are {agent_name}. Use the start-task skill to handle this task.\n"
+        )
+        return (
+            f"{intro}"
+            f"\n"
+            f"Parameters:\n"
+            f"  task_id: {task_id}\n"
+            f"  session_id: {session_id}\n"
+            f"  brief: {brief}\n"
+            f"  role_guidance: |\n"
+            f"{_indent(prompt, '    ')}\n"
+        )
 
     def _read_completion_from_db(
         self, task_id: str, agent: str, session_id: str,
@@ -175,13 +219,15 @@ class Orchestrator:
         task = self._db.get_task(task_id)
         agent_name = agent
         workspace = self._runtime.workspaces_dir / agent_name
+        provider = self._resolve_executor_name(agent_name)
+        executor = self._build_executor(provider)
 
         # The orchestrator relies on the start-task skill to bridge prompt →
         # agent work → completion callback. If the workspace was bootstrapped
         # before skills existed (or the user wiped it), the agent never calls
         # `opc report-completion` and the task silently rejects. Fail fast
         # with an actionable message instead.
-        skill_marker = workspace / ".claude" / "skills" / "start-task" / "SKILL.md"
+        skill_marker = self._readiness_marker(workspace, provider)
         if not skill_marker.exists():
             raise WorkspaceNotInitialized(
                 f"workspace for {agent_name!r} is not initialized "
@@ -193,18 +239,13 @@ class Orchestrator:
         # Brief is injected here:
         brief = task.brief if task else ""
         session_id = self._build_session_id()
-        # The prompt format must match the parsing contract documented in
-        # protocol/skills/start-task/SKILL.md. Multi-line values use YAML-style
-        # block literals so an agent scanning the text can bracket them cleanly.
-        full_prompt = (
-            f"You are {agent_name}. Use the start-task skill to handle this task.\n"
-            f"\n"
-            f"Parameters:\n"
-            f"  task_id: {task_id}\n"
-            f"  session_id: {session_id}\n"
-            f"  brief: {brief}\n"
-            f"  role_guidance: |\n"
-            f"{_indent(prompt, '    ')}\n"
+        full_prompt = self._build_agent_prompt(
+            provider,
+            agent_name,
+            task_id,
+            session_id,
+            brief,
+            prompt,
         )
 
         if self._sessions is not None:
@@ -215,11 +256,20 @@ class Orchestrator:
         self._audit.log_session_start(task_id, agent_name, str(workspace))
         self._db.update_task(task_id, assigned_agent=agent_name)
 
-        result = self._executor.run(
+        # Capture pid into SessionTracker the moment Popen returns so the
+        # /cancel route can SIGTERM the subprocess mid-session without racing
+        # the set_active() call above. Works for both Claude and Codex
+        # executors because both delegate to executors._run_command.
+        def _on_started(pid: int) -> None:
+            if self._sessions is not None:
+                self._sessions.set_pid(task_id, agent_name, pid)
+
+        result = executor.run(
             workspace=workspace,
             prompt=full_prompt,
             session_id=session_id,
             timeout_seconds=self._settings.session_timeout_seconds,
+            on_started=_on_started,
         )
         self._audit.log_session_end(task_id, agent_name, result.duration_seconds)
 

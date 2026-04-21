@@ -3,12 +3,13 @@ from unittest.mock import patch
 
 import pytest
 
+from src.daemon.agent_config import set_executor, write_default_agent_config
 from src.infrastructure.database import Database
 from src.models import (
     TaskStatus,
     TaskType,
 )
-from src.orchestrator.executor import ExecutorResult
+from src.orchestrator.executors import ExecutorResult
 from src.orchestrator.orchestrator import Orchestrator
 
 
@@ -28,6 +29,15 @@ def _setup_workspaces(runtime, agents: list[str] | None = None):
         skill = ws / ".claude" / "skills" / "start-task"
         skill.mkdir(parents=True, exist_ok=True)
         (skill / "SKILL.md").write_text("# start-task\n")
+
+
+def _setup_codex_workspace(runtime, agent: str) -> None:
+    ws = runtime.workspaces_dir / agent
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
+    write_default_agent_config(ws)
+    set_executor(ws, "codex")
+    (ws / "AGENTS.md").write_text(f"# Agent: {agent}\n")
 
 
 def test_orchestrator_no_longer_has_run_task():
@@ -63,8 +73,9 @@ def test_task_metadata_in_agent_prompt(orchestrator, test_runtime, monkeypatch):
     # Fix the session_id so the prompt is deterministic.
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
 
-    with patch.object(orchestrator._executor, "run") as mock_executor_run:
-        mock_executor_run.return_value = ExecutorResult(
+    with patch("src.orchestrator.orchestrator.ClaudeExecutor") as MockExecutor:
+        mock_executor = MockExecutor.return_value
+        mock_executor.run.return_value = ExecutorResult(
             success=True,
             duration_seconds=30,
             session_id="sess-eh",
@@ -72,13 +83,36 @@ def test_task_metadata_in_agent_prompt(orchestrator, test_runtime, monkeypatch):
 
         orchestrator._run_agent(task_id, "engineering_head", "Decide what to do next")
 
-        call_kwargs = mock_executor_run.call_args
-        prompt = call_kwargs[1]["prompt"] if "prompt" in call_kwargs[1] else call_kwargs[0][1]
+        prompt = mock_executor.run.call_args.kwargs["prompt"]
         assert "Use the start-task skill" in prompt
         assert "task_id: TASK-001" in prompt
         assert "brief: Explore payments" in prompt
         assert "session_id:" in prompt
         assert "role_guidance:" in prompt
+
+
+def test_codex_agent_prompt_uses_provider_specific_wording(
+    orchestrator, test_runtime, monkeypatch,
+):
+    _setup_codex_workspace(test_runtime, "engineering_head")
+    task_id = orchestrator.create_task(TaskType.GENERAL, "Explore payments")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
+
+    with patch("src.orchestrator.orchestrator.CodexExecutor") as MockExecutor:
+        mock_executor = MockExecutor.return_value
+        mock_executor.run.return_value = ExecutorResult(
+            success=True,
+            duration_seconds=30,
+            session_id="sess-eh",
+        )
+
+        orchestrator._run_agent(task_id, "engineering_head", "Decide what to do next")
+
+        prompt = mock_executor.run.call_args.kwargs["prompt"]
+        assert "Use the start-task skill" not in prompt
+        assert "Use the injected task parameters directly" in prompt
+        assert "task_id: TASK-001" in prompt
+        assert "brief: Explore payments" in prompt
 
 
 def test_run_agent_registers_active_session_when_tracker_attached(
@@ -98,8 +132,9 @@ def test_run_agent_registers_active_session_when_tracker_attached(
     task_id = orchestrator.create_task(TaskType.GENERAL, "Explore payments")
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
 
-    with patch.object(orchestrator._executor, "run") as mock_executor_run:
-        mock_executor_run.return_value = ExecutorResult(
+    with patch("src.orchestrator.orchestrator.ClaudeExecutor") as MockExecutor:
+        mock_executor = MockExecutor.return_value
+        mock_executor.run.return_value = ExecutorResult(
             success=True, duration_seconds=1, session_id="sess-eh",
         )
         orchestrator._run_agent(task_id, "engineering_head", "any prompt")
@@ -120,8 +155,9 @@ def test_run_agent_skips_session_registration_when_tracker_not_attached(
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
     captured: list[tuple[str, str, str]] = []
 
-    with patch.object(orchestrator._executor, "run") as mock_executor_run:
-        mock_executor_run.return_value = ExecutorResult(
+    with patch("src.orchestrator.orchestrator.ClaudeExecutor") as MockExecutor:
+        mock_executor = MockExecutor.return_value
+        mock_executor.run.return_value = ExecutorResult(
             success=True, duration_seconds=1, session_id="sess-eh",
         )
         orchestrator._run_agent(
@@ -150,6 +186,52 @@ def test_run_agent_fails_fast_when_workspace_missing_skill(orchestrator, test_ru
     assert "opc init-agent engineering_head" in msg
     # The executor must never have been invoked against a broken workspace.
     assert not (eh_workspace / ".claude" / "skills" / "start-task" / "SKILL.md").exists()
+
+
+def test_run_agent_accepts_codex_readiness_marker(orchestrator, test_runtime, monkeypatch):
+    _setup_codex_workspace(test_runtime, "engineering_head")
+    task_id = orchestrator.create_task(TaskType.GENERAL, "ping")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
+
+    with patch("src.orchestrator.orchestrator.CodexExecutor") as MockExecutor:
+        mock_executor = MockExecutor.return_value
+        mock_executor.run.return_value = ExecutorResult(
+            success=True,
+            duration_seconds=1,
+            session_id="sess-eh",
+        )
+
+        result, report = orchestrator._run_agent(task_id, "engineering_head", "any prompt")
+
+    assert result.success is True
+    assert report is None
+    assert mock_executor.run.call_count == 1
+
+
+def test_run_agent_defaults_missing_executor_to_claude(orchestrator, test_runtime, monkeypatch):
+    workspace = test_runtime.workspaces_dir / "engineering_head"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "task_history.md").write_text("# Task History: engineering_head\n\n")
+    (workspace / "agent.yaml").write_text("repos: {}\n")
+    skill = workspace / ".claude" / "skills" / "start-task"
+    skill.mkdir(parents=True, exist_ok=True)
+    (skill / "SKILL.md").write_text("# start-task\n")
+
+    task_id = orchestrator.create_task(TaskType.GENERAL, "ping")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
+
+    with patch("src.orchestrator.orchestrator.ClaudeExecutor") as MockExecutor:
+        mock_executor = MockExecutor.return_value
+        mock_executor.run.return_value = ExecutorResult(
+            success=True,
+            duration_seconds=1,
+            session_id="sess-eh",
+        )
+
+        result, _ = orchestrator._run_agent(task_id, "engineering_head", "any prompt")
+
+    assert result.success is True
+    assert mock_executor.run.call_count == 1
 
 
 def test_task_history_written_per_agent_only(orchestrator, test_runtime):

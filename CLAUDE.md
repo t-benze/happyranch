@@ -30,22 +30,22 @@ The following documents are in the `protocol/` folder.
 ## Tech Stack
 - **Language**: Python 3.11+ (currently running 3.13)
 - **Package manager**: `uv`
-- **Agent executor**: Claude Code CLI (`claude -p "<prompt>" --permission-mode auto`) — no third-party agent framework dependency
+- **Agent executor**: Per-agent executor selection. Claude Code (`claude -p "<prompt>" --permission-mode auto`) and Codex (`codex exec --json -`) are supported — no third-party agent framework dependency
 - **Daemon**: FastAPI HTTP service (`src/daemon/`) — serves orchestrator work, SSE task events, agent callbacks
 - **CLI**: Thin HTTP client (`src/client/`) that talks to the daemon over localhost
-- **Agent workflow**: Claude Code skills (`protocol/skills/`) — `start-task`, `make-worktree`, `manage-repo`, `manage-agent`. The orchestrator prompt just names the skill and passes parameters
+- **Agent workflow**: Shared workspace skills (`protocol/skills/`) — `start-task`, `make-worktree`, `manage-repo`, `manage-agent`. The orchestrator prompt references the same SOPs for both Claude and Codex workspaces
 - **Orchestrator**: Custom Python application. `run_step` is the only primitive — each invocation advances one task by one subprocess call; an async `TaskQueue` + worker pool (`src/daemon/queue.py`) drives re-enqueues across steps. EH drives decisions; performance scoring derived from implicit review verdicts on delegated work
 - **Data models**: Pydantic v2 + pydantic-settings
 - **Database**: SQLite with WAL mode (audit logs, scorecards, task state)
 - **Knowledge base**: File-backed markdown under `<runtime>/kb/` with atomic writes, substring/tag search, and regenerated `_index.md` (see `src/infrastructure/kb_store.py`). Vector store / RAG not yet added
-- **LLM**: Anthropic Claude via Claude Code CLI
+- **LLM**: Provider depends on the selected executor (Claude Code or Codex)
 - **Hosting**: Local Mac Mini
 
 ## Implementation Order (follow this sequence)
-1. ~~**Product & Engineering Team**~~ done — Engineering Head + Product Manager + Dev Agent + Payment Agent + QA Engineer with Claude Code executor. EH-driven orchestration loop (EH decides each step: delegate, handle directly, or escalate). Audit logging, agent memory, performance scoring all implemented.
+1. ~~**Product & Engineering Team**~~ done — Engineering Head + Product Manager + Dev Agent + Payment Agent + QA Engineer with executor-backed agent sessions. EH-driven orchestration loop (EH decides each step: delegate, handle directly, or escalate). Audit logging, agent memory, performance scoring all implemented.
 2. ~~**Audit logging**~~ done — SQLite-backed audit logger with session start/end, completion reports, orchestration steps, escalations.
 3. ~~**EH-driven orchestration**~~ done — Engineering Head analyzes each task and decides the approach. No hardcoded task chains. Max 10 orchestration steps before escalation.
-4. ~~**Agent memory**~~ done — Persistent workspaces with CLAUDE.md, learnings.md, scorecard.md, task_history.md. Context builder regenerates identity on tier changes.
+4. ~~**Agent memory**~~ done — Persistent workspaces with executor-specific bootstrap docs (`CLAUDE.md` or `AGENTS.md`), learnings.md, scorecard.md, task_history.md. Context builder regenerates identity on tier changes.
 5. ~~**Performance scoring**~~ done — Rolling 30-day scorecards, green/yellow/red tiers, exposed to EH via capabilities prompt.
 6. **Content Team** — Content Writer + Content QA + SEO Agent + Content Manager.
 7. **Ops Team** — Partner Liaison + Compliance Agent + Operations Manager. Enables real cross-team audits for payment changes.
@@ -76,7 +76,7 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |   |-- 03-system-prompts-workers.md
 |   |-- 04-escalation-rules.md
 |   |-- 05*.md
-|   +-- skills/                        # Claude Code skills copied into every agent workspace
+|   +-- skills/                        # Shared skills copied into every agent workspace
 |       |-- start-task/                # Parses injected params, runs role, reports via CLI callback
 |       |-- make-worktree/             # Creates an isolated git worktree under .claude/worktrees/
 |       |-- manage-repo/              # Agent-driven repo add/remove/update via opc manage-repo
@@ -113,9 +113,10 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |   |   |-- orchestrator.py            # Orchestrator facade: holds deps, exposes run_step (no more run_task)
 |   |   |-- run_step.py                # Single-step primitive — advance one task by one subprocess call
 |   |   |-- capabilities.py            # Builds capabilities prompt for EH decision sessions
-|   |   |-- executor.py                # Spawns `claude -p` subprocess with session_id
+|   |   |-- executors.py               # Provider-specific executor subprocess launchers
 |   |   |-- performance_tracker.py     # 30-day rolling scorecards, tier calculation
-|   |   |-- context_builder.py         # Generates CLAUDE.md + .claude/settings.json + copies skills
+|   |   |-- context_builder.py         # Delegates workspace bootstrap to provider-specific adapters
+|   |   |-- workspace_adapters.py      # Generates CLAUDE.md or AGENTS.md, settings, and copies skills
 |   |   +-- prompt_loader.py           # Parses system prompts from protocol markdown
 |   |-- infrastructure/
 |   |   |-- database.py                # SQLite (WAL mode), typed CRUD, task_results.status column, agent_enrollments table, parent_task_id / note / final_artifact_dir / block_kind on tasks
@@ -125,7 +126,7 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |   +-- tools/                         # Agent tools (future)
 |-- tests/                             # ~390 tests (unit + a couple of integration)
 |   |-- daemon/                        # Route-level tests for the FastAPI app
-|   |-- integration/                   # End-to-end test with a fake Claude binary
+|   |-- integration/                   # End-to-end tests with fake Claude and fake Codex binaries
 |   +-- test_*.py                      # Orchestrator, executor, config, skills, etc.
 +-- docs/superpowers/
     |-- specs/                         # Design specs
@@ -162,6 +163,7 @@ Operational settings use the `OPC_` environment variable prefix. Runtime paths (
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OPC_CLAUDE_CLI_PATH` | `claude` | Path to Claude Code CLI |
+| `OPC_CODEX_CLI_PATH` | `codex` | Path to Codex CLI |
 | `OPC_PERMISSION_MODE` | `auto` | Claude Code permission mode |
 | `OPC_PROTOCOL_DIR` | `protocol` | Protocol docs dirname (relative to project root) |
 | `OPC_MAX_ORCHESTRATION_STEPS` | `10` | Max EH decision steps before escalation |
@@ -169,9 +171,34 @@ Operational settings use the `OPC_` environment variable prefix. Runtime paths (
 | `OPC_TIER_GREEN_THRESHOLD` | `0.90` | Acceptance rate for green tier |
 | `OPC_TIER_YELLOW_THRESHOLD` | `0.75` | Acceptance rate for yellow tier |
 
-### Agent permission model
+### Agent executors
 
-Each agent workspace's `.claude/settings.json` explicitly allows only `Bash(opc:*)` — the orchestrator's CLI. Rationale: `opc report-completion`, `opc learning`, and any future agent-facing subcommand are capabilities the orchestrator exposes to agents and must never be silently blocked by Claude Code's `auto`-mode prompting (a blocked callback manifests as a mystery `failed` task — see TASK-007 post-mortem). Everything else (Read/Grep/Glob, general Bash, Write) inherits Claude Code's default `auto` behavior. When adding new orchestrator-side capabilities, keep them under the `opc` binary so they stay inside this allow rule; do **not** widen the allow list to cover arbitrary tools.
+Each workspace declares an `executor` in `agent.yaml`. Supported values are `claude` and `codex`; missing values in older workspaces default to `claude`.
+
+If the Engineering Head wants to enroll a new Codex-backed worker, the
+`opc manage-agent --from-file ...` payload should set `"executor": "codex"`.
+Example:
+
+```json
+{
+  "action": "enroll",
+  "name": "dev_agent_codex",
+  "task_id": "TASK-123",
+  "session_id": "sess-abc123",
+  "description": "Implements product and platform changes as a Codex-backed developer agent.",
+  "system_prompt": "You are the Dev Agent. Your responsibilities are...",
+  "executor": "codex",
+  "repos": {
+    "my-opc": "https://github.com/t-benze/my-opc.git"
+  }
+}
+```
+
+Founder approval stays unchanged (`opc approve-agent <name>`), but the approved
+workspace will be bootstrapped as a Codex workspace: `agent.yaml` keeps
+`executor: codex`, the readiness marker becomes `AGENTS.md`, and the
+Claude-specific `.claude/settings.json` path is not the primary bootstrap
+surface.
 
 Repos are configured per agent in `<runtime>/workspaces/<agent>/agent.yaml`:
 ```yaml
@@ -184,14 +211,14 @@ repos:
 
 ### Agent permission model
 
-Agents call the orchestrator's CLI (`opc report-completion`, `opc learning`, future callbacks) as their only sanctioned side-effect channel. The allow rule `Bash(opc:*)` lives in **two places** and both must stay in sync:
+Agents call the orchestrator's CLI (`opc report-completion`, `opc learning`, future callbacks) as their only sanctioned side-effect channel. The `--from-file` callback pattern is shared across executors. Claude workspaces additionally rely on the narrow `Bash(opc:*)` allow rule, which lives in **two places** and must stay in sync for Claude sessions:
 
 1. `.claude/settings.json` `permissions.allow` — written by `context_builder._build_settings_json`. Used by interactive (non-`-p`) sessions and surfaces intent to anyone inspecting the workspace.
-2. `--allowedTools "Bash(opc *)"` on the CLI — passed by `AgentExecutor.run` for every headless session.
+2. `--allowedTools "Bash(opc *)"` on the CLI — passed by `ClaudeExecutor.run` for every headless session.
 
-**Why both:** in headless `-p` mode, Claude Code 2.1.105 ignores the workspace's `permissions.allow` list (observed empirically: `command_permissions.allowedTools: []` regardless of settings.json). Without the `--allowedTools` flag the agent's first `opc ...` call is blocked by auto-mode prompting, the callback never reaches the daemon, and the task silently rejects — see the TASK-007/008/009 post-mortem. When adding new orchestrator-side capabilities, keep them under the `opc` binary so they stay inside this allow rule; do **not** widen either location to cover arbitrary tools.
+**Why both for Claude:** in headless `-p` mode, Claude Code 2.1.105 ignores the workspace's `permissions.allow` list (observed empirically: `command_permissions.allowedTools: []` regardless of settings.json). Without the `--allowedTools` flag the agent's first `opc ...` call is blocked by auto-mode prompting, the callback never reaches the daemon, and the task silently rejects — see the TASK-007/008/009 post-mortem. When adding new orchestrator-side capabilities, keep them under the `opc` binary so they stay inside this allow rule; do **not** widen either location to cover arbitrary tools.
 
-**Agent-side completion payloads must be single-line `opc` invocations.** Claude Code's permission matcher treats newlines (and `&&`, `||`, `;`, `|`) as command separators and matches each subcommand independently. Multi-line bash with backslash continuations is rejected even though the surface command is `opc ...`. The `start-task` skill therefore mandates writing the payload to `/tmp/completion-<task_id>.json` and invoking `opc report-completion --from-file <path>` as a single line. Any new agent-facing callback with multiple arguments should follow the same `--from-file` pattern.
+**Agent-side completion payloads must be single-line `opc` invocations.** This is mandatory across executors. For Claude specifically, the permission matcher treats newlines (and `&&`, `||`, `;`, `|`) as command separators and matches each subcommand independently. Multi-line bash with backslash continuations is rejected even though the surface command is `opc ...`. The `start-task` skill therefore mandates writing the payload to `/tmp/completion-<task_id>.json` and invoking `opc report-completion --from-file <path>` as a single line. Any new agent-facing callback with multiple arguments should follow the same `--from-file` pattern.
 
 ## Code Style
 - Type hints on all function signatures
@@ -278,8 +305,8 @@ transition) followed by `opc kb precedent --as-founder ...` (KB write, founder-o
 per spec §4.6).
 
 The context builder injects a "Knowledge Base" section into every agent's
-generated CLAUDE.md (see `context_builder._build_claude_md`). The `start-task`
-skill has explicit **Consult KB** and **Contribute to KB** steps.
+bootstrap document (`CLAUDE.md` for Claude, `AGENTS.md` for Codex). The
+`start-task` skill has explicit **Consult KB** and **Contribute to KB** steps.
 
 Also stock tech stack references: **knowledge base is now implemented**
 (`src/infrastructure/kb_store.py` + `src/daemon/routes/kb.py`) — file-backed

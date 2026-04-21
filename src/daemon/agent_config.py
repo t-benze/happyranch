@@ -10,13 +10,22 @@ from pathlib import Path
 
 import yaml
 
+DEFAULT_EXECUTOR = "claude"
+
 
 def load_agent_config(workspace: Path) -> dict:
-    """Parse workspace/agent.yaml, returning {} if missing."""
+    """Parse workspace/agent.yaml, returning {} if missing.
+
+    Existing configs that omit `executor` still behave as if they selected
+    Claude Code.
+    """
     path = workspace / "agent.yaml"
     if not path.exists():
         return {}
-    return yaml.safe_load(path.read_text()) or {}
+    config = yaml.safe_load(path.read_text()) or {}
+    config.setdefault("repos", {})
+    config.setdefault("executor", DEFAULT_EXECUTOR)
+    return config
 
 
 def write_default_agent_config(workspace: Path) -> None:
@@ -25,7 +34,16 @@ def write_default_agent_config(workspace: Path) -> None:
     if path.exists():
         return
     workspace.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.dump({"repos": {}}, default_flow_style=False))
+    path.write_text(
+        yaml.dump({"repos": {}, "executor": DEFAULT_EXECUTOR}, default_flow_style=False),
+    )
+
+
+def set_executor(workspace: Path, executor: str | None) -> None:
+    """Set the workspace executor in agent.yaml."""
+    config = load_agent_config(workspace)
+    config["executor"] = executor or DEFAULT_EXECUTOR
+    (workspace / "agent.yaml").write_text(yaml.dump(config, default_flow_style=False))
 
 
 def add_repo(workspace: Path, name: str, url: str) -> None:
