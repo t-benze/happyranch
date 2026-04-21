@@ -173,6 +173,7 @@ opc kb reindex
 opc kb precedent --task-id <id> --decision approve|reject --rationale "..." [--slug <s>]
 
 opc resolve-escalation --task-id <id> --decision approve|reject --rationale "..."
+opc revisit TASK-052 [--note "..."]   # founder: spawn a new root that inherits a terminal predecessor's brief
 ```
 
 ### Managing the daemon

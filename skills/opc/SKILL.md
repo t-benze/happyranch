@@ -57,6 +57,10 @@ scripts/opc tasks --limit 50
 scripts/opc recall TASK-001                              # brief + final summary
 scripts/opc recall TASK-001 --tree                       # list files under artifacts/TASK-001/
 scripts/opc recall TASK-001 --fetch-artifact <relpath>   # read one artifact
+
+# Revisit — founder-initiated: spawn a NEW root task that inherits the brief of a terminal predecessor.
+# TTY-gated; no --yes bypass; prompts for confirmation before POSTing.
+scripts/opc revisit TASK-052 [--note "founder hint to the new-root EH"]
 ```
 
 ## Agents
@@ -190,6 +194,7 @@ scripts/opc kb precedent        --task-id TASK-N --decision approve|reject --rat
   - `kb delete` — destructive, engineering_head only
   - `resolve-escalation` — founder state transition; paired with `kb precedent`
   - `kb precedent` — founder-only KB write tied to a resolved escalation
+  - `revisit` — founder-initiated spawn of a new root task from a terminal predecessor (TTY-gated CLI; agent sessions cannot invoke it)
 - **Agent-callback subcommands — do NOT invoke by hand:**
   - `report-completion`, `learning`, `manage-agent`
   - These are meant to run inside an agent's Claude Code session under the `Bash(opc:*)` allow rule. Invoking them manually falsifies audit data and can corrupt scorecards.

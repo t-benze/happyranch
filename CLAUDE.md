@@ -105,7 +105,7 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |   |   +-- routes/
 |   |       |-- health.py              # GET /health
 |   |       |-- runtimes.py            # POST /runtimes/init, POST /runtimes/use, GET /runtimes
-|   |       |-- tasks.py               # POST /tasks, GET /tasks, GET /tasks/{id}, SSE /tasks/{id}/events, GET /tasks/{id}/recall, POST /tasks/{id}/resolve-escalation, callbacks
+|   |       |-- tasks.py               # POST /tasks, GET /tasks, GET /tasks/{id}, SSE /tasks/{id}/events, GET /tasks/{id}/recall, POST /tasks/{id}/resolve-escalation, POST /tasks/{id}/revisit, callbacks
 |   |       |-- agents.py              # GET /agents, POST /agents/init (SSE), POST /agents/{name}/learnings, POST /agents/manage (enroll/update/terminate), GET /agents/enrollments, POST /agents/{name}/approve, POST /agents/{name}/reject, POST /agents/{name}/repos
 |   |       |-- audit.py               # GET /audit — filtered audit-log view (task/agent/action/since/limit)
 |   |       +-- kb.py                  # Knowledge base: GET /kb, /kb/{slug}, /kb/search; POST /kb, /kb/{slug}, /kb/reindex, /kb/precedent; DELETE /kb/{slug}
@@ -284,6 +284,7 @@ opc kb delete <slug> --agent <you> --confirm [--as-founder]
 opc kb reindex
 opc kb precedent --task-id TASK-001 --decision approve|reject --rationale "..." [--slug <s>] --as-founder   # founder-only; follows resolve-escalation
 opc resolve-escalation --task-id TASK-001 --decision approve|reject --rationale "..."                       # founder state transition (precedes kb precedent)
+opc revisit TASK-052 [--note "..."]                             # founder: spawn NEW root that inherits the predecessor's brief (TTY-gated)
 # Agent-side callbacks (invoked by skills):
 opc report-completion --task-id TASK-001 --session-id <sid> --status completed ...
 opc learning --agent dev_agent --session-id <sid> --task-id TASK-001 --text "..."
