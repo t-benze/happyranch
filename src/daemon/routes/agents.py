@@ -6,6 +6,7 @@ import json as _json
 import re
 import shutil
 from enum import StrEnum
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel
@@ -77,6 +78,19 @@ def _require_active(state: DaemonState) -> None:
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "no_active_runtime"},
         )
+
+
+def _append_to_learnings_file(learnings_path: Path, agent_name: str, text: str) -> None:
+    """Append a single learning line to learnings.md, creating the file+header if missing.
+
+    Callers are responsible for serialization (e.g. holding state.db_lock) when
+    concurrent writes are possible. The function itself performs no locking.
+    """
+    if not learnings_path.exists():
+        learnings_path.parent.mkdir(parents=True, exist_ok=True)
+        learnings_path.write_text(f"# Learnings: {agent_name}\n\n")
+    existing = learnings_path.read_text()
+    learnings_path.write_text(existing + f"- {text}\n")
 
 
 @router.get("/agents")
@@ -375,9 +389,5 @@ async def append_learning(agent_name: str, body: LearningBody, request: Request)
     # Hold the lock across exists/init/append so two concurrent posts can't both
     # see the file as missing and race the header write.
     async with state.db_lock:
-        if not learnings_path.exists():
-            learnings_path.parent.mkdir(parents=True, exist_ok=True)
-            learnings_path.write_text(f"# Learnings: {agent_name}\n\n")
-        existing = learnings_path.read_text()
-        learnings_path.write_text(existing + f"- {body.text}\n")
+        _append_to_learnings_file(learnings_path, agent_name, body.text)
     return {"ok": True}
