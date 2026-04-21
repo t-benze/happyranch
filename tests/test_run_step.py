@@ -599,3 +599,106 @@ def test_complete_idempotent_on_terminal_task(runtime, db):
     assert t.status == TaskStatus.FAILED
     assert t.note == "cancelled by founder: stop"
     assert t.final_artifact_dir is None  # unchanged
+
+
+def test_run_step_revisit_header_injected_on_first_step(
+    runtime, db, monkeypatch,
+):
+    """New-root task with a revisit_of audit entry and no orchestration_step
+    entry: EH prompt must start with the revisit context header."""
+    from src.orchestrator.orchestrator import Orchestrator
+    db.insert_task(TaskRecord(
+        id="TASK-072", type=TaskType.IMPLEMENT_FEATURE, brief="Add Alipay support",
+        assigned_agent="engineering_head",
+    ))
+    db.insert_audit_log(
+        task_id="TASK-072", agent="founder", action="revisit_of",
+        payload={
+            "predecessor_root": "TASK-052",
+            "flagged": "TASK-058",
+            "cascade": ["TASK-052", "TASK-053", "TASK-058"],
+            "prior_status": "failed",
+            "founder_note": "PR #103 already merged",
+        },
+    )
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+
+    captured = {}
+    def capture(task_id, agent, prompt, on_session_started=None):
+        captured["prompt"] = prompt
+        raise RuntimeError("abort after prompt build")
+    monkeypatch.setattr(orch, "_run_agent", capture)
+    orch.run_step("TASK-072")
+
+    prompt = captured["prompt"]
+    assert prompt.startswith("REVISIT CONTEXT:")
+    assert "TASK-052" in prompt
+    assert "failed" in prompt
+    assert "TASK-058" in prompt
+    assert "TASK-052 -> TASK-053 -> TASK-058" in prompt or \
+           "TASK-052 → TASK-053 → TASK-058" in prompt
+    assert "PR #103 already merged" in prompt
+
+
+def test_run_step_revisit_header_absent_on_second_step(
+    runtime, db, monkeypatch,
+):
+    """After the first orchestration_step audit entry lands, the header must
+    disappear — subsequent EH cycles see a vanilla capabilities prompt."""
+    from src.orchestrator.orchestrator import Orchestrator
+    db.insert_task(TaskRecord(
+        id="TASK-072", type=TaskType.GENERAL, brief="x",
+        assigned_agent="engineering_head",
+    ))
+    db.update_task("TASK-072", orchestration_step_count=1)
+    db.insert_audit_log(
+        task_id="TASK-072", agent="founder", action="revisit_of",
+        payload={
+            "predecessor_root": "TASK-052", "flagged": "TASK-052",
+            "cascade": ["TASK-052"], "prior_status": "failed",
+            "founder_note": None,
+        },
+    )
+    db.insert_audit_log(
+        task_id="TASK-072", agent="orchestrator", action="orchestration_step",
+        payload={"step_number": 1, "decision": {"action": "done"}},
+    )
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+
+    captured = {}
+    def capture(task_id, agent, prompt, on_session_started=None):
+        captured["prompt"] = prompt
+        raise RuntimeError("abort")
+    monkeypatch.setattr(orch, "_run_agent", capture)
+    orch.run_step("TASK-072")
+
+    assert not captured["prompt"].startswith("REVISIT CONTEXT:")
+
+
+def test_run_step_revisit_header_omits_note_line_when_none(
+    runtime, db, monkeypatch,
+):
+    """founder_note == None => no 'Founder note:' line in the header."""
+    from src.orchestrator.orchestrator import Orchestrator
+    db.insert_task(TaskRecord(
+        id="TASK-072", type=TaskType.GENERAL, brief="x",
+        assigned_agent="engineering_head",
+    ))
+    db.insert_audit_log(
+        task_id="TASK-072", agent="founder", action="revisit_of",
+        payload={
+            "predecessor_root": "TASK-052", "flagged": "TASK-052",
+            "cascade": ["TASK-052"], "prior_status": "failed",
+            "founder_note": None,
+        },
+    )
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+
+    captured = {}
+    def capture(task_id, agent, prompt, on_session_started=None):
+        captured["prompt"] = prompt
+        raise RuntimeError("abort")
+    monkeypatch.setattr(orch, "_run_agent", capture)
+    orch.run_step("TASK-072")
+
+    assert "Founder note:" not in captured["prompt"]

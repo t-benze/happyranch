@@ -191,7 +191,11 @@ def _default_agent_for_root(task) -> str:
 def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
     """Build the capabilities prompt for an EH decision step, or pass the
     brief verbatim for a worker. Prior steps are rebuilt from the DB so this
-    works identically on first pickup and on post-delegation resumption."""
+    works identically on first pickup and on post-delegation resumption.
+
+    For revisited roots, a one-shot context header is prepended to the EH
+    prompt on the very first orchestration step (detected via audit log).
+    """
     from src.orchestrator.capabilities import build_capabilities_prompt
     if agent != "engineering_head":
         return task.brief
@@ -207,13 +211,17 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
             "tier": tier.value if tier else "green",
         })
     prior_steps = _build_prior_steps_from_db(orch, task.id)
-    return build_capabilities_prompt(
+    base = build_capabilities_prompt(
         brief=task.brief,
         agents=agents_for_prompt,
         step_number=task.orchestration_step_count + 1,  # 1-indexed for EH display
         max_steps=orch._settings.max_orchestration_steps,
         prior_steps=prior_steps,
     )
+    header = _revisit_header_if_applicable(orch, task.id)
+    if header is not None:
+        return header + base
+    return base
 
 
 def _list_candidate_agents(orch: "Orchestrator"):
@@ -227,6 +235,51 @@ def _list_candidate_agents(orch: "Orchestrator"):
         names = []
     tiers = orch._tracker.get_all_tiers(names)
     return names, tiers
+
+
+def _revisit_header_if_applicable(orch: "Orchestrator", task_id: str) -> str | None:
+    """Return a 5-6 line revisit context header, or None.
+
+    Trigger: the task has a `revisit_of` audit entry AND no `orchestration_step`
+    audit entry. The latter is how we detect "first step" without timestamps —
+    once the EH has produced a decision, `log_orchestration_step` writes a row
+    and this helper returns None on every subsequent call.
+    """
+    logs = orch._db.get_audit_logs(task_id)
+    revisit_entry = next(
+        (e for e in logs if e["action"] == "revisit_of"), None,
+    )
+    if revisit_entry is None:
+        return None
+    if any(e["action"] == "orchestration_step" for e in logs):
+        return None
+
+    payload = revisit_entry["payload"]
+    predecessor = payload["predecessor_root"]
+    flagged = payload["flagged"]
+    prior_status = payload["prior_status"]
+    cascade = payload.get("cascade") or [predecessor]
+    note = payload.get("founder_note")
+
+    lines = [
+        f"REVISIT CONTEXT: this root is a revisit of {predecessor} "
+        f"(which ended in {prior_status}).",
+        f"Founder flagged {flagged} in the predecessor lineage — "
+        "start your investigation there.",
+        "Cascade chain (predecessor root -> flagged): "
+        + " -> ".join(cascade),
+    ]
+    if note:
+        lines.append(f"Founder note: {note}")
+    lines.append(
+        f"Inspect via: `opc details {predecessor}`, "
+        f"`opc audit {predecessor}`, `opc recall {predecessor}`."
+    )
+    lines.append(
+        "You may reuse successful sub-tasks' artifacts (referenced by path in "
+        "new child briefs); old child task rows stay frozen."
+    )
+    return "\n".join(lines) + "\n\n"
 
 
 def _build_prior_steps_from_db(orch: "Orchestrator", task_id: str):
