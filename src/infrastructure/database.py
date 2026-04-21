@@ -5,7 +5,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from src.models import TaskRecord, TaskStatus
+from src.models import TalkRecord, TaskRecord, TaskStatus
 
 
 class Database:
@@ -87,6 +87,22 @@ class Database:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS talks (
+                id TEXT PRIMARY KEY,
+                agent_name TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                ended_at TEXT,
+                status TEXT NOT NULL DEFAULT 'open',
+                summary TEXT,
+                topic_list_json TEXT,
+                new_learnings_count INTEGER NOT NULL DEFAULT 0,
+                new_kb_slugs_json TEXT,
+                transcript_path TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_talks_agent_status ON talks(agent_name, status);
+            CREATE INDEX IF NOT EXISTS idx_talks_started ON talks(started_at);
         """)
         # Best-effort migration for DBs created before `status` existed. SQLite
         # has no IF NOT EXISTS for ADD COLUMN; swallow the duplicate-column
@@ -673,6 +689,139 @@ class Database:
     def delete_enrollment(self, name: str) -> None:
         self._conn.execute("DELETE FROM agent_enrollments WHERE name = ?", (name,))
         self._conn.commit()
+
+    # --- Talks ---
+
+    def next_talk_id(self) -> str:
+        """Return the next available TALK-NNN id.
+
+        Callers must hold DaemonState.db_lock across the next_talk_id() +
+        insert_talk() pair to avoid duplicate IDs under concurrent requests
+        (same requirement as next_task_id).
+        """
+        cursor = self._conn.execute("SELECT COUNT(*) as cnt FROM talks")
+        count = cursor.fetchone()["cnt"]
+        return f"TALK-{count + 1:03d}"
+
+    def insert_talk(self, talk: TalkRecord) -> None:
+        self._conn.execute(
+            """INSERT INTO talks (id, agent_name, started_at, ended_at, status,
+               summary, topic_list_json, new_learnings_count, new_kb_slugs_json,
+               transcript_path)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                talk.id,
+                talk.agent_name,
+                talk.started_at.isoformat(),
+                talk.ended_at.isoformat() if talk.ended_at else None,
+                talk.status.value if hasattr(talk.status, "value") else talk.status,
+                talk.summary,
+                # Empty lists serialize to NULL; read back as [].
+                json.dumps(talk.topic_list) if talk.topic_list else None,
+                talk.new_learnings_count,
+                json.dumps(talk.new_kb_slugs) if talk.new_kb_slugs else None,
+                talk.transcript_path,
+            ),
+        )
+        self._conn.commit()
+
+    def get_talk(self, talk_id: str) -> TalkRecord | None:
+        cursor = self._conn.execute("SELECT * FROM talks WHERE id = ?", (talk_id,))
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return TalkRecord(
+            id=row["id"],
+            agent_name=row["agent_name"],
+            started_at=row["started_at"],
+            ended_at=row["ended_at"],
+            status=row["status"],
+            summary=row["summary"],
+            # Empty lists serialize to NULL; read back as [].
+            topic_list=json.loads(row["topic_list_json"]) if row["topic_list_json"] else [],
+            new_learnings_count=row["new_learnings_count"],
+            new_kb_slugs=json.loads(row["new_kb_slugs_json"]) if row["new_kb_slugs_json"] else [],
+            transcript_path=row["transcript_path"],
+        )
+
+    def update_talk(self, talk_id: str, **fields: object) -> None:
+        """Update talk fields. Unknown keys are silently ignored (intentional — lets
+        callers forward dict payloads without crashing on extras). Auto-stamps
+        `ended_at` when status transitions to closed/abandoned and the caller did
+        not explicitly supply ended_at.
+
+        Callers must hold DaemonState.db_lock when combining with other writes.
+        """
+        allowed = {
+            "status", "summary", "topic_list", "new_learnings_count",
+            "new_kb_slugs", "transcript_path", "ended_at",
+        }
+        updates: dict[str, object] = {}
+        for k, v in fields.items():
+            if k not in allowed:
+                continue
+            if k == "status":
+                updates[k] = v.value if hasattr(v, "value") else v
+            elif k == "topic_list":
+                updates["topic_list_json"] = json.dumps(v) if v else None
+            elif k == "new_kb_slugs":
+                updates["new_kb_slugs_json"] = json.dumps(v) if v else None
+            else:
+                updates[k] = v
+        # Auto-stamp ended_at on terminal transitions if caller didn't specify.
+        if updates.get("status") in ("closed", "abandoned") and "ended_at" not in updates:
+            updates["ended_at"] = datetime.now(timezone.utc).isoformat()
+        if not updates:
+            return
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = list(updates.values()) + [talk_id]
+        self._conn.execute(f"UPDATE talks SET {set_clause} WHERE id = ?", values)
+        self._conn.commit()
+
+    def list_talks(
+        self,
+        agent: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[TalkRecord]:
+        """List talks newest-first. Hard cap at 500 to protect the route layer."""
+        limit = min(max(limit, 1), 500)
+        clauses: list[str] = []
+        params: list[object] = []
+        if agent is not None:
+            clauses.append("agent_name = ?")
+            params.append(agent)
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        cursor = self._conn.execute(
+            f"SELECT * FROM talks {where} ORDER BY started_at DESC LIMIT ?",
+            tuple(params),
+        )
+        return [
+            TalkRecord(
+                id=r["id"],
+                agent_name=r["agent_name"],
+                started_at=r["started_at"],
+                ended_at=r["ended_at"],
+                status=r["status"],
+                summary=r["summary"],
+                topic_list=json.loads(r["topic_list_json"]) if r["topic_list_json"] else [],
+                new_learnings_count=r["new_learnings_count"],
+                new_kb_slugs=json.loads(r["new_kb_slugs_json"]) if r["new_kb_slugs_json"] else [],
+                transcript_path=r["transcript_path"],
+            )
+            for r in cursor.fetchall()
+        ]
+
+    def list_open_talks_for_agent(self, agent: str) -> list[TalkRecord]:
+        return self.list_talks(agent=agent, status="open", limit=500)
+
+    def last_closed_talk_for_agent(self, agent: str) -> TalkRecord | None:
+        rows = self.list_talks(agent=agent, status="closed", limit=1)
+        return rows[0] if rows else None
 
     def close(self) -> None:
         self._conn.close()
