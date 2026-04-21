@@ -781,6 +781,67 @@ def cmd_cancel(args: argparse.Namespace) -> None:
         print("  No live subprocesses attached.")
 
 
+def cmd_revisit(args: argparse.Namespace) -> None:
+    """Founder action: spawn a NEW root task that inherits a terminal
+    predecessor's brief, with the EH gated on an audit-log-backed context
+    header. TTY-gated — no --yes bypass."""
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print("opc revisit requires an interactive terminal (no --yes bypass).")
+        sys.exit(1)
+
+    print(f"About to revisit {args.task_id} (founder-initiated).")
+    print("This creates a NEW root task that inherits the original brief.")
+    print(
+        f"The existing lineage rooted at {args.task_id} stays frozen "
+        "(read-only history)."
+    )
+    print(
+        "The EH for the new root can inspect the old lineage via "
+        "`opc details` / `opc audit` / `opc recall`."
+    )
+    reply = input("Continue? [y/N] ").strip().lower()
+    if reply not in ("y", "yes"):
+        print("Aborted.")
+        sys.exit(1)
+
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    r = client.post(
+        f"/api/v1/tasks/{args.task_id}/revisit",
+        json={"founder_note": args.note},
+    )
+    if r.status_code == 404:
+        print(f"Task {args.task_id} not found.")
+        sys.exit(1)
+    if r.status_code == 409:
+        detail = {}
+        try:
+            detail = r.json().get("detail", {})
+        except ValueError:
+            pass
+        if detail.get("code") == "cannot_revisit":
+            print(
+                f"Cannot revisit {args.task_id}: "
+                f"predecessor {detail.get('predecessor_root_task_id')} "
+                f"is {detail.get('predecessor_status')}."
+            )
+            sys.exit(1)
+    if not _ok(r):
+        return
+    body = r.json()
+    new_id = body["new_root_task_id"]
+    print(
+        f"Created {new_id} (predecessor: {body['predecessor_root_task_id']}, "
+        f"flagged: {body['flagged_task_id']})."
+    )
+    print(f"Submitted {new_id}; streaming events (Ctrl-C to detach)...")
+    _stream_task_events(client, new_id)
+
+
 # ── parser ───────────────────────────────────────────────────
 
 
@@ -1006,6 +1067,21 @@ def build_parser() -> argparse.ArgumentParser:
              "(dangerous: leaves any live children parentless)",
     )
     p_cancel.set_defaults(func=cmd_cancel)
+
+    # opc revisit — founder-initiated; TTY-gated; no --yes flag by design.
+    p_revisit = sub.add_parser(
+        "revisit",
+        help=(
+            "Spawn a NEW root that inherits a terminal predecessor's brief "
+            "(founder; TTY-gated)"
+        ),
+    )
+    p_revisit.add_argument("task_id", help="Any task id in the lineage to revisit")
+    p_revisit.add_argument(
+        "--note", default=None,
+        help="Optional founder hint surfaced to the EH in the first-step prompt header",
+    )
+    p_revisit.set_defaults(func=cmd_revisit)
 
     return parser
 

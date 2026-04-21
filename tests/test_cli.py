@@ -946,3 +946,65 @@ def test_cmd_details_shows_note(capsys):
         cmd_details(Namespace(task_id="T-1"))
     out = capsys.readouterr().out
     assert "Feature landed" in out
+
+
+def test_cmd_revisit_rejects_non_tty(capsys, monkeypatch):
+    """No TTY => abort before any HTTP call."""
+    from src.cli import cmd_revisit
+
+    fake = MagicMock()
+    monkeypatch.setattr("src.cli.sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr("src.cli.sys.stdout.isatty", lambda: True)
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        args = MagicMock(task_id="TASK-052", note=None)
+        with pytest.raises(SystemExit):
+            cmd_revisit(args)
+    # Never touched the client.
+    fake.post.assert_not_called()
+    assert "interactive terminal" in capsys.readouterr().out
+
+
+def test_cmd_revisit_aborts_on_negative_confirmation(capsys, monkeypatch):
+    """TTY present but founder types 'n' => no POST."""
+    from src.cli import cmd_revisit
+
+    fake = MagicMock()
+    monkeypatch.setattr("src.cli.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("src.cli.sys.stdout.isatty", lambda: True)
+    with patch("src.cli.OpcClient.from_env", return_value=fake), \
+         patch("builtins.input", return_value="n"):
+        args = MagicMock(task_id="TASK-052", note=None)
+        with pytest.raises(SystemExit):
+            cmd_revisit(args)
+    fake.post.assert_not_called()
+
+
+def test_cmd_revisit_submits_and_streams_on_yes(capsys, monkeypatch):
+    """'y' confirmation => POST + stream."""
+    from src.cli import cmd_revisit
+
+    fake = MagicMock()
+    fake.post.return_value.status_code = 200
+    fake.post.return_value.json.return_value = {
+        "new_root_task_id": "TASK-072",
+        "predecessor_root_task_id": "TASK-052",
+        "flagged_task_id": "TASK-052",
+        "cascade": ["TASK-052"],
+        "predecessor_status": "failed",
+    }
+    fake.stream.return_value = iter(['{"type": "task_complete"}'])
+
+    monkeypatch.setattr("src.cli.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("src.cli.sys.stdout.isatty", lambda: True)
+    with patch("src.cli.OpcClient.from_env", return_value=fake), \
+         patch("builtins.input", return_value="y"):
+        args = MagicMock(task_id="TASK-052", note="PR merged")
+        cmd_revisit(args)
+
+    fake.post.assert_called_once_with(
+        "/api/v1/tasks/TASK-052/revisit",
+        json={"founder_note": "PR merged"},
+    )
+    out = capsys.readouterr().out
+    assert "TASK-072" in out
+    assert "task_complete" in out
