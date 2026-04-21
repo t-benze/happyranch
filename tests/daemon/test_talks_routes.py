@@ -71,3 +71,65 @@ def test_abandon_missing_talk(tmp_home, app, runtime, auth_headers):
     client = TestClient(app)
     r = client.post("/api/v1/talks/TALK-999/abandon", json={"reason": "x"}, headers=auth_headers)
     assert r.status_code == 404
+
+
+def test_end_talk_persists_everything(tmp_home, app, runtime, auth_headers):
+    client = TestClient(app)
+    tid = client.post("/api/v1/talks", json={"agent_name": "dev_agent"}, headers=auth_headers).json()["talk_id"]
+    # Pre-create the workspace so the learnings-append has a directory
+    (runtime.workspaces_dir / "dev_agent").mkdir(parents=True, exist_ok=True)
+
+    body = {
+        "summary": "Covered refund flow.",
+        "topic_list": ["refunds"],
+        "transcript_markdown": "## turn 1\n...",
+        "learnings": [
+            {"text": "Alipay refund sometimes 504s; retry 2x."},
+            {"text": "Founder prefers Codex on infra tasks."},
+        ],
+        "kb_slugs": [],
+    }
+    r = client.post(f"/api/v1/talks/{tid}/end", json=body, headers=auth_headers)
+    assert r.status_code == 200, r.text
+    resp = r.json()
+    assert resp["status"] == "closed"
+    assert resp["new_learnings_count"] == 2
+    assert resp["transcript_path"].endswith(f"{tid}.md")
+
+    # Row state
+    detail = client.get(f"/api/v1/talks/{tid}", headers=auth_headers).json()
+    assert detail["status"] == "closed"
+    assert detail["summary"] == "Covered refund flow."
+    assert detail["topic_list"] == ["refunds"]
+    assert detail["new_learnings_count"] == 2
+    assert "Covered refund flow." in detail["transcript"]
+
+    # Learnings file
+    learnings = (runtime.workspaces_dir / "dev_agent" / "learnings.md").read_text()
+    assert "Alipay refund sometimes 504s" in learnings
+    assert "Founder prefers Codex" in learnings
+
+
+def test_end_talk_kb_slugs_must_exist(tmp_home, app, runtime, auth_headers):
+    client = TestClient(app)
+    tid = client.post("/api/v1/talks", json={"agent_name": "dev_agent"}, headers=auth_headers).json()["talk_id"]
+    (runtime.workspaces_dir / "dev_agent").mkdir(parents=True, exist_ok=True)
+    body = {
+        "summary": "ok", "topic_list": [], "transcript_markdown": "t",
+        "learnings": [], "kb_slugs": ["never-written-slug"],
+    }
+    r = client.post(f"/api/v1/talks/{tid}/end", json=body, headers=auth_headers)
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "unknown_kb_slug"
+
+
+def test_end_talk_already_closed(tmp_home, app, runtime, auth_headers):
+    client = TestClient(app)
+    tid = client.post("/api/v1/talks", json={"agent_name": "dev_agent"}, headers=auth_headers).json()["talk_id"]
+    (runtime.workspaces_dir / "dev_agent").mkdir(parents=True, exist_ok=True)
+    body = {"summary": "s", "topic_list": [], "transcript_markdown": "t",
+            "learnings": [], "kb_slugs": []}
+    client.post(f"/api/v1/talks/{tid}/end", json=body, headers=auth_headers)
+    r = client.post(f"/api/v1/talks/{tid}/end", json=body, headers=auth_headers)
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "talk_not_open"
