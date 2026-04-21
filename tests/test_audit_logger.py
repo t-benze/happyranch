@@ -106,3 +106,34 @@ def test_log_escalation_resolved_persists_decision_and_rationale(db):
     assert matches[0]["payload"]["decision"] == "approve"
     assert "Refund justified" in matches[0]["payload"]["rationale"]
     assert matches[0]["agent"] == "founder"
+
+
+def test_log_revisit_of_records_predecessor_chain(db):
+    from src.infrastructure.audit_logger import AuditLogger
+    audit = AuditLogger(db)
+    audit.log_revisit_of(
+        task_id="TASK-072",
+        predecessor_root="TASK-052",
+        flagged="TASK-058",
+        cascade=["TASK-052", "TASK-053", "TASK-058"],
+        prior_status="failed",
+        founder_note="PR #103 already merged",
+    )
+    logs = db.get_audit_logs("TASK-072")
+    entry = next(e for e in logs if e["action"] == "revisit_of")
+    assert entry["agent"] == "founder"
+    assert entry["payload"]["predecessor_root"] == "TASK-052"
+    assert entry["payload"]["flagged"] == "TASK-058"
+    assert entry["payload"]["cascade"] == ["TASK-052", "TASK-053", "TASK-058"]
+    assert entry["payload"]["prior_status"] == "failed"
+    assert entry["payload"]["founder_note"] == "PR #103 already merged"
+
+
+def test_log_revisit_spawned_records_new_root(db):
+    from src.infrastructure.audit_logger import AuditLogger
+    audit = AuditLogger(db)
+    audit.log_revisit_spawned(predecessor_task_id="TASK-052", new_root="TASK-072")
+    logs = db.get_audit_logs("TASK-052")
+    entry = next(e for e in logs if e["action"] == "revisit_spawned")
+    assert entry["agent"] == "founder"
+    assert entry["payload"]["new_root"] == "TASK-072"

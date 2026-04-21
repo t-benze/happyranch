@@ -129,3 +129,43 @@ class AuditLogger:
             action="orchestration_step",
             payload={"step_number": step_number, "decision": decision},
         )
+
+    def log_revisit_of(
+        self,
+        task_id: str,
+        predecessor_root: str,
+        flagged: str,
+        cascade: list[str],
+        prior_status: str,
+        founder_note: str | None,
+    ) -> None:
+        """Record on the NEW root that it is a revisit of `predecessor_root`.
+
+        `cascade` is [predecessor_root, ..., flagged] -- the chain the founder
+        walked from the flagged task back up to the predecessor root. The
+        prompt-injection step in run_step reads this entry to build the
+        first-step context header.
+        """
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="founder",
+            action="revisit_of",
+            payload={
+                "predecessor_root": predecessor_root,
+                "flagged": flagged,
+                "cascade": cascade,
+                "prior_status": prior_status,
+                "founder_note": founder_note,
+            },
+        )
+
+    def log_revisit_spawned(
+        self, predecessor_task_id: str, new_root: str,
+    ) -> None:
+        """Record on the predecessor that it spawned a revisit (observational)."""
+        self._db.insert_audit_log(
+            task_id=predecessor_task_id,
+            agent="founder",
+            action="revisit_spawned",
+            payload={"new_root": new_root},
+        )
