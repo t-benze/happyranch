@@ -195,6 +195,18 @@ async def end_talk(talk_id: str, body: EndTalkBody, request: Request) -> dict:
     }
 
 
+@router.get("/talks")
+def list_talks(
+    request: Request,
+    agent: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+) -> dict:
+    state: DaemonState = _require_active(request.app.state.daemon)
+    rows = state.db.list_talks(agent=agent, status=status, limit=limit)
+    return {"talks": [_talk_to_dict(t) for t in rows]}
+
+
 @router.get("/talks/{talk_id}")
 def get_talk(talk_id: str, request: Request) -> dict:
     state: DaemonState = _require_active(request.app.state.daemon)

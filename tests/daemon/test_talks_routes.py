@@ -133,3 +133,60 @@ def test_end_talk_already_closed(tmp_home, app, runtime, auth_headers):
     r = client.post(f"/api/v1/talks/{tid}/end", json=body, headers=auth_headers)
     assert r.status_code == 400
     assert r.json()["detail"]["code"] == "talk_not_open"
+
+
+def test_list_talks_filters(tmp_home, app, runtime, auth_headers):
+    client = TestClient(app)
+    a1 = client.post(
+        "/api/v1/talks", json={"agent_name": "dev_agent"}, headers=auth_headers
+    ).json()["talk_id"]
+    (runtime.workspaces_dir / "dev_agent").mkdir(parents=True, exist_ok=True)
+    client.post(
+        f"/api/v1/talks/{a1}/end",
+        json={
+            "summary": "s",
+            "topic_list": [],
+            "transcript_markdown": "t",
+            "learnings": [],
+            "kb_slugs": [],
+        },
+        headers=auth_headers,
+    )
+    a2 = client.post(
+        "/api/v1/talks", json={"agent_name": "dev_agent"}, headers=auth_headers
+    ).json()["talk_id"]
+    b1 = client.post(
+        "/api/v1/talks", json={"agent_name": "qa_engineer"}, headers=auth_headers
+    ).json()["talk_id"]
+
+    all_talks = client.get("/api/v1/talks", headers=auth_headers).json()["talks"]
+    assert {t["talk_id"] for t in all_talks} == {a1, a2, b1}
+
+    dev_only = client.get(
+        "/api/v1/talks", params={"agent": "dev_agent"}, headers=auth_headers
+    ).json()["talks"]
+    assert {t["talk_id"] for t in dev_only} == {a1, a2}
+
+    open_only = client.get(
+        "/api/v1/talks", params={"status": "open"}, headers=auth_headers
+    ).json()["talks"]
+    assert {t["talk_id"] for t in open_only} == {a2, b1}
+
+    closed_dev = client.get(
+        "/api/v1/talks",
+        params={"agent": "dev_agent", "status": "closed"},
+        headers=auth_headers,
+    ).json()["talks"]
+    assert [t["talk_id"] for t in closed_dev] == [a1]
+
+
+def test_list_talks_limit_cap(tmp_home, app, runtime, auth_headers):
+    client = TestClient(app)
+    r = client.get("/api/v1/talks", params={"limit": 99999}, headers=auth_headers)
+    assert r.status_code == 200  # DB caps at 500; route doesn't reject
+
+
+def test_get_missing_talk(tmp_home, app, runtime, auth_headers):
+    client = TestClient(app)
+    r = client.get("/api/v1/talks/TALK-999", headers=auth_headers)
+    assert r.status_code == 404
