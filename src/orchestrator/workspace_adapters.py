@@ -12,7 +12,58 @@ from src.config import Settings
 logger = logging.getLogger(__name__)
 
 
-def build_settings_json(repo_names: list[str]) -> dict:
+# Per-agent Bash prefix extensions beyond the default `opc` allowlist. Each
+# entry is a command prefix (space-separated words) that the named agent is
+# pre-authorized to run in headless sessions, bypassing Claude Code's
+# auto-mode risk heuristic — the same heuristic that blocked EH's
+# `gh issue close 93` on TASK-067. Keep this list surgically narrow: any
+# prefix granted here can silently mutate shared external state on every
+# future task without further review. If a broader capability is needed,
+# prefer wrapping it in an `opc` subcommand so the audit log captures it.
+AGENT_EXTRA_ALLOWED_BASH_PREFIXES: dict[str, tuple[str, ...]] = {
+    "engineering_head": (
+        # Resolve superseded/stale PRs and close issues substantively fixed on
+        # main. Both subcommands accept `--comment` inline, so EH can leave a
+        # resolution note in the same call.
+        "gh pr close",
+        "gh pr comment",
+        "gh issue close",
+        "gh issue comment",
+    ),
+}
+
+
+def _format_allow_rule(prefix: str, *, cli: bool) -> str:
+    """Render a Bash prefix in one of the two equivalent permission syntaxes.
+
+    Settings.json uses ``Bash(<cmd>:*)``; the ``--allowedTools`` CLI flag uses
+    ``Bash(<cmd> *)``. Both prefix-match the same invocations in Claude Code,
+    but the project has historically used different separators in the two
+    surfaces and we preserve that to minimize diff noise against prior tests
+    and released workspaces.
+    """
+    sep = " " if cli else ":"
+    return f"Bash({prefix}{sep}*)"
+
+
+def allow_rules_for_agent(agent_name: str | None, *, cli: bool) -> list[str]:
+    """Build the Bash allow-rule list for ``agent_name``.
+
+    ``opc`` is always included (the agent-callback channel). EH picks up
+    additional narrow grants for the PR/issue resolution flow. Other agents
+    inherit Claude Code's default auto-mode behavior for everything else.
+    """
+    rules = [_format_allow_rule("opc", cli=cli)]
+    if agent_name:
+        for prefix in AGENT_EXTRA_ALLOWED_BASH_PREFIXES.get(agent_name, ()):
+            rules.append(_format_allow_rule(prefix, cli=cli))
+    return rules
+
+
+def build_settings_json(
+    repo_names: list[str],
+    agent_name: str | None = None,
+) -> dict:
     """Build .claude/settings.json with a git pull hook for all repos."""
     if repo_names:
         # Pull all repos on first tool use.
@@ -39,13 +90,13 @@ def build_settings_json(repo_names: list[str]) -> dict:
 
     return {
         "permissions": {
-            # The orchestrator's CLI (`opc …`) is the agent's only sanctioned
-            # side-effect channel — report-completion, learning, etc. Pin it
-            # open so callbacks can't be silently blocked by auto-mode
-            # prompting. Everything else falls under Claude Code's default
-            # auto-mode behavior (read-only tools run, writes/arbitrary Bash
-            # prompt).
-            "allow": ["Bash(opc:*)"]
+            # `opc` is pinned open for every agent so callbacks
+            # (report-completion, learning, etc.) can never be silently
+            # blocked by auto-mode prompting. Engineering Head gets a narrow
+            # additional set for PR/issue resolution — see
+            # AGENT_EXTRA_ALLOWED_BASH_PREFIXES above. Anything not in this
+            # list falls under Claude Code's default auto-mode behavior.
+            "allow": allow_rules_for_agent(agent_name, cli=False),
         },
         "hooks": hooks,
     }
@@ -98,11 +149,16 @@ class ClaudeWorkspaceAdapter:
         self._settings = settings
         self._persistent = PersistentWorkspaceSetup(settings)
 
-    def write_settings_json(self, workspace: Path, repo_names: list[str] | None = None) -> None:
+    def write_settings_json(
+        self,
+        workspace: Path,
+        repo_names: list[str] | None = None,
+        agent_name: str | None = None,
+    ) -> None:
         """Write .claude/settings.json to workspace."""
         claude_dir = workspace / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
-        settings_data = build_settings_json(repo_names or [])
+        settings_data = build_settings_json(repo_names or [], agent_name=agent_name)
         (claude_dir / "settings.json").write_text(
             json.dumps(settings_data, indent=2) + "\n"
         )
@@ -222,7 +278,9 @@ class ClaudeWorkspaceAdapter:
         # so workspaces carried over from older code self-heal.
         self.write_claude_md(workspace, agent_name, system_prompt, repo_names=repo_names)
         self._copy_skills(workspace)
-        self.write_settings_json(workspace, repo_names=repo_names)
+        self.write_settings_json(
+            workspace, repo_names=repo_names, agent_name=agent_name,
+        )
 
     def _copy_skills(self, workspace: Path) -> None:
         """Copy protocol/skills/ tree into workspace/.claude/skills/."""

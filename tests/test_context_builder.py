@@ -13,8 +13,8 @@ def test_build_settings_json_no_repos(test_settings, tmp_dir):
     assert settings_path.exists()
     data = json.loads(settings_path.read_text())
     assert "permissions" in data
-    # Only the orchestrator CLI is pinned open; everything else inherits
-    # Claude Code's default auto-mode behavior.
+    # Only the orchestrator CLI is pinned open for non-EH agents; everything
+    # else inherits Claude Code's default auto-mode behavior.
     assert data["permissions"]["allow"] == ["Bash(opc:*)"]
     # No repos → no hooks
     assert data["hooks"] == {}
@@ -29,6 +29,50 @@ def test_build_settings_json_with_repos(test_settings, tmp_dir):
     hook_cmd = data["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
     assert "repos/my-opc" in hook_cmd
     assert "repos/web-app" in hook_cmd
+
+
+def test_ensure_workspace_ready_grants_engineering_head_gh_resolve_rules(
+    test_settings, tmp_dir,
+):
+    """EH needs to close stale/superseded PRs and close resolved issues during
+    revisit cleanup. Those `gh` calls are otherwise blocked by Claude Code's
+    headless risk heuristic (see TASK-067 post-mortem). Scope the extra grants
+    tightly to close+comment on PRs and issues — no merge, no create, no delete.
+    """
+    builder = ContextBuilder(test_settings)
+    workspace = tmp_dir / "workspaces" / "engineering_head"
+    builder.ensure_workspace_ready(
+        workspace=workspace,
+        agent_name="engineering_head",
+        system_prompt="You are the Engineering Head.",
+    )
+    data = json.loads((workspace / ".claude" / "settings.json").read_text())
+    allow = data["permissions"]["allow"]
+    assert "Bash(opc:*)" in allow
+    assert "Bash(gh pr close:*)" in allow
+    assert "Bash(gh pr comment:*)" in allow
+    assert "Bash(gh issue close:*)" in allow
+    assert "Bash(gh issue comment:*)" in allow
+    # Guardrail: do NOT grant merge/create/delete — those can change shared
+    # state in ways the close+comment cleanup flow doesn't require.
+    assert not any("gh pr merge" in r for r in allow)
+    assert not any("gh pr create" in r for r in allow)
+    assert not any("gh issue delete" in r for r in allow)
+
+
+def test_ensure_workspace_ready_does_not_grant_gh_to_non_eh_agents(
+    test_settings, tmp_dir,
+):
+    """Only EH resolves PRs/issues; workers stay on the narrow opc allowlist."""
+    builder = ContextBuilder(test_settings)
+    workspace = tmp_dir / "workspaces" / "dev_agent"
+    builder.ensure_workspace_ready(
+        workspace=workspace,
+        agent_name="dev_agent",
+        system_prompt="You are the Dev Agent.",
+    )
+    data = json.loads((workspace / ".claude" / "settings.json").read_text())
+    assert data["permissions"]["allow"] == ["Bash(opc:*)"]
 
 
 def test_build_claude_md_contains_system_prompt(test_settings, tmp_dir):

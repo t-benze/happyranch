@@ -92,8 +92,15 @@ class ClaudeExecutor:
         # honoured in headless `-p` mode (observed empirically: Claude Code
         # 2.1.105 records `command_permissions.allowedTools: []` regardless of
         # what's in settings.json). Pass --allowedTools on the CLI instead so
-        # agents can reliably call `opc ...` callbacks. Keep the rule
-        # synchronised with context_builder._build_settings_json.
+        # agents can reliably call `opc ...` callbacks. The per-agent extras
+        # (EH's gh pr/issue close+comment) live in workspace_adapters so the
+        # CLI flag and settings.json stay in sync — see that module's
+        # AGENT_EXTRA_ALLOWED_BASH_PREFIXES.
+        from src.orchestrator.workspace_adapters import allow_rules_for_agent
+
+        # Workspace layout is `<runtime>/workspaces/<agent_name>`, so the
+        # directory name is the canonical agent identifier.
+        allowed = " ".join(allow_rules_for_agent(workspace.name, cli=True))
         cmd = [
             self._cli_path,
             "-p",
@@ -101,7 +108,7 @@ class ClaudeExecutor:
             "--permission-mode",
             self._permission_mode,
             "--allowedTools",
-            "Bash(opc *)",
+            allowed,
         ]
         return _run_command(
             cmd, workspace, session_id, timeout_seconds, on_started=on_started,

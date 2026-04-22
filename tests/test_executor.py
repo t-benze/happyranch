@@ -44,7 +44,38 @@ def test_claude_executor_launches_with_current_semantics(mock_subprocess, tmp_pa
     assert "--permission-mode" in cmd
     assert "auto" in cmd
     assert "--allowedTools" in cmd
-    assert "Bash(opc *)" in cmd
+    allowed = cmd[cmd.index("--allowedTools") + 1]
+    # Non-EH workspaces keep the narrow opc allowlist.
+    assert "Bash(opc *)" in allowed
+    assert "gh " not in allowed
+
+
+@patch("src.orchestrator.executors.subprocess")
+def test_claude_executor_grants_engineering_head_gh_resolve_rules(
+    mock_subprocess, tmp_path,
+):
+    """EH's headless session needs explicit --allowedTools entries for the
+    `gh pr close`/`gh issue close` cleanup flow. Settings.json is ignored in
+    headless mode (see TASK-007/008/009 post-mortem), so the CLI flag is the
+    only enforcement surface that matters at runtime."""
+    workspace = tmp_path / "engineering_head"
+    workspace.mkdir()
+
+    mock_subprocess.Popen.return_value = _popen_mock(stdout="EH output")
+
+    executor = ClaudeExecutor(claude_cli_path="claude", permission_mode="auto")
+    executor.run(workspace=workspace, prompt="decide next step", timeout_seconds=30)
+
+    cmd = mock_subprocess.Popen.call_args[0][0]
+    allowed = cmd[cmd.index("--allowedTools") + 1]
+    assert "Bash(opc *)" in allowed
+    assert "Bash(gh pr close *)" in allowed
+    assert "Bash(gh pr comment *)" in allowed
+    assert "Bash(gh issue close *)" in allowed
+    assert "Bash(gh issue comment *)" in allowed
+    # Guardrail mirrors the settings.json test.
+    assert "gh pr merge" not in allowed
+    assert "gh pr create" not in allowed
 
 
 @patch("src.orchestrator.executors.subprocess")
