@@ -81,6 +81,24 @@ def cmd_use(args: argparse.Namespace) -> None:
     print(f"Active runtime: {body['active']}")
 
 
+def _fmt_ts(iso: str | None, *, date_only: bool = False) -> str:
+    """Render a UTC ISO timestamp from the daemon in the machine's local tz.
+
+    Storage is always UTC; display is always local. Unknown or malformed
+    values render as "-" so callers don't need to pre-check.
+    """
+    if not iso:
+        return "-"
+    from datetime import datetime
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except ValueError:
+        return iso
+    if dt.tzinfo is not None:
+        dt = dt.astimezone()
+    return dt.strftime("%Y-%m-%d" if date_only else "%Y-%m-%d %H:%M:%S")
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     """Submit a task and stream its events until terminal."""
     try:
@@ -178,8 +196,8 @@ def cmd_details(args: argparse.Namespace) -> None:
     print(f"Status:     {task['status']}")
     print(f"Agent:      {task.get('assigned_agent') or '-'}")
     print(f"Brief:      {task['brief']}")
-    print(f"Created:    {task['created_at']}")
-    print(f"Updated:    {task['updated_at']}")
+    print(f"Created:    {_fmt_ts(task['created_at'])}")
+    print(f"Updated:    {_fmt_ts(task['updated_at'])}")
     if task.get("block_kind"):
         print(f"Block kind: {task['block_kind']}")
     if task.get("note"):
@@ -191,7 +209,7 @@ def cmd_details(args: argparse.Namespace) -> None:
     if body.get("audit_log"):
         print(f"\nAudit log ({len(body['audit_log'])} entries):")
         for log in body["audit_log"]:
-            print(f"  {log['timestamp'][:19]}  {log['agent']:20s}  {log['action']}")
+            print(f"  {_fmt_ts(log['timestamp'])}  {log['agent']:20s}  {log['action']}")
 
 
 def cmd_agents(args: argparse.Namespace) -> None:
@@ -216,7 +234,7 @@ def cmd_agents(args: argparse.Namespace) -> None:
             if sc:
                 print(f"{entry['name']}:")
                 print(f"  Acceptance: {sc['acceptance_rate']:.0%}  Revision: {sc['revision_rate']:.0%}  Errors: {sc['error_count']}")
-                print(f"  Period: {sc['period_start'][:10]} to {sc['period_end'][:10]}")
+                print(f"  Period: {_fmt_ts(sc['period_start'], date_only=True)} to {_fmt_ts(sc['period_end'], date_only=True)}")
 
 
 def cmd_init_agent(args: argparse.Namespace) -> None:
@@ -299,7 +317,7 @@ def cmd_audit(args: argparse.Namespace) -> None:
     print(f"{'Timestamp':<20} {'Task':<10} {'Agent':<22} {'Action':<22} Payload")
     print("-" * 120)
     for e in entries:
-        ts = (e.get("timestamp") or "")[:19]
+        ts = _fmt_ts(e.get("timestamp"))
         task = e.get("task_id") or "-"
         agent = e.get("agent") or "-"
         action = e.get("action") or "-"
@@ -526,7 +544,7 @@ def cmd_enrollments(args: argparse.Namespace) -> None:
     print("-" * 90)
     for e in enrollments:
         desc = e["description"][:37] + "..." if len(e["description"]) > 37 else e["description"]
-        print(f"{e['name']:<22} {e['status']:<12} {desc:<40} {e['created_at'][:19]}")
+        print(f"{e['name']:<22} {e['status']:<12} {desc:<40} {_fmt_ts(e['created_at'])}")
 
 
 def cmd_approve_agent(args: argparse.Namespace) -> None:
@@ -636,7 +654,7 @@ def cmd_kb_get(args: argparse.Namespace) -> None:
     e = r.json()
     print(f"# {e['title']}")
     print(f"(slug={e['slug']}, type={e['type']}, topic={e['topic']}, "
-          f"authored_by={e['authored_by']}, updated_at={e['updated_at']})")
+          f"authored_by={e['authored_by']}, updated_at={_fmt_ts(e['updated_at'])})")
     print()
     print(e["body"])
 
@@ -737,7 +755,7 @@ def cmd_talk_start(args: argparse.Namespace) -> None:
         if detail.get("code") == "talk_already_open":
             print(
                 f"An open talk with {args.agent} already exists: "
-                f"{detail['prior_open_talk_id']} (started {detail.get('prior_started_at')}). "
+                f"{detail['prior_open_talk_id']} (started {_fmt_ts(detail.get('prior_started_at'))}). "
                 f"Use `opc talk resume --talk-id {detail['prior_open_talk_id']}` "
                 f"or `opc talk abandon --talk-id {detail['prior_open_talk_id']} --reason orphan`."
             )
@@ -745,7 +763,7 @@ def cmd_talk_start(args: argparse.Namespace) -> None:
     if not _ok(r):
         return
     body = r.json()
-    print(f"{body['talk_id']} (started {body['started_at']})")
+    print(f"{body['talk_id']} (started {_fmt_ts(body['started_at'])})")
 
 
 def cmd_talk_resume(args: argparse.Namespace) -> None:
@@ -798,7 +816,7 @@ def cmd_talk_status(args: argparse.Namespace) -> None:
         print("no open talks")
         return
     for t in talks:
-        print(f"{t['talk_id']}  agent={t['agent_name']}  started={t['started_at']}")
+        print(f"{t['talk_id']}  agent={t['agent_name']}  started={_fmt_ts(t['started_at'])}")
 
 
 def cmd_talk_list(args: argparse.Namespace) -> None:
@@ -812,7 +830,7 @@ def cmd_talk_list(args: argparse.Namespace) -> None:
     for t in r.json()["talks"]:
         print(
             f"{t['talk_id']:10s}  {t['status']:10s}  {t['agent_name']:20s}  "
-            f"{t.get('ended_at') or t['started_at']}  "
+            f"{_fmt_ts(t.get('ended_at') or t['started_at'])}  "
             f"learnings={t['new_learnings_count']}"
         )
 
@@ -829,7 +847,7 @@ def cmd_talk_show(args: argparse.Namespace) -> None:
         return
     print(f"# {t['talk_id']} — {t['agent_name']}")
     print(
-        f"status={t['status']} started={t['started_at']} ended={t.get('ended_at')}"
+        f"status={t['status']} started={_fmt_ts(t['started_at'])} ended={_fmt_ts(t.get('ended_at'))}"
     )
     print(f"topics: {t.get('topic_list')}")
     print(f"learnings: {t['new_learnings_count']}  kb_slugs: {t.get('new_kb_slugs')}")
