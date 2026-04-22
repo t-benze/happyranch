@@ -247,6 +247,31 @@ the `tasks` row and is distinct: it takes one of `{pending, in_progress,
 blocked, completed, failed}` based on orchestration classification, with
 `block_kind` (`delegated` | `escalated`) specifying the reason.
 
+## EH decision contract
+
+Engineering Head completion payloads carry two fields with distinct purposes
+— keep them both when modifying the EH-facing prompt or skill:
+
+- **`summary`** (prose) — human-readable description of what the EH did or
+  concluded this step. Rendered in `opc details`, audit logs, `task_history.md`.
+  Stored on `task_results.output_summary` exactly like worker summaries.
+- **`decision`** (JSON object, NextStep schema) — the structured action the
+  orchestrator will execute: `{"action": "delegate"|"done"|"escalate", ...}`.
+  Stored on `task_results.decision_json` (EH-only column; workers leave it
+  NULL). Parsed by `Orchestrator._parse_next_step` directly — no prose
+  inference.
+
+Pre-TASK-071 contract had `output_summary` itself be the JSON decision. That
+double-encoding trap tripped whenever EH ran commands itself and wrote a prose
+"here's what I did" at completion time (e.g. `gh issue close` cleanup tasks).
+The structured `decision` field eliminates the trap: EH can write natural prose
+in `summary` while the orchestrator acts on a separately-typed `decision`.
+
+A legacy fallback (parse `output_summary` as JSON when `decision` is NULL)
+stays in the parser during the transition so in-flight workspaces on older
+skill copies still work; remove it after confirming every workspace has been
+`opc init-agent`-regenerated with the new skill.
+
 ## Running Tests
 ```bash
 uv run pytest tests/ -v                  # unit tests only (default)

@@ -114,6 +114,30 @@ Parameters:
    reason in `summary`. Optional keys (`risks`, `dependencies`,
    `reviewer_focus`, `confidence`, `artifact_dir`) may be omitted.
 
+   **Engineering Head only — add a `decision` field.** Alongside the prose
+   `summary`, EH must include a top-level `decision` object that the
+   orchestrator will execute. Omitting it escalates the task. See the
+   response-format section of your role_guidance for the exact shapes. The
+   `action` must be one of `delegate`, `done`, or `escalate`:
+
+   - `delegate` — hand the next subtask to a worker; requires `agent` and `prompt`.
+   - `done` — the task is complete; requires `summary` of the outcome.
+   - `escalate` — the task needs founder intervention; requires `reason`.
+
+   Example (delegation):
+
+   ```json
+   {
+     "task_id": "TASK-XXX",
+     "session_id": "<sid>",
+     "agent": "engineering_head",
+     "status": "completed",
+     "confidence": 90,
+     "summary": "Triaged and staged implementation for dev_agent.",
+     "decision": {"action": "delegate", "agent": "dev_agent", "prompt": "..."}
+   }
+   ```
+
    Then submit:
 
    ```bash

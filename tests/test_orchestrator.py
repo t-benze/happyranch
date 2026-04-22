@@ -317,3 +317,128 @@ def test_read_completion_from_db_preserves_artifact_dir(orchestrator):
     report = orchestrator._read_completion_from_db("TASK-001", "dev_agent", "sess-xyz")
     assert report is not None
     assert report.artifact_dir == "artifacts/TASK-001"
+
+
+def test_read_completion_from_db_hydrates_decision(orchestrator):
+    """EH's structured decision is persisted as JSON on task_results.decision_json
+    and must be rehydrated into report.decision as a NextStep so the parser
+    consumes it directly — no prose inference."""
+    import json as _json
+    from src.models import NextStep
+
+    orchestrator.create_task(TaskType.GENERAL, "Clean up stale PR/issue")
+    orchestrator._db.insert_task_result(
+        "TASK-001",
+        "engineering_head",
+        "sess-eh",
+        output_summary="Prose recap: closed issue #93 and PR #105.",
+        confidence_score=95,
+        decision_json=_json.dumps({
+            "action": "done",
+            "summary": "Cleanup complete.",
+        }),
+    )
+
+    report = orchestrator._read_completion_from_db(
+        "TASK-001", "engineering_head", "sess-eh",
+    )
+    assert report is not None
+    assert isinstance(report.decision, NextStep)
+    assert report.decision.action == "done"
+    assert report.decision.summary == "Cleanup complete."
+    # Prose summary still round-trips unchanged — separating the two is the
+    # whole point of the decision field.
+    assert "closed issue #93" in report.output_summary
+
+
+def test_parse_next_step_prefers_decision_field_over_prose(orchestrator):
+    """TASK-071 regression: when `decision` is populated, the parser must use
+    it verbatim and never fall through to JSON-decoding the prose summary.
+    This is the fix that eliminates the double-encoding trap — prose in
+    `output_summary` is no longer an escalation trigger if the structured
+    decision is present.
+    """
+    from src.models import CompletionReport, NextStep
+
+    # Prose output_summary + structured decision — the TASK-071 shape.
+    report = CompletionReport(
+        task_id="TASK-071",
+        agent="engineering_head",
+        status="completed",
+        confidence=98,
+        output_summary=(
+            "Cleanup pass complete. Issue #93 closed with reason=completed "
+            "plus resolution comment. Stale PR #105 closed."
+        ),
+        decision=NextStep(action="done", summary="Cleanup landed."),
+    )
+    decision = orchestrator._parse_next_step(report)
+    assert decision.action == "done"
+    assert decision.summary == "Cleanup landed."
+
+
+def test_parse_next_step_legacy_path_still_works_for_json_in_output_summary(
+    orchestrator,
+):
+    """Workspaces on older skill copies keep speaking the pre-TASK-071
+    contract: JSON decision embedded directly in output_summary, no `decision`
+    field. Parser must continue to honor that during the transition."""
+    import json as _json
+    from src.models import CompletionReport
+
+    report = CompletionReport(
+        task_id="TASK-050",
+        agent="engineering_head",
+        status="completed",
+        confidence=80,
+        output_summary=_json.dumps({
+            "action": "delegate",
+            "agent": "dev_agent",
+            "prompt": "Implement X",
+        }),
+        decision=None,
+    )
+    decision = orchestrator._parse_next_step(report)
+    assert decision.action == "delegate"
+    assert decision.agent == "dev_agent"
+    assert decision.prompt == "Implement X"
+
+
+def test_parse_next_step_prose_without_decision_still_escalates(orchestrator):
+    """The guardrail against silent-approve-from-prose (TASK-013 / TASK-016)
+    must remain: if EH sends prose AND omits `decision`, escalate. The new
+    escalation message points at the missing `decision` field so the fix is
+    obvious from the audit log."""
+    from src.models import CompletionReport
+
+    report = CompletionReport(
+        task_id="TASK-099",
+        agent="engineering_head",
+        status="completed",
+        confidence=80,
+        output_summary="Delegating to dev_agent now.",
+        decision=None,
+    )
+    decision = orchestrator._parse_next_step(report)
+    assert decision.action == "escalate"
+    assert "decision" in (decision.reason or "").lower()
+
+
+def test_read_completion_from_db_tolerates_garbage_decision_json(orchestrator):
+    """A corrupt decision_json row must not crash the orchestrator — leave
+    decision None so the parser escalates with a readable reason, rather than
+    silently falling through to prose inference."""
+    orchestrator.create_task(TaskType.GENERAL, "Task with corrupt row")
+    orchestrator._db.insert_task_result(
+        "TASK-001",
+        "engineering_head",
+        "sess-eh",
+        output_summary="prose",
+        confidence_score=70,
+        decision_json="not-json{",
+    )
+    report = orchestrator._read_completion_from_db(
+        "TASK-001", "engineering_head", "sess-eh",
+    )
+    assert report is not None
+    assert report.decision is None

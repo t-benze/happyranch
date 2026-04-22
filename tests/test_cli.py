@@ -388,6 +388,52 @@ def test_completion_payload_from_file_artifact_optional(tmp_path):
     assert body.get("artifact_dir") is None
 
 
+def test_completion_payload_from_file_passes_decision_through(tmp_path):
+    """EH's completion JSON carries an optional `decision` field that the
+    orchestrator acts on (delegate/done/escalate). The CLI must pass it
+    through to the daemon body verbatim."""
+    import json as _json
+    from src.cli import _completion_payload_from_file
+
+    path = tmp_path / "eh.json"
+    path.write_text(_json.dumps({
+        "task_id": "TASK-001",
+        "session_id": "sess-eh",
+        "agent": "engineering_head",
+        "status": "completed",
+        "summary": "Triaged and delegated.",
+        "decision": {
+            "action": "delegate",
+            "agent": "dev_agent",
+            "prompt": "Implement X",
+        },
+    }))
+    _, body = _completion_payload_from_file(str(path))
+    assert body["decision"] == {
+        "action": "delegate",
+        "agent": "dev_agent",
+        "prompt": "Implement X",
+    }
+    # Prose summary stays in output_summary — the two fields are orthogonal.
+    assert body["output_summary"] == "Triaged and delegated."
+
+
+def test_completion_payload_from_file_omits_decision_when_absent(tmp_path):
+    """Workers (and EH on legacy skills) don't include `decision`. The CLI
+    must NOT synthesize a key — absence is the signal to the parser that the
+    legacy prose-JSON path applies."""
+    import json as _json
+    from src.cli import _completion_payload_from_file
+
+    path = tmp_path / "w.json"
+    path.write_text(_json.dumps({
+        "task_id": "T", "session_id": "s", "agent": "dev_agent",
+        "status": "completed", "summary": "done",
+    }))
+    _, body = _completion_payload_from_file(str(path))
+    assert "decision" not in body
+
+
 def test_report_completion_parser_accepts_from_file_alone():
     """With --from-file, none of --task-id/--session-id/... are required."""
     parser = build_parser()

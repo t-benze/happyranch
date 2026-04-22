@@ -331,6 +331,33 @@ def test_insert_task_result_artifact_optional(db):
     assert rows[0]["artifact_dir"] is None
 
 
+def test_insert_task_result_persists_decision_json(db):
+    """EH decisions ride on task_results.decision_json as an opaque JSON
+    string. The column is nullable (workers omit it) and round-trips
+    byte-for-byte so the orchestrator can re-parse it downstream."""
+    import json as _json
+
+    payload = _json.dumps({
+        "action": "delegate", "agent": "dev_agent", "prompt": "Do X",
+    })
+    db.insert_task_result(
+        task_id="TASK-001", agent="engineering_head", session_id="eh1",
+        output_summary="Triaged and delegated.", confidence_score=90,
+        decision_json=payload,
+    )
+    row = db.get_latest_task_result("TASK-001", "engineering_head", "eh1")
+    assert row["decision_json"] == payload
+
+
+def test_insert_task_result_decision_json_optional(db):
+    db.insert_task_result(
+        task_id="TASK-003", agent="dev_agent", session_id="s3",
+        output_summary="done", confidence_score=80,
+    )
+    row = db.get_latest_task_result("TASK-003", "dev_agent", "s3")
+    assert row["decision_json"] is None
+
+
 def test_update_task_sets_final_summary_and_artifact(db):
     db.insert_task(TaskRecord(id="TASK-010", type=TaskType.GENERAL, brief="b"))
     db.update_task(

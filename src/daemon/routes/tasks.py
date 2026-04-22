@@ -154,6 +154,10 @@ class CompletionBody(BaseModel):
     status: str
     confidence: int
     output_summary: str
+    # EH-only. Structured next-step decision; workers omit or pass null.
+    # Must be a dict matching the NextStep schema if present — validated
+    # on the orchestrator side when the parser runs.
+    decision: dict | None = None
     risks_flagged: list[str] = []
     dependencies: list[str] = []
     suggested_reviewer_focus: list[str] = []
@@ -195,6 +199,9 @@ async def submit_completion(task_id: str, body: CompletionBody, request: Request
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "session_mismatch", "active": expected, "got": body.session_id},
         )
+    decision_json = (
+        _json.dumps(body.decision) if body.decision is not None else None
+    )
     async with state.db_lock:
         state.db.insert_task_result(
             task_id=task_id,
@@ -202,6 +209,7 @@ async def submit_completion(task_id: str, body: CompletionBody, request: Request
             session_id=body.session_id,
             status=body.status,
             output_summary=body.output_summary,
+            decision_json=decision_json,
             confidence_score=body.confidence,
             risks_flagged=body.risks_flagged,
             artifact_dir=body.artifact_dir,

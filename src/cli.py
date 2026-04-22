@@ -358,6 +358,11 @@ def _completion_payload_from_file(path: str) -> tuple[str, dict]:
     }
     if data.get("artifact_dir"):
         body["artifact_dir"] = data["artifact_dir"]
+    # EH-only. Workers omit `decision`; EH sets it to a NextStep object
+    # (delegate/done/escalate). Passed through verbatim — the orchestrator
+    # parses it via the NextStep pydantic model.
+    if data.get("decision") is not None:
+        body["decision"] = data["decision"]
     return data["task_id"], body
 
 

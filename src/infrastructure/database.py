@@ -93,6 +93,7 @@ class Database:
                 session_id TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'completed',
                 output_summary TEXT,
+                decision_json TEXT,
                 confidence_score INTEGER,
                 learnings TEXT,
                 risks_flagged TEXT,
@@ -150,6 +151,10 @@ class Database:
             "ALTER TABLE tasks ADD COLUMN final_output_summary TEXT",
             "ALTER TABLE tasks ADD COLUMN final_artifact_dir TEXT",
             "ALTER TABLE task_results ADD COLUMN artifact_dir TEXT",
+            # EH-only structured decision payload (serialized NextStep JSON).
+            # NULL for worker rows. Replaces the prose-in-output_summary
+            # double-encoding contract — see TASK-071 post-mortem.
+            "ALTER TABLE task_results ADD COLUMN decision_json TEXT",
             "ALTER TABLE agent_enrollments ADD COLUMN executor TEXT NOT NULL DEFAULT 'claude'",
             # crew → team rename (SQLite >= 3.25). Idempotent: fails on
             # DBs where the column is already `team` or already renamed.
@@ -573,19 +578,21 @@ class Database:
         token_count: int | None = None,
         estimated_cost: float | None = None,
         artifact_dir: str | None = None,
+        decision_json: str | None = None,
     ) -> None:
         self._conn.execute(
             """INSERT INTO task_results
-               (task_id, agent, session_id, status, output_summary, confidence_score,
-                learnings, risks_flagged, duration_seconds, token_count, estimated_cost,
-                artifact_dir, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (task_id, agent, session_id, status, output_summary, decision_json,
+                confidence_score, learnings, risks_flagged, duration_seconds,
+                token_count, estimated_cost, artifact_dir, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task_id,
                 agent,
                 session_id,
                 status,
                 output_summary,
+                decision_json,
                 confidence_score,
                 learnings,
                 json.dumps(risks_flagged) if risks_flagged is not None else None,
