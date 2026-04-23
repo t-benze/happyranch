@@ -70,14 +70,23 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
         orch._audit.log_escalation(task_id, "orchestrator", reason)
         return
 
-    # ---- 3. Atomic transition: unblock + increment + mark in_progress ----
-    db.update_task(
+    # ---- 3. Atomic claim: unblock + increment + mark in_progress ----
+    # Conditional CAS on (expected_status, expected_block_kind) — if another
+    # worker has already claimed this task_id (duplicate enqueue from a
+    # multi-child fan-in race, or parent auto-resume colliding with a late
+    # callback), the UPDATE matches zero rows and we return silently.
+    claimed = db.try_claim_for_step(
         task_id,
-        status=TaskStatus.IN_PROGRESS,
-        block_kind=None,
-        note=None,
-        orchestration_step_count=next_count,
+        expected_status=task.status,
+        expected_block_kind=task.block_kind,
+        new_count=next_count,
     )
+    if not claimed:
+        logger.debug(
+            "run_step %s: lost claim race (another worker is advancing it)",
+            task_id,
+        )
+        return
 
     # ---- 4. Run the agent subprocess ----
     agent = task.assigned_agent or _default_agent_for_root(task)
