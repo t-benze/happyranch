@@ -936,3 +936,87 @@ def test_manage_agent_both_auth_paths_returns_422(
         headers=auth_headers,
     )
     assert r.status_code == 422
+
+
+def test_manage_agent_task_path_writes_audit_entry(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    _activate_eh_session(daemon_state)
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={
+            "action": "enroll",
+            "name": "content_writer",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+            "description": "desc",
+            "system_prompt": "prompt",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+
+    managed = [
+        log for log in daemon_state.db.get_audit_logs(_EH_TASK)
+        if log["action"] == "agent_managed"
+    ]
+    assert len(managed) == 1
+    assert managed[0]["agent"] == "engineering_head"
+    assert managed[0]["payload"]["action"] == "enroll"
+    assert managed[0]["payload"]["name"] == "content_writer"
+    assert managed[0]["payload"]["source"] == "task"
+
+
+def test_manage_agent_talk_path_writes_audit_entry_scoped_to_talk(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    talk_id = _seed_eh_talk(daemon_state, "TALK-800")
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={
+            "action": "enroll",
+            "name": "content_writer",
+            "talk_id": talk_id,
+            "description": "desc",
+            "system_prompt": "prompt",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+
+    managed = [
+        log for log in daemon_state.db.get_audit_logs(talk_id)
+        if log["action"] == "agent_managed"
+    ]
+    assert len(managed) == 1
+    assert managed[0]["agent"] == "engineering_head"
+    assert managed[0]["payload"]["action"] == "enroll"
+    assert managed[0]["payload"]["name"] == "content_writer"
+    assert managed[0]["payload"]["source"] == "talk"
+
+
+def test_manage_agent_failed_enrollment_does_not_log(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """A 409 duplicate enrollment must not leave an audit row."""
+    _activate_eh_session(daemon_state)
+    daemon_state.db.insert_enrollment("content_writer", "desc", "prompt")
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={
+            "action": "enroll",
+            "name": "content_writer",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+            "description": "desc",
+            "system_prompt": "prompt",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+
+    managed = [
+        log for log in daemon_state.db.get_audit_logs(_EH_TASK)
+        if log["action"] == "agent_managed"
+    ]
+    assert len(managed) == 0

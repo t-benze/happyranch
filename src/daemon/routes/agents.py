@@ -22,6 +22,7 @@ from src.daemon.agent_config import (
 )
 from src.daemon.auth import require_token
 from src.daemon.state import DaemonState
+from src.infrastructure.audit_logger import AuditLogger
 from src.models import PerformanceTier, TalkStatus
 from src.orchestrator.context_builder import ContextBuilder
 from src.orchestrator.performance_tracker import PerformanceTracker
@@ -291,6 +292,10 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
     # Only the Engineering Head may manage agents (either via task session or open talk).
     _require_eh_auth(body, state)
 
+    scope_id = body.talk_id if body.talk_id is not None else body.task_id
+    source = "talk" if body.talk_id is not None else "task"
+    audit = AuditLogger(state.db)
+
     if not _VALID_AGENT_NAME.match(body.name):
         raise HTTPException(status_code=422, detail=f"invalid agent name: {body.name!r}")
 
@@ -305,6 +310,13 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
             system_prompt=body.system_prompt,
             repos=body.repos,
             executor=body.executor,
+        )
+        audit.log_agent_managed(
+            scope_id=scope_id,
+            actor="engineering_head",
+            action="enroll",
+            name=body.name,
+            source=source,
         )
         return {"ok": True, "status": "pending"}
 
@@ -332,6 +344,13 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
             workspace = state.runtime.workspaces_dir / body.name
             if workspace.exists():
                 await asyncio.to_thread(set_executor, workspace, body.executor)
+        audit.log_agent_managed(
+            scope_id=scope_id,
+            actor="engineering_head",
+            action="update",
+            name=body.name,
+            source=source,
+        )
         return {"ok": True}
 
     elif body.action == ManageAgentAction.terminate:
@@ -344,6 +363,13 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
         workspace = state.runtime.workspaces_dir / body.name
         if workspace.exists():
             shutil.rmtree(workspace)
+        audit.log_agent_managed(
+            scope_id=scope_id,
+            actor="engineering_head",
+            action="terminate",
+            name=body.name,
+            source=source,
+        )
         return {"ok": True}
 
     raise HTTPException(status_code=422, detail=f"unknown action: {body.action}")

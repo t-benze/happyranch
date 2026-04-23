@@ -218,3 +218,29 @@ class AuditLogger:
                 "new_kb_slugs": new_kb_slugs,
             },
         )
+
+    def log_agent_managed(
+        self,
+        *,
+        scope_id: str,
+        actor: str,
+        action: str,
+        name: str,
+        source: str,
+    ) -> None:
+        """Record a successful manage-agent call.
+
+        `scope_id` populates `audit_log.task_id` (the generic scope column
+        described at line 173): TASK-xxx for task-path calls, TALK-xxx for
+        talk-path calls. `source` is 'task' or 'talk' for quick filtering.
+        """
+        self._db.insert_audit_log(
+            task_id=scope_id,
+            agent=actor,
+            action="agent_managed",
+            payload={
+                "action": action,
+                "name": name,
+                "source": source,
+            },
+        )
