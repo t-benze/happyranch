@@ -1421,3 +1421,111 @@ def test_cmd_revisit_submits_and_streams_on_yes(capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "TASK-072" in out
     assert "task_complete" in out
+
+
+def test_cmd_details_shows_revisit_header_chain_and_footer(capsys):
+    """When the task is a revisit AND has later revisits, details must show:
+    - a `Revisit of:` header line with the predecessor id and prior_status
+    - a `Chain:` line with the full chain, oldest leftmost, (this) marker
+    - a `Revisited as:` footer line listing direct revisits
+    """
+    from src.cli import cmd_details
+    fake = MagicMock()
+    fake.get.return_value.status_code = 200
+    fake.get.return_value.json.return_value = {
+        "task": {
+            "id": "TASK-072",
+            "type": "implement_feature",
+            "status": "pending",
+            "assigned_agent": None,
+            "brief": "Add Alipay support",
+            "created_at": "2026-04-23T10:00:00+00:00",
+            "updated_at": "2026-04-23T10:00:00+00:00",
+            "revisit_of_task_id": "TASK-068",
+        },
+        "results": [],
+        "audit_log": [],
+        "revisit_chain": ["TASK-072", "TASK-068", "TASK-052"],
+        "direct_revisits": ["TASK-091", "TASK-103"],
+        "predecessor_prior_status": "failed-cancelled",
+    }
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        args = MagicMock(task_id="TASK-072")
+        cmd_details(args)
+    out = capsys.readouterr().out
+    # Header
+    assert "Revisit of: TASK-068" in out
+    assert "failed-cancelled" in out
+    # Chain: oldest-first, with (this) marker on the current task
+    assert "TASK-052" in out
+    assert "TASK-068" in out
+    assert "TASK-072" in out
+    assert "(this)" in out
+    # Arrow direction — ← reads "created from"
+    assert "←" in out
+    # Footer
+    assert "Revisited as: TASK-091, TASK-103" in out
+
+
+def test_cmd_details_omits_revisit_blocks_when_plain_task(capsys):
+    """Non-revisit task with no descendants must render cleanly — no empty
+    'Revisit of:' / 'Chain:' / 'Revisited as:' lines."""
+    from src.cli import cmd_details
+    fake = MagicMock()
+    fake.get.return_value.status_code = 200
+    fake.get.return_value.json.return_value = {
+        "task": {
+            "id": "TASK-001",
+            "type": "general",
+            "status": "pending",
+            "assigned_agent": None,
+            "brief": "plain task",
+            "created_at": "2026-04-23T10:00:00+00:00",
+            "updated_at": "2026-04-23T10:00:00+00:00",
+            "revisit_of_task_id": None,
+        },
+        "results": [],
+        "audit_log": [],
+        "revisit_chain": ["TASK-001"],
+        "direct_revisits": [],
+        "predecessor_prior_status": None,
+    }
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        args = MagicMock(task_id="TASK-001")
+        cmd_details(args)
+    out = capsys.readouterr().out
+    assert "Revisit of:" not in out
+    assert "Chain:" not in out
+    assert "Revisited as:" not in out
+
+
+def test_cmd_details_shows_footer_only_when_predecessor_has_revisits(capsys):
+    """Predecessor-side view: task is NOT a revisit (no header/chain) but
+    HAS been revisited (footer present)."""
+    from src.cli import cmd_details
+    fake = MagicMock()
+    fake.get.return_value.status_code = 200
+    fake.get.return_value.json.return_value = {
+        "task": {
+            "id": "TASK-052",
+            "type": "general",
+            "status": "failed",
+            "assigned_agent": None,
+            "brief": "the original",
+            "created_at": "2026-04-21T10:00:00+00:00",
+            "updated_at": "2026-04-21T10:00:00+00:00",
+            "revisit_of_task_id": None,
+        },
+        "results": [],
+        "audit_log": [],
+        "revisit_chain": ["TASK-052"],
+        "direct_revisits": ["TASK-072"],
+        "predecessor_prior_status": None,
+    }
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        args = MagicMock(task_id="TASK-052")
+        cmd_details(args)
+    out = capsys.readouterr().out
+    assert "Revisit of:" not in out
+    assert "Chain:" not in out
+    assert "Revisited as: TASK-072" in out

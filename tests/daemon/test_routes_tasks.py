@@ -1041,3 +1041,44 @@ def test_plain_run_leaves_revisit_of_task_id_null(
     tid = r.json()["task_id"]
     row = daemon_state.db.get_task(tid)
     assert row.revisit_of_task_id is None
+
+
+def test_get_task_includes_revisit_chain_and_direct_revisits(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """GET /tasks/{id} must surface the full revisit context for the CLI."""
+    from src.models import TaskRecord, TaskType
+    db = daemon_state.db
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="P"))
+    db.insert_task(TaskRecord(
+        id="TASK-002", type=TaskType.GENERAL, brief="N",
+        revisit_of_task_id="TASK-001",
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-003", type=TaskType.GENERAL, brief="another revisit of P",
+        revisit_of_task_id="TASK-001",
+    ))
+    # prior_status comes from the revisit_of audit entry on TASK-002.
+    db.insert_audit_log(
+        "TASK-002", "founder", "revisit_of",
+        {"predecessor_root": "TASK-001", "flagged": "TASK-001",
+         "cascade": ["TASK-001"], "prior_status": "failed-cancelled",
+         "founder_note": None},
+    )
+
+    r = TestClient(app).get("/api/v1/tasks/TASK-002", headers=auth_headers)
+    assert r.status_code == 200
+    body = r.json()
+    # Chain: [task, predecessor, ...]
+    assert body["revisit_chain"] == ["TASK-002", "TASK-001"]
+    # prior_status pulled from audit entry
+    assert body["predecessor_prior_status"] == "failed-cancelled"
+    # Direct revisits of THIS task (not its predecessor) — should be empty.
+    assert body["direct_revisits"] == []
+
+    r2 = TestClient(app).get("/api/v1/tasks/TASK-001", headers=auth_headers)
+    assert r2.status_code == 200
+    body2 = r2.json()
+    assert body2["revisit_chain"] == ["TASK-001"]
+    assert body2["predecessor_prior_status"] is None
+    assert set(body2["direct_revisits"]) == {"TASK-002", "TASK-003"}

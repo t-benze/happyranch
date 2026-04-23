@@ -66,10 +66,27 @@ def get_task(task_id: str, request: Request) -> dict:
     task = state.db.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+
+    # Revisit context: chain (this task back to original), direct revisits
+    # (tasks that revisit THIS task), and the predecessor's normalized
+    # prior_status (pulled from the revisit_of audit entry).
+    chain = [t.id for t in state.db.walk_revisit_chain(task_id)]
+    direct_revisits = state.db.get_direct_revisits(task_id)
+    prior_status = None
+    if task.revisit_of_task_id is not None:
+        for entry in state.db.get_audit_logs(task_id):
+            if entry["action"] == "revisit_of":
+                payload = entry.get("payload") or {}
+                prior_status = payload.get("prior_status")
+                break
+
     return {
         "task": task.model_dump(),
         "results": state.db.get_task_results(task_id),
         "audit_log": state.db.get_audit_logs(task_id),
+        "revisit_chain": chain,
+        "direct_revisits": direct_revisits,
+        "predecessor_prior_status": prior_status,
     }
 
 
