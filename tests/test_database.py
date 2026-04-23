@@ -711,3 +711,62 @@ def test_backfill_is_a_noop_when_nothing_to_backfill(tmp_path):
     db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="x"))
     db.close()
     Database(path).close()
+
+
+def test_walk_revisit_chain_returns_task_to_original(db):
+    """Stacked chain: P (original) → N (revisit of P) → N' (revisit of N).
+    walk_revisit_chain(N') returns [N', N, P]."""
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="P"))
+    db.insert_task(TaskRecord(
+        id="TASK-002", type=TaskType.GENERAL, brief="N",
+        revisit_of_task_id="TASK-001",
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-003", type=TaskType.GENERAL, brief="N-prime",
+        revisit_of_task_id="TASK-002",
+    ))
+    chain = db.walk_revisit_chain("TASK-003")
+    assert [t.id for t in chain] == ["TASK-003", "TASK-002", "TASK-001"]
+
+
+def test_walk_revisit_chain_non_revisit_returns_single(db):
+    """Plain task: returns [task] only."""
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="plain"))
+    chain = db.walk_revisit_chain("TASK-001")
+    assert [t.id for t in chain] == ["TASK-001"]
+
+
+def test_walk_revisit_chain_missing_task_returns_empty(db):
+    assert db.walk_revisit_chain("TASK-999") == []
+
+
+def test_walk_revisit_chain_raises_when_over_limit(db):
+    """Defensive bound matching walk_ancestors."""
+    from src.infrastructure.database import LineageTooDeep
+    db.insert_task(TaskRecord(id="TASK-000", type=TaskType.GENERAL, brief="orig"))
+    prev = "TASK-000"
+    for i in range(1, 25):
+        tid = f"TASK-{i:03d}"
+        db.insert_task(TaskRecord(
+            id=tid, type=TaskType.GENERAL, brief=f"t{i}",
+            revisit_of_task_id=prev,
+        ))
+        prev = tid
+    with pytest.raises(LineageTooDeep):
+        db.walk_revisit_chain(prev, max_hops=20)
+
+
+def test_walk_ancestors_does_not_follow_revisit_edge(db):
+    """REGRESSION GUARD: cascade-fail in run_step keys on walk_ancestors. If
+    walk_ancestors ever followed revisit_of_task_id, a predecessor's FAILED
+    children would poison the new root via _enqueue_parent_if_waiting.
+    Never let this test go green by making walk_ancestors follow the edge.
+    """
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="P"))
+    db.insert_task(TaskRecord(
+        id="TASK-002", type=TaskType.GENERAL, brief="N",
+        revisit_of_task_id="TASK-001",  # NOT a parent edge.
+        parent_task_id=None,             # Still a root.
+    ))
+    chain = db.walk_ancestors("TASK-002")
+    assert [t.id for t in chain] == ["TASK-002"]  # Does NOT include TASK-001.

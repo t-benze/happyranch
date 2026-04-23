@@ -364,6 +364,30 @@ class Database:
         return chain
 
     @_synchronized
+    def walk_revisit_chain(self, task_id: str, max_hops: int = 20) -> list[TaskRecord]:
+        """Return [task, predecessor, ..., original] by following revisit_of_task_id.
+
+        Sideways edge — does NOT cross into parent_task_id ancestor space.
+        Non-revisit tasks return [task]. Missing task returns []. Overruns
+        raise LineageTooDeep (same pattern as walk_ancestors).
+        """
+        chain: list[TaskRecord] = []
+        current_id: str | None = task_id
+        for _ in range(max_hops):
+            if current_id is None:
+                return chain
+            task = self.get_task(current_id)
+            if task is None:
+                return chain
+            chain.append(task)
+            current_id = task.revisit_of_task_id
+        if current_id is not None:
+            raise LineageTooDeep(
+                f"revisit chain from {task_id} exceeded {max_hops} hops"
+            )
+        return chain
+
+    @_synchronized
     def get_recall_payload(self, task_id: str) -> dict | None:
         """Return a flat dict suitable for the /recall endpoint, or None.
 
