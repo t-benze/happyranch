@@ -386,6 +386,7 @@ async def revisit_task(
             brief=predecessor.brief,
             status=TaskStatus.PENDING,
             parent_task_id=None,
+            revisit_of_task_id=predecessor.id,
         ))
         audit = AuditLogger(state.db)
         audit.log_revisit_of(

@@ -983,3 +983,41 @@ def test_revisit_a_revisit_chain_of_chains(
     logs_n2 = db.get_audit_logs(id_n2)
     ro = next(e for e in logs_n2 if e["action"] == "revisit_of")
     assert ro["payload"]["predecessor_root"] == id_n
+
+
+def test_revisit_writes_revisit_of_task_id_on_new_root(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """The new root's revisit_of_task_id column must equal the predecessor
+    root's id. This is what makes the link queryable without audit-log scans."""
+    from src.models import TaskRecord, TaskStatus, TaskType
+    db = daemon_state.db
+    db.insert_task(TaskRecord(
+        id="TASK-052", type=TaskType.IMPLEMENT_FEATURE, brief="Add Alipay support",
+    ))
+    db.update_task("TASK-052", status=TaskStatus.FAILED, note="rc=1")
+
+    r = TestClient(app).post(
+        "/api/v1/tasks/TASK-052/revisit",
+        json={"founder_note": None},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    new_id = r.json()["new_root_task_id"]
+    new_root = db.get_task(new_id)
+    assert new_root.revisit_of_task_id == "TASK-052"
+
+
+def test_plain_run_leaves_revisit_of_task_id_null(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """Plain /tasks POST (no revisit) must not set the column."""
+    r = TestClient(app).post(
+        "/api/v1/tasks",
+        json={"type": "general", "brief": "plain task"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    tid = r.json()["task_id"]
+    row = daemon_state.db.get_task(tid)
+    assert row.revisit_of_task_id is None
