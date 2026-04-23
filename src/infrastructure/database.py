@@ -7,7 +7,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from src.models import TalkRecord, TaskRecord, TaskStatus
+from src.models import BlockKind, TalkRecord, TaskRecord, TaskStatus
 
 
 class LineageTooDeep(Exception):
@@ -93,6 +93,7 @@ class Database:
                 session_id TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'completed',
                 output_summary TEXT,
+                decision_json TEXT,
                 confidence_score INTEGER,
                 learnings TEXT,
                 risks_flagged TEXT,
@@ -150,6 +151,10 @@ class Database:
             "ALTER TABLE tasks ADD COLUMN final_output_summary TEXT",
             "ALTER TABLE tasks ADD COLUMN final_artifact_dir TEXT",
             "ALTER TABLE task_results ADD COLUMN artifact_dir TEXT",
+            # EH-only structured decision payload (serialized NextStep JSON).
+            # NULL for worker rows. Replaces the prose-in-output_summary
+            # double-encoding contract — see TASK-071 post-mortem.
+            "ALTER TABLE task_results ADD COLUMN decision_json TEXT",
             "ALTER TABLE agent_enrollments ADD COLUMN executor TEXT NOT NULL DEFAULT 'claude'",
             # crew → team rename (SQLite >= 3.25). Idempotent: fails on
             # DBs where the column is already `team` or already renamed.
@@ -171,11 +176,20 @@ class Database:
             # SIGTERM'd session as "cancelled" (not a retryable failure) and
             # idempotent _fail calls don't overwrite the founder's note.
             "ALTER TABLE tasks ADD COLUMN cancelled_at TEXT",
+            # Revisit link: see docs/superpowers/specs/2026-04-23-revisit-root-link-design.md.
+            # Sideways reference to the predecessor root of a revisit; NULL for
+            # non-revisit tasks. walk_ancestors MUST NOT follow this column —
+            # that's the attempt-isolation invariant from the v2 revisit spec.
+            "ALTER TABLE tasks ADD COLUMN revisit_of_task_id TEXT",
         ):
             try:
                 self._conn.execute(ddl)
             except sqlite3.OperationalError:
                 pass
+        # Index the reverse lookup (`WHERE revisit_of_task_id = ?`).
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_revisit_of ON tasks(revisit_of_task_id)"
+        )
 
         # One-shot data remap. Guard with a sentinel so re-runs are no-ops.
         applied = self._conn.execute(
@@ -414,6 +428,48 @@ class Database:
         self._conn.commit()
 
     @_synchronized
+    def try_claim_for_step(
+        self,
+        task_id: str,
+        expected_status: TaskStatus,
+        expected_block_kind: BlockKind | None,
+        new_count: int,
+    ) -> bool:
+        """Atomic compare-and-swap for the run_step entry transition.
+
+        Transitions the row to status=in_progress, clears block_kind/note, and
+        sets orchestration_step_count=new_count, but ONLY if the row currently
+        matches (expected_status, expected_block_kind). Returns True iff the
+        transition occurred.
+
+        Why this exists: two workers can pop the same task_id (e.g. a multi-
+        child fan-in double-enqueued the parent). Without this CAS, both pass
+        the check-then-update at run_step steps 1→3 and both spawn an agent
+        subprocess. The conditional WHERE ensures only the first writer wins.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        if expected_block_kind is None:
+            cursor = self._conn.execute(
+                """UPDATE tasks
+                   SET status = ?, block_kind = NULL, note = NULL,
+                       orchestration_step_count = ?, updated_at = ?
+                   WHERE id = ? AND status = ? AND block_kind IS NULL""",
+                (TaskStatus.IN_PROGRESS.value, new_count, now,
+                 task_id, expected_status.value),
+            )
+        else:
+            cursor = self._conn.execute(
+                """UPDATE tasks
+                   SET status = ?, block_kind = NULL, note = NULL,
+                       orchestration_step_count = ?, updated_at = ?
+                   WHERE id = ? AND status = ? AND block_kind = ?""",
+                (TaskStatus.IN_PROGRESS.value, new_count, now,
+                 task_id, expected_status.value, expected_block_kind.value),
+            )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    @_synchronized
     def increment_revision_count(self, task_id: str) -> None:
         self._conn.execute(
             "UPDATE tasks SET revision_count = revision_count + 1, updated_at = ? WHERE id = ?",
@@ -573,19 +629,21 @@ class Database:
         token_count: int | None = None,
         estimated_cost: float | None = None,
         artifact_dir: str | None = None,
+        decision_json: str | None = None,
     ) -> None:
         self._conn.execute(
             """INSERT INTO task_results
-               (task_id, agent, session_id, status, output_summary, confidence_score,
-                learnings, risks_flagged, duration_seconds, token_count, estimated_cost,
-                artifact_dir, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (task_id, agent, session_id, status, output_summary, decision_json,
+                confidence_score, learnings, risks_flagged, duration_seconds,
+                token_count, estimated_cost, artifact_dir, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task_id,
                 agent,
                 session_id,
                 status,
                 output_summary,
+                decision_json,
                 confidence_score,
                 learnings,
                 json.dumps(risks_flagged) if risks_flagged is not None else None,

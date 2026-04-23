@@ -527,3 +527,496 @@ def test_list_enrollments(
     assert r.status_code == 200
     names = [e["name"] for e in r.json()["enrollments"]]
     assert names == ["b"]
+
+
+def test_manage_agent_body_accepts_talk_id_alone() -> None:
+    """talk_id alone (no task_id/session_id) validates."""
+    from src.daemon.routes.agents import ManageAgentBody
+
+    body = ManageAgentBody(
+        action="enroll",
+        name="content_writer",
+        talk_id="TALK-007",
+        description="desc",
+        system_prompt="prompt",
+    )
+    assert body.talk_id == "TALK-007"
+    assert body.task_id is None
+    assert body.session_id is None
+
+
+def test_manage_agent_body_accepts_task_and_session() -> None:
+    """(task_id + session_id) still validates."""
+    from src.daemon.routes.agents import ManageAgentBody
+
+    body = ManageAgentBody(
+        action="enroll",
+        name="content_writer",
+        task_id="TASK-100",
+        session_id="sess-eh",
+        description="desc",
+        system_prompt="prompt",
+    )
+    assert body.task_id == "TASK-100"
+    assert body.talk_id is None
+
+
+def test_manage_agent_body_rejects_both_paths() -> None:
+    """Supplying both task/session and talk_id is a validation error."""
+    import pytest
+    from pydantic import ValidationError
+    from src.daemon.routes.agents import ManageAgentBody
+
+    with pytest.raises(ValidationError):
+        ManageAgentBody(
+            action="enroll",
+            name="content_writer",
+            task_id="TASK-100",
+            session_id="sess-eh",
+            talk_id="TALK-007",
+            description="desc",
+            system_prompt="prompt",
+        )
+
+
+def test_manage_agent_body_rejects_neither_path() -> None:
+    """Supplying neither is a validation error."""
+    import pytest
+    from pydantic import ValidationError
+    from src.daemon.routes.agents import ManageAgentBody
+
+    with pytest.raises(ValidationError):
+        ManageAgentBody(
+            action="enroll",
+            name="content_writer",
+            description="desc",
+            system_prompt="prompt",
+        )
+
+
+def test_manage_agent_body_rejects_partial_task_path() -> None:
+    """task_id without session_id (or vice versa) is a validation error."""
+    import pytest
+    from pydantic import ValidationError
+    from src.daemon.routes.agents import ManageAgentBody
+
+    with pytest.raises(ValidationError):
+        ManageAgentBody(
+            action="enroll",
+            name="content_writer",
+            task_id="TASK-100",
+            description="desc",
+            system_prompt="prompt",
+        )
+
+
+def test_require_eh_auth_talk_path_success(
+    tmp_home, daemon_state,
+) -> None:
+    """Helper returns None for an open EH talk."""
+    from src.daemon.routes.agents import ManageAgentBody, _require_eh_auth
+    from src.models import TalkRecord
+
+    daemon_state.db.insert_talk(
+        TalkRecord(id="TALK-042", agent_name="engineering_head"),
+    )
+
+    body = ManageAgentBody(
+        action="enroll",
+        name="content_writer",
+        talk_id="TALK-042",
+        description="desc",
+        system_prompt="prompt",
+    )
+    _require_eh_auth(body, daemon_state)  # no raise
+
+
+def test_require_eh_auth_talk_path_wrong_agent_raises_403(
+    tmp_home, daemon_state,
+) -> None:
+    """Talk owned by another agent is rejected."""
+    import pytest
+    from fastapi import HTTPException
+    from src.daemon.routes.agents import ManageAgentBody, _require_eh_auth
+    from src.models import TalkRecord
+
+    daemon_state.db.insert_talk(
+        TalkRecord(id="TALK-050", agent_name="dev_agent"),
+    )
+
+    body = ManageAgentBody(
+        action="enroll",
+        name="content_writer",
+        talk_id="TALK-050",
+        description="desc",
+        system_prompt="prompt",
+    )
+    with pytest.raises(HTTPException) as ex:
+        _require_eh_auth(body, daemon_state)
+    assert ex.value.status_code == 403
+
+
+def test_require_eh_auth_talk_path_closed_talk_raises_403(
+    tmp_home, daemon_state,
+) -> None:
+    """Closed talk is rejected."""
+    import pytest
+    from fastapi import HTTPException
+    from src.daemon.routes.agents import ManageAgentBody, _require_eh_auth
+    from src.models import TalkRecord, TalkStatus
+
+    daemon_state.db.insert_talk(
+        TalkRecord(
+            id="TALK-060",
+            agent_name="engineering_head",
+            status=TalkStatus.CLOSED,
+        ),
+    )
+
+    body = ManageAgentBody(
+        action="enroll",
+        name="content_writer",
+        talk_id="TALK-060",
+        description="desc",
+        system_prompt="prompt",
+    )
+    with pytest.raises(HTTPException) as ex:
+        _require_eh_auth(body, daemon_state)
+    assert ex.value.status_code == 403
+
+
+def test_require_eh_auth_talk_path_missing_talk_raises_404(
+    tmp_home, daemon_state,
+) -> None:
+    """Unknown talk_id is 404."""
+    import pytest
+    from fastapi import HTTPException
+    from src.daemon.routes.agents import ManageAgentBody, _require_eh_auth
+
+    body = ManageAgentBody(
+        action="enroll",
+        name="content_writer",
+        talk_id="TALK-999",
+        description="desc",
+        system_prompt="prompt",
+    )
+    with pytest.raises(HTTPException) as ex:
+        _require_eh_auth(body, daemon_state)
+    assert ex.value.status_code == 404
+
+
+def test_require_eh_auth_task_path_success(
+    tmp_home, daemon_state,
+) -> None:
+    """Helper returns None for a live EH task session."""
+    from src.daemon.routes.agents import ManageAgentBody, _require_eh_auth
+
+    daemon_state.sessions.set_active("TASK-100", "engineering_head", "sess-eh")
+
+    body = ManageAgentBody(
+        action="enroll",
+        name="content_writer",
+        task_id="TASK-100",
+        session_id="sess-eh",
+        description="desc",
+        system_prompt="prompt",
+    )
+    _require_eh_auth(body, daemon_state)  # no raise
+
+
+def test_require_eh_auth_task_path_unknown_session_raises_403(
+    tmp_home, daemon_state,
+) -> None:
+    """Unknown (task_id, eh) pair is 403."""
+    import pytest
+    from fastapi import HTTPException
+    from src.daemon.routes.agents import ManageAgentBody, _require_eh_auth
+
+    body = ManageAgentBody(
+        action="enroll",
+        name="content_writer",
+        task_id="TASK-404",
+        session_id="sess-ghost",
+        description="desc",
+        system_prompt="prompt",
+    )
+    with pytest.raises(HTTPException) as ex:
+        _require_eh_auth(body, daemon_state)
+    assert ex.value.status_code == 403
+
+
+def test_require_eh_auth_task_path_wrong_session_raises_403(
+    tmp_home, daemon_state,
+) -> None:
+    """Mismatched session_id is 403."""
+    import pytest
+    from fastapi import HTTPException
+    from src.daemon.routes.agents import ManageAgentBody, _require_eh_auth
+
+    daemon_state.sessions.set_active("TASK-100", "engineering_head", "sess-real")
+
+    body = ManageAgentBody(
+        action="enroll",
+        name="content_writer",
+        task_id="TASK-100",
+        session_id="sess-stale",
+        description="desc",
+        system_prompt="prompt",
+    )
+    with pytest.raises(HTTPException) as ex:
+        _require_eh_auth(body, daemon_state)
+    assert ex.value.status_code == 403
+
+
+def _seed_eh_talk(daemon_state, talk_id: str = "TALK-700") -> str:
+    """Helper: insert an open EH talk and return its id."""
+    from src.models import TalkRecord
+
+    daemon_state.db.insert_talk(
+        TalkRecord(id=talk_id, agent_name="engineering_head"),
+    )
+    return talk_id
+
+
+def test_manage_agent_talk_path_enroll_creates_pending(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    talk_id = _seed_eh_talk(daemon_state)
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={
+            "action": "enroll",
+            "name": "content_writer",
+            "talk_id": talk_id,
+            "description": "Writes destination guides",
+            "system_prompt": "You are the Content Writer...",
+            "executor": "codex",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "pending"
+    e = daemon_state.db.get_enrollment("content_writer")
+    assert e is not None
+    assert e["status"] == "pending"
+    assert e["executor"] == "codex"
+
+
+def test_manage_agent_talk_path_update_changes_prompt(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    talk_id = _seed_eh_talk(daemon_state, "TALK-701")
+    daemon_state.db.insert_enrollment("content_writer", "desc", "old prompt")
+    daemon_state.db.update_enrollment_status("content_writer", "approved")
+    workspace = daemon_state.runtime.workspaces_dir / "content_writer"
+    workspace.mkdir(parents=True)
+
+    with patch("src.daemon.routes.agents.ContextBuilder") as MockCB:
+        mock_ctx = MockCB.return_value
+        mock_ctx.ensure_workspace_ready.return_value = None
+        r = TestClient(app).post(
+            "/api/v1/agents/manage",
+            json={
+                "action": "update",
+                "name": "content_writer",
+                "talk_id": talk_id,
+                "system_prompt": "new prompt via talk",
+            },
+            headers=auth_headers,
+        )
+    assert r.status_code == 200
+    assert daemon_state.db.get_enrollment("content_writer")["system_prompt"] == "new prompt via talk"
+
+
+def test_manage_agent_talk_path_terminate_removes_workspace(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    talk_id = _seed_eh_talk(daemon_state, "TALK-702")
+    daemon_state.db.insert_enrollment("content_writer", "desc", "prompt")
+    daemon_state.db.update_enrollment_status("content_writer", "approved")
+    workspace = daemon_state.runtime.workspaces_dir / "content_writer"
+    workspace.mkdir(parents=True)
+    (workspace / "CLAUDE.md").write_text("# test")
+
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "content_writer",
+            "talk_id": talk_id,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert not workspace.exists()
+    assert daemon_state.db.get_enrollment("content_writer")["status"] == "terminated"
+
+
+def test_manage_agent_talk_path_non_eh_talk_returns_403(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    from src.models import TalkRecord
+
+    daemon_state.db.insert_talk(
+        TalkRecord(id="TALK-703", agent_name="dev_agent"),
+    )
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={
+            "action": "enroll",
+            "name": "content_writer",
+            "talk_id": "TALK-703",
+            "description": "desc",
+            "system_prompt": "prompt",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 403
+
+
+def test_manage_agent_talk_path_closed_talk_returns_403(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    from src.models import TalkRecord, TalkStatus
+
+    daemon_state.db.insert_talk(
+        TalkRecord(
+            id="TALK-704",
+            agent_name="engineering_head",
+            status=TalkStatus.CLOSED,
+        ),
+    )
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={
+            "action": "enroll",
+            "name": "content_writer",
+            "talk_id": "TALK-704",
+            "description": "desc",
+            "system_prompt": "prompt",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 403
+
+
+def test_manage_agent_talk_path_missing_talk_returns_404(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={
+            "action": "enroll",
+            "name": "content_writer",
+            "talk_id": "TALK-DOES-NOT-EXIST",
+            "description": "desc",
+            "system_prompt": "prompt",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 404
+
+
+def test_manage_agent_both_auth_paths_returns_422(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    _activate_eh_session(daemon_state)
+    _seed_eh_talk(daemon_state, "TALK-705")
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={
+            "action": "enroll",
+            "name": "content_writer",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+            "talk_id": "TALK-705",
+            "description": "desc",
+            "system_prompt": "prompt",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 422
+
+
+def test_manage_agent_task_path_writes_audit_entry(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    _activate_eh_session(daemon_state)
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={
+            "action": "enroll",
+            "name": "content_writer",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+            "description": "desc",
+            "system_prompt": "prompt",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+
+    managed = [
+        log for log in daemon_state.db.get_audit_logs(_EH_TASK)
+        if log["action"] == "agent_managed"
+    ]
+    assert len(managed) == 1
+    assert managed[0]["agent"] == "engineering_head"
+    assert managed[0]["payload"]["action"] == "enroll"
+    assert managed[0]["payload"]["name"] == "content_writer"
+    assert managed[0]["payload"]["source"] == "task"
+
+
+def test_manage_agent_talk_path_writes_audit_entry_scoped_to_talk(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    talk_id = _seed_eh_talk(daemon_state, "TALK-800")
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={
+            "action": "enroll",
+            "name": "content_writer",
+            "talk_id": talk_id,
+            "description": "desc",
+            "system_prompt": "prompt",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+
+    managed = [
+        log for log in daemon_state.db.get_audit_logs(talk_id)
+        if log["action"] == "agent_managed"
+    ]
+    assert len(managed) == 1
+    assert managed[0]["agent"] == "engineering_head"
+    assert managed[0]["payload"]["action"] == "enroll"
+    assert managed[0]["payload"]["name"] == "content_writer"
+    assert managed[0]["payload"]["source"] == "talk"
+
+
+def test_manage_agent_failed_enrollment_does_not_log(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """A 409 duplicate enrollment must not leave an audit row."""
+    _activate_eh_session(daemon_state)
+    daemon_state.db.insert_enrollment("content_writer", "desc", "prompt")
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={
+            "action": "enroll",
+            "name": "content_writer",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+            "description": "desc",
+            "system_prompt": "prompt",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+
+    managed = [
+        log for log in daemon_state.db.get_audit_logs(_EH_TASK)
+        if log["action"] == "agent_managed"
+    ]
+    assert len(managed) == 0

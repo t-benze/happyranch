@@ -31,15 +31,16 @@ def build_capabilities_prompt(
 
     sections.extend([
         "\n### Response Format (MANDATORY)\n",
-        "Your completion report's `output_summary` MUST be a single JSON object and "
-        "nothing else. No prose before or after. No markdown code fences. No "
-        "explanation wrapping the JSON.\n",
-        "If you write prose (e.g. \"Delegating to dev_agent...\") instead of a JSON "
-        "object, the orchestrator CANNOT act on your intent. Your task will escalate "
-        "to the founder with a non-JSON parse-failure reason, and the agent you "
-        "\"delegated to\" will never run. This is the single most common EH failure "
-        "mode — do not announce the action, emit it.\n",
-        "Choose EXACTLY ONE of the shapes below:\n",
+        "Your completion payload MUST include a top-level `decision` field "
+        "containing a single JSON object: the structured next-step action for "
+        "the orchestrator. The `summary` field is prose describing what "
+        "happened (for audit logs and founder visibility); the `decision` "
+        "field is what the orchestrator acts on.\n",
+        "If you omit `decision`, your task will escalate to the founder — "
+        "the orchestrator will NOT guess intent from your prose `summary`. "
+        "That guardrail exists because prose-as-decision was the root cause "
+        "of past silent-approve bugs.\n",
+        "Choose EXACTLY ONE `decision` shape below:\n",
         '**delegate** -- Assign work to an agent:',
         "```json",
         '{"action": "delegate", "agent": "<agent_name>", "prompt": "<detailed instructions for the agent>"}',
@@ -52,19 +53,42 @@ def build_capabilities_prompt(
         "```json",
         '{"action": "escalate", "reason": "<why this needs escalation>"}',
         "```\n",
-        "#### WRONG — this is prose and will escalate your task\n",
-        "```",
-        "Triaged issue #93. Delegating end-to-end implementation to dev_agent with a staged plan.",
-        "```\n",
-        "#### RIGHT — same intent, JSON only\n",
+        "#### Example completion payload\n",
+        "Write `/tmp/completion-<task_id>.json` with BOTH fields set:",
         "```json",
-        '{"action": "delegate", "agent": "dev_agent", "prompt": "Implement issue #93: ..."}',
+        "{",
+        '  "task_id": "TASK-XXX",',
+        '  "session_id": "<sid>",',
+        '  "agent": "engineering_head",',
+        '  "status": "completed",',
+        '  "confidence": 90,',
+        '  "summary": "Triaged issue #93 and staged implementation plan for dev_agent.",',
+        '  "decision": {"action": "delegate", "agent": "dev_agent", "prompt": "Implement issue #93: ..."}',
+        "}",
         "```\n",
+        "The `summary` is prose — it can describe what you did, what you found, "
+        "or why you're delegating. The `decision` is what the orchestrator executes.\n",
+        "#### WRONG — no `decision` field, task will escalate\n",
+        "Prose-only completion (the `decision` field is missing entirely):",
+        "```json",
+        "{",
+        '  "task_id": "TASK-XXX",',
+        '  "session_id": "<sid>",',
+        '  "agent": "engineering_head",',
+        '  "status": "completed",',
+        '  "summary": "Cleanup done — issue #93 and PR #105 closed."',
+        "}",
+        "```",
+        "DO NOT omit `decision`. Even for a direct-action cleanup you ran "
+        'yourself this step, set `decision` to `{"action": "done", "summary": '
+        '"<recap>"}`. The orchestrator will NOT infer "done" from your prose '
+        "`summary` — that guardrail exists because silent prose-to-decision "
+        "inference masked past delegation bugs (TASK-013 / TASK-016).\n",
         "**manage-agent** -- Enroll, update, or terminate an agent:",
         "Use the manage-agent skill to write a JSON file and call `opc manage-agent --from-file <path>`.",
         "Enrollment requires founder approval before the agent becomes active. "
         "This is a side-channel capability, not one of the three decision shapes above — "
-        "your `output_summary` still has to be one of delegate/done/escalate.\n",
+        "your `decision` field still has to be one of delegate/done/escalate.\n",
         "### Constraints\n",
         f"- This is step {step_number} of maximum {max_steps}",
         "- Budget authority: auto-approved up to $200 USD single / $100 USD monthly recurring",

@@ -81,6 +81,24 @@ def cmd_use(args: argparse.Namespace) -> None:
     print(f"Active runtime: {body['active']}")
 
 
+def _fmt_ts(iso: str | None, *, date_only: bool = False) -> str:
+    """Render a UTC ISO timestamp from the daemon in the machine's local tz.
+
+    Storage is always UTC; display is always local. Unknown or malformed
+    values render as "-" so callers don't need to pre-check.
+    """
+    if not iso:
+        return "-"
+    from datetime import datetime
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except ValueError:
+        return iso
+    if dt.tzinfo is not None:
+        dt = dt.astimezone()
+    return dt.strftime("%Y-%m-%d" if date_only else "%Y-%m-%d %H:%M:%S")
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     """Submit a task and stream its events until terminal."""
     try:
@@ -178,8 +196,8 @@ def cmd_details(args: argparse.Namespace) -> None:
     print(f"Status:     {task['status']}")
     print(f"Agent:      {task.get('assigned_agent') or '-'}")
     print(f"Brief:      {task['brief']}")
-    print(f"Created:    {task['created_at']}")
-    print(f"Updated:    {task['updated_at']}")
+    print(f"Created:    {_fmt_ts(task['created_at'])}")
+    print(f"Updated:    {_fmt_ts(task['updated_at'])}")
     if task.get("block_kind"):
         print(f"Block kind: {task['block_kind']}")
     if task.get("note"):
@@ -191,7 +209,7 @@ def cmd_details(args: argparse.Namespace) -> None:
     if body.get("audit_log"):
         print(f"\nAudit log ({len(body['audit_log'])} entries):")
         for log in body["audit_log"]:
-            print(f"  {log['timestamp'][:19]}  {log['agent']:20s}  {log['action']}")
+            print(f"  {_fmt_ts(log['timestamp'])}  {log['agent']:20s}  {log['action']}")
 
 
 def cmd_agents(args: argparse.Namespace) -> None:
@@ -216,7 +234,7 @@ def cmd_agents(args: argparse.Namespace) -> None:
             if sc:
                 print(f"{entry['name']}:")
                 print(f"  Acceptance: {sc['acceptance_rate']:.0%}  Revision: {sc['revision_rate']:.0%}  Errors: {sc['error_count']}")
-                print(f"  Period: {sc['period_start'][:10]} to {sc['period_end'][:10]}")
+                print(f"  Period: {_fmt_ts(sc['period_start'], date_only=True)} to {_fmt_ts(sc['period_end'], date_only=True)}")
 
 
 def cmd_init_agent(args: argparse.Namespace) -> None:
@@ -299,7 +317,7 @@ def cmd_audit(args: argparse.Namespace) -> None:
     print(f"{'Timestamp':<20} {'Task':<10} {'Agent':<22} {'Action':<22} Payload")
     print("-" * 120)
     for e in entries:
-        ts = (e.get("timestamp") or "")[:19]
+        ts = _fmt_ts(e.get("timestamp"))
         task = e.get("task_id") or "-"
         agent = e.get("agent") or "-"
         action = e.get("action") or "-"
@@ -340,6 +358,11 @@ def _completion_payload_from_file(path: str) -> tuple[str, dict]:
     }
     if data.get("artifact_dir"):
         body["artifact_dir"] = data["artifact_dir"]
+    # EH-only. Workers omit `decision`; EH sets it to a NextStep object
+    # (delegate/done/escalate). Passed through verbatim — the orchestrator
+    # parses it via the NextStep pydantic model.
+    if data.get("decision") is not None:
+        body["decision"] = data["decision"]
     return data["task_id"], body
 
 
@@ -454,14 +477,27 @@ def cmd_manage_repo(args: argparse.Namespace) -> None:
 
 
 def _manage_agent_payload_from_file(path: str) -> dict:
-    """Load a manage-agent payload from a JSON file."""
+    """Load a manage-agent payload from a JSON file.
+
+    The daemon (see ManageAgentBody in src/daemon/routes/agents.py) accepts two
+    mutually-exclusive auth paths: (task_id + session_id) OR talk_id. This
+    client-side check fast-fails obvious shape errors before the HTTP round trip.
+    """
     import json as _json
     with open(path) as f:
         data = _json.load(f)
-    required = ["action", "name", "task_id", "session_id"]
-    missing = [k for k in required if not data.get(k)]
-    if missing:
-        raise ValueError(f"manage-agent file missing keys: {missing}")
+    missing_base = [k for k in ("action", "name") if not data.get(k)]
+    if missing_base:
+        raise ValueError(f"manage-agent file missing keys: {missing_base}")
+    has_task = bool(data.get("task_id")) and bool(data.get("session_id"))
+    has_partial_task = bool(data.get("task_id")) != bool(data.get("session_id"))
+    has_talk = bool(data.get("talk_id"))
+    if has_partial_task:
+        raise ValueError("manage-agent file must supply task_id and session_id together")
+    if has_task and has_talk:
+        raise ValueError("manage-agent file must supply either (task_id + session_id) or talk_id, not both")
+    if not has_task and not has_talk:
+        raise ValueError("manage-agent file must supply either (task_id + session_id) or talk_id")
     return data
 
 
@@ -484,9 +520,14 @@ def cmd_manage_agent(args: argparse.Namespace) -> None:
         body = {
             "action": args.action,
             "name": args.name,
-            "task_id": args.task_id,
-            "session_id": args.session_id,
         }
+        if args.task_id:
+            body["task_id"] = args.task_id
+        if args.session_id:
+            body["session_id"] = args.session_id
+        talk_id = getattr(args, "talk_id", None)
+        if talk_id:
+            body["talk_id"] = talk_id
         if args.description:
             body["description"] = args.description
         if args.system_prompt:
@@ -526,7 +567,7 @@ def cmd_enrollments(args: argparse.Namespace) -> None:
     print("-" * 90)
     for e in enrollments:
         desc = e["description"][:37] + "..." if len(e["description"]) > 37 else e["description"]
-        print(f"{e['name']:<22} {e['status']:<12} {desc:<40} {e['created_at'][:19]}")
+        print(f"{e['name']:<22} {e['status']:<12} {desc:<40} {_fmt_ts(e['created_at'])}")
 
 
 def cmd_approve_agent(args: argparse.Namespace) -> None:
@@ -636,7 +677,7 @@ def cmd_kb_get(args: argparse.Namespace) -> None:
     e = r.json()
     print(f"# {e['title']}")
     print(f"(slug={e['slug']}, type={e['type']}, topic={e['topic']}, "
-          f"authored_by={e['authored_by']}, updated_at={e['updated_at']})")
+          f"authored_by={e['authored_by']}, updated_at={_fmt_ts(e['updated_at'])})")
     print()
     print(e["body"])
 
@@ -737,7 +778,7 @@ def cmd_talk_start(args: argparse.Namespace) -> None:
         if detail.get("code") == "talk_already_open":
             print(
                 f"An open talk with {args.agent} already exists: "
-                f"{detail['prior_open_talk_id']} (started {detail.get('prior_started_at')}). "
+                f"{detail['prior_open_talk_id']} (started {_fmt_ts(detail.get('prior_started_at'))}). "
                 f"Use `opc talk resume --talk-id {detail['prior_open_talk_id']}` "
                 f"or `opc talk abandon --talk-id {detail['prior_open_talk_id']} --reason orphan`."
             )
@@ -745,7 +786,7 @@ def cmd_talk_start(args: argparse.Namespace) -> None:
     if not _ok(r):
         return
     body = r.json()
-    print(f"{body['talk_id']} (started {body['started_at']})")
+    print(f"{body['talk_id']} (started {_fmt_ts(body['started_at'])})")
 
 
 def cmd_talk_resume(args: argparse.Namespace) -> None:
@@ -798,7 +839,7 @@ def cmd_talk_status(args: argparse.Namespace) -> None:
         print("no open talks")
         return
     for t in talks:
-        print(f"{t['talk_id']}  agent={t['agent_name']}  started={t['started_at']}")
+        print(f"{t['talk_id']}  agent={t['agent_name']}  started={_fmt_ts(t['started_at'])}")
 
 
 def cmd_talk_list(args: argparse.Namespace) -> None:
@@ -812,7 +853,7 @@ def cmd_talk_list(args: argparse.Namespace) -> None:
     for t in r.json()["talks"]:
         print(
             f"{t['talk_id']:10s}  {t['status']:10s}  {t['agent_name']:20s}  "
-            f"{t.get('ended_at') or t['started_at']}  "
+            f"{_fmt_ts(t.get('ended_at') or t['started_at'])}  "
             f"learnings={t['new_learnings_count']}"
         )
 
@@ -829,7 +870,7 @@ def cmd_talk_show(args: argparse.Namespace) -> None:
         return
     print(f"# {t['talk_id']} — {t['agent_name']}")
     print(
-        f"status={t['status']} started={t['started_at']} ended={t.get('ended_at')}"
+        f"status={t['status']} started={_fmt_ts(t['started_at'])} ended={_fmt_ts(t.get('ended_at'))}"
     )
     print(f"topics: {t.get('topic_list')}")
     print(f"learnings: {t['new_learnings_count']}  kb_slugs: {t.get('new_kb_slugs')}")
@@ -1040,8 +1081,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_ma = sub.add_parser("manage-agent", help="Enroll, update, or terminate an agent")
     p_ma.add_argument("action", nargs="?", default=None, choices=["enroll", "update", "terminate"])
     p_ma.add_argument("--name", default=None, help="Agent name")
-    p_ma.add_argument("--task-id", dest="task_id", default=None, help="Active task ID")
-    p_ma.add_argument("--session-id", dest="session_id", default=None, help="Active EH session ID")
+    p_ma.add_argument("--task-id", dest="task_id", default=None, help="Active task ID (task auth path)")
+    p_ma.add_argument("--session-id", dest="session_id", default=None, help="Active EH session ID (task auth path)")
+    p_ma.add_argument("--talk-id", dest="talk_id", default=None, help="Open EH talk ID (talk auth path)")
     p_ma.add_argument("--description", default=None, help="Agent description")
     p_ma.add_argument("--system-prompt", dest="system_prompt", default=None, help="System prompt")
     p_ma.add_argument("--executor", default=None, help="Agent executor (default: claude)")

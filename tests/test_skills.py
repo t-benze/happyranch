@@ -68,6 +68,21 @@ def test_start_task_skill_documents_kb_contribute() -> None:
     assert "--from-file" in body
 
 
+def test_start_task_skill_documents_eh_decision_field() -> None:
+    """EH needs explicit guidance that its completion payload must include a
+    top-level `decision` field alongside the prose `summary`. Without this
+    note the skill looks identical for EH and workers, which caused TASK-071
+    (EH wrote prose-only and the orchestrator escalated for missing
+    decision)."""
+    body = (SKILLS_ROOT / "start-task" / "SKILL.md").read_text()
+    assert "Engineering Head" in body
+    assert "decision" in body
+    # The three legal decision actions must be discoverable from the skill.
+    assert "delegate" in body
+    assert "done" in body
+    assert "escalate" in body
+
+
 def test_talk_skill_documents_start_procedure() -> None:
     body = (SKILLS_ROOT / "talk" / "SKILL.md").read_text()
     assert "opc talk start" in body

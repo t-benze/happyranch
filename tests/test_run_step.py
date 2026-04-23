@@ -702,3 +702,92 @@ def test_run_step_revisit_header_omits_note_line_when_none(
     orch.run_step("TASK-072")
 
     assert "Founder note:" not in captured["prompt"]
+
+
+def test_run_step_concurrent_claim_spawns_only_one_agent(
+    runtime, db, monkeypatch,
+):
+    """Regression: when two workers pop the same task_id (e.g. a multi-child
+    fan-in race double-enqueued the parent), exactly one must claim the step
+    and call _run_agent. The other must observe the claimed state and
+    silently no-op.
+
+    Without an atomic CAS on the BLOCKED+DELEGATED → IN_PROGRESS transition,
+    both threads pass the eligibility check at run_step steps 1 and both
+    write IN_PROGRESS at step 3 → both _run_agent calls fire, producing two
+    EH subprocesses on the same brief.
+    """
+    import json
+    import threading
+    from src.orchestrator.orchestrator import Orchestrator
+
+    # Parent blocked(DELEGATED) with two children, both terminal → eligible
+    # for exactly one EH decision step.
+    db.insert_task(TaskRecord(id="T-PAR", type=TaskType.GENERAL, brief="p",
+                              assigned_agent="engineering_head"))
+    db.insert_task(TaskRecord(id="T-C1", type=TaskType.GENERAL, brief="c1",
+                              assigned_agent="dev_agent", parent_task_id="T-PAR"))
+    db.insert_task(TaskRecord(id="T-C2", type=TaskType.GENERAL, brief="c2",
+                              assigned_agent="dev_agent", parent_task_id="T-PAR"))
+    db.update_task("T-C1", status=TaskStatus.COMPLETED)
+    db.update_task("T-C2", status=TaskStatus.COMPLETED)
+    db.update_task("T-PAR", status=TaskStatus.BLOCKED,
+                   block_kind=BlockKind.DELEGATED, note="waiting")
+
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10),
+                        runtime=runtime)
+
+    # Barrier-sync the two threads AFTER each has read the parent row at the
+    # top of run_step_impl — both then observe BLOCKED+DELEGATED before either
+    # writes IN_PROGRESS. This is the exact race window we're closing.
+    barrier = threading.Barrier(2, timeout=5.0)
+    original_get_task = db.get_task
+    par_reads = [0]
+    par_reads_lock = threading.Lock()
+    def synced_get_task(task_id):
+        result = original_get_task(task_id)
+        if task_id == "T-PAR":
+            with par_reads_lock:
+                par_reads[0] += 1
+                should_sync = par_reads[0] <= 2
+            if should_sync:
+                try:
+                    barrier.wait()
+                except threading.BrokenBarrierError:
+                    pass
+        return result
+    monkeypatch.setattr(db, "get_task", synced_get_task)
+
+    agent_calls: list[tuple[str, str]] = []
+    agent_calls_lock = threading.Lock()
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        with agent_calls_lock:
+            agent_calls.append((task_id, agent))
+        return _make_result(), _make_report(
+            output_summary=json.dumps({"action": "done", "summary": "ok"})
+        )
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    errs: list[BaseException] = []
+    def worker():
+        try:
+            orch.run_step("T-PAR")
+        except BaseException as e:
+            errs.append(e)
+
+    t1 = threading.Thread(target=worker)
+    t2 = threading.Thread(target=worker)
+    t1.start(); t2.start()
+    t1.join(timeout=5.0); t2.join(timeout=5.0)
+
+    assert not t1.is_alive() and not t2.is_alive(), "worker thread hung"
+    assert not errs, f"worker threads raised: {errs}"
+    # The assertion: exactly one EH subprocess spawned, not two.
+    assert len(agent_calls) == 1, (
+        f"expected 1 _run_agent call, got {len(agent_calls)}: {agent_calls}"
+    )
+    # And the step counter incremented exactly once — not twice.
+    par = db.get_task("T-PAR")
+    assert par.orchestration_step_count == 1, (
+        f"expected orchestration_step_count=1, got {par.orchestration_step_count}"
+    )

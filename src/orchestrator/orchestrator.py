@@ -128,12 +128,26 @@ class Orchestrator:
         row = self._db.get_latest_task_result(task_id, agent, session_id)
         if row is None:
             return None
+        decision: NextStep | None = None
+        raw_decision = row.get("decision_json")
+        if raw_decision:
+            # A row with garbage in decision_json is a corruption signal, not
+            # a reason to fall through to the legacy prose-JSON path — leave
+            # decision None so _parse_next_step escalates with a readable
+            # reason instead of silently approving the prose summary.
+            try:
+                parsed = json.loads(raw_decision)
+                if isinstance(parsed, dict):
+                    decision = NextStep(**parsed)
+            except (json.JSONDecodeError, TypeError, ValueError, ValidationError):
+                decision = None
         return CompletionReport(
             task_id=task_id,
             agent=agent,
             status=row.get("status") or "completed",
             confidence=row["confidence_score"] or 0,
             output_summary=row["output_summary"] or "",
+            decision=decision,
             risks_flagged=row.get("risks_flagged") or [],
             dependencies=[],
             suggested_reviewer_focus=[],
@@ -160,21 +174,30 @@ class Orchestrator:
     def _parse_next_step(self, report: CompletionReport | None) -> NextStep:
         """Parse the Engineering Head's decision from its completion report.
 
-        The EH must return a single JSON object in ``output_summary``. Anything
-        else — prose, empty, JSON-in-a-sentence, valid JSON with the wrong
-        schema — escalates to the founder. We refuse to guess intent from
-        prose: a prior silent-approve fallback was the root cause of TASK-013
-        and TASK-016, where "Delegating to dev_agent..." was interpreted as
-        "done" and the worker never ran.
+        Preferred path: ``report.decision`` is a structured NextStep supplied
+        by EH alongside a prose ``output_summary``. That separation eliminates
+        the old double-encoding trap where ``output_summary`` itself had to be
+        a JSON decision envelope (see TASK-071 post-mortem).
+
+        Legacy path: if ``decision`` is absent (in-flight workspaces on the
+        old skill), we still attempt to parse ``output_summary`` as JSON for
+        backwards compatibility. Prose-as-``output_summary`` escalates; we
+        refuse to guess intent from prose — the silent-approve fallback was
+        the root cause of TASK-013 / TASK-016.
         """
         if report is None:
             return NextStep(action="escalate", reason="No completion report from Engineering Head")
+        if report.decision is not None:
+            return report.decision
         text = report.output_summary or ""
         stripped = text.strip()
         if not stripped:
             return NextStep(
                 action="escalate",
-                reason="EH returned an empty output_summary; no decision to act on.",
+                reason=(
+                    "EH returned neither a `decision` field nor an "
+                    "`output_summary`; no decision to act on."
+                ),
             )
         try:
             data = json.loads(stripped)
@@ -183,7 +206,9 @@ class Orchestrator:
             return NextStep(
                 action="escalate",
                 reason=(
-                    "EH returned non-JSON output_summary; decision cannot be parsed. "
+                    "EH omitted the `decision` field and its `output_summary` "
+                    "is not JSON. The completion payload must include a "
+                    "`decision` object (delegate/done/escalate). "
                     f"Preview: {preview!r}"
                 ),
             )
@@ -191,8 +216,8 @@ class Orchestrator:
             return NextStep(
                 action="escalate",
                 reason=(
-                    "EH output_summary parsed as non-object JSON; expected a decision "
-                    f"object. Got: {type(data).__name__}"
+                    "EH legacy output_summary parsed as non-object JSON; "
+                    f"expected a decision object. Got: {type(data).__name__}"
                 ),
             )
         try:

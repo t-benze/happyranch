@@ -215,6 +215,75 @@ def test_completion_persists_artifact_dir(
     assert rows[-1]["artifact_dir"] == f"artifacts/{task_id}"
 
 
+def test_completion_persists_decision_json_for_engineering_head(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """EH's structured decision must land on task_results.decision_json as a
+    serialized JSON string so the orchestrator can rehydrate it into
+    report.decision when run_step reads it back."""
+    import json as _json
+
+    sub = TestClient(app).post(
+        "/api/v1/tasks",
+        json={"type": "general", "brief": "x"},
+        headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    daemon_state.sessions.set_active(task_id, "engineering_head", "sess-eh")
+
+    r = TestClient(app).post(
+        f"/api/v1/tasks/{task_id}/completion",
+        json={
+            "session_id": "sess-eh", "agent": "engineering_head",
+            "status": "completed", "confidence": 95,
+            "output_summary": "Triaged and delegated.",
+            "decision": {
+                "action": "delegate",
+                "agent": "dev_agent",
+                "prompt": "Implement feature X",
+            },
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    rows = daemon_state.db.get_task_results(task_id)
+    stored = rows[-1]["decision_json"]
+    assert stored is not None
+    assert _json.loads(stored) == {
+        "action": "delegate",
+        "agent": "dev_agent",
+        "prompt": "Implement feature X",
+    }
+
+
+def test_completion_leaves_decision_json_null_when_omitted(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """Workers don't set `decision`. The daemon must store NULL, not an
+    empty-object string — the parser distinguishes 'no decision field' from
+    'malformed decision', and a persisted empty object would be the latter."""
+    sub = TestClient(app).post(
+        "/api/v1/tasks",
+        json={"type": "general", "brief": "x"},
+        headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    daemon_state.sessions.set_active(task_id, "dev_agent", "sess-a")
+
+    r = TestClient(app).post(
+        f"/api/v1/tasks/{task_id}/completion",
+        json={
+            "session_id": "sess-a", "agent": "dev_agent",
+            "status": "completed", "confidence": 80,
+            "output_summary": "Done",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    rows = daemon_state.db.get_task_results(task_id)
+    assert rows[-1]["decision_json"] is None
+
+
 def test_recall_returns_task_payload(tmp_home, app, daemon_state, auth_headers) -> None:
     from src.models import TaskRecord, TaskStatus, TaskType
     daemon_state.db.insert_task(

@@ -388,6 +388,52 @@ def test_completion_payload_from_file_artifact_optional(tmp_path):
     assert body.get("artifact_dir") is None
 
 
+def test_completion_payload_from_file_passes_decision_through(tmp_path):
+    """EH's completion JSON carries an optional `decision` field that the
+    orchestrator acts on (delegate/done/escalate). The CLI must pass it
+    through to the daemon body verbatim."""
+    import json as _json
+    from src.cli import _completion_payload_from_file
+
+    path = tmp_path / "eh.json"
+    path.write_text(_json.dumps({
+        "task_id": "TASK-001",
+        "session_id": "sess-eh",
+        "agent": "engineering_head",
+        "status": "completed",
+        "summary": "Triaged and delegated.",
+        "decision": {
+            "action": "delegate",
+            "agent": "dev_agent",
+            "prompt": "Implement X",
+        },
+    }))
+    _, body = _completion_payload_from_file(str(path))
+    assert body["decision"] == {
+        "action": "delegate",
+        "agent": "dev_agent",
+        "prompt": "Implement X",
+    }
+    # Prose summary stays in output_summary — the two fields are orthogonal.
+    assert body["output_summary"] == "Triaged and delegated."
+
+
+def test_completion_payload_from_file_omits_decision_when_absent(tmp_path):
+    """Workers (and EH on legacy skills) don't include `decision`. The CLI
+    must NOT synthesize a key — absence is the signal to the parser that the
+    legacy prose-JSON path applies."""
+    import json as _json
+    from src.cli import _completion_payload_from_file
+
+    path = tmp_path / "w.json"
+    path.write_text(_json.dumps({
+        "task_id": "T", "session_id": "s", "agent": "dev_agent",
+        "status": "completed", "summary": "done",
+    }))
+    _, body = _completion_payload_from_file(str(path))
+    assert "decision" not in body
+
+
 def test_report_completion_parser_accepts_from_file_alone():
     """With --from-file, none of --task-id/--session-id/... are required."""
     parser = build_parser()
@@ -746,6 +792,76 @@ def test_cmd_manage_agent_from_file(tmp_path):
     args_pos, kwargs = fake.post.call_args
     assert kwargs["json"]["action"] == "enroll"
     assert kwargs["json"]["name"] == "content_writer"
+
+
+def test_cmd_manage_agent_from_file_talk_path(tmp_path):
+    import json
+
+    from src.cli import cmd_manage_agent
+
+    payload = {
+        "action": "enroll",
+        "name": "content_writer",
+        "talk_id": "TALK-002",
+        "description": "Writes guides",
+        "system_prompt": "You are the Content Writer...",
+    }
+    f = tmp_path / "enroll.json"
+    f.write_text(json.dumps(payload))
+
+    fake = MagicMock()
+    fake.post.return_value.status_code = 200
+    fake.post.return_value.json.return_value = {"ok": True, "status": "pending"}
+    args = MagicMock(
+        from_file=str(f),
+        action=None, name=None, description=None,
+        system_prompt=None, repos=None,
+    )
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_manage_agent(args)
+    _args_pos, kwargs = fake.post.call_args
+    assert kwargs["json"]["talk_id"] == "TALK-002"
+    assert "task_id" not in kwargs["json"]
+    assert "session_id" not in kwargs["json"]
+
+
+def test_manage_agent_payload_from_file_rejects_mixed_auth(tmp_path):
+    import json
+
+    from src.cli import _manage_agent_payload_from_file
+
+    f = tmp_path / "mixed.json"
+    f.write_text(json.dumps({
+        "action": "enroll",
+        "name": "content_writer",
+        "task_id": "TASK-001",
+        "session_id": "sess-1",
+        "talk_id": "TALK-002",
+    }))
+    with pytest.raises(ValueError, match="not both"):
+        _manage_agent_payload_from_file(str(f))
+
+
+def test_manage_agent_payload_from_file_rejects_no_auth(tmp_path):
+    import json
+
+    from src.cli import _manage_agent_payload_from_file
+
+    f = tmp_path / "noauth.json"
+    f.write_text(json.dumps({"action": "enroll", "name": "content_writer"}))
+    with pytest.raises(ValueError, match="task_id \\+ session_id"):
+        _manage_agent_payload_from_file(str(f))
+
+
+def test_manage_agent_parser_accepts_talk_id():
+    parser = build_parser()
+    args = parser.parse_args([
+        "manage-agent", "enroll",
+        "--name", "content_writer",
+        "--talk-id", "TALK-002",
+    ])
+    assert args.talk_id == "TALK-002"
+    assert args.task_id is None
 
 
 def test_enrollments_parser():

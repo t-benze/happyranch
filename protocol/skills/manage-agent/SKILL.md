@@ -7,11 +7,20 @@ description: Enroll, update, or terminate an agent. Write a JSON file and call o
 
 Manage the agent roster. You can **enroll** a new agent (requires founder approval), **update** an existing agent's system prompt or description, or **terminate** an agent (removes its workspace).
 
+## Authentication paths
+
+The daemon accepts two ways to prove you are the Engineering Head:
+
+- **Task path** — supply `task_id` + `session_id` from your current task session. Use this while executing a task.
+- **Talk path** — supply `talk_id` from an open talk you are currently in. Use this during a founder talk when the need for an enrollment/update/termination surfaces in conversation.
+
+The two paths are **mutually exclusive** — supply one pair or the other, never both. The daemon rejects payloads that mix them (`422`).
+
 ## Usage
 
-1. **Write a JSON file** to `/tmp/manage-agent-<unique>.json` using the Write tool:
+1. **Write a JSON file** to `/tmp/manage-agent-<unique>.json` using the Write tool.
 
-   **Enroll a new agent:**
+   **Task-path enroll:**
    ```json
    {
      "action": "enroll",
@@ -25,20 +34,33 @@ Manage the agent roster. You can **enroll** a new agent (requires founder approv
    }
    ```
 
-   **Update an existing agent:**
+   **Talk-path enroll:**
+   ```json
+   {
+     "action": "enroll",
+     "name": "content_writer",
+     "talk_id": "<talk_id>",
+     "description": "Writes destination guides and travel articles",
+     "system_prompt": "You are the Content Writer. Your responsibilities are...",
+     "executor": "codex",
+     "repos": {"web-content": "https://github.com/t-benze/web-content.git"}
+   }
+   ```
+
+   **Update an existing agent (task path shown; talk path swaps task_id+session_id for talk_id):**
    ```json
    {
      "action": "update",
      "name": "content_writer",
      "task_id": "<task_id>",
      "session_id": "<session_id>",
-      "description": "Updated description",
+     "description": "Updated description",
      "system_prompt": "Updated system prompt...",
      "executor": "claude"
    }
    ```
 
-   **Terminate an agent:**
+   **Terminate an agent (task path shown; talk path swaps task_id+session_id for talk_id):**
    ```json
    {
      "action": "terminate",
@@ -60,9 +82,22 @@ Manage the agent roster. You can **enroll** a new agent (requires founder approv
 
 ## Access control
 
-Only the **Engineering Head** may use this skill. The daemon validates that the
-`task_id` and `session_id` belong to an active EH session. Other agents will
-receive a `403 Forbidden` error.
+Only the **Engineering Head** may use this skill. The daemon validates the auth path you supplied:
+
+- Task path: the `(task_id, session_id)` pair must match an active engineering_head session in the session tracker.
+- Talk path: the `talk_id` must reference a talk whose `agent_name` is `engineering_head` and whose `status` is `open`.
+
+Other agents — and closed/abandoned talks — receive a `403 Forbidden` (or `404` if the talk id is unknown).
+
+## When called during a talk: update your transcript
+
+If you invoke this skill from within a talk, **record the call in the `transcript_markdown` you will send at `/talk end`**. One line per action is enough, e.g.:
+
+```
+[during talk] submitted enrollment request for agent `content_writer` (pending founder approval).
+```
+
+The transcript is the only human-readable record of what happened in the conversation, and the daemon writes it at talk-end from whatever you provide. Skipping this step silently mutates the roster from the founder's point of view. The audit log (`opc audit <talk_id>`) captures the action too, but the transcript is what the founder reads back.
 
 ## What happens
 
@@ -77,4 +112,5 @@ Agent names must be lowercase with underscores only (e.g. `content_writer`, `seo
 ## Error handling
 
 - If `opc` returns non-zero, retry once after 1 second.
-- `409` (duplicate name on enroll, non-approved agent on update/terminate) and `404` (agent not found) are not retryable.
+- `409` (duplicate name on enroll, non-approved agent on update/terminate) and `404` (agent not found, talk not found) are not retryable.
+- `422` usually means the payload mixed task and talk auth paths, or supplied neither — fix the JSON and retry.

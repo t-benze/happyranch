@@ -205,6 +205,11 @@ workspace will be bootstrapped as a Codex workspace: `agent.yaml` keeps
 Claude-specific `.claude/settings.json` path is not the primary bootstrap
 surface.
 
+Payloads can authenticate via either an active EH task session
+(`task_id` + `session_id`) or an open EH talk (`talk_id`). The two paths
+are mutually exclusive. See `protocol/skills/manage-agent/SKILL.md` for
+the full payload shapes.
+
 Repos are configured per agent in `<runtime>/workspaces/<agent>/agent.yaml`:
 ```yaml
 repos:
@@ -216,12 +221,20 @@ repos:
 
 ### Agent permission model
 
-Agents call the orchestrator's CLI (`opc report-completion`, `opc learning`, future callbacks) as their only sanctioned side-effect channel. The `--from-file` callback pattern is shared across executors. Claude workspaces additionally rely on the narrow `Bash(opc:*)` allow rule, which lives in **two places** and must stay in sync for Claude sessions:
+Agents call the orchestrator's CLI (`opc report-completion`, `opc learning`, future callbacks) as their only sanctioned side-effect channel. The `--from-file` callback pattern is shared across executors. Claude workspaces additionally rely on explicit Bash allow rules, which live in **two places** and must stay in sync for Claude sessions:
 
-1. `.claude/settings.json` `permissions.allow` — written by `context_builder._build_settings_json`. Used by interactive (non-`-p`) sessions and surfaces intent to anyone inspecting the workspace.
-2. `--allowedTools "Bash(opc *)"` on the CLI — passed by `ClaudeExecutor.run` for every headless session.
+1. `.claude/settings.json` `permissions.allow` — written by `ClaudeWorkspaceAdapter.write_settings_json`. Used by interactive (non-`-p`) sessions and surfaces intent to anyone inspecting the workspace.
+2. `--allowedTools` on the CLI — passed by `ClaudeExecutor.run` for every headless session.
 
-**Why both for Claude:** in headless `-p` mode, Claude Code 2.1.105 ignores the workspace's `permissions.allow` list (observed empirically: `command_permissions.allowedTools: []` regardless of settings.json). Without the `--allowedTools` flag the agent's first `opc ...` call is blocked by auto-mode prompting, the callback never reaches the daemon, and the task silently rejects — see the TASK-007/008/009 post-mortem. When adding new orchestrator-side capabilities, keep them under the `opc` binary so they stay inside this allow rule; do **not** widen either location to cover arbitrary tools.
+Both surfaces are generated from `allow_rules_for_agent(agent_name, cli=...)` in `src/orchestrator/workspace_adapters.py`, which renders the *same* per-agent list in each syntax (settings uses `Bash(<cmd>:*)`; CLI uses `Bash(<cmd> *)`). Do not hand-edit one side without the other — and don't hand-edit the generated `.claude/settings.json`, `opc init-agent` will rewrite it.
+
+**Baseline grant (every agent):** `opc` — the callback channel.
+
+**Engineering Head extras** (see `AGENT_EXTRA_ALLOWED_BASH_PREFIXES`): `gh pr close`, `gh pr comment`, `gh issue close`, `gh issue comment`. Purpose: EH needs to close superseded/stale PRs and close issues substantively fixed on `main` during revisit cleanup — without these, Claude Code's headless risk heuristic refuses those calls even in `--permission-mode auto` (see TASK-067, where `gh issue close 93` was declined). The extras are deliberately narrow — no `gh pr merge`, no `gh pr create`, no `gh issue delete` — because each extra prefix can silently mutate shared external state on every future task.
+
+**Why both surfaces for Claude:** in headless `-p` mode, Claude Code 2.1.105 ignores the workspace's `permissions.allow` list (observed empirically: `command_permissions.allowedTools: []` regardless of settings.json). Without the `--allowedTools` flag the agent's first `opc ...` call is blocked by auto-mode prompting, the callback never reaches the daemon, and the task silently rejects — see the TASK-007/008/009 post-mortem.
+
+**When adding new orchestrator-side capabilities, keep them under the `opc` binary so they stay inside the baseline allow rule.** Only add a raw-tool prefix to `AGENT_EXTRA_ALLOWED_BASH_PREFIXES` when the operation genuinely cannot be wrapped in `opc` (e.g., third-party CLI targeting external infrastructure we don't own). Each new prefix bypasses the auto-mode risk heuristic for every task that agent runs thereafter, so scope it as narrowly as the `gh pr close`/`gh issue close` grants above.
 
 **Agent-side completion payloads must be single-line `opc` invocations.** This is mandatory across executors. For Claude specifically, the permission matcher treats newlines (and `&&`, `||`, `;`, `|`) as command separators and matches each subcommand independently. Multi-line bash with backslash continuations is rejected even though the surface command is `opc ...`. The `start-task` skill therefore mandates writing the payload to `/tmp/completion-<task_id>.json` and invoking `opc report-completion --from-file <path>` as a single line. Any new agent-facing callback with multiple arguments should follow the same `--from-file` pattern.
 
@@ -238,6 +251,31 @@ Note: agents self-report `status="completed"|"blocked"` via `opc report-completi
 the `tasks` row and is distinct: it takes one of `{pending, in_progress,
 blocked, completed, failed}` based on orchestration classification, with
 `block_kind` (`delegated` | `escalated`) specifying the reason.
+
+## EH decision contract
+
+Engineering Head completion payloads carry two fields with distinct purposes
+— keep them both when modifying the EH-facing prompt or skill:
+
+- **`summary`** (prose) — human-readable description of what the EH did or
+  concluded this step. Rendered in `opc details`, audit logs, `task_history.md`.
+  Stored on `task_results.output_summary` exactly like worker summaries.
+- **`decision`** (JSON object, NextStep schema) — the structured action the
+  orchestrator will execute: `{"action": "delegate"|"done"|"escalate", ...}`.
+  Stored on `task_results.decision_json` (EH-only column; workers leave it
+  NULL). Parsed by `Orchestrator._parse_next_step` directly — no prose
+  inference.
+
+Pre-TASK-071 contract had `output_summary` itself be the JSON decision. That
+double-encoding trap tripped whenever EH ran commands itself and wrote a prose
+"here's what I did" at completion time (e.g. `gh issue close` cleanup tasks).
+The structured `decision` field eliminates the trap: EH can write natural prose
+in `summary` while the orchestrator acts on a separately-typed `decision`.
+
+A legacy fallback (parse `output_summary` as JSON when `decision` is NULL)
+stays in the parser during the transition so in-flight workspaces on older
+skill copies still work; remove it after confirming every workspace has been
+`opc init-agent`-regenerated with the new skill.
 
 ## Running Tests
 ```bash
@@ -302,7 +340,7 @@ opc talk show TALK-001
 opc report-completion --task-id TASK-001 --session-id <sid> --status completed ...
 opc learning --agent dev_agent --session-id <sid> --task-id TASK-001 --text "..."
 opc manage-repo add --agent dev_agent --repo-name docs --url https://github.com/t-benze/docs.git
-opc manage-agent --from-file /tmp/manage-agent-enroll.json  # enroll/update/terminate an agent
+opc manage-agent --from-file /tmp/manage-agent-enroll.json  # enroll/update/terminate an agent (task-path or talk-path auth)
 # Founder-side enrollment management:
 opc enrollments [--status pending]     # list enrollment requests
 opc approve-agent <name>               # approve and bootstrap workspace
