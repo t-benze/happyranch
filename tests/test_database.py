@@ -770,3 +770,37 @@ def test_walk_ancestors_does_not_follow_revisit_edge(db):
     ))
     chain = db.walk_ancestors("TASK-002")
     assert [t.id for t in chain] == ["TASK-002"]  # Does NOT include TASK-001.
+
+
+def test_get_direct_revisits_returns_all_direct_children(db):
+    """Two revisits of the same predecessor — both appear, ordered by creation."""
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="P"))
+    db.insert_task(TaskRecord(
+        id="TASK-002", type=TaskType.GENERAL, brief="rv1",
+        revisit_of_task_id="TASK-001",
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-003", type=TaskType.GENERAL, brief="rv2",
+        revisit_of_task_id="TASK-001",
+    ))
+    assert db.get_direct_revisits("TASK-001") == ["TASK-002", "TASK-003"]
+
+
+def test_get_direct_revisits_does_not_include_transitive(db):
+    """In P → N → N', P.get_direct_revisits returns only [N], not [N, N']."""
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="P"))
+    db.insert_task(TaskRecord(
+        id="TASK-002", type=TaskType.GENERAL, brief="N",
+        revisit_of_task_id="TASK-001",
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-003", type=TaskType.GENERAL, brief="N'",
+        revisit_of_task_id="TASK-002",
+    ))
+    assert db.get_direct_revisits("TASK-001") == ["TASK-002"]
+    assert db.get_direct_revisits("TASK-002") == ["TASK-003"]
+
+
+def test_get_direct_revisits_none(db):
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="x"))
+    assert db.get_direct_revisits("TASK-001") == []

@@ -342,6 +342,17 @@ class Database:
         return [row["id"] for row in cursor.fetchall()]
 
     @_synchronized
+    def get_direct_revisits(self, task_id: str) -> list[str]:
+        """Return IDs of tasks whose revisit_of_task_id points at this task,
+        ordered by creation. Uses idx_tasks_revisit_of.
+        """
+        cursor = self._conn.execute(
+            "SELECT id FROM tasks WHERE revisit_of_task_id = ? ORDER BY created_at",
+            (task_id,),
+        )
+        return [row["id"] for row in cursor.fetchall()]
+
+    @_synchronized
     def walk_ancestors(self, task_id: str, max_hops: int = 20) -> list[TaskRecord]:
         """Return [task, parent, ..., root] by following parent_task_id.
 
