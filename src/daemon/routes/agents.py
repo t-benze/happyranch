@@ -293,6 +293,7 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
     _require_eh_auth(body, state)
 
     scope_id = body.talk_id if body.talk_id is not None else body.task_id
+    assert scope_id is not None  # guaranteed by ManageAgentBody._exactly_one_auth_path
     source = "talk" if body.talk_id is not None else "task"
     audit = AuditLogger(state.db)
 
@@ -313,7 +314,6 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
         )
         audit.log_agent_managed(
             scope_id=scope_id,
-            actor="engineering_head",
             action="enroll",
             name=body.name,
             source=source,
@@ -346,7 +346,6 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
                 await asyncio.to_thread(set_executor, workspace, body.executor)
         audit.log_agent_managed(
             scope_id=scope_id,
-            actor="engineering_head",
             action="update",
             name=body.name,
             source=source,
@@ -365,7 +364,6 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
             shutil.rmtree(workspace)
         audit.log_agent_managed(
             scope_id=scope_id,
-            actor="engineering_head",
             action="terminate",
             name=body.name,
             source=source,

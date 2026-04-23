@@ -223,7 +223,6 @@ class AuditLogger:
         self,
         *,
         scope_id: str,
-        actor: str,
         action: str,
         name: str,
         source: str,
@@ -233,10 +232,12 @@ class AuditLogger:
         `scope_id` populates `audit_log.task_id` (the generic scope column
         described at line 173): TASK-xxx for task-path calls, TALK-xxx for
         talk-path calls. `source` is 'task' or 'talk' for quick filtering.
+        Actor is always 'engineering_head' — the route gates this via
+        `_require_eh_auth` before calling here.
         """
         self._db.insert_audit_log(
             task_id=scope_id,
-            agent=actor,
+            agent="engineering_head",
             action="agent_managed",
             payload={
                 "action": action,
