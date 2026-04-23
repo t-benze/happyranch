@@ -477,14 +477,27 @@ def cmd_manage_repo(args: argparse.Namespace) -> None:
 
 
 def _manage_agent_payload_from_file(path: str) -> dict:
-    """Load a manage-agent payload from a JSON file."""
+    """Load a manage-agent payload from a JSON file.
+
+    The daemon (see ManageAgentBody in src/daemon/routes/agents.py) accepts two
+    mutually-exclusive auth paths: (task_id + session_id) OR talk_id. This
+    client-side check fast-fails obvious shape errors before the HTTP round trip.
+    """
     import json as _json
     with open(path) as f:
         data = _json.load(f)
-    required = ["action", "name", "task_id", "session_id"]
-    missing = [k for k in required if not data.get(k)]
-    if missing:
-        raise ValueError(f"manage-agent file missing keys: {missing}")
+    missing_base = [k for k in ("action", "name") if not data.get(k)]
+    if missing_base:
+        raise ValueError(f"manage-agent file missing keys: {missing_base}")
+    has_task = bool(data.get("task_id")) and bool(data.get("session_id"))
+    has_partial_task = bool(data.get("task_id")) != bool(data.get("session_id"))
+    has_talk = bool(data.get("talk_id"))
+    if has_partial_task:
+        raise ValueError("manage-agent file must supply task_id and session_id together")
+    if has_task and has_talk:
+        raise ValueError("manage-agent file must supply either (task_id + session_id) or talk_id, not both")
+    if not has_task and not has_talk:
+        raise ValueError("manage-agent file must supply either (task_id + session_id) or talk_id")
     return data
 
 
@@ -507,9 +520,14 @@ def cmd_manage_agent(args: argparse.Namespace) -> None:
         body = {
             "action": args.action,
             "name": args.name,
-            "task_id": args.task_id,
-            "session_id": args.session_id,
         }
+        if args.task_id:
+            body["task_id"] = args.task_id
+        if args.session_id:
+            body["session_id"] = args.session_id
+        talk_id = getattr(args, "talk_id", None)
+        if talk_id:
+            body["talk_id"] = talk_id
         if args.description:
             body["description"] = args.description
         if args.system_prompt:
@@ -1063,8 +1081,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_ma = sub.add_parser("manage-agent", help="Enroll, update, or terminate an agent")
     p_ma.add_argument("action", nargs="?", default=None, choices=["enroll", "update", "terminate"])
     p_ma.add_argument("--name", default=None, help="Agent name")
-    p_ma.add_argument("--task-id", dest="task_id", default=None, help="Active task ID")
-    p_ma.add_argument("--session-id", dest="session_id", default=None, help="Active EH session ID")
+    p_ma.add_argument("--task-id", dest="task_id", default=None, help="Active task ID (task auth path)")
+    p_ma.add_argument("--session-id", dest="session_id", default=None, help="Active EH session ID (task auth path)")
+    p_ma.add_argument("--talk-id", dest="talk_id", default=None, help="Open EH talk ID (talk auth path)")
     p_ma.add_argument("--description", default=None, help="Agent description")
     p_ma.add_argument("--system-prompt", dest="system_prompt", default=None, help="System prompt")
     p_ma.add_argument("--executor", default=None, help="Agent executor (default: claude)")
