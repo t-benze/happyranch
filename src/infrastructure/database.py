@@ -7,7 +7,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from src.models import TalkRecord, TaskRecord, TaskStatus
+from src.models import BlockKind, TalkRecord, TaskRecord, TaskStatus
 
 
 class LineageTooDeep(Exception):
@@ -412,6 +412,48 @@ class Database:
         values = list(updates.values()) + [task_id]
         self._conn.execute(f"UPDATE tasks SET {set_clause} WHERE id = ?", values)
         self._conn.commit()
+
+    @_synchronized
+    def try_claim_for_step(
+        self,
+        task_id: str,
+        expected_status: TaskStatus,
+        expected_block_kind: BlockKind | None,
+        new_count: int,
+    ) -> bool:
+        """Atomic compare-and-swap for the run_step entry transition.
+
+        Transitions the row to status=in_progress, clears block_kind/note, and
+        sets orchestration_step_count=new_count, but ONLY if the row currently
+        matches (expected_status, expected_block_kind). Returns True iff the
+        transition occurred.
+
+        Why this exists: two workers can pop the same task_id (e.g. a multi-
+        child fan-in double-enqueued the parent). Without this CAS, both pass
+        the check-then-update at run_step steps 1→3 and both spawn an agent
+        subprocess. The conditional WHERE ensures only the first writer wins.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        if expected_block_kind is None:
+            cursor = self._conn.execute(
+                """UPDATE tasks
+                   SET status = ?, block_kind = NULL, note = NULL,
+                       orchestration_step_count = ?, updated_at = ?
+                   WHERE id = ? AND status = ? AND block_kind IS NULL""",
+                (TaskStatus.IN_PROGRESS.value, new_count, now,
+                 task_id, expected_status.value),
+            )
+        else:
+            cursor = self._conn.execute(
+                """UPDATE tasks
+                   SET status = ?, block_kind = NULL, note = NULL,
+                       orchestration_step_count = ?, updated_at = ?
+                   WHERE id = ? AND status = ? AND block_kind = ?""",
+                (TaskStatus.IN_PROGRESS.value, new_count, now,
+                 task_id, expected_status.value, expected_block_kind.value),
+            )
+        self._conn.commit()
+        return cursor.rowcount == 1
 
     @_synchronized
     def increment_revision_count(self, task_id: str) -> None:
