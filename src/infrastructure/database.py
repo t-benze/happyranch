@@ -421,6 +421,7 @@ class Database:
         return {
             "task_id": task.id,
             "parent_task_id": task.parent_task_id,
+            "revisit_of_task_id": task.revisit_of_task_id,
             "assigned_agent": task.assigned_agent,
             "brief": task.brief,
             "status": task.status.value,

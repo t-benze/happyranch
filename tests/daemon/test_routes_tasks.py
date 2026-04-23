@@ -315,6 +315,26 @@ def test_recall_idle_returns_409(tmp_home, app_idle, auth_headers) -> None:
     assert r.json()["detail"]["code"] == "no_active_runtime"
 
 
+def test_recall_payload_includes_revisit_of_task_id(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    from src.models import TaskRecord, TaskType
+    db = daemon_state.db
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="P"))
+    db.insert_task(TaskRecord(
+        id="TASK-002", type=TaskType.GENERAL, brief="rv",
+        revisit_of_task_id="TASK-001",
+    ))
+    r = TestClient(app).get("/api/v1/tasks/TASK-002/recall", headers=auth_headers)
+    assert r.status_code == 200
+    assert r.json()["revisit_of_task_id"] == "TASK-001"
+
+    # Non-revisit: NULL round-trips as null, not missing key.
+    r2 = TestClient(app).get("/api/v1/tasks/TASK-001/recall", headers=auth_headers)
+    assert r2.status_code == 200
+    assert r2.json()["revisit_of_task_id"] is None
+
+
 def test_recall_tree_includes_descendants(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
