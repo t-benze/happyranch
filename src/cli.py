@@ -173,6 +173,10 @@ def cmd_tasks(args: argparse.Namespace) -> None:
         status = t["status"]
         if t.get("block_kind"):
             status = f"{status}({t['block_kind']})"
+        # Revisit marker — appended after the brief so row widths stay stable
+        # for non-revisit rows. `↩` is a U+21A9 leftwards arrow with hook.
+        if t.get("revisit_of_task_id"):
+            brief = f"{brief}  ↩ {t['revisit_of_task_id']}"
         print(f"{t['id']:<12} {t['type']:<20} {status:<22} {agent:<18} {brief}")
 
 

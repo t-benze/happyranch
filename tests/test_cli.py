@@ -1529,3 +1529,34 @@ def test_cmd_details_shows_footer_only_when_predecessor_has_revisits(capsys):
     assert "Revisit of:" not in out
     assert "Chain:" not in out
     assert "Revisited as: TASK-072" in out
+
+
+def test_cmd_tasks_suffixes_revisit_rows(capsys):
+    """Tasks that have a predecessor root show `↩ TASK-XXX` as a trailing
+    marker; plain tasks render unchanged."""
+    from src.cli import cmd_tasks
+    fake = MagicMock()
+    fake.get.return_value.status_code = 200
+    fake.get.return_value.json.return_value = {"tasks": [
+        {
+            "id": "TASK-072", "type": "implement_feature", "status": "pending",
+            "brief": "Add Alipay support",
+            "assigned_agent": None,
+            "revisit_of_task_id": "TASK-052",
+        },
+        {
+            "id": "TASK-001", "type": "general", "status": "completed",
+            "brief": "plain task",
+            "assigned_agent": "dev_agent",
+            "revisit_of_task_id": None,
+        },
+    ]}
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        args = MagicMock(limit=20)
+        cmd_tasks(args)
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    revisit_line = next(line for line in lines if "TASK-072" in line)
+    plain_line = next(line for line in lines if "TASK-001" in line)
+    assert "↩ TASK-052" in revisit_line
+    assert "↩" not in plain_line
