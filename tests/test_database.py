@@ -640,3 +640,74 @@ def test_update_task_cannot_change_revisit_of_task_id(db):
     db.update_task("TASK-001", revisit_of_task_id="TASK-999")
     got = db.get_task("TASK-001")
     assert got.revisit_of_task_id == "TASK-000"  # unchanged
+
+
+def test_backfill_populates_revisit_of_task_id_from_audit_log(tmp_path):
+    """Simulates a pre-feature revisit row: tasks has the column but no value,
+    audit_log has the revisit_of entry. Reopening the DB must backfill."""
+    from src.infrastructure.database import Database
+
+    path = tmp_path / "backfill.db"
+    db = Database(path)
+
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="pre"))
+    db.insert_task(TaskRecord(id="TASK-002", type=TaskType.GENERAL, brief="rv"))
+    # Forcibly NULL the column to simulate legacy data even if Task 3 shipped first.
+    db._conn.execute(
+        "UPDATE tasks SET revisit_of_task_id = NULL WHERE id = 'TASK-002'"
+    )
+    db._conn.commit()
+    db.insert_audit_log(
+        task_id="TASK-002",
+        agent="founder",
+        action="revisit_of",
+        payload={
+            "predecessor_root": "TASK-001",
+            "flagged": "TASK-001",
+            "cascade": ["TASK-001"],
+            "prior_status": "failed",
+            "founder_note": None,
+        },
+    )
+    db.close()
+
+    # Reopen — backfill runs in _create_tables.
+    db2 = Database(path)
+    row = db2.get_task("TASK-002")
+    assert row.revisit_of_task_id == "TASK-001"
+    db2.close()
+
+
+def test_backfill_does_not_overwrite_existing_value(tmp_path):
+    """If revisit_of_task_id is already set, backfill must leave it alone —
+    idempotent guard against audit-entry drift."""
+    from src.infrastructure.database import Database
+    path = tmp_path / "no-overwrite.db"
+    db = Database(path)
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="pre"))
+    db.insert_task(TaskRecord(
+        id="TASK-002", type=TaskType.GENERAL, brief="rv",
+        revisit_of_task_id="TASK-001",
+    ))
+    # Seed a conflicting audit entry; backfill must NOT overwrite.
+    db.insert_audit_log(
+        task_id="TASK-002", agent="founder", action="revisit_of",
+        payload={"predecessor_root": "TASK-999", "flagged": "TASK-999",
+                 "cascade": ["TASK-999"], "prior_status": "failed",
+                 "founder_note": None},
+    )
+    db.close()
+
+    db2 = Database(path)
+    assert db2.get_task("TASK-002").revisit_of_task_id == "TASK-001"
+    db2.close()
+
+
+def test_backfill_is_a_noop_when_nothing_to_backfill(tmp_path):
+    """Opening a DB with no revisit_of audit entries must not raise."""
+    from src.infrastructure.database import Database
+    path = tmp_path / "clean.db"
+    db = Database(path)
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="x"))
+    db.close()
+    Database(path).close()

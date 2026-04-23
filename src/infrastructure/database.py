@@ -191,6 +191,13 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_tasks_revisit_of ON tasks(revisit_of_task_id)"
         )
 
+        # --- Revisit link backfill ---
+        # Historical revisit rows (created before revisit_of_task_id existed)
+        # have the column but no value; the link lives only in audit_log's
+        # revisit_of entry. Populate the column from those entries.
+        # IS NULL guard makes this safely idempotent across restarts.
+        self._backfill_revisit_of_task_id()
+
         # One-shot data remap. Guard with a sentinel so re-runs are no-ops.
         applied = self._conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks' "
@@ -213,6 +220,27 @@ class Database:
             # Normalize dead legacy values.
             self._conn.execute("UPDATE tasks SET status='failed' WHERE status='in_review'")
             self._conn.commit()
+
+    def _backfill_revisit_of_task_id(self) -> None:
+        cursor = self._conn.execute(
+            "SELECT task_id, payload FROM audit_log WHERE action = 'revisit_of'"
+        )
+        for row in cursor.fetchall():
+            if not row["payload"]:
+                continue
+            try:
+                payload = json.loads(row["payload"])
+            except json.JSONDecodeError:
+                continue
+            predecessor_root = payload.get("predecessor_root")
+            if not predecessor_root:
+                continue
+            self._conn.execute(
+                "UPDATE tasks SET revisit_of_task_id = ? "
+                "WHERE id = ? AND revisit_of_task_id IS NULL",
+                (predecessor_root, row["task_id"]),
+            )
+        self._conn.commit()
 
     @_synchronized
     def list_tables(self) -> list[str]:
