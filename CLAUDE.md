@@ -205,6 +205,11 @@ workspace will be bootstrapped as a Codex workspace: `agent.yaml` keeps
 Claude-specific `.claude/settings.json` path is not the primary bootstrap
 surface.
 
+Payloads can authenticate via either an active EH task session
+(`task_id` + `session_id`) or an open EH talk (`talk_id`). The two paths
+are mutually exclusive. See `protocol/skills/manage-agent/SKILL.md` for
+the full payload shapes.
+
 Repos are configured per agent in `<runtime>/workspaces/<agent>/agent.yaml`:
 ```yaml
 repos:
@@ -335,7 +340,7 @@ opc talk show TALK-001
 opc report-completion --task-id TASK-001 --session-id <sid> --status completed ...
 opc learning --agent dev_agent --session-id <sid> --task-id TASK-001 --text "..."
 opc manage-repo add --agent dev_agent --repo-name docs --url https://github.com/t-benze/docs.git
-opc manage-agent --from-file /tmp/manage-agent-enroll.json  # enroll/update/terminate an agent
+opc manage-agent --from-file /tmp/manage-agent-enroll.json  # enroll/update/terminate an agent (task-path or talk-path auth)
 # Founder-side enrollment management:
 opc enrollments [--status pending]     # list enrollment requests
 opc approve-agent <name>               # approve and bootstrap workspace

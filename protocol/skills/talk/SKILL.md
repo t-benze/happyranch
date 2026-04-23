@@ -122,6 +122,7 @@ The `--from-file` pattern matches `opc report-completion`, `opc manage-agent`, a
 ## What NOT to do
 
 - Don't start tasks (`opc run ...`) from inside a talk — that's out of scope for v1. If something actionable comes up, tell the founder explicitly and let them submit.
+- **Exception:** `opc manage-agent` (enroll / update / terminate) is allowed during a talk via the talk-path payload (pass `talk_id` instead of `task_id`+`session_id`). See the `manage-agent` skill. Record any such call in your `transcript_markdown` so the founder has a human-readable record at talk-end.
 - Don't call `opc talk end` without a summary + transcript. An empty payload is useless on recall.
 - Don't write learnings you've already written — the daemon appends verbatim, so duplicates will clutter `learnings.md`.
 - Don't treat KB entries as a catch-all for in-talk notes. KB is for durable, cross-agent-relevant knowledge. Everything else is a per-agent learning.

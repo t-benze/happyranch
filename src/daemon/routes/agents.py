@@ -9,7 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from sse_starlette.sse import EventSourceResponse
 
 from src.daemon.agent_config import (
@@ -22,7 +22,8 @@ from src.daemon.agent_config import (
 )
 from src.daemon.auth import require_token
 from src.daemon.state import DaemonState
-from src.models import PerformanceTier
+from src.infrastructure.audit_logger import AuditLogger
+from src.models import PerformanceTier, TalkStatus
 from src.orchestrator.context_builder import ContextBuilder
 from src.orchestrator.performance_tracker import PerformanceTracker
 from src.orchestrator.prompt_loader import load_all_prompts
@@ -61,12 +62,26 @@ class ManageAgentAction(StrEnum):
 class ManageAgentBody(BaseModel):
     action: ManageAgentAction
     name: str
-    task_id: str
-    session_id: str
+    task_id: str | None = None
+    session_id: str | None = None
+    talk_id: str | None = None
     description: str | None = None
     system_prompt: str | None = None
     repos: dict[str, str] | None = None
     executor: str | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_auth_path(self) -> ManageAgentBody:
+        task_path = self.task_id is not None and self.session_id is not None
+        partial_task = (self.task_id is not None) != (self.session_id is not None)
+        talk_path = self.talk_id is not None
+        if partial_task:
+            raise ValueError("task_id and session_id must be supplied together")
+        if task_path and talk_path:
+            raise ValueError("supply either (task_id + session_id) or talk_id, not both")
+        if not task_path and not talk_path:
+            raise ValueError("supply either (task_id + session_id) or talk_id")
+        return self
 
 
 _VALID_AGENT_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -77,6 +92,51 @@ def _require_active(state: DaemonState) -> None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "no_active_runtime"},
+        )
+
+
+def _require_eh_auth(body: ManageAgentBody, state: DaemonState) -> None:
+    """Validate the caller is authorized to run manage-agent as EH.
+
+    Supports two auth paths:
+      - Task path: (task_id, session_id) must map to an active
+        engineering_head session in SessionTracker.
+      - Talk path: talk_id must reference an open talk whose
+        agent_name == 'engineering_head'.
+
+    The pydantic validator on ManageAgentBody guarantees exactly one path
+    is set, so this function only checks the path that is present.
+    """
+    if body.talk_id is not None:
+        talk = state.db.get_talk(body.talk_id)
+        if talk is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"talk {body.talk_id!r} not found",
+            )
+        if talk.agent_name != "engineering_head":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="manage-agent requires an engineering_head talk",
+            )
+        if talk.status != TalkStatus.OPEN:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"talk {body.talk_id!r} is {talk.status.value}, not open",
+            )
+        return
+
+    # Task path
+    expected = state.sessions.get_active(body.task_id, "engineering_head")
+    if expected is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="manage-agent requires an active engineering_head session",
+        )
+    if expected != body.session_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="session_id does not match the active engineering_head session",
         )
 
 
@@ -229,18 +289,13 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
     state: DaemonState = request.app.state.daemon
     _require_active(state)
 
-    # Only the Engineering Head may manage agents.
-    expected = state.sessions.get_active(body.task_id, "engineering_head")
-    if expected is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="manage-agent requires an active engineering_head session",
-        )
-    if expected != body.session_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="session_id does not match the active engineering_head session",
-        )
+    # Only the Engineering Head may manage agents (either via task session or open talk).
+    _require_eh_auth(body, state)
+
+    scope_id = body.talk_id if body.talk_id is not None else body.task_id
+    assert scope_id is not None  # guaranteed by ManageAgentBody._exactly_one_auth_path
+    source = "talk" if body.talk_id is not None else "task"
+    audit = AuditLogger(state.db)
 
     if not _VALID_AGENT_NAME.match(body.name):
         raise HTTPException(status_code=422, detail=f"invalid agent name: {body.name!r}")
@@ -256,6 +311,12 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
             system_prompt=body.system_prompt,
             repos=body.repos,
             executor=body.executor,
+        )
+        audit.log_agent_managed(
+            scope_id=scope_id,
+            action="enroll",
+            name=body.name,
+            source=source,
         )
         return {"ok": True, "status": "pending"}
 
@@ -283,6 +344,12 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
             workspace = state.runtime.workspaces_dir / body.name
             if workspace.exists():
                 await asyncio.to_thread(set_executor, workspace, body.executor)
+        audit.log_agent_managed(
+            scope_id=scope_id,
+            action="update",
+            name=body.name,
+            source=source,
+        )
         return {"ok": True}
 
     elif body.action == ManageAgentAction.terminate:
@@ -295,6 +362,12 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
         workspace = state.runtime.workspaces_dir / body.name
         if workspace.exists():
             shutil.rmtree(workspace)
+        audit.log_agent_managed(
+            scope_id=scope_id,
+            action="terminate",
+            name=body.name,
+            source=source,
+        )
         return {"ok": True}
 
     raise HTTPException(status_code=422, detail=f"unknown action: {body.action}")
