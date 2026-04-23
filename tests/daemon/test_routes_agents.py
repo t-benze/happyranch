@@ -527,3 +527,84 @@ def test_list_enrollments(
     assert r.status_code == 200
     names = [e["name"] for e in r.json()["enrollments"]]
     assert names == ["b"]
+
+
+def test_manage_agent_body_accepts_talk_id_alone() -> None:
+    """talk_id alone (no task_id/session_id) validates."""
+    from src.daemon.routes.agents import ManageAgentBody
+
+    body = ManageAgentBody(
+        action="enroll",
+        name="content_writer",
+        talk_id="TALK-007",
+        description="desc",
+        system_prompt="prompt",
+    )
+    assert body.talk_id == "TALK-007"
+    assert body.task_id is None
+    assert body.session_id is None
+
+
+def test_manage_agent_body_accepts_task_and_session() -> None:
+    """(task_id + session_id) still validates."""
+    from src.daemon.routes.agents import ManageAgentBody
+
+    body = ManageAgentBody(
+        action="enroll",
+        name="content_writer",
+        task_id="TASK-100",
+        session_id="sess-eh",
+        description="desc",
+        system_prompt="prompt",
+    )
+    assert body.task_id == "TASK-100"
+    assert body.talk_id is None
+
+
+def test_manage_agent_body_rejects_both_paths() -> None:
+    """Supplying both task/session and talk_id is a validation error."""
+    import pytest
+    from pydantic import ValidationError
+    from src.daemon.routes.agents import ManageAgentBody
+
+    with pytest.raises(ValidationError):
+        ManageAgentBody(
+            action="enroll",
+            name="content_writer",
+            task_id="TASK-100",
+            session_id="sess-eh",
+            talk_id="TALK-007",
+            description="desc",
+            system_prompt="prompt",
+        )
+
+
+def test_manage_agent_body_rejects_neither_path() -> None:
+    """Supplying neither is a validation error."""
+    import pytest
+    from pydantic import ValidationError
+    from src.daemon.routes.agents import ManageAgentBody
+
+    with pytest.raises(ValidationError):
+        ManageAgentBody(
+            action="enroll",
+            name="content_writer",
+            description="desc",
+            system_prompt="prompt",
+        )
+
+
+def test_manage_agent_body_rejects_partial_task_path() -> None:
+    """task_id without session_id (or vice versa) is a validation error."""
+    import pytest
+    from pydantic import ValidationError
+    from src.daemon.routes.agents import ManageAgentBody
+
+    with pytest.raises(ValidationError):
+        ManageAgentBody(
+            action="enroll",
+            name="content_writer",
+            task_id="TASK-100",
+            description="desc",
+            system_prompt="prompt",
+        )

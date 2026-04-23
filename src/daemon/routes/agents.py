@@ -9,7 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from sse_starlette.sse import EventSourceResponse
 
 from src.daemon.agent_config import (
@@ -61,12 +61,26 @@ class ManageAgentAction(StrEnum):
 class ManageAgentBody(BaseModel):
     action: ManageAgentAction
     name: str
-    task_id: str
-    session_id: str
+    task_id: str | None = None
+    session_id: str | None = None
+    talk_id: str | None = None
     description: str | None = None
     system_prompt: str | None = None
     repos: dict[str, str] | None = None
     executor: str | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_auth_path(self) -> ManageAgentBody:
+        task_path = self.task_id is not None and self.session_id is not None
+        partial_task = (self.task_id is not None) != (self.session_id is not None)
+        talk_path = self.talk_id is not None
+        if partial_task:
+            raise ValueError("task_id and session_id must be supplied together")
+        if task_path and talk_path:
+            raise ValueError("supply either (task_id + session_id) or talk_id, not both")
+        if not task_path and not talk_path:
+            raise ValueError("supply either (task_id + session_id) or talk_id")
+        return self
 
 
 _VALID_AGENT_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
