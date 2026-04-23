@@ -766,3 +766,173 @@ def test_require_eh_auth_task_path_wrong_session_raises_403(
     with pytest.raises(HTTPException) as ex:
         _require_eh_auth(body, daemon_state)
     assert ex.value.status_code == 403
+
+
+def _seed_eh_talk(daemon_state, talk_id: str = "TALK-700") -> str:
+    """Helper: insert an open EH talk and return its id."""
+    from src.models import TalkRecord
+
+    daemon_state.db.insert_talk(
+        TalkRecord(id=talk_id, agent_name="engineering_head"),
+    )
+    return talk_id
+
+
+def test_manage_agent_talk_path_enroll_creates_pending(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    talk_id = _seed_eh_talk(daemon_state)
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={
+            "action": "enroll",
+            "name": "content_writer",
+            "talk_id": talk_id,
+            "description": "Writes destination guides",
+            "system_prompt": "You are the Content Writer...",
+            "executor": "codex",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "pending"
+    e = daemon_state.db.get_enrollment("content_writer")
+    assert e is not None
+    assert e["status"] == "pending"
+    assert e["executor"] == "codex"
+
+
+def test_manage_agent_talk_path_update_changes_prompt(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    talk_id = _seed_eh_talk(daemon_state, "TALK-701")
+    daemon_state.db.insert_enrollment("content_writer", "desc", "old prompt")
+    daemon_state.db.update_enrollment_status("content_writer", "approved")
+    workspace = daemon_state.runtime.workspaces_dir / "content_writer"
+    workspace.mkdir(parents=True)
+
+    with patch("src.daemon.routes.agents.ContextBuilder") as MockCB:
+        mock_ctx = MockCB.return_value
+        mock_ctx.ensure_workspace_ready.return_value = None
+        r = TestClient(app).post(
+            "/api/v1/agents/manage",
+            json={
+                "action": "update",
+                "name": "content_writer",
+                "talk_id": talk_id,
+                "system_prompt": "new prompt via talk",
+            },
+            headers=auth_headers,
+        )
+    assert r.status_code == 200
+    assert daemon_state.db.get_enrollment("content_writer")["system_prompt"] == "new prompt via talk"
+
+
+def test_manage_agent_talk_path_terminate_removes_workspace(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    talk_id = _seed_eh_talk(daemon_state, "TALK-702")
+    daemon_state.db.insert_enrollment("content_writer", "desc", "prompt")
+    daemon_state.db.update_enrollment_status("content_writer", "approved")
+    workspace = daemon_state.runtime.workspaces_dir / "content_writer"
+    workspace.mkdir(parents=True)
+    (workspace / "CLAUDE.md").write_text("# test")
+
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={
+            "action": "terminate",
+            "name": "content_writer",
+            "talk_id": talk_id,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert not workspace.exists()
+    assert daemon_state.db.get_enrollment("content_writer")["status"] == "terminated"
+
+
+def test_manage_agent_talk_path_non_eh_talk_returns_403(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    from src.models import TalkRecord
+
+    daemon_state.db.insert_talk(
+        TalkRecord(id="TALK-703", agent_name="dev_agent"),
+    )
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={
+            "action": "enroll",
+            "name": "content_writer",
+            "talk_id": "TALK-703",
+            "description": "desc",
+            "system_prompt": "prompt",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 403
+
+
+def test_manage_agent_talk_path_closed_talk_returns_403(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    from src.models import TalkRecord, TalkStatus
+
+    daemon_state.db.insert_talk(
+        TalkRecord(
+            id="TALK-704",
+            agent_name="engineering_head",
+            status=TalkStatus.CLOSED,
+        ),
+    )
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={
+            "action": "enroll",
+            "name": "content_writer",
+            "talk_id": "TALK-704",
+            "description": "desc",
+            "system_prompt": "prompt",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 403
+
+
+def test_manage_agent_talk_path_missing_talk_returns_404(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={
+            "action": "enroll",
+            "name": "content_writer",
+            "talk_id": "TALK-DOES-NOT-EXIST",
+            "description": "desc",
+            "system_prompt": "prompt",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 404
+
+
+def test_manage_agent_both_auth_paths_returns_422(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    _activate_eh_session(daemon_state)
+    _seed_eh_talk(daemon_state, "TALK-705")
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={
+            "action": "enroll",
+            "name": "content_writer",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+            "talk_id": "TALK-705",
+            "description": "desc",
+            "system_prompt": "prompt",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 422

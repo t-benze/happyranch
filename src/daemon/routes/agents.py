@@ -288,18 +288,8 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
     state: DaemonState = request.app.state.daemon
     _require_active(state)
 
-    # Only the Engineering Head may manage agents.
-    expected = state.sessions.get_active(body.task_id, "engineering_head")
-    if expected is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="manage-agent requires an active engineering_head session",
-        )
-    if expected != body.session_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="session_id does not match the active engineering_head session",
-        )
+    # Only the Engineering Head may manage agents (either via task session or open talk).
+    _require_eh_auth(body, state)
 
     if not _VALID_AGENT_NAME.match(body.name):
         raise HTTPException(status_code=422, detail=f"invalid agent name: {body.name!r}")
