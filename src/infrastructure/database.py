@@ -228,8 +228,8 @@ class Database:
         self._conn.execute(
             """INSERT INTO tasks (id, type, status, assigned_agent, team, brief,
                revision_count, created_at, updated_at, completed_at, parent_task_id,
-               block_kind, note, orchestration_step_count)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               revisit_of_task_id, block_kind, note, orchestration_step_count)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task.id,
                 task.type.value,
@@ -242,6 +242,7 @@ class Database:
                 task.updated_at.isoformat(),
                 task.completed_at.isoformat() if task.completed_at else None,
                 task.parent_task_id,
+                task.revisit_of_task_id,
                 task.block_kind.value if task.block_kind else None,
                 task.note,
                 task.orchestration_step_count,
@@ -267,6 +268,7 @@ class Database:
             updated_at=row["updated_at"],
             completed_at=row["completed_at"],
             parent_task_id=row["parent_task_id"],
+            revisit_of_task_id=row["revisit_of_task_id"],
             block_kind=row["block_kind"],
             note=row["note"],
             orchestration_step_count=row["orchestration_step_count"] or 0,
@@ -292,6 +294,7 @@ class Database:
                 updated_at=row["updated_at"],
                 completed_at=row["completed_at"],
                 parent_task_id=row["parent_task_id"],
+                revisit_of_task_id=row["revisit_of_task_id"],
                 block_kind=row["block_kind"],
                 note=row["note"],
                 orchestration_step_count=row["orchestration_step_count"] or 0,
@@ -393,6 +396,7 @@ class Database:
                 updated_at=row["updated_at"],
                 completed_at=row["completed_at"],
                 parent_task_id=row["parent_task_id"],
+                revisit_of_task_id=row["revisit_of_task_id"],
                 block_kind=row["block_kind"],
                 note=row["note"],
                 orchestration_step_count=row["orchestration_step_count"] or 0,

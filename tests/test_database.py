@@ -600,3 +600,43 @@ def test_concurrent_access_from_multiple_threads_is_safe(db):
         f"Concurrent Database access raised {len(errors)} exceptions, "
         f"first: {type(errors[0]).__name__}: {errors[0]}"
     )
+
+
+def test_insert_task_round_trips_revisit_of(db):
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="predecessor"))
+    db.insert_task(TaskRecord(
+        id="TASK-002",
+        type=TaskType.GENERAL,
+        brief="revisit",
+        revisit_of_task_id="TASK-001",
+    ))
+    got = db.get_task("TASK-002")
+    assert got is not None
+    assert got.revisit_of_task_id == "TASK-001"
+
+    # Non-revisit tasks keep it NULL on read.
+    got_pre = db.get_task("TASK-001")
+    assert got_pre.revisit_of_task_id is None
+
+
+def test_list_tasks_exposes_revisit_of(db):
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="pre"))
+    db.insert_task(TaskRecord(
+        id="TASK-002", type=TaskType.GENERAL, brief="rv",
+        revisit_of_task_id="TASK-001",
+    ))
+    rows = {t.id: t for t in db.list_tasks()}
+    assert rows["TASK-002"].revisit_of_task_id == "TASK-001"
+    assert rows["TASK-001"].revisit_of_task_id is None
+
+
+def test_update_task_cannot_change_revisit_of_task_id(db):
+    """The column is write-once at insert time. Guards against accidental
+    mutation from other write paths."""
+    db.insert_task(TaskRecord(
+        id="TASK-001", type=TaskType.GENERAL, brief="rv",
+        revisit_of_task_id="TASK-000",
+    ))
+    db.update_task("TASK-001", revisit_of_task_id="TASK-999")
+    got = db.get_task("TASK-001")
+    assert got.revisit_of_task_id == "TASK-000"  # unchanged
