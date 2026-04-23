@@ -521,6 +521,34 @@ def test_walk_ancestors_raises_when_over_limit(db):
         db.walk_ancestors(prev, max_hops=20)
 
 
+def test_revisit_of_task_id_column_exists(db):
+    """The tasks table must gain a nullable revisit_of_task_id column.
+    Idempotent on restart: reopening the same DB must not error.
+    """
+    cols = {row[1] for row in db._conn.execute("PRAGMA table_info(tasks)").fetchall()}
+    assert "revisit_of_task_id" in cols
+
+    # Index exists (keeps the reverse lookup `WHERE revisit_of_task_id = ?` cheap).
+    indexes = {row[1] for row in db._conn.execute(
+        "SELECT * FROM sqlite_master WHERE type='index' AND tbl_name='tasks'"
+    ).fetchall()}
+    assert "idx_tasks_revisit_of" in indexes
+
+
+def test_migration_idempotent_over_restart(tmp_path):
+    """Opening a Database twice on the same file must not raise."""
+    from src.infrastructure.database import Database
+    path = tmp_path / "restart.db"
+    db1 = Database(path)
+    db1.close()
+    # Second open is where duplicate-column / duplicate-index errors would fire
+    # if the migration weren't guarded.
+    db2 = Database(path)
+    cols = {row[1] for row in db2._conn.execute("PRAGMA table_info(tasks)").fetchall()}
+    assert "revisit_of_task_id" in cols
+    db2.close()
+
+
 def test_concurrent_access_from_multiple_threads_is_safe(db):
     """Regression test: sqlite3 raises InterfaceError when two threads use the
     same connection concurrently. The daemon exposes this shape — route

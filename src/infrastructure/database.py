@@ -176,11 +176,20 @@ class Database:
             # SIGTERM'd session as "cancelled" (not a retryable failure) and
             # idempotent _fail calls don't overwrite the founder's note.
             "ALTER TABLE tasks ADD COLUMN cancelled_at TEXT",
+            # Revisit link: see docs/superpowers/specs/2026-04-23-revisit-root-link-design.md.
+            # Sideways reference to the predecessor root of a revisit; NULL for
+            # non-revisit tasks. walk_ancestors MUST NOT follow this column —
+            # that's the attempt-isolation invariant from the v2 revisit spec.
+            "ALTER TABLE tasks ADD COLUMN revisit_of_task_id TEXT",
         ):
             try:
                 self._conn.execute(ddl)
             except sqlite3.OperationalError:
                 pass
+        # Index the reverse lookup (`WHERE revisit_of_task_id = ?`).
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_revisit_of ON tasks(revisit_of_task_id)"
+        )
 
         # One-shot data remap. Guard with a sentinel so re-runs are no-ops.
         applied = self._conn.execute(
