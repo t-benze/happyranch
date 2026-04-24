@@ -7,7 +7,6 @@ from src.daemon.agent_config import set_executor, write_default_agent_config
 from src.infrastructure.database import Database
 from src.models import (
     TaskStatus,
-    TaskType,
 )
 from src.orchestrator.executors import ExecutorResult
 from src.orchestrator.orchestrator import Orchestrator
@@ -47,17 +46,17 @@ def test_orchestrator_no_longer_has_run_task():
 
 
 def test_create_task(orchestrator):
-    task_id = orchestrator.create_task(TaskType.GENERAL, "Explore the codebase")
+    task_id = orchestrator.create_task("Explore the codebase")
     assert task_id == "TASK-001"
     task = orchestrator._db.get_task(task_id)
     assert task.status == TaskStatus.PENDING
     assert task.brief == "Explore the codebase"
 
 
-def test_create_task_with_type(orchestrator):
-    task_id = orchestrator.create_task(TaskType.IMPLEMENT_FEATURE, "Add Alipay")
+def test_create_task_with_team(orchestrator):
+    task_id = orchestrator.create_task("Add Alipay", team="engineering")
     task = orchestrator._db.get_task(task_id)
-    assert task.type == TaskType.IMPLEMENT_FEATURE
+    assert task.team == "engineering"
 
 
 def test_task_metadata_in_agent_prompt(orchestrator, test_runtime, monkeypatch):
@@ -68,7 +67,7 @@ def test_task_metadata_in_agent_prompt(orchestrator, test_runtime, monkeypatch):
     """
     _setup_workspaces(test_runtime)
 
-    task_id = orchestrator.create_task(TaskType.GENERAL, "Explore payments")
+    task_id = orchestrator.create_task("Explore payments")
 
     # Fix the session_id so the prompt is deterministic.
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
@@ -95,7 +94,7 @@ def test_codex_agent_prompt_uses_provider_specific_wording(
     orchestrator, test_runtime, monkeypatch,
 ):
     _setup_codex_workspace(test_runtime, "engineering_head")
-    task_id = orchestrator.create_task(TaskType.GENERAL, "Explore payments")
+    task_id = orchestrator.create_task("Explore payments")
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
 
     with patch("src.orchestrator.orchestrator.CodexExecutor") as MockExecutor:
@@ -129,7 +128,7 @@ def test_run_agent_registers_active_session_when_tracker_attached(
     tracker = SessionTracker()
     orchestrator.attach_sessions(tracker)
 
-    task_id = orchestrator.create_task(TaskType.GENERAL, "Explore payments")
+    task_id = orchestrator.create_task("Explore payments")
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
 
     with patch("src.orchestrator.orchestrator.ClaudeExecutor") as MockExecutor:
@@ -151,7 +150,7 @@ def test_run_agent_skips_session_registration_when_tracker_not_attached(
     _setup_workspaces(test_runtime)
     assert orchestrator._sessions is None
 
-    task_id = orchestrator.create_task(TaskType.GENERAL, "Explore payments")
+    task_id = orchestrator.create_task("Explore payments")
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
     captured: list[tuple[str, str, str]] = []
 
@@ -174,7 +173,7 @@ def test_run_agent_fails_fast_when_workspace_missing_skill(orchestrator, test_ru
     actionable error instead of silently marking the task rejected."""
     from src.orchestrator.orchestrator import WorkspaceNotInitialized
 
-    task_id = orchestrator.create_task(TaskType.GENERAL, "ping")
+    task_id = orchestrator.create_task("ping")
     eh_workspace = test_runtime.workspaces_dir / "engineering_head"
     assert not eh_workspace.exists()
 
@@ -190,7 +189,7 @@ def test_run_agent_fails_fast_when_workspace_missing_skill(orchestrator, test_ru
 
 def test_run_agent_accepts_codex_readiness_marker(orchestrator, test_runtime, monkeypatch):
     _setup_codex_workspace(test_runtime, "engineering_head")
-    task_id = orchestrator.create_task(TaskType.GENERAL, "ping")
+    task_id = orchestrator.create_task("ping")
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
 
     with patch("src.orchestrator.orchestrator.CodexExecutor") as MockExecutor:
@@ -217,7 +216,7 @@ def test_run_agent_defaults_missing_executor_to_claude(orchestrator, test_runtim
     skill.mkdir(parents=True, exist_ok=True)
     (skill / "SKILL.md").write_text("# start-task\n")
 
-    task_id = orchestrator.create_task(TaskType.GENERAL, "ping")
+    task_id = orchestrator.create_task("ping")
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
 
     with patch("src.orchestrator.orchestrator.ClaudeExecutor") as MockExecutor:
@@ -238,7 +237,7 @@ def test_task_history_written_per_agent_only(orchestrator, test_runtime):
     """_update_task_history writes the file to the assigned_agent's workspace only."""
     _setup_workspaces(test_runtime)
 
-    orchestrator.create_task(TaskType.GENERAL, "Add Alipay support")
+    orchestrator.create_task("Add Alipay support")
     orchestrator._db.update_task(
         "TASK-001",
         assigned_agent="dev_agent",
@@ -258,7 +257,7 @@ def test_task_history_entry_format(orchestrator, test_runtime):
     """task_history.md entries follow the `**TASK-id** (date, status) — brief` format."""
     _setup_workspaces(test_runtime)
 
-    orchestrator.create_task(TaskType.GENERAL, "Review Q1 project status")
+    orchestrator.create_task("Review Q1 project status")
     orchestrator._db.update_task(
         "TASK-001",
         assigned_agent="engineering_head",
@@ -277,7 +276,7 @@ def test_task_history_newest_first(orchestrator, test_runtime):
     """task_history.md lists entries newest-first."""
     _setup_workspaces(test_runtime)
 
-    orchestrator.create_task(TaskType.GENERAL, "First task")
+    orchestrator.create_task("First task")
     orchestrator._db.update_task(
         "TASK-001",
         assigned_agent="engineering_head",
@@ -286,7 +285,7 @@ def test_task_history_newest_first(orchestrator, test_runtime):
     )
     orchestrator._update_task_history("TASK-001")
 
-    orchestrator.create_task(TaskType.GENERAL, "Second task")
+    orchestrator.create_task("Second task")
     orchestrator._db.update_task(
         "TASK-002",
         assigned_agent="engineering_head",
@@ -304,7 +303,7 @@ def test_task_history_newest_first(orchestrator, test_runtime):
 def test_read_completion_from_db_preserves_artifact_dir(orchestrator):
     """Reconstructing a CompletionReport from task_results must include
     artifact_dir so the daemon-callback path can persist tasks.final_artifact_dir."""
-    orchestrator.create_task(TaskType.GENERAL, "Write the report")
+    orchestrator.create_task("Write the report")
     orchestrator._db.insert_task_result(
         "TASK-001",
         "dev_agent",
@@ -326,7 +325,7 @@ def test_read_completion_from_db_hydrates_decision(orchestrator):
     import json as _json
     from src.models import NextStep
 
-    orchestrator.create_task(TaskType.GENERAL, "Clean up stale PR/issue")
+    orchestrator.create_task("Clean up stale PR/issue")
     orchestrator._db.insert_task_result(
         "TASK-001",
         "engineering_head",
@@ -428,7 +427,7 @@ def test_read_completion_from_db_tolerates_garbage_decision_json(orchestrator):
     """A corrupt decision_json row must not crash the orchestrator — leave
     decision None so the parser escalates with a readable reason, rather than
     silently falling through to prose inference."""
-    orchestrator.create_task(TaskType.GENERAL, "Task with corrupt row")
+    orchestrator.create_task("Task with corrupt row")
     orchestrator._db.insert_task_result(
         "TASK-001",
         "engineering_head",

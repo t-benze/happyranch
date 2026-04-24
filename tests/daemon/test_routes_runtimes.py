@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.daemon import runtimes as reg
-from src.models import TaskRecord, TaskStatus, TaskType
+from src.models import TaskRecord, TaskStatus
 from src.runtime import RuntimeDir
 
 
@@ -53,7 +53,7 @@ def test_activate_blocked_by_in_flight_task(
     reg.activate(daemon_state.runtime.root)
 
     # Insert an IN_PROGRESS task on the active runtime.
-    task = TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="x")
+    task = TaskRecord(id="TASK-001", brief="x")
     daemon_state.db.insert_task(task)
     daemon_state.db.update_task("TASK-001", status=TaskStatus.IN_PROGRESS)
 
@@ -79,7 +79,7 @@ def test_activate_blocked_by_pending_task(
     reg.activate(daemon_state.runtime.root)
 
     # Insert a PENDING task — never marked IN_PROGRESS.
-    task = TaskRecord(id="TASK-002", type=TaskType.GENERAL, brief="y")
+    task = TaskRecord(id="TASK-002", brief="y")
     daemon_state.db.insert_task(task)
 
     r = TestClient(app).post(

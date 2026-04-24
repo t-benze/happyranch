@@ -21,13 +21,6 @@ class BlockKind(StrEnum):
     ESCALATED = "escalated"
 
 
-class TaskType(StrEnum):
-    IMPLEMENT_FEATURE = "implement_feature"
-    BUG_FIX = "bug_fix"
-    PAYMENT_CHANGE = "payment_change"
-    GENERAL = "general"
-
-
 class PerformanceTier(StrEnum):
     GREEN = "green"
     YELLOW = "yellow"
@@ -46,10 +39,9 @@ def _now() -> datetime:
 
 class TaskRecord(BaseModel):
     id: str
-    type: TaskType
     status: TaskStatus = TaskStatus.PENDING
     assigned_agent: str | None = None
-    team: str = "product_engineering"
+    team: str = "engineering"
     brief: str
     parent_task_id: str | None = None
     revisit_of_task_id: str | None = None

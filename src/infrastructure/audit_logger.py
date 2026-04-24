@@ -108,18 +108,6 @@ class AuditLogger:
             payload={"rationale": rationale, "cascade": cascade},
         )
 
-    def log_cross_audit_stub(self, task_id: str, task_type: str) -> None:
-        self._db.insert_audit_log(
-            task_id=task_id,
-            agent="orchestrator",
-            action="cross_audit_requested",
-            payload={
-                "task_type": task_type,
-                "auto_approved": True,
-                "note": "Cross-audit stubbed -- Compliance Agent review pending Ops Team implementation",
-            },
-        )
-
     def log_orchestration_step(
         self, task_id: str, step_number: int, decision: dict
     ) -> None:

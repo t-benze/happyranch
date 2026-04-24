@@ -22,7 +22,6 @@ from src.models import (
     NextStep,
     StepRecord,
     TaskRecord,
-    TaskType,
 )
 from src.orchestrator.executors import ClaudeExecutor, CodexExecutor, ExecutorResult
 from src.orchestrator.performance_tracker import PerformanceTracker
@@ -155,10 +154,10 @@ class Orchestrator:
             artifact_dir=row.get("artifact_dir"),
         )
 
-    def create_task(self, task_type: TaskType, brief: str) -> str:
+    def create_task(self, brief: str, team: str = "engineering") -> str:
         """Create a new task and persist it."""
         task_id = self._db.next_task_id()
-        task = TaskRecord(id=task_id, type=task_type, brief=brief)
+        task = TaskRecord(id=task_id, brief=brief, team=team)
         self._db.insert_task(task)
         logger.info("Created task %s: %s", task_id, brief)
         return task_id

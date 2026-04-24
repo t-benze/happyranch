@@ -51,10 +51,9 @@ class Database:
         self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS tasks (
                 id TEXT PRIMARY KEY,
-                type TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending',
                 assigned_agent TEXT,
-                team TEXT NOT NULL DEFAULT 'product_engineering',
+                team TEXT NOT NULL DEFAULT 'engineering',
                 brief TEXT NOT NULL,
                 revision_count INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
@@ -167,6 +166,15 @@ class Database:
             except sqlite3.OperationalError:
                 pass
 
+        # Remap legacy team value: 'product_engineering' → 'engineering'.
+        try:
+            self._conn.execute(
+                "UPDATE tasks SET team='engineering' WHERE team='product_engineering'"
+            )
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass
+
         # --- Task-status redesign migration (idempotent) ---
         # Add new columns; swallow duplicate errors on subsequent startups.
         for ddl in (
@@ -260,13 +268,12 @@ class Database:
     @_synchronized
     def insert_task(self, task: TaskRecord) -> None:
         self._conn.execute(
-            """INSERT INTO tasks (id, type, status, assigned_agent, team, brief,
+            """INSERT INTO tasks (id, status, assigned_agent, team, brief,
                revision_count, created_at, updated_at, completed_at, parent_task_id,
                revisit_of_task_id, block_kind, note, orchestration_step_count)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task.id,
-                task.type.value,
                 task.status.value,
                 task.assigned_agent,
                 task.team,
@@ -292,7 +299,6 @@ class Database:
             return None
         return TaskRecord(
             id=row["id"],
-            type=row["type"],
             status=row["status"],
             assigned_agent=row["assigned_agent"],
             team=row["team"],
@@ -318,7 +324,7 @@ class Database:
         return [
             TaskRecord(
                 id=row["id"],
-                type=row["type"],
+
                 status=row["status"],
                 assigned_agent=row["assigned_agent"],
                 team=row["team"],
@@ -461,7 +467,7 @@ class Database:
         return [
             TaskRecord(
                 id=row["id"],
-                type=row["type"],
+
                 status=row["status"],
                 assigned_agent=row["assigned_agent"],
                 team=row["team"],

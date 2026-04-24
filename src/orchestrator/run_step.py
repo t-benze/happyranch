@@ -160,7 +160,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
         child_id = db.next_task_id()
         db.insert_task(TaskRecord(
             id=child_id,
-            type=task.type,
+            team=task.team,
             brief=decision.prompt or "",
             assigned_agent=decision.agent,
             parent_task_id=task_id,

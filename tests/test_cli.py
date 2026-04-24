@@ -9,11 +9,11 @@ def test_run_subcommand():
     parser = build_parser()
     args = parser.parse_args([
         "run",
-        "--task", "implement_feature",
+        "--team", "engineering",
         "--brief", "Add Alipay support",
     ])
     assert args.command == "run"
-    assert args.task == "implement_feature"
+    assert args.team == "engineering"
     assert args.brief == "Add Alipay support"
 
 
@@ -79,18 +79,18 @@ def test_no_command_prints_help(capsys):
 
 
 
-def test_run_without_task_flag():
+def test_run_without_team_flag():
     parser = build_parser()
     args = parser.parse_args(["run", "--brief", "Explore the codebase"])
     assert args.command == "run"
-    assert args.task == "general"
+    assert args.team is None
     assert args.brief == "Explore the codebase"
 
 
-def test_run_with_task_flag():
+def test_run_with_team_flag():
     parser = build_parser()
-    args = parser.parse_args(["run", "--task", "bug_fix", "--brief", "Fix it"])
-    assert args.task == "bug_fix"
+    args = parser.parse_args(["run", "--team", "content", "--brief", "Write guide"])
+    assert args.team == "content"
 
 
 def test_cmd_init_calls_register_endpoint(tmp_path, capsys):
@@ -236,10 +236,10 @@ def test_cmd_run_submits_then_streams(capsys):
     ])
 
     with patch("src.cli.OpcClient.from_env", return_value=fake):
-        args = MagicMock(task="general", brief="x")
+        args = MagicMock(team=None, brief="x")
         cmd_run(args)
 
-    fake.post.assert_called_once_with("/api/v1/tasks", json={"type": "general", "brief": "x"})
+    fake.post.assert_called_once_with("/api/v1/tasks", json={"brief": "x"})
     out = capsys.readouterr().out
     assert "TASK-001" in out
     assert "task_complete" in out

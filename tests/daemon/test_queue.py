@@ -82,14 +82,14 @@ def test_synthesize_terminal_event_rules(tmp_path):
     surface as task_blocked to a late subscriber."""
     from src.config import Settings
     from src.daemon.state import DaemonState
-    from src.models import BlockKind, TaskRecord, TaskStatus, TaskType
+    from src.models import BlockKind, TaskRecord, TaskStatus
     from src.runtime import RuntimeDir
     rt = RuntimeDir.init(tmp_path / "rt")
     state = DaemonState.from_runtime(rt, Settings())
 
     def make(task_id: str, status: TaskStatus,
              block_kind: BlockKind | None = None):
-        state.db.insert_task(TaskRecord(id=task_id, type=TaskType.GENERAL, brief="x"))
+        state.db.insert_task(TaskRecord(id=task_id, brief="x"))
         state.db.update_task(task_id, status=status, block_kind=block_kind)
         return state.db.get_task(task_id)
 

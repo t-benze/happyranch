@@ -15,7 +15,7 @@ from sse_starlette.sse import EventSourceResponse
 from src.daemon.auth import require_token
 from src.daemon.runner import enqueue_task
 from src.daemon.state import DaemonState
-from src.models import TaskRecord, TaskStatus, TaskType
+from src.models import TaskRecord, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ MAX_ARTIFACT_BYTES = 200 * 1024
 
 
 class SubmitTask(BaseModel):
-    type: TaskType = TaskType.GENERAL
+    team: str | None = None
     brief: str
 
 
@@ -43,12 +43,28 @@ def _require_active(state: DaemonState) -> None:
 async def submit_task(body: SubmitTask, request: Request) -> dict:
     state: DaemonState = request.app.state.daemon
     _require_active(state)
+    team = body.team or "engineering"
+    registry = state.teams
+    if registry is None or team not in registry.teams():
+        valid = registry.teams() if registry is not None else []
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "unknown_team", "valid": valid},
+        )
+    manager = registry.manager_for_team(team)
     async with state.db_lock:
         task_id = state.db.next_task_id()
-        state.db.insert_task(TaskRecord(id=task_id, type=body.type, brief=body.brief))
+        state.db.insert_task(
+            TaskRecord(
+                id=task_id,
+                brief=body.brief,
+                team=team,
+                assigned_agent=manager.name,
+            )
+        )
 
     enqueue_task(state, task_id)
-    return {"task_id": task_id}
+    return {"task_id": task_id, "team": team, "assigned_agent": manager.name}
 
 
 @router.get("/tasks")
@@ -402,8 +418,9 @@ async def revisit_task(
         new_id = state.db.next_task_id()
         state.db.insert_task(TaskRecord(
             id=new_id,
-            type=predecessor.type,
             brief=predecessor.brief,
+            team=predecessor.team,
+            assigned_agent=predecessor.assigned_agent,
             status=TaskStatus.PENDING,
             parent_task_id=None,
             revisit_of_task_id=predecessor.id,

@@ -19,7 +19,6 @@ from src.infrastructure.kb_store import (
     NotFound,
     SlugExists,
 )
-from src.models import TaskType
 
 router = APIRouter(dependencies=[require_token()])
 
@@ -199,13 +198,6 @@ async def reindex_kb(request: Request) -> dict:
     return {"ok": True}
 
 
-_TOPIC_FOR_TASK_TYPE: dict[TaskType, str] = {
-    TaskType.PAYMENT_CHANGE: "payment",
-    TaskType.BUG_FIX: "engineering",
-    TaskType.IMPLEMENT_FEATURE: "engineering",
-}
-
-
 class KBPrecedentBody(BaseModel):
     task_id: str
     decision: str
@@ -246,7 +238,7 @@ async def precedent_kb(body: KBPrecedentBody, request: Request) -> dict:
 
     default_slug = f"precedent-{body.task_id.lower().replace('_', '-')}-{body.decision}"
     slug = body.slug or default_slug
-    topic = _TOPIC_FOR_TASK_TYPE.get(task.type, "general")
+    topic = task.team
     title = f"{task.brief} — {body.decision}"
     entry_body = (
         f"# Precedent: {task.brief}\n\n"

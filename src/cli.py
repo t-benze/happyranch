@@ -107,7 +107,10 @@ def cmd_run(args: argparse.Namespace) -> None:
         print(f"Error: {exc}")
         sys.exit(1)
 
-    r = client.post("/api/v1/tasks", json={"type": args.task, "brief": args.brief})
+    payload: dict = {"brief": args.brief}
+    if args.team:
+        payload["team"] = args.team
+    r = client.post("/api/v1/tasks", json=payload)
     if not _ok(r):
         return
     task_id = r.json()["task_id"]
@@ -210,7 +213,7 @@ def cmd_details(args: argparse.Namespace) -> None:
             print(f"Chain:      {' ← '.join(display)}")
 
     print(f"Task:       {task['id']}")
-    print(f"Type:       {task['type']}")
+    print(f"Team:       {task.get('team', '-')}")
     print(f"Status:     {task['status']}")
     print(f"Agent:      {task.get('assigned_agent') or '-'}")
     print(f"Brief:      {task['brief']}")
@@ -1090,9 +1093,8 @@ def build_parser() -> argparse.ArgumentParser:
     # opc run
     p_run = sub.add_parser("run", help="Run a task")
     p_run.add_argument(
-        "--task", default="general",
-        choices=["general", "implement_feature", "bug_fix", "payment_change"],
-        help="Task type hint (default: general -- EH decides the approach)",
+        "--team", default=None,
+        help="Team to route the task to (default: engineering)",
     )
     p_run.add_argument("--brief", required=True, help="Task description")
     p_run.set_defaults(func=cmd_run)
