@@ -521,6 +521,34 @@ def test_walk_ancestors_raises_when_over_limit(db):
         db.walk_ancestors(prev, max_hops=20)
 
 
+def test_revisit_of_task_id_column_exists(db):
+    """The tasks table must gain a nullable revisit_of_task_id column.
+    Idempotent on restart: reopening the same DB must not error.
+    """
+    cols = {row[1] for row in db._conn.execute("PRAGMA table_info(tasks)").fetchall()}
+    assert "revisit_of_task_id" in cols
+
+    # Index exists (keeps the reverse lookup `WHERE revisit_of_task_id = ?` cheap).
+    indexes = {row[1] for row in db._conn.execute(
+        "SELECT * FROM sqlite_master WHERE type='index' AND tbl_name='tasks'"
+    ).fetchall()}
+    assert "idx_tasks_revisit_of" in indexes
+
+
+def test_migration_idempotent_over_restart(tmp_path):
+    """Opening a Database twice on the same file must not raise."""
+    from src.infrastructure.database import Database
+    path = tmp_path / "restart.db"
+    db1 = Database(path)
+    db1.close()
+    # Second open is where duplicate-column / duplicate-index errors would fire
+    # if the migration weren't guarded.
+    db2 = Database(path)
+    cols = {row[1] for row in db2._conn.execute("PRAGMA table_info(tasks)").fetchall()}
+    assert "revisit_of_task_id" in cols
+    db2.close()
+
+
 def test_concurrent_access_from_multiple_threads_is_safe(db):
     """Regression test: sqlite3 raises InterfaceError when two threads use the
     same connection concurrently. The daemon exposes this shape — route
@@ -572,3 +600,228 @@ def test_concurrent_access_from_multiple_threads_is_safe(db):
         f"Concurrent Database access raised {len(errors)} exceptions, "
         f"first: {type(errors[0]).__name__}: {errors[0]}"
     )
+
+
+def test_insert_task_round_trips_revisit_of(db):
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="predecessor"))
+    db.insert_task(TaskRecord(
+        id="TASK-002",
+        type=TaskType.GENERAL,
+        brief="revisit",
+        revisit_of_task_id="TASK-001",
+    ))
+    got = db.get_task("TASK-002")
+    assert got is not None
+    assert got.revisit_of_task_id == "TASK-001"
+
+    # Non-revisit tasks keep it NULL on read.
+    got_pre = db.get_task("TASK-001")
+    assert got_pre.revisit_of_task_id is None
+
+
+def test_list_tasks_exposes_revisit_of(db):
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="pre"))
+    db.insert_task(TaskRecord(
+        id="TASK-002", type=TaskType.GENERAL, brief="rv",
+        revisit_of_task_id="TASK-001",
+    ))
+    rows = {t.id: t for t in db.list_tasks()}
+    assert rows["TASK-002"].revisit_of_task_id == "TASK-001"
+    assert rows["TASK-001"].revisit_of_task_id is None
+
+
+def test_update_task_cannot_change_revisit_of_task_id(db):
+    """The column is write-once at insert time. Guards against accidental
+    mutation from other write paths."""
+    db.insert_task(TaskRecord(
+        id="TASK-001", type=TaskType.GENERAL, brief="rv",
+        revisit_of_task_id="TASK-000",
+    ))
+    db.update_task("TASK-001", revisit_of_task_id="TASK-999")
+    got = db.get_task("TASK-001")
+    assert got.revisit_of_task_id == "TASK-000"  # unchanged
+
+
+def test_backfill_populates_revisit_of_task_id_from_audit_log(tmp_path):
+    """Simulates a pre-feature revisit row: tasks has the column but no value,
+    audit_log has the revisit_of entry. Reopening the DB must backfill."""
+    from src.infrastructure.database import Database
+
+    path = tmp_path / "backfill.db"
+    db = Database(path)
+
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="pre"))
+    db.insert_task(TaskRecord(id="TASK-002", type=TaskType.GENERAL, brief="rv"))
+    # Forcibly NULL the column to simulate legacy data even if Task 3 shipped first.
+    db._conn.execute(
+        "UPDATE tasks SET revisit_of_task_id = NULL WHERE id = 'TASK-002'"
+    )
+    db._conn.commit()
+    db.insert_audit_log(
+        task_id="TASK-002",
+        agent="founder",
+        action="revisit_of",
+        payload={
+            "predecessor_root": "TASK-001",
+            "flagged": "TASK-001",
+            "cascade": ["TASK-001"],
+            "prior_status": "failed",
+            "founder_note": None,
+        },
+    )
+    db.close()
+
+    # Reopen — backfill runs in _create_tables.
+    db2 = Database(path)
+    row = db2.get_task("TASK-002")
+    assert row.revisit_of_task_id == "TASK-001"
+    db2.close()
+
+
+def test_backfill_does_not_overwrite_existing_value(tmp_path):
+    """If revisit_of_task_id is already set, backfill must leave it alone —
+    idempotent guard against audit-entry drift."""
+    from src.infrastructure.database import Database
+    path = tmp_path / "no-overwrite.db"
+    db = Database(path)
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="pre"))
+    db.insert_task(TaskRecord(
+        id="TASK-002", type=TaskType.GENERAL, brief="rv",
+        revisit_of_task_id="TASK-001",
+    ))
+    # Seed a conflicting audit entry; backfill must NOT overwrite.
+    db.insert_audit_log(
+        task_id="TASK-002", agent="founder", action="revisit_of",
+        payload={"predecessor_root": "TASK-999", "flagged": "TASK-999",
+                 "cascade": ["TASK-999"], "prior_status": "failed",
+                 "founder_note": None},
+    )
+    db.close()
+
+    db2 = Database(path)
+    assert db2.get_task("TASK-002").revisit_of_task_id == "TASK-001"
+    db2.close()
+
+
+def test_backfill_is_a_noop_when_nothing_to_backfill(tmp_path):
+    """Opening a DB with no revisit_of audit entries must not raise."""
+    from src.infrastructure.database import Database
+    path = tmp_path / "clean.db"
+    db = Database(path)
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="x"))
+    db.close()
+    Database(path).close()
+
+
+def test_walk_revisit_chain_returns_task_to_original(db):
+    """Stacked chain: P (original) → N (revisit of P) → N' (revisit of N).
+    walk_revisit_chain(N') returns [N', N, P]."""
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="P"))
+    db.insert_task(TaskRecord(
+        id="TASK-002", type=TaskType.GENERAL, brief="N",
+        revisit_of_task_id="TASK-001",
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-003", type=TaskType.GENERAL, brief="N-prime",
+        revisit_of_task_id="TASK-002",
+    ))
+    chain = db.walk_revisit_chain("TASK-003")
+    assert [t.id for t in chain] == ["TASK-003", "TASK-002", "TASK-001"]
+
+
+def test_walk_revisit_chain_non_revisit_returns_single(db):
+    """Plain task: returns [task] only."""
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="plain"))
+    chain = db.walk_revisit_chain("TASK-001")
+    assert [t.id for t in chain] == ["TASK-001"]
+
+
+def test_walk_revisit_chain_missing_task_returns_empty(db):
+    assert db.walk_revisit_chain("TASK-999") == []
+
+
+def test_walk_revisit_chain_raises_when_over_limit(db):
+    """Defensive bound matching walk_ancestors."""
+    from src.infrastructure.database import LineageTooDeep
+    db.insert_task(TaskRecord(id="TASK-000", type=TaskType.GENERAL, brief="orig"))
+    prev = "TASK-000"
+    for i in range(1, 25):
+        tid = f"TASK-{i:03d}"
+        db.insert_task(TaskRecord(
+            id=tid, type=TaskType.GENERAL, brief=f"t{i}",
+            revisit_of_task_id=prev,
+        ))
+        prev = tid
+    with pytest.raises(LineageTooDeep):
+        db.walk_revisit_chain(prev, max_hops=20)
+
+
+def test_walk_revisit_chain_truncates_when_asked(db):
+    """Read-path opt-in: return the partial chain on overrun instead of raising.
+
+    Revisit history grows naturally over a task's lifetime (unlike parent
+    ancestry, which is bounded by the delegation depth), so read endpoints
+    need a non-crashing path.
+    """
+    db.insert_task(TaskRecord(id="TASK-000", type=TaskType.GENERAL, brief="orig"))
+    prev = "TASK-000"
+    for i in range(1, 25):
+        tid = f"TASK-{i:03d}"
+        db.insert_task(TaskRecord(
+            id=tid, type=TaskType.GENERAL, brief=f"t{i}",
+            revisit_of_task_id=prev,
+        ))
+        prev = tid
+    chain = db.walk_revisit_chain(prev, max_hops=20, truncate=True)
+    assert len(chain) == 20
+    assert chain[0].id == prev
+
+
+def test_walk_ancestors_does_not_follow_revisit_edge(db):
+    """REGRESSION GUARD: cascade-fail in run_step keys on walk_ancestors. If
+    walk_ancestors ever followed revisit_of_task_id, a predecessor's FAILED
+    children would poison the new root via _enqueue_parent_if_waiting.
+    Never let this test go green by making walk_ancestors follow the edge.
+    """
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="P"))
+    db.insert_task(TaskRecord(
+        id="TASK-002", type=TaskType.GENERAL, brief="N",
+        revisit_of_task_id="TASK-001",  # NOT a parent edge.
+        parent_task_id=None,             # Still a root.
+    ))
+    chain = db.walk_ancestors("TASK-002")
+    assert [t.id for t in chain] == ["TASK-002"]  # Does NOT include TASK-001.
+
+
+def test_get_direct_revisits_returns_all_direct_children(db):
+    """Two revisits of the same predecessor — both appear, ordered by creation."""
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="P"))
+    db.insert_task(TaskRecord(
+        id="TASK-002", type=TaskType.GENERAL, brief="rv1",
+        revisit_of_task_id="TASK-001",
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-003", type=TaskType.GENERAL, brief="rv2",
+        revisit_of_task_id="TASK-001",
+    ))
+    assert db.get_direct_revisits("TASK-001") == ["TASK-002", "TASK-003"]
+
+
+def test_get_direct_revisits_does_not_include_transitive(db):
+    """In P → N → N', P.get_direct_revisits returns only [N], not [N, N']."""
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="P"))
+    db.insert_task(TaskRecord(
+        id="TASK-002", type=TaskType.GENERAL, brief="N",
+        revisit_of_task_id="TASK-001",
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-003", type=TaskType.GENERAL, brief="N'",
+        revisit_of_task_id="TASK-002",
+    ))
+    assert db.get_direct_revisits("TASK-001") == ["TASK-002"]
+    assert db.get_direct_revisits("TASK-002") == ["TASK-003"]
+
+
+def test_get_direct_revisits_none(db):
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="x"))
+    assert db.get_direct_revisits("TASK-001") == []

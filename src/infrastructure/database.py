@@ -176,11 +176,27 @@ class Database:
             # SIGTERM'd session as "cancelled" (not a retryable failure) and
             # idempotent _fail calls don't overwrite the founder's note.
             "ALTER TABLE tasks ADD COLUMN cancelled_at TEXT",
+            # Revisit link: see docs/superpowers/specs/2026-04-23-revisit-root-link-design.md.
+            # Sideways reference to the predecessor root of a revisit; NULL for
+            # non-revisit tasks. walk_ancestors MUST NOT follow this column —
+            # that's the attempt-isolation invariant from the v2 revisit spec.
+            "ALTER TABLE tasks ADD COLUMN revisit_of_task_id TEXT",
         ):
             try:
                 self._conn.execute(ddl)
             except sqlite3.OperationalError:
                 pass
+        # Index the reverse lookup (`WHERE revisit_of_task_id = ?`).
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_revisit_of ON tasks(revisit_of_task_id)"
+        )
+
+        # --- Revisit link backfill ---
+        # Historical revisit rows (created before revisit_of_task_id existed)
+        # have the column but no value; the link lives only in audit_log's
+        # revisit_of entry. Populate the column from those entries.
+        # IS NULL guard makes this safely idempotent across restarts.
+        self._backfill_revisit_of_task_id()
 
         # One-shot data remap. Guard with a sentinel so re-runs are no-ops.
         applied = self._conn.execute(
@@ -205,6 +221,31 @@ class Database:
             self._conn.execute("UPDATE tasks SET status='failed' WHERE status='in_review'")
             self._conn.commit()
 
+    def _backfill_revisit_of_task_id(self) -> None:
+        # Called from _create_tables during __init__, which is single-threaded
+        # by construction (Database is instantiated once per daemon, before
+        # any worker threads start). Accessing self._conn directly without
+        # @_synchronized is therefore safe here; do not call from elsewhere.
+        cursor = self._conn.execute(
+            "SELECT task_id, payload FROM audit_log WHERE action = 'revisit_of'"
+        )
+        for row in cursor.fetchall():
+            if not row["payload"]:
+                continue
+            try:
+                payload = json.loads(row["payload"])
+            except json.JSONDecodeError:
+                continue
+            predecessor_root = payload.get("predecessor_root")
+            if not predecessor_root:
+                continue
+            self._conn.execute(
+                "UPDATE tasks SET revisit_of_task_id = ? "
+                "WHERE id = ? AND revisit_of_task_id IS NULL",
+                (predecessor_root, row["task_id"]),
+            )
+        self._conn.commit()
+
     @_synchronized
     def list_tables(self) -> list[str]:
         cursor = self._conn.execute(
@@ -219,8 +260,8 @@ class Database:
         self._conn.execute(
             """INSERT INTO tasks (id, type, status, assigned_agent, team, brief,
                revision_count, created_at, updated_at, completed_at, parent_task_id,
-               block_kind, note, orchestration_step_count)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               revisit_of_task_id, block_kind, note, orchestration_step_count)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task.id,
                 task.type.value,
@@ -233,6 +274,7 @@ class Database:
                 task.updated_at.isoformat(),
                 task.completed_at.isoformat() if task.completed_at else None,
                 task.parent_task_id,
+                task.revisit_of_task_id,
                 task.block_kind.value if task.block_kind else None,
                 task.note,
                 task.orchestration_step_count,
@@ -258,6 +300,7 @@ class Database:
             updated_at=row["updated_at"],
             completed_at=row["completed_at"],
             parent_task_id=row["parent_task_id"],
+            revisit_of_task_id=row["revisit_of_task_id"],
             block_kind=row["block_kind"],
             note=row["note"],
             orchestration_step_count=row["orchestration_step_count"] or 0,
@@ -283,6 +326,7 @@ class Database:
                 updated_at=row["updated_at"],
                 completed_at=row["completed_at"],
                 parent_task_id=row["parent_task_id"],
+                revisit_of_task_id=row["revisit_of_task_id"],
                 block_kind=row["block_kind"],
                 note=row["note"],
                 orchestration_step_count=row["orchestration_step_count"] or 0,
@@ -298,6 +342,17 @@ class Database:
         cursor = self._conn.execute(
             "SELECT id FROM tasks WHERE parent_task_id = ? ORDER BY created_at",
             (parent_task_id,),
+        )
+        return [row["id"] for row in cursor.fetchall()]
+
+    @_synchronized
+    def get_direct_revisits(self, task_id: str) -> list[str]:
+        """Return IDs of tasks whose revisit_of_task_id points at this task,
+        ordered by creation. Uses idx_tasks_revisit_of.
+        """
+        cursor = self._conn.execute(
+            "SELECT id FROM tasks WHERE revisit_of_task_id = ? ORDER BY created_at",
+            (task_id,),
         )
         return [row["id"] for row in cursor.fetchall()]
 
@@ -324,6 +379,35 @@ class Database:
         return chain
 
     @_synchronized
+    def walk_revisit_chain(
+        self, task_id: str, max_hops: int = 20, truncate: bool = False,
+    ) -> list[TaskRecord]:
+        """Return [task, predecessor, ..., original] by following revisit_of_task_id.
+
+        Sideways edge — does NOT cross into parent_task_id ancestor space.
+        Non-revisit tasks return [task]. Missing task returns []. Overruns
+        raise LineageTooDeep by default (same pattern as walk_ancestors); pass
+        truncate=True to return the first max_hops entries instead — read
+        paths use this because revisit history grows naturally over a task's
+        lifetime and must not 500 once it exceeds the defensive bound.
+        """
+        chain: list[TaskRecord] = []
+        current_id: str | None = task_id
+        for _ in range(max_hops):
+            if current_id is None:
+                return chain
+            task = self.get_task(current_id)
+            if task is None:
+                return chain
+            chain.append(task)
+            current_id = task.revisit_of_task_id
+        if current_id is not None and not truncate:
+            raise LineageTooDeep(
+                f"revisit chain from {task_id} exceeded {max_hops} hops"
+            )
+        return chain
+
+    @_synchronized
     def get_recall_payload(self, task_id: str) -> dict | None:
         """Return a flat dict suitable for the /recall endpoint, or None.
 
@@ -346,6 +430,7 @@ class Database:
         return {
             "task_id": task.id,
             "parent_task_id": task.parent_task_id,
+            "revisit_of_task_id": task.revisit_of_task_id,
             "assigned_agent": task.assigned_agent,
             "brief": task.brief,
             "status": task.status.value,
@@ -384,6 +469,7 @@ class Database:
                 updated_at=row["updated_at"],
                 completed_at=row["completed_at"],
                 parent_task_id=row["parent_task_id"],
+                revisit_of_task_id=row["revisit_of_task_id"],
                 block_kind=row["block_kind"],
                 note=row["note"],
                 orchestration_step_count=row["orchestration_step_count"] or 0,

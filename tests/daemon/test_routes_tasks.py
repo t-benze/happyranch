@@ -315,6 +315,26 @@ def test_recall_idle_returns_409(tmp_home, app_idle, auth_headers) -> None:
     assert r.json()["detail"]["code"] == "no_active_runtime"
 
 
+def test_recall_payload_includes_revisit_of_task_id(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    from src.models import TaskRecord, TaskType
+    db = daemon_state.db
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="P"))
+    db.insert_task(TaskRecord(
+        id="TASK-002", type=TaskType.GENERAL, brief="rv",
+        revisit_of_task_id="TASK-001",
+    ))
+    r = TestClient(app).get("/api/v1/tasks/TASK-002/recall", headers=auth_headers)
+    assert r.status_code == 200
+    assert r.json()["revisit_of_task_id"] == "TASK-001"
+
+    # Non-revisit: NULL round-trips as null, not missing key.
+    r2 = TestClient(app).get("/api/v1/tasks/TASK-001/recall", headers=auth_headers)
+    assert r2.status_code == 200
+    assert r2.json()["revisit_of_task_id"] is None
+
+
 def test_recall_tree_includes_descendants(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
@@ -983,3 +1003,111 @@ def test_revisit_a_revisit_chain_of_chains(
     logs_n2 = db.get_audit_logs(id_n2)
     ro = next(e for e in logs_n2 if e["action"] == "revisit_of")
     assert ro["payload"]["predecessor_root"] == id_n
+
+
+def test_revisit_writes_revisit_of_task_id_on_new_root(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """The new root's revisit_of_task_id column must equal the predecessor
+    root's id. This is what makes the link queryable without audit-log scans."""
+    from src.models import TaskRecord, TaskStatus, TaskType
+    db = daemon_state.db
+    db.insert_task(TaskRecord(
+        id="TASK-052", type=TaskType.IMPLEMENT_FEATURE, brief="Add Alipay support",
+    ))
+    db.update_task("TASK-052", status=TaskStatus.FAILED, note="rc=1")
+
+    r = TestClient(app).post(
+        "/api/v1/tasks/TASK-052/revisit",
+        json={"founder_note": None},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    new_id = r.json()["new_root_task_id"]
+    new_root = db.get_task(new_id)
+    assert new_root.revisit_of_task_id == "TASK-052"
+
+
+def test_plain_run_leaves_revisit_of_task_id_null(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """Plain /tasks POST (no revisit) must not set the column."""
+    r = TestClient(app).post(
+        "/api/v1/tasks",
+        json={"type": "general", "brief": "plain task"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    tid = r.json()["task_id"]
+    row = daemon_state.db.get_task(tid)
+    assert row.revisit_of_task_id is None
+
+
+def test_get_task_includes_revisit_chain_and_direct_revisits(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """GET /tasks/{id} must surface the full revisit context for the CLI."""
+    from src.models import TaskRecord, TaskType
+    db = daemon_state.db
+    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="P"))
+    db.insert_task(TaskRecord(
+        id="TASK-002", type=TaskType.GENERAL, brief="N",
+        revisit_of_task_id="TASK-001",
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-003", type=TaskType.GENERAL, brief="another revisit of P",
+        revisit_of_task_id="TASK-001",
+    ))
+    # prior_status comes from the revisit_of audit entry on TASK-002.
+    db.insert_audit_log(
+        "TASK-002", "founder", "revisit_of",
+        {"predecessor_root": "TASK-001", "flagged": "TASK-001",
+         "cascade": ["TASK-001"], "prior_status": "failed-cancelled",
+         "founder_note": None},
+    )
+
+    r = TestClient(app).get("/api/v1/tasks/TASK-002", headers=auth_headers)
+    assert r.status_code == 200
+    body = r.json()
+    # Chain: [task, predecessor, ...]
+    assert body["revisit_chain"] == ["TASK-002", "TASK-001"]
+    # prior_status pulled from audit entry
+    assert body["predecessor_prior_status"] == "failed-cancelled"
+    # Direct revisits of THIS task (not its predecessor) — should be empty.
+    assert body["direct_revisits"] == []
+
+    r2 = TestClient(app).get("/api/v1/tasks/TASK-001", headers=auth_headers)
+    assert r2.status_code == 200
+    body2 = r2.json()
+    assert body2["revisit_chain"] == ["TASK-001"]
+    assert body2["predecessor_prior_status"] is None
+    assert set(body2["direct_revisits"]) == {"TASK-002", "TASK-003"}
+
+
+def test_get_task_does_not_crash_on_long_revisit_chain(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """Regression: revisit history grows naturally; GET /tasks/{id} must not
+    500 once the chain exceeds walk_revisit_chain's defensive max_hops. The
+    route opts into truncation so the response stays usable even at depth.
+    """
+    from src.models import TaskRecord, TaskType
+    db = daemon_state.db
+    # Build a chain 25 deep — well past the default max_hops=20.
+    db.insert_task(TaskRecord(id="TASK-000", type=TaskType.GENERAL, brief="orig"))
+    prev = "TASK-000"
+    for i in range(1, 26):
+        tid = f"TASK-{i:03d}"
+        db.insert_task(TaskRecord(
+            id=tid, type=TaskType.GENERAL, brief=f"t{i}",
+            revisit_of_task_id=prev,
+        ))
+        prev = tid
+
+    r = TestClient(app).get(f"/api/v1/tasks/{prev}", headers=auth_headers)
+    assert r.status_code == 200
+    body = r.json()
+    # Chain is truncated to max_hops entries rather than raising.
+    assert len(body["revisit_chain"]) == 20
+    # Truncation preserves the most-recent end (head of the walk).
+    assert body["revisit_chain"][0] == prev

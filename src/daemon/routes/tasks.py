@@ -66,10 +66,30 @@ def get_task(task_id: str, request: Request) -> dict:
     task = state.db.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+
+    # Revisit context: chain (this task back to original), direct revisits
+    # (tasks that revisit THIS task), and the predecessor's normalized
+    # prior_status (pulled from the revisit_of audit entry).
+    # truncate=True: revisit history grows naturally over a task's lifetime,
+    # so the read path must not 500 once the chain exceeds the defensive bound.
+    chain = [t.id for t in state.db.walk_revisit_chain(task_id, truncate=True)]
+    direct_revisits = state.db.get_direct_revisits(task_id)
+    audit_log = state.db.get_audit_logs(task_id)
+    prior_status = None
+    if task.revisit_of_task_id is not None:
+        for entry in audit_log:
+            if entry["action"] == "revisit_of":
+                payload = entry.get("payload") or {}
+                prior_status = payload.get("prior_status")
+                break
+
     return {
         "task": task.model_dump(),
         "results": state.db.get_task_results(task_id),
-        "audit_log": state.db.get_audit_logs(task_id),
+        "audit_log": audit_log,
+        "revisit_chain": chain,
+        "direct_revisits": direct_revisits,
+        "predecessor_prior_status": prior_status,
     }
 
 
@@ -386,6 +406,7 @@ async def revisit_task(
             brief=predecessor.brief,
             status=TaskStatus.PENDING,
             parent_task_id=None,
+            revisit_of_task_id=predecessor.id,
         ))
         audit = AuditLogger(state.db)
         audit.log_revisit_of(

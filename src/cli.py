@@ -173,6 +173,10 @@ def cmd_tasks(args: argparse.Namespace) -> None:
         status = t["status"]
         if t.get("block_kind"):
             status = f"{status}({t['block_kind']})"
+        # Revisit marker — appended after the brief so row widths stay stable
+        # for non-revisit rows. `↩` is a U+21A9 leftwards arrow with hook.
+        if t.get("revisit_of_task_id"):
+            brief = f"{brief}  ↩ {t['revisit_of_task_id']}"
         print(f"{t['id']:<12} {t['type']:<20} {status:<22} {agent:<18} {brief}")
 
 
@@ -191,6 +195,20 @@ def cmd_details(args: argparse.Namespace) -> None:
         return
     body = r.json()
     task = body["task"]
+
+    # Revisit header: shown only when this task IS a revisit.
+    if task.get("revisit_of_task_id"):
+        prior = body.get("predecessor_prior_status") or "unknown"
+        print(f"Revisit of: {task['revisit_of_task_id']}  (predecessor: {prior})")
+        chain = body.get("revisit_chain") or []
+        if len(chain) > 1:
+            # walk_revisit_chain returns [task, predecessor, ..., original].
+            # Reverse so the oldest predecessor is leftmost and ← reads
+            # "created from": original ← ... ← current (this).
+            display = list(reversed(chain))
+            display[-1] = f"{display[-1]} (this)"
+            print(f"Chain:      {' ← '.join(display)}")
+
     print(f"Task:       {task['id']}")
     print(f"Type:       {task['type']}")
     print(f"Status:     {task['status']}")
@@ -210,6 +228,11 @@ def cmd_details(args: argparse.Namespace) -> None:
         print(f"\nAudit log ({len(body['audit_log'])} entries):")
         for log in body["audit_log"]:
             print(f"  {_fmt_ts(log['timestamp'])}  {log['agent']:20s}  {log['action']}")
+
+    # Revisit footer: shown only when this task HAS been revisited.
+    direct = body.get("direct_revisits") or []
+    if direct:
+        print(f"\nRevisited as: {', '.join(direct)}")
 
 
 def cmd_agents(args: argparse.Namespace) -> None:
