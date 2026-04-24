@@ -35,7 +35,7 @@ async def test_full_delegation_roundtrip(tmp_path: Path, monkeypatch):
     call_log: list[tuple[str, str]] = []
     def fake_run_agent(task_id, agent, prompt, on_session_started=None):
         call_log.append((task_id, agent))
-        from src.orchestrator.executor import ExecutorResult
+        from src.orchestrator.executors import ExecutorResult
         from src.models import CompletionReport
         if agent == "engineering_head":
             # First EH pass delegates; second is `done`.
@@ -98,7 +98,7 @@ async def test_escalation_roundtrip(tmp_path: Path, monkeypatch):
     orch.attach_queue(queue)
 
     def fake_run_agent(task_id, agent, prompt, on_session_started=None):
-        from src.orchestrator.executor import ExecutorResult
+        from src.orchestrator.executors import ExecutorResult
         from src.models import CompletionReport
         # First EH call: escalate. Second EH call (after founder resolves):
         # done.

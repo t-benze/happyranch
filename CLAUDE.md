@@ -210,6 +210,20 @@ Payloads can authenticate via either an active EH task session
 are mutually exclusive. See `protocol/skills/manage-agent/SKILL.md` for
 the full payload shapes.
 
+**Codex enrollment system prompts must not reference Claude-only skill
+names.** Codex workspaces do not copy `protocol/skills/` (there is no
+`.claude/skills/` tree and the Codex CLI does not resolve SKILL.md
+files), so any instruction like *"use the start-task skill"* or *"run
+make-worktree"* in the stored `system_prompt` points at nothing and
+corrupts the model's plan. The workflow, completion contract, and KB
+read/write commands are inlined by `CodexWorkspaceAdapter.write_agents_md`
+into `AGENTS.md` — the `system_prompt` should therefore contain the
+role description and quality standards **only**, not lifecycle
+instructions. TASK-077 (2026-04-24) is the canonical failure: `senior_dev`
+was enrolled with "Use the **start-task** skill..." in its prompt,
+completed the work, then exited 0 without calling `opc report-completion`,
+and the orchestrator auto-rejected with *no completion callback*.
+
 Repos are configured per agent in `<runtime>/workspaces/<agent>/agent.yaml`:
 ```yaml
 repos:

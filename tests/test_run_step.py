@@ -109,7 +109,7 @@ def _make_report(output_summary: str, status: str = "completed",
 
 
 def _make_result(success: bool = True, duration: int = 1):
-    from src.orchestrator.executor import ExecutorResult
+    from src.orchestrator.executors import ExecutorResult
     return ExecutorResult(
         success=success, session_id="sess-x", duration_seconds=duration,
     )
@@ -353,7 +353,7 @@ def test_run_step_session_failure_note_includes_diagnostics(
     so post-mortems don't need to grep daemon.log. TASK-044/045 class of
     failure (subprocess exits without calling back) is the motivating case.
     """
-    from src.orchestrator.executor import ExecutorResult
+    from src.orchestrator.executors import ExecutorResult
     from src.orchestrator.orchestrator import Orchestrator
 
     db.insert_task(TaskRecord(id="T-1", type=TaskType.GENERAL, brief="x",
