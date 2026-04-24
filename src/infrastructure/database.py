@@ -222,6 +222,10 @@ class Database:
             self._conn.commit()
 
     def _backfill_revisit_of_task_id(self) -> None:
+        # Called from _create_tables during __init__, which is single-threaded
+        # by construction (Database is instantiated once per daemon, before
+        # any worker threads start). Accessing self._conn directly without
+        # @_synchronized is therefore safe here; do not call from elsewhere.
         cursor = self._conn.execute(
             "SELECT task_id, payload FROM audit_log WHERE action = 'revisit_of'"
         )
