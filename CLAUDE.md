@@ -23,7 +23,6 @@ The following documents are in the `protocol/` folder.
   - `05a-teams.md` — Concept mapping, team definitions, agent tools, runtime responsibilities
   - `05b-agent-runtime.md` — Executor model, memory architecture, lifecycle & scheduling
   - `05c-orchestrator.md` — Orchestrator responsibilities, performance tiers, permissions, task state machine
-  - `05d-feishu.md` — Founder interaction via Feishu, bot architecture, notification tiers
   - `05e-dashboard.md` — Dashboard layout, API endpoints, implementation order
 - `06-knowledge-base.md` — Shared KB rules: entry schema, author/founder write paths, precedent workflow, search, index regeneration
 
@@ -51,9 +50,8 @@ The following documents are in the `protocol/` folder.
 7. **Ops Team** — Partner Liaison + Compliance Agent + Operations Manager. Enables real cross-team audits for payment changes.
 8. **Inter-Team communication** — Orchestrator routes tasks between Teams.
 9. **CX Team** — Support Agent may run as persistent agent for real-time chat, not batch.
-10. **Feishu integration** — Bot architecture, notification tiers, reply parsing.
-11. **Founder dashboard** — Aggregate audit logs, escalation summaries, scorecards into weekly view.
-12. ~~**Talk flow**~~ done — founder↔agent conversations with SQLite-tracked talks, transcripts under `<runtime>/talks/`, end-of-talk learnings + KB entries.
+10. **Founder dashboard** — Aggregate audit logs, escalation summaries, scorecards into weekly view.
+11. ~~**Talk flow**~~ done — founder↔agent conversations with SQLite-tracked talks, transcripts under `<runtime>/talks/`, end-of-talk learnings + KB entries.
 
 ## Key Constraints
 - **Two jurisdictions**: Hong Kong (PDPO), Macau (PDPA) — both must be complied with simultaneously. Mainland China is explicitly out of scope (PIPL/CSL/DSL do not apply).

@@ -113,62 +113,17 @@ How the org design maps to the runtime (Python daemon + executor-backed agent se
 
 ---
 
-## 3. Tools Each Agent Gets
+## 3. Agent Capabilities
 
-Agents running as coding-agent sessions have native access to file system, shell, and web. The tools below are *additional* capabilities the orchestrator exposes to each agent — either as `opc` CLI subcommands or as future MCP tools. Claude sessions use the narrow `Bash(opc:*)` allow rule; Codex sessions use the same `opc` callback contract without the Claude-specific matcher behavior.
+Agents run as coding-agent sessions with native access to file system, shell, and web through their executor (Claude Code or Codex). The only orchestrator-owned channel is the `opc` CLI, which every agent can invoke through its baseline `Bash(opc:*)` allow rule (Claude) or the equivalent contract (Codex). Shared `opc` capabilities used by all agents:
 
-### Shared tools (all agents)
-- `read_knowledge_base(topic)` — query the org charter, SOPs, brand guidelines (currently: `opc kb list/get/search`)
-- `submit_completion_report(report)` — mandatory after every task (currently: `opc report-completion --from-file`)
-- `escalate(category, severity, summary)` — trigger the escalation router (currently: set `status: escalated` in the completion report)
-- `view_team_health()` — see the current team health summary
-- `record_learning(insight)` — append to agent's learnings file (currently: `opc learning`)
+- `opc kb list/get/search` — read the shared knowledge base (org charter, SOPs, precedents)
+- `opc kb add --from-file` — contribute to the knowledge base
+- `opc report-completion --from-file` — mandatory callback at the end of every task
+- `opc learning` — append an insight to the agent's `learnings.md`
+- `opc manage-repo` — add/remove repos in the agent's `agent.yaml`
 
-### Content Writer
-- `search_web(query)` — research destinations, verify facts
-- `check_source(url)` — verify an official source is current
-
-### Content QA
-- `search_web(query)` — verify claims against official sources
-- `check_url(url)` — test if a link is live
-- `check_exchange_rate(from, to)` — verify currency conversions
-
-### QA Engineer
-- `run_tests(scope)` — execute unit/integration/E2E suites against the change
-- `check_performance(url)` — measure page load and API latency against the budget
-- `diff_coverage(base, head)` — report coverage delta and missing branches
-- `exercise_flow(flow_name)` — drive booking/payment/i18n flows end-to-end
-
-### SEO Agent
-- `keyword_research(seed_keywords)` — find tourist intent queries
-- `analyze_serp(keyword)` — check current rankings and competitors
-
-### Product Manager
-- `search_web(query)` — research competitors, market trends, user needs
-- `git_clone(repo)` — clone project repo to read codebase for spec writing
-
-### Dev Agent
-- `run_tests(scope)` — execute test suite
-- `check_performance(url)` — measure page load times
-- `deploy(target)` — deploy to staging/production (with approval)
-
-### Payment Agent
-- `check_gateway_status(gateway)` — verify Stripe/Alipay/WeChat status
-- `get_exchange_rate(from, to)` — current market rates
-
-### Partner Liaison
-- `search_partner(criteria)` — find potential partners
-- `check_business_license(entity)` — verify partner credentials
-- `update_partner_directory(entry)` — update partner directory in KB
-
-### Compliance Agent
-- `search_regulation(jurisdiction, topic)` — find current regulations
-- `log_audit_finding(finding)` — log to compliance audit trail
-
-### Support Agent
-- `lookup_booking(booking_id)` — retrieve booking details
-- `submit_feedback_ticket(pattern, data)` — create feedback for CX Manager
-- `get_emergency_info(jurisdiction)` — retrieve local emergency numbers
+Engineering Head has narrow extra grants (`gh pr close/comment`, `gh issue close/comment`, `opc manage-agent`) for its management role; everything else stays inside the `opc` surface. No per-agent tool registries are planned — domain capabilities (booking lookups, gateway status, regulatory search, etc.) are expected to be solved by the executor's native web/shell access, or by adding a new `opc` subcommand when shared infrastructure is genuinely needed.
 
 ---
 
@@ -181,7 +136,7 @@ Unlike frameworks that bake in task chaining, revision loops, and manager-delega
 - Running the EH-driven decision loop (ask manager → execute `delegate` / `done` / `escalate` → feed the result back as history)
 - Agent workspace provisioning: executor-specific bootstrap docs (`CLAUDE.md` or `AGENTS.md`), Claude settings when applicable, copied skills, repo clones (`src/orchestrator/context_builder.py`, `src/orchestrator/workspace_adapters.py`)
 - Task state machine (`pending` → `in_progress` → `completed`/`rejected`/`escalated`) and the 10-step runaway guard
-- Founder interaction surface (Feishu bot + dashboard — both still planned; today the CLI + SSE stream covers it)
+- Founder interaction surface (CLI + SSE stream + `opc talk` today; dashboard planned)
 - Inter-team task routing (e.g., Product → Ops cross-audit)
 - Escalation resolution (`opc resolve-escalation`) and precedent recording (`opc kb precedent --as-founder`)
 - Revision tracking (`revision_count` on `TaskRecord`; manager escalates after 2 rounds)

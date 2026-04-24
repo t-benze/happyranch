@@ -258,7 +258,6 @@ Each agent runs in its own persistent workspace inside the runtime directory. Af
 - [ ] Ops Team (Partner Liaison, Compliance Agent, Operations Manager)
 - [ ] Inter-team communication and cross-team audits
 - [ ] CX Team (Support Agent for real-time chat)
-- [ ] Feishu integration (founder notifications and reply parsing)
 - [ ] Founder dashboard (aggregated audit logs, scorecards, escalation summaries)
 
 ## License

@@ -194,7 +194,7 @@ Some work happens on a fixed schedule. The orchestrator's scheduler triggers the
 
 | Schedule | Agent | Task |
 |---|---|---|
-| Daily 9:00 AM | Content Manager | Generate and send daily report to founder via Feishu |
+| Daily 9:00 AM | Content Manager | Generate and send daily report to founder |
 | Daily 9:15 AM | Product Manager | Generate and send daily report |
 | Daily 9:30 AM | Ops Manager | Generate and send daily report |
 | Daily 9:45 AM | CX Manager | Generate and send daily report |
@@ -202,7 +202,7 @@ Some work happens on a fixed schedule. The orchestrator's scheduler triggers the
 | Every Monday | SEO Agent | Weekly keyword ranking report |
 | 1st of month | Compliance Agent | Monthly regulatory scan across 3 jurisdictions |
 | 1st of month | Ops Manager | Monthly partner SLA compliance review |
-| Weekly Monday 10:00 AM | Orchestrator (not an agent) | Generate and post weekly org summary to Feishu |
+| Weekly Monday 10:00 AM | Orchestrator (not an agent) | Generate and post weekly org summary to the dashboard |
 
 Each scheduled task is configured in the orchestrator's scheduler (a cron-like system). Missed runs (e.g., Mac Mini was off) are handled by a catch-up mechanism: on startup, the orchestrator checks for missed scheduled tasks and runs them.
 

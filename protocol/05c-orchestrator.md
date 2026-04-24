@@ -212,7 +212,7 @@ Blocked tasks don't wait forever:
 | Blocked on dependency (cross-team) | 4 hours | Escalate to both managers |
 | Waiting for guidance (novel situation) | 24 hours | Re-notify founder + agent proceeds with conservative default if one exists |
 
-The orchestrator runs a background check every 15 minutes for timed-out tasks. If a founder approval times out twice (48 hours total), the task is flagged as critical on the dashboard and the orchestrator sends a notification through whatever channel the founder has configured (email, Feishu, SMS).
+The orchestrator runs a background check every 15 minutes for timed-out tasks. If a founder approval times out twice (48 hours total), the task is flagged as critical on the dashboard through whatever channel the founder has configured.
 
 ### Permission evolution
 
