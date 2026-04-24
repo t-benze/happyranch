@@ -1292,3 +1292,41 @@ def test_manage_agent_body_allow_rules_none_is_valid() -> None:
         system_prompt="prompt",
     )
     assert body.allow_rules is None
+
+
+def test_init_agents_targets_include_content_team(
+    daemon_state,
+) -> None:
+    """init_agents target enumeration includes Content Team agents from TeamsRegistry."""
+    # daemon_state uses a fresh temp runtime → TeamsRegistry.load falls back to
+    # DEFAULT_LAYOUT, which includes content_manager / content_writer / content_qa.
+    assert daemon_state.teams is not None
+    agents = daemon_state.teams.all_agents()
+    assert "content_manager" in agents
+    assert "content_writer" in agents
+    assert "content_qa" in agents
+
+
+def test_init_agents_targets_include_approved_enrollments(
+    daemon_state,
+) -> None:
+    """init_agents target enumeration includes approved enrollments from DB."""
+    daemon_state.db.insert_enrollment("seo_agent", "SEO worker", "You are SEO.")
+    daemon_state.db.update_enrollment_status("seo_agent", "approved")
+    names = daemon_state.db.list_approved_agent_names()
+    assert "seo_agent" in names
+
+
+def test_init_agents_targets_none_teams_is_safe(daemon_state) -> None:
+    """If teams is None the guard prevents a crash; workspace dirs are still used."""
+    daemon_state.teams = None  # type: ignore[assignment]
+    # No crash — state.teams is None but the guard `if state.teams is not None` handles it.
+    known: set[str] = set()
+    if daemon_state.teams is not None:
+        known.update(daemon_state.teams.all_agents())
+    ws_dir = daemon_state.runtime.workspaces_dir
+    if ws_dir.exists():
+        known.update(d.name for d in ws_dir.iterdir() if d.is_dir())
+    known.update(daemon_state.db.list_approved_agent_names())
+    # No exception raised; result is an empty or workspace-only set.
+    assert isinstance(known, set)

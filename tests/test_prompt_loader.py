@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from src.config import Settings
 from src.orchestrator.prompt_loader import load_all_prompts, load_system_prompt
 
 
@@ -55,10 +56,11 @@ def test_load_all_prompts(tmp_path: Path):
         "## Dev Agent\n\n```\nYou are Dev.\n```\n\n"
         "## Payment Agent\n\n```\nYou are Payment.\n```\n\n"
         "## QA Engineer\n\n```\nYou are QA Engineer.\n```\n\n"
-        "## Content QA\n\n```\nYou are Content QA.\n```\n"
+        "## Content QA\n\n```\nYou are Content QA.\n```\n\n"
+        "## Content Writer\n\n```\nYou are the Content Writer.\n```\n"
     )
     prompts = load_all_prompts(protocol)
-    assert len(prompts) == 7
+    assert len(prompts) == 8
     assert "Engineering Head" in prompts["engineering_head"]
     assert "Content Manager" in prompts["content_manager"]
     assert "PM" in prompts["product_manager"]
@@ -66,6 +68,7 @@ def test_load_all_prompts(tmp_path: Path):
     assert "Payment" in prompts["payment_agent"]
     assert "QA Engineer" in prompts["qa_engineer"]
     assert "Content QA" in prompts["content_qa"]
+    assert "Content Writer" in prompts["content_writer"]
 
 
 def test_load_from_real_protocol():
@@ -76,3 +79,15 @@ def test_load_from_real_protocol():
     prompts = load_all_prompts(protocol)
     for agent, prompt in prompts.items():
         assert len(prompt) > 100, f"{agent} prompt too short: {len(prompt)} chars"
+
+
+def test_content_manager_prompt_loads() -> None:
+    s = Settings()
+    prompt = load_system_prompt(s.get_protocol_dir(), "content_manager")
+    assert prompt.startswith("You are the Content Manager")
+
+
+def test_content_writer_prompt_loads() -> None:
+    s = Settings()
+    prompt = load_system_prompt(s.get_protocol_dir(), "content_writer")
+    assert "Content Writer" in prompt or "You are the Content Writer" in prompt

@@ -256,7 +256,13 @@ async def init_agents(body: InitBody, request: Request):
 
     if body.agent is None:
         ws_dir = state.runtime.workspaces_dir
-        targets = sorted(d.name for d in ws_dir.iterdir() if d.is_dir()) if ws_dir.exists() else []
+        known: set[str] = set()
+        if state.teams is not None:
+            known.update(state.teams.all_agents())
+        if ws_dir.exists():
+            known.update(d.name for d in ws_dir.iterdir() if d.is_dir())
+        known.update(state.db.list_approved_agent_names())
+        targets = sorted(known)
     else:
         targets = [body.agent]
 

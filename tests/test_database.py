@@ -270,6 +270,14 @@ def test_list_enrollments_by_status(db):
     assert len(all_e) == 2
 
 
+def test_list_approved_agent_names(db):
+    db.insert_enrollment("alpha", "desc", "prompt")
+    db.insert_enrollment("beta", "desc", "prompt")
+    db.update_enrollment_status("beta", "approved")
+    result = db.list_approved_agent_names()
+    assert result == ["beta"]
+
+
 def test_update_enrollment_status(db):
     db.insert_enrollment("x", "desc", "prompt")
     db.update_enrollment_status("x", "approved")

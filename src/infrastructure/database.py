@@ -900,6 +900,13 @@ class Database:
         return [dict(r) for r in rows]
 
     @_synchronized
+    def list_approved_agent_names(self) -> list[str]:
+        cur = self._conn.execute(
+            "SELECT name FROM agent_enrollments WHERE status='approved' ORDER BY name"
+        )
+        return [r["name"] for r in cur.fetchall()]
+
+    @_synchronized
     def update_enrollment_status(self, name: str, status: str) -> None:
         now = datetime.now(timezone.utc).isoformat()
         self._conn.execute(
