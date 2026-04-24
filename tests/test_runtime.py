@@ -99,4 +99,4 @@ def test_init_does_not_overwrite_existing_teams_yaml(tmp_path: Path) -> None:
     # Second init must not overwrite an existing teams.yaml.
     RuntimeDir.init(tmp_path / "rt")
     data = yaml.safe_load(rt.teams_config_path.read_text())
-    assert "custom" in data["teams"]
+    assert set(data["teams"].keys()) == {"custom"}

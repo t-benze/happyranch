@@ -67,11 +67,10 @@ class RuntimeDir:
         if not instance.marker_file.exists():
             instance.marker_file.write_text("")
         instance.workspaces_dir.mkdir(parents=True, exist_ok=True)
-        if not instance.teams_config_path.exists():
-            # Deferred import: teams.py imports RuntimeDir, so the import lives
-            # inside the function to avoid a cycle at module-load time.
-            from src.orchestrator.teams import DEFAULT_LAYOUT, TeamsRegistry
-            TeamsRegistry._from_layout(DEFAULT_LAYOUT).save(instance)
+        # Deferred import: teams.py imports RuntimeDir, so the import lives
+        # inside the function to avoid a cycle at module-load time.
+        from src.orchestrator.teams import TeamsRegistry
+        TeamsRegistry.seed_default(instance)
         return instance
 
     @classmethod

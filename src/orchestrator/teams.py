@@ -59,6 +59,13 @@ class TeamsRegistry:
             teams[team_name] = TeamManager(name=manager, team=team_name, workers=workers)
         return cls(teams, runtime=runtime)
 
+    @classmethod
+    def seed_default(cls, runtime: RuntimeDir) -> None:
+        """Write the default teams.yaml to *runtime* if it doesn't already exist."""
+        if runtime.teams_config_path.exists():
+            return
+        cls._from_layout(DEFAULT_LAYOUT, runtime).save(runtime)
+
     # ---- persistence ----
 
     def save(self, runtime: RuntimeDir | None = None) -> None:
