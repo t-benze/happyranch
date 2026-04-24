@@ -325,10 +325,11 @@ def test_manage_agent_enroll_invalid_name_returns_422(
 def test_manage_agent_update_changes_prompt(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
+    # Use dev_agent which belongs to engineering team (managed by engineering_head).
     _activate_eh_session(daemon_state)
-    daemon_state.db.insert_enrollment("content_writer", "desc", "old prompt")
-    daemon_state.db.update_enrollment_status("content_writer", "approved")
-    workspace = daemon_state.runtime.workspaces_dir / "content_writer"
+    daemon_state.db.insert_enrollment("dev_agent", "desc", "old prompt")
+    daemon_state.db.update_enrollment_status("dev_agent", "approved")
+    workspace = daemon_state.runtime.workspaces_dir / "dev_agent"
     workspace.mkdir(parents=True)
 
     with patch("src.daemon.routes.agents.ContextBuilder") as MockCB:
@@ -338,7 +339,7 @@ def test_manage_agent_update_changes_prompt(
             "/api/v1/agents/manage",
             json={
                 "action": "update",
-                "name": "content_writer",
+                "name": "dev_agent",
             "task_id": _EH_TASK,
             "session_id": _EH_SESSION,
             "system_prompt": "new prompt",
@@ -347,7 +348,7 @@ def test_manage_agent_update_changes_prompt(
         headers=auth_headers,
     )
     assert r.status_code == 200
-    enrollment = daemon_state.db.get_enrollment("content_writer")
+    enrollment = daemon_state.db.get_enrollment("dev_agent")
     assert enrollment["system_prompt"] == "new prompt"
     assert enrollment["executor"] == "codex"
 
@@ -355,10 +356,11 @@ def test_manage_agent_update_changes_prompt(
 def test_manage_agent_update_persists_executor_to_workspace(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
+    # Use dev_agent which belongs to engineering team (managed by engineering_head).
     _activate_eh_session(daemon_state)
-    daemon_state.db.insert_enrollment("content_writer", "desc", "old prompt")
-    daemon_state.db.update_enrollment_status("content_writer", "approved")
-    workspace = daemon_state.runtime.workspaces_dir / "content_writer"
+    daemon_state.db.insert_enrollment("dev_agent", "desc", "old prompt")
+    daemon_state.db.update_enrollment_status("dev_agent", "approved")
+    workspace = daemon_state.runtime.workspaces_dir / "dev_agent"
     workspace.mkdir(parents=True)
     (workspace / "agent.yaml").write_text("repos: {}\n")
 
@@ -366,7 +368,7 @@ def test_manage_agent_update_persists_executor_to_workspace(
         "/api/v1/agents/manage",
         json={
             "action": "update",
-            "name": "content_writer",
+            "name": "dev_agent",
             "task_id": _EH_TASK,
             "session_id": _EH_SESSION,
             "executor": "codex",
@@ -384,10 +386,11 @@ def test_manage_agent_update_persists_executor_to_workspace(
 def test_manage_agent_terminate_removes_workspace(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
+    # Use dev_agent which belongs to engineering team (managed by engineering_head).
     _activate_eh_session(daemon_state)
-    daemon_state.db.insert_enrollment("content_writer", "desc", "prompt")
-    daemon_state.db.update_enrollment_status("content_writer", "approved")
-    workspace = daemon_state.runtime.workspaces_dir / "content_writer"
+    daemon_state.db.insert_enrollment("dev_agent", "desc", "prompt")
+    daemon_state.db.update_enrollment_status("dev_agent", "approved")
+    workspace = daemon_state.runtime.workspaces_dir / "dev_agent"
     workspace.mkdir(parents=True)
     (workspace / "CLAUDE.md").write_text("# test")
 
@@ -395,7 +398,7 @@ def test_manage_agent_terminate_removes_workspace(
         "/api/v1/agents/manage",
         json={
             "action": "terminate",
-            "name": "content_writer",
+            "name": "dev_agent",
             "task_id": _EH_TASK,
             "session_id": _EH_SESSION,
         },
@@ -403,7 +406,7 @@ def test_manage_agent_terminate_removes_workspace(
     )
     assert r.status_code == 200
     assert not workspace.exists()
-    assert daemon_state.db.get_enrollment("content_writer")["status"] == "terminated"
+    assert daemon_state.db.get_enrollment("dev_agent")["status"] == "terminated"
 
 
 def test_manage_agent_terminate_nonexistent_returns_404(
@@ -947,10 +950,11 @@ def test_manage_agent_talk_path_enroll_creates_pending(
 def test_manage_agent_talk_path_update_changes_prompt(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
+    # Use dev_agent which belongs to engineering team (managed by engineering_head).
     talk_id = _seed_eh_talk(daemon_state, "TALK-701")
-    daemon_state.db.insert_enrollment("content_writer", "desc", "old prompt")
-    daemon_state.db.update_enrollment_status("content_writer", "approved")
-    workspace = daemon_state.runtime.workspaces_dir / "content_writer"
+    daemon_state.db.insert_enrollment("dev_agent", "desc", "old prompt")
+    daemon_state.db.update_enrollment_status("dev_agent", "approved")
+    workspace = daemon_state.runtime.workspaces_dir / "dev_agent"
     workspace.mkdir(parents=True)
 
     with patch("src.daemon.routes.agents.ContextBuilder") as MockCB:
@@ -960,23 +964,24 @@ def test_manage_agent_talk_path_update_changes_prompt(
             "/api/v1/agents/manage",
             json={
                 "action": "update",
-                "name": "content_writer",
+                "name": "dev_agent",
                 "talk_id": talk_id,
                 "system_prompt": "new prompt via talk",
             },
             headers=auth_headers,
         )
     assert r.status_code == 200
-    assert daemon_state.db.get_enrollment("content_writer")["system_prompt"] == "new prompt via talk"
+    assert daemon_state.db.get_enrollment("dev_agent")["system_prompt"] == "new prompt via talk"
 
 
 def test_manage_agent_talk_path_terminate_removes_workspace(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
+    # Use dev_agent which belongs to engineering team (managed by engineering_head).
     talk_id = _seed_eh_talk(daemon_state, "TALK-702")
-    daemon_state.db.insert_enrollment("content_writer", "desc", "prompt")
-    daemon_state.db.update_enrollment_status("content_writer", "approved")
-    workspace = daemon_state.runtime.workspaces_dir / "content_writer"
+    daemon_state.db.insert_enrollment("dev_agent", "desc", "prompt")
+    daemon_state.db.update_enrollment_status("dev_agent", "approved")
+    workspace = daemon_state.runtime.workspaces_dir / "dev_agent"
     workspace.mkdir(parents=True)
     (workspace / "CLAUDE.md").write_text("# test")
 
@@ -984,14 +989,14 @@ def test_manage_agent_talk_path_terminate_removes_workspace(
         "/api/v1/agents/manage",
         json={
             "action": "terminate",
-            "name": "content_writer",
+            "name": "dev_agent",
             "talk_id": talk_id,
         },
         headers=auth_headers,
     )
     assert r.status_code == 200
     assert not workspace.exists()
-    assert daemon_state.db.get_enrollment("content_writer")["status"] == "terminated"
+    assert daemon_state.db.get_enrollment("dev_agent")["status"] == "terminated"
 
 
 def test_manage_agent_talk_path_non_eh_talk_returns_403(

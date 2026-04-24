@@ -214,18 +214,19 @@ class AuditLogger:
         action: str,
         name: str,
         source: str,
+        actor: str = "engineering_head",
     ) -> None:
         """Record a successful manage-agent call.
 
         `scope_id` populates `audit_log.task_id` (the generic scope column
         described at line 173): TASK-xxx for task-path calls, TALK-xxx for
         talk-path calls. `source` is 'task' or 'talk' for quick filtering.
-        Actor is always 'engineering_head' — the route gates this via
-        `_require_eh_auth` before calling here.
+        `actor` defaults to 'engineering_head' for backward compat; pass the
+        actual manager_name when called from the generalised team-manager route.
         """
         self._db.insert_audit_log(
             task_id=scope_id,
-            agent="engineering_head",
+            agent=actor,
             action="agent_managed",
             payload={
                 "action": action,

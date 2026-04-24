@@ -83,12 +83,21 @@ The two paths are **mutually exclusive** — supply one pair or the other, never
 
 ## Access control
 
-Only the **Engineering Head** may use this skill. The daemon validates the auth path you supplied:
+Any **team manager** may use this skill to manage agents within their own team. The daemon validates the auth path you supplied:
 
-- Task path: the `(task_id, session_id)` pair must match an active engineering_head session in the session tracker.
-- Talk path: the `talk_id` must reference a talk whose `agent_name` is `engineering_head` and whose `status` is `open`.
+- Task path: the `(task_id, session_id)` pair must match an active session for a registered team manager.
+- Talk path: the `talk_id` must reference a talk whose `agent_name` is a registered team manager and whose `status` is `open`.
 
 Other agents — and closed/abandoned talks — receive a `403 Forbidden` (or `404` if the talk id is unknown).
+
+### Team scoping
+
+Managers may only enroll, update, or terminate agents within their own team:
+
+- **enroll**: The new agent is assigned to the caller's team by default. Optionally, include `"target_team": "<team>"` in the payload — but if `target_team` differs from the caller's team, the request is rejected with `403 cross_team_forbidden`.
+- **update / terminate**: The target agent must already belong to the caller's team. Cross-team update or termination is rejected with `403 cross_team_forbidden`.
+
+This prevents a Content Manager from enrolling agents into the engineering team, and vice versa.
 
 ## When called during a talk: update your transcript
 
