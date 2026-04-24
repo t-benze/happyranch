@@ -529,6 +529,148 @@ def test_list_enrollments(
     assert names == ["b"]
 
 
+def test_backfill_enrollments_imports_known_workspaces(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """Workspaces that exist on disk but lack enrollment rows and whose
+    name is in the protocol prompt loader get imported at status='approved'."""
+    ws_dir = daemon_state.runtime.workspaces_dir
+    for name in ("engineering_head", "dev_agent"):
+        (ws_dir / name).mkdir(parents=True, exist_ok=True)
+    from src.daemon.agent_config import write_default_agent_config
+    for name in ("engineering_head", "dev_agent"):
+        write_default_agent_config(ws_dir / name)
+
+    r = TestClient(app).post(
+        "/api/v1/agents/backfill-enrollments",
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    names = sorted(e["name"] for e in body["backfilled"])
+    assert names == ["dev_agent", "engineering_head"]
+
+    for name in ("engineering_head", "dev_agent"):
+        row = daemon_state.db.get_enrollment(name)
+        assert row is not None
+        assert row["status"] == "approved"
+        # system_prompt must be populated from the protocol markdown, not empty
+        assert row["system_prompt"]
+
+
+def test_backfill_enrollments_skips_already_enrolled(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """An agent that already has an enrollment row must NOT be overwritten."""
+    ws_dir = daemon_state.runtime.workspaces_dir
+    (ws_dir / "dev_agent").mkdir(parents=True, exist_ok=True)
+    daemon_state.db.insert_enrollment(
+        "dev_agent", "existing desc", "existing prompt", status="approved",
+    )
+
+    r = TestClient(app).post(
+        "/api/v1/agents/backfill-enrollments",
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["backfilled"] == []
+    assert "dev_agent" in body["skipped_already_enrolled"]
+
+    row = daemon_state.db.get_enrollment("dev_agent")
+    assert row["description"] == "existing desc"
+    assert row["system_prompt"] == "existing prompt"
+
+
+def test_backfill_enrollments_skips_unknown_prompt(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """A workspace whose name isn't in the protocol prompt loader is skipped
+    — we can't reconstruct a system prompt from disk."""
+    ws_dir = daemon_state.runtime.workspaces_dir
+    (ws_dir / "random_agent_xyz").mkdir(parents=True, exist_ok=True)
+
+    r = TestClient(app).post(
+        "/api/v1/agents/backfill-enrollments",
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["backfilled"] == []
+    assert "random_agent_xyz" in body["skipped_unknown_prompt"]
+    assert daemon_state.db.get_enrollment("random_agent_xyz") is None
+
+
+def test_backfill_enrollments_is_idempotent(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """Second call backfills nothing and reports the same agents as already
+    enrolled."""
+    ws_dir = daemon_state.runtime.workspaces_dir
+    (ws_dir / "dev_agent").mkdir(parents=True, exist_ok=True)
+    from src.daemon.agent_config import write_default_agent_config
+    write_default_agent_config(ws_dir / "dev_agent")
+
+    client = TestClient(app)
+    r1 = client.post(
+        "/api/v1/agents/backfill-enrollments", headers=auth_headers,
+    )
+    assert r1.status_code == 200
+    assert [e["name"] for e in r1.json()["backfilled"]] == ["dev_agent"]
+
+    r2 = client.post(
+        "/api/v1/agents/backfill-enrollments", headers=auth_headers,
+    )
+    assert r2.status_code == 200
+    assert r2.json()["backfilled"] == []
+    assert "dev_agent" in r2.json()["skipped_already_enrolled"]
+
+
+def test_backfill_enrollments_reads_agent_yaml(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """repos + executor from agent.yaml land on the enrollment row."""
+    ws_dir = daemon_state.runtime.workspaces_dir
+    (ws_dir / "dev_agent").mkdir(parents=True, exist_ok=True)
+    import yaml
+    (ws_dir / "dev_agent" / "agent.yaml").write_text(
+        yaml.dump({
+            "executor": "codex",
+            "repos": {"my-opc": "https://example.com/my-opc.git"},
+        }),
+    )
+
+    r = TestClient(app).post(
+        "/api/v1/agents/backfill-enrollments",
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    row = daemon_state.db.get_enrollment("dev_agent")
+    assert row["executor"] == "codex"
+    import json as _json
+    assert _json.loads(row["repos"]) == {"my-opc": "https://example.com/my-opc.git"}
+
+
+def test_backfill_enrollments_writes_audit_entry(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """Each backfill emits an `agent_backfilled` audit entry with actor=founder."""
+    ws_dir = daemon_state.runtime.workspaces_dir
+    (ws_dir / "dev_agent").mkdir(parents=True, exist_ok=True)
+
+    r = TestClient(app).post(
+        "/api/v1/agents/backfill-enrollments",
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+
+    entries = daemon_state.db.get_audit_logs("AGENT-dev_agent")
+    actions = [e["action"] for e in entries]
+    assert "agent_backfilled" in actions
+    found = [e for e in entries if e["action"] == "agent_backfilled"][0]
+    assert found["agent"] == "founder"
+
+
 def test_manage_agent_body_accepts_talk_id_alone() -> None:
     """talk_id alone (no task_id/session_id) validates."""
     from src.daemon.routes.agents import ManageAgentBody

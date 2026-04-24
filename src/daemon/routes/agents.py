@@ -26,7 +26,7 @@ from src.infrastructure.audit_logger import AuditLogger
 from src.models import PerformanceTier, TalkStatus
 from src.orchestrator.context_builder import ContextBuilder
 from src.orchestrator.performance_tracker import PerformanceTracker
-from src.orchestrator.prompt_loader import load_all_prompts
+from src.orchestrator.prompt_loader import load_all_prompts, load_system_prompt
 
 router = APIRouter(dependencies=[require_token()])
 
@@ -424,6 +424,77 @@ async def approve_agent(agent_name: str, request: Request) -> dict:
     await asyncio.to_thread(ctx.create_agent_dirs, workspace, agent_name)
 
     return {"ok": True}
+
+
+@router.post("/agents/backfill-enrollments")
+def backfill_enrollments(request: Request) -> dict:
+    """Founder recovery op: import pre-existing workspaces into the enrollment
+    registry so `manage-agent update`/`terminate` can target them.
+
+    Scans `workspaces_dir`, and for each agent that has a workspace on disk
+    but no enrollment row, inserts a row with status='approved' (bypassing
+    the enroll→approve flow, which would re-clone repos we already have).
+
+    Scope is intentionally narrow:
+      - Never mutates workspace files — registry-only.
+      - Skips agents already in the enrollment registry (any status).
+      - Skips workspaces whose name isn't in the protocol prompt loader
+        — those prompts can't be reconstructed without human input.
+      - `description` is a placeholder pointing at provenance; the real role
+        lives in `system_prompt` and EH can improve the description via
+        `manage-agent update` later.
+    """
+    state: DaemonState = request.app.state.daemon
+    _require_active(state)
+
+    audit = AuditLogger(state.db)
+    ws_dir = state.runtime.workspaces_dir
+    if not ws_dir.exists():
+        return {"backfilled": [], "skipped_already_enrolled": [], "skipped_unknown_prompt": []}
+
+    protocol_dir = state.settings.get_protocol_dir()
+    backfilled: list[dict] = []
+    skipped_already: list[str] = []
+    skipped_unknown: list[str] = []
+
+    for entry in sorted(ws_dir.iterdir()):
+        if not entry.is_dir():
+            continue
+        name = entry.name
+        if state.db.get_enrollment(name) is not None:
+            skipped_already.append(name)
+            continue
+        sys_prompt = load_system_prompt(protocol_dir, name)
+        if not sys_prompt:
+            skipped_unknown.append(name)
+            continue
+        cfg = load_agent_config(entry)
+        repos = cfg.get("repos") or {}
+        executor = cfg.get("executor") or "claude"
+        description = (
+            f"Pre-existing agent backfilled from protocol "
+            f"(source: {protocol_dir.name})."
+        )
+        state.db.insert_enrollment(
+            name=name,
+            description=description,
+            system_prompt=sys_prompt,
+            repos=repos,
+            executor=executor,
+            status="approved",
+        )
+        audit.log_agent_backfilled(
+            name=name,
+            repos_count=len(repos),
+            executor=executor,
+        )
+        backfilled.append({"name": name, "executor": executor, "repos_count": len(repos)})
+
+    return {
+        "backfilled": backfilled,
+        "skipped_already_enrolled": skipped_already,
+        "skipped_unknown_prompt": skipped_unknown,
+    }
 
 
 @router.post("/agents/{agent_name}/reject")

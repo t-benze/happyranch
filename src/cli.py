@@ -619,6 +619,55 @@ def cmd_reject_agent(args: argparse.Namespace) -> None:
     print(f"Rejected: {args.name}")
 
 
+def cmd_backfill_enrollments(args: argparse.Namespace) -> None:
+    """Founder recovery op: import pre-existing workspaces into the enrollment
+    registry so `manage-agent update`/`terminate` can target them.
+
+    TTY-gated — no --yes bypass. Safe to re-run (idempotent); second call
+    reports all agents as already enrolled.
+    """
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print("opc backfill-enrollments requires an interactive terminal (no --yes bypass).")
+        sys.exit(1)
+
+    print("About to backfill the enrollment registry (founder-initiated).")
+    print("This imports workspaces that lack enrollment rows into the registry")
+    print("at status='approved'. No workspace files are modified.")
+    reply = input("Continue? [y/N] ").strip().lower()
+    if reply not in ("y", "yes"):
+        print("Aborted.")
+        sys.exit(1)
+
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    r = client.post("/api/v1/agents/backfill-enrollments", json={})
+    if not _ok(r):
+        return
+    body = r.json()
+    backfilled = body.get("backfilled", [])
+    already = body.get("skipped_already_enrolled", [])
+    unknown = body.get("skipped_unknown_prompt", [])
+    if backfilled:
+        print(f"Backfilled {len(backfilled)}:")
+        for entry in backfilled:
+            print(
+                f"  - {entry['name']} (executor={entry['executor']}, "
+                f"repos={entry['repos_count']})"
+            )
+    else:
+        print("Backfilled 0.")
+    if already:
+        print(f"Already enrolled (skipped): {', '.join(already)}")
+    if unknown:
+        print(
+            f"Unknown prompt (skipped — not in protocol loader): {', '.join(unknown)}"
+        )
+
+
 def cmd_recall(args: argparse.Namespace) -> None:
     """Fetch a task's brief, canonical outcome, and optionally artifact files.
 
@@ -1129,6 +1178,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_reject = sub.add_parser("reject-agent", help="Reject a pending agent enrollment")
     p_reject.add_argument("name", help="Agent name to reject")
     p_reject.set_defaults(func=cmd_reject_agent)
+
+    # opc backfill-enrollments — founder recovery op; TTY-gated; no --yes.
+    p_backfill = sub.add_parser(
+        "backfill-enrollments",
+        help=(
+            "Import pre-existing workspaces into the enrollment registry "
+            "(founder; TTY-gated)"
+        ),
+    )
+    p_backfill.set_defaults(func=cmd_backfill_enrollments)
 
     # opc recall
     p_recall = sub.add_parser(

@@ -345,6 +345,7 @@ opc manage-agent --from-file /tmp/manage-agent-enroll.json  # enroll/update/term
 opc enrollments [--status pending]     # list enrollment requests
 opc approve-agent <name>               # approve and bootstrap workspace
 opc reject-agent <name>                # reject enrollment
+opc backfill-enrollments               # founder recovery: import pre-existing workspaces into the registry (TTY-gated)
 ```
 
 ## Knowledge Base

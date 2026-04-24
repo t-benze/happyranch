@@ -245,3 +245,27 @@ class AuditLogger:
                 "source": source,
             },
         )
+
+    def log_agent_backfilled(
+        self,
+        *,
+        name: str,
+        repos_count: int,
+        executor: str,
+    ) -> None:
+        """Record a founder-initiated enrollment backfill.
+
+        Unlike `log_agent_managed`, the actor is 'founder' — this is a one-off
+        recovery op for agents bootstrapped outside the enroll→approve flow.
+        Scope is the agent name itself (no task/talk context).
+        """
+        self._db.insert_audit_log(
+            task_id=f"AGENT-{name}",
+            agent="founder",
+            action="agent_backfilled",
+            payload={
+                "name": name,
+                "repos_count": repos_count,
+                "executor": executor,
+            },
+        )

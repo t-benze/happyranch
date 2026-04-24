@@ -827,12 +827,13 @@ class Database:
         system_prompt: str,
         repos: dict[str, str] | None = None,
         executor: str | None = None,
+        status: str = "pending",
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         self._conn.execute(
             "INSERT INTO agent_enrollments (name, description, system_prompt, repos, executor, status, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
-            (name, description, system_prompt, json.dumps(repos or {}), executor or "claude", now, now),
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (name, description, system_prompt, json.dumps(repos or {}), executor or "claude", status, now, now),
         )
         self._conn.commit()
 
