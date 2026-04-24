@@ -415,17 +415,19 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
             raise HTTPException(status_code=404, detail=f"agent {body.name!r} not found")
         if enrollment["status"] != "approved":
             raise HTTPException(status_code=409, detail=f"agent {body.name!r} is {enrollment['status']}, not approved")
-        # Reject cross-team update attempts.
-        agent_team = state.teams.team_for_agent(body.name) if state.teams is not None else None
-        if agent_team != manager_team:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "code": "cross_team_forbidden",
-                    "caller_team": manager_team,
-                    "agent_team": agent_team,
-                },
-            )
+        # Reject cross-team update attempts — hold the lock to prevent a torn
+        # read racing against a concurrent terminate.
+        async with state.teams_lock:
+            agent_team = state.teams.team_for_agent(body.name) if state.teams is not None else None
+            if agent_team != manager_team:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={
+                        "code": "cross_team_forbidden",
+                        "caller_team": manager_team,
+                        "agent_team": agent_team,
+                    },
+                )
         state.db.update_enrollment_fields(
             body.name,
             description=body.description,
@@ -470,9 +472,10 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
                         "agent_team": agent_team,
                     },
                 )
+            # DB update first — if it raises, teams.yaml stays untouched.
+            state.db.update_enrollment_status(body.name, "terminated")
             state.teams.remove_worker(manager_team, body.name)
             state.teams.save(state.runtime)
-        state.db.update_enrollment_status(body.name, "terminated")
         workspace = state.runtime.workspaces_dir / body.name
         if workspace.exists():
             shutil.rmtree(workspace)
