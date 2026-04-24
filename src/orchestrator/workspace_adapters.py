@@ -28,21 +28,36 @@ def _format_allow_rule(prefix: str, *, cli: bool) -> str:
 
 def allow_rules_for_agent(
     settings: Settings, agent_name: str | None, *, cli: bool,
+    db: object | None = None,
 ) -> list[str]:
     """Build the Bash allow-rule list for ``agent_name``.
 
     Baseline ``opc`` is always included (the agent-callback channel).
-    Additional prefixes come from the ``### Allow Rules`` subsection
-    of the agent's role in the protocol markdown. See
-    ``protocol/02-system-prompts-managers.md`` for the per-manager grants.
+    Additional prefixes come from one of two sources (in priority order):
+      1. The DB enrollment row's ``allow_rules`` field, if ``db`` is provided
+         and the agent has an enrollment with a non-empty allow_rules list.
+      2. The ``### Allow Rules`` subsection of the agent's role in the
+         protocol markdown (covers built-in agents like engineering_head).
+
+    See ``protocol/02-system-prompts-managers.md`` for the per-manager grants.
     """
     from src.orchestrator import prompt_loader
     rules = [_format_allow_rule("opc", cli=cli)]
     if agent_name is None:
         return rules
-    for prefix in prompt_loader.allow_rules_for(
-        settings.get_protocol_dir(), agent_name,
-    ):
+
+    prefixes: list[str] = []
+    if db is not None:
+        enrollment = db.get_enrollment(agent_name)  # type: ignore[union-attr]
+        if enrollment is not None:
+            prefixes = list(enrollment.get("allow_rules") or ())
+
+    if not prefixes:
+        prefixes = list(prompt_loader.allow_rules_for(
+            settings.get_protocol_dir(), agent_name,
+        ))
+
+    for prefix in prefixes:
         rules.append(_format_allow_rule(prefix, cli=cli))
     return rules
 

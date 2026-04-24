@@ -110,6 +110,7 @@ class Database:
                 system_prompt TEXT NOT NULL,
                 repos TEXT NOT NULL DEFAULT '{}',
                 executor TEXT NOT NULL DEFAULT 'claude',
+                allow_rules TEXT NOT NULL DEFAULT '[]',
                 status TEXT NOT NULL DEFAULT 'pending',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -156,6 +157,7 @@ class Database:
             # double-encoding contract — see TASK-071 post-mortem.
             "ALTER TABLE task_results ADD COLUMN decision_json TEXT",
             "ALTER TABLE agent_enrollments ADD COLUMN executor TEXT NOT NULL DEFAULT 'claude'",
+            "ALTER TABLE agent_enrollments ADD COLUMN allow_rules TEXT NOT NULL DEFAULT '[]'",
             # crew → team rename (SQLite >= 3.25). Idempotent: fails on
             # DBs where the column is already `team` or already renamed.
             "ALTER TABLE tasks RENAME COLUMN crew TO team",
@@ -828,12 +830,14 @@ class Database:
         repos: dict[str, str] | None = None,
         executor: str | None = None,
         status: str = "pending",
+        allow_rules: list[str] | None = None,
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         self._conn.execute(
-            "INSERT INTO agent_enrollments (name, description, system_prompt, repos, executor, status, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (name, description, system_prompt, json.dumps(repos or {}), executor or "claude", status, now, now),
+            "INSERT INTO agent_enrollments (name, description, system_prompt, repos, executor, allow_rules, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (name, description, system_prompt, json.dumps(repos or {}), executor or "claude",
+             json.dumps(allow_rules or []), status, now, now),
         )
         self._conn.commit()
 
@@ -842,7 +846,11 @@ class Database:
         row = self._conn.execute(
             "SELECT * FROM agent_enrollments WHERE name = ?", (name,),
         ).fetchone()
-        return dict(row) if row else None
+        if row is None:
+            return None
+        d = dict(row)
+        d["allow_rules"] = json.loads(d.get("allow_rules") or "[]")
+        return d
 
     @_synchronized
     def list_enrollments(self, status: str | None = None) -> list[dict]:

@@ -69,6 +69,7 @@ class ManageAgentBody(BaseModel):
     system_prompt: str | None = None
     repos: dict[str, str] | None = None
     executor: str | None = None
+    allow_rules: list[str] | None = None
 
     @model_validator(mode="after")
     def _exactly_one_auth_path(self) -> ManageAgentBody:
@@ -311,6 +312,7 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
             system_prompt=body.system_prompt,
             repos=body.repos,
             executor=body.executor,
+            allow_rules=body.allow_rules or [],
         )
         audit.log_agent_managed(
             scope_id=scope_id,

@@ -101,7 +101,7 @@ The transcript is the only human-readable record of what happened in the convers
 
 ## What happens
 
-- **enroll**: Creates a pending enrollment request. You may optionally specify `executor: "claude"` or `executor: "codex"`; if omitted, it defaults to `claude`. The founder must run `opc approve-agent <name>` before the agent's workspace is bootstrapped and the agent becomes available for delegation.
+- **enroll**: Creates a pending enrollment request. You may optionally specify `executor: "claude"` or `executor: "codex"`; if omitted, it defaults to `claude`. You may also include `"allow_rules": ["curl https://api.example.com", ...]` to grant additional Bash prefixes beyond the baseline `opc` grant — for example, to allow a specific external API call. The founder must run `opc approve-agent <name>` before the agent's workspace is bootstrapped and the agent becomes available for delegation.
 - **update**: Updates the agent's description, system prompt, executor, or repos in the enrollment registry. If the system prompt or executor changes, the workspace bootstrap files are regenerated. Only works on approved agents.
 - **terminate**: Marks the agent as terminated and deletes its workspace directory. Only works on approved agents.
 
