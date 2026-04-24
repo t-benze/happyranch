@@ -89,7 +89,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
         return
 
     # ---- 4. Run the agent subprocess ----
-    agent = task.assigned_agent or _default_agent_for_root(task)
+    agent = task.assigned_agent or _default_agent_for_root(orch, task)
     if task.assigned_agent is None:
         db.update_task(task_id, assigned_agent=agent)
 
@@ -115,11 +115,11 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
         return
 
     # ---- 6. Parse next step ----
-    # Only the Engineering Head speaks the NextStep JSON protocol. Worker
-    # completions are plain prose/summary payloads — treating them as EH
-    # decisions reclassifies every non-JSON output_summary as `escalate`
-    # (see P1 in 2026-04-20 review).
-    if agent == "engineering_head":
+    # Only team managers speak the NextStep JSON protocol. Worker
+    # completions are plain prose/summary payloads — treating them as
+    # manager decisions reclassifies every non-JSON output_summary as
+    # `escalate` (see P1 in 2026-04-20 review).
+    if orch.teams.is_team_manager(agent):
         decision = orch._parse_next_step(report)
         orch._audit.log_orchestration_step(
             task_id, next_count, decision.model_dump(exclude_none=True),
@@ -151,10 +151,39 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
         return
 
     if decision.action == "delegate":
+        # First: hard-fail on structurally invalid delegate (no agent name or
+        # missing workspace). These are unrecoverable for this step.
         err = _validate_delegate(orch, decision)
         if err is not None:
             _fail(orch, task_id, note=f"invalid delegate: {err}")
             _enqueue_parent_if_waiting(orch, task_id)
+            return
+        # Cross-team delegation guard: a manager may only delegate to workers
+        # on its own team. Violations feed a feedback step back (not a hard
+        # fail) so the manager can correct its decision on the next step.
+        caller_team = orch.teams.team_for_manager(agent)
+        target_team = orch.teams.team_for_agent(decision.agent)
+        if caller_team is None or target_team is None or caller_team != target_team:
+            feedback = (
+                f"Invalid delegation: you are on team {caller_team!r}, "
+                f"but {decision.agent!r} is on team {target_team!r}. "
+                "Pick a worker on your own team, or escalate."
+            )
+            db.insert_task_result(
+                task_id=task_id,
+                agent=agent,
+                session_id="",
+                status="completed",
+                confidence_score=0,
+                output_summary=feedback,
+                risks_flagged=[],
+            )
+            orch._audit.log_orchestration_step(
+                task_id, next_count, {"action": "feedback", "reason": feedback},
+            )
+            db.update_task(task_id, status=TaskStatus.PENDING, block_kind=None)
+            if orch._queue is not None:
+                orch._queue.put_nowait(task_id)
             return
         from src.models import TaskRecord
         child_id = db.next_task_id()
@@ -192,9 +221,9 @@ def _validate_delegate(orch: "Orchestrator", decision) -> str | None:
     return None
 
 
-def _default_agent_for_root(task) -> str:
-    """Root tasks default to the Engineering Head as their assigned agent."""
-    return "engineering_head"
+def _default_agent_for_root(orch: "Orchestrator", task) -> str:
+    """Root tasks default to the manager for their team."""
+    return orch.teams.manager_for_team(task.team).name
 
 
 def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
@@ -206,9 +235,9 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
     prompt on the very first orchestration step (detected via audit log).
     """
     from src.orchestrator.capabilities import build_capabilities_prompt
-    if agent != "engineering_head":
+    if not orch.teams.is_team_manager(agent):
         return task.brief
-    agent_names, tiers = _list_candidate_agents(orch)
+    agent_names, tiers = _list_candidate_agents(orch, agent)
     agents_for_prompt = []
     for name in agent_names:
         enrollment = orch._db.get_enrollment(name)
@@ -233,12 +262,16 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
     return base
 
 
-def _list_candidate_agents(orch: "Orchestrator"):
-    """Return (agent_names, tiers_map) — same shape as orchestrator used."""
+def _list_candidate_agents(orch: "Orchestrator", calling_manager: str):
+    """Return (agent_names, tiers_map) — same shape as orchestrator used.
+
+    Excludes the calling manager's own workspace so it doesn't appear in
+    its own candidate list (a manager should not delegate to itself).
+    """
     if orch._runtime.workspaces_dir.exists():
         names = [
             d.name for d in orch._runtime.workspaces_dir.iterdir()
-            if d.is_dir() and d.name != "engineering_head"
+            if d.is_dir() and d.name != calling_manager
         ]
     else:
         names = []
@@ -356,9 +389,9 @@ def _fail(orch: "Orchestrator", task_id: str, *, note: str) -> None:
 def _log_verdict_if_delegated(
     orch: "Orchestrator", task_id: str, *, success: bool,
 ) -> None:
-    """Emit the implicit EH review_verdict + refresh the worker scorecard.
+    """Emit the implicit manager review_verdict + refresh the worker scorecard.
 
-    The Engineering Head is the implicit reviewer of every delegated child:
+    The team manager is the implicit reviewer of every delegated child:
     a COMPLETED child is an "approved" delegation, a FAILED child is
     "rejected". PerformanceTracker reads these rows to compute tiers, so
     skipping them leaves every delegated agent on stale performance data
@@ -368,11 +401,17 @@ def _log_verdict_if_delegated(
     if task is None or task.parent_task_id is None:
         return
     agent = task.assigned_agent
-    if not agent or agent in ("engineering_head", "orchestrator", "unknown"):
+    if not agent or orch.teams.is_team_manager(agent) or agent in ("orchestrator", "unknown"):
         return
+    parent = orch._db.get_task(task.parent_task_id)
+    reviewer_team = parent.team if parent else task.team
+    try:
+        reviewer = orch.teams.manager_for_team(reviewer_team).name
+    except KeyError:
+        reviewer = "unknown_manager"
     orch._audit.log_review_verdict(
         task_id=task_id,
-        reviewer="engineering_head",
+        reviewer=reviewer,
         verdict="approved" if success else "rejected",
         feedback=task.note,
         reviewed_agent=agent,

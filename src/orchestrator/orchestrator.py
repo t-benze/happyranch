@@ -25,6 +25,7 @@ from src.models import (
 )
 from src.orchestrator.executors import ClaudeExecutor, CodexExecutor, ExecutorResult
 from src.orchestrator.performance_tracker import PerformanceTracker
+from src.orchestrator.teams import TeamsRegistry, DEFAULT_LAYOUT
 
 logger = logging.getLogger(__name__)
 
@@ -47,14 +48,25 @@ def _indent(text: str, prefix: str) -> str:
 
 
 class Orchestrator:
-    def __init__(self, db: Database, settings: Settings, runtime: RuntimeDir) -> None:
+    def __init__(
+        self,
+        db: Database,
+        settings: Settings,
+        runtime: RuntimeDir,
+        teams: TeamsRegistry | None = None,
+    ) -> None:
         self._db = db
         self._settings = settings
         self._runtime = runtime
         self._audit = AuditLogger(db)
         self._tracker = PerformanceTracker(db, settings)
+        self._teams: TeamsRegistry = teams if teams is not None else TeamsRegistry._from_layout(DEFAULT_LAYOUT)
         self._queue: "asyncio.Queue[str] | None" = None  # wired by daemon
         self._sessions: "SessionTracker | None" = None  # wired by daemon
+
+    @property
+    def teams(self) -> TeamsRegistry:
+        return self._teams
 
     def attach_queue(self, queue) -> None:
         """Daemon boot wires its TaskQueue so run_step can enqueue follow-ups.
@@ -303,13 +315,19 @@ class Orchestrator:
 
     def _log_review_verdicts(self, task_id: str, prior_steps: list[StepRecord]) -> None:
         """Log review verdicts for delegated agents so performance tiers stay current."""
+        task = self._db.get_task(task_id)
+        reviewer_team = task.team if task else "engineering"
+        try:
+            reviewer = self._teams.manager_for_team(reviewer_team).name
+        except KeyError:
+            reviewer = "unknown_manager"
         for step in prior_steps:
-            if step.agent in ("unknown", "engineering_head", "orchestrator"):
+            if step.agent in ("unknown", "orchestrator") or self._teams.is_team_manager(step.agent):
                 continue
             verdict = "approved" if step.success else "rejected"
             self._audit.log_review_verdict(
                 task_id=task_id,
-                reviewer="engineering_head",
+                reviewer=reviewer,
                 verdict=verdict,
                 feedback=step.result_summary,
                 reviewed_agent=step.agent,
