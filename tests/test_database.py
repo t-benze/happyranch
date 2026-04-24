@@ -820,3 +820,123 @@ def test_get_direct_revisits_does_not_include_transitive(db):
 def test_get_direct_revisits_none(db):
     db.insert_task(TaskRecord(id="TASK-001", brief="x"))
     assert db.get_direct_revisits("TASK-001") == []
+
+
+def test_insert_task_succeeds_on_legacy_schema_with_type_column(tmp_path):
+    """Simulate an upgraded DB that still has the legacy `type NOT NULL` column.
+    insert_task must supply a sentinel value so the NOT NULL constraint is satisfied."""
+    import sqlite3
+    from src.infrastructure.database import Database
+    from src.models import TaskRecord
+
+    db_path = tmp_path / "legacy.db"
+
+    # Manually create the legacy schema (pre-Task-4) with type TEXT NOT NULL.
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            type TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            assigned_agent TEXT,
+            team TEXT NOT NULL DEFAULT 'engineering',
+            brief TEXT NOT NULL,
+            revision_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT,
+            parent_task_id TEXT,
+            final_output_summary TEXT,
+            final_artifact_dir TEXT,
+            block_kind TEXT,
+            note TEXT,
+            orchestration_step_count INTEGER DEFAULT 0,
+            cancelled_at TEXT,
+            revisit_of_task_id TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
+        CREATE INDEX IF NOT EXISTS idx_tasks_revisit_of ON tasks(revisit_of_task_id);
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            agent TEXT NOT NULL,
+            action TEXT NOT NULL,
+            payload TEXT,
+            timestamp TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS scorecards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent TEXT NOT NULL UNIQUE,
+            period_start TEXT NOT NULL,
+            period_end TEXT NOT NULL,
+            acceptance_rate REAL NOT NULL,
+            revision_rate REAL NOT NULL,
+            error_count INTEGER NOT NULL,
+            tier TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS task_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            agent TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'completed',
+            output_summary TEXT,
+            decision_json TEXT,
+            confidence_score INTEGER,
+            learnings TEXT,
+            risks_flagged TEXT,
+            duration_seconds INTEGER,
+            token_count INTEGER,
+            estimated_cost REAL,
+            artifact_dir TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS agent_enrollments (
+            name TEXT PRIMARY KEY,
+            description TEXT NOT NULL,
+            system_prompt TEXT NOT NULL,
+            repos TEXT NOT NULL DEFAULT '{}',
+            executor TEXT NOT NULL DEFAULT 'claude',
+            allow_rules TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS talks (
+            id TEXT PRIMARY KEY,
+            agent_name TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            ended_at TEXT,
+            status TEXT NOT NULL DEFAULT 'open',
+            summary TEXT,
+            topic_list_json TEXT,
+            new_learnings_count INTEGER NOT NULL DEFAULT 0,
+            new_kb_slugs_json TEXT,
+            transcript_path TEXT
+        );
+    """)
+    conn.commit()
+    conn.close()
+
+    # Database() should detect the legacy column and handle inserts gracefully.
+    db = Database(db_path)
+    assert db._tasks_has_legacy_type_column is True
+
+    record = TaskRecord(id="TASK-001", brief="legacy schema test", team="engineering")
+    db.insert_task(record)  # Must NOT raise IntegrityError
+
+    # Round-trip read should work.
+    got = db.get_task("TASK-001")
+    assert got is not None
+    assert got.id == "TASK-001"
+    assert got.brief == "legacy schema test"
+
+
+def test_fresh_db_has_no_legacy_type_column(tmp_path):
+    """Fresh DBs must not have the legacy type column — flag stays False."""
+    from src.infrastructure.database import Database
+
+    db = Database(tmp_path / "fresh.db")
+    assert db._tasks_has_legacy_type_column is False
+    db.close()

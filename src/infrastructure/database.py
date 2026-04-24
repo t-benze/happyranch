@@ -45,7 +45,22 @@ class Database:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
+        self._tasks_has_legacy_type_column: bool = False
         self._create_tables()
+        self._detect_legacy_columns()
+
+    def _detect_legacy_columns(self) -> None:
+        """Detect legacy columns that may still exist on upgraded DBs.
+
+        Called once after _create_tables() completes. Fresh DBs never have the
+        ``type`` column (dropped in the Task-4 schema refactor). Runtimes
+        created before that change retain it as ``TEXT NOT NULL`` with no SQL
+        default — insert_task must supply a sentinel value or SQLite raises
+        IntegrityError.
+        """
+        cursor = self._conn.execute("PRAGMA table_info(tasks)")
+        columns = {row[1] for row in cursor.fetchall()}
+        self._tasks_has_legacy_type_column = "type" in columns
 
     def _create_tables(self) -> None:
         self._conn.executescript("""
@@ -267,28 +282,43 @@ class Database:
 
     @_synchronized
     def insert_task(self, task: TaskRecord) -> None:
-        self._conn.execute(
-            """INSERT INTO tasks (id, status, assigned_agent, team, brief,
-               revision_count, created_at, updated_at, completed_at, parent_task_id,
-               revisit_of_task_id, block_kind, note, orchestration_step_count)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                task.id,
-                task.status.value,
-                task.assigned_agent,
-                task.team,
-                task.brief,
-                task.revision_count,
-                task.created_at.isoformat(),
-                task.updated_at.isoformat(),
-                task.completed_at.isoformat() if task.completed_at else None,
-                task.parent_task_id,
-                task.revisit_of_task_id,
-                task.block_kind.value if task.block_kind else None,
-                task.note,
-                task.orchestration_step_count,
-            ),
+        params = (
+            task.id,
+            task.status.value,
+            task.assigned_agent,
+            task.team,
+            task.brief,
+            task.revision_count,
+            task.created_at.isoformat(),
+            task.updated_at.isoformat(),
+            task.completed_at.isoformat() if task.completed_at else None,
+            task.parent_task_id,
+            task.revisit_of_task_id,
+            task.block_kind.value if task.block_kind else None,
+            task.note,
+            task.orchestration_step_count,
         )
+        if self._tasks_has_legacy_type_column:
+            # Legacy DBs (created before the Task-4 schema refactor) retain a
+            # `type TEXT NOT NULL` column with no SQL default. Supply a sentinel
+            # value to satisfy the NOT NULL constraint without re-adding the
+            # column to the current schema.
+            # params[0] = id; insert type="general" after id, then the rest.
+            self._conn.execute(
+                """INSERT INTO tasks (id, type, status, assigned_agent, team, brief,
+                   revision_count, created_at, updated_at, completed_at, parent_task_id,
+                   revisit_of_task_id, block_kind, note, orchestration_step_count)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (params[0], "general") + params[1:],
+            )
+        else:
+            self._conn.execute(
+                """INSERT INTO tasks (id, status, assigned_agent, team, brief,
+                   revision_count, created_at, updated_at, completed_at, parent_task_id,
+                   revisit_of_task_id, block_kind, note, orchestration_step_count)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                params,
+            )
         self._conn.commit()
 
     @_synchronized
@@ -324,7 +354,6 @@ class Database:
         return [
             TaskRecord(
                 id=row["id"],
-
                 status=row["status"],
                 assigned_agent=row["assigned_agent"],
                 team=row["team"],
@@ -467,7 +496,6 @@ class Database:
         return [
             TaskRecord(
                 id=row["id"],
-
                 status=row["status"],
                 assigned_agent=row["assigned_agent"],
                 team=row["team"],
