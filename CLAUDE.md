@@ -383,15 +383,28 @@ Eligibility — predecessor root must be one of:
 Anything else (`pending`, `in_progress`, `blocked(delegated)`) returns
 **409 `cannot_revisit`** with the predecessor's current status.
 
-Architecture — the predecessor ↔ new-root link lives entirely in `audit_log`;
-no schema migration, no new columns. Inside `state.db_lock` the endpoint
-atomically:
+Architecture — the predecessor ↔ new-root link lives in two places: a
+first-class nullable `tasks.revisit_of_task_id` column (queryable, indexed
+via `idx_tasks_revisit_of`) AND an `audit_log` entry that carries the
+richer payload (`flagged`, `cascade`, `founder_note`, `prior_status`).
+The column is a sideways reference — `walk_ancestors` MUST NOT follow
+it, or cascade-fail will re-poison revisits via
+`_enqueue_parent_if_waiting`. Two helpers read the edge:
+`Database.walk_revisit_chain(task_id)` walks backward to the original;
+`Database.get_direct_revisits(task_id)` returns immediate revisits.
+
+Inside `state.db_lock` the endpoint atomically:
 1. walks ancestors via `walk_ancestors(task_id, max_hops=20)` to find the root
-2. inserts the new root `TaskRecord` (same `brief` + `type`, fresh `id`)
+2. inserts the new root `TaskRecord` (same `brief` + `type`, fresh `id`,
+   `revisit_of_task_id=predecessor.id`)
 3. logs `revisit_of` on the new root (payload: `predecessor_root`, `flagged`,
    `cascade`, `prior_status`, `founder_note`)
 4. logs `revisit_spawned` on the predecessor root
 5. enqueues the new root outside the lock
+
+Historical revisits (created before the column existed) are backfilled on
+daemon startup from the `revisit_of` audit entries; the UPDATE is guarded by
+`IS NULL` so restarts are idempotent.
 
 First EH step injection — on the new root's first `orchestration_step`,
 `_revisit_header_if_applicable(orch, task_id)` prepends a 5-6 line context
