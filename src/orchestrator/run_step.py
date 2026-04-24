@@ -181,6 +181,8 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
             orch._audit.log_orchestration_step(
                 task_id, next_count, {"action": "feedback", "reason": feedback},
             )
+            # step already counted on claim (try_claim_for_step increments
+            # orchestration_step_count atomically before the agent runs).
             db.update_task(task_id, status=TaskStatus.PENDING, block_kind=None)
             if orch._queue is not None:
                 orch._queue.put_nowait(task_id)
@@ -252,9 +254,10 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
     base = build_capabilities_prompt(
         brief=task.brief,
         agents=agents_for_prompt,
-        step_number=task.orchestration_step_count + 1,  # 1-indexed for EH display
+        step_number=task.orchestration_step_count + 1,  # 1-indexed for manager display
         max_steps=orch._settings.max_orchestration_steps,
         prior_steps=prior_steps,
+        manager_name=agent,
     )
     header = _revisit_header_if_applicable(orch, task.id)
     if header is not None:
@@ -265,14 +268,21 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
 def _list_candidate_agents(orch: "Orchestrator", calling_manager: str):
     """Return (agent_names, tiers_map) — same shape as orchestrator used.
 
-    Excludes the calling manager's own workspace so it doesn't appear in
-    its own candidate list (a manager should not delegate to itself).
+    Only includes workers on the calling manager's own team that have an
+    existing workspace on disk. Returns an empty list when the calling_manager
+    is not found in the registry (e.g. fallback / tests without a full layout).
     """
+    caller_team = orch.teams.team_for_manager(calling_manager)
+    if caller_team is None:
+        return [], {}
+    team_members = set(orch.teams.manager_for_team(caller_team).workers)
+    team_members.discard(calling_manager)  # manager should not delegate to itself
+
     if orch._runtime.workspaces_dir.exists():
-        names = [
+        names = sorted(
             d.name for d in orch._runtime.workspaces_dir.iterdir()
-            if d.is_dir() and d.name != calling_manager
-        ]
+            if d.is_dir() and d.name in team_members
+        )
     else:
         names = []
     tiers = orch._tracker.get_all_tiers(names)

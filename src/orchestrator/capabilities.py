@@ -9,16 +9,20 @@ def build_capabilities_prompt(
     step_number: int,
     max_steps: int,
     prior_steps: list[StepRecord] | None = None,
+    manager_name: str = "engineering_head",
 ) -> str:
-    """Build the prompt sent to the Engineering Head for each decision step.
+    """Build the prompt sent to a team manager for each decision step.
 
     ``agents`` is a list of dicts with keys: name, description, tier.
+    ``manager_name`` is the agent name of the calling manager; it is used to
+    address the manager by role in the prompt (e.g. "You are the Content Manager.").
     """
+    pretty = manager_name.replace("_", " ").title()  # "content_manager" -> "Content Manager"
     sections = [
         "# Task\n",
         brief.strip(),
         "\n## Your Orchestration Capabilities\n",
-        "You are the Engineering Head. Analyze the task and decide what to do next.",
+        f"You are the {pretty}. Analyze the task and decide what to do next.",
         "You can explore the codebase, analyze code, and do research yourself in this session.",
         "You can also delegate work to your team.\n",
         "### Available Agents\n",
