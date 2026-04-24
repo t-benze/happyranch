@@ -315,7 +315,7 @@ opc audit TASK-007 --json                        # raw JSON with full payloads
 opc init-agent               # initialize all agent workspaces (repo clones + system prompts + skills)
 opc init-agent dev_agent     # initialize a specific agent
 opc recall TASK-001 [--tree] [--fetch-artifact <relpath>]   # fetch task brief + artifact tree/content
-# Knowledge base (read: any; write: any via --from-file; delete: engineering_head; precedent: founder):
+# Knowledge base (read: any; write: any via --from-file; delete: any team manager (audited); founder via --as-founder; precedent: founder):
 opc kb list [--topic <t>] [--type reference|precedent]
 opc kb get <slug>
 opc kb search <query> [--limit N]
@@ -349,8 +349,7 @@ opc backfill-enrollments               # founder recovery: import pre-existing w
 ## Knowledge Base
 
 Shared precedents + domain reference live under `<runtime>/kb/`. Any agent can
-read; any agent can write (via `opc kb add --from-file`); only Engineering Head
-deletes. Full rules: `protocol/06-knowledge-base.md`. The founder records
+read; any agent can write (via `opc kb add --from-file`); any team manager deletes (audited); founder overrides via `--as-founder`. Full rules: `protocol/06-knowledge-base.md`. The founder records
 precedents via the two-command flow `opc resolve-escalation ...` (state
 transition) followed by `opc kb precedent --as-founder ...` (KB write, founder-only
 per spec §4.6).

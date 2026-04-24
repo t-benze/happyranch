@@ -218,7 +218,7 @@ class ClaudeWorkspaceAdapter:
             "- `task_history.md` -- read-only, updated by orchestrator\n",
             "## Knowledge Base (shared across agents)\n",
             "Path: `<runtime>/kb/`. Read: everyone. Write: any agent (via `--from-file`).",
-            "Delete: engineering_head only. Full rules: `protocol/06-knowledge-base.md`.",
+            "Delete: any team manager (audited); founder via `--as-founder`. Full rules: `protocol/06-knowledge-base.md`.",
         ]
         if include_start_task:
             sections.extend([

@@ -309,10 +309,10 @@ async def delete_kb(
     as_founder: bool = False,
 ) -> dict:
     state: DaemonState = _require_active(request.app.state.daemon)
-    if not as_founder and agent != "engineering_head":
+    if not as_founder and (state.teams is None or not state.teams.is_team_manager(agent)):
         raise HTTPException(
             status_code=403,
-            detail={"code": "delete_forbidden", "required": "engineering_head"},
+            detail={"code": "delete_forbidden", "required": "team_manager"},
         )
     if not confirm:
         raise HTTPException(status_code=400, detail={"code": "confirm_required"})
