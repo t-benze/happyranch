@@ -78,8 +78,10 @@ class TeamsRegistry:
                 yaml.safe_dump(payload, fh, sort_keys=False)
             os.replace(tmp, path)
         except Exception:
-            if os.path.exists(tmp):
+            try:
                 os.unlink(tmp)
+            except FileNotFoundError:
+                pass
             raise
 
     # ---- lookups ----
