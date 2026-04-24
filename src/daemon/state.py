@@ -10,6 +10,7 @@ from src.daemon.sessions import SessionTracker
 from src.daemon.queue import TaskQueue
 from src.infrastructure.database import Database
 from src.models import BlockKind, TaskStatus
+from src.orchestrator.teams import TeamsRegistry
 from src.runtime import RuntimeDir
 
 
@@ -31,6 +32,8 @@ class DaemonState:
     settings: Settings
     db_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     kb_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    teams_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    teams: TeamsRegistry | None = None
     sessions: SessionTracker = field(default_factory=SessionTracker)
     queue: TaskQueue = field(default_factory=TaskQueue)
     event_bus: EventBus = field(init=False)
@@ -80,7 +83,12 @@ class DaemonState:
 
     @classmethod
     def from_runtime(cls, runtime: RuntimeDir, settings: Settings) -> "DaemonState":
-        return cls(runtime=runtime, db=Database(runtime.db_path), settings=settings)
+        return cls(
+            runtime=runtime,
+            db=Database(runtime.db_path),
+            settings=settings,
+            teams=TeamsRegistry.load(runtime),
+        )
 
     @property
     def is_idle(self) -> bool:
