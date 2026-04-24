@@ -33,6 +33,10 @@ class RuntimeDir:
     def marker_file(self) -> Path:
         return self._path / "opc.yaml"
 
+    @property
+    def teams_config_path(self) -> Path:
+        return self._path / "teams.yaml"
+
     # ------------------------------------------------------------------
     # Validation
     # ------------------------------------------------------------------
