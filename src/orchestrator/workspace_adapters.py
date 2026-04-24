@@ -12,26 +12,6 @@ from src.config import Settings
 logger = logging.getLogger(__name__)
 
 
-# Per-agent Bash prefix extensions beyond the default `opc` allowlist. Each
-# entry is a command prefix (space-separated words) that the named agent is
-# pre-authorized to run in headless sessions, bypassing Claude Code's
-# auto-mode risk heuristic — the same heuristic that blocked EH's
-# `gh issue close 93` on TASK-067. Keep this list surgically narrow: any
-# prefix granted here can silently mutate shared external state on every
-# future task without further review. If a broader capability is needed,
-# prefer wrapping it in an `opc` subcommand so the audit log captures it.
-AGENT_EXTRA_ALLOWED_BASH_PREFIXES: dict[str, tuple[str, ...]] = {
-    "engineering_head": (
-        # Resolve superseded/stale PRs and close issues substantively fixed on
-        # main. Both subcommands accept `--comment` inline, so EH can leave a
-        # resolution note in the same call.
-        "gh pr close",
-        "gh pr comment",
-        "gh issue close",
-        "gh issue comment",
-    ),
-}
-
 
 def _format_allow_rule(prefix: str, *, cli: bool) -> str:
     """Render a Bash prefix in one of the two equivalent permission syntaxes.
@@ -46,21 +26,29 @@ def _format_allow_rule(prefix: str, *, cli: bool) -> str:
     return f"Bash({prefix}{sep}*)"
 
 
-def allow_rules_for_agent(agent_name: str | None, *, cli: bool) -> list[str]:
+def allow_rules_for_agent(
+    settings: Settings, agent_name: str | None, *, cli: bool,
+) -> list[str]:
     """Build the Bash allow-rule list for ``agent_name``.
 
-    ``opc`` is always included (the agent-callback channel). EH picks up
-    additional narrow grants for the PR/issue resolution flow. Other agents
-    inherit Claude Code's default auto-mode behavior for everything else.
+    Baseline ``opc`` is always included (the agent-callback channel).
+    Additional prefixes come from the ``### Allow Rules`` subsection
+    of the agent's role in the protocol markdown. See
+    ``protocol/02-system-prompts-managers.md`` for the per-manager grants.
     """
+    from src.orchestrator import prompt_loader
     rules = [_format_allow_rule("opc", cli=cli)]
-    if agent_name:
-        for prefix in AGENT_EXTRA_ALLOWED_BASH_PREFIXES.get(agent_name, ()):
-            rules.append(_format_allow_rule(prefix, cli=cli))
+    if agent_name is None:
+        return rules
+    for prefix in prompt_loader.allow_rules_for(
+        settings.get_protocol_dir(), agent_name,
+    ):
+        rules.append(_format_allow_rule(prefix, cli=cli))
     return rules
 
 
 def build_settings_json(
+    settings: Settings,
     repo_names: list[str],
     agent_name: str | None = None,
 ) -> dict:
@@ -92,11 +80,11 @@ def build_settings_json(
         "permissions": {
             # `opc` is pinned open for every agent so callbacks
             # (report-completion, learning, etc.) can never be silently
-            # blocked by auto-mode prompting. Engineering Head gets a narrow
-            # additional set for PR/issue resolution — see
-            # AGENT_EXTRA_ALLOWED_BASH_PREFIXES above. Anything not in this
-            # list falls under Claude Code's default auto-mode behavior.
-            "allow": allow_rules_for_agent(agent_name, cli=False),
+            # blocked by auto-mode prompting. Per-agent extras come from the
+            # ``### Allow Rules`` subsection in the protocol markdown.
+            # Anything not in this list falls under Claude Code's default
+            # auto-mode behavior.
+            "allow": allow_rules_for_agent(settings, agent_name, cli=False),
         },
         "hooks": hooks,
     }
@@ -158,7 +146,7 @@ class ClaudeWorkspaceAdapter:
         """Write .claude/settings.json to workspace."""
         claude_dir = workspace / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
-        settings_data = build_settings_json(repo_names or [], agent_name=agent_name)
+        settings_data = build_settings_json(self._settings, repo_names or [], agent_name=agent_name)
         (claude_dir / "settings.json").write_text(
             json.dumps(settings_data, indent=2) + "\n"
         )

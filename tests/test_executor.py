@@ -25,7 +25,7 @@ def test_claude_executor_launches_with_current_semantics(mock_subprocess, tmp_pa
 
     mock_subprocess.Popen.return_value = _popen_mock(stdout="Agent output")
 
-    executor = ClaudeExecutor(claude_cli_path="claude", permission_mode="auto")
+    executor = ClaudeExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings())
     result = executor.run(
         workspace=workspace,
         prompt="Implement Alipay support",
@@ -63,7 +63,7 @@ def test_claude_executor_grants_engineering_head_gh_resolve_rules(
 
     mock_subprocess.Popen.return_value = _popen_mock(stdout="EH output")
 
-    executor = ClaudeExecutor(claude_cli_path="claude", permission_mode="auto")
+    executor = ClaudeExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings())
     executor.run(workspace=workspace, prompt="decide next step", timeout_seconds=30)
 
     cmd = mock_subprocess.Popen.call_args[0][0]
@@ -176,7 +176,7 @@ def test_run_invokes_on_started_with_pid(mock_subprocess, tmp_path):
 
     mock_subprocess.Popen.return_value = _popen_mock(pid=9123)
 
-    executor = AgentExecutor(claude_cli_path="claude", permission_mode="auto")
+    executor = AgentExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings())
     received: list[int] = []
     executor.run(
         workspace=workspace,

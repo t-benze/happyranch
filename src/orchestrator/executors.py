@@ -7,6 +7,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.config import Settings
+
 
 @dataclass
 class ExecutorResult:
@@ -76,9 +78,10 @@ def _run_command(
 
 
 class ClaudeExecutor:
-    def __init__(self, claude_cli_path: str, permission_mode: str) -> None:
+    def __init__(self, claude_cli_path: str, permission_mode: str, settings: Settings) -> None:
         self._cli_path = claude_cli_path
         self._permission_mode = permission_mode
+        self._settings = settings
 
     def run(
         self,
@@ -92,15 +95,14 @@ class ClaudeExecutor:
         # honoured in headless `-p` mode (observed empirically: Claude Code
         # 2.1.105 records `command_permissions.allowedTools: []` regardless of
         # what's in settings.json). Pass --allowedTools on the CLI instead so
-        # agents can reliably call `opc ...` callbacks. The per-agent extras
-        # (EH's gh pr/issue close+comment) live in workspace_adapters so the
-        # CLI flag and settings.json stay in sync — see that module's
-        # AGENT_EXTRA_ALLOWED_BASH_PREFIXES.
+        # agents can reliably call `opc ...` callbacks. Per-agent extras come
+        # from the ``### Allow Rules`` subsection in ``protocol/02-system-prompts-managers.md``
+        # (and the workers file for worker agents).
         from src.orchestrator.workspace_adapters import allow_rules_for_agent
 
         # Workspace layout is `<runtime>/workspaces/<agent_name>`, so the
         # directory name is the canonical agent identifier.
-        allowed = " ".join(allow_rules_for_agent(workspace.name, cli=True))
+        allowed = " ".join(allow_rules_for_agent(self._settings, workspace.name, cli=True))
         cmd = [
             self._cli_path,
             "-p",

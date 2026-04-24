@@ -47,7 +47,8 @@ def test_load_all_prompts(tmp_path: Path):
     protocol = tmp_path / "protocol"
     protocol.mkdir()
     (protocol / "02-system-prompts-managers.md").write_text(
-        "## Engineering Head\n\n```\nYou are the Engineering Head.\n```\n"
+        "## Engineering Head\n\n```\nYou are the Engineering Head.\n```\n\n"
+        "## Content Manager\n\n```\nYou are the Content Manager.\n```\n"
     )
     (protocol / "03-system-prompts-workers.md").write_text(
         "## Product Manager\n\n```\nYou are the PM.\n```\n\n"
@@ -57,8 +58,9 @@ def test_load_all_prompts(tmp_path: Path):
         "## Content QA\n\n```\nYou are Content QA.\n```\n"
     )
     prompts = load_all_prompts(protocol)
-    assert len(prompts) == 6
+    assert len(prompts) == 7
     assert "Engineering Head" in prompts["engineering_head"]
+    assert "Content Manager" in prompts["content_manager"]
     assert "PM" in prompts["product_manager"]
     assert "Dev" in prompts["dev_agent"]
     assert "Payment" in prompts["payment_agent"]

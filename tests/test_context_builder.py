@@ -38,7 +38,16 @@ def test_ensure_workspace_ready_grants_engineering_head_gh_resolve_rules(
     revisit cleanup. Those `gh` calls are otherwise blocked by Claude Code's
     headless risk heuristic (see TASK-067 post-mortem). Scope the extra grants
     tightly to close+comment on PRs and issues — no merge, no create, no delete.
+    Allow rules now come from ``### Allow Rules`` in protocol/02-system-prompts-managers.md.
     """
+    # Seed the minimal protocol file so allow_rules_for can parse the EH section.
+    protocol_dir = test_settings.get_protocol_dir()
+    protocol_dir.mkdir(parents=True, exist_ok=True)
+    (protocol_dir / "02-system-prompts-managers.md").write_text(
+        "## Engineering Head\n\n```\nYou are the Engineering Head.\n```\n\n"
+        "### Allow Rules\n\nBeyond the baseline `opc *` grant, this agent may run:\n\n"
+        "- `gh pr close`\n- `gh pr comment`\n- `gh issue close`\n- `gh issue comment`\n\n---\n"
+    )
     builder = ContextBuilder(test_settings)
     workspace = tmp_dir / "workspaces" / "engineering_head"
     builder.ensure_workspace_ready(

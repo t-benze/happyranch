@@ -95,6 +95,7 @@ class Orchestrator:
         return ClaudeExecutor(
             claude_cli_path=self._settings.claude_cli_path,
             permission_mode=self._settings.permission_mode,
+            settings=self._settings,
         )
 
     def _build_agent_prompt(
