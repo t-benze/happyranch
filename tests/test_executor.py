@@ -32,11 +32,9 @@ def test_claude_executor_launches_with_current_semantics(mock_subprocess, tmp_pa
         timeout_seconds=30,
     )
 
-    assert result == ExecutorResult(
-        success=True,
-        duration_seconds=result.duration_seconds,
-        session_id=result.session_id,
-    )
+    assert result.success is True
+    assert result.session_id is not None
+    assert result.error is None
 
     call_args = mock_subprocess.Popen.call_args
     cmd = call_args[0][0]
@@ -186,3 +184,80 @@ def test_run_invokes_on_started_with_pid(mock_subprocess, tmp_path):
     )
 
     assert received == [9123]
+
+
+# -- Diagnostic plumbing (rc + stdout_tail + stderr_tail) -----------------
+# These fields let _session_failed_note in run_step.py render self-diagnosing
+# audit notes when a subprocess exits cleanly but never calls back (the
+# TASK-077 signature). Without them the note degrades to "rc=?" with no
+# preview, which is exactly what was observed for senior_dev's first Codex
+# session.
+
+
+@patch("src.orchestrator.executors.subprocess")
+def test_claude_executor_populates_returncode_and_stdout_tail_on_success(
+    mock_subprocess, tmp_path,
+):
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=0, stdout="wrote ExplorePage.tsx\nbuild ok\n", stderr="",
+    )
+
+    executor = ClaudeExecutor(claude_cli_path="claude", permission_mode="auto")
+    result = executor.run(workspace=workspace, prompt="x", timeout_seconds=30)
+
+    assert result.success is True
+    assert result.returncode == 0
+    assert "wrote ExplorePage.tsx" in result.stdout_tail
+    assert result.stderr_tail == ""
+
+
+@patch("src.orchestrator.executors.subprocess")
+def test_codex_executor_populates_returncode_and_stderr_tail_on_failure(
+    mock_subprocess, tmp_path,
+):
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=2, stdout="", stderr="fatal: missing workspace\n",
+    )
+
+    executor = CodexExecutor(codex_cli_path="codex", sandbox_mode="workspace-write")
+    result = executor.run(workspace=workspace, prompt="x", timeout_seconds=30)
+
+    assert result.success is False
+    assert result.returncode == 2
+    assert "fatal: missing workspace" in result.stderr_tail
+    assert result.stdout_tail == ""
+
+
+@patch("src.orchestrator.executors.subprocess")
+def test_timeout_leaves_returncode_none_and_preserves_error(
+    mock_subprocess, tmp_path,
+):
+    """Timeouts kill the proc before an exit code is observed. We shouldn't
+    fabricate a return code — the enriched note will render `rc=?` in that
+    case, which is correct, while the `error` string carries the timeout."""
+    import subprocess
+
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+
+    proc = MagicMock()
+    proc.pid = 4242
+    proc.communicate.side_effect = [
+        subprocess.TimeoutExpired(cmd="codex", timeout=30),
+        ("", ""),
+    ]
+    mock_subprocess.TimeoutExpired = subprocess.TimeoutExpired
+    mock_subprocess.Popen.return_value = proc
+
+    executor = CodexExecutor(codex_cli_path="codex", sandbox_mode="workspace-write")
+    result = executor.run(workspace=workspace, prompt="x", timeout_seconds=30)
+
+    assert result.success is False
+    assert result.returncode is None
+    assert "timed out" in (result.error or "").lower()

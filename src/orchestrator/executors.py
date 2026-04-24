@@ -10,12 +10,27 @@ from pathlib import Path
 
 @dataclass
 class ExecutorResult:
-    """Outcome of a subprocess execution. Completion data lives in the DB."""
+    """Outcome of a subprocess execution. Completion data lives in the DB.
+
+    ``returncode``/``stdout_tail``/``stderr_tail`` feed the enriched
+    ``agent session failed`` note in ``run_step._session_failed_note`` so
+    a subprocess that exits without calling back is self-diagnosing from
+    the audit trail alone (the TASK-044/045/077 class of failure).
+    Timeouts leave ``returncode=None`` because the process was killed
+    before an exit code could be observed; in that case the enriched
+    note renders ``rc=?`` and the ``error`` string carries the timeout.
+    """
 
     success: bool
     duration_seconds: int
     session_id: str
+    returncode: int | None = None
+    stdout_tail: str = ""
+    stderr_tail: str = ""
     error: str | None = None
+
+
+_TAIL_BYTES = 2000
 
 
 def _run_command(
@@ -44,7 +59,7 @@ def _run_command(
     if on_started is not None:
         on_started(proc.pid)
     try:
-        _stdout, stderr = proc.communicate(input=input_text, timeout=timeout_seconds)
+        stdout, stderr = proc.communicate(input=input_text, timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
         proc.kill()
         # Drain pipes so we don't leak FDs on the retry-free path.
@@ -58,20 +73,28 @@ def _run_command(
             session_id=sid,
             error=f"Session timed out after {timeout_seconds} seconds",
         )
+    stdout_tail = (stdout or "")[-_TAIL_BYTES:]
+    stderr_tail = (stderr or "")[-_TAIL_BYTES:]
     if proc.returncode != 0:
-        error_summary = (stderr or _stdout or "").strip()
+        error_summary = (stderr or stdout or "").strip()
         if error_summary:
             error_summary = f": {error_summary}"
         return ExecutorResult(
             success=False,
             duration_seconds=int(time.monotonic() - start_time),
             session_id=sid,
+            returncode=proc.returncode,
+            stdout_tail=stdout_tail,
+            stderr_tail=stderr_tail,
             error=f"Command exited with code {proc.returncode}{error_summary}",
         )
     return ExecutorResult(
         success=True,
         duration_seconds=int(time.monotonic() - start_time),
         session_id=sid,
+        returncode=proc.returncode,
+        stdout_tail=stdout_tail,
+        stderr_tail=stderr_tail,
     )
 
 
