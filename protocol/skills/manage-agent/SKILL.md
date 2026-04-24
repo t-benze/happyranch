@@ -30,7 +30,8 @@ The two paths are **mutually exclusive** — supply one pair or the other, never
      "description": "Writes destination guides and travel articles",
      "system_prompt": "You are the Content Writer. Your responsibilities are...",
      "executor": "codex",
-     "repos": {"web-content": "https://github.com/t-benze/web-content.git"}
+     "repos": {"web-content": "https://github.com/t-benze/web-content.git"},
+     "allow_rules": ["gh api /repos/{owner}/{repo}/contents"]
    }
    ```
 

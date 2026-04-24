@@ -1162,3 +1162,128 @@ def test_manage_agent_failed_enrollment_does_not_log(
         if log["action"] == "agent_managed"
     ]
     assert len(managed) == 0
+
+
+# ---------------------------------------------------------------------------
+# ManageAgentBody.allow_rules validation tests (FIX 1 security hardening)
+# ---------------------------------------------------------------------------
+
+def test_manage_agent_body_allow_rules_accepts_valid() -> None:
+    """Valid allow_rules list with safe entries validates successfully."""
+    from src.daemon.routes.agents import ManageAgentBody
+
+    body = ManageAgentBody(
+        action="enroll",
+        name="seo_agent",
+        task_id="TASK-200",
+        session_id="sess-eh",
+        description="SEO agent",
+        system_prompt="You are the SEO Agent...",
+        allow_rules=["gh api", "curl https://api.example.com"],
+    )
+    assert body.allow_rules == ["gh api", "curl https://api.example.com"]
+
+
+def test_manage_agent_body_allow_rules_rejects_empty_string() -> None:
+    """Empty string entry in allow_rules must be rejected with 422."""
+    import pytest
+    from pydantic import ValidationError
+    from src.daemon.routes.agents import ManageAgentBody
+
+    with pytest.raises(ValidationError, match="non-empty"):
+        ManageAgentBody(
+            action="enroll",
+            name="seo_agent",
+            task_id="TASK-201",
+            session_id="sess-eh",
+            description="desc",
+            system_prompt="prompt",
+            allow_rules=[""],
+        )
+
+
+def test_manage_agent_body_allow_rules_rejects_whitespace_only() -> None:
+    """Whitespace-only entry in allow_rules must be rejected."""
+    import pytest
+    from pydantic import ValidationError
+    from src.daemon.routes.agents import ManageAgentBody
+
+    with pytest.raises(ValidationError, match="non-empty"):
+        ManageAgentBody(
+            action="enroll",
+            name="seo_agent",
+            task_id="TASK-202",
+            session_id="sess-eh",
+            description="desc",
+            system_prompt="prompt",
+            allow_rules=["   "],
+        )
+
+
+def test_manage_agent_body_allow_rules_rejects_embedded_newline() -> None:
+    """Entry with embedded newline must be rejected (newline = command separator)."""
+    import pytest
+    from pydantic import ValidationError
+    from src.daemon.routes.agents import ManageAgentBody
+
+    with pytest.raises(ValidationError):
+        ManageAgentBody(
+            action="enroll",
+            name="seo_agent",
+            task_id="TASK-203",
+            session_id="sess-eh",
+            description="desc",
+            system_prompt="prompt",
+            allow_rules=["gh api\ngh pr merge"],
+        )
+
+
+def test_manage_agent_body_allow_rules_rejects_embedded_semicolon() -> None:
+    """Entry with semicolon must be rejected (semicolon = command separator)."""
+    import pytest
+    from pydantic import ValidationError
+    from src.daemon.routes.agents import ManageAgentBody
+
+    with pytest.raises(ValidationError):
+        ManageAgentBody(
+            action="enroll",
+            name="seo_agent",
+            task_id="TASK-204",
+            session_id="sess-eh",
+            description="desc",
+            system_prompt="prompt",
+            allow_rules=["gh api; rm -rf /"],
+        )
+
+
+def test_manage_agent_body_allow_rules_rejects_leading_whitespace() -> None:
+    """Entry with leading whitespace must be rejected."""
+    import pytest
+    from pydantic import ValidationError
+    from src.daemon.routes.agents import ManageAgentBody
+
+    with pytest.raises(ValidationError, match="leading/trailing whitespace"):
+        ManageAgentBody(
+            action="enroll",
+            name="seo_agent",
+            task_id="TASK-205",
+            session_id="sess-eh",
+            description="desc",
+            system_prompt="prompt",
+            allow_rules=[" gh api"],
+        )
+
+
+def test_manage_agent_body_allow_rules_none_is_valid() -> None:
+    """allow_rules=None (omitted) is accepted — means use protocol defaults."""
+    from src.daemon.routes.agents import ManageAgentBody
+
+    body = ManageAgentBody(
+        action="enroll",
+        name="seo_agent",
+        task_id="TASK-206",
+        session_id="sess-eh",
+        description="desc",
+        system_prompt="prompt",
+    )
+    assert body.allow_rules is None

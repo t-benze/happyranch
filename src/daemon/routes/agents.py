@@ -9,7 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, field_validator, model_validator
 from sse_starlette.sse import EventSourceResponse
 
 from src.daemon.agent_config import (
@@ -70,6 +70,22 @@ class ManageAgentBody(BaseModel):
     repos: dict[str, str] | None = None
     executor: str | None = None
     allow_rules: list[str] | None = None
+
+    @field_validator("allow_rules")
+    @classmethod
+    def _reject_unsafe_allow_rules(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return v
+        forbidden = {"\n", "\r", ";", "|", "&", "`", "$("}
+        for entry in v:
+            if not entry or not entry.strip():
+                raise ValueError("allow_rules entries must be non-empty")
+            if entry != entry.strip():
+                raise ValueError("allow_rules entries must not have leading/trailing whitespace")
+            for bad in forbidden:
+                if bad in entry:
+                    raise ValueError(f"allow_rules entries must not contain {bad!r}")
+        return v
 
     @model_validator(mode="after")
     def _exactly_one_auth_path(self) -> ManageAgentBody:

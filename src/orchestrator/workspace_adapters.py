@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.config import Settings
+from src.infrastructure.database import Database
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ def _format_allow_rule(prefix: str, *, cli: bool) -> str:
 
 def allow_rules_for_agent(
     settings: Settings, agent_name: str | None, *, cli: bool,
-    db: object | None = None,
+    db: Database | None = None,
 ) -> list[str]:
     """Build the Bash allow-rule list for ``agent_name``.
 
@@ -48,7 +49,7 @@ def allow_rules_for_agent(
 
     prefixes: list[str] = []
     if db is not None:
-        enrollment = db.get_enrollment(agent_name)  # type: ignore[union-attr]
+        enrollment = db.get_enrollment(agent_name)
         if enrollment is not None:
             prefixes = list(enrollment.get("allow_rules") or ())
 
