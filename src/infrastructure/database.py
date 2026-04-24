@@ -379,12 +379,17 @@ class Database:
         return chain
 
     @_synchronized
-    def walk_revisit_chain(self, task_id: str, max_hops: int = 20) -> list[TaskRecord]:
+    def walk_revisit_chain(
+        self, task_id: str, max_hops: int = 20, truncate: bool = False,
+    ) -> list[TaskRecord]:
         """Return [task, predecessor, ..., original] by following revisit_of_task_id.
 
         Sideways edge — does NOT cross into parent_task_id ancestor space.
         Non-revisit tasks return [task]. Missing task returns []. Overruns
-        raise LineageTooDeep (same pattern as walk_ancestors).
+        raise LineageTooDeep by default (same pattern as walk_ancestors); pass
+        truncate=True to return the first max_hops entries instead — read
+        paths use this because revisit history grows naturally over a task's
+        lifetime and must not 500 once it exceeds the defensive bound.
         """
         chain: list[TaskRecord] = []
         current_id: str | None = task_id
@@ -396,7 +401,7 @@ class Database:
                 return chain
             chain.append(task)
             current_id = task.revisit_of_task_id
-        if current_id is not None:
+        if current_id is not None and not truncate:
             raise LineageTooDeep(
                 f"revisit chain from {task_id} exceeded {max_hops} hops"
             )

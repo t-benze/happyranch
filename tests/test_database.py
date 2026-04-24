@@ -756,6 +756,27 @@ def test_walk_revisit_chain_raises_when_over_limit(db):
         db.walk_revisit_chain(prev, max_hops=20)
 
 
+def test_walk_revisit_chain_truncates_when_asked(db):
+    """Read-path opt-in: return the partial chain on overrun instead of raising.
+
+    Revisit history grows naturally over a task's lifetime (unlike parent
+    ancestry, which is bounded by the delegation depth), so read endpoints
+    need a non-crashing path.
+    """
+    db.insert_task(TaskRecord(id="TASK-000", type=TaskType.GENERAL, brief="orig"))
+    prev = "TASK-000"
+    for i in range(1, 25):
+        tid = f"TASK-{i:03d}"
+        db.insert_task(TaskRecord(
+            id=tid, type=TaskType.GENERAL, brief=f"t{i}",
+            revisit_of_task_id=prev,
+        ))
+        prev = tid
+    chain = db.walk_revisit_chain(prev, max_hops=20, truncate=True)
+    assert len(chain) == 20
+    assert chain[0].id == prev
+
+
 def test_walk_ancestors_does_not_follow_revisit_edge(db):
     """REGRESSION GUARD: cascade-fail in run_step keys on walk_ancestors. If
     walk_ancestors ever followed revisit_of_task_id, a predecessor's FAILED

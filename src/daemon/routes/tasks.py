@@ -70,7 +70,9 @@ def get_task(task_id: str, request: Request) -> dict:
     # Revisit context: chain (this task back to original), direct revisits
     # (tasks that revisit THIS task), and the predecessor's normalized
     # prior_status (pulled from the revisit_of audit entry).
-    chain = [t.id for t in state.db.walk_revisit_chain(task_id)]
+    # truncate=True: revisit history grows naturally over a task's lifetime,
+    # so the read path must not 500 once the chain exceeds the defensive bound.
+    chain = [t.id for t in state.db.walk_revisit_chain(task_id, truncate=True)]
     direct_revisits = state.db.get_direct_revisits(task_id)
     audit_log = state.db.get_audit_logs(task_id)
     prior_status = None

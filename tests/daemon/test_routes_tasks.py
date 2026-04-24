@@ -1082,3 +1082,32 @@ def test_get_task_includes_revisit_chain_and_direct_revisits(
     assert body2["revisit_chain"] == ["TASK-001"]
     assert body2["predecessor_prior_status"] is None
     assert set(body2["direct_revisits"]) == {"TASK-002", "TASK-003"}
+
+
+def test_get_task_does_not_crash_on_long_revisit_chain(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """Regression: revisit history grows naturally; GET /tasks/{id} must not
+    500 once the chain exceeds walk_revisit_chain's defensive max_hops. The
+    route opts into truncation so the response stays usable even at depth.
+    """
+    from src.models import TaskRecord, TaskType
+    db = daemon_state.db
+    # Build a chain 25 deep — well past the default max_hops=20.
+    db.insert_task(TaskRecord(id="TASK-000", type=TaskType.GENERAL, brief="orig"))
+    prev = "TASK-000"
+    for i in range(1, 26):
+        tid = f"TASK-{i:03d}"
+        db.insert_task(TaskRecord(
+            id=tid, type=TaskType.GENERAL, brief=f"t{i}",
+            revisit_of_task_id=prev,
+        ))
+        prev = tid
+
+    r = TestClient(app).get(f"/api/v1/tasks/{prev}", headers=auth_headers)
+    assert r.status_code == 200
+    body = r.json()
+    # Chain is truncated to max_hops entries rather than raising.
+    assert len(body["revisit_chain"]) == 20
+    # Truncation preserves the most-recent end (head of the walk).
+    assert body["revisit_chain"][0] == prev
