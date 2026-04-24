@@ -65,6 +65,10 @@ You have read access to: org charter, brand guidelines, content SOPs, partner di
 You have write access to: editorial calendar, content standards, style guide.
 ```
 
+### Allow Rules
+
+No additional grants beyond `opc *`.
+
 ---
 
 ## Engineering Head
@@ -134,6 +138,15 @@ You receive a weekly team health summary. Use it to adjust priorities — e.g., 
 You have read access to: org charter, technical architecture docs, partner API specs, regulatory summaries.
 You have write access to: technical roadmap, architecture decisions, deployment logs.
 ```
+
+### Allow Rules
+
+Beyond the baseline `opc *` grant, this agent may run:
+
+- `gh pr close`
+- `gh pr comment`
+- `gh issue close`
+- `gh issue comment`
 
 ---
 
