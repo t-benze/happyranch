@@ -1,0 +1,165 @@
+"""Shared helpers for orchestrator unit tests."""
+from __future__ import annotations
+
+from collections import defaultdict
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from src.config import Settings
+from src.infrastructure.database import Database
+from src.models import BlockKind, CompletionReport, NextStep, TaskStatus
+from src.orchestrator.orchestrator import Orchestrator
+from src.orchestrator.executors import ExecutorResult
+from src.runtime import RuntimeDir
+
+
+# ---------------------------------------------------------------------------
+# ScriptedRunAgent — pops pre-declared (ExecutorResult, CompletionReport)
+# tuples per-agent in FIFO order.
+# ---------------------------------------------------------------------------
+
+class ScriptedRunAgent:
+    """Simulates _run_agent by returning pre-queued results per agent.
+
+    Usage::
+
+        scripted = ScriptedRunAgent()
+        scripted.enqueue("content_manager",
+                         decision=NextStep(action="delegate", agent="content_writer", prompt="x"),
+                         summary="delegating")
+        scripted.enqueue("content_writer", summary="draft done",
+                         artifact_dir="artifacts/TASK-C1")
+
+        monkeypatch.setattr(orch, "_run_agent", scripted)
+
+    The fake does NOT insert a task_result row — the orchestrator's `_run_agent`
+    returns ``(result, report)`` directly, and `run_step_impl` uses that tuple
+    without going back to the DB for the report.  `_log_step_result` just audits
+    the report it already has in hand.
+    """
+
+    def __init__(self) -> None:
+        # agent_name -> FIFO list of (ExecutorResult, CompletionReport | None)
+        self._queues: dict[str, list[tuple[ExecutorResult, CompletionReport | None]]] = (
+            defaultdict(list)
+        )
+
+    def enqueue(
+        self,
+        agent: str,
+        *,
+        decision: NextStep | None = None,
+        summary: str = "",
+        artifact_dir: str | None = None,
+        success: bool = True,
+    ) -> None:
+        """Pre-declare what _run_agent returns the next time `agent` is called."""
+        result = ExecutorResult(
+            success=success,
+            session_id=f"sess-fake-{agent}",
+            duration_seconds=0,
+        )
+        report: CompletionReport | None
+        if success:
+            report = CompletionReport(
+                task_id="",  # placeholder; run_step doesn't use this field from the return value
+                agent=agent,
+                status="completed",
+                confidence=90,
+                output_summary=summary,
+                decision=decision,
+                artifact_dir=artifact_dir,
+            )
+        else:
+            report = None
+        self._queues[agent].append((result, report))
+
+    def __call__(
+        self,
+        task_id: str,
+        agent: str,
+        prompt: str,
+        on_session_started: Any = None,
+    ) -> tuple[ExecutorResult, CompletionReport | None]:
+        queue = self._queues.get(agent)
+        if not queue:
+            raise AssertionError(
+                f"ScriptedRunAgent: unexpected call for agent={agent!r} task={task_id!r} "
+                f"(no enqueued responses left). Check test setup."
+            )
+        return queue.pop(0)
+
+
+# ---------------------------------------------------------------------------
+# run_task_to_completion — drives the full task tree without a real queue
+# ---------------------------------------------------------------------------
+
+_TERMINAL = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED})
+
+
+def _is_eligible(db: Database, tid: str) -> bool:
+    """Return True if run_step would accept this task (mirrors run_step entry check)."""
+    task = db.get_task(tid)
+    if task is None:
+        return False
+    if task.status == TaskStatus.PENDING:
+        return True
+    if task.status == TaskStatus.BLOCKED and task.block_kind == BlockKind.DELEGATED:
+        children = [db.get_task(cid) for cid in db.get_children(tid)]
+        return all(c is not None and c.status in _TERMINAL for c in children)
+    return False
+
+
+def _find_eligible_in_tree(db: Database, root_id: str) -> list[str]:
+    """BFS the task tree, return all run_step-eligible task IDs (leaves first)."""
+    visited: list[str] = []
+    bfs_queue = [root_id]
+    while bfs_queue:
+        tid = bfs_queue.pop(0)
+        task = db.get_task(tid)
+        if task is None:
+            continue
+        visited.append(tid)
+        bfs_queue.extend(db.get_children(tid))
+    # Reverse so we process deepest (leaf) eligible tasks before their parents.
+    return [tid for tid in reversed(visited) if _is_eligible(db, tid)]
+
+
+def run_task_to_completion(orch: Orchestrator, task_id: str, max_steps: int = 20) -> None:
+    """Drive the entire task tree until the root reaches a terminal state.
+
+    The real daemon uses an async queue; this helper replicates that by
+    scanning the tree for any PENDING task and calling run_step on it.
+    """
+    for _ in range(max_steps):
+        root = orch._db.get_task(task_id)
+        if root is None:
+            return
+        if root.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+            return
+        if root.status == TaskStatus.BLOCKED and root.block_kind == BlockKind.ESCALATED:
+            return
+        # Find next eligible task in tree (leaves first so children run before parents resume).
+        eligible = _find_eligible_in_tree(orch._db, task_id)
+        if not eligible:
+            return
+        orch.run_step(eligible[0])
+    raise AssertionError(
+        f"task {task_id} did not terminate within {max_steps} steps"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def runtime(tmp_path: Path) -> RuntimeDir:
+    return RuntimeDir.init(tmp_path / "rt")
+
+
+@pytest.fixture
+def db(runtime: RuntimeDir) -> Database:
+    return Database(runtime.db_path)

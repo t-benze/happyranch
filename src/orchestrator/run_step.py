@@ -188,6 +188,20 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
                 orch._queue.put_nowait(task_id)
             return
         from src.models import TaskRecord
+        # Revision tracking: if the target agent already has a completed child
+        # under this task (i.e. the manager is re-delegating after QA feedback),
+        # bump the root task's revision_count so the audit trail reflects the
+        # number of revision cycles. This mirrors the spec's rule:
+        # "bumps it when decision.agent == previous_delegate_target_after_qa".
+        existing_children = db.get_children(task_id)
+        already_delegated = any(
+            (c := db.get_task(cid)) is not None
+            and c.assigned_agent == decision.agent
+            and c.status == TaskStatus.COMPLETED
+            for cid in existing_children
+        )
+        if already_delegated:
+            db.increment_revision_count(task_id)
         child_id = db.next_task_id()
         db.insert_task(TaskRecord(
             id=child_id,
