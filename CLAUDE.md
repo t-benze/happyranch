@@ -23,7 +23,6 @@ The following documents are in the `protocol/` folder.
   - `05a-teams.md` — Concept mapping, team definitions, agent tools, runtime responsibilities
   - `05b-agent-runtime.md` — Executor model, memory architecture, lifecycle & scheduling
   - `05c-orchestrator.md` — Orchestrator responsibilities, performance tiers, permissions, task state machine
-  - `05d-feishu.md` — Founder interaction via Feishu, bot architecture, notification tiers
   - `05e-dashboard.md` — Dashboard layout, API endpoints, implementation order
 - `06-knowledge-base.md` — Shared KB rules: entry schema, author/founder write paths, precedent workflow, search, index regeneration
 
@@ -51,9 +50,8 @@ The following documents are in the `protocol/` folder.
 7. **Ops Team** — Partner Liaison + Compliance Agent + Operations Manager. Enables real cross-team audits for payment changes.
 8. **Inter-Team communication** — Orchestrator routes tasks between Teams.
 9. **CX Team** — Support Agent may run as persistent agent for real-time chat, not batch.
-10. **Feishu integration** — Bot architecture, notification tiers, reply parsing.
-11. **Founder dashboard** — Aggregate audit logs, escalation summaries, scorecards into weekly view.
-12. ~~**Talk flow**~~ done — founder↔agent conversations with SQLite-tracked talks, transcripts under `<runtime>/talks/`, end-of-talk learnings + KB entries.
+10. **Founder dashboard** — Aggregate audit logs, escalation summaries, scorecards into weekly view.
+11. ~~**Talk flow**~~ done — founder↔agent conversations with SQLite-tracked talks, transcripts under `<runtime>/talks/`, end-of-talk learnings + KB entries.
 
 ## Key Constraints
 - **Two jurisdictions**: Hong Kong (PDPO), Macau (PDPA) — both must be complied with simultaneously. Mainland China is explicitly out of scope (PIPL/CSL/DSL do not apply).
@@ -244,11 +242,11 @@ Both surfaces are generated from `allow_rules_for_agent(agent_name, cli=...)` in
 
 **Baseline grant (every agent):** `opc` — the callback channel.
 
-**Engineering Head extras** (see `AGENT_EXTRA_ALLOWED_BASH_PREFIXES`): `gh pr close`, `gh pr comment`, `gh issue close`, `gh issue comment`. Purpose: EH needs to close superseded/stale PRs and close issues substantively fixed on `main` during revisit cleanup — without these, Claude Code's headless risk heuristic refuses those calls even in `--permission-mode auto` (see TASK-067, where `gh issue close 93` was declined). The extras are deliberately narrow — no `gh pr merge`, no `gh pr create`, no `gh issue delete` — because each extra prefix can silently mutate shared external state on every future task.
+**Engineering Head extras** (see `### Allow Rules` under "Engineering Head" in `protocol/02-system-prompts-managers.md`): `gh pr close`, `gh pr comment`, `gh issue close`, `gh issue comment`. Purpose: EH needs to close superseded/stale PRs and close issues substantively fixed on `main` during revisit cleanup — without these, Claude Code's headless risk heuristic refuses those calls even in `--permission-mode auto` (see TASK-067, where `gh issue close 93` was declined). The extras are deliberately narrow — no `gh pr merge`, no `gh pr create`, no `gh issue delete` — because each extra prefix can silently mutate shared external state on every future task.
 
 **Why both surfaces for Claude:** in headless `-p` mode, Claude Code 2.1.105 ignores the workspace's `permissions.allow` list (observed empirically: `command_permissions.allowedTools: []` regardless of settings.json). Without the `--allowedTools` flag the agent's first `opc ...` call is blocked by auto-mode prompting, the callback never reaches the daemon, and the task silently rejects — see the TASK-007/008/009 post-mortem.
 
-**When adding new orchestrator-side capabilities, keep them under the `opc` binary so they stay inside the baseline allow rule.** Only add a raw-tool prefix to `AGENT_EXTRA_ALLOWED_BASH_PREFIXES` when the operation genuinely cannot be wrapped in `opc` (e.g., third-party CLI targeting external infrastructure we don't own). Each new prefix bypasses the auto-mode risk heuristic for every task that agent runs thereafter, so scope it as narrowly as the `gh pr close`/`gh issue close` grants above.
+**When adding new orchestrator-side capabilities, keep them under the `opc` binary so they stay inside the baseline allow rule.** Only add a raw-tool prefix to the protocol's `### Allow Rules` list when the operation genuinely cannot be wrapped in `opc` (e.g., third-party CLI targeting external infrastructure we don't own). Each new prefix bypasses the auto-mode risk heuristic for every task that agent runs thereafter, so scope it as narrowly as the `gh pr close`/`gh issue close` grants above.
 
 **Agent-side completion payloads must be single-line `opc` invocations.** This is mandatory across executors. For Claude specifically, the permission matcher treats newlines (and `&&`, `||`, `;`, `|`) as command separators and matches each subcommand independently. Multi-line bash with backslash continuations is rejected even though the surface command is `opc ...`. The `start-task` skill therefore mandates writing the payload to `/tmp/completion-<task_id>.json` and invoking `opc report-completion --from-file <path>` as a single line. Any new agent-facing callback with multiple arguments should follow the same `--from-file` pattern.
 
@@ -320,7 +318,7 @@ scripts/daemon.sh status                                        # or stop
 opc init /path/to/runtime                                       # register + activate a runtime dir
 opc use /path/to/other-runtime                                  # switch the daemon's active runtime
 opc run --brief "Explore the payment module"                    # submit a task; EH decides approach
-opc run --task implement_feature --brief "Add Alipay support"   # with task type hint
+opc run --team engineering --brief "Add Alipay support"          # route to a team
 opc tail TASK-001            # stream live SSE events for a task
 opc tasks                    # list recent tasks
 opc details TASK-001         # show task details (status, block_kind, note, results, audit log)
@@ -331,7 +329,7 @@ opc audit TASK-007 --json                        # raw JSON with full payloads
 opc init-agent               # initialize all agent workspaces (repo clones + system prompts + skills)
 opc init-agent dev_agent     # initialize a specific agent
 opc recall TASK-001 [--tree] [--fetch-artifact <relpath>]   # fetch task brief + artifact tree/content
-# Knowledge base (read: any; write: any via --from-file; delete: engineering_head; precedent: founder):
+# Knowledge base (read: any; write: any via --from-file; delete: any team manager (audited); founder via --as-founder; precedent: founder):
 opc kb list [--topic <t>] [--type reference|precedent]
 opc kb get <slug>
 opc kb search <query> [--limit N]
@@ -365,8 +363,7 @@ opc backfill-enrollments               # founder recovery: import pre-existing w
 ## Knowledge Base
 
 Shared precedents + domain reference live under `<runtime>/kb/`. Any agent can
-read; any agent can write (via `opc kb add --from-file`); only Engineering Head
-deletes. Full rules: `protocol/06-knowledge-base.md`. The founder records
+read; any agent can write (via `opc kb add --from-file`); any team manager deletes (audited); founder overrides via `--as-founder`. Full rules: `protocol/06-knowledge-base.md`. The founder records
 precedents via the two-command flow `opc resolve-escalation ...` (state
 transition) followed by `opc kb precedent --as-founder ...` (KB write, founder-only
 per spec §4.6).
@@ -384,7 +381,7 @@ No vector store yet.
 ## Revisit (founder recovery)
 
 `opc revisit <task-id>` is a founder-initiated primitive that spawns a **new
-root task** inheriting the brief + task_type of a terminal predecessor. The
+root task** inheriting the brief + team of a terminal predecessor. The
 existing lineage stays frozen (read-only history) — nothing in the old tree
 is mutated. Design doc: `docs/superpowers/specs/2026-04-21-opc-revisit-design.md`.
 

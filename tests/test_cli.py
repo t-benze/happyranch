@@ -9,11 +9,11 @@ def test_run_subcommand():
     parser = build_parser()
     args = parser.parse_args([
         "run",
-        "--task", "implement_feature",
+        "--team", "engineering",
         "--brief", "Add Alipay support",
     ])
     assert args.command == "run"
-    assert args.task == "implement_feature"
+    assert args.team == "engineering"
     assert args.brief == "Add Alipay support"
 
 
@@ -79,18 +79,18 @@ def test_no_command_prints_help(capsys):
 
 
 
-def test_run_without_task_flag():
+def test_run_without_team_flag():
     parser = build_parser()
     args = parser.parse_args(["run", "--brief", "Explore the codebase"])
     assert args.command == "run"
-    assert args.task == "general"
+    assert args.team is None
     assert args.brief == "Explore the codebase"
 
 
-def test_run_with_task_flag():
+def test_run_with_team_flag():
     parser = build_parser()
-    args = parser.parse_args(["run", "--task", "bug_fix", "--brief", "Fix it"])
-    assert args.task == "bug_fix"
+    args = parser.parse_args(["run", "--team", "content", "--brief", "Write guide"])
+    assert args.team == "content"
 
 
 def test_cmd_init_calls_register_endpoint(tmp_path, capsys):
@@ -139,7 +139,7 @@ def test_cmd_tasks_calls_list_endpoint(capsys):
     fake = MagicMock()
     fake.get.return_value.status_code = 200
     fake.get.return_value.json.return_value = {"tasks": [
-        {"id": "TASK-001", "type": "general", "status": "approved", "brief": "x"},
+        {"id": "TASK-001", "team": "engineering", "status": "approved", "brief": "x"},
     ]}
     with patch("src.cli.OpcClient.from_env", return_value=fake):
         args = MagicMock(limit=20)
@@ -160,17 +160,17 @@ def test_cmd_tasks_shows_assigned_agent_column(capsys):
     fake.get.return_value.status_code = 200
     fake.get.return_value.json.return_value = {"tasks": [
         {
-            "id": "TASK-020", "type": "bug_fix", "status": "in_progress",
+            "id": "TASK-020", "team": "engineering", "status": "in_progress",
             "brief": "Fix the save button",
             "assigned_agent": "dev_agent",
         },
         {
-            "id": "TASK-018", "type": "bug_fix", "status": "in_progress",
+            "id": "TASK-018", "team": "engineering", "status": "in_progress",
             "brief": "Re-dispatch of TASK-017",
             "assigned_agent": "engineering_head",
         },
         {
-            "id": "TASK-021", "type": "general", "status": "pending",
+            "id": "TASK-021", "team": "engineering", "status": "pending",
             "brief": "Not yet assigned",
             "assigned_agent": None,
         },
@@ -236,10 +236,10 @@ def test_cmd_run_submits_then_streams(capsys):
     ])
 
     with patch("src.cli.OpcClient.from_env", return_value=fake):
-        args = MagicMock(task="general", brief="x")
+        args = MagicMock(team=None, brief="x")
         cmd_run(args)
 
-    fake.post.assert_called_once_with("/api/v1/tasks", json={"type": "general", "brief": "x"})
+    fake.post.assert_called_once_with("/api/v1/tasks", json={"brief": "x"})
     out = capsys.readouterr().out
     assert "TASK-001" in out
     assert "task_complete" in out
@@ -1024,10 +1024,10 @@ def test_cmd_tasks_shows_block_kind_when_present(capsys):
     response = MagicMock()
     response.status_code = 200
     response.json.return_value = {"tasks": [
-        {"id": "T-1", "type": "general", "status": "blocked",
+        {"id": "T-1", "team": "engineering", "status": "blocked",
          "assigned_agent": "engineering_head", "brief": "waiting",
          "block_kind": "delegated"},
-        {"id": "T-2", "type": "general", "status": "completed",
+        {"id": "T-2", "team": "engineering", "status": "completed",
          "assigned_agent": "engineering_head", "brief": "done",
          "block_kind": None},
     ]}
@@ -1037,6 +1037,31 @@ def test_cmd_tasks_shows_block_kind_when_present(capsys):
     out = capsys.readouterr().out
     assert "blocked(delegated)" in out or "blocked (delegated)" in out
     assert "completed" in out
+
+
+def test_cmd_tasks_renders_team_column(capsys):
+    """Regression: the task-list table must read the `team` column, not the
+    retired `type` column. Rendering a payload that matches the real API
+    response (no `type` key) used to raise KeyError and crash `opc tasks`.
+    """
+    from src.cli import cmd_tasks
+    from argparse import Namespace
+
+    fake = MagicMock()
+    fake.get.return_value.status_code = 200
+    fake.get.return_value.json.return_value = {"tasks": [
+        {"id": "TASK-030", "team": "content", "status": "in_progress",
+         "assigned_agent": "content_manager", "brief": "Draft Macau visa guide"},
+        {"id": "TASK-031", "team": "engineering", "status": "completed",
+         "assigned_agent": "engineering_head", "brief": "Add Alipay"},
+    ]}
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_tasks(Namespace(limit=20))
+    out = capsys.readouterr().out
+    assert "Team" in out
+    assert "Type" not in out.splitlines()[0]
+    assert "content" in out
+    assert "engineering" in out
 
 
 def test_talk_start_parses():
@@ -1539,13 +1564,13 @@ def test_cmd_tasks_suffixes_revisit_rows(capsys):
     fake.get.return_value.status_code = 200
     fake.get.return_value.json.return_value = {"tasks": [
         {
-            "id": "TASK-072", "type": "implement_feature", "status": "pending",
+            "id": "TASK-072", "team": "engineering", "status": "pending",
             "brief": "Add Alipay support",
             "assigned_agent": None,
             "revisit_of_task_id": "TASK-052",
         },
         {
-            "id": "TASK-001", "type": "general", "status": "completed",
+            "id": "TASK-001", "team": "engineering", "status": "completed",
             "brief": "plain task",
             "assigned_agent": "dev_agent",
             "revisit_of_task_id": None,

@@ -33,6 +33,10 @@ class RuntimeDir:
     def marker_file(self) -> Path:
         return self._path / "opc.yaml"
 
+    @property
+    def teams_config_path(self) -> Path:
+        return self._path / "teams.yaml"
+
     # ------------------------------------------------------------------
     # Validation
     # ------------------------------------------------------------------
@@ -63,6 +67,10 @@ class RuntimeDir:
         if not instance.marker_file.exists():
             instance.marker_file.write_text("")
         instance.workspaces_dir.mkdir(parents=True, exist_ok=True)
+        # Deferred import: teams.py imports RuntimeDir, so the import lives
+        # inside the function to avoid a cycle at module-load time.
+        from src.orchestrator.teams import TeamsRegistry
+        TeamsRegistry.seed_default(instance)
         return instance
 
     @classmethod

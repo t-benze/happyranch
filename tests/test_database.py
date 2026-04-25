@@ -3,7 +3,7 @@ import threading
 import pytest
 
 from src.infrastructure.database import Database, LineageTooDeep
-from src.models import TaskRecord, TaskStatus, TaskType
+from src.models import TaskRecord, TaskStatus
 
 
 def test_init_creates_tables(db):
@@ -17,14 +17,12 @@ def test_init_creates_tables(db):
 def test_insert_and_get_task(db):
     task = TaskRecord(
         id="TASK-001",
-        type=TaskType.IMPLEMENT_FEATURE,
         brief="Add Alipay support",
     )
     db.insert_task(task)
     retrieved = db.get_task("TASK-001")
     assert retrieved is not None
     assert retrieved.id == "TASK-001"
-    assert retrieved.type == TaskType.IMPLEMENT_FEATURE
     assert retrieved.brief == "Add Alipay support"
     assert retrieved.status == TaskStatus.PENDING
 
@@ -38,8 +36,8 @@ def test_list_tasks_empty_returns_empty_list(db):
 
 
 def test_list_tasks_returns_most_recent_first(db):
-    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.BUG_FIX, brief="Fix it"))
-    db.insert_task(TaskRecord(id="TASK-002", type=TaskType.IMPLEMENT_FEATURE, brief="Build it"))
+    db.insert_task(TaskRecord(id="TASK-001", brief="Fix it"))
+    db.insert_task(TaskRecord(id="TASK-002", brief="Build it"))
     tasks = db.list_tasks()
     assert len(tasks) == 2
     assert tasks[0].id == "TASK-002"
@@ -48,7 +46,6 @@ def test_list_tasks_returns_most_recent_first(db):
 def test_update_task_status(db):
     task = TaskRecord(
         id="TASK-002",
-        type=TaskType.BUG_FIX,
         brief="Fix broken links",
     )
     db.insert_task(task)
@@ -61,7 +58,6 @@ def test_update_task_status(db):
 def test_increment_revision_count(db):
     task = TaskRecord(
         id="TASK-003",
-        type=TaskType.IMPLEMENT_FEATURE,
         brief="Refactor auth",
     )
     db.insert_task(task)
@@ -146,7 +142,7 @@ def test_upsert_scorecard_updates_existing(db):
 
 def test_next_task_id(db):
     assert db.next_task_id() == "TASK-001"
-    task = TaskRecord(id="TASK-001", type=TaskType.BUG_FIX, brief="test")
+    task = TaskRecord(id="TASK-001", brief="test")
     db.insert_task(task)
     assert db.next_task_id() == "TASK-002"
 
@@ -274,6 +270,14 @@ def test_list_enrollments_by_status(db):
     assert len(all_e) == 2
 
 
+def test_list_approved_agent_names(db):
+    db.insert_enrollment("alpha", "desc", "prompt")
+    db.insert_enrollment("beta", "desc", "prompt")
+    db.update_enrollment_status("beta", "approved")
+    result = db.list_approved_agent_names()
+    assert result == ["beta"]
+
+
 def test_update_enrollment_status(db):
     db.insert_enrollment("x", "desc", "prompt")
     db.update_enrollment_status("x", "approved")
@@ -302,9 +306,9 @@ def test_delete_enrollment(db):
 
 
 def test_insert_task_with_parent_round_trips(db):
-    parent = TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="root")
+    parent = TaskRecord(id="TASK-001", brief="root")
     child = TaskRecord(
-        id="TASK-002", type=TaskType.GENERAL, brief="child", parent_task_id="TASK-001"
+        id="TASK-002", brief="child", parent_task_id="TASK-001"
     )
     db.insert_task(parent)
     db.insert_task(child)
@@ -359,7 +363,7 @@ def test_insert_task_result_decision_json_optional(db):
 
 
 def test_update_task_sets_final_summary_and_artifact(db):
-    db.insert_task(TaskRecord(id="TASK-010", type=TaskType.GENERAL, brief="b"))
+    db.insert_task(TaskRecord(id="TASK-010", brief="b"))
     db.update_task(
         "TASK-010",
         note="Produced Q1 report",
@@ -371,22 +375,22 @@ def test_update_task_sets_final_summary_and_artifact(db):
 
 
 def test_final_fields_default_to_none(db):
-    db.insert_task(TaskRecord(id="TASK-011", type=TaskType.GENERAL, brief="b"))
+    db.insert_task(TaskRecord(id="TASK-011", brief="b"))
     got = db.get_task("TASK-011")
     assert got.note is None
     assert got.final_artifact_dir is None
 
 
 def test_get_children_returns_direct_children_only(db):
-    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="root"))
+    db.insert_task(TaskRecord(id="TASK-001", brief="root"))
     db.insert_task(TaskRecord(
-        id="TASK-002", type=TaskType.GENERAL, brief="c1", parent_task_id="TASK-001"
+        id="TASK-002", brief="c1", parent_task_id="TASK-001"
     ))
     db.insert_task(TaskRecord(
-        id="TASK-003", type=TaskType.GENERAL, brief="c2", parent_task_id="TASK-001"
+        id="TASK-003", brief="c2", parent_task_id="TASK-001"
     ))
     db.insert_task(TaskRecord(
-        id="TASK-004", type=TaskType.GENERAL, brief="grandchild", parent_task_id="TASK-002"
+        id="TASK-004", brief="grandchild", parent_task_id="TASK-002"
     ))
     assert db.get_children("TASK-001") == ["TASK-002", "TASK-003"]
     assert db.get_children("TASK-002") == ["TASK-004"]
@@ -394,9 +398,9 @@ def test_get_children_returns_direct_children_only(db):
 
 
 def test_get_recall_payload_returns_task_with_children(db):
-    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="root"))
+    db.insert_task(TaskRecord(id="TASK-001", brief="root"))
     db.insert_task(TaskRecord(
-        id="TASK-002", type=TaskType.GENERAL, brief="child", parent_task_id="TASK-001"
+        id="TASK-002", brief="child", parent_task_id="TASK-001"
     ))
     db.update_task(
         "TASK-001",
@@ -419,10 +423,10 @@ def test_get_recall_payload_missing_task_returns_none(db):
 
 def test_update_task_writes_block_kind_and_note(tmp_path):
     from src.infrastructure.database import Database
-    from src.models import TaskRecord, TaskStatus, TaskType, BlockKind
+    from src.models import TaskRecord, TaskStatus, BlockKind
 
     db = Database(tmp_path / "opc.db")
-    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="x"))
+    db.insert_task(TaskRecord(id="TASK-001", brief="x"))
     db.update_task(
         "TASK-001",
         status=TaskStatus.BLOCKED,
@@ -441,10 +445,10 @@ def test_update_task_can_clear_block_kind_to_none(tmp_path):
     """When a task unblocks, block_kind and note must be nulled — the existing
     update_task `v is not None` filter would silently drop these writes."""
     from src.infrastructure.database import Database
-    from src.models import TaskRecord, TaskStatus, TaskType, BlockKind
+    from src.models import TaskRecord, TaskStatus, BlockKind
 
     db = Database(tmp_path / "opc.db")
-    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="x"))
+    db.insert_task(TaskRecord(id="TASK-001", brief="x"))
     db.update_task("TASK-001", status=TaskStatus.BLOCKED,
                    block_kind=BlockKind.DELEGATED, note="x")
     db.update_task("TASK-001", status=TaskStatus.IN_PROGRESS,
@@ -456,7 +460,7 @@ def test_update_task_can_clear_block_kind_to_none(tmp_path):
 
 def test_get_nonterminal_task_ids_includes_blocked(tmp_path):
     from src.infrastructure.database import Database
-    from src.models import TaskRecord, TaskStatus, TaskType, BlockKind
+    from src.models import TaskRecord, TaskStatus, BlockKind
 
     db = Database(tmp_path / "opc.db")
     for tid, status, bk in [
@@ -467,7 +471,7 @@ def test_get_nonterminal_task_ids_includes_blocked(tmp_path):
         ("T-CMP", TaskStatus.COMPLETED, None),
         ("T-FAI", TaskStatus.FAILED, None),
     ]:
-        db.insert_task(TaskRecord(id=tid, type=TaskType.GENERAL, brief="x"))
+        db.insert_task(TaskRecord(id=tid, brief="x"))
         db.update_task(tid, status=status, block_kind=bk)
 
     ids = set(db.get_nonterminal_task_ids())
@@ -476,11 +480,11 @@ def test_get_nonterminal_task_ids_includes_blocked(tmp_path):
 
 def test_list_blocked_with_kind(tmp_path):
     from src.infrastructure.database import Database
-    from src.models import TaskRecord, TaskStatus, TaskType, BlockKind
+    from src.models import TaskRecord, TaskStatus, BlockKind
 
     db = Database(tmp_path / "opc.db")
-    db.insert_task(TaskRecord(id="T-1", type=TaskType.GENERAL, brief="x"))
-    db.insert_task(TaskRecord(id="T-2", type=TaskType.GENERAL, brief="y"))
+    db.insert_task(TaskRecord(id="T-1", brief="x"))
+    db.insert_task(TaskRecord(id="T-2", brief="y"))
     db.update_task("T-1", status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED)
     db.update_task("T-2", status=TaskStatus.BLOCKED, block_kind=BlockKind.ESCALATED)
 
@@ -491,30 +495,30 @@ def test_list_blocked_with_kind(tmp_path):
 
 
 def test_walk_ancestors_leaf_to_root_returns_chain(db):
-    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="root"))
+    db.insert_task(TaskRecord(id="TASK-001", brief="root"))
     db.insert_task(TaskRecord(
-        id="TASK-002", type=TaskType.GENERAL, brief="mid", parent_task_id="TASK-001",
+        id="TASK-002", brief="mid", parent_task_id="TASK-001",
     ))
     db.insert_task(TaskRecord(
-        id="TASK-003", type=TaskType.GENERAL, brief="leaf", parent_task_id="TASK-002",
+        id="TASK-003", brief="leaf", parent_task_id="TASK-002",
     ))
     chain = db.walk_ancestors("TASK-003")
     assert [t.id for t in chain] == ["TASK-003", "TASK-002", "TASK-001"]
 
 
 def test_walk_ancestors_root_returns_single_element(db):
-    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="root"))
+    db.insert_task(TaskRecord(id="TASK-001", brief="root"))
     chain = db.walk_ancestors("TASK-001")
     assert [t.id for t in chain] == ["TASK-001"]
 
 
 def test_walk_ancestors_raises_when_over_limit(db):
-    db.insert_task(TaskRecord(id="TASK-000", type=TaskType.GENERAL, brief="root"))
+    db.insert_task(TaskRecord(id="TASK-000", brief="root"))
     prev = "TASK-000"
     for i in range(1, 25):  # 24 descendants + root = 25 hops
         tid = f"TASK-{i:03d}"
         db.insert_task(TaskRecord(
-            id=tid, type=TaskType.GENERAL, brief=f"t{i}", parent_task_id=prev,
+            id=tid, brief=f"t{i}", parent_task_id=prev,
         ))
         prev = tid
     with pytest.raises(LineageTooDeep):
@@ -560,7 +564,7 @@ def test_concurrent_access_from_multiple_threads_is_safe(db):
     """
     for i in range(10):
         db.insert_task(TaskRecord(
-            id=f"TASK-{i:03d}", type=TaskType.GENERAL, brief=f"task {i}",
+            id=f"TASK-{i:03d}", brief=f"task {i}",
         ))
 
     errors: list[BaseException] = []
@@ -603,10 +607,9 @@ def test_concurrent_access_from_multiple_threads_is_safe(db):
 
 
 def test_insert_task_round_trips_revisit_of(db):
-    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="predecessor"))
+    db.insert_task(TaskRecord(id="TASK-001", brief="predecessor"))
     db.insert_task(TaskRecord(
         id="TASK-002",
-        type=TaskType.GENERAL,
         brief="revisit",
         revisit_of_task_id="TASK-001",
     ))
@@ -620,9 +623,9 @@ def test_insert_task_round_trips_revisit_of(db):
 
 
 def test_list_tasks_exposes_revisit_of(db):
-    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="pre"))
+    db.insert_task(TaskRecord(id="TASK-001", brief="pre"))
     db.insert_task(TaskRecord(
-        id="TASK-002", type=TaskType.GENERAL, brief="rv",
+        id="TASK-002", brief="rv",
         revisit_of_task_id="TASK-001",
     ))
     rows = {t.id: t for t in db.list_tasks()}
@@ -634,7 +637,7 @@ def test_update_task_cannot_change_revisit_of_task_id(db):
     """The column is write-once at insert time. Guards against accidental
     mutation from other write paths."""
     db.insert_task(TaskRecord(
-        id="TASK-001", type=TaskType.GENERAL, brief="rv",
+        id="TASK-001", brief="rv",
         revisit_of_task_id="TASK-000",
     ))
     db.update_task("TASK-001", revisit_of_task_id="TASK-999")
@@ -650,8 +653,8 @@ def test_backfill_populates_revisit_of_task_id_from_audit_log(tmp_path):
     path = tmp_path / "backfill.db"
     db = Database(path)
 
-    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="pre"))
-    db.insert_task(TaskRecord(id="TASK-002", type=TaskType.GENERAL, brief="rv"))
+    db.insert_task(TaskRecord(id="TASK-001", brief="pre"))
+    db.insert_task(TaskRecord(id="TASK-002", brief="rv"))
     # Forcibly NULL the column to simulate legacy data even if Task 3 shipped first.
     db._conn.execute(
         "UPDATE tasks SET revisit_of_task_id = NULL WHERE id = 'TASK-002'"
@@ -684,9 +687,9 @@ def test_backfill_does_not_overwrite_existing_value(tmp_path):
     from src.infrastructure.database import Database
     path = tmp_path / "no-overwrite.db"
     db = Database(path)
-    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="pre"))
+    db.insert_task(TaskRecord(id="TASK-001", brief="pre"))
     db.insert_task(TaskRecord(
-        id="TASK-002", type=TaskType.GENERAL, brief="rv",
+        id="TASK-002", brief="rv",
         revisit_of_task_id="TASK-001",
     ))
     # Seed a conflicting audit entry; backfill must NOT overwrite.
@@ -708,7 +711,7 @@ def test_backfill_is_a_noop_when_nothing_to_backfill(tmp_path):
     from src.infrastructure.database import Database
     path = tmp_path / "clean.db"
     db = Database(path)
-    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="x"))
+    db.insert_task(TaskRecord(id="TASK-001", brief="x"))
     db.close()
     Database(path).close()
 
@@ -716,13 +719,13 @@ def test_backfill_is_a_noop_when_nothing_to_backfill(tmp_path):
 def test_walk_revisit_chain_returns_task_to_original(db):
     """Stacked chain: P (original) → N (revisit of P) → N' (revisit of N).
     walk_revisit_chain(N') returns [N', N, P]."""
-    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="P"))
+    db.insert_task(TaskRecord(id="TASK-001", brief="P"))
     db.insert_task(TaskRecord(
-        id="TASK-002", type=TaskType.GENERAL, brief="N",
+        id="TASK-002", brief="N",
         revisit_of_task_id="TASK-001",
     ))
     db.insert_task(TaskRecord(
-        id="TASK-003", type=TaskType.GENERAL, brief="N-prime",
+        id="TASK-003", brief="N-prime",
         revisit_of_task_id="TASK-002",
     ))
     chain = db.walk_revisit_chain("TASK-003")
@@ -731,7 +734,7 @@ def test_walk_revisit_chain_returns_task_to_original(db):
 
 def test_walk_revisit_chain_non_revisit_returns_single(db):
     """Plain task: returns [task] only."""
-    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="plain"))
+    db.insert_task(TaskRecord(id="TASK-001", brief="plain"))
     chain = db.walk_revisit_chain("TASK-001")
     assert [t.id for t in chain] == ["TASK-001"]
 
@@ -743,12 +746,12 @@ def test_walk_revisit_chain_missing_task_returns_empty(db):
 def test_walk_revisit_chain_raises_when_over_limit(db):
     """Defensive bound matching walk_ancestors."""
     from src.infrastructure.database import LineageTooDeep
-    db.insert_task(TaskRecord(id="TASK-000", type=TaskType.GENERAL, brief="orig"))
+    db.insert_task(TaskRecord(id="TASK-000", brief="orig"))
     prev = "TASK-000"
     for i in range(1, 25):
         tid = f"TASK-{i:03d}"
         db.insert_task(TaskRecord(
-            id=tid, type=TaskType.GENERAL, brief=f"t{i}",
+            id=tid, brief=f"t{i}",
             revisit_of_task_id=prev,
         ))
         prev = tid
@@ -763,12 +766,12 @@ def test_walk_revisit_chain_truncates_when_asked(db):
     ancestry, which is bounded by the delegation depth), so read endpoints
     need a non-crashing path.
     """
-    db.insert_task(TaskRecord(id="TASK-000", type=TaskType.GENERAL, brief="orig"))
+    db.insert_task(TaskRecord(id="TASK-000", brief="orig"))
     prev = "TASK-000"
     for i in range(1, 25):
         tid = f"TASK-{i:03d}"
         db.insert_task(TaskRecord(
-            id=tid, type=TaskType.GENERAL, brief=f"t{i}",
+            id=tid, brief=f"t{i}",
             revisit_of_task_id=prev,
         ))
         prev = tid
@@ -783,9 +786,9 @@ def test_walk_ancestors_does_not_follow_revisit_edge(db):
     children would poison the new root via _enqueue_parent_if_waiting.
     Never let this test go green by making walk_ancestors follow the edge.
     """
-    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="P"))
+    db.insert_task(TaskRecord(id="TASK-001", brief="P"))
     db.insert_task(TaskRecord(
-        id="TASK-002", type=TaskType.GENERAL, brief="N",
+        id="TASK-002", brief="N",
         revisit_of_task_id="TASK-001",  # NOT a parent edge.
         parent_task_id=None,             # Still a root.
     ))
@@ -795,13 +798,13 @@ def test_walk_ancestors_does_not_follow_revisit_edge(db):
 
 def test_get_direct_revisits_returns_all_direct_children(db):
     """Two revisits of the same predecessor — both appear, ordered by creation."""
-    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="P"))
+    db.insert_task(TaskRecord(id="TASK-001", brief="P"))
     db.insert_task(TaskRecord(
-        id="TASK-002", type=TaskType.GENERAL, brief="rv1",
+        id="TASK-002", brief="rv1",
         revisit_of_task_id="TASK-001",
     ))
     db.insert_task(TaskRecord(
-        id="TASK-003", type=TaskType.GENERAL, brief="rv2",
+        id="TASK-003", brief="rv2",
         revisit_of_task_id="TASK-001",
     ))
     assert db.get_direct_revisits("TASK-001") == ["TASK-002", "TASK-003"]
@@ -809,13 +812,13 @@ def test_get_direct_revisits_returns_all_direct_children(db):
 
 def test_get_direct_revisits_does_not_include_transitive(db):
     """In P → N → N', P.get_direct_revisits returns only [N], not [N, N']."""
-    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="P"))
+    db.insert_task(TaskRecord(id="TASK-001", brief="P"))
     db.insert_task(TaskRecord(
-        id="TASK-002", type=TaskType.GENERAL, brief="N",
+        id="TASK-002", brief="N",
         revisit_of_task_id="TASK-001",
     ))
     db.insert_task(TaskRecord(
-        id="TASK-003", type=TaskType.GENERAL, brief="N'",
+        id="TASK-003", brief="N'",
         revisit_of_task_id="TASK-002",
     ))
     assert db.get_direct_revisits("TASK-001") == ["TASK-002"]
@@ -823,5 +826,125 @@ def test_get_direct_revisits_does_not_include_transitive(db):
 
 
 def test_get_direct_revisits_none(db):
-    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="x"))
+    db.insert_task(TaskRecord(id="TASK-001", brief="x"))
     assert db.get_direct_revisits("TASK-001") == []
+
+
+def test_insert_task_succeeds_on_legacy_schema_with_type_column(tmp_path):
+    """Simulate an upgraded DB that still has the legacy `type NOT NULL` column.
+    insert_task must supply a sentinel value so the NOT NULL constraint is satisfied."""
+    import sqlite3
+    from src.infrastructure.database import Database
+    from src.models import TaskRecord
+
+    db_path = tmp_path / "legacy.db"
+
+    # Manually create the legacy schema (pre-Task-4) with type TEXT NOT NULL.
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            type TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            assigned_agent TEXT,
+            team TEXT NOT NULL DEFAULT 'engineering',
+            brief TEXT NOT NULL,
+            revision_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT,
+            parent_task_id TEXT,
+            final_output_summary TEXT,
+            final_artifact_dir TEXT,
+            block_kind TEXT,
+            note TEXT,
+            orchestration_step_count INTEGER DEFAULT 0,
+            cancelled_at TEXT,
+            revisit_of_task_id TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
+        CREATE INDEX IF NOT EXISTS idx_tasks_revisit_of ON tasks(revisit_of_task_id);
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            agent TEXT NOT NULL,
+            action TEXT NOT NULL,
+            payload TEXT,
+            timestamp TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS scorecards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent TEXT NOT NULL UNIQUE,
+            period_start TEXT NOT NULL,
+            period_end TEXT NOT NULL,
+            acceptance_rate REAL NOT NULL,
+            revision_rate REAL NOT NULL,
+            error_count INTEGER NOT NULL,
+            tier TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS task_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            agent TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'completed',
+            output_summary TEXT,
+            decision_json TEXT,
+            confidence_score INTEGER,
+            learnings TEXT,
+            risks_flagged TEXT,
+            duration_seconds INTEGER,
+            token_count INTEGER,
+            estimated_cost REAL,
+            artifact_dir TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS agent_enrollments (
+            name TEXT PRIMARY KEY,
+            description TEXT NOT NULL,
+            system_prompt TEXT NOT NULL,
+            repos TEXT NOT NULL DEFAULT '{}',
+            executor TEXT NOT NULL DEFAULT 'claude',
+            allow_rules TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS talks (
+            id TEXT PRIMARY KEY,
+            agent_name TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            ended_at TEXT,
+            status TEXT NOT NULL DEFAULT 'open',
+            summary TEXT,
+            topic_list_json TEXT,
+            new_learnings_count INTEGER NOT NULL DEFAULT 0,
+            new_kb_slugs_json TEXT,
+            transcript_path TEXT
+        );
+    """)
+    conn.commit()
+    conn.close()
+
+    # Database() should detect the legacy column and handle inserts gracefully.
+    db = Database(db_path)
+    assert db._tasks_has_legacy_type_column is True
+
+    record = TaskRecord(id="TASK-001", brief="legacy schema test", team="engineering")
+    db.insert_task(record)  # Must NOT raise IntegrityError
+
+    # Round-trip read should work.
+    got = db.get_task("TASK-001")
+    assert got is not None
+    assert got.id == "TASK-001"
+    assert got.brief == "legacy schema test"
+
+
+def test_fresh_db_has_no_legacy_type_column(tmp_path):
+    """Fresh DBs must not have the legacy type column — flag stays False."""
+    from src.infrastructure.database import Database
+
+    db = Database(tmp_path / "fresh.db")
+    assert db._tasks_has_legacy_type_column is False
+    db.close()

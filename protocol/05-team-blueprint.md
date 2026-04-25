@@ -6,11 +6,10 @@ This document was split into focused modules for easier reference during impleme
 
 | Document | What it covers |
 |----------|---------------|
-| [05a-teams.md](05a-teams.md) | Team definitions (Content, Product & Engineering, Ops, CX), the tasks each team owns, and the tools available to each agent |
+| [05a-teams.md](05a-teams.md) | Team definitions (Content, Product & Engineering, Ops, CX) and the tasks each team owns |
 | [05b-agent-runtime.md](05b-agent-runtime.md) | Agent execution model (Claude Code subprocess executor), memory architecture, lifecycle & scheduling, concurrency, cost profile |
 | [05c-orchestrator.md](05c-orchestrator.md) | Orchestrator responsibilities, inter-team communication, performance tier impact, permission & authority model, task state machine |
-| [05d-feishu.md](05d-feishu.md) | Founder interaction via Feishu — hybrid bot architecture, group chat structure, 4 notification tiers, reply parsing, quick commands |
-| [05e-dashboard.md](05e-dashboard.md) | Self-hosted founder dashboard (6 pages), REST API endpoints, connection to Feishu, suggested implementation order |
+| [05e-dashboard.md](05e-dashboard.md) | Self-hosted founder dashboard (6 pages), REST API endpoints, suggested implementation order |
 
 ## Quick Reference
 

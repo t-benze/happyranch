@@ -55,13 +55,12 @@ opc init-agent
 # Or initialize a specific agent
 opc init-agent dev_agent
 
-# Run a task (EH decides the approach). The CLI streams live events until done.
+# Run a task. The CLI streams live events until done.
 opc run --brief "Explore how the payment module handles refunds"
 
-# Provide a task type hint to guide the EH
-opc run --task implement_feature --brief "Add Alipay support for international cards"
-opc run --task bug_fix --brief "Payment confirmation emails not sending for HK bookings"
-opc run --task payment_change --brief "Add WeChat Pay as alternative payment method"
+# Route a task to a specific team
+opc run --team engineering --brief "Add Alipay support for international cards"
+opc run --team content --brief "Write a Macau visa walkthrough for first-time visitors"
 
 # Re-attach to a running task and stream its events
 opc tail TASK-001
@@ -86,8 +85,8 @@ opc use ~/another-runtime
 |---------|-------------|
 | `opc init <path>` | Create a runtime directory and set it as active |
 | `opc use <path>` | Switch the daemon's active runtime directory |
-| `opc run --brief "..."` | Submit a task and stream its events (EH decides approach) |
-| `opc run --task TYPE --brief "..."` | Run with task type hint (`general`, `implement_feature`, `bug_fix`, `payment_change`) |
+| `opc run --brief "..."` | Submit a task and stream its events. The team manager decides the approach. |
+| `opc run --team TEAM --brief "..."` | Route a task to a team (e.g., `engineering`, `content`) |
 | `opc tail TASK-ID` | Stream live events for a running (or historical) task |
 | `opc details TASK-ID` | Show task details (status, block_kind, note, results, audit log) |
 | `opc tasks [--limit N]` | List recent tasks (default: 20) |
@@ -178,7 +177,7 @@ opc revisit TASK-052 [--note "..."]   # founder: spawn a new root that inherits 
 
 `opc revisit` takes any task id in a lineage, walks to its root, and — if the
 root ended `failed`, `failed-cancelled`, `blocked(escalated)`, or `completed` —
-spawns a fresh root inheriting the original brief and task type. The old tree
+spawns a fresh root inheriting the original brief and team. The old tree
 stays frozen (read-only history); the new root's Engineering Head gets a
 prompt-header pointer back to it so it can inspect what happened via
 `opc details` / `opc audit` / `opc recall`.
@@ -258,7 +257,6 @@ Each agent runs in its own persistent workspace inside the runtime directory. Af
 - [ ] Ops Team (Partner Liaison, Compliance Agent, Operations Manager)
 - [ ] Inter-team communication and cross-team audits
 - [ ] CX Team (Support Agent for real-time chat)
-- [ ] Feishu integration (founder notifications and reply parsing)
 - [ ] Founder dashboard (aggregated audit logs, scorecards, escalation summaries)
 
 ## License

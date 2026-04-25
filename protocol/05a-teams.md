@@ -10,13 +10,13 @@ How the org design maps to the runtime (Python daemon + executor-backed agent se
 |---|---|---|
 | Worker Agent (e.g., Content Writer) | Persistent agent workspace + configured executor session | `<runtime>/workspaces/<agent>/` holds `agent.yaml`, skills, repos, and executor-specific bootstrap files (`CLAUDE.md` for Claude or `AGENTS.md` for Codex). Each task spawns a headless session using that agent's configured executor |
 | Manager Agent (e.g., Content Manager) | Same as a worker, but with an EH-style orchestration prompt | Managers decide at each step: handle, delegate, escalate. Engineering Head is the first manager implemented; others follow the same pattern |
-| Content task (e.g., "write Macau visa guide") | `TaskRecord` row + brief | Tasks have a type hint (`implement_feature`, `bug_fix`, `payment_change`, `general`) that steers the manager's decision, not a hardcoded chain |
+| Content task (e.g., "write Macau visa guide") | `TaskRecord` row + brief | Tasks carry a `team` routing tag (set via `opc run --team <name>`) that selects the manager; the manager then decides the chain, not a hardcoded one |
 | QA review of that content | Second agent session triggered by the manager's orchestration decision | Maker-checker preserved — the manager delegates to a different agent via the `delegate` action |
 | Manager approval step | Manager's final `done` action after reviewing the worker's completion report | Captured as a `verdict` audit entry |
 | Functional team (Content Writer + QA + Content Mgr) | Group of agent workspaces plus the `team` field on each task | Team is a taxonomy, not a scheduling unit — the orchestrator doesn't instantiate "a team", it just spawns the agents the manager picks |
 | Peer audit (cross-manager review) | Cross-team task spawned by the orchestrator per escalation rules | Routed between managers in the orchestrator layer |
 | Escalation to founder | Manager returns `{action: "escalate", reason: "..."}` from a decision session | The orchestrator surfaces the escalation and the founder resolves it via `opc resolve-escalation` |
-| Knowledge base | File-backed markdown under `<runtime>/kb/` | Any agent reads; any agent writes via `opc kb add --from-file`; engineering_head deletes; founder records precedents |
+| Knowledge base | File-backed markdown under `<runtime>/kb/` | Any agent reads; any agent writes via `opc kb add --from-file`; any team manager deletes (audited); founder overrides via `--as-founder`; founder records precedents |
 | Audit logger | Semantic events in SQLite (`session_start`, `completion_report`, `verdict`, `escalation`, `orchestration_step`, etc.) | Wired into every orchestrator action and every agent callback |
 | Performance scoring | Rolling 30-day scorecard (green/yellow/red) surfaced to the manager in its capabilities prompt | Tier feedback shapes the manager's delegation decisions naturally |
 
@@ -113,62 +113,17 @@ How the org design maps to the runtime (Python daemon + executor-backed agent se
 
 ---
 
-## 3. Tools Each Agent Gets
+## 3. Agent Capabilities
 
-Agents running as coding-agent sessions have native access to file system, shell, and web. The tools below are *additional* capabilities the orchestrator exposes to each agent — either as `opc` CLI subcommands or as future MCP tools. Claude sessions use the narrow `Bash(opc:*)` allow rule; Codex sessions use the same `opc` callback contract without the Claude-specific matcher behavior.
+Agents run as coding-agent sessions with native access to file system, shell, and web through their executor (Claude Code or Codex). The only orchestrator-owned channel is the `opc` CLI, which every agent can invoke through its baseline `Bash(opc:*)` allow rule (Claude) or the equivalent contract (Codex). Shared `opc` capabilities used by all agents:
 
-### Shared tools (all agents)
-- `read_knowledge_base(topic)` — query the org charter, SOPs, brand guidelines (currently: `opc kb list/get/search`)
-- `submit_completion_report(report)` — mandatory after every task (currently: `opc report-completion --from-file`)
-- `escalate(category, severity, summary)` — trigger the escalation router (currently: set `status: escalated` in the completion report)
-- `view_team_health()` — see the current team health summary
-- `record_learning(insight)` — append to agent's learnings file (currently: `opc learning`)
+- `opc kb list/get/search` — read the shared knowledge base (org charter, SOPs, precedents)
+- `opc kb add --from-file` — contribute to the knowledge base
+- `opc report-completion --from-file` — mandatory callback at the end of every task
+- `opc learning` — append an insight to the agent's `learnings.md`
+- `opc manage-repo` — add/remove repos in the agent's `agent.yaml`
 
-### Content Writer
-- `search_web(query)` — research destinations, verify facts
-- `check_source(url)` — verify an official source is current
-
-### Content QA
-- `search_web(query)` — verify claims against official sources
-- `check_url(url)` — test if a link is live
-- `check_exchange_rate(from, to)` — verify currency conversions
-
-### QA Engineer
-- `run_tests(scope)` — execute unit/integration/E2E suites against the change
-- `check_performance(url)` — measure page load and API latency against the budget
-- `diff_coverage(base, head)` — report coverage delta and missing branches
-- `exercise_flow(flow_name)` — drive booking/payment/i18n flows end-to-end
-
-### SEO Agent
-- `keyword_research(seed_keywords)` — find tourist intent queries
-- `analyze_serp(keyword)` — check current rankings and competitors
-
-### Product Manager
-- `search_web(query)` — research competitors, market trends, user needs
-- `git_clone(repo)` — clone project repo to read codebase for spec writing
-
-### Dev Agent
-- `run_tests(scope)` — execute test suite
-- `check_performance(url)` — measure page load times
-- `deploy(target)` — deploy to staging/production (with approval)
-
-### Payment Agent
-- `check_gateway_status(gateway)` — verify Stripe/Alipay/WeChat status
-- `get_exchange_rate(from, to)` — current market rates
-
-### Partner Liaison
-- `search_partner(criteria)` — find potential partners
-- `check_business_license(entity)` — verify partner credentials
-- `update_partner_directory(entry)` — update partner directory in KB
-
-### Compliance Agent
-- `search_regulation(jurisdiction, topic)` — find current regulations
-- `log_audit_finding(finding)` — log to compliance audit trail
-
-### Support Agent
-- `lookup_booking(booking_id)` — retrieve booking details
-- `submit_feedback_ticket(pattern, data)` — create feedback for CX Manager
-- `get_emergency_info(jurisdiction)` — retrieve local emergency numbers
+Engineering Head has narrow extra grants (`gh pr close/comment`, `gh issue close/comment`, `opc manage-agent`) for its management role; everything else stays inside the `opc` surface. No per-agent tool registries are planned — domain capabilities (booking lookups, gateway status, regulatory search, etc.) are expected to be solved by the executor's native web/shell access, or by adding a new `opc` subcommand when shared infrastructure is genuinely needed.
 
 ---
 
@@ -181,7 +136,7 @@ Unlike frameworks that bake in task chaining, revision loops, and manager-delega
 - Running the EH-driven decision loop (ask manager → execute `delegate` / `done` / `escalate` → feed the result back as history)
 - Agent workspace provisioning: executor-specific bootstrap docs (`CLAUDE.md` or `AGENTS.md`), Claude settings when applicable, copied skills, repo clones (`src/orchestrator/context_builder.py`, `src/orchestrator/workspace_adapters.py`)
 - Task state machine (`pending` → `in_progress` → `completed`/`rejected`/`escalated`) and the 10-step runaway guard
-- Founder interaction surface (Feishu bot + dashboard — both still planned; today the CLI + SSE stream covers it)
+- Founder interaction surface (CLI + SSE stream + `opc talk` today; dashboard planned)
 - Inter-team task routing (e.g., Product → Ops cross-audit)
 - Escalation resolution (`opc resolve-escalation`) and precedent recording (`opc kb precedent --as-founder`)
 - Revision tracking (`revision_count` on `TaskRecord`; manager escalates after 2 rounds)

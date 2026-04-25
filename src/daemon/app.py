@@ -24,7 +24,7 @@ def ensure_workers_started(state: DaemonState) -> None:
         return
     if state.queue.is_running():
         return
-    orch = Orchestrator(db=state.db, settings=state.settings, runtime=state.runtime)
+    orch = Orchestrator(db=state.db, settings=state.settings, runtime=state.runtime, teams=state.teams)
     orch.attach_queue(state.queue)
     orch.attach_sessions(state.sessions)
     state.queue.start_workers(orch, n=3)

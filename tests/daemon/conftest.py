@@ -64,3 +64,29 @@ def client_with_runtime(tmp_home, daemon_state: DaemonState):
     # Attach auth token to every request automatically.
     client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
     yield client, daemon_state
+
+
+@pytest.fixture
+def client(tmp_home, daemon_state: DaemonState):
+    """TestClient bound to a runtime-backed app (no lifespan, auth pre-attached).
+
+    Returns the TestClient directly (not a tuple). Suitable for tests that
+    only need HTTP access and not direct DB/state manipulation.
+    """
+    from fastapi.testclient import TestClient
+    app = create_app(daemon_state)
+    tc = TestClient(app)
+    tc.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+    return tc
+
+
+def open_talk_for(client, agent_name: str) -> str:
+    """POST /talks/start for *agent_name* and return the talk_id.
+
+    Convenience helper for tests that need an open talk without caring about
+    the full talk lifecycle. Raises AssertionError on non-200 responses.
+    """
+    from fastapi.testclient import TestClient as _TC  # noqa: F401 (type-check only)
+    resp = client.post("/api/v1/talks", json={"agent_name": agent_name})
+    assert resp.status_code == 200, f"open_talk_for({agent_name!r}) failed: {resp.text}"
+    return resp.json()["talk_id"]

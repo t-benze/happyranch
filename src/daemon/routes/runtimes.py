@@ -10,6 +10,7 @@ from src.daemon import runtimes as reg
 from src.daemon.auth import require_token
 from src.daemon.state import DaemonState
 from src.infrastructure.database import Database
+from src.orchestrator.teams import TeamsRegistry
 from src.runtime import RuntimeDir
 
 router = APIRouter(dependencies=[require_token()])
@@ -28,9 +29,11 @@ def _swap_active_runtime(state: DaemonState, new_path: Path) -> None:
     """
     new_runtime = RuntimeDir.load(new_path)
     new_db = Database(new_runtime.db_path)
+    new_teams = TeamsRegistry.load(new_runtime)
     old_db = state.db
     state.runtime = new_runtime
     state.db = new_db
+    state.teams = new_teams
     if old_db is not None:
         old_db.close()
 

@@ -67,7 +67,7 @@ vocabulary.
 
 ## Deletion
 
-- **Only the Engineering Head can delete.** Others get a 403.
+- **Delete: any team manager; founder via `--as-founder`.** Workers get a 403. The audit log captures the calling agent so cross-team deletions remain traceable.
 - `--confirm` is mandatory.
 - **Deletion is irreversible** unless the runtime dir is git-initialized.
   The founder can force-delete via `--as-founder` but the guideline is to

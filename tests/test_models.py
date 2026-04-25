@@ -7,7 +7,6 @@ from src.models import (
     TaskRecord,
     TaskStatus,
     TaskStep,
-    TaskType,
     TalkRecord,
     TalkStatus,
 )
@@ -19,12 +18,6 @@ def test_task_status_values():
     assert TaskStatus.COMPLETED == "completed"
     assert TaskStatus.BLOCKED == "blocked"
     assert TaskStatus.FAILED == "failed"
-
-
-def test_task_type_values():
-    assert TaskType.IMPLEMENT_FEATURE == "implement_feature"
-    assert TaskType.BUG_FIX == "bug_fix"
-    assert TaskType.PAYMENT_CHANGE == "payment_change"
 
 
 def test_performance_tier_values():
@@ -42,13 +35,12 @@ def test_review_verdict_values():
 def test_task_record_creation():
     record = TaskRecord(
         id="TASK-001",
-        type=TaskType.IMPLEMENT_FEATURE,
         brief="Add Alipay support",
     )
     assert record.status == TaskStatus.PENDING
     assert record.revision_count == 0
     assert record.assigned_agent is None
-    assert record.team == "product_engineering"
+    assert record.team == "engineering"
     assert record.completed_at is None
     assert record.created_at is not None
     assert record.updated_at is not None
@@ -123,17 +115,13 @@ def test_step_record():
     assert record.success is True
 
 
-def test_task_type_general():
-    assert TaskType.GENERAL == "general"
-
-
 def test_task_record_accepts_parent_task_id():
-    t = TaskRecord(id="TASK-002", type=TaskType.GENERAL, brief="child", parent_task_id="TASK-001")
+    t = TaskRecord(id="TASK-002", brief="child", parent_task_id="TASK-001")
     assert t.parent_task_id == "TASK-001"
 
 
 def test_task_record_parent_defaults_to_none():
-    t = TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="root")
+    t = TaskRecord(id="TASK-001", brief="root")
     assert t.parent_task_id is None
 
 
@@ -165,17 +153,17 @@ def test_block_kind_has_delegated_and_escalated():
 
 
 def test_task_record_has_new_columns():
-    from src.models import TaskRecord, TaskType
-    t = TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="x")
+    from src.models import TaskRecord
+    t = TaskRecord(id="TASK-001", brief="x")
     assert t.block_kind is None
     assert t.note is None
     assert t.orchestration_step_count == 0
 
 
 def test_task_record_accepts_block_kind():
-    from src.models import TaskRecord, TaskType, TaskStatus, BlockKind
+    from src.models import TaskRecord, TaskStatus, BlockKind
     t = TaskRecord(
-        id="TASK-001", type=TaskType.GENERAL, brief="x",
+        id="TASK-001", brief="x",
         status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED,
         note="Delegated to dev_agent", orchestration_step_count=3,
     )

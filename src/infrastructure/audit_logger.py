@@ -108,18 +108,6 @@ class AuditLogger:
             payload={"rationale": rationale, "cascade": cascade},
         )
 
-    def log_cross_audit_stub(self, task_id: str, task_type: str) -> None:
-        self._db.insert_audit_log(
-            task_id=task_id,
-            agent="orchestrator",
-            action="cross_audit_requested",
-            payload={
-                "task_type": task_type,
-                "auto_approved": True,
-                "note": "Cross-audit stubbed -- Compliance Agent review pending Ops Team implementation",
-            },
-        )
-
     def log_orchestration_step(
         self, task_id: str, step_number: int, decision: dict
     ) -> None:
@@ -226,18 +214,19 @@ class AuditLogger:
         action: str,
         name: str,
         source: str,
+        actor: str = "engineering_head",
     ) -> None:
         """Record a successful manage-agent call.
 
         `scope_id` populates `audit_log.task_id` (the generic scope column
         described at line 173): TASK-xxx for task-path calls, TALK-xxx for
         talk-path calls. `source` is 'task' or 'talk' for quick filtering.
-        Actor is always 'engineering_head' — the route gates this via
-        `_require_eh_auth` before calling here.
+        `actor` defaults to 'engineering_head' for backward compat; pass the
+        actual manager_name when called from the generalised team-manager route.
         """
         self._db.insert_audit_log(
             task_id=scope_id,
-            agent="engineering_head",
+            agent=actor,
             action="agent_managed",
             payload={
                 "action": action,

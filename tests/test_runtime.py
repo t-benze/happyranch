@@ -73,3 +73,30 @@ def test_db_path_derived_from_root(tmp_path: Path) -> None:
 def test_workspaces_dir_derived_from_root(tmp_path: Path) -> None:
     rt = RuntimeDir(tmp_path)
     assert rt.workspaces_dir == tmp_path.resolve() / "workspaces"
+
+
+# ---------------------------------------------------------------------------
+# teams.yaml seeding
+# ---------------------------------------------------------------------------
+
+
+def test_init_seeds_default_teams_yaml(tmp_path: Path) -> None:
+    import yaml
+    rt = RuntimeDir.init(tmp_path / "rt")
+    assert rt.teams_config_path.exists()
+    data = yaml.safe_load(rt.teams_config_path.read_text())
+    assert set(data["teams"].keys()) == {"engineering", "content"}
+    assert data["teams"]["engineering"]["manager"] == "engineering_head"
+    assert data["teams"]["content"]["manager"] == "content_manager"
+
+
+def test_init_does_not_overwrite_existing_teams_yaml(tmp_path: Path) -> None:
+    import yaml
+    rt = RuntimeDir.init(tmp_path / "rt")
+    rt.teams_config_path.write_text(
+        "teams:\n  custom:\n    manager: custom_mgr\n    workers: []\n"
+    )
+    # Second init must not overwrite an existing teams.yaml.
+    RuntimeDir.init(tmp_path / "rt")
+    data = yaml.safe_load(rt.teams_config_path.read_text())
+    assert set(data["teams"].keys()) == {"custom"}

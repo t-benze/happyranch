@@ -8,7 +8,7 @@ import pytest
 
 from src.config import Settings
 from src.infrastructure.database import Database
-from src.models import BlockKind, TaskRecord, TaskStatus, TaskType
+from src.models import BlockKind, TaskRecord, TaskStatus
 from src.runtime import RuntimeDir
 
 
@@ -35,7 +35,7 @@ def test_run_step_noop_on_blocked_escalated(runtime, db):
     for /resolve-escalation to transition it first. Second-hand enqueue
     must be silently ignored."""
     from src.orchestrator.orchestrator import Orchestrator
-    db.insert_task(TaskRecord(id="T-1", type=TaskType.GENERAL, brief="x"))
+    db.insert_task(TaskRecord(id="T-1", brief="x"))
     db.update_task("T-1", status=TaskStatus.BLOCKED, block_kind=BlockKind.ESCALATED,
                    note="halted")
     orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
@@ -49,7 +49,7 @@ def test_run_step_over_budget_parks_escalated(runtime, db):
     from src.orchestrator.orchestrator import Orchestrator
     settings = Settings(max_orchestration_steps=3)
     db.insert_task(TaskRecord(
-        id="T-1", type=TaskType.GENERAL, brief="x", assigned_agent="engineering_head",
+        id="T-1", brief="x", assigned_agent="engineering_head",
     ))
     db.update_task("T-1", orchestration_step_count=3)  # already at the cap
 
@@ -76,7 +76,7 @@ def test_run_step_transitions_pending_to_in_progress_and_increments_count(
     from src.orchestrator.orchestrator import Orchestrator, WorkspaceNotInitialized
 
     db.insert_task(TaskRecord(
-        id="T-1", type=TaskType.GENERAL, brief="x", assigned_agent="engineering_head",
+        id="T-1", brief="x", assigned_agent="engineering_head",
     ))
     orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10), runtime=runtime)
 
@@ -123,12 +123,12 @@ def test_run_step_done_completes_task_and_enqueues_parent(
     from src.orchestrator.orchestrator import Orchestrator
 
     # Parent in blocked(DELEGATED), child in pending.
-    db.insert_task(TaskRecord(id="T-PAR", type=TaskType.GENERAL, brief="parent",
+    db.insert_task(TaskRecord(id="T-PAR", brief="parent",
                               assigned_agent="engineering_head"))
     db.update_task("T-PAR", status=TaskStatus.BLOCKED,
                    block_kind=BlockKind.DELEGATED, note="waiting")
     db.insert_task(TaskRecord(
-        id="T-CHD", type=TaskType.GENERAL, brief="child",
+        id="T-CHD", brief="child",
         assigned_agent="engineering_head", parent_task_id="T-PAR",
     ))
 
@@ -164,12 +164,12 @@ def test_run_step_escalate_parks_blocked_and_leaves_parent_parked(
     import json
     from src.orchestrator.orchestrator import Orchestrator
 
-    db.insert_task(TaskRecord(id="T-PAR", type=TaskType.GENERAL, brief="p",
+    db.insert_task(TaskRecord(id="T-PAR", brief="p",
                               assigned_agent="engineering_head"))
     db.update_task("T-PAR", status=TaskStatus.BLOCKED,
                    block_kind=BlockKind.DELEGATED, note="waiting")
     db.insert_task(TaskRecord(
-        id="T-CHD", type=TaskType.GENERAL, brief="c",
+        id="T-CHD", brief="c",
         assigned_agent="engineering_head", parent_task_id="T-PAR",
     ))
 
@@ -208,7 +208,7 @@ def test_run_step_delegate_spawns_child_and_blocks_self(
 
     (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
 
-    db.insert_task(TaskRecord(id="T-1", type=TaskType.GENERAL, brief="root",
+    db.insert_task(TaskRecord(id="T-1", brief="root",
                               assigned_agent="engineering_head"))
     orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
     q: asyncio.Queue = asyncio.Queue()
@@ -251,7 +251,7 @@ def test_run_step_invalid_delegate_fails_task(runtime, db, monkeypatch):
     import json
     from src.orchestrator.orchestrator import Orchestrator
 
-    db.insert_task(TaskRecord(id="T-1", type=TaskType.GENERAL, brief="x",
+    db.insert_task(TaskRecord(id="T-1", brief="x",
                               assigned_agent="engineering_head"))
     orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
     orch._queue = asyncio.Queue()
@@ -279,12 +279,12 @@ def test_run_step_session_failure_cascades_to_parent_no_retry(
     import asyncio
     from src.orchestrator.orchestrator import Orchestrator
 
-    db.insert_task(TaskRecord(id="T-PAR", type=TaskType.GENERAL, brief="p",
+    db.insert_task(TaskRecord(id="T-PAR", brief="p",
                               assigned_agent="engineering_head"))
     db.update_task("T-PAR", status=TaskStatus.BLOCKED,
                    block_kind=BlockKind.DELEGATED, note="waiting")
     db.insert_task(TaskRecord(
-        id="T-CHD", type=TaskType.GENERAL, brief="c",
+        id="T-CHD", brief="c",
         assigned_agent="engineering_head", parent_task_id="T-PAR",
     ))
 
@@ -318,18 +318,18 @@ def test_run_step_session_failure_cascades_up_chain(
     import asyncio
     from src.orchestrator.orchestrator import Orchestrator
 
-    db.insert_task(TaskRecord(id="T-ROOT", type=TaskType.GENERAL, brief="r",
+    db.insert_task(TaskRecord(id="T-ROOT", brief="r",
                               assigned_agent="engineering_head"))
     db.update_task("T-ROOT", status=TaskStatus.BLOCKED,
                    block_kind=BlockKind.DELEGATED, note="waiting")
     db.insert_task(TaskRecord(
-        id="T-MID", type=TaskType.GENERAL, brief="m",
+        id="T-MID", brief="m",
         assigned_agent="engineering_head", parent_task_id="T-ROOT",
     ))
     db.update_task("T-MID", status=TaskStatus.BLOCKED,
                    block_kind=BlockKind.DELEGATED, note="waiting")
     db.insert_task(TaskRecord(
-        id="T-LEAF", type=TaskType.GENERAL, brief="l",
+        id="T-LEAF", brief="l",
         assigned_agent="dev_agent", parent_task_id="T-MID",
     ))
 
@@ -356,7 +356,7 @@ def test_run_step_session_failure_note_includes_diagnostics(
     from src.orchestrator.executors import ExecutorResult
     from src.orchestrator.orchestrator import Orchestrator
 
-    db.insert_task(TaskRecord(id="T-1", type=TaskType.GENERAL, brief="x",
+    db.insert_task(TaskRecord(id="T-1", brief="x",
                               assigned_agent="engineering_head"))
     orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
     import asyncio
@@ -384,7 +384,7 @@ def test_run_step_worker_self_blocked_fails_task(runtime, db, monkeypatch):
     import asyncio
     from src.orchestrator.orchestrator import Orchestrator
 
-    db.insert_task(TaskRecord(id="T-1", type=TaskType.GENERAL, brief="x",
+    db.insert_task(TaskRecord(id="T-1", brief="x",
                               assigned_agent="engineering_head"))
     orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
     orch._queue = asyncio.Queue()
@@ -409,12 +409,12 @@ def test_run_step_worker_completion_is_done_not_parsed_as_eh_decision(
     from src.orchestrator.orchestrator import Orchestrator
 
     # Parent (EH) delegated to dev_agent (worker).
-    db.insert_task(TaskRecord(id="T-PAR", type=TaskType.GENERAL, brief="p",
+    db.insert_task(TaskRecord(id="T-PAR", brief="p",
                               assigned_agent="engineering_head"))
     db.update_task("T-PAR", status=TaskStatus.BLOCKED,
                    block_kind=BlockKind.DELEGATED, note="waiting")
     db.insert_task(TaskRecord(
-        id="T-CHD", type=TaskType.GENERAL, brief="c",
+        id="T-CHD", brief="c",
         assigned_agent="dev_agent", parent_task_id="T-PAR",
     ))
 
@@ -450,16 +450,16 @@ def test_run_step_delegated_worker_emits_review_verdict_and_scorecard(
     import asyncio
     from src.orchestrator.orchestrator import Orchestrator
 
-    db.insert_task(TaskRecord(id="T-PAR", type=TaskType.GENERAL, brief="p",
+    db.insert_task(TaskRecord(id="T-PAR", brief="p",
                               assigned_agent="engineering_head"))
     db.update_task("T-PAR", status=TaskStatus.BLOCKED,
                    block_kind=BlockKind.DELEGATED, note="waiting")
     db.insert_task(TaskRecord(
-        id="T-OK", type=TaskType.GENERAL, brief="ok",
+        id="T-OK", brief="ok",
         assigned_agent="dev_agent", parent_task_id="T-PAR",
     ))
     db.insert_task(TaskRecord(
-        id="T-BAD", type=TaskType.GENERAL, brief="bad",
+        id="T-BAD", brief="bad",
         assigned_agent="dev_agent", parent_task_id="T-PAR",
     ))
 
@@ -499,7 +499,7 @@ def test_run_step_root_eh_task_skips_review_verdict(runtime, db, monkeypatch):
     import json
     from src.orchestrator.orchestrator import Orchestrator
 
-    db.insert_task(TaskRecord(id="T-ROOT", type=TaskType.GENERAL, brief="r",
+    db.insert_task(TaskRecord(id="T-ROOT", brief="r",
                               assigned_agent="engineering_head"))
     orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
     orch._queue = asyncio.Queue()
@@ -524,7 +524,7 @@ def test_run_step_skips_task_with_cancelled_at(runtime, db, monkeypatch):
     from src.orchestrator.orchestrator import Orchestrator
 
     db.insert_task(TaskRecord(
-        id="T-CNL", type=TaskType.GENERAL, brief="x",
+        id="T-CNL", brief="x",
         assigned_agent="engineering_head",
     ))
     # /cancel's phase-1 writes: FAILED + cancelled_at + founder note.
@@ -562,7 +562,7 @@ def test_fail_idempotent_on_terminal_task(runtime, db):
     from src.orchestrator.orchestrator import Orchestrator
     from src.orchestrator.run_step import _fail
 
-    db.insert_task(TaskRecord(id="T-1", type=TaskType.GENERAL, brief="x",
+    db.insert_task(TaskRecord(id="T-1", brief="x",
                               assigned_agent="dev_agent"))
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc).isoformat()
@@ -584,7 +584,7 @@ def test_complete_idempotent_on_terminal_task(runtime, db):
     from src.orchestrator.orchestrator import Orchestrator
     from src.orchestrator.run_step import _complete
 
-    db.insert_task(TaskRecord(id="T-1", type=TaskType.GENERAL, brief="x",
+    db.insert_task(TaskRecord(id="T-1", brief="x",
                               assigned_agent="dev_agent"))
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc).isoformat()
@@ -608,7 +608,7 @@ def test_run_step_revisit_header_injected_on_first_step(
     entry: EH prompt must start with the revisit context header."""
     from src.orchestrator.orchestrator import Orchestrator
     db.insert_task(TaskRecord(
-        id="TASK-072", type=TaskType.IMPLEMENT_FEATURE, brief="Add Alipay support",
+        id="TASK-072", brief="Add Alipay support",
         assigned_agent="engineering_head",
     ))
     db.insert_audit_log(
@@ -647,7 +647,7 @@ def test_run_step_revisit_header_absent_on_second_step(
     disappear — subsequent EH cycles see a vanilla capabilities prompt."""
     from src.orchestrator.orchestrator import Orchestrator
     db.insert_task(TaskRecord(
-        id="TASK-072", type=TaskType.GENERAL, brief="x",
+        id="TASK-072", brief="x",
         assigned_agent="engineering_head",
     ))
     db.update_task("TASK-072", orchestration_step_count=1)
@@ -681,7 +681,7 @@ def test_run_step_revisit_header_omits_note_line_when_none(
     """founder_note == None => no 'Founder note:' line in the header."""
     from src.orchestrator.orchestrator import Orchestrator
     db.insert_task(TaskRecord(
-        id="TASK-072", type=TaskType.GENERAL, brief="x",
+        id="TASK-072", brief="x",
         assigned_agent="engineering_head",
     ))
     db.insert_audit_log(
@@ -723,11 +723,11 @@ def test_run_step_concurrent_claim_spawns_only_one_agent(
 
     # Parent blocked(DELEGATED) with two children, both terminal → eligible
     # for exactly one EH decision step.
-    db.insert_task(TaskRecord(id="T-PAR", type=TaskType.GENERAL, brief="p",
+    db.insert_task(TaskRecord(id="T-PAR", brief="p",
                               assigned_agent="engineering_head"))
-    db.insert_task(TaskRecord(id="T-C1", type=TaskType.GENERAL, brief="c1",
+    db.insert_task(TaskRecord(id="T-C1", brief="c1",
                               assigned_agent="dev_agent", parent_task_id="T-PAR"))
-    db.insert_task(TaskRecord(id="T-C2", type=TaskType.GENERAL, brief="c2",
+    db.insert_task(TaskRecord(id="T-C2", brief="c2",
                               assigned_agent="dev_agent", parent_task_id="T-PAR"))
     db.update_task("T-C1", status=TaskStatus.COMPLETED)
     db.update_task("T-C2", status=TaskStatus.COMPLETED)

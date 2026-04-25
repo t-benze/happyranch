@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from src.infrastructure.database import Database
-from src.models import PerformanceTier, TaskRecord, TaskStatus, TaskType
+from src.models import PerformanceTier, TaskRecord, TaskStatus
 from src.orchestrator.performance_tracker import PerformanceTracker
 
 
@@ -9,7 +9,7 @@ def _seed_task_results(db: Database, agent: str, outcomes: list[str]) -> None:
     """Seed task results. outcomes is a list of 'approved' or 'revised' or 'rejected'."""
     for i, outcome in enumerate(outcomes):
         task_id = f"TASK-{i+1:03d}"
-        db.insert_task(TaskRecord(id=task_id, type=TaskType.IMPLEMENT_FEATURE, brief="test"))
+        db.insert_task(TaskRecord(id=task_id, brief="test"))
         db.insert_task_result(
             task_id=task_id,
             agent=agent,

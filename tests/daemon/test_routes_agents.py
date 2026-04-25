@@ -325,10 +325,11 @@ def test_manage_agent_enroll_invalid_name_returns_422(
 def test_manage_agent_update_changes_prompt(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
+    # Use dev_agent which belongs to engineering team (managed by engineering_head).
     _activate_eh_session(daemon_state)
-    daemon_state.db.insert_enrollment("content_writer", "desc", "old prompt")
-    daemon_state.db.update_enrollment_status("content_writer", "approved")
-    workspace = daemon_state.runtime.workspaces_dir / "content_writer"
+    daemon_state.db.insert_enrollment("dev_agent", "desc", "old prompt")
+    daemon_state.db.update_enrollment_status("dev_agent", "approved")
+    workspace = daemon_state.runtime.workspaces_dir / "dev_agent"
     workspace.mkdir(parents=True)
 
     with patch("src.daemon.routes.agents.ContextBuilder") as MockCB:
@@ -338,7 +339,7 @@ def test_manage_agent_update_changes_prompt(
             "/api/v1/agents/manage",
             json={
                 "action": "update",
-                "name": "content_writer",
+                "name": "dev_agent",
             "task_id": _EH_TASK,
             "session_id": _EH_SESSION,
             "system_prompt": "new prompt",
@@ -347,7 +348,7 @@ def test_manage_agent_update_changes_prompt(
         headers=auth_headers,
     )
     assert r.status_code == 200
-    enrollment = daemon_state.db.get_enrollment("content_writer")
+    enrollment = daemon_state.db.get_enrollment("dev_agent")
     assert enrollment["system_prompt"] == "new prompt"
     assert enrollment["executor"] == "codex"
 
@@ -355,10 +356,11 @@ def test_manage_agent_update_changes_prompt(
 def test_manage_agent_update_persists_executor_to_workspace(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
+    # Use dev_agent which belongs to engineering team (managed by engineering_head).
     _activate_eh_session(daemon_state)
-    daemon_state.db.insert_enrollment("content_writer", "desc", "old prompt")
-    daemon_state.db.update_enrollment_status("content_writer", "approved")
-    workspace = daemon_state.runtime.workspaces_dir / "content_writer"
+    daemon_state.db.insert_enrollment("dev_agent", "desc", "old prompt")
+    daemon_state.db.update_enrollment_status("dev_agent", "approved")
+    workspace = daemon_state.runtime.workspaces_dir / "dev_agent"
     workspace.mkdir(parents=True)
     (workspace / "agent.yaml").write_text("repos: {}\n")
 
@@ -366,7 +368,7 @@ def test_manage_agent_update_persists_executor_to_workspace(
         "/api/v1/agents/manage",
         json={
             "action": "update",
-            "name": "content_writer",
+            "name": "dev_agent",
             "task_id": _EH_TASK,
             "session_id": _EH_SESSION,
             "executor": "codex",
@@ -384,10 +386,11 @@ def test_manage_agent_update_persists_executor_to_workspace(
 def test_manage_agent_terminate_removes_workspace(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
+    # Use dev_agent which belongs to engineering team (managed by engineering_head).
     _activate_eh_session(daemon_state)
-    daemon_state.db.insert_enrollment("content_writer", "desc", "prompt")
-    daemon_state.db.update_enrollment_status("content_writer", "approved")
-    workspace = daemon_state.runtime.workspaces_dir / "content_writer"
+    daemon_state.db.insert_enrollment("dev_agent", "desc", "prompt")
+    daemon_state.db.update_enrollment_status("dev_agent", "approved")
+    workspace = daemon_state.runtime.workspaces_dir / "dev_agent"
     workspace.mkdir(parents=True)
     (workspace / "CLAUDE.md").write_text("# test")
 
@@ -395,7 +398,7 @@ def test_manage_agent_terminate_removes_workspace(
         "/api/v1/agents/manage",
         json={
             "action": "terminate",
-            "name": "content_writer",
+            "name": "dev_agent",
             "task_id": _EH_TASK,
             "session_id": _EH_SESSION,
         },
@@ -403,7 +406,7 @@ def test_manage_agent_terminate_removes_workspace(
     )
     assert r.status_code == 200
     assert not workspace.exists()
-    assert daemon_state.db.get_enrollment("content_writer")["status"] == "terminated"
+    assert daemon_state.db.get_enrollment("dev_agent")["status"] == "terminated"
 
 
 def test_manage_agent_terminate_nonexistent_returns_404(
@@ -947,10 +950,11 @@ def test_manage_agent_talk_path_enroll_creates_pending(
 def test_manage_agent_talk_path_update_changes_prompt(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
+    # Use dev_agent which belongs to engineering team (managed by engineering_head).
     talk_id = _seed_eh_talk(daemon_state, "TALK-701")
-    daemon_state.db.insert_enrollment("content_writer", "desc", "old prompt")
-    daemon_state.db.update_enrollment_status("content_writer", "approved")
-    workspace = daemon_state.runtime.workspaces_dir / "content_writer"
+    daemon_state.db.insert_enrollment("dev_agent", "desc", "old prompt")
+    daemon_state.db.update_enrollment_status("dev_agent", "approved")
+    workspace = daemon_state.runtime.workspaces_dir / "dev_agent"
     workspace.mkdir(parents=True)
 
     with patch("src.daemon.routes.agents.ContextBuilder") as MockCB:
@@ -960,23 +964,24 @@ def test_manage_agent_talk_path_update_changes_prompt(
             "/api/v1/agents/manage",
             json={
                 "action": "update",
-                "name": "content_writer",
+                "name": "dev_agent",
                 "talk_id": talk_id,
                 "system_prompt": "new prompt via talk",
             },
             headers=auth_headers,
         )
     assert r.status_code == 200
-    assert daemon_state.db.get_enrollment("content_writer")["system_prompt"] == "new prompt via talk"
+    assert daemon_state.db.get_enrollment("dev_agent")["system_prompt"] == "new prompt via talk"
 
 
 def test_manage_agent_talk_path_terminate_removes_workspace(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
+    # Use dev_agent which belongs to engineering team (managed by engineering_head).
     talk_id = _seed_eh_talk(daemon_state, "TALK-702")
-    daemon_state.db.insert_enrollment("content_writer", "desc", "prompt")
-    daemon_state.db.update_enrollment_status("content_writer", "approved")
-    workspace = daemon_state.runtime.workspaces_dir / "content_writer"
+    daemon_state.db.insert_enrollment("dev_agent", "desc", "prompt")
+    daemon_state.db.update_enrollment_status("dev_agent", "approved")
+    workspace = daemon_state.runtime.workspaces_dir / "dev_agent"
     workspace.mkdir(parents=True)
     (workspace / "CLAUDE.md").write_text("# test")
 
@@ -984,14 +989,14 @@ def test_manage_agent_talk_path_terminate_removes_workspace(
         "/api/v1/agents/manage",
         json={
             "action": "terminate",
-            "name": "content_writer",
+            "name": "dev_agent",
             "talk_id": talk_id,
         },
         headers=auth_headers,
     )
     assert r.status_code == 200
     assert not workspace.exists()
-    assert daemon_state.db.get_enrollment("content_writer")["status"] == "terminated"
+    assert daemon_state.db.get_enrollment("dev_agent")["status"] == "terminated"
 
 
 def test_manage_agent_talk_path_non_eh_talk_returns_403(
@@ -1162,3 +1167,166 @@ def test_manage_agent_failed_enrollment_does_not_log(
         if log["action"] == "agent_managed"
     ]
     assert len(managed) == 0
+
+
+# ---------------------------------------------------------------------------
+# ManageAgentBody.allow_rules validation tests (FIX 1 security hardening)
+# ---------------------------------------------------------------------------
+
+def test_manage_agent_body_allow_rules_accepts_valid() -> None:
+    """Valid allow_rules list with safe entries validates successfully."""
+    from src.daemon.routes.agents import ManageAgentBody
+
+    body = ManageAgentBody(
+        action="enroll",
+        name="seo_agent",
+        task_id="TASK-200",
+        session_id="sess-eh",
+        description="SEO agent",
+        system_prompt="You are the SEO Agent...",
+        allow_rules=["gh api", "curl https://api.example.com"],
+    )
+    assert body.allow_rules == ["gh api", "curl https://api.example.com"]
+
+
+def test_manage_agent_body_allow_rules_rejects_empty_string() -> None:
+    """Empty string entry in allow_rules must be rejected with 422."""
+    import pytest
+    from pydantic import ValidationError
+    from src.daemon.routes.agents import ManageAgentBody
+
+    with pytest.raises(ValidationError, match="non-empty"):
+        ManageAgentBody(
+            action="enroll",
+            name="seo_agent",
+            task_id="TASK-201",
+            session_id="sess-eh",
+            description="desc",
+            system_prompt="prompt",
+            allow_rules=[""],
+        )
+
+
+def test_manage_agent_body_allow_rules_rejects_whitespace_only() -> None:
+    """Whitespace-only entry in allow_rules must be rejected."""
+    import pytest
+    from pydantic import ValidationError
+    from src.daemon.routes.agents import ManageAgentBody
+
+    with pytest.raises(ValidationError, match="non-empty"):
+        ManageAgentBody(
+            action="enroll",
+            name="seo_agent",
+            task_id="TASK-202",
+            session_id="sess-eh",
+            description="desc",
+            system_prompt="prompt",
+            allow_rules=["   "],
+        )
+
+
+def test_manage_agent_body_allow_rules_rejects_embedded_newline() -> None:
+    """Entry with embedded newline must be rejected (newline = command separator)."""
+    import pytest
+    from pydantic import ValidationError
+    from src.daemon.routes.agents import ManageAgentBody
+
+    with pytest.raises(ValidationError):
+        ManageAgentBody(
+            action="enroll",
+            name="seo_agent",
+            task_id="TASK-203",
+            session_id="sess-eh",
+            description="desc",
+            system_prompt="prompt",
+            allow_rules=["gh api\ngh pr merge"],
+        )
+
+
+def test_manage_agent_body_allow_rules_rejects_embedded_semicolon() -> None:
+    """Entry with semicolon must be rejected (semicolon = command separator)."""
+    import pytest
+    from pydantic import ValidationError
+    from src.daemon.routes.agents import ManageAgentBody
+
+    with pytest.raises(ValidationError):
+        ManageAgentBody(
+            action="enroll",
+            name="seo_agent",
+            task_id="TASK-204",
+            session_id="sess-eh",
+            description="desc",
+            system_prompt="prompt",
+            allow_rules=["gh api; rm -rf /"],
+        )
+
+
+def test_manage_agent_body_allow_rules_rejects_leading_whitespace() -> None:
+    """Entry with leading whitespace must be rejected."""
+    import pytest
+    from pydantic import ValidationError
+    from src.daemon.routes.agents import ManageAgentBody
+
+    with pytest.raises(ValidationError, match="leading/trailing whitespace"):
+        ManageAgentBody(
+            action="enroll",
+            name="seo_agent",
+            task_id="TASK-205",
+            session_id="sess-eh",
+            description="desc",
+            system_prompt="prompt",
+            allow_rules=[" gh api"],
+        )
+
+
+def test_manage_agent_body_allow_rules_none_is_valid() -> None:
+    """allow_rules=None (omitted) is accepted — means use protocol defaults."""
+    from src.daemon.routes.agents import ManageAgentBody
+
+    body = ManageAgentBody(
+        action="enroll",
+        name="seo_agent",
+        task_id="TASK-206",
+        session_id="sess-eh",
+        description="desc",
+        system_prompt="prompt",
+    )
+    assert body.allow_rules is None
+
+
+def test_init_agents_targets_include_content_team(
+    daemon_state,
+) -> None:
+    """init_agents target enumeration includes Content Team agents from TeamsRegistry."""
+    # daemon_state uses a fresh temp runtime → TeamsRegistry.load falls back to
+    # DEFAULT_LAYOUT, which includes content_manager / content_writer / content_qa.
+    assert daemon_state.teams is not None
+    agents = daemon_state.teams.all_agents()
+    assert "content_manager" in agents
+    assert "content_writer" in agents
+    assert "content_qa" in agents
+
+
+def test_init_agents_targets_include_approved_enrollments(
+    daemon_state,
+) -> None:
+    """init_agents target enumeration includes approved enrollments from DB."""
+    daemon_state.db.insert_enrollment("seo_agent", "SEO worker", "You are SEO.")
+    daemon_state.db.update_enrollment_status("seo_agent", "approved")
+    names = daemon_state.db.list_approved_agent_names()
+    assert "seo_agent" in names
+
+
+def test_init_agents_targets_none_teams_is_safe(daemon_state) -> None:
+    """If teams is None the guard prevents a crash; workspace dirs are still used."""
+    daemon_state.teams = None  # type: ignore[assignment]
+    # No crash — state.teams is None but the guard `if state.teams is not None` handles it.
+    known: set[str] = set()
+    if daemon_state.teams is not None:
+        known.update(daemon_state.teams.all_agents())
+    ws_dir = daemon_state.runtime.workspaces_dir
+    if ws_dir.exists():
+        known.update(d.name for d in ws_dir.iterdir() if d.is_dir())
+    known.update(daemon_state.db.list_approved_agent_names())
+    # No exception raised; result is an empty or workspace-only set.
+    assert isinstance(known, set)

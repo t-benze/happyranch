@@ -9,7 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, field_validator, model_validator
 from sse_starlette.sse import EventSourceResponse
 
 from src.daemon.agent_config import (
@@ -69,6 +69,24 @@ class ManageAgentBody(BaseModel):
     system_prompt: str | None = None
     repos: dict[str, str] | None = None
     executor: str | None = None
+    allow_rules: list[str] | None = None
+    target_team: str | None = None
+
+    @field_validator("allow_rules")
+    @classmethod
+    def _reject_unsafe_allow_rules(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return v
+        forbidden = {"\n", "\r", ";", "|", "&", "`", "$("}
+        for entry in v:
+            if not entry or not entry.strip():
+                raise ValueError("allow_rules entries must be non-empty")
+            if entry != entry.strip():
+                raise ValueError("allow_rules entries must not have leading/trailing whitespace")
+            for bad in forbidden:
+                if bad in entry:
+                    raise ValueError(f"allow_rules entries must not contain {bad!r}")
+        return v
 
     @model_validator(mode="after")
     def _exactly_one_auth_path(self) -> ManageAgentBody:
@@ -140,6 +158,61 @@ def _require_eh_auth(body: ManageAgentBody, state: DaemonState) -> None:
         )
 
 
+def _require_team_manager_auth(body: ManageAgentBody, state: DaemonState) -> tuple[str, str]:
+    """Validate the caller is a team manager and return (manager_name, manager_team).
+
+    Supports the same two auth paths as _require_eh_auth, but accepts *any*
+    team manager (not just engineering_head):
+      - Talk path: talk_id must reference an open talk whose agent_name is a
+        registered team manager.
+      - Task path: iterate all team managers, find the one with a matching
+        active (task_id, session_id) session.
+
+    Returns (manager_name, manager_team) so callers can enforce team scoping.
+    """
+    if state.teams is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="manage-agent requires teams registry (no active runtime)",
+        )
+
+    if body.talk_id is not None:
+        talk = state.db.get_talk(body.talk_id)
+        if talk is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"talk {body.talk_id!r} not found",
+            )
+        if not state.teams.is_team_manager(talk.agent_name):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="manage-agent requires a team-manager talk",
+            )
+        if talk.status != TalkStatus.OPEN:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"talk {body.talk_id!r} is {talk.status.value}, not open",
+            )
+        manager_team = state.teams.team_for_manager(talk.agent_name)
+        assert manager_team is not None  # guaranteed by is_team_manager check above
+        return talk.agent_name, manager_team
+
+    # Task path: find the team manager whose active session matches
+    for candidate in state.teams.all_agents():
+        if not state.teams.is_team_manager(candidate):
+            continue
+        active = state.sessions.get_active(body.task_id, candidate)
+        if active is not None and active == body.session_id:
+            manager_team = state.teams.team_for_manager(candidate)
+            assert manager_team is not None
+            return candidate, manager_team
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="manage-agent requires an active team-manager session",
+    )
+
+
 def _append_to_learnings_file(learnings_path: Path, agent_name: str, text: str) -> None:
     """Append a single learning line to learnings.md, creating the file+header if missing.
 
@@ -183,7 +256,13 @@ async def init_agents(body: InitBody, request: Request):
 
     if body.agent is None:
         ws_dir = state.runtime.workspaces_dir
-        targets = sorted(d.name for d in ws_dir.iterdir() if d.is_dir()) if ws_dir.exists() else []
+        known: set[str] = set()
+        if state.teams is not None:
+            known.update(state.teams.all_agents())
+        if ws_dir.exists():
+            known.update(d.name for d in ws_dir.iterdir() if d.is_dir())
+        known.update(state.db.list_approved_agent_names())
+        targets = sorted(known)
     else:
         targets = [body.agent]
 
@@ -289,8 +368,8 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
     state: DaemonState = request.app.state.daemon
     _require_active(state)
 
-    # Only the Engineering Head may manage agents (either via task session or open talk).
-    _require_eh_auth(body, state)
+    # Any team manager may manage agents within their team.
+    manager_name, manager_team = _require_team_manager_auth(body, state)
 
     scope_id = body.talk_id if body.talk_id is not None else body.task_id
     assert scope_id is not None  # guaranteed by ManageAgentBody._exactly_one_auth_path
@@ -305,18 +384,34 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
             raise HTTPException(status_code=422, detail="description and system_prompt required for enroll")
         if state.db.get_enrollment(body.name) is not None:
             raise HTTPException(status_code=409, detail=f"agent {body.name!r} already enrolled")
-        state.db.insert_enrollment(
-            name=body.name,
-            description=body.description,
-            system_prompt=body.system_prompt,
-            repos=body.repos,
-            executor=body.executor,
-        )
+        # Validate target_team BEFORE inserting — avoid zombie enrollment rows.
+        async with state.teams_lock:
+            target_team = body.target_team or manager_team
+            if target_team != manager_team:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={
+                        "code": "cross_team_forbidden",
+                        "caller_team": manager_team,
+                        "requested_team": target_team,
+                    },
+                )
+            state.db.insert_enrollment(
+                name=body.name,
+                description=body.description,
+                system_prompt=body.system_prompt,
+                repos=body.repos,
+                executor=body.executor,
+                allow_rules=body.allow_rules or [],
+            )
+            state.teams.add_worker(manager_team, body.name)
+            state.teams.save(state.runtime)
         audit.log_agent_managed(
             scope_id=scope_id,
             action="enroll",
             name=body.name,
             source=source,
+            actor=manager_name,
         )
         return {"ok": True, "status": "pending"}
 
@@ -326,6 +421,19 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
             raise HTTPException(status_code=404, detail=f"agent {body.name!r} not found")
         if enrollment["status"] != "approved":
             raise HTTPException(status_code=409, detail=f"agent {body.name!r} is {enrollment['status']}, not approved")
+        # Reject cross-team update attempts — hold the lock to prevent a torn
+        # read racing against a concurrent terminate.
+        async with state.teams_lock:
+            agent_team = state.teams.team_for_agent(body.name) if state.teams is not None else None
+            if agent_team != manager_team:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={
+                        "code": "cross_team_forbidden",
+                        "caller_team": manager_team,
+                        "agent_team": agent_team,
+                    },
+                )
         state.db.update_enrollment_fields(
             body.name,
             description=body.description,
@@ -349,6 +457,7 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
             action="update",
             name=body.name,
             source=source,
+            actor=manager_name,
         )
         return {"ok": True}
 
@@ -358,7 +467,21 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
             raise HTTPException(status_code=404, detail=f"agent {body.name!r} not found")
         if enrollment["status"] != "approved":
             raise HTTPException(status_code=409, detail=f"agent {body.name!r} is {enrollment['status']}, not approved")
-        state.db.update_enrollment_status(body.name, "terminated")
+        async with state.teams_lock:
+            agent_team = state.teams.team_for_agent(body.name) if state.teams is not None else None
+            if agent_team != manager_team:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={
+                        "code": "cross_team_forbidden",
+                        "caller_team": manager_team,
+                        "agent_team": agent_team,
+                    },
+                )
+            # DB update first — if it raises, teams.yaml stays untouched.
+            state.db.update_enrollment_status(body.name, "terminated")
+            state.teams.remove_worker(manager_team, body.name)
+            state.teams.save(state.runtime)
         workspace = state.runtime.workspaces_dir / body.name
         if workspace.exists():
             shutil.rmtree(workspace)
@@ -367,6 +490,7 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
             action="terminate",
             name=body.name,
             source=source,
+            actor=manager_name,
         )
         return {"ok": True}
 
@@ -377,10 +501,24 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
 def list_enrollments(
     request: Request,
     enrollment_status: str | None = Query(default=None, alias="status"),
+    team: str | None = Query(default=None),
 ) -> dict:
+    """List enrollments with optional ?status= and/or ?team= filters.
+
+    The ?team= filter is voluntary scoping — it does not authenticate the
+    caller as a member of that team. Founders always get an unfiltered view
+    when neither parameter is supplied.
+    """
     state: DaemonState = request.app.state.daemon
     _require_active(state)
     enrollments = state.db.list_enrollments(status=enrollment_status)
+    if team is not None and state.teams is not None:
+        team_agents = {
+            agent
+            for agent in state.teams.all_agents()
+            if state.teams.team_for_agent(agent) == team
+        }
+        enrollments = [e for e in enrollments if e["name"] in team_agents]
     return {"enrollments": [
         {"name": e["name"], "description": e["description"], "status": e["status"],
          "created_at": e["created_at"]}

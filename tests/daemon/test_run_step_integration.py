@@ -12,7 +12,7 @@ from src.config import Settings
 from src.daemon.queue import TaskQueue
 from src.daemon.agent_config import load_agent_config
 from src.infrastructure.database import Database
-from src.models import TaskRecord, TaskStatus, TaskType
+from src.models import TaskRecord, TaskStatus
 from src.orchestrator.orchestrator import Orchestrator
 from src.runtime import RuntimeDir
 
@@ -58,7 +58,7 @@ async def test_full_delegation_roundtrip(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
 
     # Seed the root
-    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="build"))
+    db.insert_task(TaskRecord(id="TASK-001", brief="build"))
     queue.enqueue("TASK-001")
 
     # Drain in two passes — delegate creates a child and enqueues it, which
@@ -115,7 +115,7 @@ async def test_escalation_roundtrip(tmp_path: Path, monkeypatch):
         )
     monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
 
-    db.insert_task(TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="x"))
+    db.insert_task(TaskRecord(id="TASK-001", brief="x"))
     queue.enqueue("TASK-001")
     await queue.drain_sync(orch)
 

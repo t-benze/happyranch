@@ -6,7 +6,7 @@ The self-hosted dashboard for org-wide visibility, plus the recommended build se
 
 ## 1. Dashboard Purpose
 
-The Feishu chats are for real-time interaction — conversations, approvals, daily updates. The dashboard is for when you want the big picture: how is the org performing, what happened recently, where are the trends going, and what's the full audit trail. It runs as a local web app on your Mac Mini, accessible from any device on your network.
+The CLI (`opc ...`) and SSE task streams are for real-time interaction — submitting work, streaming events, founder↔agent talks, approving escalations. The dashboard is for when you want the big picture: how is the org performing, what happened recently, where are the trends going, and what's the full audit trail. It runs as a local web app on your Mac Mini, accessible from any device on your network.
 
 ### Fully Self-Hosted
 All data stays on your Mac Mini — no third-party observability service. The orchestrator records execution data (agent decisions, task timelines, tool usage, LLM calls) directly to SQLite alongside the business-level metrics (scorecards, escalation history, calibration insights). One dashboard covers both engineering observability and business performance — no cloud dependency, no data leaving your infrastructure, full compliance with PDPO (HK) and PDPA (Macau). Mainland China is out of scope, so PIPL/CSL/DSL do not apply.
@@ -35,8 +35,8 @@ The landing page — what's happening right now.
 │  SYSTEM HEALTH          PENDING YOUR ACTION              │
 │  ┌────────────────┐     ┌──────────────────────────────┐ │
 │  │ ● All systems  │     │ 🟡 Refund $280 (CX Mgr)     │ │
-│  │   operational  │     │    waiting 3h — reply in      │ │
-│  │                │     │    Feishu to approve/deny     │ │
+│  │   operational  │     │    waiting 3h — run          │ │
+│  │                │     │    opc resolve-escalation     │ │
 │  │ Uptime: 99.7%  │     │                              │ │
 │  │ Last incident: │     │ 🟡 Partner custom terms       │ │
 │  │   3 days ago   │     │    (Ops Mgr) waiting 1h      │ │
@@ -139,7 +139,7 @@ Searchable, filterable log of every action in the system.
 │    Status: Waiting for founder approval                  │
 │                                                          │
 │  Apr 11, 09:00  Content Manager  daily_report            │
-│    Channel: Feishu Content Manager group                 │
+│    Channel: dashboard                                    │
 │                                                          │
 │  [Load more...]                                          │
 │                                                          │
@@ -263,10 +263,10 @@ Engineering-level observability for debugging and cost tracking — fully self-h
 │  ▶ RUN-087  Content Team  14:32  ✅ 3m 22s  $0.84      │
 │    ├── Content Writer  write_content     2m 10s  $0.52  │
 │    │   └── LLM: 3 calls, 12,400 tokens                 │
-│    │   └── Tools: search_web (2x), check_source (1x)   │
+│    │   └── Tools: WebFetch (2x), Read (3x)             │
 │    ├── Content QA  qa_review               0m 48s  $0.24  │
 │    │   └── LLM: 2 calls, 5,200 tokens                  │
-│    │   └── Tools: check_url (4x), check_exchange_rate   │
+│    │   └── Tools: WebFetch (4x), Grep (2x)             │
 │    └── Content Manager  manager_review   0m 24s  $0.08  │
 │        └── LLM: 1 call, 2,100 tokens                   │
 │                                                          │
@@ -304,7 +304,7 @@ Data sources: orchestrator audit log (session/step/completion events), LLM usage
 
 ## 3. Dashboard API Endpoints
 
-The dashboard backend exposes a REST API that the frontend consumes. This same API could be used by other tools (scripts, Feishu bot commands, etc.):
+The dashboard backend exposes a REST API that the frontend consumes. This same API could be used by other tools (scripts, CLI lookups, etc.):
 
 | Endpoint | Returns |
 |---|---|
@@ -315,14 +315,14 @@ The dashboard backend exposes a REST API that the frontend consumes. This same A
 | `GET /api/logs/{task_id}` | Full history for a specific task |
 | `GET /api/escalations?period=` | Escalation history with calibration insights |
 | `GET /api/trends?period=7d` | Aggregated metrics for charts |
-| `GET /api/health` | Team health summary (same data as Feishu `health` command) |
+| `GET /api/health` | Team health summary |
 | `GET /api/traces?team=&date=` | Execution traces with LLM calls, tool usage, timing |
 | `GET /api/traces/{run_id}` | Full trace detail for a specific team run |
 | `GET /api/costs?period=7d` | LLM cost breakdown by agent, team, and time period |
 
-### Connection to Feishu
+### Dashboard is read-only
 
-The dashboard and Feishu are two views of the same data. Quick commands in Feishu (`status`, `health`, `scorecard`) hit the same API endpoints as the dashboard. The "Pending Your Action" items on the dashboard link to the corresponding Feishu group chat thread where you can approve/deny. The dashboard is read-only — all actions (approvals, directives, goal-setting) happen through Feishu conversations.
+The dashboard is read-only. All founder actions (approvals, directives, goal-setting, rejections) happen through CLI commands (`opc resolve-escalation`, `opc kb precedent --as-founder`, `opc revisit`) or `opc talk` conversations. "Pending Your Action" items link to the command you'd run; the dashboard never mutates state itself.
 
 ---
 
@@ -340,16 +340,14 @@ The dashboard and Feishu are two views of the same data. Quick commands in Feish
 
 6. **Add performance scoring** — after each Team run, score the agents. Start displaying scorecards. Implement tier-based task chain adjustment.
 
-7. **Add Feishu bot integration** — set up the OPC Hub app bot and 4 manager webhook bots. Create the 7 group chats. Implement daily reports (Tier 3), standard approvals (Tier 2), reply parsing, and the decision-routing loop. Test with the Content Manager group chat first.
+7. **Add the knowledge base** — RAG access to org charter, guides, and SOPs. Scoped read/write per agent.
 
-8. **Add the knowledge base** — RAG access to org charter, guides, and SOPs. Scoped read/write per agent.
+8. **Stand up Team 2 (Product) and Team 3 (Ops)** — these are more complex due to cross-team dependencies (Compliance Agent cross-auditing Payment Agent).
 
-9. **Stand up Team 2 (Product) and Team 3 (Ops)** — these are more complex due to cross-team dependencies (Compliance Agent cross-auditing Payment Agent).
+9. **Add inter-Team communication** — the orchestrator routes cross-team tasks.
 
-10. **Add inter-Team communication** — the orchestrator routes cross-team tasks.
+10. **Stand up CX Team** — with the Support Agent as a persistent session for real-time chat (running outside the standard task loop) while still reporting into the CX Team for review workflows.
 
-11. **Stand up CX Team** — with the Support Agent as a persistent session for real-time chat (running outside the standard task loop) while still reporting into the CX Team for review workflows.
+11. **Add additional executor support** — once the abstraction is solid with one provider, add Codex and OpenCode as options.
 
-12. **Add additional executor support** — once the abstraction is solid with one provider, add Codex and OpenCode as options.
-
-13. **Build the founder dashboard** — FastAPI backend exposing the REST API, React or static HTML frontend with the 6 pages (live status, scorecards, work log, escalation history, trends, execution traces). Connect the Feishu quick commands to the same API endpoints. No third-party observability dependency — all data captured via orchestrator audit hooks and stored locally.
+12. **Build the founder dashboard** — FastAPI backend exposing the REST API, React or static HTML frontend with the 6 pages (live status, scorecards, work log, escalation history, trends, execution traces). No third-party observability dependency — all data captured via orchestrator audit hooks and stored locally.

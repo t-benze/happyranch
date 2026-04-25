@@ -45,16 +45,30 @@ class Database:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
+        self._tasks_has_legacy_type_column: bool = False
         self._create_tables()
+        self._detect_legacy_columns()
+
+    def _detect_legacy_columns(self) -> None:
+        """Detect legacy columns that may still exist on upgraded DBs.
+
+        Called once after _create_tables() completes. Fresh DBs never have the
+        ``type`` column (dropped in the Task-4 schema refactor). Runtimes
+        created before that change retain it as ``TEXT NOT NULL`` with no SQL
+        default — insert_task must supply a sentinel value or SQLite raises
+        IntegrityError.
+        """
+        cursor = self._conn.execute("PRAGMA table_info(tasks)")
+        columns = {row[1] for row in cursor.fetchall()}
+        self._tasks_has_legacy_type_column = "type" in columns
 
     def _create_tables(self) -> None:
         self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS tasks (
                 id TEXT PRIMARY KEY,
-                type TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending',
                 assigned_agent TEXT,
-                team TEXT NOT NULL DEFAULT 'product_engineering',
+                team TEXT NOT NULL DEFAULT 'engineering',
                 brief TEXT NOT NULL,
                 revision_count INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
@@ -110,6 +124,7 @@ class Database:
                 system_prompt TEXT NOT NULL,
                 repos TEXT NOT NULL DEFAULT '{}',
                 executor TEXT NOT NULL DEFAULT 'claude',
+                allow_rules TEXT NOT NULL DEFAULT '[]',
                 status TEXT NOT NULL DEFAULT 'pending',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -156,6 +171,7 @@ class Database:
             # double-encoding contract — see TASK-071 post-mortem.
             "ALTER TABLE task_results ADD COLUMN decision_json TEXT",
             "ALTER TABLE agent_enrollments ADD COLUMN executor TEXT NOT NULL DEFAULT 'claude'",
+            "ALTER TABLE agent_enrollments ADD COLUMN allow_rules TEXT NOT NULL DEFAULT '[]'",
             # crew → team rename (SQLite >= 3.25). Idempotent: fails on
             # DBs where the column is already `team` or already renamed.
             "ALTER TABLE tasks RENAME COLUMN crew TO team",
@@ -164,6 +180,15 @@ class Database:
                 self._conn.execute(ddl)
             except sqlite3.OperationalError:
                 pass
+
+        # Remap legacy team value: 'product_engineering' → 'engineering'.
+        try:
+            self._conn.execute(
+                "UPDATE tasks SET team='engineering' WHERE team='product_engineering'"
+            )
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass
 
         # --- Task-status redesign migration (idempotent) ---
         # Add new columns; swallow duplicate errors on subsequent startups.
@@ -257,29 +282,43 @@ class Database:
 
     @_synchronized
     def insert_task(self, task: TaskRecord) -> None:
-        self._conn.execute(
-            """INSERT INTO tasks (id, type, status, assigned_agent, team, brief,
-               revision_count, created_at, updated_at, completed_at, parent_task_id,
-               revisit_of_task_id, block_kind, note, orchestration_step_count)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                task.id,
-                task.type.value,
-                task.status.value,
-                task.assigned_agent,
-                task.team,
-                task.brief,
-                task.revision_count,
-                task.created_at.isoformat(),
-                task.updated_at.isoformat(),
-                task.completed_at.isoformat() if task.completed_at else None,
-                task.parent_task_id,
-                task.revisit_of_task_id,
-                task.block_kind.value if task.block_kind else None,
-                task.note,
-                task.orchestration_step_count,
-            ),
+        params = (
+            task.id,
+            task.status.value,
+            task.assigned_agent,
+            task.team,
+            task.brief,
+            task.revision_count,
+            task.created_at.isoformat(),
+            task.updated_at.isoformat(),
+            task.completed_at.isoformat() if task.completed_at else None,
+            task.parent_task_id,
+            task.revisit_of_task_id,
+            task.block_kind.value if task.block_kind else None,
+            task.note,
+            task.orchestration_step_count,
         )
+        if self._tasks_has_legacy_type_column:
+            # Legacy DBs (created before the Task-4 schema refactor) retain a
+            # `type TEXT NOT NULL` column with no SQL default. Supply a sentinel
+            # value to satisfy the NOT NULL constraint without re-adding the
+            # column to the current schema.
+            # params[0] = id; insert type="general" after id, then the rest.
+            self._conn.execute(
+                """INSERT INTO tasks (id, type, status, assigned_agent, team, brief,
+                   revision_count, created_at, updated_at, completed_at, parent_task_id,
+                   revisit_of_task_id, block_kind, note, orchestration_step_count)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (params[0], "general") + params[1:],
+            )
+        else:
+            self._conn.execute(
+                """INSERT INTO tasks (id, status, assigned_agent, team, brief,
+                   revision_count, created_at, updated_at, completed_at, parent_task_id,
+                   revisit_of_task_id, block_kind, note, orchestration_step_count)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                params,
+            )
         self._conn.commit()
 
     @_synchronized
@@ -290,7 +329,6 @@ class Database:
             return None
         return TaskRecord(
             id=row["id"],
-            type=row["type"],
             status=row["status"],
             assigned_agent=row["assigned_agent"],
             team=row["team"],
@@ -316,7 +354,6 @@ class Database:
         return [
             TaskRecord(
                 id=row["id"],
-                type=row["type"],
                 status=row["status"],
                 assigned_agent=row["assigned_agent"],
                 team=row["team"],
@@ -459,7 +496,6 @@ class Database:
         return [
             TaskRecord(
                 id=row["id"],
-                type=row["type"],
                 status=row["status"],
                 assigned_agent=row["assigned_agent"],
                 team=row["team"],
@@ -828,12 +864,14 @@ class Database:
         repos: dict[str, str] | None = None,
         executor: str | None = None,
         status: str = "pending",
+        allow_rules: list[str] | None = None,
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         self._conn.execute(
-            "INSERT INTO agent_enrollments (name, description, system_prompt, repos, executor, status, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (name, description, system_prompt, json.dumps(repos or {}), executor or "claude", status, now, now),
+            "INSERT INTO agent_enrollments (name, description, system_prompt, repos, executor, allow_rules, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (name, description, system_prompt, json.dumps(repos or {}), executor or "claude",
+             json.dumps(allow_rules or []), status, now, now),
         )
         self._conn.commit()
 
@@ -842,7 +880,11 @@ class Database:
         row = self._conn.execute(
             "SELECT * FROM agent_enrollments WHERE name = ?", (name,),
         ).fetchone()
-        return dict(row) if row else None
+        if row is None:
+            return None
+        d = dict(row)
+        d["allow_rules"] = json.loads(d.get("allow_rules") or "[]")
+        return d
 
     @_synchronized
     def list_enrollments(self, status: str | None = None) -> list[dict]:
@@ -856,6 +898,13 @@ class Database:
                 "SELECT * FROM agent_enrollments ORDER BY created_at",
             ).fetchall()
         return [dict(r) for r in rows]
+
+    @_synchronized
+    def list_approved_agent_names(self) -> list[str]:
+        cur = self._conn.execute(
+            "SELECT name FROM agent_enrollments WHERE status='approved' ORDER BY name"
+        )
+        return [r["name"] for r in cur.fetchall()]
 
     @_synchronized
     def update_enrollment_status(self, name: str, status: str) -> None:

@@ -107,7 +107,10 @@ def cmd_run(args: argparse.Namespace) -> None:
         print(f"Error: {exc}")
         sys.exit(1)
 
-    r = client.post("/api/v1/tasks", json={"type": args.task, "brief": args.brief})
+    payload: dict = {"brief": args.brief}
+    if args.team:
+        payload["team"] = args.team
+    r = client.post("/api/v1/tasks", json=payload)
     if not _ok(r):
         return
     task_id = r.json()["task_id"]
@@ -165,8 +168,8 @@ def cmd_tasks(args: argparse.Namespace) -> None:
     if not tasks:
         print("No tasks found.")
         return
-    print(f"{'ID':<12} {'Type':<20} {'Status':<22} {'Agent':<18} Brief")
-    print("-" * 106)
+    print(f"{'ID':<12} {'Team':<16} {'Status':<22} {'Agent':<18} Brief")
+    print("-" * 102)
     for t in tasks:
         brief = t["brief"][:40] + "..." if len(t["brief"]) > 40 else t["brief"]
         agent = t.get("assigned_agent") or "-"
@@ -177,7 +180,8 @@ def cmd_tasks(args: argparse.Namespace) -> None:
         # for non-revisit rows. `↩` is a U+21A9 leftwards arrow with hook.
         if t.get("revisit_of_task_id"):
             brief = f"{brief}  ↩ {t['revisit_of_task_id']}"
-        print(f"{t['id']:<12} {t['type']:<20} {status:<22} {agent:<18} {brief}")
+        team = t.get("team") or "-"
+        print(f"{t['id']:<12} {team:<16} {status:<22} {agent:<18} {brief}")
 
 
 def cmd_details(args: argparse.Namespace) -> None:
@@ -210,7 +214,7 @@ def cmd_details(args: argparse.Namespace) -> None:
             print(f"Chain:      {' ← '.join(display)}")
 
     print(f"Task:       {task['id']}")
-    print(f"Type:       {task['type']}")
+    print(f"Team:       {task.get('team', '-')}")
     print(f"Status:     {task['status']}")
     print(f"Agent:      {task.get('assigned_agent') or '-'}")
     print(f"Brief:      {task['brief']}")
@@ -1090,9 +1094,8 @@ def build_parser() -> argparse.ArgumentParser:
     # opc run
     p_run = sub.add_parser("run", help="Run a task")
     p_run.add_argument(
-        "--task", default="general",
-        choices=["general", "implement_feature", "bug_fix", "payment_change"],
-        help="Task type hint (default: general -- EH decides the approach)",
+        "--team", default=None,
+        help="Team to route the task to (default: engineering)",
     )
     p_run.add_argument("--brief", required=True, help="Task description")
     p_run.set_defaults(func=cmd_run)

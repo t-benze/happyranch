@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.daemon import runtimes as reg
-from src.models import TaskRecord, TaskStatus, TaskType
+from src.models import TaskRecord, TaskStatus
 from src.runtime import RuntimeDir
 
 
@@ -53,7 +53,7 @@ def test_activate_blocked_by_in_flight_task(
     reg.activate(daemon_state.runtime.root)
 
     # Insert an IN_PROGRESS task on the active runtime.
-    task = TaskRecord(id="TASK-001", type=TaskType.GENERAL, brief="x")
+    task = TaskRecord(id="TASK-001", brief="x")
     daemon_state.db.insert_task(task)
     daemon_state.db.update_task("TASK-001", status=TaskStatus.IN_PROGRESS)
 
@@ -79,7 +79,7 @@ def test_activate_blocked_by_pending_task(
     reg.activate(daemon_state.runtime.root)
 
     # Insert a PENDING task — never marked IN_PROGRESS.
-    task = TaskRecord(id="TASK-002", type=TaskType.GENERAL, brief="y")
+    task = TaskRecord(id="TASK-002", brief="y")
     daemon_state.db.insert_task(task)
 
     r = TestClient(app).post(
@@ -95,3 +95,17 @@ def test_activate_blocked_by_pending_task(
 def test_unauthenticated_request_401(tmp_home, app_idle) -> None:
     r = TestClient(app_idle).get("/api/v1/runtimes")
     assert r.status_code == 401
+
+
+def test_register_runtime_populates_teams(tmp_home, app_idle, auth_headers, tmp_path: Path) -> None:
+    rt_path = _make_runtime(tmp_path, "rt-teams")
+    r = TestClient(app_idle).post(
+        "/api/v1/runtimes/register",
+        json={"path": str(rt_path)},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    daemon = app_idle.state.daemon
+    assert daemon.teams is not None
+    assert daemon.teams.manager_for_team("engineering").name == "engineering_head"
+    assert daemon.teams.manager_for_team("content").name == "content_manager"

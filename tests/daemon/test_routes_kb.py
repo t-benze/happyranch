@@ -295,10 +295,10 @@ def _seed_escalated_task(
     app, task_id: str = "TASK-037", brief: str = "Large refund for custom itinerary",
     reason: str = "Amount exceeds CX cap",
 ) -> None:
-    from src.models import BlockKind, TaskRecord, TaskStatus, TaskType
+    from src.models import BlockKind, TaskRecord, TaskStatus
     state = app.state.daemon
     state.db.insert_task(TaskRecord(
-        id=task_id, type=TaskType.GENERAL, brief=brief,
+        id=task_id, brief=brief,
     ))
     state.db.update_task(
         task_id, status=TaskStatus.BLOCKED, block_kind=BlockKind.ESCALATED,
@@ -351,10 +351,10 @@ def test_kb_precedent_does_not_transition_task_status(tmp_home, app, runtime, au
 
 def test_kb_precedent_post_hoc_on_resolved_task(tmp_home, app, runtime, auth_headers):
     """Founder can write a precedent for an already-resolved task."""
-    from src.models import TaskRecord, TaskType, TaskStatus
+    from src.models import TaskRecord, TaskStatus
     state = app.state.daemon
     state.db.insert_task(TaskRecord(
-        id="TASK-039", type=TaskType.GENERAL, brief="Partner change",
+        id="TASK-039", brief="Partner change",
         status=TaskStatus.COMPLETED,
     ))
     state.db.insert_audit_log(
@@ -371,10 +371,10 @@ def test_kb_precedent_post_hoc_on_resolved_task(tmp_home, app, runtime, auth_hea
 
 
 def test_kb_precedent_rejects_task_without_escalation(tmp_home, app, auth_headers):
-    from src.models import TaskRecord, TaskType, TaskStatus
+    from src.models import TaskRecord, TaskStatus
     state = app.state.daemon
     state.db.insert_task(TaskRecord(
-        id="TASK-040", type=TaskType.GENERAL, brief="x", status=TaskStatus.COMPLETED,
+        id="TASK-040", brief="x", status=TaskStatus.COMPLETED,
     ))
     # No escalation audit row
     client = TestClient(app)
