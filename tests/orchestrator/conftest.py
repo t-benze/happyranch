@@ -7,7 +7,6 @@ from typing import Any
 
 import pytest
 
-from src.config import Settings
 from src.infrastructure.database import Database
 from src.models import BlockKind, CompletionReport, NextStep, TaskStatus
 from src.orchestrator.orchestrator import Orchestrator

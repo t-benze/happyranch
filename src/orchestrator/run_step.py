@@ -188,20 +188,26 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
                 orch._queue.put_nowait(task_id)
             return
         from src.models import TaskRecord
-        # Revision tracking: if the target agent already has a completed child
-        # under this task (i.e. the manager is re-delegating after QA feedback),
-        # bump the root task's revision_count so the audit trail reflects the
-        # number of revision cycles. This mirrors the spec's rule:
-        # "bumps it when decision.agent == previous_delegate_target_after_qa".
+        # Revision tracking: bump the delegating task's revision_count only
+        # when the manager re-delegates to the *worker-of-record* — i.e. the
+        # earliest-completed child. By convention, the first delegated child
+        # is the worker for this task (true for both Content Team and
+        # Engineering Team flows); subsequent same-agent delegations are
+        # genuine revise cycles. Re-delegating to QA/reviewer is *not* a
+        # revision and must not bump the count (spec
+        # `protocol/05a-teams.md`: "manager escalates after 2 rounds").
         existing_children = db.get_children(task_id)
-        already_delegated = any(
-            (c := db.get_task(cid)) is not None
-            and c.assigned_agent == decision.agent
-            and c.status == TaskStatus.COMPLETED
-            for cid in existing_children
-        )
-        if already_delegated:
-            db.increment_revision_count(task_id)
+        completed_children = []
+        for cid in existing_children:
+            c = db.get_task(cid)
+            if c is not None and c.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                completed_children.append(c)
+        if completed_children:
+            # Earliest by created_at; tie-break on id for determinism.
+            completed_children.sort(key=lambda c: (c.created_at, c.id))
+            worker_of_record = completed_children[0].assigned_agent
+            if worker_of_record == decision.agent:
+                db.increment_revision_count(task_id)
         child_id = db.next_task_id()
         db.insert_task(TaskRecord(
             id=child_id,

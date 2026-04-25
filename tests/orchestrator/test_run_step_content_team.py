@@ -8,13 +8,10 @@ Tests the three paths defined in the spec:
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
-
-import pytest
 
 from src.config import Settings
 from src.infrastructure.database import Database
-from src.models import BlockKind, NextStep, TaskRecord, TaskStatus
+from src.models import NextStep, TaskRecord, TaskStatus
 from src.orchestrator.orchestrator import Orchestrator
 from src.runtime import RuntimeDir
 from tests.orchestrator.conftest import ScriptedRunAgent, run_task_to_completion
@@ -102,7 +99,12 @@ def test_pass_path_completes_task(runtime: RuntimeDir, db: Database, monkeypatch
 
 
 def test_revise_path_bumps_revision_count(runtime: RuntimeDir, db: Database, monkeypatch) -> None:
-    """REVISE path: one QA rejection cycle; final PASS; revision_count >= 1."""
+    """REVISE path: one QA rejection cycle; final PASS; revision_count == 1.
+
+    The cycle is W1 → Q1 → W2 (revision) → Q2 (re-review). Only the W2
+    re-delegation is a revision — the Q2 re-review must not also bump the
+    counter (regression guard for the over-counting bug fixed alongside
+    this test)."""
     _seed_workspaces(runtime)
     orch = _make_orch(runtime, db)
     tid = _seed_task(db)
@@ -153,8 +155,10 @@ def test_revise_path_bumps_revision_count(runtime: RuntimeDir, db: Database, mon
     task = db.get_task(tid)
     assert task is not None
     assert task.status == TaskStatus.COMPLETED, f"expected COMPLETED, got {task.status} (note={task.note!r})"
-    assert task.revision_count >= 1, (
-        f"expected revision_count >= 1 after a REVISE cycle, got {task.revision_count}"
+    assert task.revision_count == 1, (
+        f"expected revision_count == 1 after one REVISE cycle "
+        f"(only the worker re-delegation should bump; QA re-review must not), "
+        f"got {task.revision_count}"
     )
 
 

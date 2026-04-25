@@ -7,9 +7,7 @@ Uses the same harness as ``test_end_to_end.py`` (live_daemon + fake_claude).
 """
 from __future__ import annotations
 
-import json
 import time
-from pathlib import Path
 
 import httpx
 import pytest
