@@ -10,13 +10,13 @@ How the org design maps to the runtime (Python daemon + executor-backed agent se
 |---|---|---|
 | Worker Agent (e.g., Content Writer) | Persistent agent workspace + configured executor session | `<runtime>/workspaces/<agent>/` holds `agent.yaml`, skills, repos, and executor-specific bootstrap files (`CLAUDE.md` for Claude or `AGENTS.md` for Codex). Each task spawns a headless session using that agent's configured executor |
 | Manager Agent (e.g., Content Manager) | Same as a worker, but with an EH-style orchestration prompt | Managers decide at each step: handle, delegate, escalate. Engineering Head is the first manager implemented; others follow the same pattern |
-| Content task (e.g., "write Macau visa guide") | `TaskRecord` row + brief | Tasks have a type hint (`implement_feature`, `bug_fix`, `payment_change`, `general`) that steers the manager's decision, not a hardcoded chain |
+| Content task (e.g., "write Macau visa guide") | `TaskRecord` row + brief | Tasks carry a `team` routing tag (set via `opc run --team <name>`) that selects the manager; the manager then decides the chain, not a hardcoded one |
 | QA review of that content | Second agent session triggered by the manager's orchestration decision | Maker-checker preserved — the manager delegates to a different agent via the `delegate` action |
 | Manager approval step | Manager's final `done` action after reviewing the worker's completion report | Captured as a `verdict` audit entry |
 | Functional team (Content Writer + QA + Content Mgr) | Group of agent workspaces plus the `team` field on each task | Team is a taxonomy, not a scheduling unit — the orchestrator doesn't instantiate "a team", it just spawns the agents the manager picks |
 | Peer audit (cross-manager review) | Cross-team task spawned by the orchestrator per escalation rules | Routed between managers in the orchestrator layer |
 | Escalation to founder | Manager returns `{action: "escalate", reason: "..."}` from a decision session | The orchestrator surfaces the escalation and the founder resolves it via `opc resolve-escalation` |
-| Knowledge base | File-backed markdown under `<runtime>/kb/` | Any agent reads; any agent writes via `opc kb add --from-file`; any team manager deletes (audited); founder overrides via --as-founder; founder records precedents |
+| Knowledge base | File-backed markdown under `<runtime>/kb/` | Any agent reads; any agent writes via `opc kb add --from-file`; any team manager deletes (audited); founder overrides via `--as-founder`; founder records precedents |
 | Audit logger | Semantic events in SQLite (`session_start`, `completion_report`, `verdict`, `escalation`, `orchestration_step`, etc.) | Wired into every orchestrator action and every agent callback |
 | Performance scoring | Rolling 30-day scorecard (green/yellow/red) surfaced to the manager in its capabilities prompt | Tier feedback shapes the manager's delegation decisions naturally |
 
