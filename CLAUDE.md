@@ -304,7 +304,7 @@ scripts/daemon.sh status                                        # or stop
 opc init /path/to/runtime                                       # register + activate a runtime dir
 opc use /path/to/other-runtime                                  # switch the daemon's active runtime
 opc run --brief "Explore the payment module"                    # submit a task; EH decides approach
-opc run --task implement_feature --brief "Add Alipay support"   # with task type hint
+opc run --team engineering --brief "Add Alipay support"          # route to a team
 opc tail TASK-001            # stream live SSE events for a task
 opc tasks                    # list recent tasks
 opc details TASK-001         # show task details (status, block_kind, note, results, audit log)
@@ -367,7 +367,7 @@ No vector store yet.
 ## Revisit (founder recovery)
 
 `opc revisit <task-id>` is a founder-initiated primitive that spawns a **new
-root task** inheriting the brief + task_type of a terminal predecessor. The
+root task** inheriting the brief + team of a terminal predecessor. The
 existing lineage stays frozen (read-only history) — nothing in the old tree
 is mutated. Design doc: `docs/superpowers/specs/2026-04-21-opc-revisit-design.md`.
 

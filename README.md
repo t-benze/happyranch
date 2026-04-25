@@ -55,13 +55,12 @@ opc init-agent
 # Or initialize a specific agent
 opc init-agent dev_agent
 
-# Run a task (EH decides the approach). The CLI streams live events until done.
+# Run a task. The CLI streams live events until done.
 opc run --brief "Explore how the payment module handles refunds"
 
-# Provide a task type hint to guide the EH
-opc run --task implement_feature --brief "Add Alipay support for international cards"
-opc run --task bug_fix --brief "Payment confirmation emails not sending for HK bookings"
-opc run --task payment_change --brief "Add WeChat Pay as alternative payment method"
+# Route a task to a specific team
+opc run --team engineering --brief "Add Alipay support for international cards"
+opc run --team content --brief "Write a Macau visa walkthrough for first-time visitors"
 
 # Re-attach to a running task and stream its events
 opc tail TASK-001
@@ -86,8 +85,8 @@ opc use ~/another-runtime
 |---------|-------------|
 | `opc init <path>` | Create a runtime directory and set it as active |
 | `opc use <path>` | Switch the daemon's active runtime directory |
-| `opc run --brief "..."` | Submit a task and stream its events (EH decides approach) |
-| `opc run --task TYPE --brief "..."` | Run with task type hint (`general`, `implement_feature`, `bug_fix`, `payment_change`) |
+| `opc run --brief "..."` | Submit a task and stream its events. The team manager decides the approach. |
+| `opc run --team TEAM --brief "..."` | Route a task to a team (e.g., `engineering`, `content`) |
 | `opc tail TASK-ID` | Stream live events for a running (or historical) task |
 | `opc details TASK-ID` | Show task details (status, block_kind, note, results, audit log) |
 | `opc tasks [--limit N]` | List recent tasks (default: 20) |

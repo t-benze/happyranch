@@ -16,7 +16,7 @@ How the org design maps to the runtime (Python daemon + executor-backed agent se
 | Functional team (Content Writer + QA + Content Mgr) | Group of agent workspaces plus the `team` field on each task | Team is a taxonomy, not a scheduling unit — the orchestrator doesn't instantiate "a team", it just spawns the agents the manager picks |
 | Peer audit (cross-manager review) | Cross-team task spawned by the orchestrator per escalation rules | Routed between managers in the orchestrator layer |
 | Escalation to founder | Manager returns `{action: "escalate", reason: "..."}` from a decision session | The orchestrator surfaces the escalation and the founder resolves it via `opc resolve-escalation` |
-| Knowledge base | File-backed markdown under `<runtime>/kb/` | Any agent reads; any agent writes via `opc kb add --from-file`; engineering_head deletes; founder records precedents |
+| Knowledge base | File-backed markdown under `<runtime>/kb/` | Any agent reads; any agent writes via `opc kb add --from-file`; any team manager deletes (audited); founder overrides via --as-founder; founder records precedents |
 | Audit logger | Semantic events in SQLite (`session_start`, `completion_report`, `verdict`, `escalation`, `orchestration_step`, etc.) | Wired into every orchestrator action and every agent callback |
 | Performance scoring | Rolling 30-day scorecard (green/yellow/red) surfaced to the manager in its capabilities prompt | Tier feedback shapes the manager's delegation decisions naturally |
 
