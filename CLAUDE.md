@@ -222,6 +222,20 @@ was enrolled with "Use the **start-task** skill..." in its prompt,
 completed the work, then exited 0 without calling `opc report-completion`,
 and the orchestrator auto-rejected with *no completion callback*.
 
+**Codex `workspace-write` sandbox blocks localhost by default.** The
+`opc` CLI talks to the daemon over `127.0.0.1` via httpx, so without an
+override the agent's `opc report-completion` call dies with
+`httpx.ConnectError: [Errno 1] Operation not permitted` and the task
+auto-rejects with *no completion callback* — same surface symptom as
+TASK-077 but a different root cause. `CodexExecutor.run` therefore passes
+`-c sandbox_workspace_write.network_access=true` on every Codex
+invocation. Do not remove this flag without first re-architecting the
+agent callback path to not require localhost sockets (e.g., a file-drop
+the daemon polls). TASK-080 (2026-04-25) is the canonical failure:
+`senior_dev` produced a complete 130-line `design-review.md` artifact,
+exited rc=0, then was auto-rejected because the final HTTP callback
+never made it past the sandbox.
+
 Repos are configured per agent in `<runtime>/workspaces/<agent>/agent.yaml`:
 ```yaml
 repos:

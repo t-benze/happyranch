@@ -158,6 +158,16 @@ class CodexExecutor:
             "exec",
             "--sandbox",
             self._sandbox_mode,
+            # Codex's `workspace-write` sandbox blocks all outbound sockets by
+            # default, including localhost. The `opc` CLI talks to the daemon
+            # over 127.0.0.1 via httpx, so without this override the agent's
+            # `opc report-completion` call dies with
+            # `httpx.ConnectError: [Errno 1] Operation not permitted` and the
+            # task auto-rejects with "no completion callback" (TASK-080 class
+            # of failure). Enable network at the sandbox layer; agent-side
+            # discipline still flows through the sanctioned `opc` channel.
+            "-c",
+            "sandbox_workspace_write.network_access=true",
             "--skip-git-repo-check",
             "--json",
             "-",

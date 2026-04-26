@@ -101,6 +101,12 @@ def test_codex_executor_launches_exec_with_explicit_sandbox(mock_subprocess, tmp
     assert "--skip-git-repo-check" in cmd
     assert "--json" in cmd
     assert cmd[-1] == "-"
+    # `workspace-write` blocks localhost by default; the override is required
+    # so agents can call back into the daemon via `opc report-completion`.
+    # See TASK-080 post-mortem in CLAUDE.md.
+    assert "-c" in cmd
+    c_index = cmd.index("-c")
+    assert cmd[c_index + 1] == "sandbox_workspace_write.network_access=true"
     # Prompt is passed through communicate(input=...), not Popen(input=...).
     assert mock_subprocess.Popen.return_value.communicate.call_args.kwargs[
         "input"
