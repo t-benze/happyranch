@@ -158,6 +158,37 @@ class AuditLogger:
             payload={"new_root": new_root},
         )
 
+    def log_task_dispatched(
+        self,
+        *,
+        task_id: str,
+        talk_id: str,
+        dispatcher_agent: str,
+        dispatcher_role: str,
+        effective_target: str,
+        team: str,
+    ) -> None:
+        """Record on a NEW task that it was dispatched from a talk.
+
+        `task_id` is the new task's id (NOT the talk id) -- the task_id scope
+        is the new task; querying by talk_id uses the dispatched_from_talk_id
+        column on tasks instead. `dispatcher_role` is "worker" or "manager"
+        -- frozen at dispatch time so retroactive role changes don't rewrite
+        history.
+        """
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent=dispatcher_agent,
+            action="task_dispatched",
+            payload={
+                "talk_id": talk_id,
+                "dispatcher_agent": dispatcher_agent,
+                "dispatcher_role": dispatcher_role,
+                "effective_target": effective_target,
+                "team": team,
+            },
+        )
+
     # NOTE: audit_log.task_id is NOT NULL. Talk events reuse that column as a
     # generic "scope id" and store the talk id (TALK-NNN). Readers that filter
     # by talk id pass it in place of task_id.

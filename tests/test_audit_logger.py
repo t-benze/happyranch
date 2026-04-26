@@ -163,3 +163,26 @@ def test_log_talk_ended(db):
     assert rows[0]["action"] == "talk_ended"
     assert rows[0]["payload"]["new_learnings_count"] == 2
     assert rows[0]["payload"]["new_kb_slugs"] == ["alipay-refund"]
+
+
+def test_log_task_dispatched_records_payload(db):
+    AuditLogger(db).log_task_dispatched(
+        task_id="TASK-001",
+        talk_id="TALK-007",
+        dispatcher_agent="dev_agent",
+        dispatcher_role="worker",
+        effective_target="dev_agent",
+        team="engineering",
+    )
+    rows = db.get_audit_logs("TASK-001")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["action"] == "task_dispatched"
+    assert row["agent"] == "dev_agent"
+    assert row["payload"] == {
+        "talk_id": "TALK-007",
+        "dispatcher_agent": "dev_agent",
+        "dispatcher_role": "worker",
+        "effective_target": "dev_agent",
+        "team": "engineering",
+    }
