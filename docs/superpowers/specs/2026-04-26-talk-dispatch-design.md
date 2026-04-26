@@ -251,11 +251,19 @@ End-to-end with the fake-Claude binary fixture: start a talk, fake agent calls `
 
 `src/orchestrator/run_step.py:92` reads `task.assigned_agent` and branches on `orch.teams.is_team_manager(agent)` (line 122). A root task with `assigned_agent=<worker>` takes the worker branch, runs the worker session, and is classified at completion the same as any other worker session. No orchestrator change required for the dispatch path itself.
 
-### Performance scoring bypasses worker self-dispatched tasks
+### Performance scoring on root tasks: consistent with current behavior
 
-`_log_verdict_if_delegated` (`run_step.py:419`) only emits a `review_verdict` audit row when the worker has a parent (i.e., the task was delegated by a manager). A root task with `assigned_agent=<worker>` has `parent_task_id=NULL`, so no verdict is logged, and the worker's 30-day rolling scorecard does not move because of self-dispatched work.
+The auto-verdict loop only scores **delegated children** of a manager. Both verdict-logging paths (`_log_verdict_if_delegated` in `run_step.py:431-434`, and `Orchestrator._log_review_verdicts` in `orchestrator.py:325`) explicitly skip:
 
-This is the correct behavior given the authority model — there's no manager to review the work, and the founder co-presence in the talk *is* the gate. But it means a worker can avoid scorecard pressure by routing requests through talks. The mitigation is operational, not technical: `task_dispatched` audit entries are queryable and `opc audit --action task_dispatched --agent <worker>` surfaces the volume. If abuse becomes a real concern, a future spec can add either a synthetic verdict (founder co-presence stamps an approve) or a separate dispatched-task scorecard.
+1. Root tasks (`parent_task_id IS NULL`)
+2. Team managers as `reviewed_agent`
+3. System agents (`orchestrator`, `unknown`)
+
+Concretely, **today's `opc run --team engineering`** flow already produces an unscored root: the EH gets the task, runs decision steps, and never appears as `reviewed_agent` in any verdict row — its scorecard stays at default GREEN regardless of outcome. The implicit contract is "founder-initiated root tasks are reviewed by the founder, not by the auto-verdict loop."
+
+Worker self-dispatch from a talk slots into the same contract: the resulting root task has `assigned_agent=<worker>` and `parent_task_id=NULL`, so the worker also doesn't appear as `reviewed_agent` for that task. The founder co-presence in the talk *is* the review gate, exactly as `opc run` is the founder's review gate for manager-rooted work.
+
+So talk-dispatch does not introduce a new bypass — it extends an existing architectural pattern. If we ever want auto-scoring on founder-initiated root tasks, that's a separate workstream covering both `opc run` and `opc dispatch` symmetrically; deferring is intentional, not an oversight.
 
 ### Open question for plan stage: `team_for_agent` lookup
 
