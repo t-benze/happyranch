@@ -45,6 +45,7 @@ class TaskRecord(BaseModel):
     brief: str
     parent_task_id: str | None = None
     revisit_of_task_id: str | None = None
+    dispatched_from_talk_id: str | None = None
     block_kind: BlockKind | None = None
     note: str | None = None
     final_artifact_dir: str | None = None
