@@ -33,7 +33,7 @@ def test_claude_adapter_bootstrap_creates_claude_files_and_skills(test_settings,
     assert (workspace / ".claude" / "settings.json").exists()
     assert (workspace / ".claude" / "skills" / "start-task" / "SKILL.md").exists()
     assert (workspace / "learnings.md").exists()
-    assert (workspace / "scorecard.md").exists()
+    assert not (workspace / "scorecard.md").exists()
     assert (workspace / "task_history.md").exists()
 
     data = json.loads((workspace / ".claude" / "settings.json").read_text())
@@ -74,7 +74,7 @@ def test_codex_adapter_bootstrap_creates_agents_md_and_skills_tree(test_settings
     assert (workspace / ".agents" / "skills" / "start-task" / "SKILL.md").exists()
     assert (workspace / ".agents" / "skills" / "talk" / "SKILL.md").exists()
     assert (workspace / "learnings.md").exists()
-    assert (workspace / "scorecard.md").exists()
+    assert not (workspace / "scorecard.md").exists()
     assert (workspace / "task_history.md").exists()
     assert not (workspace / "recent_tasks.md").exists()
 

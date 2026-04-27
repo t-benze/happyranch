@@ -269,14 +269,31 @@ def cmd_agents(args: argparse.Namespace) -> None:
     r = client.get("/api/v1/agents")
     if not _ok(r):
         return
-    body = r.json()
+    entries = r.json()["agents"]
+
+    if args.agent is not None:
+        match = next((e for e in entries if e["name"] == args.agent), None)
+        if match is None:
+            known = ", ".join(e["name"] for e in entries) or "(none)"
+            print(f"Error: no agent named {args.agent!r}. Known: {known}")
+            sys.exit(1)
+        sc = match.get("scorecard")
+        print(f"{match['name']}  Tier: {match['tier']}")
+        if sc:
+            print(f"  Acceptance: {sc['acceptance_rate']:.0%}  Revision: {sc['revision_rate']:.0%}  Errors: {sc['error_count']}")
+            print(f"  Period: {_fmt_ts(sc['period_start'], date_only=True)} to {_fmt_ts(sc['period_end'], date_only=True)}")
+            print(f"  Updated: {_fmt_ts(sc['updated_at'])}")
+        else:
+            print("  No performance data yet (default tier).")
+        return
+
     print(f"{'Agent':<22} {'Tier':<8}")
     print("-" * 30)
-    for entry in body["agents"]:
+    for entry in entries:
         print(f"{entry['name']:<22} {entry['tier']:<8}")
     if args.detail:
         print()
-        for entry in body["agents"]:
+        for entry in entries:
             sc = entry.get("scorecard")
             if sc:
                 print(f"{entry['name']}:")
@@ -1224,6 +1241,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # opc agents
     p_agents = sub.add_parser("agents", help="Show agent performance tiers")
+    p_agents.add_argument("agent", nargs="?", default=None,
+                          help="Optional agent name; show that agent's scorecard only")
     p_agents.add_argument("--detail", action="store_true", help="Show detailed scorecards")
     p_agents.set_defaults(func=cmd_agents)
 

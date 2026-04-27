@@ -84,6 +84,7 @@ opc tasks
 # View agent performance tiers
 opc agents
 opc agents --detail
+opc agents dev_agent          # one agent's scorecard
 
 # Switch which runtime directory the daemon is serving
 opc use ~/another-runtime
@@ -132,7 +133,7 @@ Make a backup first — the flag is mandatory on purpose. Without `--apply` the 
 | `opc tail TASK-ID` | Stream live events for a running (or historical) task |
 | `opc details TASK-ID` | Show task details (status, block_kind, note, results, audit log) |
 | `opc tasks [--limit N]` | List recent tasks (default: 20) |
-| `opc agents [--detail]` | Show agent performance tiers and scorecards |
+| `opc agents [name] [--detail]` | Show agent performance tiers (all, or one agent's scorecard) |
 | `opc init-agent [name]` | Initialize agent workspaces (all or specific agent) |
 | `opc audit TASK-ID [--json]` | View audit log for a task (or filter by `--agent`, `--action`) |
 | `opc manage-repo add\|remove\|update` | Add, remove, or update a repo in an agent's workspace |
@@ -291,7 +292,6 @@ Each agent runs in its own persistent workspace inside the runtime directory. Af
 - `.claude/skills/` — shared skills copied into the workspace
 - `repos/` — git clones of repositories configured in `agent.yaml` (auto-pulled before each task)
 - `learnings.md` — agent-written insights from past tasks (appended via `opc learning`)
-- `scorecard.md` — performance summary (updated by orchestrator)
 - `task_history.md` — rolling per-agent task history
 
 ## Roadmap

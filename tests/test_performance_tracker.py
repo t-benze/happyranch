@@ -1,7 +1,5 @@
-from pathlib import Path
-
 from src.infrastructure.database import Database
-from src.models import PerformanceTier, TaskRecord, TaskStatus
+from src.models import PerformanceTier, TaskRecord
 from src.orchestrator.performance_tracker import PerformanceTracker
 
 
@@ -63,20 +61,6 @@ def test_update_scorecard_writes_to_db(db, test_settings):
     assert scorecard is not None
     assert scorecard["tier"] == "green"
     assert scorecard["acceptance_rate"] == 0.9
-
-
-def test_write_scorecard_file(db, test_settings, tmp_dir):
-    tracker = PerformanceTracker(db, test_settings)
-    workspace = tmp_dir / "dev_agent"
-    workspace.mkdir(parents=True)
-    _seed_task_results(db, "dev_agent", ["approved"] * 9 + ["revised"])
-    tracker.update_scorecard("dev_agent")
-    tracker.write_scorecard_file("dev_agent", workspace)
-    scorecard_path = workspace / "scorecard.md"
-    assert scorecard_path.exists()
-    content = scorecard_path.read_text()
-    assert "green" in content.lower()
-    assert "90" in content
 
 
 def test_get_all_tiers(db, test_settings):

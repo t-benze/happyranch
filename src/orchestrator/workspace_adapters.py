@@ -118,7 +118,6 @@ class PersistentWorkspaceSetup:
 
         for filename, default_content in [
             ("learnings.md", f"# Learnings: {agent_name}\n\n"),
-            ("scorecard.md", "# Scorecard\n\nNo performance data yet. Tier: green (default)\n"),
             ("task_history.md", f"# Task History: {agent_name}\n\n"),
         ]:
             path = workspace / filename
@@ -216,7 +215,6 @@ class ClaudeWorkspaceAdapter:
             repo_refresh_note + "\n",
             "## Persistent Files\n",
             "- `learnings.md` -- your accumulated operational learnings",
-            "- `scorecard.md` -- read-only, updated by orchestrator",
             "- `task_history.md` -- read-only, updated by orchestrator\n",
             "## Knowledge Base (shared across agents)\n",
             "Path: `<runtime>/kb/`. Read: everyone. Write: any agent (via `--from-file`).",

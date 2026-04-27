@@ -48,7 +48,7 @@ at `examples/orgs/hk-macau-tourism/` for the HK/Macau tourism org.
 1. ~~**Product & Engineering Team**~~ done — Engineering Head + Product Manager + Dev Agent + Payment Agent + QA Engineer with executor-backed agent sessions. EH-driven orchestration loop (EH decides each step: delegate, handle directly, or escalate). Audit logging, agent memory, performance scoring all implemented.
 2. ~~**Audit logging**~~ done — SQLite-backed audit logger with session start/end, completion reports, orchestration steps, escalations.
 3. ~~**EH-driven orchestration**~~ done — Engineering Head analyzes each task and decides the approach. No hardcoded task chains. Max 10 orchestration steps before escalation.
-4. ~~**Agent memory**~~ done — Persistent workspaces with executor-specific bootstrap docs (`CLAUDE.md` or `AGENTS.md`), learnings.md, scorecard.md, task_history.md. Context builder regenerates identity on tier changes.
+4. ~~**Agent memory**~~ done — Persistent workspaces with executor-specific bootstrap docs (`CLAUDE.md` or `AGENTS.md`), learnings.md, task_history.md. Context builder regenerates identity on tier changes.
 5. ~~**Performance scoring**~~ done — Rolling 30-day scorecards, green/yellow/red tiers, exposed to EH via capabilities prompt.
 6. **Content Team** — Content Writer + Content QA + SEO Agent + Content Manager.
 7. **Ops Team** — Partner Liaison + Compliance Agent + Operations Manager. Enables real cross-team audits for payment changes.
@@ -157,9 +157,22 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |   +-- agents/
 |       |-- <name>.md                  # active agents
 |       +-- _pending/<name>.md         # awaiting founder approval
-|-- workspaces/<agent>/...
-|-- kb/...
-+-- talks/...
+|-- workspaces/
+|   +-- <agent_name>/                  # One per agent (dynamic — created by init-agent or approve-agent)
+|       |-- agent.yaml                 # Per-agent config (repos, etc.)
+|       |-- CLAUDE.md                  # Generated from system prompt (protocol docs or enrollment)
+|       |-- .claude/
+|       |   |-- settings.json          # Permissions + PreToolUse hook (git pull all repos)
+|       |   +-- skills/                # All skills copied from protocol/skills/
+|       |-- repos/                     # Git clones declared in agent.yaml
+|       |   +-- <name>/                # One dir per entry in agent.yaml `repos:`
+|       |-- learnings.md
+|       +-- task_history.md            # Per-agent history (renamed from recent_tasks.md; legacy files auto-migrated)
+|-- kb/                                # Shared knowledge base (see protocol/06-knowledge-base.md)
+|   |-- _index.md                      # Regenerated after every write
+|   +-- <slug>.md                      # Flat; filename = slug
++-- talks/                             # Transcript files written at /talk end
+    +-- TALK-NNN.md
 ```
 
 ## Configuration

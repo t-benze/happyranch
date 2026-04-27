@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 from src.config import Settings
 from src.infrastructure.database import Database
@@ -73,25 +72,6 @@ class PerformanceTracker:
             error_count=error_count,
             tier=tier.value,
         )
-
-    def write_scorecard_file(self, agent: str, workspace: Path) -> None:
-        """Write a human-readable scorecard.md to the agent's workspace."""
-        scorecard = self._db.get_scorecard(agent)
-        if scorecard is None:
-            content = "# Scorecard\n\nNo performance data yet. Tier: green (default)\n"
-        else:
-            content = (
-                f"# Scorecard: {agent}\n\n"
-                f"**Tier: {scorecard['tier'].upper()}**\n\n"
-                f"| Metric | Value |\n"
-                f"|--------|-------|\n"
-                f"| Acceptance rate | {scorecard['acceptance_rate'] * 100:.0f}% |\n"
-                f"| Revision rate | {scorecard['revision_rate'] * 100:.0f}% |\n"
-                f"| Errors (rejections) | {scorecard['error_count']} |\n"
-                f"| Period | {scorecard['period_start'][:10]} to {scorecard['period_end'][:10]} |\n"
-                f"| Updated | {scorecard['updated_at'][:19]} |\n"
-            )
-        (workspace / "scorecard.md").write_text(content)
 
     def get_all_tiers(self, agent_names: list[str]) -> dict[str, PerformanceTier]:
         """Get current tier for a list of agents."""

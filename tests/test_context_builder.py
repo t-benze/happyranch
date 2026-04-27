@@ -131,7 +131,7 @@ def test_build_claude_md_contains_persistent_file_pointers(test_settings, tmp_di
     )
     content = (workspace / "CLAUDE.md").read_text()
     assert "learnings.md" in content
-    assert "scorecard.md" in content
+    assert "scorecard.md" not in content
     assert "task_history.md" in content
     assert "recent_tasks.md" not in content
 
@@ -145,7 +145,7 @@ def test_ensure_workspace_ready_creates_persistent_files(test_settings, tmp_dir,
         system_prompt="You are the Dev Agent.",
     )
     assert (workspace / "learnings.md").exists()
-    assert (workspace / "scorecard.md").exists()
+    assert not (workspace / "scorecard.md").exists()
     assert (workspace / "task_history.md").exists()
     assert not (workspace / "recent_tasks.md").exists()
     assert (workspace / "CLAUDE.md").exists()
