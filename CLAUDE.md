@@ -11,20 +11,18 @@ A one-person company (OPC) that provides online tourism information and booking 
 
 Agents operate autonomously within defined authority. Managers cross-audit each other (peer review). No agent both proposes and approves consequential actions (maker-checker pattern).
 
+The org-specific content (charter, agents, teams, escalation rules) lives **per runtime** under `<runtime>/org/`, not in the repo. A canonical sample tree ships at `examples/orgs/hk-macau-tourism/` — future runtimes will be bootstrapped via `opc init <path> --slug <slug> --from examples/orgs/hk-macau-tourism` (this CLI form lands in Plan 2; for now the example tree serves as the reference shape).
+
 ## Design Documents (read these first)
 
 The following documents are in the `protocol/` folder.
 
-- `01-org-charter.md` — Mission, brand voice, risk tolerance, budget caps, partner standards, compliance requirements across 3 jurisdictions
-- `02-system-prompts-managers.md` — Full system prompts for all 4 manager agents with accountability contracts and performance tiers
-- `03-system-prompts-workers.md` — Full system prompts for all 9 worker agents (incl. QA Engineer and Content QA) with accountability contracts and performance tiers
-- `04-escalation-rules.md` — 12 routing rules (priority-ordered), manager-resolvable categories, peer audit triggers, structured request/response formats
-- `05-team-blueprint.md` — Index pointing to the split blueprint documents:
-  - `05a-teams.md` — Concept mapping, team definitions, agent tools, runtime responsibilities
+- `00-completion-contract.md` — Universal completion-report format, EH decision schema, agent-callback list
+- `05-runtime-blueprint.md` — Index pointing to the split blueprint documents:
   - `05b-agent-runtime.md` — Executor model, memory architecture, lifecycle & scheduling
   - `05c-orchestrator.md` — Orchestrator responsibilities, performance tiers, permissions, task state machine
   - `05e-dashboard.md` — Dashboard layout, API endpoints, implementation order
-- `06-knowledge-base.md` — Shared KB rules: entry schema, author/founder write paths, precedent workflow, search, index regeneration
+- `06-knowledge-base.md` — Shared KB rules
 
 ## Tech Stack
 - **Language**: Python 3.11+ (currently running 3.13)
@@ -69,12 +67,13 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 ~/projects/my-opc/                     # Source code (this repo)
 |-- CLAUDE.md
 |-- pyproject.toml
-|-- protocol/                          # Org charter, system prompts, escalation rules, blueprint, skills
-|   |-- 01-org-charter.md
-|   |-- 02-system-prompts-managers.md
-|   |-- 03-system-prompts-workers.md
-|   |-- 04-escalation-rules.md
-|   |-- 05*.md
+|-- protocol/                          # System kernel: completion contract, runtime blueprint, KB rules, skills
+|   |-- 00-completion-contract.md
+|   |-- 05-runtime-blueprint.md
+|   |-- 05b-agent-runtime.md
+|   |-- 05c-orchestrator.md
+|   |-- 05e-dashboard.md
+|   |-- 06-knowledge-base.md
 |   +-- skills/                        # Shared skills copied into every agent workspace
 |       |-- start-task/                # Parses injected params, runs role, reports via CLI callback
 |       |-- make-worktree/             # Creates an isolated git worktree under .claude/worktrees/
@@ -138,25 +137,18 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 +-- runtimes.yaml                      # Registered runtime dirs + which one is active
 
 <runtime-dir>/                         # Created by `opc init <path>`
-|-- opc.yaml                           # Marker file (presence = valid runtime folder)
-|-- opc.db                             # SQLite database
-|-- workspaces/
-|   +-- <agent_name>/                  # One per agent (dynamic — created by init-agent or approve-agent)
-|       |-- agent.yaml                 # Per-agent config (repos, etc.)
-|       |-- CLAUDE.md                  # Generated from system prompt (protocol docs or enrollment)
-|       |-- .claude/
-|       |   |-- settings.json          # Permissions + PreToolUse hook (git pull all repos)
-|       |   +-- skills/                # All skills copied from protocol/skills/
-|       |-- repos/                     # Git clones declared in agent.yaml
-|       |   +-- <name>/                # One dir per entry in agent.yaml `repos:`
-|       |-- learnings.md
-|       |-- scorecard.md
-|       +-- task_history.md            # Per-agent history (renamed from recent_tasks.md; legacy files auto-migrated)
-|-- kb/                                # Shared knowledge base (see protocol/06-knowledge-base.md)
-|   |-- _index.md                      # Regenerated after every write
-|   +-- <slug>.md                      # Flat; filename = slug
-+-- talks/                             # Transcript files written at /talk end
-    +-- TALK-NNN.md
+|-- opc.yaml                           # marker (slug, created_at, schema_version)
+|-- opc.db                             # per-runtime SQLite
+|-- org/                               # editable org content
+|   |-- charter.md                     # reference doc
+|   |-- escalation-rules.md            # reference doc
+|   |-- teams.yaml                     # team layout
+|   +-- agents/
+|       |-- <name>.md                  # active agents
+|       +-- _pending/<name>.md         # awaiting founder approval
+|-- workspaces/<agent>/...
+|-- kb/...
++-- talks/...
 ```
 
 ## Configuration
@@ -383,6 +375,7 @@ opc enrollments [--status pending]     # list enrollment requests
 opc approve-agent <name>               # approve and bootstrap workspace
 opc reject-agent <name>                # reject enrollment
 opc backfill-enrollments               # founder recovery: import pre-existing workspaces into the registry (TTY-gated)
+opc migrate-to-org-runtime <path> --slug <slug> --i-have-a-backup --apply   # one-shot: lift legacy runtime into the org/ shape
 ```
 
 ## Knowledge Base
