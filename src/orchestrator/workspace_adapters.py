@@ -14,6 +14,25 @@ logger = logging.getLogger(__name__)
 
 
 
+def _copy_skills_tree(src: Path, dst: Path) -> None:
+    """Copy each skill directory from ``src`` into ``dst``, replacing existing copies.
+
+    Used by both Claude (``<ws>/.claude/skills/``) and Codex
+    (``<ws>/.agents/skills/``) workspaces. Codex CLI ≥0.125 discovers skills by
+    walking ``.agents/skills/`` from the working directory up to the repo root,
+    so the destination differs by platform but the source — ``protocol/skills/``
+    — is shared.
+    """
+    if not src.exists():
+        return
+    dst.mkdir(parents=True, exist_ok=True)
+    for child in src.iterdir():
+        target = dst / child.name
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(child, target)
+
+
 def _format_allow_rule(prefix: str, *, cli: bool) -> str:
     """Render a Bash prefix in one of the two equivalent permission syntaxes.
 
@@ -282,81 +301,10 @@ class ClaudeWorkspaceAdapter:
 
     def _copy_skills(self, workspace: Path) -> None:
         """Copy protocol/skills/ tree into workspace/.claude/skills/."""
-        src = self._settings.get_protocol_dir() / "skills"
-        if not src.exists():
-            return
-        dst = workspace / ".claude" / "skills"
-        dst.mkdir(parents=True, exist_ok=True)
-        for child in src.iterdir():
-            target = dst / child.name
-            if target.exists():
-                shutil.rmtree(target)
-            shutil.copytree(child, target)
-
-
-def _codex_workflow_section() -> list[str]:
-    """Full completion contract inlined for Codex AGENTS.md.
-
-    Codex does not read ``.claude/skills/start-task/SKILL.md``, so every
-    requirement the skill encodes for a Claude session has to be spelled
-    out here in prose + JSON. Keep this in sync with
-    ``protocol/skills/start-task/SKILL.md`` whenever the callback contract
-    changes.
-    """
-    return [
-        "Every task arrives via the orchestrator's prompt with an injected `task_id`,",
-        "`session_id`, and `agent` name. Calling `opc report-completion` at end-of-turn",
-        "is **mandatory** — exiting without it causes the orchestrator to reject the",
-        "task with \"no completion callback\" (no retry, no recovery path).\n",
-        "### Completion callback\n",
-        "Write the payload to a file, then invoke a single-line `opc` call. The",
-        "`--from-file` form is mandatory across executors; multi-line `opc` invocations",
-        "are blocked by the shared permission matcher.\n",
-        "Payload shape (`/tmp/completion-<task_id>.json`):",
-        "```json",
-        "{",
-        "  \"task_id\": \"<the task_id from the prompt>\",",
-        "  \"session_id\": \"<the session_id from the prompt>\",",
-        "  \"agent\": \"<this agent's name>\",",
-        "  \"status\": \"completed\",",
-        "  \"summary\": \"<short prose summary of what you did>\"",
-        "}",
-        "```\n",
-        "Then call back:",
-        "```",
-        "opc report-completion --from-file /tmp/completion-<task_id>.json",
-        "```\n",
-        "### Blocker path\n",
-        "Use `\"status\": \"blocked\"` when you cannot finish and need the orchestrator",
-        "to route around you. Put the blocker reason in `summary` — the orchestrator",
-        "reads it verbatim when deciding the next step.\n",
-        "### Engineering Head decision field\n",
-        "Engineering Head sessions must additionally include a structured `decision`",
-        "object telling the orchestrator what to do next. `summary` stays prose; the",
-        "orchestrator parses `decision` directly.\n",
-        "```json",
-        "{",
-        "  \"task_id\": \"...\",",
-        "  \"session_id\": \"...\",",
-        "  \"agent\": \"engineering_head\",",
-        "  \"status\": \"completed\",",
-        "  \"summary\": \"<what you did or concluded this step>\",",
-        "  \"decision\": {",
-        "    \"action\": \"delegate\",",
-        "    \"agent\": \"<target agent name>\",",
-        "    \"brief\": \"<child task brief>\"",
-        "  }",
-        "}",
-        "```\n",
-        "`decision.action` is one of:",
-        "- `\"delegate\"` — spawn a child task on another agent (also set `agent` + `brief`).",
-        "- `\"done\"` — terminal; the root task finishes here.",
-        "- `\"escalate\"` — surface to the founder for resolution (also set `reason`).\n",
-        "### Mid-task learnings\n",
-        "Durable lessons go through `opc learning --agent <you> --session-id <sid>",
-        "--task-id <task_id> --text \"...\"`. Cross-agent reference / precedent material",
-        "belongs in the Knowledge Base above, not in `learnings.md`.\n",
-    ]
+        _copy_skills_tree(
+            self._settings.get_protocol_dir() / "skills",
+            workspace / ".claude" / "skills",
+        )
 
 
 class CodexWorkspaceAdapter:
@@ -377,19 +325,18 @@ class CodexWorkspaceAdapter:
     ) -> None:
         """Write AGENTS.md to workspace with system prompt and context pointers.
 
-        Codex sessions never discover Claude-style ``.claude/skills/*/SKILL.md``
-        files, so the full completion contract (JSON payload shape,
-        ``--from-file`` usage, blocker path, and the EH-only decision object)
-        is inlined here. A Codex-backed agent must be able to obey the
-        callback contract from AGENTS.md alone — TASK-077 was caused by the
-        previous two-line footer letting ``senior_dev`` exit 0 without ever
-        calling ``opc report-completion``.
+        Codex CLI ≥0.125 discovers skills by walking ``.agents/skills/`` from
+        the working directory up to the repo root, so the same
+        ``protocol/skills/`` tree that Claude consumes is copied into
+        ``<ws>/.agents/skills/`` by ``_copy_skills``. AGENTS.md therefore
+        only points at the **start-task** skill — it does not re-inline the
+        completion contract. The skill itself is the source of truth.
         """
         workspace.mkdir(parents=True, exist_ok=True)
         sections = ClaudeWorkspaceAdapter(self._settings)._build_sections(
             agent_name,
             system_prompt,
-            include_start_task=False,
+            include_start_task=True,
             repo_refresh_note=(
                 "repositories cloned under `repos/`. Refresh repository state "
                 "yourself when the task requires it; do not assume Claude-specific "
@@ -399,9 +346,20 @@ class CodexWorkspaceAdapter:
                 "Use the `--from-file` form to keep the callback contract stable "
                 "across executors and avoid shell quoting issues."
             ),
-            workflow_section=_codex_workflow_section(),
+            workflow_section=[
+                "Every task arrives via the orchestrator's prompt. Use the **start-task** skill",
+                "(in `.agents/skills/start-task/`) to parse parameters and report completion via",
+                "`opc report-completion`. Mid-task learnings go through `opc learning`.\n",
+            ],
         )
         (workspace / "AGENTS.md").write_text("\n".join(sections))
+
+    def _copy_skills(self, workspace: Path) -> None:
+        """Copy protocol/skills/ tree into workspace/.agents/skills/."""
+        _copy_skills_tree(
+            self._settings.get_protocol_dir() / "skills",
+            workspace / ".agents" / "skills",
+        )
 
     def ensure_workspace_ready(
         self,
@@ -412,3 +370,4 @@ class CodexWorkspaceAdapter:
         """Make sure a Codex workspace has the shared persistent files and bootstrap."""
         self._persistent.ensure(workspace, agent_name)
         self.write_agents_md(workspace, agent_name, system_prompt)
+        self._copy_skills(workspace)

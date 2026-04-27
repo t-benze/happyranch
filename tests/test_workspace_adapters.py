@@ -33,7 +33,22 @@ def test_claude_adapter_bootstrap_creates_claude_files_and_skills(test_settings,
     assert "repos/my-opc" in hook_cmd
 
 
-def test_codex_adapter_bootstrap_creates_agents_md_without_claude_tree(test_settings, tmp_dir):
+def test_codex_adapter_bootstrap_creates_agents_md_and_skills_tree(test_settings, tmp_dir):
+    """Codex CLI ≥0.125 discovers skills under ``.agents/skills/`` (walking from
+    cwd up to repo root). The adapter must copy ``protocol/skills/`` into the
+    workspace and AGENTS.md must point at the start-task skill — not inline
+    the full completion contract (the skill is the source of truth).
+    """
+    skills_root = test_settings.get_protocol_dir() / "skills"
+    (skills_root / "start-task").mkdir(parents=True)
+    (skills_root / "start-task" / "SKILL.md").write_text(
+        "---\nname: start-task\ndescription: Use this skill at the start of every task.\n---\n"
+    )
+    (skills_root / "talk").mkdir(parents=True)
+    (skills_root / "talk" / "SKILL.md").write_text(
+        "---\nname: talk\ndescription: Use when the founder runs /talk start.\n---\n"
+    )
+
     workspace = tmp_dir / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
     (workspace / "recent_tasks.md").write_text("# Recent Tasks: dev_agent\n\n- TASK-001\n")
@@ -46,7 +61,10 @@ def test_codex_adapter_bootstrap_creates_agents_md_without_claude_tree(test_sett
 
     assert (workspace / "AGENTS.md").exists()
     assert not (workspace / "CLAUDE.md").exists()
+    # Codex skills land under .agents/skills/, not .claude/skills/
     assert not (workspace / ".claude" / "skills" / "start-task").exists()
+    assert (workspace / ".agents" / "skills" / "start-task" / "SKILL.md").exists()
+    assert (workspace / ".agents" / "skills" / "talk" / "SKILL.md").exists()
     assert (workspace / "learnings.md").exists()
     assert (workspace / "scorecard.md").exists()
     assert (workspace / "task_history.md").exists()
@@ -54,24 +72,34 @@ def test_codex_adapter_bootstrap_creates_agents_md_without_claude_tree(test_sett
 
     body = (workspace / "AGENTS.md").read_text()
     assert "You are the Dev Agent." in body
-    assert "start-task" not in body
+    # Points at the skill, not at Claude-specific paths.
+    assert ".agents/skills/start-task/" in body
+    assert ".claude/skills" not in body
     assert ".claude/settings.json" not in body
     assert "PreToolUse" not in body
     assert "Bash(opc:*)" not in body
 
 
-def test_codex_agents_md_inlines_completion_contract(test_settings, tmp_dir):
-    """A Codex session never discovers Claude-style ``.claude/skills/*/SKILL.md``
-    files — its workflow comes from AGENTS.md. The failure mode that motivated
-    this (senior_dev / TASK-077, 2026-04-24) was: the inlined system prompt
-    pointed at a `start-task skill` that didn't exist for Codex, and the
-    adapter's own Workflow section reduced to two lines with no JSON schema.
-    Codex completed its turn, wrote a verdict to stdout, and exited 0 — the
-    orchestrator then auto-rejected the task with ``no completion callback``.
+def test_codex_agents_md_does_not_inline_completion_contract(test_settings, tmp_dir):
+    """The completion contract used to be duplicated into AGENTS.md as prose
+    + JSON because Codex couldn't resolve SKILL.md. As of Codex CLI 0.125 it
+    can — the start-task skill in ``.agents/skills/`` is the source of truth
+    and AGENTS.md must not re-inline its body. Two reasons:
 
-    AGENTS.md must therefore inline the full completion contract so the model
-    can obey it without referencing external skill files.
+    1. Drift: every contract change had to be applied in two places.
+    2. Scope: Codex sessions implicit-invoke the skill via ``description``
+       matching, so the skill is reliably loaded; duplicating its body is dead
+       weight that bloats every AGENTS.md.
+
+    This test is the inverse of the (now-removed) "inlines_completion_contract"
+    test that locked in the pre-0.125 behavior.
     """
+    skills_root = test_settings.get_protocol_dir() / "skills"
+    (skills_root / "start-task").mkdir(parents=True)
+    (skills_root / "start-task" / "SKILL.md").write_text(
+        "---\nname: start-task\ndescription: Use this skill at the start of every task.\n---\n"
+    )
+
     workspace = tmp_dir / "workspaces" / "senior_dev"
     workspace.mkdir(parents=True)
 
@@ -83,32 +111,16 @@ def test_codex_agents_md_inlines_completion_contract(test_settings, tmp_dir):
 
     body = (workspace / "AGENTS.md").read_text()
 
-    # The callback is mandatory and must be called out explicitly — the fix
-    # for TASK-077 is precisely to make "exiting without calling back" an
-    # impossible-to-miss failure mode for the model.
-    assert "opc report-completion" in body
-    assert "mandatory" in body.lower()
+    # The skill pointer is present.
+    assert "start-task" in body
+    assert ".agents/skills/start-task/" in body
 
-    # The JSON payload schema (task_id + session_id + agent + status + summary)
-    # must be inlined so Codex doesn't need to read a skill file.
-    for field in ('"task_id"', '"session_id"', '"agent"', '"status"', '"summary"'):
-        assert field in body, f"AGENTS.md missing payload field {field}"
+    # The full JSON schema is NOT inlined — it lives in the skill file.
+    assert '"task_id"' not in body
+    assert '"session_id"' not in body
+    assert '/tmp/completion-' not in body
 
-    # --from-file form is mandatory across executors; it must be shown.
-    assert "--from-file" in body
-    assert "/tmp/completion-" in body
-
-    # Blocker path must be documented.
-    assert '"blocked"' in body
-
-    # EH decision contract must be inlined (delegate/done/escalate) since
-    # engineering_head can also be Codex-backed in future enrollments.
-    assert "decision" in body
-    assert "delegate" in body
-    assert "escalate" in body
-
-    # Still no mention of Claude-specific skill names (would be confusing
-    # inside a Codex workspace and would conflict with the embedded system
-    # prompt, which is exactly how TASK-077 was poisoned).
-    assert "start-task" not in body
-    assert "make-worktree" not in body
+    # The EH decision contract is also delegated to the skill.
+    assert '"decision"' not in body
+    assert "delegate" not in body
+    assert "escalate" not in body
