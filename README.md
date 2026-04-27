@@ -95,6 +95,7 @@ opc use ~/another-runtime
 | `opc audit TASK-ID [--json]` | View audit log for a task (or filter by `--agent`, `--action`) |
 | `opc manage-repo add\|remove\|update` | Add, remove, or update a repo in an agent's workspace |
 | `opc manage-agent --from-file F` | Enroll, update, or terminate an agent (used by EH skill) |
+| `opc dispatch --from-file F` | Dispatch a new task from inside an open talk (workers self-only; team managers intra-team) |
 | `opc enrollments [--status S]` | List agent enrollment requests |
 | `opc approve-agent <name>` | Approve a pending enrollment and bootstrap workspace |
 | `opc reject-agent <name>` | Reject a pending enrollment |
