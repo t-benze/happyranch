@@ -60,7 +60,7 @@ def test_daemon_state_carries_a_task_queue(tmp_path):
     from src.daemon.state import DaemonState
     from src.daemon.queue import TaskQueue
     from src.runtime import RuntimeDir
-    rt = RuntimeDir.init(tmp_path / "rt")
+    rt = RuntimeDir.init(tmp_path / "rt", slug="test")
     state = DaemonState.from_runtime(rt, Settings())
     assert isinstance(state.queue, TaskQueue)
 
@@ -84,7 +84,7 @@ def test_synthesize_terminal_event_rules(tmp_path):
     from src.daemon.state import DaemonState
     from src.models import BlockKind, TaskRecord, TaskStatus
     from src.runtime import RuntimeDir
-    rt = RuntimeDir.init(tmp_path / "rt")
+    rt = RuntimeDir.init(tmp_path / "rt", slug="test")
     state = DaemonState.from_runtime(rt, Settings())
 
     def make(task_id: str, status: TaskStatus,

@@ -21,7 +21,7 @@ def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture
 def runtime(tmp_path: Path) -> RuntimeDir:
-    return RuntimeDir.init(tmp_path / "runtime")
+    return RuntimeDir.init(tmp_path / "runtime", slug="test")
 
 
 @pytest.fixture

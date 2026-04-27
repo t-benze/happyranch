@@ -156,7 +156,7 @@ def run_task_to_completion(orch: Orchestrator, task_id: str, max_steps: int = 20
 
 @pytest.fixture
 def runtime(tmp_path: Path) -> RuntimeDir:
-    return RuntimeDir.init(tmp_path / "rt")
+    return RuntimeDir.init(tmp_path / "rt", slug="test")
 
 
 @pytest.fixture

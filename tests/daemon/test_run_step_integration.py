@@ -19,7 +19,7 @@ from src.runtime import RuntimeDir
 
 @pytest.mark.asyncio
 async def test_full_delegation_roundtrip(tmp_path: Path, monkeypatch):
-    runtime = RuntimeDir.init(tmp_path / "rt")
+    runtime = RuntimeDir.init(tmp_path / "rt", slug="test")
     (runtime.workspaces_dir / "engineering_head" / ".claude" / "skills" / "start-task").mkdir(parents=True)
     (runtime.workspaces_dir / "engineering_head" / ".claude" / "skills" / "start-task" / "SKILL.md").touch()
     (runtime.workspaces_dir / "dev_agent" / ".claude" / "skills" / "start-task").mkdir(parents=True)
@@ -88,7 +88,7 @@ async def test_escalation_roundtrip(tmp_path: Path, monkeypatch):
     from fastapi.testclient import TestClient
     from src.daemon.app import create_app
 
-    runtime = RuntimeDir.init(tmp_path / "rt")
+    runtime = RuntimeDir.init(tmp_path / "rt", slug="test")
     (runtime.workspaces_dir / "engineering_head" / ".claude" / "skills" / "start-task").mkdir(parents=True)
     (runtime.workspaces_dir / "engineering_head" / ".claude" / "skills" / "start-task" / "SKILL.md").touch()
     db = Database(runtime.db_path)
@@ -146,7 +146,7 @@ async def test_init_agents_uses_enrollment_executor_for_workspace_bootstrap(
     from src.daemon.paths import ensure_token
     from src.daemon import runtimes as runtimes_mod
 
-    runtime = RuntimeDir.init(tmp_path / "rt")
+    runtime = RuntimeDir.init(tmp_path / "rt", slug="test")
     db = Database(runtime.db_path)
     db.insert_enrollment("content_writer", "desc", "prompt", executor="codex")
     settings = Settings(project_root=Path("/Users/tangbz/projects/my-opc/.worktrees/codex-executor"))
@@ -189,7 +189,7 @@ async def test_approve_agent_uses_provider_specific_workspace_bootstrap(
     from src.daemon.paths import ensure_token
     from src.daemon import runtimes as runtimes_mod
 
-    runtime = RuntimeDir.init(tmp_path / "rt")
+    runtime = RuntimeDir.init(tmp_path / "rt", slug="test")
     db = Database(runtime.db_path)
     db.insert_enrollment("content_writer", "desc", "prompt", executor="codex")
     settings = Settings(project_root=Path("/Users/tangbz/projects/my-opc/.worktrees/codex-executor"))

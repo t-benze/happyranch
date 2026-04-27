@@ -11,7 +11,7 @@ from src.runtime import RuntimeDir
 
 
 def _make_runtime(base: Path, name: str) -> Path:
-    rt = RuntimeDir.init(base / name)
+    rt = RuntimeDir.init(base / name, slug="test")
     return rt.root
 
 

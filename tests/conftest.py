@@ -19,7 +19,7 @@ def test_settings(tmp_dir: Path) -> Settings:
 
 @pytest.fixture
 def test_runtime(tmp_dir: Path) -> RuntimeDir:
-    return RuntimeDir.init(tmp_dir / "runtime")
+    return RuntimeDir.init(tmp_dir / "runtime", slug="test")
 
 
 @pytest.fixture

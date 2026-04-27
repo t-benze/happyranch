@@ -29,7 +29,7 @@ def test_dynamic_agent_uses_db_allow_rules(tmp_path) -> None:
     from src.runtime import RuntimeDir
     from src.infrastructure.database import Database
 
-    rt = RuntimeDir.init(tmp_path / "rt")
+    rt = RuntimeDir.init(tmp_path / "rt", slug="test")
     db = Database(rt.db_path)
     db.insert_enrollment(
         name="seo_bot",
@@ -52,7 +52,7 @@ def test_empty_allow_rules_falls_back_to_protocol(tmp_path) -> None:
     from src.runtime import RuntimeDir
     from src.infrastructure.database import Database
 
-    rt = RuntimeDir.init(tmp_path / "rt")
+    rt = RuntimeDir.init(tmp_path / "rt", slug="test")
     db = Database(rt.db_path)
     db.insert_enrollment(
         name="engineering_head",
@@ -77,7 +77,7 @@ def test_non_enrolled_agent_with_db_returns_baseline(tmp_path) -> None:
     from src.runtime import RuntimeDir
     from src.infrastructure.database import Database
 
-    rt = RuntimeDir.init(tmp_path / "rt")
+    rt = RuntimeDir.init(tmp_path / "rt", slug="test")
     db = Database(rt.db_path)
 
     s = Settings()

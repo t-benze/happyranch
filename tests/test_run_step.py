@@ -14,7 +14,7 @@ from src.runtime import RuntimeDir
 
 @pytest.fixture
 def runtime(tmp_path: Path) -> RuntimeDir:
-    return RuntimeDir.init(tmp_path / "rt")
+    return RuntimeDir.init(tmp_path / "rt", slug="test")
 
 
 @pytest.fixture

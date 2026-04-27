@@ -18,7 +18,7 @@ def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def _make_runtime(base: Path, name: str) -> Path:
     runtime_path = base / name
-    RuntimeDir.init(runtime_path)
+    RuntimeDir.init(runtime_path, slug="test")
     return runtime_path.resolve()
 
 

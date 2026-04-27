@@ -9,12 +9,23 @@ from src.config import Settings
 from src.infrastructure.database import Database
 from src.models import BlockKind, CompletionReport, NextStep, TaskRecord, TaskStatus
 from src.orchestrator.orchestrator import Orchestrator
-from src.orchestrator.teams import TeamsRegistry, DEFAULT_LAYOUT
+from src.orchestrator.teams import TeamsRegistry
 from src.runtime import RuntimeDir
+
+_LAYOUT: dict[str, dict[str, object]] = {
+    "engineering": {
+        "manager": "engineering_head",
+        "workers": ["product_manager", "dev_agent", "payment_agent", "qa_engineer"],
+    },
+    "content": {
+        "manager": "content_manager",
+        "workers": ["content_writer", "content_qa"],
+    },
+}
 
 
 def test_registry_flags_cross_team_delegation() -> None:
-    registry = TeamsRegistry._from_layout(DEFAULT_LAYOUT)
+    registry = TeamsRegistry._from_layout(_LAYOUT)
     # Content Manager trying to delegate to dev_agent (engineering team)
     caller_team = registry.team_for_manager("content_manager")
     target_team = registry.team_for_agent("dev_agent")
@@ -25,7 +36,17 @@ def test_registry_flags_cross_team_delegation() -> None:
 
 @pytest.fixture
 def runtime(tmp_path: Path) -> RuntimeDir:
-    return RuntimeDir.init(tmp_path / "rt")
+    rt = RuntimeDir.init(tmp_path / "rt", slug="test")
+    rt.teams_config_path.write_text(
+        "teams:\n"
+        "  engineering:\n"
+        "    manager: engineering_head\n"
+        "    workers: [product_manager, dev_agent, payment_agent, qa_engineer]\n"
+        "  content:\n"
+        "    manager: content_manager\n"
+        "    workers: [content_writer, content_qa]\n"
+    )
+    return rt
 
 
 @pytest.fixture

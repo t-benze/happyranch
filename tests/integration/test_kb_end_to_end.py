@@ -22,7 +22,7 @@ def test_agent_writes_other_agent_reads(tmp_path: Path, monkeypatch):
     paths_mod.ensure_token()
     headers = {"Authorization": f"Bearer {paths_mod.read_token()}"}
 
-    runtime = RuntimeDir.init(tmp_path / "runtime")
+    runtime = RuntimeDir.init(tmp_path / "runtime", slug="test")
     state = DaemonState.from_runtime(runtime, Settings())
     app = create_app(state)
     client = TestClient(app)
