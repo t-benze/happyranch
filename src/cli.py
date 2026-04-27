@@ -1140,6 +1140,37 @@ def cmd_revisit(args: argparse.Namespace) -> None:
     _stream_task_events(client, new_id)
 
 
+def cmd_migrate_to_org_runtime(args: argparse.Namespace) -> int:
+    """`opc migrate-to-org-runtime <path> --slug <slug> --i-have-a-backup [--apply]`."""
+    from src.orchestrator.migration import migrate_to_org_runtime
+    try:
+        result = migrate_to_org_runtime(
+            Path(args.runtime_path).expanduser().resolve(),
+            slug=args.slug,
+            i_have_a_backup=args.i_have_a_backup,
+            apply=args.apply,
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if result.already_migrated:
+        print(f"already migrated: {result.runtime_path}")
+        return 0
+    if not result.applied:
+        print(f"DRY-RUN — would apply {len(result.planned)} actions:")
+        for step in result.planned:
+            print(f"  - {step}")
+        print("\nRe-run with --apply to execute.")
+        return 0
+    print(f"migrated runtime: {result.runtime_path}")
+    print(f"slug: {result.slug}")
+    print(f"approved exports ({len(result.exported_approved)}): "
+          f"{', '.join(result.exported_approved) or '(none)'}")
+    print(f"pending exports ({len(result.exported_pending)}): "
+          f"{', '.join(result.exported_pending) or '(none)'}")
+    return 0
+
+
 # ── parser ───────────────────────────────────────────────────
 
 
@@ -1434,6 +1465,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional founder hint surfaced to the EH in the first-step prompt header",
     )
     p_revisit.set_defaults(func=cmd_revisit)
+
+    # opc migrate-to-org-runtime — one-shot migration for pre-org-cut runtimes.
+    mig = sub.add_parser(
+        "migrate-to-org-runtime",
+        help="One-shot: migrate <runtime>/teams.yaml + agent_enrollments → <runtime>/org/.",
+    )
+    mig.add_argument("runtime_path")
+    mig.add_argument("--slug", required=True)
+    mig.add_argument("--i-have-a-backup", action="store_true",
+                     help="Mandatory acknowledgment that the runtime is backed up.")
+    mig.add_argument("--apply", action="store_true",
+                     help="Execute the migration. Without this, the command is a dry run.")
+    mig.set_defaults(func=cmd_migrate_to_org_runtime)
 
     return parser
 
