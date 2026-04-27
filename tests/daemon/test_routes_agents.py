@@ -1321,10 +1321,19 @@ def test_init_agents_targets_include_content_team(
 def test_init_agents_targets_include_approved_enrollments(
     daemon_state,
 ) -> None:
-    """init_agents target enumeration includes approved enrollments from DB."""
-    daemon_state.db.insert_enrollment("seo_agent", "SEO worker", "You are SEO.")
-    daemon_state.db.update_enrollment_status("seo_agent", "approved")
-    names = daemon_state.db.list_approved_agent_names()
+    """init_agents target enumeration includes approved enrollments from agent files."""
+    from src.orchestrator import prompt_loader
+    from src.orchestrator.agent_def import AgentDef, render_agent_text
+    from datetime import datetime, timezone
+    agent = AgentDef(
+        name="seo_agent", team="content", role="worker", executor="claude",
+        allow_rules=(), repos={}, enrolled_by="engineering_head",
+        enrolled_at_task=None, enrolled_at=datetime.now(timezone.utc),
+        system_prompt="You are SEO.\n",
+    )
+    daemon_state.runtime.agents_dir.mkdir(parents=True, exist_ok=True)
+    (daemon_state.runtime.agents_dir / "seo_agent.md").write_text(render_agent_text(agent))
+    names = [a.name for a in prompt_loader.list_agents(daemon_state.runtime)]
     assert "seo_agent" in names
 
 
@@ -1332,13 +1341,14 @@ def test_init_agents_targets_none_teams_is_safe(daemon_state) -> None:
     """If teams is None the guard prevents a crash; workspace dirs are still used."""
     daemon_state.teams = None  # type: ignore[assignment]
     # No crash — state.teams is None but the guard `if state.teams is not None` handles it.
+    from src.orchestrator import prompt_loader
     known: set[str] = set()
     if daemon_state.teams is not None:
         known.update(daemon_state.teams.all_agents())
     ws_dir = daemon_state.runtime.workspaces_dir
     if ws_dir.exists():
         known.update(d.name for d in ws_dir.iterdir() if d.is_dir())
-    known.update(daemon_state.db.list_approved_agent_names())
+    known.update([a.name for a in prompt_loader.list_agents(daemon_state.runtime)])
     # No exception raised; result is an empty or workspace-only set.
     assert isinstance(known, set)
 

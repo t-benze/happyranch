@@ -1,6 +1,8 @@
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from src.config import Settings
 from src.orchestrator.executors import (
     AgentExecutor,
@@ -8,6 +10,30 @@ from src.orchestrator.executors import (
     CodexExecutor,
     ExecutorResult,
 )
+from src.runtime import RuntimeDir
+
+
+@pytest.fixture
+def runtime(tmp_path: Path) -> RuntimeDir:
+    """A minimal RuntimeDir with engineering_head.md pre-seeded."""
+    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
+    from src.orchestrator.agent_def import AgentDef, render_agent_text
+    from datetime import datetime, timezone
+    eh = AgentDef(
+        name="engineering_head",
+        team="engineering",
+        role="manager",
+        executor="claude",
+        allow_rules=("gh pr close", "gh pr comment", "gh issue close", "gh issue comment"),
+        repos={},
+        enrolled_by=None,
+        enrolled_at_task=None,
+        enrolled_at=datetime.now(timezone.utc),
+        system_prompt="You are the Engineering Head.\n",
+    )
+    rt.agents_dir.mkdir(parents=True, exist_ok=True)
+    (rt.agents_dir / "engineering_head.md").write_text(render_agent_text(eh))
+    return rt
 
 
 def _popen_mock(returncode: int = 0, stdout: str = "", stderr: str = "", pid: int = 4242):
@@ -19,13 +45,13 @@ def _popen_mock(returncode: int = 0, stdout: str = "", stderr: str = "", pid: in
 
 
 @patch("src.orchestrator.executors.subprocess")
-def test_claude_executor_launches_with_current_semantics(mock_subprocess, tmp_path):
+def test_claude_executor_launches_with_current_semantics(mock_subprocess, tmp_path, runtime):
     workspace = tmp_path / "dev_agent"
     workspace.mkdir()
 
     mock_subprocess.Popen.return_value = _popen_mock(stdout="Agent output")
 
-    executor = ClaudeExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings())
+    executor = ClaudeExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings(), runtime=runtime)
     result = executor.run(
         workspace=workspace,
         prompt="Implement Alipay support",
@@ -50,7 +76,7 @@ def test_claude_executor_launches_with_current_semantics(mock_subprocess, tmp_pa
 
 @patch("src.orchestrator.executors.subprocess")
 def test_claude_executor_grants_engineering_head_gh_resolve_rules(
-    mock_subprocess, tmp_path,
+    mock_subprocess, tmp_path, runtime,
 ):
     """EH's headless session needs explicit --allowedTools entries for the
     `gh pr close`/`gh issue close` cleanup flow. Settings.json is ignored in
@@ -61,7 +87,7 @@ def test_claude_executor_grants_engineering_head_gh_resolve_rules(
 
     mock_subprocess.Popen.return_value = _popen_mock(stdout="EH output")
 
-    executor = ClaudeExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings())
+    executor = ClaudeExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings(), runtime=runtime)
     executor.run(workspace=workspace, prompt="decide next step", timeout_seconds=30)
 
     cmd = mock_subprocess.Popen.call_args[0][0]
@@ -171,7 +197,7 @@ def test_codex_executor_timeout(mock_subprocess, tmp_path):
 
 
 @patch("src.orchestrator.executors.subprocess")
-def test_run_invokes_on_started_with_pid(mock_subprocess, tmp_path):
+def test_run_invokes_on_started_with_pid(mock_subprocess, tmp_path, runtime):
     """The /cancel feature depends on the executor handing the pid over to
     SessionTracker BEFORE communicate() blocks. Pin that contract for both
     executor classes — the common shape is in _run_command."""
@@ -180,7 +206,7 @@ def test_run_invokes_on_started_with_pid(mock_subprocess, tmp_path):
 
     mock_subprocess.Popen.return_value = _popen_mock(pid=9123)
 
-    executor = AgentExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings())
+    executor = AgentExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings(), runtime=runtime)
     received: list[int] = []
     executor.run(
         workspace=workspace,
@@ -202,7 +228,7 @@ def test_run_invokes_on_started_with_pid(mock_subprocess, tmp_path):
 
 @patch("src.orchestrator.executors.subprocess")
 def test_claude_executor_populates_returncode_and_stdout_tail_on_success(
-    mock_subprocess, tmp_path,
+    mock_subprocess, tmp_path, runtime,
 ):
     workspace = tmp_path / "dev_agent"
     workspace.mkdir()
@@ -211,7 +237,7 @@ def test_claude_executor_populates_returncode_and_stdout_tail_on_success(
         returncode=0, stdout="wrote ExplorePage.tsx\nbuild ok\n", stderr="",
     )
 
-    executor = ClaudeExecutor(claude_cli_path="claude", permission_mode="auto")
+    executor = ClaudeExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings(), runtime=runtime)
     result = executor.run(workspace=workspace, prompt="x", timeout_seconds=30)
 
     assert result.success is True

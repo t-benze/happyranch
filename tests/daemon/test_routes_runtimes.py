@@ -12,6 +12,16 @@ from src.runtime import RuntimeDir
 
 def _make_runtime(base: Path, name: str) -> Path:
     rt = RuntimeDir.init(base / name, slug="test")
+    # Seed teams.yaml so team manager lookups work without DEFAULT_LAYOUT.
+    rt.teams_config_path.write_text(
+        "teams:\n"
+        "  engineering:\n"
+        "    manager: engineering_head\n"
+        "    workers: [product_manager, dev_agent, payment_agent, qa_engineer]\n"
+        "  content:\n"
+        "    manager: content_manager\n"
+        "    workers: [content_writer, content_qa, seo_agent]\n"
+    )
     return rt.root
 
 

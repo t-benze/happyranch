@@ -915,6 +915,7 @@ class Database:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    # deprecated: use prompt_loader.list_agents
     @_synchronized
     def list_approved_agent_names(self) -> list[str]:
         cur = self._conn.execute(

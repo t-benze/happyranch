@@ -107,6 +107,7 @@ class Orchestrator:
             claude_cli_path=self._settings.claude_cli_path,
             permission_mode=self._settings.permission_mode,
             settings=self._settings,
+            runtime=self._runtime,
         )
 
     def _build_agent_prompt(
