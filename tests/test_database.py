@@ -948,3 +948,61 @@ def test_fresh_db_has_no_legacy_type_column(tmp_path):
     db = Database(tmp_path / "fresh.db")
     assert db._tasks_has_legacy_type_column is False
     db.close()
+
+
+def test_task_round_trips_dispatched_from_talk_id(tmp_path):
+    from src.infrastructure.database import Database
+    from src.models import TaskRecord
+
+    db = Database(tmp_path / "opc.db")
+    task = TaskRecord(
+        id="TASK-001",
+        brief="dispatched task",
+        team="engineering",
+        assigned_agent="dev_agent",
+        dispatched_from_talk_id="TALK-007",
+    )
+    db.insert_task(task)
+    fetched = db.get_task("TASK-001")
+    assert fetched is not None
+    assert fetched.dispatched_from_talk_id == "TALK-007"
+
+
+def test_task_round_trips_dispatched_from_talk_id_when_null(tmp_path):
+    from src.infrastructure.database import Database
+    from src.models import TaskRecord
+
+    db = Database(tmp_path / "opc.db")
+    task = TaskRecord(id="TASK-001", brief="normal task", team="engineering")
+    db.insert_task(task)
+    fetched = db.get_task("TASK-001")
+    assert fetched is not None
+    assert fetched.dispatched_from_talk_id is None
+
+
+def test_idempotent_dispatched_from_talk_id_migration(tmp_path):
+    from src.infrastructure.database import Database
+
+    db_path = tmp_path / "opc.db"
+    Database(db_path)            # first init creates the column
+    Database(db_path)            # second init must NOT raise
+
+
+def test_dispatched_from_talk_id_index_queryable(tmp_path):
+    from src.infrastructure.database import Database
+    from src.models import TaskRecord
+
+    db = Database(tmp_path / "opc.db")
+    db.insert_task(TaskRecord(
+        id="TASK-001", brief="a", team="engineering",
+        assigned_agent="dev_agent", dispatched_from_talk_id="TALK-007",
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-002", brief="b", team="engineering",
+        assigned_agent="dev_agent",
+    ))
+    cur = db._conn.execute(
+        "SELECT id FROM tasks WHERE dispatched_from_talk_id = ?", ("TALK-007",),
+    )
+    rows = [r["id"] for r in cur.fetchall()]
+    assert rows == ["TASK-001"]

@@ -8,11 +8,12 @@ from pydantic import BaseModel
 
 from src.daemon.auth import require_token
 from src.daemon.routes.agents import _append_to_learnings_file
+from src.daemon.runner import enqueue_task
 from src.daemon.state import DaemonState
 from src.infrastructure.audit_logger import AuditLogger
 from src.infrastructure.kb_store import KBStore
 from src.infrastructure.talk_store import TalkStore
-from src.models import TalkRecord, TalkStatus
+from src.models import TalkRecord, TalkStatus, TaskRecord
 
 router = APIRouter(dependencies=[require_token()])
 
@@ -96,6 +97,12 @@ class EndTalkBody(BaseModel):
     transcript_markdown: str
     learnings: list[EndTalkLearning] = []
     kb_slugs: list[str] = []
+
+
+class DispatchBody(BaseModel):
+    brief: str
+    target_agent: str | None = None
+    team: str | None = None
 
 
 @router.post("/talks/{talk_id}/resume")
@@ -223,3 +230,125 @@ def get_talk(talk_id: str, request: Request) -> dict:
         except FileNotFoundError:
             transcript = None
     return _talk_to_dict(talk, include_transcript=transcript)
+
+
+@router.post("/talks/{talk_id}/dispatch")
+async def dispatch_task(talk_id: str, body: DispatchBody, request: Request) -> dict:
+    state: DaemonState = _require_active(request.app.state.daemon)
+
+    # 1. Talk exists + open.
+    talk = state.db.get_talk(talk_id)
+    if talk is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "talk_id": talk_id})
+    if talk.status != TalkStatus.OPEN:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "talk_not_open", "status": talk.status.value},
+        )
+
+    # 2. Brief non-empty after strip.
+    brief = body.brief.strip()
+    if not brief:
+        raise HTTPException(status_code=422, detail={"code": "empty_brief"})
+
+    # 2b. Reject empty strings on optional body fields (None means "unset"; "" is malformed).
+    if body.team is not None and not body.team.strip():
+        raise HTTPException(status_code=422, detail={"code": "empty_team"})
+    if body.target_agent is not None and not body.target_agent.strip():
+        raise HTTPException(status_code=422, detail={"code": "empty_target_agent"})
+
+    # 2c. Teams registry must be available for role/membership checks.
+    if state.teams is None:
+        raise HTTPException(status_code=403, detail={"code": "teams_registry_unavailable"})
+
+    # 3. Resolve dispatcher's team. 4. Forbid cross-team. 5. Role-based assignment.
+    # All three steps read the teams registry — hold teams_lock so a concurrent
+    # manage-agent mutation cannot tear membership reads.
+    dispatcher = talk.agent_name
+    async with state.teams_lock:
+        is_manager = state.teams.is_team_manager(dispatcher)
+        dispatcher_team = (
+            state.teams.team_for_manager(dispatcher) if is_manager
+            else state.teams.team_for_agent(dispatcher)
+        )
+        if dispatcher_team is None:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "dispatcher_team_unknown", "agent": dispatcher},
+            )
+
+        # 4. Resolve effective_team and forbid cross-team.
+        effective_team = body.team if body.team is not None else dispatcher_team
+        if effective_team != dispatcher_team:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "cross_team_dispatch_forbidden",
+                    "dispatcher_team": dispatcher_team,
+                    "requested_team": effective_team,
+                },
+            )
+
+        # 5. Resolve effective_target + role-based assignment rule.
+        effective_target = body.target_agent if body.target_agent is not None else dispatcher
+        if not is_manager and effective_target != dispatcher:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "worker_must_self_dispatch",
+                    "dispatcher": dispatcher,
+                    "requested_target": effective_target,
+                },
+            )
+        if is_manager:
+            team_meta = state.teams.manager_for_team(dispatcher_team)
+            in_team = (
+                effective_target == team_meta.name
+                or effective_target in team_meta.workers
+            )
+            if not in_team:
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "code": "target_not_in_team",
+                        "team": dispatcher_team,
+                        "requested_target": effective_target,
+                    },
+                )
+
+    # 6. Target agent is registered AND has a workspace.
+    enrollment = state.db.get_enrollment(effective_target)
+    workspace_exists = (state.runtime.workspaces_dir / effective_target).exists()
+    if enrollment is None or enrollment.get("status") != "approved" or not workspace_exists:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "unknown_agent", "agent": effective_target},
+        )
+
+    # 7. Insert + audit + enqueue.
+    async with state.db_lock:
+        task_id = state.db.next_task_id()
+        state.db.insert_task(TaskRecord(
+            id=task_id,
+            brief=brief,
+            team=effective_team,
+            assigned_agent=effective_target,
+            dispatched_from_talk_id=talk_id,
+        ))
+        AuditLogger(state.db).log_task_dispatched(
+            task_id=task_id,
+            talk_id=talk_id,
+            dispatcher_agent=dispatcher,
+            dispatcher_role="manager" if is_manager else "worker",
+            effective_target=effective_target,
+            team=effective_team,
+        )
+
+    enqueue_task(state, task_id)
+
+    return {
+        "task_id": task_id,
+        "team": effective_team,
+        "assigned_agent": effective_target,
+        "dispatched_from_talk_id": talk_id,
+    }

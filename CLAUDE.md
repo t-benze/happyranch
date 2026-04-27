@@ -377,6 +377,7 @@ opc report-completion --task-id TASK-001 --session-id <sid> --status completed .
 opc learning --agent dev_agent --session-id <sid> --task-id TASK-001 --text "..."
 opc manage-repo add --agent dev_agent --repo-name docs --url https://github.com/t-benze/docs.git
 opc manage-agent --from-file /tmp/manage-agent-enroll.json  # enroll/update/terminate an agent (task-path or talk-path auth)
+opc dispatch --from-file /tmp/dispatch-<talk_id>.json   # agent: dispatch a new task from inside an open talk (workers self-only; team managers intra-team)
 # Founder-side enrollment management:
 opc enrollments [--status pending]     # list enrollment requests
 opc approve-agent <name>               # approve and bootstrap workspace

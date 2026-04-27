@@ -206,6 +206,11 @@ class Database:
             # non-revisit tasks. walk_ancestors MUST NOT follow this column —
             # that's the attempt-isolation invariant from the v2 revisit spec.
             "ALTER TABLE tasks ADD COLUMN revisit_of_task_id TEXT",
+            # Talk-dispatch link: tasks dispatched from an open agent talk
+            # session record the originating TALK id here. NULL for tasks
+            # created via `opc run` or revisit. Most tasks have no talk
+            # provenance, so the index below is partial.
+            "ALTER TABLE tasks ADD COLUMN dispatched_from_talk_id TEXT",
         ):
             try:
                 self._conn.execute(ddl)
@@ -214,6 +219,11 @@ class Database:
         # Index the reverse lookup (`WHERE revisit_of_task_id = ?`).
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tasks_revisit_of ON tasks(revisit_of_task_id)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_dispatched_from_talk_id "
+            "ON tasks(dispatched_from_talk_id) "
+            "WHERE dispatched_from_talk_id IS NOT NULL"
         )
 
         # --- Revisit link backfill ---
@@ -294,6 +304,7 @@ class Database:
             task.completed_at.isoformat() if task.completed_at else None,
             task.parent_task_id,
             task.revisit_of_task_id,
+            task.dispatched_from_talk_id,
             task.block_kind.value if task.block_kind else None,
             task.note,
             task.orchestration_step_count,
@@ -307,16 +318,18 @@ class Database:
             self._conn.execute(
                 """INSERT INTO tasks (id, type, status, assigned_agent, team, brief,
                    revision_count, created_at, updated_at, completed_at, parent_task_id,
-                   revisit_of_task_id, block_kind, note, orchestration_step_count)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   revisit_of_task_id, dispatched_from_talk_id, block_kind, note,
+                   orchestration_step_count)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (params[0], "general") + params[1:],
             )
         else:
             self._conn.execute(
                 """INSERT INTO tasks (id, status, assigned_agent, team, brief,
                    revision_count, created_at, updated_at, completed_at, parent_task_id,
-                   revisit_of_task_id, block_kind, note, orchestration_step_count)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   revisit_of_task_id, dispatched_from_talk_id, block_kind, note,
+                   orchestration_step_count)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 params,
             )
         self._conn.commit()
@@ -339,6 +352,7 @@ class Database:
             completed_at=row["completed_at"],
             parent_task_id=row["parent_task_id"],
             revisit_of_task_id=row["revisit_of_task_id"],
+            dispatched_from_talk_id=row["dispatched_from_talk_id"],
             block_kind=row["block_kind"],
             note=row["note"],
             orchestration_step_count=row["orchestration_step_count"] or 0,
@@ -364,6 +378,7 @@ class Database:
                 completed_at=row["completed_at"],
                 parent_task_id=row["parent_task_id"],
                 revisit_of_task_id=row["revisit_of_task_id"],
+                dispatched_from_talk_id=row["dispatched_from_talk_id"],
                 block_kind=row["block_kind"],
                 note=row["note"],
                 orchestration_step_count=row["orchestration_step_count"] or 0,
@@ -506,6 +521,7 @@ class Database:
                 completed_at=row["completed_at"],
                 parent_task_id=row["parent_task_id"],
                 revisit_of_task_id=row["revisit_of_task_id"],
+                dispatched_from_talk_id=row["dispatched_from_talk_id"],
                 block_kind=row["block_kind"],
                 note=row["note"],
                 orchestration_step_count=row["orchestration_step_count"] or 0,

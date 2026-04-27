@@ -1556,6 +1556,128 @@ def test_cmd_details_shows_footer_only_when_predecessor_has_revisits(capsys):
     assert "Revisited as: TASK-072" in out
 
 
+def test_cmd_details_renders_dispatched_from(capsys):
+    """When a task was dispatched from a talk, `opc details` must show:
+    - a `Dispatched from:` header line with the source talk id
+    - the dispatcher agent + role pulled from the task_dispatched audit row
+    The line appears after the (optional) revisit header and before the
+    main task summary block.
+    """
+    from argparse import Namespace
+
+    from src.cli import cmd_details
+
+    fake = MagicMock()
+    fake.get.return_value.status_code = 200
+    fake.get.return_value.json.return_value = {
+        "task": {
+            "id": "TASK-042",
+            "type": "general",
+            "status": "pending",
+            "assigned_agent": None,
+            "brief": "Investigate daemon crash",
+            "created_at": "2026-04-26T10:00:00+00:00",
+            "updated_at": "2026-04-26T10:00:00+00:00",
+            "dispatched_from_talk_id": "TALK-007",
+        },
+        "results": [],
+        "audit_log": [
+            {
+                "timestamp": "2026-04-26T10:00:00+00:00",
+                "agent": "dev_agent",
+                "action": "task_dispatched",
+                "payload": {
+                    "talk_id": "TALK-007",
+                    "dispatcher_agent": "dev_agent",
+                    "dispatcher_role": "worker",
+                },
+            },
+        ],
+    }
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_details(Namespace(task_id="TASK-042"))
+    out = capsys.readouterr().out
+    assert "Dispatched from: TALK-007" in out
+    assert "dev_agent / worker" in out
+
+
+def test_cmd_dispatch_happy_path(tmp_path):
+    """`opc dispatch --from-file ...` POSTs to /talks/{talk_id}/dispatch with
+    body shaped {brief, target_agent?, team?} — talk_id stays in the URL path
+    and is NOT echoed in the request body."""
+    import json
+    from argparse import Namespace
+
+    from src.cli import cmd_dispatch
+
+    payload = {
+        "talk_id": "TALK-001",
+        "brief": "Investigate the daemon crash",
+        "target_agent": "dev_agent",
+        "team": "engineering",
+    }
+    payload_path = tmp_path / "dispatch.json"
+    payload_path.write_text(json.dumps(payload))
+
+    fake = MagicMock()
+    fake.post.return_value.status_code = 200
+    fake.post.return_value.json.return_value = {
+        "task_id": "TASK-042",
+        "team": "engineering",
+        "assigned_agent": "dev_agent",
+        "dispatched_from_talk_id": "TALK-001",
+    }
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_dispatch(Namespace(from_file=str(payload_path)))
+
+    args_pos, kwargs = fake.post.call_args
+    assert args_pos[0] == "/api/v1/talks/TALK-001/dispatch"
+    body = kwargs["json"]
+    assert body == {
+        "brief": "Investigate the daemon crash",
+        "target_agent": "dev_agent",
+        "team": "engineering",
+    }
+    assert "talk_id" not in body
+
+
+def test_cmd_dispatch_missing_talk_id_raises(tmp_path, capsys):
+    """A from-file payload without `talk_id` should fail before the HTTP call."""
+    import json
+    from argparse import Namespace
+
+    from src.cli import cmd_dispatch
+
+    payload = {"brief": "Do the thing"}  # no talk_id
+    payload_path = tmp_path / "bad.json"
+    payload_path.write_text(json.dumps(payload))
+
+    fake = MagicMock()
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        with pytest.raises(SystemExit):
+            cmd_dispatch(Namespace(from_file=str(payload_path)))
+    fake.post.assert_not_called()
+
+
+def test_cmd_dispatch_whitespace_talk_id_raises(tmp_path, capsys):
+    """A from-file payload with a whitespace-only `talk_id` should fail before
+    the HTTP call — symmetric with the `brief` strip-validation."""
+    import json
+    from argparse import Namespace
+
+    from src.cli import cmd_dispatch
+
+    payload = {"talk_id": "   ", "brief": "x"}  # whitespace-only talk_id
+    payload_path = tmp_path / "bad.json"
+    payload_path.write_text(json.dumps(payload))
+
+    fake = MagicMock()
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        with pytest.raises(SystemExit):
+            cmd_dispatch(Namespace(from_file=str(payload_path)))
+    fake.post.assert_not_called()
+
+
 def test_cmd_tasks_suffixes_revisit_rows(capsys):
     """Tasks that have a predecessor root show `↩ TASK-XXX` as a trailing
     marker; plain tasks render unchanged."""
