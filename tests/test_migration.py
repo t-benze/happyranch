@@ -90,3 +90,138 @@ def test_migration_is_idempotent(tmp_path: Path) -> None:
     db = Database(db_path)
     rows = list(db._conn.execute("SELECT status FROM tasks WHERE id='T-APR'"))
     assert rows[0]["status"] == "completed"
+
+
+# ── Migration: <runtime>/teams.yaml + agent_enrollments → <runtime>/org/ ──
+
+import pytest
+import yaml
+
+from src.orchestrator.migration import migrate_to_org_runtime, MigrationResult
+from src.runtime import RuntimeDir
+
+
+def _build_legacy_runtime(tmp_path: Path, *, with_enrollments: bool = True) -> Path:
+    """Construct a pre-org-cut runtime at tmp_path/legacy."""
+    rt_root = tmp_path / "legacy"
+    rt_root.mkdir()
+    # opc.yaml without slug (the pre-cut shape).
+    (rt_root / "opc.yaml").write_text("")
+    (rt_root / "workspaces").mkdir()
+    # teams.yaml at the OLD location (root, not under org/).
+    (rt_root / "teams.yaml").write_text(
+        "teams:\n  engineering:\n    manager: engineering_head\n    workers: [dev_agent]\n"
+    )
+    # SQLite with legacy agent_enrollments table.
+    db_path = rt_root / "opc.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript("""
+      CREATE TABLE agent_enrollments (
+        name TEXT PRIMARY KEY,
+        description TEXT,
+        system_prompt TEXT,
+        repos TEXT,
+        executor TEXT,
+        allow_rules TEXT,
+        status TEXT,
+        created_at TEXT
+      );
+    """)
+    if with_enrollments:
+        conn.execute(
+            "INSERT INTO agent_enrollments VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("custom_dev", "A custom dev", "You are custom_dev.\n",
+             '{"my-opc": "https://github.com/x/x.git"}', "claude",
+             '[]', "approved", "2026-04-01T00:00:00Z"),
+        )
+        conn.execute(
+            "INSERT INTO agent_enrollments VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("draft_writer", "Draft", "Body\n", '{}', "claude", '[]',
+             "pending", "2026-04-02T00:00:00Z"),
+        )
+    conn.commit()
+    conn.close()
+    return rt_root
+
+
+def test_dryrun_emits_planned_actions(tmp_path: Path) -> None:
+    rt_root = _build_legacy_runtime(tmp_path)
+    result = migrate_to_org_runtime(
+        rt_root, slug="hk-tourism",
+        i_have_a_backup=True, apply=False,
+    )
+    assert isinstance(result, MigrationResult)
+    assert result.applied is False
+    assert any("write opc.yaml" in step for step in result.planned)
+    assert any("move teams.yaml" in step for step in result.planned)
+    assert any("custom_dev" in step for step in result.planned)
+    assert any("draft_writer" in step for step in result.planned)
+    # Filesystem unchanged.
+    assert not (rt_root / "org").exists()
+    assert (rt_root / "teams.yaml").exists()
+
+
+def test_apply_writes_org_tree(tmp_path: Path) -> None:
+    rt_root = _build_legacy_runtime(tmp_path)
+    result = migrate_to_org_runtime(
+        rt_root, slug="hk-tourism",
+        i_have_a_backup=True, apply=True,
+    )
+    assert result.applied is True
+    rt = RuntimeDir.load(rt_root)
+    assert rt.slug == "hk-tourism"
+    # teams.yaml moved.
+    assert rt.teams_config_path.exists()
+    assert not (rt_root / "teams.yaml").exists()
+    # Approved enrollment exported to active agents/.
+    assert (rt.agents_dir / "custom_dev.md").exists()
+    # Pending enrollment exported to _pending/.
+    assert (rt.pending_agents_dir / "draft_writer.md").exists()
+    # agent_enrollments table dropped.
+    conn = sqlite3.connect(rt.db_path)
+    cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='agent_enrollments'")
+    assert cur.fetchone() is None
+    conn.close()
+
+
+def test_apply_idempotent(tmp_path: Path) -> None:
+    rt_root = _build_legacy_runtime(tmp_path)
+    migrate_to_org_runtime(rt_root, slug="x", i_have_a_backup=True, apply=True)
+    second = migrate_to_org_runtime(rt_root, slug="x", i_have_a_backup=True, apply=True)
+    assert second.already_migrated is True
+
+
+def test_aborts_without_backup_flag(tmp_path: Path) -> None:
+    rt_root = _build_legacy_runtime(tmp_path)
+    with pytest.raises(ValueError, match="i_have_a_backup"):
+        migrate_to_org_runtime(rt_root, slug="x", i_have_a_backup=False, apply=True)
+
+
+def test_aborts_when_slug_disagrees_with_existing(tmp_path: Path) -> None:
+    rt_root = _build_legacy_runtime(tmp_path)
+    (rt_root / "opc.yaml").write_text("slug: existing\n")
+    with pytest.raises(ValueError, match="slug.*disagrees"):
+        migrate_to_org_runtime(rt_root, slug="other", i_have_a_backup=True, apply=True)
+
+
+def test_strips_completion_contract_block(tmp_path: Path) -> None:
+    rt_root = _build_legacy_runtime(tmp_path, with_enrollments=False)
+    # Insert one enrollment whose system_prompt has the canonical contract block.
+    conn = sqlite3.connect(rt_root / "opc.db")
+    body = (
+        "You are role_x.\n\nResponsibilities: do X.\n\n"
+        "## Task completion report\n\n"
+        "Format: confidence, risks, ...\n"
+        "(this whole section should be stripped on migration.)\n"
+    )
+    conn.execute(
+        "INSERT INTO agent_enrollments VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("role_x", "x", body, "{}", "claude", "[]", "approved", "2026-04-01T00:00:00Z"),
+    )
+    conn.commit()
+    conn.close()
+    migrate_to_org_runtime(rt_root, slug="x", i_have_a_backup=True, apply=True)
+    rt = RuntimeDir.load(rt_root)
+    text = (rt.agents_dir / "role_x.md").read_text()
+    assert "Task completion report" not in text
+    assert "do X" in text
