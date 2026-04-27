@@ -583,8 +583,9 @@ def _dispatch_payload_from_file(path: str) -> dict:
     import json as _json
     with open(path) as f:
         data = _json.load(f)
-    if not data.get("talk_id"):
-        raise ValueError("dispatch file missing 'talk_id'")
+    talk_id = data.get("talk_id")
+    if not talk_id or not str(talk_id).strip():
+        raise ValueError("dispatch file missing or empty 'talk_id'")
     brief = data.get("brief")
     if not brief or not str(brief).strip():
         raise ValueError("dispatch file missing or empty 'brief'")

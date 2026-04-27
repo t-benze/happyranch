@@ -1614,6 +1614,25 @@ def test_cmd_dispatch_missing_talk_id_raises(tmp_path, capsys):
     fake.post.assert_not_called()
 
 
+def test_cmd_dispatch_whitespace_talk_id_raises(tmp_path, capsys):
+    """A from-file payload with a whitespace-only `talk_id` should fail before
+    the HTTP call — symmetric with the `brief` strip-validation."""
+    import json
+    from argparse import Namespace
+
+    from src.cli import cmd_dispatch
+
+    payload = {"talk_id": "   ", "brief": "x"}  # whitespace-only talk_id
+    payload_path = tmp_path / "bad.json"
+    payload_path.write_text(json.dumps(payload))
+
+    fake = MagicMock()
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        with pytest.raises(SystemExit):
+            cmd_dispatch(Namespace(from_file=str(payload_path)))
+    fake.post.assert_not_called()
+
+
 def test_cmd_tasks_suffixes_revisit_rows(capsys):
     """Tasks that have a predecessor root show `↩ TASK-XXX` as a trailing
     marker; plain tasks render unchanged."""
