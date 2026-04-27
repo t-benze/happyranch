@@ -1,13 +1,21 @@
 import json
 from pathlib import Path
 
+import pytest
+
+from src.runtime import RuntimeDir
 from src.orchestrator.workspace_adapters import (
     ClaudeWorkspaceAdapter,
     CodexWorkspaceAdapter,
 )
 
 
-def test_claude_adapter_bootstrap_creates_claude_files_and_skills(test_settings, tmp_dir):
+@pytest.fixture
+def runtime(tmp_path: Path) -> RuntimeDir:
+    return RuntimeDir.init(tmp_path / "rt", slug="test")
+
+
+def test_claude_adapter_bootstrap_creates_claude_files_and_skills(test_settings, tmp_dir, runtime):
     skills_root = test_settings.get_protocol_dir() / "skills"
     (skills_root / "start-task").mkdir(parents=True)
     (skills_root / "start-task" / "SKILL.md").write_text("# start-task\n")
@@ -15,7 +23,7 @@ def test_claude_adapter_bootstrap_creates_claude_files_and_skills(test_settings,
     workspace = tmp_dir / "workspaces" / "dev_agent"
     (workspace / "repos" / "my-opc" / ".git").mkdir(parents=True)
 
-    ClaudeWorkspaceAdapter(test_settings).ensure_workspace_ready(
+    ClaudeWorkspaceAdapter(test_settings, runtime).ensure_workspace_ready(
         workspace=workspace,
         agent_name="dev_agent",
         system_prompt="You are the Dev Agent.",
@@ -33,7 +41,7 @@ def test_claude_adapter_bootstrap_creates_claude_files_and_skills(test_settings,
     assert "repos/my-opc" in hook_cmd
 
 
-def test_codex_adapter_bootstrap_creates_agents_md_and_skills_tree(test_settings, tmp_dir):
+def test_codex_adapter_bootstrap_creates_agents_md_and_skills_tree(test_settings, tmp_dir, runtime):
     """Codex CLI ≥0.125 discovers skills under ``.agents/skills/`` (walking from
     cwd up to repo root). The adapter must copy ``protocol/skills/`` into the
     workspace and AGENTS.md must point at the start-task skill — not inline
@@ -53,7 +61,7 @@ def test_codex_adapter_bootstrap_creates_agents_md_and_skills_tree(test_settings
     workspace.mkdir(parents=True)
     (workspace / "recent_tasks.md").write_text("# Recent Tasks: dev_agent\n\n- TASK-001\n")
 
-    CodexWorkspaceAdapter(test_settings).ensure_workspace_ready(
+    CodexWorkspaceAdapter(test_settings, runtime).ensure_workspace_ready(
         workspace=workspace,
         agent_name="dev_agent",
         system_prompt="You are the Dev Agent.",
@@ -80,7 +88,7 @@ def test_codex_adapter_bootstrap_creates_agents_md_and_skills_tree(test_settings
     assert "Bash(opc:*)" not in body
 
 
-def test_codex_agents_md_does_not_inline_completion_contract(test_settings, tmp_dir):
+def test_codex_agents_md_does_not_inline_completion_contract(test_settings, tmp_dir, runtime):
     """The completion contract used to be duplicated into AGENTS.md as prose
     + JSON because Codex couldn't resolve SKILL.md. As of Codex CLI 0.125 it
     can — the start-task skill in ``.agents/skills/`` is the source of truth
@@ -103,7 +111,7 @@ def test_codex_agents_md_does_not_inline_completion_contract(test_settings, tmp_
     workspace = tmp_dir / "workspaces" / "senior_dev"
     workspace.mkdir(parents=True)
 
-    CodexWorkspaceAdapter(test_settings).ensure_workspace_ready(
+    CodexWorkspaceAdapter(test_settings, runtime).ensure_workspace_ready(
         workspace=workspace,
         agent_name="senior_dev",
         system_prompt="You are the Senior Developer.",

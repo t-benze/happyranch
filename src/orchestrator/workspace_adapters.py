@@ -6,9 +6,12 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from src.config import Settings
-from src.infrastructure.database import Database
+
+if TYPE_CHECKING:
+    from src.runtime import RuntimeDir
 
 logger = logging.getLogger(__name__)
 
@@ -47,49 +50,30 @@ def _format_allow_rule(prefix: str, *, cli: bool) -> str:
 
 
 def allow_rules_for_agent(
-    settings: Settings, agent_name: str | None, *, cli: bool,
-    db: Database | None = None,
+    runtime: "RuntimeDir", agent_name: str | None, *, cli: bool,
 ) -> list[str]:
     """Build the Bash allow-rule list for ``agent_name``.
 
     Baseline ``opc`` is always included (the agent-callback channel).
-    Additional prefixes come from one of two sources (in priority order):
-      1. The DB enrollment row's ``allow_rules`` field, if ``db`` is provided
-         and the agent has an enrollment with a non-empty allow_rules list.
-      2. The ``### Allow Rules`` subsection of the agent's role in the
-         protocol markdown (covers built-in agents like engineering_head).
-
-    See ``protocol/02-system-prompts-managers.md`` for the per-manager grants.
+    Additional prefixes come from the agent's ``allow_rules`` frontmatter
+    field in ``<runtime>/org/agents/<name>.md``.
     """
     from src.orchestrator import prompt_loader
     rules = [_format_allow_rule("opc", cli=cli)]
     if agent_name is None:
         return rules
-
-    prefixes: list[str] = []
-    if db is not None:
-        enrollment = db.get_enrollment(agent_name)
-        if enrollment is not None:
-            prefixes = list(enrollment.get("allow_rules") or ())
-
-    if not prefixes:
-        prefixes = list(prompt_loader.allow_rules_for(
-            settings.get_protocol_dir(), agent_name,
-        ))
-
-    for prefix in prefixes:
+    for prefix in prompt_loader.allow_rules_for_agent(runtime, agent_name):
         rules.append(_format_allow_rule(prefix, cli=cli))
     return rules
 
 
 def build_settings_json(
-    settings: Settings,
+    runtime: "RuntimeDir",
     repo_names: list[str],
     agent_name: str | None = None,
 ) -> dict:
     """Build .claude/settings.json with a git pull hook for all repos."""
     if repo_names:
-        # Pull all repos on first tool use.
         pull_cmds = " && ".join(
             f"(cd repos/{name} && git pull --ff-only 2>/dev/null; true)"
             for name in repo_names
@@ -99,11 +83,7 @@ def build_settings_json(
                 {
                     "matcher": "Bash|Read|Grep|Glob",
                     "hooks": [
-                        {
-                            "type": "command",
-                            "command": pull_cmds,
-                            "once": True,
-                        }
+                        {"type": "command", "command": pull_cmds, "once": True}
                     ],
                 }
             ]
@@ -113,13 +93,7 @@ def build_settings_json(
 
     return {
         "permissions": {
-            # `opc` is pinned open for every agent so callbacks
-            # (report-completion, learning, etc.) can never be silently
-            # blocked by auto-mode prompting. Per-agent extras come from the
-            # ``### Allow Rules`` subsection in the protocol markdown.
-            # Anything not in this list falls under Claude Code's default
-            # auto-mode behavior.
-            "allow": allow_rules_for_agent(settings, agent_name, cli=False),
+            "allow": allow_rules_for_agent(runtime, agent_name, cli=False),
         },
         "hooks": hooks,
     }
@@ -168,8 +142,9 @@ class ClaudeWorkspaceAdapter:
 
     provider_name = "claude"
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, runtime: "RuntimeDir") -> None:
         self._settings = settings
+        self._runtime = runtime
         self._persistent = PersistentWorkspaceSetup(settings)
 
     def write_settings_json(
@@ -181,7 +156,9 @@ class ClaudeWorkspaceAdapter:
         """Write .claude/settings.json to workspace."""
         claude_dir = workspace / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
-        settings_data = build_settings_json(self._settings, repo_names or [], agent_name=agent_name)
+        settings_data = build_settings_json(
+            self._runtime, repo_names or [], agent_name=agent_name,
+        )
         (claude_dir / "settings.json").write_text(
             json.dumps(settings_data, indent=2) + "\n"
         )
@@ -312,8 +289,9 @@ class CodexWorkspaceAdapter:
 
     provider_name = "codex"
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, runtime: "RuntimeDir") -> None:
         self._settings = settings
+        self._runtime = runtime
         self._persistent = PersistentWorkspaceSetup(settings)
 
     def write_agents_md(
@@ -333,7 +311,7 @@ class CodexWorkspaceAdapter:
         completion contract. The skill itself is the source of truth.
         """
         workspace.mkdir(parents=True, exist_ok=True)
-        sections = ClaudeWorkspaceAdapter(self._settings)._build_sections(
+        sections = ClaudeWorkspaceAdapter(self._settings, self._runtime)._build_sections(
             agent_name,
             system_prompt,
             include_start_task=True,

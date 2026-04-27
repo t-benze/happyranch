@@ -9,15 +9,17 @@ from src.orchestrator.workspace_adapters import (
     ClaudeWorkspaceAdapter,
     CodexWorkspaceAdapter,
 )
+from src.runtime import RuntimeDir
 
 logger = logging.getLogger(__name__)
 
 
 class ContextBuilder:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, runtime: RuntimeDir) -> None:
         self._settings = settings
-        self._claude = ClaudeWorkspaceAdapter(settings)
-        self._codex = CodexWorkspaceAdapter(settings)
+        self._runtime = runtime
+        self._claude = ClaudeWorkspaceAdapter(settings, runtime)
+        self._codex = CodexWorkspaceAdapter(settings, runtime)
 
     def _adapter(self, provider: str = "claude"):
         if provider == "claude":
