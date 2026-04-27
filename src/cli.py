@@ -573,6 +573,57 @@ def cmd_manage_agent(args: argparse.Namespace) -> None:
     print(f"ok: {body['action']} {body['name']} (status: {status})")
 
 
+def _dispatch_payload_from_file(path: str) -> dict:
+    """Load a talk-dispatch payload from a JSON file.
+
+    Same single-line `opc` constraint as the other agent callbacks. Required
+    keys: ``talk_id`` (used in the URL path) and ``brief`` (the new task's
+    description). Optional: ``target_agent``, ``team``.
+    """
+    import json as _json
+    with open(path) as f:
+        data = _json.load(f)
+    if not data.get("talk_id"):
+        raise ValueError("dispatch file missing 'talk_id'")
+    brief = data.get("brief")
+    if not brief or not str(brief).strip():
+        raise ValueError("dispatch file missing or empty 'brief'")
+    return data
+
+
+def cmd_dispatch(args: argparse.Namespace) -> None:
+    """Agent callback: dispatch a new task from inside an open talk."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    import json as _json
+    try:
+        data = _dispatch_payload_from_file(args.from_file)
+    except (OSError, _json.JSONDecodeError, ValueError) as exc:
+        print(f"Error reading dispatch file {args.from_file}: {exc}")
+        sys.exit(1)
+
+    talk_id = data["talk_id"]
+    body: dict = {"brief": data["brief"]}
+    if data.get("target_agent"):
+        body["target_agent"] = data["target_agent"]
+    if data.get("team"):
+        body["team"] = data["team"]
+
+    r = client.post(f"/api/v1/talks/{talk_id}/dispatch", json=body)
+    if not _ok(r):
+        return
+    result = r.json()
+    print(
+        f"ok: dispatched {result['task_id']} "
+        f"(team={result['team']} agent={result['assigned_agent']} "
+        f"from {result['dispatched_from_talk_id']})"
+    )
+
+
 def cmd_enrollments(args: argparse.Namespace) -> None:
     """List agent enrollment requests."""
     try:
@@ -1166,6 +1217,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_ma.add_argument("--from-file", dest="from_file", default=None,
                        help="Path to JSON file with enrollment payload")
     p_ma.set_defaults(func=cmd_manage_agent)
+
+    # opc dispatch
+    p_dispatch = sub.add_parser("dispatch", help="Dispatch a new task from an open talk")
+    p_dispatch.add_argument(
+        "--from-file", dest="from_file", required=True,
+        help="Path to JSON file with dispatch payload (talk_id, brief, optional target_agent/team)",
+    )
+    p_dispatch.set_defaults(func=cmd_dispatch)
 
     # opc enrollments
     p_enroll = sub.add_parser("enrollments", help="List agent enrollment requests")

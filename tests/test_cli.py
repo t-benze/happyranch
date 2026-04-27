@@ -1556,6 +1556,64 @@ def test_cmd_details_shows_footer_only_when_predecessor_has_revisits(capsys):
     assert "Revisited as: TASK-072" in out
 
 
+def test_cmd_dispatch_happy_path(tmp_path):
+    """`opc dispatch --from-file ...` POSTs to /talks/{talk_id}/dispatch with
+    body shaped {brief, target_agent?, team?} — talk_id stays in the URL path
+    and is NOT echoed in the request body."""
+    import json
+    from argparse import Namespace
+
+    from src.cli import cmd_dispatch
+
+    payload = {
+        "talk_id": "TALK-001",
+        "brief": "Investigate the daemon crash",
+        "target_agent": "dev_agent",
+        "team": "engineering",
+    }
+    payload_path = tmp_path / "dispatch.json"
+    payload_path.write_text(json.dumps(payload))
+
+    fake = MagicMock()
+    fake.post.return_value.status_code = 200
+    fake.post.return_value.json.return_value = {
+        "task_id": "TASK-042",
+        "team": "engineering",
+        "assigned_agent": "dev_agent",
+        "dispatched_from_talk_id": "TALK-001",
+    }
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_dispatch(Namespace(from_file=str(payload_path)))
+
+    args_pos, kwargs = fake.post.call_args
+    assert args_pos[0] == "/api/v1/talks/TALK-001/dispatch"
+    body = kwargs["json"]
+    assert body == {
+        "brief": "Investigate the daemon crash",
+        "target_agent": "dev_agent",
+        "team": "engineering",
+    }
+    assert "talk_id" not in body
+
+
+def test_cmd_dispatch_missing_talk_id_raises(tmp_path, capsys):
+    """A from-file payload without `talk_id` should fail before the HTTP call."""
+    import json
+    from argparse import Namespace
+
+    from src.cli import cmd_dispatch
+
+    payload = {"brief": "Do the thing"}  # no talk_id
+    payload_path = tmp_path / "bad.json"
+    payload_path.write_text(json.dumps(payload))
+
+    fake = MagicMock()
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        with pytest.raises(SystemExit):
+            cmd_dispatch(Namespace(from_file=str(payload_path)))
+    fake.post.assert_not_called()
+
+
 def test_cmd_tasks_suffixes_revisit_rows(capsys):
     """Tasks that have a predecessor root show `↩ TASK-XXX` as a trailing
     marker; plain tasks render unchanged."""
