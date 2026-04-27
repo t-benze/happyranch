@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
+
+import yaml
 
 
 class RuntimeDir:
     """Value object representing a self-describing OPC runtime folder.
 
     The presence of an ``opc.yaml`` marker file distinguishes a valid
-    runtime directory from an arbitrary path.
+    runtime directory from an arbitrary path. The marker file carries the
+    runtime's slug, creation timestamp, and schema version.
     """
 
     def __init__(self, path: Path) -> None:
         self._path = path.resolve()
+        self._cached_slug: str | None = None
 
     # ------------------------------------------------------------------
     # Properties
@@ -34,8 +39,33 @@ class RuntimeDir:
         return self._path / "opc.yaml"
 
     @property
+    def org_dir(self) -> Path:
+        return self._path / "org"
+
+    @property
+    def agents_dir(self) -> Path:
+        return self.org_dir / "agents"
+
+    @property
+    def pending_agents_dir(self) -> Path:
+        return self.agents_dir / "_pending"
+
+    @property
     def teams_config_path(self) -> Path:
-        return self._path / "teams.yaml"
+        return self.org_dir / "teams.yaml"
+
+    @property
+    def slug(self) -> str:
+        if self._cached_slug is not None:
+            return self._cached_slug
+        if not self.marker_file.exists():
+            raise ValueError(f"{self.marker_file} missing")
+        data = yaml.safe_load(self.marker_file.read_text()) or {}
+        slug = data.get("slug")
+        if not isinstance(slug, str) or not slug:
+            raise ValueError(f"{self.marker_file} missing slug")
+        self._cached_slug = slug
+        return slug
 
     # ------------------------------------------------------------------
     # Validation
@@ -50,27 +80,37 @@ class RuntimeDir:
     # ------------------------------------------------------------------
 
     @classmethod
-    def init(cls, path: Path) -> RuntimeDir:
+    def init(cls, path: Path, *, slug: str | None = None) -> RuntimeDir:
         """Create a runtime directory at *path*.
 
-        Creates the directory, writes an empty ``opc.yaml`` marker, and
-        creates the ``workspaces/`` sub-directory.  Calling this more
-        than once on the same path is idempotent — existing files are
-        not overwritten.
+        On first creation, writes ``opc.yaml`` with the supplied ``slug``,
+        a ``created_at`` timestamp, and ``schema_version: 1``. Subsequent
+        calls are idempotent — the existing slug is preserved.
 
-        Returns the new ``RuntimeDir`` instance.
+        Creates the ``workspaces/`` and ``org/agents/_pending/`` sub-directories.
         """
         instance = cls(path)
         instance.root.mkdir(parents=True, exist_ok=True)
-        # Write marker only if it doesn't already exist so we don't
-        # overwrite any future content.
+
         if not instance.marker_file.exists():
-            instance.marker_file.write_text("")
+            if slug is None:
+                raise ValueError("slug is required to initialize a new runtime")
+            payload = {
+                "slug": slug,
+                "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "schema_version": 1,
+            }
+            instance.marker_file.write_text(yaml.safe_dump(payload, sort_keys=False))
+
         instance.workspaces_dir.mkdir(parents=True, exist_ok=True)
+        instance.org_dir.mkdir(parents=True, exist_ok=True)
+        instance.agents_dir.mkdir(parents=True, exist_ok=True)
+        instance.pending_agents_dir.mkdir(parents=True, exist_ok=True)
+
         # Deferred import: teams.py imports RuntimeDir, so the import lives
         # inside the function to avoid a cycle at module-load time.
         from src.orchestrator.teams import TeamsRegistry
-        TeamsRegistry.seed_default(instance)
+        TeamsRegistry.seed_empty(instance)
         return instance
 
     @classmethod
