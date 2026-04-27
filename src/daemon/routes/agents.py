@@ -645,10 +645,14 @@ def backfill_enrollments(request: Request) -> dict:
     SQLite enrollment registry; that registry is replaced by file-based agents.
     Returns a success response with empty lists for backwards compatibility.
     """
+    state: DaemonState = request.app.state.daemon
+    _require_active(state)
     return {
         "backfilled": [],
         "skipped_already_enrolled": [],
         "skipped_unknown_prompt": [],
+        "deprecated": True,
+        "note": "Backfill is now done via `opc migrate-to-org-runtime`. Pre-existing workspaces without org/agents/<name>.md should be reconstructed by the founder manually.",
     }
 
 
