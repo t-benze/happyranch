@@ -213,6 +213,23 @@ def cmd_details(args: argparse.Namespace) -> None:
             display[-1] = f"{display[-1]} (this)"
             print(f"Chain:      {' ← '.join(display)}")
 
+    # Dispatched-from header: shown only when this task was created via
+    # POST /talks/{talk_id}/dispatch. Pulls dispatcher agent/role from the
+    # task_dispatched audit row written at dispatch time.
+    if task.get("dispatched_from_talk_id"):
+        dispatcher = "?"
+        role = "?"
+        for log in body.get("audit_log") or []:
+            if log.get("action") == "task_dispatched":
+                payload = log.get("payload") or {}
+                dispatcher = payload.get("dispatcher_agent", "?")
+                role = payload.get("dispatcher_role", "?")
+                break
+        print(
+            f"Dispatched from: {task['dispatched_from_talk_id']}  "
+            f"(dispatcher: {dispatcher} / {role})"
+        )
+
     print(f"Task:       {task['id']}")
     print(f"Team:       {task.get('team', '-')}")
     print(f"Status:     {task['status']}")
