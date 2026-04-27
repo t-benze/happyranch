@@ -9,7 +9,7 @@ The self-hosted dashboard for org-wide visibility, plus the recommended build se
 The CLI (`opc ...`) and SSE task streams are for real-time interaction — submitting work, streaming events, founder↔agent talks, approving escalations. The dashboard is for when you want the big picture: how is the org performing, what happened recently, where are the trends going, and what's the full audit trail. It runs as a local web app on your Mac Mini, accessible from any device on your network.
 
 ### Fully Self-Hosted
-All data stays on your Mac Mini — no third-party observability service. The orchestrator records execution data (agent decisions, task timelines, tool usage, LLM calls) directly to SQLite alongside the business-level metrics (scorecards, escalation history, calibration insights). One dashboard covers both engineering observability and business performance — no cloud dependency, no data leaving your infrastructure, full compliance with PDPO (HK) and PDPA (Macau). Mainland China is out of scope, so PIPL/CSL/DSL do not apply.
+All data stays on your Mac Mini — no third-party observability service. The orchestrator records execution data (agent decisions, task timelines, tool usage, LLM calls) directly to SQLite alongside the business-level metrics (scorecards, escalation history, calibration insights). One dashboard covers both engineering observability and business performance — no cloud dependency, no data leaving your infrastructure. Compliance posture (e.g., applicable data-protection regimes) is defined per runtime in the org charter, not in this blueprint.
 
 ### Tech Stack
 - **Backend**: FastAPI (Python) — reads from the same SQLite database the orchestrator writes to
@@ -45,7 +45,7 @@ The landing page — what's happening right now.
 │  ACTIVE TASKS BY TEAM                                    │
 │  ┌──────────────────────────────────────────────────────┐│
 │  │ Content Team                                         ││
-│  │   ● Content Writer: Drafting "Shenzhen day trip"     ││
+│  │   ● Content Writer: Drafting a destination guide   ││
 │  │   ○ Content QA: Idle (waiting for draft)               ││
 │  │   ○ SEO Agent: Idle                                  ││
 │  │                                                      ││
@@ -54,7 +54,7 @@ The landing page — what's happening right now.
 │  │   ○ Payment Agent: Idle                              ││
 │  │                                                      ││
 │  │ Ops Team                                             ││
-│  │   ● Partner Liaison: Vetting Macau hotel candidates  ││
+│  │   ● Partner Liaison: Vetting hotel candidates        ││
 │  │   ○ Compliance Agent: Idle                           ││
 │  │                                                      ││
 │  │ CX Team                                              ││
@@ -120,17 +120,17 @@ Searchable, filterable log of every action in the system.
 ├──────────────────────────────────────────────────────────┤
 │                                                          │
 │  Apr 11, 14:32  Content Writer  wrote_content            │
-│    Task: Shenzhen day trip guide (first draft)           │
+│    Task: Destination guide (first draft)                 │
 │    Confidence: 82                                        │
 │    Status: Submitted for QA review                       │
 │                                                          │
 │  Apr 11, 14:15  Content QA  reviewed_content_pass          │
-│    Task: Macau visa guide (v2)                           │
+│    Task: Visa guide (v2)                           │
 │    Verdict: PASS                                         │
 │    Checklist: 10/10 items verified                       │
 │                                                          │
 │  Apr 11, 13:50  Content Manager  decided_approve         │
-│    Task: Macau visa guide (v2)                           │
+│    Task: Visa guide (v2)                           │
 │    Decision: Approved for publication                    │
 │                                                          │
 │  Apr 11, 12:00  CX Manager  escalated                   │
