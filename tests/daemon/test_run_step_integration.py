@@ -14,6 +14,7 @@ from src.daemon.agent_config import load_agent_config
 from src.infrastructure.database import Database
 from src.models import TaskRecord, TaskStatus
 from src.orchestrator.orchestrator import Orchestrator
+from src.orchestrator.teams import TeamsRegistry
 from src.runtime import RuntimeDir
 
 
@@ -26,7 +27,7 @@ async def test_full_delegation_roundtrip(tmp_path: Path, monkeypatch):
     (runtime.workspaces_dir / "dev_agent" / ".claude" / "skills" / "start-task" / "SKILL.md").touch()
     db = Database(runtime.db_path)
 
-    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10), runtime=runtime)
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10), runtime=runtime, teams=TeamsRegistry.load(runtime))
     queue = TaskQueue()
     orch.attach_queue(queue)
 
@@ -93,7 +94,7 @@ async def test_escalation_roundtrip(tmp_path: Path, monkeypatch):
     (runtime.workspaces_dir / "engineering_head" / ".claude" / "skills" / "start-task" / "SKILL.md").touch()
     db = Database(runtime.db_path)
 
-    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime, teams=TeamsRegistry.load(runtime))
     queue = TaskQueue()
     orch.attach_queue(queue)
 

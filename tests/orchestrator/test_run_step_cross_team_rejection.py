@@ -55,7 +55,7 @@ def db(runtime: RuntimeDir) -> Database:
 
 
 def _make_result(success: bool = True):
-    from src.orchestrator.executor import ExecutorResult
+    from src.orchestrator.executors import ExecutorResult
     return ExecutorResult(success=success, session_id="sess-x", duration_seconds=1)
 
 
@@ -92,7 +92,7 @@ def test_cross_team_feedback_path(runtime: RuntimeDir, db: Database, monkeypatch
         assigned_agent="content_manager",
     ))
 
-    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10), runtime=runtime)
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10), runtime=runtime, teams=TeamsRegistry.load(runtime))
     q: asyncio.Queue = asyncio.Queue()
     orch._queue = q
 

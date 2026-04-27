@@ -10,9 +10,6 @@ import yaml
 
 from src.runtime import RuntimeDir
 
-# Backward-compat alias — remove in Phase 5 when orchestrator.py is updated.
-DEFAULT_LAYOUT: dict[str, dict[str, object]] = {}
-
 
 @dataclass(frozen=True)
 class TeamManager:

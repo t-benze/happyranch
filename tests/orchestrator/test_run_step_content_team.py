@@ -23,10 +23,12 @@ from tests.orchestrator.conftest import ScriptedRunAgent, run_task_to_completion
 
 def _make_orch(runtime: RuntimeDir, db: Database) -> Orchestrator:
     """Build an Orchestrator with a real async queue (needed by _enqueue_parent_if_waiting)."""
+    from src.orchestrator.teams import TeamsRegistry
     orch = Orchestrator(
         db=db,
         settings=Settings(max_orchestration_steps=15),
         runtime=runtime,
+        teams=TeamsRegistry.load(runtime),
     )
     orch._queue = asyncio.Queue()
     return orch
