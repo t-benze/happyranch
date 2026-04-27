@@ -21,7 +21,19 @@ def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture
 def runtime(tmp_path: Path) -> RuntimeDir:
-    return RuntimeDir.init(tmp_path / "runtime", slug="test")
+    rt = RuntimeDir.init(tmp_path / "runtime", slug="test")
+    # Seed a minimal teams.yaml so engineering_head and content_manager are
+    # recognized as team managers by _require_team_manager_auth.
+    rt.teams_config_path.write_text(
+        "teams:\n"
+        "  engineering:\n"
+        "    manager: engineering_head\n"
+        "    workers: [product_manager, dev_agent, payment_agent, qa_engineer]\n"
+        "  content:\n"
+        "    manager: content_manager\n"
+        "    workers: [content_writer, content_qa, seo_agent]\n"
+    )
+    return rt
 
 
 @pytest.fixture

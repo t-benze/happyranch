@@ -277,17 +277,27 @@ def test_manage_agent_enroll_creates_pending(
     )
     assert r.status_code == 200
     assert r.json()["status"] == "pending"
-    e = daemon_state.db.get_enrollment("content_writer")
-    assert e is not None
-    assert e["status"] == "pending"
-    assert e["executor"] == "codex"
+    from src.orchestrator import prompt_loader
+    agent = prompt_loader.load_pending_agent(daemon_state.runtime, "content_writer")
+    assert agent is not None
+    assert agent.executor == "codex"
 
 
 def test_manage_agent_enroll_duplicate_returns_409(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
     _activate_eh_session(daemon_state)
-    daemon_state.db.insert_enrollment("content_writer", "desc", "prompt")
+    # Pre-seed a pending agent file so the duplicate check fires.
+    from src.orchestrator import prompt_loader
+    from src.orchestrator.agent_def import AgentDef
+    from datetime import datetime, timezone
+    agent = AgentDef(
+        name="content_writer", team="content", role="worker", executor="claude",
+        allow_rules=(), repos={}, enrolled_by="engineering_head",
+        enrolled_at_task=_EH_TASK, enrolled_at=datetime.now(timezone.utc),
+        system_prompt="prompt\n",
+    )
+    prompt_loader.write_pending_agent(daemon_state.runtime, agent)
     r = TestClient(app).post(
         "/api/v1/agents/manage",
         json={
@@ -322,13 +332,26 @@ def test_manage_agent_enroll_invalid_name_returns_422(
     assert r.status_code == 422
 
 
+def _seed_active_agent(daemon_state, name: str, team: str = "engineering", executor: str = "claude", system_prompt: str = "prompt\n") -> None:
+    """Write an active agent file for testing update/terminate endpoints."""
+    from src.orchestrator.agent_def import AgentDef, render_agent_text
+    from datetime import datetime, timezone
+    agent = AgentDef(
+        name=name, team=team, role="worker", executor=executor,
+        allow_rules=(), repos={}, enrolled_by="engineering_head",
+        enrolled_at_task=_EH_TASK, enrolled_at=datetime.now(timezone.utc),
+        system_prompt=system_prompt,
+    )
+    daemon_state.runtime.agents_dir.mkdir(parents=True, exist_ok=True)
+    (daemon_state.runtime.agents_dir / f"{name}.md").write_text(render_agent_text(agent))
+
+
 def test_manage_agent_update_changes_prompt(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
     # Use dev_agent which belongs to engineering team (managed by engineering_head).
     _activate_eh_session(daemon_state)
-    daemon_state.db.insert_enrollment("dev_agent", "desc", "old prompt")
-    daemon_state.db.update_enrollment_status("dev_agent", "approved")
+    _seed_active_agent(daemon_state, "dev_agent", system_prompt="old prompt\n")
     workspace = daemon_state.runtime.workspaces_dir / "dev_agent"
     workspace.mkdir(parents=True)
 
@@ -348,9 +371,11 @@ def test_manage_agent_update_changes_prompt(
         headers=auth_headers,
     )
     assert r.status_code == 200
-    enrollment = daemon_state.db.get_enrollment("dev_agent")
-    assert enrollment["system_prompt"] == "new prompt"
-    assert enrollment["executor"] == "codex"
+    from src.orchestrator import prompt_loader
+    updated = prompt_loader.load_agent(daemon_state.runtime, "dev_agent")
+    assert updated is not None
+    assert "new prompt" in updated.system_prompt
+    assert updated.executor == "codex"
 
 
 def test_manage_agent_update_persists_executor_to_workspace(
@@ -358,8 +383,7 @@ def test_manage_agent_update_persists_executor_to_workspace(
 ) -> None:
     # Use dev_agent which belongs to engineering team (managed by engineering_head).
     _activate_eh_session(daemon_state)
-    daemon_state.db.insert_enrollment("dev_agent", "desc", "old prompt")
-    daemon_state.db.update_enrollment_status("dev_agent", "approved")
+    _seed_active_agent(daemon_state, "dev_agent")
     workspace = daemon_state.runtime.workspaces_dir / "dev_agent"
     workspace.mkdir(parents=True)
     (workspace / "agent.yaml").write_text("repos: {}\n")
@@ -388,8 +412,7 @@ def test_manage_agent_terminate_removes_workspace(
 ) -> None:
     # Use dev_agent which belongs to engineering team (managed by engineering_head).
     _activate_eh_session(daemon_state)
-    daemon_state.db.insert_enrollment("dev_agent", "desc", "prompt")
-    daemon_state.db.update_enrollment_status("dev_agent", "approved")
+    _seed_active_agent(daemon_state, "dev_agent")
     workspace = daemon_state.runtime.workspaces_dir / "dev_agent"
     workspace.mkdir(parents=True)
     (workspace / "CLAUDE.md").write_text("# test")
@@ -406,7 +429,8 @@ def test_manage_agent_terminate_removes_workspace(
     )
     assert r.status_code == 200
     assert not workspace.exists()
-    assert daemon_state.db.get_enrollment("dev_agent")["status"] == "terminated"
+    from src.orchestrator import prompt_loader
+    assert prompt_loader.load_agent(daemon_state.runtime, "dev_agent") is None
 
 
 def test_manage_agent_terminate_nonexistent_returns_404(
@@ -468,7 +492,17 @@ def test_manage_agent_wrong_session_returns_403(
 def test_approve_agent_bootstraps_workspace(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
-    daemon_state.db.insert_enrollment("content_writer", "desc", "prompt", executor="codex")
+    # Pre-seed a pending agent file.
+    from src.orchestrator import prompt_loader
+    from src.orchestrator.agent_def import AgentDef
+    from datetime import datetime, timezone
+    agent = AgentDef(
+        name="content_writer", team="content", role="worker", executor="codex",
+        allow_rules=(), repos={}, enrolled_by="engineering_head",
+        enrolled_at_task=_EH_TASK, enrolled_at=datetime.now(timezone.utc),
+        system_prompt="prompt\n",
+    )
+    prompt_loader.write_pending_agent(daemon_state.runtime, agent)
 
     with patch("src.daemon.routes.agents.ContextBuilder") as MockCB:
         mock_ctx = MockCB.return_value
@@ -481,7 +515,8 @@ def test_approve_agent_bootstraps_workspace(
             headers=auth_headers,
         )
     assert r.status_code == 200
-    assert daemon_state.db.get_enrollment("content_writer")["status"] == "approved"
+    assert prompt_loader.load_agent(daemon_state.runtime, "content_writer") is not None
+    assert prompt_loader.load_pending_agent(daemon_state.runtime, "content_writer") is None
     workspace = daemon_state.runtime.workspaces_dir / "content_writer"
     assert workspace.exists()
 
@@ -494,8 +529,8 @@ def test_approve_agent_bootstraps_workspace(
 def test_approve_non_pending_returns_409(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
-    daemon_state.db.insert_enrollment("content_writer", "desc", "prompt")
-    daemon_state.db.update_enrollment_status("content_writer", "approved")
+    # Seed an active (approved) agent file — not pending.
+    _seed_active_agent(daemon_state, "content_writer", team="content")
     r = TestClient(app).post(
         "/api/v1/agents/content_writer/approve",
         headers=auth_headers,
@@ -506,21 +541,42 @@ def test_approve_non_pending_returns_409(
 def test_reject_agent(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
-    daemon_state.db.insert_enrollment("content_writer", "desc", "prompt")
+    from src.orchestrator import prompt_loader
+    from src.orchestrator.agent_def import AgentDef
+    from datetime import datetime, timezone
+    agent = AgentDef(
+        name="content_writer", team="content", role="worker", executor="claude",
+        allow_rules=(), repos={}, enrolled_by="engineering_head",
+        enrolled_at_task=_EH_TASK, enrolled_at=datetime.now(timezone.utc),
+        system_prompt="prompt\n",
+    )
+    prompt_loader.write_pending_agent(daemon_state.runtime, agent)
     r = TestClient(app).post(
         "/api/v1/agents/content_writer/reject",
         headers=auth_headers,
     )
     assert r.status_code == 200
-    assert daemon_state.db.get_enrollment("content_writer")["status"] == "rejected"
+    assert prompt_loader.load_pending_agent(daemon_state.runtime, "content_writer") is None
 
 
 def test_list_enrollments(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
-    daemon_state.db.insert_enrollment("a", "desc a", "prompt a")
-    daemon_state.db.insert_enrollment("b", "desc b", "prompt b")
-    daemon_state.db.update_enrollment_status("a", "approved")
+    # Seed one pending and one active agent.
+    from src.orchestrator import prompt_loader
+    from src.orchestrator.agent_def import AgentDef
+    from datetime import datetime, timezone
+    def _make(name, team):
+        return AgentDef(
+            name=name, team=team, role="worker", executor="claude",
+            allow_rules=(), repos={}, enrolled_by="engineering_head",
+            enrolled_at_task=_EH_TASK, enrolled_at=datetime.now(timezone.utc),
+            system_prompt="prompt\n",
+        )
+    prompt_loader.write_pending_agent(daemon_state.runtime, _make("b", "content"))
+    daemon_state.runtime.agents_dir.mkdir(parents=True, exist_ok=True)
+    from src.orchestrator.agent_def import render_agent_text
+    (daemon_state.runtime.agents_dir / "a.md").write_text(render_agent_text(_make("a", "engineering")))
 
     r = TestClient(app).get(
         "/api/v1/agents/enrollments",
@@ -535,42 +591,22 @@ def test_list_enrollments(
 def test_backfill_enrollments_imports_known_workspaces(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
-    """Workspaces that exist on disk but lack enrollment rows and whose
-    name is in the protocol prompt loader get imported at status='approved'."""
-    ws_dir = daemon_state.runtime.workspaces_dir
-    for name in ("engineering_head", "dev_agent"):
-        (ws_dir / name).mkdir(parents=True, exist_ok=True)
-    from src.daemon.agent_config import write_default_agent_config
-    for name in ("engineering_head", "dev_agent"):
-        write_default_agent_config(ws_dir / name)
-
+    """backfill-enrollments is now a deprecated no-op; always returns empty lists."""
     r = TestClient(app).post(
         "/api/v1/agents/backfill-enrollments",
         headers=auth_headers,
     )
     assert r.status_code == 200
     body = r.json()
-    names = sorted(e["name"] for e in body["backfilled"])
-    assert names == ["dev_agent", "engineering_head"]
-
-    for name in ("engineering_head", "dev_agent"):
-        row = daemon_state.db.get_enrollment(name)
-        assert row is not None
-        assert row["status"] == "approved"
-        # system_prompt must be populated from the protocol markdown, not empty
-        assert row["system_prompt"]
+    assert body["backfilled"] == []
+    assert body["skipped_already_enrolled"] == []
+    assert body["skipped_unknown_prompt"] == []
 
 
 def test_backfill_enrollments_skips_already_enrolled(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
-    """An agent that already has an enrollment row must NOT be overwritten."""
-    ws_dir = daemon_state.runtime.workspaces_dir
-    (ws_dir / "dev_agent").mkdir(parents=True, exist_ok=True)
-    daemon_state.db.insert_enrollment(
-        "dev_agent", "existing desc", "existing prompt", status="approved",
-    )
-
+    """Deprecated no-op: always returns empty lists regardless of workspace state."""
     r = TestClient(app).post(
         "/api/v1/agents/backfill-enrollments",
         headers=auth_headers,
@@ -578,21 +614,13 @@ def test_backfill_enrollments_skips_already_enrolled(
     assert r.status_code == 200
     body = r.json()
     assert body["backfilled"] == []
-    assert "dev_agent" in body["skipped_already_enrolled"]
-
-    row = daemon_state.db.get_enrollment("dev_agent")
-    assert row["description"] == "existing desc"
-    assert row["system_prompt"] == "existing prompt"
+    assert body["skipped_already_enrolled"] == []
 
 
 def test_backfill_enrollments_skips_unknown_prompt(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
-    """A workspace whose name isn't in the protocol prompt loader is skipped
-    — we can't reconstruct a system prompt from disk."""
-    ws_dir = daemon_state.runtime.workspaces_dir
-    (ws_dir / "random_agent_xyz").mkdir(parents=True, exist_ok=True)
-
+    """Deprecated no-op: always returns empty lists."""
     r = TestClient(app).post(
         "/api/v1/agents/backfill-enrollments",
         headers=auth_headers,
@@ -600,78 +628,49 @@ def test_backfill_enrollments_skips_unknown_prompt(
     assert r.status_code == 200
     body = r.json()
     assert body["backfilled"] == []
-    assert "random_agent_xyz" in body["skipped_unknown_prompt"]
-    assert daemon_state.db.get_enrollment("random_agent_xyz") is None
+    assert body["skipped_unknown_prompt"] == []
 
 
 def test_backfill_enrollments_is_idempotent(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
-    """Second call backfills nothing and reports the same agents as already
-    enrolled."""
-    ws_dir = daemon_state.runtime.workspaces_dir
-    (ws_dir / "dev_agent").mkdir(parents=True, exist_ok=True)
-    from src.daemon.agent_config import write_default_agent_config
-    write_default_agent_config(ws_dir / "dev_agent")
-
+    """Deprecated no-op: both calls return empty lists."""
     client = TestClient(app)
     r1 = client.post(
         "/api/v1/agents/backfill-enrollments", headers=auth_headers,
     )
     assert r1.status_code == 200
-    assert [e["name"] for e in r1.json()["backfilled"]] == ["dev_agent"]
+    assert r1.json()["backfilled"] == []
 
     r2 = client.post(
         "/api/v1/agents/backfill-enrollments", headers=auth_headers,
     )
     assert r2.status_code == 200
     assert r2.json()["backfilled"] == []
-    assert "dev_agent" in r2.json()["skipped_already_enrolled"]
 
 
 def test_backfill_enrollments_reads_agent_yaml(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
-    """repos + executor from agent.yaml land on the enrollment row."""
-    ws_dir = daemon_state.runtime.workspaces_dir
-    (ws_dir / "dev_agent").mkdir(parents=True, exist_ok=True)
-    import yaml
-    (ws_dir / "dev_agent" / "agent.yaml").write_text(
-        yaml.dump({
-            "executor": "codex",
-            "repos": {"my-opc": "https://example.com/my-opc.git"},
-        }),
-    )
-
+    """Deprecated no-op: always returns empty lists (agent.yaml ignored)."""
     r = TestClient(app).post(
         "/api/v1/agents/backfill-enrollments",
         headers=auth_headers,
     )
     assert r.status_code == 200
-    row = daemon_state.db.get_enrollment("dev_agent")
-    assert row["executor"] == "codex"
-    import json as _json
-    assert _json.loads(row["repos"]) == {"my-opc": "https://example.com/my-opc.git"}
+    assert r.json()["backfilled"] == []
 
 
 def test_backfill_enrollments_writes_audit_entry(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
-    """Each backfill emits an `agent_backfilled` audit entry with actor=founder."""
-    ws_dir = daemon_state.runtime.workspaces_dir
-    (ws_dir / "dev_agent").mkdir(parents=True, exist_ok=True)
-
+    """Deprecated no-op: returns 200 with empty lists; no audit entries written."""
     r = TestClient(app).post(
         "/api/v1/agents/backfill-enrollments",
         headers=auth_headers,
     )
     assert r.status_code == 200
-
-    entries = daemon_state.db.get_audit_logs("AGENT-dev_agent")
-    actions = [e["action"] for e in entries]
-    assert "agent_backfilled" in actions
-    found = [e for e in entries if e["action"] == "agent_backfilled"][0]
-    assert found["agent"] == "founder"
+    assert r.json()["backfilled"] == []
 
 
 def test_manage_agent_body_accepts_talk_id_alone() -> None:
@@ -941,10 +940,10 @@ def test_manage_agent_talk_path_enroll_creates_pending(
     )
     assert r.status_code == 200
     assert r.json()["status"] == "pending"
-    e = daemon_state.db.get_enrollment("content_writer")
-    assert e is not None
-    assert e["status"] == "pending"
-    assert e["executor"] == "codex"
+    from src.orchestrator import prompt_loader
+    agent = prompt_loader.load_pending_agent(daemon_state.runtime, "content_writer")
+    assert agent is not None
+    assert agent.executor == "codex"
 
 
 def test_manage_agent_talk_path_update_changes_prompt(
@@ -952,8 +951,7 @@ def test_manage_agent_talk_path_update_changes_prompt(
 ) -> None:
     # Use dev_agent which belongs to engineering team (managed by engineering_head).
     talk_id = _seed_eh_talk(daemon_state, "TALK-701")
-    daemon_state.db.insert_enrollment("dev_agent", "desc", "old prompt")
-    daemon_state.db.update_enrollment_status("dev_agent", "approved")
+    _seed_active_agent(daemon_state, "dev_agent", system_prompt="old prompt\n")
     workspace = daemon_state.runtime.workspaces_dir / "dev_agent"
     workspace.mkdir(parents=True)
 
@@ -971,7 +969,10 @@ def test_manage_agent_talk_path_update_changes_prompt(
             headers=auth_headers,
         )
     assert r.status_code == 200
-    assert daemon_state.db.get_enrollment("dev_agent")["system_prompt"] == "new prompt via talk"
+    from src.orchestrator import prompt_loader
+    updated = prompt_loader.load_agent(daemon_state.runtime, "dev_agent")
+    assert updated is not None
+    assert "new prompt via talk" in updated.system_prompt
 
 
 def test_manage_agent_talk_path_terminate_removes_workspace(
@@ -979,8 +980,7 @@ def test_manage_agent_talk_path_terminate_removes_workspace(
 ) -> None:
     # Use dev_agent which belongs to engineering team (managed by engineering_head).
     talk_id = _seed_eh_talk(daemon_state, "TALK-702")
-    daemon_state.db.insert_enrollment("dev_agent", "desc", "prompt")
-    daemon_state.db.update_enrollment_status("dev_agent", "approved")
+    _seed_active_agent(daemon_state, "dev_agent")
     workspace = daemon_state.runtime.workspaces_dir / "dev_agent"
     workspace.mkdir(parents=True)
     (workspace / "CLAUDE.md").write_text("# test")
@@ -996,7 +996,8 @@ def test_manage_agent_talk_path_terminate_removes_workspace(
     )
     assert r.status_code == 200
     assert not workspace.exists()
-    assert daemon_state.db.get_enrollment("dev_agent")["status"] == "terminated"
+    from src.orchestrator import prompt_loader
+    assert prompt_loader.load_agent(daemon_state.runtime, "dev_agent") is None
 
 
 def test_manage_agent_talk_path_non_eh_talk_returns_403(
@@ -1147,7 +1148,17 @@ def test_manage_agent_failed_enrollment_does_not_log(
 ) -> None:
     """A 409 duplicate enrollment must not leave an audit row."""
     _activate_eh_session(daemon_state)
-    daemon_state.db.insert_enrollment("content_writer", "desc", "prompt")
+    # Pre-seed a pending agent file so the duplicate check fires.
+    from src.orchestrator import prompt_loader
+    from src.orchestrator.agent_def import AgentDef
+    from datetime import datetime, timezone
+    agent = AgentDef(
+        name="content_writer", team="content", role="worker", executor="claude",
+        allow_rules=(), repos={}, enrolled_by="engineering_head",
+        enrolled_at_task=_EH_TASK, enrolled_at=datetime.now(timezone.utc),
+        system_prompt="prompt\n",
+    )
+    prompt_loader.write_pending_agent(daemon_state.runtime, agent)
     r = TestClient(app).post(
         "/api/v1/agents/manage",
         json={
@@ -1330,3 +1341,100 @@ def test_init_agents_targets_none_teams_is_safe(daemon_state) -> None:
     known.update(daemon_state.db.list_approved_agent_names())
     # No exception raised; result is an empty or workspace-only set.
     assert isinstance(known, set)
+
+
+# ---------------------------------------------------------------------------
+# Task 6.1: file-based enroll / approve / reject tests
+# ---------------------------------------------------------------------------
+
+def test_manage_agent_enroll_writes_pending_file(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """manage-agent enroll writes a pending agent file under _pending/."""
+    _activate_eh_session(daemon_state)
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={
+            "action": "enroll",
+            "name": "seo_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+            "description": "Does SEO",
+            "system_prompt": "You are the SEO Agent.",
+            "executor": "claude",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "pending"
+    from src.orchestrator import prompt_loader
+    agent = prompt_loader.load_pending_agent(daemon_state.runtime, "seo_agent")
+    assert agent is not None
+    assert agent.name == "seo_agent"
+    assert agent.executor == "claude"
+
+
+def test_approve_agent_moves_file(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """approve moves the pending file to the active agents dir."""
+    from src.orchestrator import prompt_loader
+    from src.orchestrator.agent_def import AgentDef
+    from datetime import datetime, timezone
+
+    agent = AgentDef(
+        name="seo_agent",
+        team="content",
+        role="worker",
+        executor="claude",
+        allow_rules=(),
+        repos={},
+        enrolled_by="engineering_head",
+        enrolled_at_task=_EH_TASK,
+        enrolled_at=datetime.now(timezone.utc),
+        system_prompt="You are the SEO Agent.\n",
+    )
+    prompt_loader.write_pending_agent(daemon_state.runtime, agent)
+
+    with patch("src.daemon.routes.agents.ContextBuilder") as MockCB:
+        mock_ctx = MockCB.return_value
+        mock_ctx.clone_repo.return_value = True
+        mock_ctx.ensure_workspace_ready.return_value = None
+        mock_ctx.create_agent_dirs.return_value = None
+        r = TestClient(app).post(
+            "/api/v1/agents/seo_agent/approve",
+            headers=auth_headers,
+        )
+    assert r.status_code == 200
+    assert prompt_loader.load_agent(daemon_state.runtime, "seo_agent") is not None
+    assert prompt_loader.load_pending_agent(daemon_state.runtime, "seo_agent") is None
+
+
+def test_reject_agent_unlinks_file(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """reject removes the pending file."""
+    from src.orchestrator import prompt_loader
+    from src.orchestrator.agent_def import AgentDef
+    from datetime import datetime, timezone
+
+    agent = AgentDef(
+        name="seo_agent",
+        team="content",
+        role="worker",
+        executor="claude",
+        allow_rules=(),
+        repos={},
+        enrolled_by="engineering_head",
+        enrolled_at_task=_EH_TASK,
+        enrolled_at=datetime.now(timezone.utc),
+        system_prompt="You are the SEO Agent.\n",
+    )
+    prompt_loader.write_pending_agent(daemon_state.runtime, agent)
+
+    r = TestClient(app).post(
+        "/api/v1/agents/seo_agent/reject",
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert prompt_loader.load_pending_agent(daemon_state.runtime, "seo_agent") is None
