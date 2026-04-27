@@ -80,6 +80,9 @@ The new task carries `dispatched_from_talk_id = <your talk_id>` for observabilit
 - `404 not_found`: the `talk_id` doesn't exist. Re-check the id you typed.
 - `400 talk_not_open`: the talk has been closed or abandoned. Open a new talk if needed.
 - `422 empty_brief`: the brief was missing or whitespace-only. Re-state the work clearly.
+- `422 empty_team`: you sent `team: ""`. Drop the field (defaults to your own team) or set it to a real team name.
+- `422 empty_target_agent`: you sent `target_agent: ""`. Drop the field (defaults to yourself) or set a real agent name.
+- `403 teams_registry_unavailable`: the daemon's team registry isn't loaded. Wait briefly and retry; if it persists, escalate to the founder.
 - `403 dispatcher_team_unknown`: your agent record is not registered with any team. Ask the founder.
 - `403 cross_team_dispatch_forbidden`: you tried to set `team` to a value other than your own.
 - `403 worker_must_self_dispatch`: you are a worker and `target_agent` was not yourself.
