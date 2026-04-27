@@ -35,6 +35,7 @@ class AgentDef:
     enrolled_at_task: str | None
     enrolled_at: datetime | None
     system_prompt: str
+    description: str | None = None
 
 
 def _parse_iso(ts: object) -> datetime | None:
@@ -126,6 +127,10 @@ def parse_agent_text(text: str, *, expected_name: str) -> AgentDef:
 
     enrolled_at = _parse_iso(fm.get("enrolled_at"))
 
+    description = fm.get("description")
+    if description is not None and not isinstance(description, str):
+        raise AgentParseError("description must be a string or null")
+
     return AgentDef(
         name=name,
         team=team,
@@ -137,6 +142,7 @@ def parse_agent_text(text: str, *, expected_name: str) -> AgentDef:
         enrolled_at_task=enrolled_at_task,
         enrolled_at=enrolled_at,
         system_prompt=body if body.endswith("\n") else body + "\n",
+        description=description,
     )
 
 
@@ -147,6 +153,7 @@ def render_agent_text(agent: AgentDef) -> str:
         "team": agent.team,
         "role": agent.role,
         "executor": agent.executor,
+        "description": agent.description,
         "allow_rules": list(agent.allow_rules),
         "repos": dict(agent.repos),
         "enrolled_by": agent.enrolled_by,

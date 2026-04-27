@@ -54,7 +54,10 @@ def cmd_init(args: argparse.Namespace) -> None:
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
         print(f"Error: {exc}")
         sys.exit(1)
-    r = client.post("/api/v1/runtimes/register", json={"path": str(Path(args.path).expanduser())})
+    r = client.post(
+        "/api/v1/runtimes/register",
+        json={"path": str(Path(args.path).expanduser()), "slug": args.slug},
+    )
     if r.status_code != 200:
         print(f"Error ({r.status_code}): {r.text}")
         sys.exit(1)
@@ -1184,6 +1187,10 @@ def build_parser() -> argparse.ArgumentParser:
     # opc init
     p_init_runtime = sub.add_parser("init", help="Initialize a new OPC runtime directory")
     p_init_runtime.add_argument("path", help="Path for the new runtime directory")
+    p_init_runtime.add_argument(
+        "--slug", required=True,
+        help="Org slug stamped into opc.yaml on first init (required)",
+    )
     p_init_runtime.set_defaults(func=cmd_init)
 
     # opc use

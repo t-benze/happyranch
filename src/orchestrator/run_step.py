@@ -259,11 +259,12 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
     from src.orchestrator.capabilities import build_capabilities_prompt
     if not orch.teams.is_team_manager(agent):
         return task.brief
+    from src.orchestrator import prompt_loader
     agent_names, tiers = _list_candidate_agents(orch, agent)
     agents_for_prompt = []
     for name in agent_names:
-        enrollment = orch._db.get_enrollment(name)
-        desc = enrollment["description"] if enrollment else name
+        candidate = prompt_loader.load_agent(orch._runtime, name)
+        desc = (candidate.description if candidate is not None else None) or name
         tier = tiers.get(name)
         agents_for_prompt.append({
             "name": name,

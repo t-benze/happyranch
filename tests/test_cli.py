@@ -66,9 +66,16 @@ def test_init_agent_specific():
 
 def test_init_subcommand():
     parser = build_parser()
-    args = parser.parse_args(["init", "/tmp/my-runtime"])
+    args = parser.parse_args(["init", "/tmp/my-runtime", "--slug", "hk-tourism"])
     assert args.command == "init"
     assert args.path == "/tmp/my-runtime"
+    assert args.slug == "hk-tourism"
+
+
+def test_init_subcommand_requires_slug():
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["init", "/tmp/my-runtime"])
 
 
 def test_no_command_prints_help(capsys):
@@ -104,11 +111,12 @@ def test_cmd_init_calls_register_endpoint(tmp_path, capsys):
     }
 
     with patch("src.cli.OpcClient.from_env", return_value=fake_client):
-        args = MagicMock(path=str(tmp_path / "rt"))
+        args = MagicMock(path=str(tmp_path / "rt"), slug="hk-tourism")
         cmd_init(args)
 
     fake_client.post.assert_called_once_with(
-        "/api/v1/runtimes/register", json={"path": str(tmp_path / "rt")},
+        "/api/v1/runtimes/register",
+        json={"path": str(tmp_path / "rt"), "slug": "hk-tourism"},
     )
     out = capsys.readouterr().out
     assert "active runtime" in out.lower()

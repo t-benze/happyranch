@@ -283,6 +283,42 @@ def test_manage_agent_enroll_creates_pending(
     assert agent.executor == "codex"
 
 
+def test_manage_agent_enroll_persists_description(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """description from the request body must round-trip through pending file
+    and surface on /agents/enrollments — Codex review caught this regression."""
+    _activate_eh_session(daemon_state)
+    desc = "Writes destination guides for HK and Macau."
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={
+            "action": "enroll",
+            "name": "content_writer",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+            "description": desc,
+            "system_prompt": "You are the Content Writer...",
+            "executor": "claude",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    from src.orchestrator import prompt_loader
+    pending = prompt_loader.load_pending_agent(daemon_state.runtime, "content_writer")
+    assert pending is not None
+    assert pending.description == desc
+
+    list_resp = TestClient(app).get(
+        "/api/v1/agents/enrollments",
+        params={"status": "pending"},
+        headers=auth_headers,
+    )
+    assert list_resp.status_code == 200
+    found = [e for e in list_resp.json()["enrollments"] if e["name"] == "content_writer"]
+    assert found and found[0]["description"] == desc
+
+
 def test_manage_agent_enroll_duplicate_returns_409(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:
@@ -311,6 +347,30 @@ def test_manage_agent_enroll_duplicate_returns_409(
         headers=auth_headers,
     )
     assert r.status_code == 409
+
+
+def test_manage_agent_enroll_rejects_invalid_executor_at_boundary(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """Invalid executor must 422 at the request boundary, not 500 mid-mutation."""
+    _activate_eh_session(daemon_state)
+    r = TestClient(app).post(
+        "/api/v1/agents/manage",
+        json={
+            "action": "enroll",
+            "name": "rogue_agent",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+            "description": "desc",
+            "system_prompt": "prompt",
+            "executor": "gpt",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 422
+    # The pending file must NOT have been created.
+    from src.orchestrator import prompt_loader
+    assert prompt_loader.load_pending_agent(daemon_state.runtime, "rogue_agent") is None
 
 
 def test_manage_agent_enroll_invalid_name_returns_422(
@@ -557,6 +617,36 @@ def test_reject_agent(
     )
     assert r.status_code == 200
     assert prompt_loader.load_pending_agent(daemon_state.runtime, "content_writer") is None
+
+
+def test_reject_agent_removes_from_teams_yaml(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """Reject must undo the teams.yaml mutation that enrollment performed."""
+    from src.orchestrator import prompt_loader
+    from src.orchestrator.agent_def import AgentDef
+    from datetime import datetime, timezone
+
+    # Simulate a fully-enrolled pending agent: pending file + team membership.
+    agent = AgentDef(
+        name="rookie_writer", team="content", role="worker", executor="claude",
+        allow_rules=(), repos={}, enrolled_by="engineering_head",
+        enrolled_at_task=_EH_TASK, enrolled_at=datetime.now(timezone.utc),
+        system_prompt="prompt\n",
+    )
+    prompt_loader.write_pending_agent(daemon_state.runtime, agent)
+    daemon_state.teams.add_worker("content", "rookie_writer")
+    daemon_state.teams.save(daemon_state.runtime)
+    assert "rookie_writer" in daemon_state.teams.all_agents()
+
+    r = TestClient(app).post(
+        "/api/v1/agents/rookie_writer/reject",
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    # Pending file gone AND team membership removed.
+    assert prompt_loader.load_pending_agent(daemon_state.runtime, "rookie_writer") is None
+    assert "rookie_writer" not in daemon_state.teams.all_agents()
 
 
 def test_list_enrollments(

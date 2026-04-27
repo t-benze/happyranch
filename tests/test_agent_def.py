@@ -107,6 +107,31 @@ def test_render_round_trip() -> None:
     assert agent == agent2
 
 
+def test_description_round_trips() -> None:
+    """description is a one-line summary used by managers picking workers — it
+    must survive the parse/render cycle and carry through pending and active files."""
+    text = (
+        "---\n"
+        "name: x\n"
+        "team: t\n"
+        "role: worker\n"
+        "executor: claude\n"
+        "description: Writes destination guides for HK and Macau\n"
+        "---\n"
+        "body\n"
+    )
+    agent = parse_agent_text(text, expected_name="x")
+    assert agent.description == "Writes destination guides for HK and Macau"
+    rerendered = parse_agent_text(render_agent_text(agent), expected_name="x")
+    assert rerendered.description == agent.description
+
+
+def test_description_defaults_to_none_when_absent() -> None:
+    text = "---\nname: x\nteam: t\nrole: worker\nexecutor: claude\n---\nbody\n"
+    agent = parse_agent_text(text, expected_name="x")
+    assert agent.description is None
+
+
 def test_render_omits_null_optional_fields() -> None:
     agent = AgentDef(
         name="x",

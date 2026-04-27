@@ -77,6 +77,7 @@ def _enrollment_to_agent(row: sqlite3.Row | tuple, *, team: str, role: str) -> A
         enrolled_at_task=None,
         enrolled_at=enrolled_at,
         system_prompt=body,
+        description=cols["description"],
     )
 
 

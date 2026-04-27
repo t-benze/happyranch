@@ -10,6 +10,7 @@ import tempfile
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, field_validator, model_validator
@@ -72,7 +73,7 @@ class ManageAgentBody(BaseModel):
     description: str | None = None
     system_prompt: str | None = None
     repos: dict[str, str] | None = None
-    executor: str | None = None
+    executor: Literal["claude", "codex"] | None = None
     allow_rules: list[str] | None = None
     target_team: str | None = None
 
@@ -411,6 +412,7 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
                 enrolled_at_task=body.task_id,
                 enrolled_at=datetime.now(timezone.utc),
                 system_prompt=body.system_prompt,
+                description=body.description,
             )
             prompt_loader.write_pending_agent(state.runtime, agent)
             state.teams.add_worker(manager_team, body.name)
@@ -453,6 +455,7 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
             enrolled_at_task=existing.enrolled_at_task,
             enrolled_at=existing.enrolled_at,
             system_prompt=body.system_prompt if body.system_prompt is not None else existing.system_prompt,
+            description=body.description if body.description is not None else existing.description,
         )
         # Atomic overwrite of the active file via tempfile + os.replace.
         active_path = state.runtime.agents_dir / f"{body.name}.md"
@@ -547,14 +550,14 @@ def list_enrollments(
     for agent in prompt_loader.list_pending(state.runtime):
         all_enrollments.append({
             "name": agent.name,
-            "description": "",
+            "description": agent.description or "",
             "status": "pending",
             "created_at": agent.enrolled_at.isoformat() if agent.enrolled_at else None,
         })
     for agent in prompt_loader.list_agents(state.runtime):
         all_enrollments.append({
             "name": agent.name,
-            "description": "",
+            "description": agent.description or "",
             "status": "approved",
             "created_at": agent.enrolled_at.isoformat() if agent.enrolled_at else None,
         })
@@ -620,7 +623,7 @@ async def approve_agent(agent_name: str, request: Request) -> dict:
 
 
 @router.post("/agents/{agent_name}/reject")
-def reject_agent(agent_name: str, request: Request) -> dict:
+async def reject_agent(agent_name: str, request: Request) -> dict:
     state: DaemonState = request.app.state.daemon
     _require_active(state)
 
@@ -631,10 +634,21 @@ def reject_agent(agent_name: str, request: Request) -> dict:
             raise HTTPException(status_code=409, detail=f"agent is approved, not pending")
         raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
 
-    try:
-        prompt_loader.reject_agent(state.runtime, agent_name)
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
+    # Drop the file first; if it's already gone the reject_agent helper raises
+    # FileNotFoundError. Holding teams_lock keeps the file-unlink + teams-yaml
+    # mutation paired so a concurrent enrollment can't observe a half-state.
+    async with state.teams_lock:
+        try:
+            prompt_loader.reject_agent(state.runtime, agent_name)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
+        # manage_agent.enroll added this worker to teams.yaml when it wrote the
+        # pending file. Reject must undo both — otherwise the agent stays in
+        # team membership forever and re-enrollment hits "duplicate" on the
+        # team-side too. remove_worker is a no-op if the agent isn't a worker
+        # under pending.team, so this is safe even if teams drifted.
+        if state.teams is not None and pending.team in state.teams.teams():
+            state.teams.remove_worker(pending.team, agent_name)
 
     return {"ok": True}
 

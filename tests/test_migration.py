@@ -204,6 +204,16 @@ def test_aborts_when_slug_disagrees_with_existing(tmp_path: Path) -> None:
         migrate_to_org_runtime(rt_root, slug="other", i_have_a_backup=True, apply=True)
 
 
+def test_apply_preserves_description_field(tmp_path: Path) -> None:
+    """The legacy agent_enrollments.description column must survive into the
+    AgentDef.description field — Codex review caught it being dropped."""
+    rt_root = _build_legacy_runtime(tmp_path)
+    migrate_to_org_runtime(rt_root, slug="hk", i_have_a_backup=True, apply=True)
+    rt = RuntimeDir.load(rt_root)
+    custom_dev_text = (rt.agents_dir / "custom_dev.md").read_text()
+    assert "description: A custom dev" in custom_dev_text
+
+
 def test_strips_completion_contract_block(tmp_path: Path) -> None:
     rt_root = _build_legacy_runtime(tmp_path, with_enrollments=False)
     # Insert one enrollment whose system_prompt has the canonical contract block.
