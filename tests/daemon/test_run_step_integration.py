@@ -14,19 +14,35 @@ from src.daemon.agent_config import load_agent_config
 from src.infrastructure.database import Database
 from src.models import TaskRecord, TaskStatus
 from src.orchestrator.orchestrator import Orchestrator
+from src.orchestrator.teams import TeamsRegistry
 from src.runtime import RuntimeDir
+
+
+def _seed_teams(runtime: RuntimeDir) -> None:
+    """Seed a minimal teams.yaml so team manager lookups work."""
+    runtime.teams_config_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime.teams_config_path.write_text(
+        "teams:\n"
+        "  engineering:\n"
+        "    manager: engineering_head\n"
+        "    workers: [product_manager, dev_agent, payment_agent, qa_engineer]\n"
+        "  content:\n"
+        "    manager: content_manager\n"
+        "    workers: [content_writer, content_qa, seo_agent]\n"
+    )
 
 
 @pytest.mark.asyncio
 async def test_full_delegation_roundtrip(tmp_path: Path, monkeypatch):
-    runtime = RuntimeDir.init(tmp_path / "rt")
+    runtime = RuntimeDir.init(tmp_path / "rt", slug="test")
+    _seed_teams(runtime)
     (runtime.workspaces_dir / "engineering_head" / ".claude" / "skills" / "start-task").mkdir(parents=True)
     (runtime.workspaces_dir / "engineering_head" / ".claude" / "skills" / "start-task" / "SKILL.md").touch()
     (runtime.workspaces_dir / "dev_agent" / ".claude" / "skills" / "start-task").mkdir(parents=True)
     (runtime.workspaces_dir / "dev_agent" / ".claude" / "skills" / "start-task" / "SKILL.md").touch()
     db = Database(runtime.db_path)
 
-    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10), runtime=runtime)
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10), runtime=runtime, teams=TeamsRegistry.load(runtime))
     queue = TaskQueue()
     orch.attach_queue(queue)
 
@@ -88,12 +104,13 @@ async def test_escalation_roundtrip(tmp_path: Path, monkeypatch):
     from fastapi.testclient import TestClient
     from src.daemon.app import create_app
 
-    runtime = RuntimeDir.init(tmp_path / "rt")
+    runtime = RuntimeDir.init(tmp_path / "rt", slug="test")
+    _seed_teams(runtime)
     (runtime.workspaces_dir / "engineering_head" / ".claude" / "skills" / "start-task").mkdir(parents=True)
     (runtime.workspaces_dir / "engineering_head" / ".claude" / "skills" / "start-task" / "SKILL.md").touch()
     db = Database(runtime.db_path)
 
-    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime, teams=TeamsRegistry.load(runtime))
     queue = TaskQueue()
     orch.attach_queue(queue)
 
@@ -145,10 +162,20 @@ async def test_init_agents_uses_enrollment_executor_for_workspace_bootstrap(
     from src.daemon.state import DaemonState
     from src.daemon.paths import ensure_token
     from src.daemon import runtimes as runtimes_mod
+    from src.orchestrator.agent_def import AgentDef, render_agent_text
+    from datetime import datetime, timezone
 
-    runtime = RuntimeDir.init(tmp_path / "rt")
+    runtime = RuntimeDir.init(tmp_path / "rt", slug="test")
+    _seed_teams(runtime)
+    # Seed an active agent file with executor=codex.
+    agent = AgentDef(
+        name="content_writer", team="content", role="worker", executor="codex",
+        allow_rules=(), repos={}, enrolled_by=None, enrolled_at_task=None,
+        enrolled_at=datetime.now(timezone.utc), system_prompt="prompt\n",
+    )
+    runtime.agents_dir.mkdir(parents=True, exist_ok=True)
+    (runtime.agents_dir / "content_writer.md").write_text(render_agent_text(agent))
     db = Database(runtime.db_path)
-    db.insert_enrollment("content_writer", "desc", "prompt", executor="codex")
     settings = Settings(project_root=Path("/Users/tangbz/projects/my-opc/.worktrees/codex-executor"))
 
     daemon_home = tmp_path / "home"
@@ -188,10 +215,20 @@ async def test_approve_agent_uses_provider_specific_workspace_bootstrap(
     from src.daemon.state import DaemonState
     from src.daemon.paths import ensure_token
     from src.daemon import runtimes as runtimes_mod
+    from src.orchestrator import prompt_loader
+    from src.orchestrator.agent_def import AgentDef
+    from datetime import datetime, timezone
 
-    runtime = RuntimeDir.init(tmp_path / "rt")
+    runtime = RuntimeDir.init(tmp_path / "rt", slug="test")
+    _seed_teams(runtime)
+    # Seed a pending agent file with executor=codex.
+    agent = AgentDef(
+        name="content_writer", team="content", role="worker", executor="codex",
+        allow_rules=(), repos={}, enrolled_by=None, enrolled_at_task=None,
+        enrolled_at=datetime.now(timezone.utc), system_prompt="prompt\n",
+    )
+    prompt_loader.write_pending_agent(runtime, agent)
     db = Database(runtime.db_path)
-    db.insert_enrollment("content_writer", "desc", "prompt", executor="codex")
     settings = Settings(project_root=Path("/Users/tangbz/projects/my-opc/.worktrees/codex-executor"))
 
     daemon_home = tmp_path / "home"

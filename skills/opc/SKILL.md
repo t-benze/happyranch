@@ -26,7 +26,7 @@ Manage the OPC (one-person company) AI tourism organization: submit tasks to the
   <project>/scripts/daemon.sh start          # pid/port under ~/.opc/
   <project>/scripts/daemon.sh status         # or stop
   ```
-- An active runtime — `scripts/opc init <path>` to create, `scripts/opc use <path>` to switch.
+- An active runtime — `scripts/opc init <path> --slug <slug>` to create, `scripts/opc use <path>` to switch. The runtime's `org/` folder (charter, teams, agent prompts) must be seeded before `init`; today copy it from `examples/orgs/hk-macau-tourism/`.
 
 ## Tasks
 
@@ -145,11 +145,21 @@ Common action values: `session_start`, `session_end`, `completion_report`, `orch
 ## Runtime
 
 ```bash
-scripts/opc init /path/to/runtime       # register + activate a new runtime directory
-scripts/opc use  /path/to/runtime       # switch which runtime the daemon serves
+# Create + register + activate a runtime. --slug is required on first init
+# (stamped into opc.yaml as the org's identity).
+scripts/opc init /path/to/runtime --slug hk-tourism
+
+# Switch which runtime the daemon serves.
+scripts/opc use  /path/to/runtime
+
+# Lift a pre-org-folder runtime into the new layout (DB-backed agents -> files).
+# Dry-run by default — pass --apply to actually write.
+scripts/opc migrate-to-org-runtime /path/to/runtime --slug hk-tourism --i-have-a-backup --apply
 ```
 
 Every command operates on whichever runtime is currently active — the CLI does not take a runtime path.
+
+A runtime is org-specific: its charter, teams, escalation rules, and agent system prompts live under `<runtime>/org/`. Seed that folder before `opc init` (today: copy from `examples/orgs/hk-macau-tourism/org/`; a `--from` flag is on the roadmap).
 
 ## Common Workflows
 
@@ -195,6 +205,7 @@ scripts/opc kb precedent        --task-id TASK-N --decision approve|reject --rat
   - `resolve-escalation` — founder state transition; paired with `kb precedent`
   - `kb precedent` — founder-only KB write tied to a resolved escalation
   - `revisit` — founder-initiated spawn of a new root task from a terminal predecessor (TTY-gated CLI; agent sessions cannot invoke it)
+  - `migrate-to-org-runtime` — rewrites a runtime's on-disk shape; requires a backup and `--apply` to actually run
 - **Agent-callback subcommands — do NOT invoke by hand:**
   - `report-completion`, `learning`, `manage-agent`
   - These are meant to run inside an agent's Claude Code session under the `Bash(opc:*)` allow rule. Invoking them manually falsifies audit data and can corrupt scorecards.
@@ -202,7 +213,7 @@ scripts/opc kb precedent        --task-id TASK-N --decision approve|reject --rat
 ## Troubleshooting
 
 - **`Connection refused` on any command** → daemon not running. Start it: `<project>/scripts/daemon.sh start`.
-- **`no active runtime`** → `scripts/opc use <path>` (or `scripts/opc init <path>` if new).
+- **`no active runtime`** → `scripts/opc use <path>` (or `scripts/opc init <path> --slug <slug>` if new).
 - **Task silently ends as `failed`** → likely a blocked agent callback. Check `scripts/opc audit <id>` for the session_end event; the TASK-007/008/009 post-mortem in the project's CLAUDE.md explains the `Bash(opc:*)` allowlist requirement.
 - **Task sits in `blocked(delegated)` forever** → a child task hasn't finished or its terminal event never arrived. `scripts/opc tasks` shows children; drill in with `scripts/opc details <child>`. The parent auto-resumes when the last child terminates.
 - **Task is in `blocked(escalated)`** → waiting on founder resolution. Read the `note` field via `scripts/opc details <id>`, then use the two-command founder flow above.

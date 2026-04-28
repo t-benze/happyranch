@@ -1,0 +1,13 @@
+teams:
+  engineering:
+    manager: engineering_head
+    workers:
+      - product_manager
+      - dev_agent
+      - payment_agent
+      - qa_engineer
+  content:
+    manager: content_manager
+    workers:
+      - content_writer
+      - content_qa

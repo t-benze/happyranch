@@ -156,7 +156,20 @@ def run_task_to_completion(orch: Orchestrator, task_id: str, max_steps: int = 20
 
 @pytest.fixture
 def runtime(tmp_path: Path) -> RuntimeDir:
-    return RuntimeDir.init(tmp_path / "rt")
+    rt = RuntimeDir.init(tmp_path / "rt", slug="test")
+    # Seed a minimal teams.yaml so content_manager and engineering_head are
+    # recognized as managers and their workers as workers.
+    rt.teams_config_path.parent.mkdir(parents=True, exist_ok=True)
+    rt.teams_config_path.write_text(
+        "teams:\n"
+        "  engineering:\n"
+        "    manager: engineering_head\n"
+        "    workers: [product_manager, dev_agent, payment_agent, qa_engineer]\n"
+        "  content:\n"
+        "    manager: content_manager\n"
+        "    workers: [content_writer, content_qa]\n"
+    )
+    return rt
 
 
 @pytest.fixture

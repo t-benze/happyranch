@@ -11,7 +11,17 @@ from src.runtime import RuntimeDir
 
 
 def _make_runtime(base: Path, name: str) -> Path:
-    rt = RuntimeDir.init(base / name)
+    rt = RuntimeDir.init(base / name, slug="test")
+    # Seed teams.yaml so team manager lookups work without DEFAULT_LAYOUT.
+    rt.teams_config_path.write_text(
+        "teams:\n"
+        "  engineering:\n"
+        "    manager: engineering_head\n"
+        "    workers: [product_manager, dev_agent, payment_agent, qa_engineer]\n"
+        "  content:\n"
+        "    manager: content_manager\n"
+        "    workers: [content_writer, content_qa, seo_agent]\n"
+    )
     return rt.root
 
 
@@ -95,6 +105,33 @@ def test_activate_blocked_by_pending_task(
 def test_unauthenticated_request_401(tmp_home, app_idle) -> None:
     r = TestClient(app_idle).get("/api/v1/runtimes")
     assert r.status_code == 401
+
+
+def test_register_fresh_path_without_slug_400(tmp_home, app_idle, auth_headers, tmp_path: Path) -> None:
+    """A path with no opc.yaml requires a slug — RuntimeDir.init raises ValueError."""
+    fresh = tmp_path / "fresh-rt"
+    r = TestClient(app_idle).post(
+        "/api/v1/runtimes/register",
+        json={"path": str(fresh)},
+        headers=auth_headers,
+    )
+    assert r.status_code == 400
+    assert "slug" in r.text
+
+
+def test_register_fresh_path_with_slug_creates_marker(
+    tmp_home, app_idle, auth_headers, tmp_path: Path,
+) -> None:
+    fresh = tmp_path / "fresh-rt"
+    r = TestClient(app_idle).post(
+        "/api/v1/runtimes/register",
+        json={"path": str(fresh), "slug": "hk-tourism"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert (fresh / "opc.yaml").exists()
+    rt = RuntimeDir.load(fresh)
+    assert rt.slug == "hk-tourism"
 
 
 def test_register_runtime_populates_teams(tmp_home, app_idle, auth_headers, tmp_path: Path) -> None:

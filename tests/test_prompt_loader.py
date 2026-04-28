@@ -1,93 +1,147 @@
+"""Tests for the file-based prompt_loader API."""
+from __future__ import annotations
+
 from pathlib import Path
 
-from src.config import Settings
-from src.orchestrator.prompt_loader import load_all_prompts, load_system_prompt
+import pytest
+
+from src.orchestrator import prompt_loader
+from src.orchestrator.agent_def import AgentDef
+from src.runtime import RuntimeDir
 
 
-def test_load_engineering_head_prompt(tmp_path: Path):
-    protocol = tmp_path / "protocol"
-    protocol.mkdir()
-    (protocol / "02-system-prompts-managers.md").write_text(
-        "# Managers\n\n## Engineering Head\n\n```\nYou are the Engineering Head.\n\n## Your Role\nLead the team.\n```\n\n---\n"
+def _write_agent(runtime: RuntimeDir, name: str, **fm) -> Path:
+    """Helper: write a minimal valid agent file."""
+    parts = [
+        "---",
+        f"name: {name}",
+        f"team: {fm.get('team', 'engineering')}",
+        f"role: {fm.get('role', 'worker')}",
+        f"executor: {fm.get('executor', 'claude')}",
+    ]
+    if "allow_rules" in fm:
+        parts.append("allow_rules:")
+        for r in fm["allow_rules"]:
+            parts.append(f"  - {r!r}")
+    else:
+        parts.append("allow_rules: []")
+    parts.append("repos: {}")
+    parts.append("enrolled_by: null")
+    parts.append("enrolled_at_task: null")
+    parts.append("enrolled_at: null")
+    parts.append("---")
+    parts.append("")
+    parts.append(fm.get("body", f"You are {name}.\n"))
+    pending = fm.get("pending", False)
+    target_dir = runtime.pending_agents_dir if pending else runtime.agents_dir
+    path = target_dir / f"{name}.md"
+    path.write_text("\n".join(parts))
+    return path
+
+
+def test_load_agent_returns_agentdef(tmp_path: Path) -> None:
+    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
+    _write_agent(rt, "dev_agent", role="worker", team="engineering")
+    agent = prompt_loader.load_agent(rt, "dev_agent")
+    assert agent is not None
+    assert agent.name == "dev_agent"
+    assert agent.role == "worker"
+
+
+def test_load_agent_returns_none_when_missing(tmp_path: Path) -> None:
+    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
+    assert prompt_loader.load_agent(rt, "nope") is None
+
+
+def test_load_agent_does_not_return_pending(tmp_path: Path) -> None:
+    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
+    _write_agent(rt, "draft", pending=True)
+    assert prompt_loader.load_agent(rt, "draft") is None
+
+
+def test_list_agents_excludes_pending(tmp_path: Path) -> None:
+    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
+    _write_agent(rt, "active1")
+    _write_agent(rt, "active2")
+    _write_agent(rt, "draft", pending=True)
+    names = sorted(a.name for a in prompt_loader.list_agents(rt))
+    assert names == ["active1", "active2"]
+
+
+def test_list_pending_only_pending(tmp_path: Path) -> None:
+    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
+    _write_agent(rt, "active1")
+    _write_agent(rt, "draft", pending=True)
+    names = sorted(a.name for a in prompt_loader.list_pending(rt))
+    assert names == ["draft"]
+
+
+def test_write_pending_agent_creates_file(tmp_path: Path) -> None:
+    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
+    agent = AgentDef(
+        name="newbie",
+        team="engineering",
+        role="worker",
+        executor="claude",
+        allow_rules=(),
+        repos={},
+        enrolled_by="engineering_head",
+        enrolled_at_task="TASK-9",
+        enrolled_at=None,
+        system_prompt="You are newbie.\n",
     )
-    prompt = load_system_prompt(protocol, "engineering_head")
-    assert "Engineering Head" in prompt
-    assert "Your Role" in prompt
+    path = prompt_loader.write_pending_agent(rt, agent)
+    assert path == rt.pending_agents_dir / "newbie.md"
+    assert path.exists()
+    reloaded = prompt_loader.list_pending(rt)
+    assert len(reloaded) == 1 and reloaded[0].name == "newbie"
 
 
-def test_load_dev_agent_prompt(tmp_path: Path):
-    protocol = tmp_path / "protocol"
-    protocol.mkdir()
-    (protocol / "03-system-prompts-workers.md").write_text(
-        "# Workers\n\n## Product Manager\n\n```\nYou are the PM.\n```\n\n---\n\n## Dev Agent\n\n```\nYou are the Dev Agent.\n\n## Standards\nWrite tests.\n```\n\n---\n"
+def test_write_pending_agent_atomic_overwrite(tmp_path: Path) -> None:
+    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
+    agent = AgentDef(
+        name="newbie", team="engineering", role="worker", executor="claude",
+        allow_rules=(), repos={}, enrolled_by=None, enrolled_at_task=None,
+        enrolled_at=None, system_prompt="v1\n",
     )
-    prompt = load_system_prompt(protocol, "dev_agent")
-    assert "Dev Agent" in prompt
-    assert "Standards" in prompt
+    prompt_loader.write_pending_agent(rt, agent)
+    agent2 = AgentDef(**{**agent.__dict__, "system_prompt": "v2\n"})
+    prompt_loader.write_pending_agent(rt, agent2)
+    out = (rt.pending_agents_dir / "newbie.md").read_text()
+    assert "v2" in out and "v1" not in out
 
 
-def test_load_missing_agent(tmp_path: Path):
-    protocol = tmp_path / "protocol"
-    protocol.mkdir()
-    (protocol / "02-system-prompts-managers.md").write_text("# Empty\n")
-    prompt = load_system_prompt(protocol, "engineering_head")
-    assert prompt == ""
+def test_approve_agent_moves_pending_to_active(tmp_path: Path) -> None:
+    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
+    _write_agent(rt, "newbie", pending=True)
+    agent = prompt_loader.approve_agent(rt, "newbie")
+    assert agent.name == "newbie"
+    assert (rt.agents_dir / "newbie.md").exists()
+    assert not (rt.pending_agents_dir / "newbie.md").exists()
 
 
-def test_load_unknown_agent(tmp_path: Path):
-    prompt = load_system_prompt(tmp_path, "unknown_agent")
-    assert prompt == ""
+def test_approve_agent_404_when_no_pending(tmp_path: Path) -> None:
+    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
+    with pytest.raises(FileNotFoundError):
+        prompt_loader.approve_agent(rt, "nope")
 
 
-def test_load_missing_file(tmp_path: Path):
-    prompt = load_system_prompt(tmp_path, "engineering_head")
-    assert prompt == ""
+def test_approve_agent_409_when_active_already_exists(tmp_path: Path) -> None:
+    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
+    _write_agent(rt, "dup")  # already active
+    _write_agent(rt, "dup", pending=True)  # somehow also pending
+    with pytest.raises(FileExistsError):
+        prompt_loader.approve_agent(rt, "dup")
 
 
-def test_load_all_prompts(tmp_path: Path):
-    protocol = tmp_path / "protocol"
-    protocol.mkdir()
-    (protocol / "02-system-prompts-managers.md").write_text(
-        "## Engineering Head\n\n```\nYou are the Engineering Head.\n```\n\n"
-        "## Content Manager\n\n```\nYou are the Content Manager.\n```\n"
-    )
-    (protocol / "03-system-prompts-workers.md").write_text(
-        "## Product Manager\n\n```\nYou are the PM.\n```\n\n"
-        "## Dev Agent\n\n```\nYou are Dev.\n```\n\n"
-        "## Payment Agent\n\n```\nYou are Payment.\n```\n\n"
-        "## QA Engineer\n\n```\nYou are QA Engineer.\n```\n\n"
-        "## Content QA\n\n```\nYou are Content QA.\n```\n\n"
-        "## Content Writer\n\n```\nYou are the Content Writer.\n```\n"
-    )
-    prompts = load_all_prompts(protocol)
-    assert len(prompts) == 8
-    assert "Engineering Head" in prompts["engineering_head"]
-    assert "Content Manager" in prompts["content_manager"]
-    assert "PM" in prompts["product_manager"]
-    assert "Dev" in prompts["dev_agent"]
-    assert "Payment" in prompts["payment_agent"]
-    assert "QA Engineer" in prompts["qa_engineer"]
-    assert "Content QA" in prompts["content_qa"]
-    assert "Content Writer" in prompts["content_writer"]
+def test_reject_agent_unlinks_pending(tmp_path: Path) -> None:
+    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
+    _write_agent(rt, "drop", pending=True)
+    prompt_loader.reject_agent(rt, "drop")
+    assert not (rt.pending_agents_dir / "drop.md").exists()
 
 
-def test_load_from_real_protocol():
-    """Verify prompts load from the actual protocol directory."""
-    protocol = Path(__file__).resolve().parent.parent / "protocol"
-    if not protocol.exists():
-        return  # skip in CI if protocol not present
-    prompts = load_all_prompts(protocol)
-    for agent, prompt in prompts.items():
-        assert len(prompt) > 100, f"{agent} prompt too short: {len(prompt)} chars"
-
-
-def test_content_manager_prompt_loads() -> None:
-    s = Settings()
-    prompt = load_system_prompt(s.get_protocol_dir(), "content_manager")
-    assert prompt.startswith("You are the Content Manager")
-
-
-def test_content_writer_prompt_loads() -> None:
-    s = Settings()
-    prompt = load_system_prompt(s.get_protocol_dir(), "content_writer")
-    assert "Content Writer" in prompt or "You are the Content Writer" in prompt
+def test_reject_agent_404_when_missing(tmp_path: Path) -> None:
+    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
+    with pytest.raises(FileNotFoundError):
+        prompt_loader.reject_agent(rt, "nope")

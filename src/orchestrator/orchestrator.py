@@ -25,7 +25,7 @@ from src.models import (
 )
 from src.orchestrator.executors import ClaudeExecutor, CodexExecutor, ExecutorResult
 from src.orchestrator.performance_tracker import PerformanceTracker
-from src.orchestrator.teams import TeamsRegistry, DEFAULT_LAYOUT
+from src.orchestrator.teams import TeamsRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -53,14 +53,14 @@ class Orchestrator:
         db: Database,
         settings: Settings,
         runtime: RuntimeDir,
-        teams: TeamsRegistry | None = None,
+        teams: TeamsRegistry,
     ) -> None:
         self._db = db
         self._settings = settings
         self._runtime = runtime
         self._audit = AuditLogger(db)
         self._tracker = PerformanceTracker(db, settings)
-        self._teams: TeamsRegistry = teams if teams is not None else TeamsRegistry._from_layout(DEFAULT_LAYOUT)
+        self._teams = teams
         self._queue: "asyncio.Queue[str] | None" = None  # wired by daemon
         self._sessions: "SessionTracker | None" = None  # wired by daemon
 
@@ -107,6 +107,7 @@ class Orchestrator:
             claude_cli_path=self._settings.claude_cli_path,
             permission_mode=self._settings.permission_mode,
             settings=self._settings,
+            runtime=self._runtime,
         )
 
     def _build_agent_prompt(

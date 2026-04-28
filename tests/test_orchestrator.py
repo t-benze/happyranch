@@ -10,12 +10,14 @@ from src.models import (
 )
 from src.orchestrator.executors import ExecutorResult
 from src.orchestrator.orchestrator import Orchestrator
+from src.orchestrator.teams import TeamsRegistry
 
 
 @pytest.fixture
 def orchestrator(test_settings, test_runtime):
     db = Database(test_runtime.db_path)
-    return Orchestrator(db=db, settings=test_settings, runtime=test_runtime)
+    teams = TeamsRegistry.load(test_runtime)
+    return Orchestrator(db=db, settings=test_settings, runtime=test_runtime, teams=teams)
 
 
 _DEFAULT_AGENTS = ["engineering_head", "product_manager", "dev_agent", "payment_agent"]
@@ -441,3 +443,20 @@ def test_read_completion_from_db_tolerates_garbage_decision_json(orchestrator):
     )
     assert report is not None
     assert report.decision is None
+
+
+def test_orchestrator_requires_teams() -> None:
+    import pytest
+    from pathlib import Path
+    from src.config import Settings
+    from src.infrastructure.database import Database
+    from src.orchestrator.orchestrator import Orchestrator
+    from src.runtime import RuntimeDir
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        rt = RuntimeDir.init(Path(td) / "rt", slug="x")
+        db = Database(rt.db_path)
+        settings = Settings()
+        with pytest.raises(TypeError):
+            Orchestrator(db=db, settings=settings, runtime=rt)  # missing teams

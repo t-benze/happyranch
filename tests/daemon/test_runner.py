@@ -11,7 +11,7 @@ async def test_enqueue_task_puts_id_on_state_queue(tmp_path):
     from src.daemon.runner import enqueue_task
     from src.daemon.state import DaemonState
     from src.runtime import RuntimeDir
-    rt = RuntimeDir.init(tmp_path / "rt")
+    rt = RuntimeDir.init(tmp_path / "rt", slug="test")
     state = DaemonState.from_runtime(rt, Settings())
     enqueue_task(state, "TASK-001")
     assert state.queue._queue.get_nowait() == "TASK-001"

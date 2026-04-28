@@ -9,12 +9,23 @@ import pytest
 from src.config import Settings
 from src.infrastructure.database import Database
 from src.models import BlockKind, TaskRecord, TaskStatus
+from src.orchestrator.teams import TeamsRegistry
 from src.runtime import RuntimeDir
 
 
 @pytest.fixture
 def runtime(tmp_path: Path) -> RuntimeDir:
-    return RuntimeDir.init(tmp_path / "rt")
+    rt = RuntimeDir.init(tmp_path / "rt", slug="test")
+    # Seed a minimal teams.yaml so engineering_head is recognized as a manager
+    # and dev_agent/product_manager/payment_agent as workers.
+    rt.teams_config_path.parent.mkdir(parents=True, exist_ok=True)
+    rt.teams_config_path.write_text(
+        "teams:\n"
+        "  engineering:\n"
+        "    manager: engineering_head\n"
+        "    workers: [product_manager, dev_agent, payment_agent, qa_engineer]\n"
+    )
+    return rt
 
 
 @pytest.fixture
@@ -25,7 +36,7 @@ def db(runtime: RuntimeDir) -> Database:
 def test_run_step_silent_noop_when_task_missing(runtime, db):
     from src.orchestrator.orchestrator import Orchestrator
     settings = Settings(max_orchestration_steps=3)
-    orch = Orchestrator(db=db, settings=settings, runtime=runtime)
+    orch = Orchestrator(db=db, settings=settings, runtime=runtime, teams=TeamsRegistry.load(runtime))
     # Just must not raise
     orch.run_step("TASK-NOPE")
 
@@ -38,7 +49,7 @@ def test_run_step_noop_on_blocked_escalated(runtime, db):
     db.insert_task(TaskRecord(id="T-1", brief="x"))
     db.update_task("T-1", status=TaskStatus.BLOCKED, block_kind=BlockKind.ESCALATED,
                    note="halted")
-    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime, teams=TeamsRegistry.load(runtime))
     orch.run_step("T-1")
     t = db.get_task("T-1")
     assert t.status == TaskStatus.BLOCKED
@@ -53,7 +64,7 @@ def test_run_step_over_budget_parks_escalated(runtime, db):
     ))
     db.update_task("T-1", orchestration_step_count=3)  # already at the cap
 
-    orch = Orchestrator(db=db, settings=settings, runtime=runtime)
+    orch = Orchestrator(db=db, settings=settings, runtime=runtime, teams=TeamsRegistry.load(runtime))
     orch.run_step("T-1")
 
     t = db.get_task("T-1")
@@ -78,7 +89,7 @@ def test_run_step_transitions_pending_to_in_progress_and_increments_count(
     db.insert_task(TaskRecord(
         id="T-1", brief="x", assigned_agent="engineering_head",
     ))
-    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10), runtime=runtime)
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10), runtime=runtime, teams=TeamsRegistry.load(runtime))
 
     # Force _run_agent to raise so we can inspect the DB state mid-flight.
     captured: dict = {}
@@ -133,7 +144,7 @@ def test_run_step_done_completes_task_and_enqueues_parent(
     ))
 
     orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10),
-                        runtime=runtime)
+                        runtime=runtime, teams=TeamsRegistry.load(runtime))
     # Wire a fake queue
     q: asyncio.Queue = asyncio.Queue()
     orch._queue = q
@@ -173,7 +184,7 @@ def test_run_step_escalate_parks_blocked_and_leaves_parent_parked(
         assigned_agent="engineering_head", parent_task_id="T-PAR",
     ))
 
-    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime, teams=TeamsRegistry.load(runtime))
     q: asyncio.Queue = asyncio.Queue()
     orch._queue = q
 
@@ -210,7 +221,7 @@ def test_run_step_delegate_spawns_child_and_blocks_self(
 
     db.insert_task(TaskRecord(id="T-1", brief="root",
                               assigned_agent="engineering_head"))
-    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime, teams=TeamsRegistry.load(runtime))
     q: asyncio.Queue = asyncio.Queue()
     orch._queue = q
 
@@ -253,7 +264,7 @@ def test_run_step_invalid_delegate_fails_task(runtime, db, monkeypatch):
 
     db.insert_task(TaskRecord(id="T-1", brief="x",
                               assigned_agent="engineering_head"))
-    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime, teams=TeamsRegistry.load(runtime))
     orch._queue = asyncio.Queue()
 
     def fake_run_agent(task_id, agent, prompt, on_session_started=None):
@@ -288,7 +299,7 @@ def test_run_step_session_failure_cascades_to_parent_no_retry(
         assigned_agent="engineering_head", parent_task_id="T-PAR",
     ))
 
-    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime, teams=TeamsRegistry.load(runtime))
     q: asyncio.Queue = asyncio.Queue()
     orch._queue = q
 
@@ -333,7 +344,7 @@ def test_run_step_session_failure_cascades_up_chain(
         assigned_agent="dev_agent", parent_task_id="T-MID",
     ))
 
-    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime, teams=TeamsRegistry.load(runtime))
     orch._queue = asyncio.Queue()
     monkeypatch.setattr(orch, "_run_agent",
                         lambda *a, **k: (_make_result(success=False), None))
@@ -358,7 +369,7 @@ def test_run_step_session_failure_note_includes_diagnostics(
 
     db.insert_task(TaskRecord(id="T-1", brief="x",
                               assigned_agent="engineering_head"))
-    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime, teams=TeamsRegistry.load(runtime))
     import asyncio
     orch._queue = asyncio.Queue()
 
@@ -386,7 +397,7 @@ def test_run_step_worker_self_blocked_fails_task(runtime, db, monkeypatch):
 
     db.insert_task(TaskRecord(id="T-1", brief="x",
                               assigned_agent="engineering_head"))
-    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime, teams=TeamsRegistry.load(runtime))
     orch._queue = asyncio.Queue()
 
     monkeypatch.setattr(orch, "_run_agent",
@@ -418,7 +429,7 @@ def test_run_step_worker_completion_is_done_not_parsed_as_eh_decision(
         assigned_agent="dev_agent", parent_task_id="T-PAR",
     ))
 
-    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime, teams=TeamsRegistry.load(runtime))
     q: asyncio.Queue = asyncio.Queue()
     orch._queue = q
 
@@ -463,7 +474,7 @@ def test_run_step_delegated_worker_emits_review_verdict_and_scorecard(
         assigned_agent="dev_agent", parent_task_id="T-PAR",
     ))
 
-    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime, teams=TeamsRegistry.load(runtime))
     orch._queue = asyncio.Queue()
 
     # Success path.
@@ -501,7 +512,7 @@ def test_run_step_root_eh_task_skips_review_verdict(runtime, db, monkeypatch):
 
     db.insert_task(TaskRecord(id="T-ROOT", brief="r",
                               assigned_agent="engineering_head"))
-    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime, teams=TeamsRegistry.load(runtime))
     orch._queue = asyncio.Queue()
 
     monkeypatch.setattr(orch, "_run_agent",
@@ -538,7 +549,7 @@ def test_run_step_skips_task_with_cancelled_at(runtime, db, monkeypatch):
         completed_at=now,
     )
 
-    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime, teams=TeamsRegistry.load(runtime))
     called = {"n": 0}
     def sentinel(*a, **k):
         called["n"] += 1
@@ -570,7 +581,7 @@ def test_fail_idempotent_on_terminal_task(runtime, db):
                    note="cancelled by founder: stop", cancelled_at=now,
                    completed_at=now)
 
-    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime, teams=TeamsRegistry.load(runtime))
     _fail(orch, "T-1", note="agent session failed rc=-15")
 
     t = db.get_task("T-1")
@@ -592,7 +603,7 @@ def test_complete_idempotent_on_terminal_task(runtime, db):
                    note="cancelled by founder: stop", cancelled_at=now,
                    completed_at=now)
 
-    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime, teams=TeamsRegistry.load(runtime))
     _complete(orch, "T-1", note="looks great", artifact_dir="artifacts/run-1")
 
     t = db.get_task("T-1")
@@ -621,7 +632,7 @@ def test_run_step_revisit_header_injected_on_first_step(
             "founder_note": "PR #103 already merged",
         },
     )
-    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime, teams=TeamsRegistry.load(runtime))
 
     captured = {}
     def capture(task_id, agent, prompt, on_session_started=None):
@@ -663,7 +674,7 @@ def test_run_step_revisit_header_absent_on_second_step(
         task_id="TASK-072", agent="orchestrator", action="orchestration_step",
         payload={"step_number": 1, "decision": {"action": "done"}},
     )
-    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime, teams=TeamsRegistry.load(runtime))
 
     captured = {}
     def capture(task_id, agent, prompt, on_session_started=None):
@@ -692,7 +703,7 @@ def test_run_step_revisit_header_omits_note_line_when_none(
             "founder_note": None,
         },
     )
-    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime)
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime, teams=TeamsRegistry.load(runtime))
 
     captured = {}
     def capture(task_id, agent, prompt, on_session_started=None):
@@ -735,7 +746,7 @@ def test_run_step_concurrent_claim_spawns_only_one_agent(
                    block_kind=BlockKind.DELEGATED, note="waiting")
 
     orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10),
-                        runtime=runtime)
+                        runtime=runtime, teams=TeamsRegistry.load(runtime))
 
     # Barrier-sync the two threads AFTER each has read the parent row at the
     # top of run_step_impl — both then observe BLOCKED+DELEGATED before either

@@ -11,20 +11,24 @@ A one-person company (OPC) that provides online tourism information and booking 
 
 Agents operate autonomously within defined authority. Managers cross-audit each other (peer review). No agent both proposes and approves consequential actions (maker-checker pattern).
 
+The org-specific content (charter, agents, teams, escalation rules) lives **per runtime** under `<runtime>/org/`, not in the repo. A canonical sample tree ships at `examples/orgs/hk-macau-tourism/` — future runtimes will be bootstrapped via `opc init <path> --slug <slug> --from examples/orgs/hk-macau-tourism` (this CLI form lands in Plan 2; for now the example tree serves as the reference shape).
+
 ## Design Documents (read these first)
 
 The following documents are in the `protocol/` folder.
 
-- `01-org-charter.md` — Mission, brand voice, risk tolerance, budget caps, partner standards, compliance requirements across 3 jurisdictions
-- `02-system-prompts-managers.md` — Full system prompts for all 4 manager agents with accountability contracts and performance tiers
-- `03-system-prompts-workers.md` — Full system prompts for all 9 worker agents (incl. QA Engineer and Content QA) with accountability contracts and performance tiers
-- `04-escalation-rules.md` — 12 routing rules (priority-ordered), manager-resolvable categories, peer audit triggers, structured request/response formats
-- `05-team-blueprint.md` — Index pointing to the split blueprint documents:
-  - `05a-teams.md` — Concept mapping, team definitions, agent tools, runtime responsibilities
+- `00-completion-contract.md` — Universal completion-report format, EH decision schema, agent-callback list
+- `05-runtime-blueprint.md` — Index pointing to the split blueprint documents:
   - `05b-agent-runtime.md` — Executor model, memory architecture, lifecycle & scheduling
   - `05c-orchestrator.md` — Orchestrator responsibilities, performance tiers, permissions, task state machine
   - `05e-dashboard.md` — Dashboard layout, API endpoints, implementation order
-- `06-knowledge-base.md` — Shared KB rules: entry schema, author/founder write paths, precedent workflow, search, index regeneration
+- `06-knowledge-base.md` — Shared KB rules
+
+Note: `05c-orchestrator.md` and `05e-dashboard.md` are now org-agnostic — they
+reference "team manager" / "team alpha" as placeholders rather than naming
+specific roles like Engineering Head. The org-specific charter, teams, and
+agent prompts live in the runtime under `org/`. The canonical sample tree is
+at `examples/orgs/hk-macau-tourism/` for the HK/Macau tourism org.
 
 ## Tech Stack
 - **Language**: Python 3.11+ (currently running 3.13)
@@ -69,12 +73,13 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 ~/projects/my-opc/                     # Source code (this repo)
 |-- CLAUDE.md
 |-- pyproject.toml
-|-- protocol/                          # Org charter, system prompts, escalation rules, blueprint, skills
-|   |-- 01-org-charter.md
-|   |-- 02-system-prompts-managers.md
-|   |-- 03-system-prompts-workers.md
-|   |-- 04-escalation-rules.md
-|   |-- 05*.md
+|-- protocol/                          # System kernel: completion contract, runtime blueprint, KB rules, skills
+|   |-- 00-completion-contract.md
+|   |-- 05-runtime-blueprint.md
+|   |-- 05b-agent-runtime.md
+|   |-- 05c-orchestrator.md
+|   |-- 05e-dashboard.md
+|   |-- 06-knowledge-base.md
 |   +-- skills/                        # Shared skills copied into every agent workspace
 |       |-- start-task/                # Parses injected params, runs role, reports via CLI callback
 |       |-- make-worktree/             # Creates an isolated git worktree under .claude/worktrees/
@@ -105,7 +110,7 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |   |       |-- health.py              # GET /health
 |   |       |-- runtimes.py            # POST /runtimes/init, POST /runtimes/use, GET /runtimes
 |   |       |-- tasks.py               # POST /tasks, GET /tasks, GET /tasks/{id}, SSE /tasks/{id}/events, GET /tasks/{id}/recall, POST /tasks/{id}/resolve-escalation, POST /tasks/{id}/revisit, callbacks
-|   |       |-- agents.py              # GET /agents, POST /agents/init (SSE), POST /agents/{name}/learnings, POST /agents/manage (enroll/update/terminate), GET /agents/enrollments, POST /agents/{name}/approve, POST /agents/{name}/reject, POST /agents/{name}/repos
+|   |       |-- agents.py              # GET /agents, POST /agents/init (SSE), POST /agents/{name}/learnings, POST /agents/manage (enroll/update/terminate — file-backed under <runtime>/org/agents/), GET /agents/enrollments, POST /agents/{name}/approve, POST /agents/{name}/reject, POST /agents/{name}/repos
 |   |       |-- audit.py               # GET /audit — filtered audit-log view (task/agent/action/since/limit)
 |   |       |-- kb.py                  # Knowledge base: GET /kb, /kb/{slug}, /kb/search; POST /kb, /kb/{slug}, /kb/reindex, /kb/precedent; DELETE /kb/{slug}
 |   |       +-- talks.py               # /talks — first-class founder↔agent conversations
@@ -116,10 +121,12 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |   |   |-- executors.py               # Provider-specific executor subprocess launchers
 |   |   |-- performance_tracker.py     # 30-day rolling scorecards, tier calculation
 |   |   |-- context_builder.py         # Delegates workspace bootstrap to provider-specific adapters
-|   |   |-- workspace_adapters.py      # Generates CLAUDE.md or AGENTS.md, settings, and copies skills
-|   |   +-- prompt_loader.py           # Parses system prompts from protocol markdown
+|   |   |-- workspace_adapters.py      # Generates CLAUDE.md or AGENTS.md, settings, and copies skills (constructors take RuntimeDir)
+|   |   |-- agent_def.py               # AgentDef dataclass + frontmatter parser/renderer for <runtime>/org/agents/<name>.md
+|   |   |-- prompt_loader.py           # File-based agent loader (active + _pending under <runtime>/org/agents/)
+|   |   +-- migration.py               # opc migrate-to-org-runtime — lifts a legacy runtime into the org/ shape
 |   |-- infrastructure/
-|   |   |-- database.py                # SQLite (WAL mode), typed CRUD, task_results.status column, agent_enrollments table, parent_task_id / note / final_artifact_dir / block_kind on tasks
+|   |   |-- database.py                # SQLite (WAL mode), typed CRUD, task_results.status column, parent_task_id / note / final_artifact_dir / block_kind on tasks. (The legacy agent_enrollments table is no longer the source of truth — agents now live as files under <runtime>/org/agents/. The table remains in the schema for backward compatibility with old runtimes; new code paths read/write through prompt_loader.)
 |   |   |-- audit_logger.py            # Semantic logging (session, verdict, escalation, orchestration steps, escalation_resolved)
 |   |   |-- kb_store.py                # Knowledge base: slug validation, atomic entry write, list/read/update/delete, search, _index.md regeneration, near-duplicate detection
 |   |   +-- talk_store.py              # Transcript file writer: atomic, per-talk markdown
@@ -129,6 +136,9 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |   |-- daemon/                        # Route-level tests for the FastAPI app
 |   |-- integration/                   # End-to-end tests with fake Claude and fake Codex binaries
 |   +-- test_*.py                      # Orchestrator, executor, config, skills, etc.
+|-- examples/orgs/                     # Canonical sample org trees (copy into a runtime to bootstrap)
+|   +-- hk-macau-tourism/
+|       +-- org/                       # charter.md, escalation-rules.md, teams.yaml, agents/<name>.md
 +-- docs/superpowers/
     |-- specs/                         # Design specs
     +-- plans/                         # Implementation plans
@@ -137,26 +147,19 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |-- auth_token                         # Bearer token shared by daemon + CLI
 +-- runtimes.yaml                      # Registered runtime dirs + which one is active
 
-<runtime-dir>/                         # Created by `opc init <path>`
-|-- opc.yaml                           # Marker file (presence = valid runtime folder)
-|-- opc.db                             # SQLite database
-|-- workspaces/
-|   +-- <agent_name>/                  # One per agent (dynamic — created by init-agent or approve-agent)
-|       |-- agent.yaml                 # Per-agent config (repos, etc.)
-|       |-- CLAUDE.md                  # Generated from system prompt (protocol docs or enrollment)
-|       |-- .claude/
-|       |   |-- settings.json          # Permissions + PreToolUse hook (git pull all repos)
-|       |   +-- skills/                # All skills copied from protocol/skills/
-|       |-- repos/                     # Git clones declared in agent.yaml
-|       |   +-- <name>/                # One dir per entry in agent.yaml `repos:`
-|       |-- learnings.md
-|       |-- scorecard.md
-|       +-- task_history.md            # Per-agent history (renamed from recent_tasks.md; legacy files auto-migrated)
-|-- kb/                                # Shared knowledge base (see protocol/06-knowledge-base.md)
-|   |-- _index.md                      # Regenerated after every write
-|   +-- <slug>.md                      # Flat; filename = slug
-+-- talks/                             # Transcript files written at /talk end
-    +-- TALK-NNN.md
+<runtime-dir>/                         # Created by `opc init <path> --slug <slug>`
+|-- opc.yaml                           # marker (slug, created_at, schema_version)
+|-- opc.db                             # per-runtime SQLite
+|-- org/                               # editable org content
+|   |-- charter.md                     # reference doc
+|   |-- escalation-rules.md            # reference doc
+|   |-- teams.yaml                     # team layout
+|   +-- agents/
+|       |-- <name>.md                  # active agents
+|       +-- _pending/<name>.md         # awaiting founder approval
+|-- workspaces/<agent>/...
+|-- kb/...
++-- talks/...
 ```
 
 ## Configuration
@@ -276,9 +279,47 @@ Both surfaces are generated from `allow_rules_for_agent(agent_name, cli=...)` in
 
 ## Code Style
 - Type hints on all function signatures
-- Pydantic v2 models for structured data, StrEnum for enumerations (agent names are plain strings, not enums — agents are discovered dynamically from workspaces + enrollments DB)
+- Pydantic v2 models for structured data, StrEnum for enumerations (agent names are plain strings, not enums — agents are discovered dynamically from `<runtime>/org/agents/*.md`)
 - Tests for business logic (escalation rules, scoring, tier calculation)
 - `from __future__ import annotations` in all source files
+
+## Org-per-runtime layout
+
+Each runtime carries its own org content under `<runtime>/org/`:
+
+- `charter.md` — org-level reference doc (purpose, team scope, etc.)
+- `escalation-rules.md` — when to escalate to founder
+- `teams.yaml` — team layout (which manager owns which workers)
+- `agents/<name>.md` — active agent definitions (frontmatter + system prompt)
+- `agents/_pending/<name>.md` — pending enrollments awaiting founder approval
+
+`AgentDef` (in `src/orchestrator/agent_def.py`) is the in-memory representation:
+markdown-with-YAML-frontmatter, parsed/rendered by `parse_agent_text` /
+`render_agent_text`. Fields: `name`, `team`, `role` (worker|manager),
+`executor` (claude|codex), `description`, `allow_rules`, `repos`,
+`enrolled_by`, `enrolled_at_task`, `enrolled_at`, `system_prompt` (body).
+
+`src/orchestrator/prompt_loader.py` is the only API for reading and writing
+these files — `load_agent`, `list_agents`, `list_pending`, `write_pending_agent`,
+`approve_agent`, `reject_agent`. Routes (`src/daemon/routes/agents.py`) and
+the orchestrator (`src/orchestrator/run_step.py`,
+`src/orchestrator/workspace_adapters.py`) all read through this module. Do
+NOT reach into the legacy `agent_enrollments` SQLite table for new code paths
+— it's preserved for migration only.
+
+`TeamsRegistry` (in `src/orchestrator/teams.py`) is seeded from
+`<runtime>/org/teams.yaml` and auto-persists on `add_worker` / `remove_worker`.
+There is no `DEFAULT_LAYOUT` — a runtime without a `teams.yaml` is treated as
+an empty registry until the founder writes one.
+
+`opc init <path> --slug <slug>` is the only way to create a new runtime;
+`--slug` is mandatory on first init. `RuntimeDir.init(path, slug=...)`
+raises `ValueError` if the slug is missing on a fresh path. Idempotent
+re-runs preserve the existing slug.
+
+For runtimes created before the `org/` folder existed, `opc migrate-to-org-runtime
+<path> --slug <slug> --i-have-a-backup --apply` lifts the legacy DB-backed
+agents into the file-based layout.
 
 ## Task status vocabularies
 
@@ -339,7 +380,7 @@ The CLI is an HTTP client. Start the daemon once, then run CLI commands.
 scripts/daemon.sh start                                         # start daemon in background (pid/port under ~/.opc/)
 scripts/daemon.sh status                                        # or stop
 
-opc init /path/to/runtime                                       # register + activate a runtime dir
+opc init /path/to/runtime --slug hk-tourism                     # create + register + activate a runtime dir (slug required)
 opc use /path/to/other-runtime                                  # switch the daemon's active runtime
 opc run --brief "Explore the payment module"                    # submit a task; EH decides approach
 opc run --team engineering --brief "Add Alipay support"          # route to a team
@@ -383,6 +424,7 @@ opc enrollments [--status pending]     # list enrollment requests
 opc approve-agent <name>               # approve and bootstrap workspace
 opc reject-agent <name>                # reject enrollment
 opc backfill-enrollments               # founder recovery: import pre-existing workspaces into the registry (TTY-gated)
+opc migrate-to-org-runtime <path> --slug <slug> --i-have-a-backup --apply   # one-shot: lift legacy runtime into the org/ shape
 ```
 
 ## Knowledge Base

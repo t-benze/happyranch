@@ -1,4 +1,4 @@
-"""Team registry: who manages whom, loaded from <runtime>/teams.yaml."""
+"""Team registry: who manages whom, loaded from <runtime>/org/teams.yaml."""
 from __future__ import annotations
 
 import os
@@ -9,18 +9,6 @@ from pathlib import Path
 import yaml
 
 from src.runtime import RuntimeDir
-
-
-DEFAULT_LAYOUT: dict[str, dict[str, object]] = {
-    "engineering": {
-        "manager": "engineering_head",
-        "workers": ["product_manager", "dev_agent", "payment_agent", "qa_engineer"],
-    },
-    "content": {
-        "manager": "content_manager",
-        "workers": ["content_writer", "content_qa"],
-    },
-}
 
 
 @dataclass(frozen=True)
@@ -41,11 +29,9 @@ class TeamsRegistry:
     def load(cls, runtime: RuntimeDir) -> "TeamsRegistry":
         path = runtime.teams_config_path
         if not path.exists():
-            return cls._from_layout(DEFAULT_LAYOUT, runtime)
+            return cls({}, runtime=runtime)
         raw = yaml.safe_load(path.read_text()) or {}
         layout = raw.get("teams") or {}
-        if not layout:
-            return cls._from_layout(DEFAULT_LAYOUT, runtime)
         return cls._from_layout(layout, runtime)
 
     @classmethod
@@ -60,11 +46,11 @@ class TeamsRegistry:
         return cls(teams, runtime=runtime)
 
     @classmethod
-    def seed_default(cls, runtime: RuntimeDir) -> None:
-        """Write the default teams.yaml to *runtime* if it doesn't already exist."""
+    def seed_empty(cls, runtime: RuntimeDir) -> None:
+        """Write an empty ``teams: {}`` block to *runtime* if it doesn't exist."""
         if runtime.teams_config_path.exists():
             return
-        cls._from_layout(DEFAULT_LAYOUT, runtime).save(runtime)
+        cls({}, runtime=runtime).save(runtime)
 
     # ---- persistence ----
 

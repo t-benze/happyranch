@@ -16,6 +16,10 @@ The initial team (created via `opc init-agent`) includes Engineering Head, Produ
 
 The EH can delegate multiple steps (e.g., PM writes spec, then Dev implements), explore the codebase itself, or escalate if the task requires human judgment. A max of 10 orchestration steps prevents runaway loops.
 
+### Org-per-Runtime
+
+The org-specific content (charter, escalation rules, teams, agent definitions) lives **per runtime** under `<runtime>/org/`. Each runtime is its own organization — same source code, different brief. A canonical sample tree ships at `examples/orgs/hk-macau-tourism/` for the HK/Macau tourism org. To bootstrap a new runtime today, copy that tree into the runtime path before running `opc init` (the `--from <example>` flag is on the roadmap).
+
 ## Requirements
 
 - Python 3.11+
@@ -45,10 +49,16 @@ uv run pytest tests/ -v
 #    stores its auth token + runtime registry under ~/.opc/.
 scripts/daemon.sh start
 
-# 2. Create and activate a runtime directory (stores database, agent workspaces)
-opc init ~/opc-runtime
+# 2. Seed your runtime with org content. Today this is a manual copy of the
+#    sample tree; the canonical example is the HK/Macau tourism org.
+mkdir -p ~/opc-runtime
+cp -R examples/orgs/hk-macau-tourism/org ~/opc-runtime/org
 
-# 3. Initialize all agent workspaces (creates agent.yaml, loads system prompts,
+# 3. Create and activate the runtime directory. The --slug stamps the
+#    runtime's identity into opc.yaml and is required on first init.
+opc init ~/opc-runtime --slug hk-tourism
+
+# 4. Initialize all agent workspaces (creates agent.yaml, loads system prompts,
 #    copies skills, clones repos declared in agent.yaml)
 opc init-agent
 
@@ -79,11 +89,43 @@ opc agents --detail
 opc use ~/another-runtime
 ```
 
+### Runtime layout
+
+A runtime directory contains both the editable org content and the runtime data the daemon manages:
+
+```
+<runtime>/
+|-- opc.yaml                           # marker (slug, created_at, schema_version)
+|-- opc.db                             # per-runtime SQLite
+|-- org/                               # editable org content (you can hand-edit this)
+|   |-- charter.md                     # org-level reference doc
+|   |-- escalation-rules.md            # when to escalate to founder
+|   |-- teams.yaml                     # team layout
+|   +-- agents/
+|       |-- <name>.md                  # active agents (frontmatter + system prompt)
+|       +-- _pending/<name>.md         # awaiting founder approval
+|-- workspaces/<agent>/                # per-agent workspace (CLAUDE.md/AGENTS.md, repos, scorecard, learnings)
+|-- kb/                                # shared knowledge base (markdown)
++-- talks/                             # founder↔agent transcripts
+```
+
+The files under `org/` are the source of truth for the organization. You can hand-edit them between tasks (e.g., to refine an agent's system prompt) — the next `opc init-agent` regenerates the workspace bootstrap accordingly.
+
+### Migrating an old runtime
+
+Runtimes created before the `org/` folder existed had their agent definitions in SQLite. Lift them into the file-based layout with:
+
+```bash
+opc migrate-to-org-runtime ~/opc-runtime --slug hk-tourism --i-have-a-backup --apply
+```
+
+Make a backup first — the flag is mandatory on purpose. Without `--apply` the command runs in dry-run mode and prints the planned changes.
+
 ### Commands
 
 | Command | Description |
 |---------|-------------|
-| `opc init <path>` | Create a runtime directory and set it as active |
+| `opc init <path> --slug <slug>` | Create a runtime directory and set it as active (slug required on first init) |
 | `opc use <path>` | Switch the daemon's active runtime directory |
 | `opc run --brief "..."` | Submit a task and stream its events. The team manager decides the approach. |
 | `opc run --team TEAM --brief "..."` | Route a task to a team (e.g., `engineering`, `content`) |

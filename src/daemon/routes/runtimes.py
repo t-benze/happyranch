@@ -18,6 +18,7 @@ router = APIRouter(dependencies=[require_token()])
 
 class RuntimePath(BaseModel):
     path: str
+    slug: str | None = None
 
 
 def _swap_active_runtime(state: DaemonState, new_path: Path) -> None:
@@ -55,7 +56,10 @@ async def register_runtime(body: RuntimePath, request: Request) -> dict:
     path = Path(body.path).expanduser()
     if not path.exists():
         path.mkdir(parents=True, exist_ok=True)
-    RuntimeDir.init(path)
+    try:
+        RuntimeDir.init(path, slug=body.slug)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     try:
         reg.register(path)
     except ValueError as exc:
