@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -42,6 +43,38 @@ def _ok(r) -> bool:
     else:
         print(f"Error ({r.status_code}): {r.text}")
     sys.exit(1)
+
+
+def resolve_org_slug(*, args_org: str | None, available: list[str]) -> str:
+    """Resolve the per-command --org per the spec §7.4 chain."""
+    if args_org:
+        return args_org
+    env = os.environ.get("OPC_ORG_SLUG")
+    if env:
+        return env
+    if len(available) == 1:
+        return available[0]
+    if not available:
+        print(
+            "error: no orgs registered yet\n"
+            "create one with: opc orgs init <slug> [--from <example-path>]",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    print(
+        "error: --org <slug> is required\navailable orgs:",
+        file=sys.stderr,
+    )
+    for slug in sorted(available):
+        print(f"  {slug}", file=sys.stderr)
+    sys.exit(1)
+
+
+def _fetch_available_orgs(client) -> list[str]:
+    r = client.get("/api/v1/orgs")
+    if r.status_code != 200:
+        return []
+    return [o["slug"] for o in r.json().get("orgs", [])]
 
 
 # ── subcommands ──────────────────────────────────────────────

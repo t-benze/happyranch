@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.cli import build_parser
+from src.cli import build_parser, resolve_org_slug
 
 
 def test_run_subcommand():
@@ -1715,3 +1715,42 @@ def test_cmd_tasks_suffixes_revisit_rows(capsys):
     plain_line = next(line for line in lines if "TASK-001" in line)
     assert "↩ TASK-052" in revisit_line
     assert "↩" not in plain_line
+
+
+# ── resolve_org_slug ──────────────────────────────────────────
+
+
+def test_resolve_org_explicit_flag_wins(monkeypatch) -> None:
+    monkeypatch.setenv("OPC_ORG_SLUG", "from-env")
+    available = ["alpha", "beta"]
+    slug = resolve_org_slug(args_org="from-flag", available=available)
+    assert slug == "from-flag"
+
+
+def test_resolve_org_env_var(monkeypatch) -> None:
+    monkeypatch.setenv("OPC_ORG_SLUG", "from-env")
+    slug = resolve_org_slug(args_org=None, available=["alpha", "from-env"])
+    assert slug == "from-env"
+
+
+def test_resolve_org_auto_infer_single(monkeypatch) -> None:
+    monkeypatch.delenv("OPC_ORG_SLUG", raising=False)
+    slug = resolve_org_slug(args_org=None, available=["alpha"])
+    assert slug == "alpha"
+
+
+def test_resolve_org_zero_orgs_errors(monkeypatch, capsys) -> None:
+    monkeypatch.delenv("OPC_ORG_SLUG", raising=False)
+    with pytest.raises(SystemExit):
+        resolve_org_slug(args_org=None, available=[])
+    err = capsys.readouterr().err
+    assert "no orgs registered" in err
+
+
+def test_resolve_org_multi_errors(monkeypatch, capsys) -> None:
+    monkeypatch.delenv("OPC_ORG_SLUG", raising=False)
+    with pytest.raises(SystemExit):
+        resolve_org_slug(args_org=None, available=["alpha", "beta"])
+    err = capsys.readouterr().err
+    assert "alpha" in err
+    assert "beta" in err
