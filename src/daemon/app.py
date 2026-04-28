@@ -51,7 +51,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(health.router, prefix="/api/v1")
     app.include_router(runtime.router, prefix="/api/v1")
     app.include_router(orgs.router, prefix="/api/v1")
-    app.include_router(tasks.router, prefix="/api/v1")
+    app.include_router(tasks.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(agents.router, prefix="/api/v1")
     app.include_router(audit.router, prefix="/api/v1")
     app.include_router(kb.router, prefix="/api/v1")
