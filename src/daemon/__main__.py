@@ -27,8 +27,8 @@ from src.runtime import RuntimeDir
 logger = logging.getLogger("opc.daemon")
 
 
-def _sweep_on_startup(db: Database, queue: TaskQueue) -> None:
-    """Post-restart recovery:
+def _sweep_on_startup(db: Database, queue: TaskQueue, slug: str) -> None:
+    """Post-restart recovery for a single org:
       - in_progress rows → failed (we killed the subprocess)
       - pending rows → re-enqueue (lost the original POST enqueue)
       - blocked(DELEGATED) with all children terminal → re-enqueue parent
@@ -53,15 +53,15 @@ def _sweep_on_startup(db: Database, queue: TaskQueue) -> None:
                     if all(c is not None and c.status in {TaskStatus.COMPLETED,
                                                          TaskStatus.FAILED}
                            for c in children):
-                        queue.enqueue(parent_id)
+                        queue.enqueue(slug, parent_id)
         elif t.status == TaskStatus.PENDING:
-            queue.enqueue(task_id)
+            queue.enqueue(slug, task_id)
         elif t.status == TaskStatus.BLOCKED and t.block_kind == BlockKind.DELEGATED:
             children = [db.get_task(cid) for cid in db.get_children(task_id)]
             if all(c is not None and c.status in {TaskStatus.COMPLETED,
                                                   TaskStatus.FAILED}
                    for c in children):
-                queue.enqueue(task_id)
+                queue.enqueue(slug, task_id)
         # blocked(ESCALATED) falls through: founder owns the transition.
 
 
@@ -72,7 +72,8 @@ def _build_state(settings: Settings) -> DaemonState:
         return DaemonState.idle(settings)
     runtime = RuntimeDir.load(reg.active)
     state = DaemonState.from_runtime(runtime, settings)
-    _sweep_on_startup(state.db, state.queue)
+    for org in state.orgs.values():
+        _sweep_on_startup(org.db, state.queue, org.slug)
     # Worker-pool bootstrap is deferred to the FastAPI lifespan startup
     # event because we need a running event loop. See `create_app` →
     # lifespan.
@@ -98,8 +99,11 @@ def _install_signal_handlers(state: DaemonState) -> None:
                 f.unlink()
             except FileNotFoundError:
                 pass
-        if state.db is not None:
-            state.db.close()
+        for org in state.orgs.values():
+            try:
+                org.db.close()
+            except Exception:
+                pass
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, _handle)
