@@ -1,4 +1,4 @@
-"""Team registry: who manages whom, loaded from <runtime>/org/teams.yaml."""
+"""Team registry: who manages whom, loaded from <root>/org/teams.yaml."""
 from __future__ import annotations
 
 import os
@@ -7,8 +7,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
-
-from src.runtime import RuntimeDir
 
 
 @dataclass(frozen=True)
@@ -19,23 +17,25 @@ class TeamManager:
 
 
 class TeamsRegistry:
-    def __init__(self, teams: dict[str, TeamManager], runtime: RuntimeDir | None = None) -> None:
+    def __init__(self, teams: dict[str, TeamManager], root: Path | None = None) -> None:
         self._teams = dict(teams)
-        self._runtime = runtime
+        self._root = root
 
     # ---- construction ----
 
     @classmethod
-    def load(cls, runtime: RuntimeDir) -> "TeamsRegistry":
-        path = runtime.teams_config_path
+    def load(cls, root: Path) -> "TeamsRegistry":
+        """Load from <root>/org/teams.yaml. ``root`` is an org root (or, in
+        legacy single-org runtimes, the runtime root)."""
+        path = root / "org" / "teams.yaml"
         if not path.exists():
-            return cls({}, runtime=runtime)
+            return cls({}, root=root)
         raw = yaml.safe_load(path.read_text()) or {}
         layout = raw.get("teams") or {}
-        return cls._from_layout(layout, runtime)
+        return cls._from_layout(layout, root)
 
     @classmethod
-    def _from_layout(cls, layout: dict[str, dict[str, object]], runtime: RuntimeDir | None = None) -> "TeamsRegistry":
+    def _from_layout(cls, layout: dict[str, dict[str, object]], root: Path | None = None) -> "TeamsRegistry":
         teams: dict[str, TeamManager] = {}
         for team_name, entry in layout.items():
             manager = entry.get("manager")
@@ -43,22 +43,23 @@ class TeamsRegistry:
             if not isinstance(manager, str) or not manager:
                 raise ValueError(f"team {team_name!r} missing manager")
             teams[team_name] = TeamManager(name=manager, team=team_name, workers=workers)
-        return cls(teams, runtime=runtime)
+        return cls(teams, root=root)
 
     @classmethod
-    def seed_empty(cls, runtime: RuntimeDir) -> None:
-        """Write an empty ``teams: {}`` block to *runtime* if it doesn't exist."""
-        if runtime.teams_config_path.exists():
+    def seed_empty(cls, root: Path) -> None:
+        """Write an empty ``teams: {}`` block under *root* if it doesn't exist."""
+        path = root / "org" / "teams.yaml"
+        if path.exists():
             return
-        cls({}, runtime=runtime).save(runtime)
+        cls({}, root=root).save()
 
     # ---- persistence ----
 
-    def save(self, runtime: RuntimeDir | None = None) -> None:
-        target = runtime if runtime is not None else self._runtime
+    def save(self, root: Path | None = None) -> None:
+        target = root if root is not None else self._root
         if target is None:
-            raise RuntimeError("TeamsRegistry.save requires a RuntimeDir (none supplied and none stored)")
-        path = target.teams_config_path
+            raise RuntimeError("TeamsRegistry.save requires a root path (none supplied and none stored)")
+        path = target / "org" / "teams.yaml"
         payload = {"teams": {
             team: {"manager": m.name, "workers": list(m.workers)}
             for team, m in sorted(self._teams.items())
@@ -120,7 +121,7 @@ class TeamsRegistry:
         self._teams[team] = TeamManager(
             name=m.name, team=m.team, workers=tuple([*m.workers, agent]),
         )
-        if self._runtime is not None:
+        if self._root is not None:
             self.save()
 
     def remove_worker(self, team: str, agent: str) -> None:
@@ -133,5 +134,5 @@ class TeamsRegistry:
             name=m.name, team=m.team,
             workers=tuple(w for w in m.workers if w != agent),
         )
-        if self._runtime is not None:
+        if self._root is not None:
             self.save()
