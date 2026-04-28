@@ -128,7 +128,7 @@ Make a backup first — the flag is mandatory on purpose. Without `--apply` the 
 |---------|-------------|
 | `opc init <path> --slug <slug>` | Create a runtime directory and set it as active (slug required on first init) |
 | `opc use <path>` | Switch the daemon's active runtime directory |
-| `opc run --brief "..."` | Submit a task and stream its events. The team manager decides the approach. |
+| `opc run --brief "..."` | Submit a task and return immediately. The team manager decides the approach. Use `opc tail TASK-ID` to attach. |
 | `opc run --team TEAM --brief "..."` | Route a task to a team (e.g., `engineering`, `content`) |
 | `opc tail TASK-ID` | Stream live events for a running (or historical) task |
 | `opc details TASK-ID` | Show task details (status, block_kind, note, results, audit log) |
@@ -250,7 +250,7 @@ Operational settings use the `OPC_` environment variable prefix. Runtime paths (
 | `OPC_CODEX_CLI_PATH` | `codex` | Path to Codex CLI |
 | `OPC_PERMISSION_MODE` | `auto` | Claude Code permission mode |
 | `OPC_MAX_ORCHESTRATION_STEPS` | `10` | Max EH decision steps before escalation |
-| `OPC_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout (30 min) |
+| `OPC_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout (30 min) — global default; can be overridden per-runtime in `<runtime>/org/config.yaml` and per-agent in the agent's frontmatter |
 | `OPC_TIER_GREEN_THRESHOLD` | `0.90` | Acceptance rate for green tier |
 | `OPC_TIER_YELLOW_THRESHOLD` | `0.75` | Acceptance rate for yellow tier |
 
@@ -268,6 +268,16 @@ repos:
 `executor` may be `claude` or `codex`. If omitted in an older workspace, it defaults to `claude`.
 
 Repos are cloned into the agent's workspace on `opc init-agent` and auto-pulled before each task.
+
+### Session timeout overrides
+
+The per-session timeout (default 1800s / 30 min) is resolved in three layers, highest precedence first:
+
+1. **Per-agent**: add `session_timeout_seconds: <int>` to the agent's frontmatter at `<runtime>/org/agents/<name>.md`. Use this for one slow worker without affecting peers.
+2. **Per-runtime (org)**: create `<runtime>/org/config.yaml` with `session_timeout_seconds: <int>`. Use this to bump every agent in this runtime above the global default.
+3. **Global default**: `OPC_SESSION_TIMEOUT_SECONDS` env var (or the built-in 1800s).
+
+A missing file or `null` value at any layer falls through to the next layer. Values must be positive integers.
 
 ## Performance Tiers
 

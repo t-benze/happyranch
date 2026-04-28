@@ -103,7 +103,11 @@ def _fmt_ts(iso: str | None, *, date_only: bool = False) -> str:
 
 
 def cmd_run(args: argparse.Namespace) -> None:
-    """Submit a task and stream its events until terminal."""
+    """Submit a task and return immediately.
+
+    The CLI does not stream events. Use `opc tail <task_id>` to attach to
+    a running task, or `opc details <task_id>` for a snapshot.
+    """
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
@@ -117,8 +121,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     if not _ok(r):
         return
     task_id = r.json()["task_id"]
-    print(f"Submitted {task_id}; streaming events (Ctrl-C to detach)...")
-    _stream_task_events(client, task_id)
+    print(f"Submitted {task_id}. Attach with: opc tail {task_id}")
 
 
 def cmd_tail(args: argparse.Namespace) -> None:
@@ -1156,8 +1159,7 @@ def cmd_revisit(args: argparse.Namespace) -> None:
         f"Created {new_id} (predecessor: {body['predecessor_root_task_id']}, "
         f"flagged: {body['flagged_task_id']})."
     )
-    print(f"Submitted {new_id}; streaming events (Ctrl-C to detach)...")
-    _stream_task_events(client, new_id)
+    print(f"Submitted {new_id}. Attach with: opc tail {new_id}")
 
 
 def cmd_migrate_to_org_runtime(args: argparse.Namespace) -> int:

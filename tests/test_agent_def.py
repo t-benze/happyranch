@@ -132,6 +132,45 @@ def test_description_defaults_to_none_when_absent() -> None:
     assert agent.description is None
 
 
+def test_session_timeout_seconds_round_trips() -> None:
+    text = (
+        "---\n"
+        "name: x\n"
+        "team: t\n"
+        "role: worker\n"
+        "executor: claude\n"
+        "session_timeout_seconds: 7200\n"
+        "---\n"
+        "body\n"
+    )
+    agent = parse_agent_text(text, expected_name="x")
+    assert agent.session_timeout_seconds == 7200
+    rerendered = parse_agent_text(render_agent_text(agent), expected_name="x")
+    assert rerendered.session_timeout_seconds == 7200
+
+
+def test_session_timeout_seconds_defaults_to_none_when_absent() -> None:
+    text = "---\nname: x\nteam: t\nrole: worker\nexecutor: claude\n---\nbody\n"
+    agent = parse_agent_text(text, expected_name="x")
+    assert agent.session_timeout_seconds is None
+
+
+@pytest.mark.parametrize("bad_value", ["3600", 0, -10, True, 1.5])
+def test_session_timeout_seconds_rejects_invalid(bad_value: object) -> None:
+    text = (
+        "---\n"
+        "name: x\n"
+        "team: t\n"
+        "role: worker\n"
+        "executor: claude\n"
+        f"session_timeout_seconds: {bad_value!r}\n"
+        "---\n"
+        "body\n"
+    )
+    with pytest.raises(AgentParseError, match="session_timeout_seconds"):
+        parse_agent_text(text, expected_name="x")
+
+
 def test_render_omits_null_optional_fields() -> None:
     agent = AgentDef(
         name="x",

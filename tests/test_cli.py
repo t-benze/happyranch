@@ -232,25 +232,24 @@ def test_cmd_details_handles_404(capsys):
     assert "not found" in capsys.readouterr().out
 
 
-def test_cmd_run_submits_then_streams(capsys):
+def test_cmd_run_submits_and_returns_without_streaming(capsys):
+    """Submission is fire-and-forget; the CLI must NOT call client.stream(),
+    and must surface the tail hint so the user knows how to attach later."""
     from src.cli import cmd_run
 
     fake = MagicMock()
     fake.post.return_value.status_code = 200
     fake.post.return_value.json.return_value = {"task_id": "TASK-001"}
-    fake.stream.return_value = iter([
-        '{"type": "audit", "n": 1}',
-        '{"type": "task_complete", "outcome": "approved"}',
-    ])
 
     with patch("src.cli.OpcClient.from_env", return_value=fake):
         args = MagicMock(team=None, brief="x")
         cmd_run(args)
 
     fake.post.assert_called_once_with("/api/v1/tasks", json={"brief": "x"})
+    fake.stream.assert_not_called()
     out = capsys.readouterr().out
     assert "TASK-001" in out
-    assert "task_complete" in out
+    assert "opc tail TASK-001" in out
 
 
 def test_cmd_tail_streams_existing_task(capsys):
@@ -1425,8 +1424,9 @@ def test_cmd_revisit_aborts_on_negative_confirmation(capsys, monkeypatch):
     fake.post.assert_not_called()
 
 
-def test_cmd_revisit_submits_and_streams_on_yes(capsys, monkeypatch):
-    """'y' confirmation => POST + stream."""
+def test_cmd_revisit_submits_without_streaming_on_yes(capsys, monkeypatch):
+    """'y' confirmation => POST, then return; no streaming. The tail hint must
+    point at the new root id, not the predecessor."""
     from src.cli import cmd_revisit
 
     fake = MagicMock()
@@ -1438,7 +1438,6 @@ def test_cmd_revisit_submits_and_streams_on_yes(capsys, monkeypatch):
         "cascade": ["TASK-052"],
         "predecessor_status": "failed",
     }
-    fake.stream.return_value = iter(['{"type": "task_complete"}'])
 
     monkeypatch.setattr("src.cli.sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("src.cli.sys.stdout.isatty", lambda: True)
@@ -1451,9 +1450,10 @@ def test_cmd_revisit_submits_and_streams_on_yes(capsys, monkeypatch):
         "/api/v1/tasks/TASK-052/revisit",
         json={"founder_note": "PR merged"},
     )
+    fake.stream.assert_not_called()
     out = capsys.readouterr().out
     assert "TASK-072" in out
-    assert "task_complete" in out
+    assert "opc tail TASK-072" in out
 
 
 def test_cmd_details_shows_revisit_header_chain_and_footer(capsys):

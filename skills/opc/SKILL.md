@@ -165,7 +165,8 @@ A runtime is org-specific: its charter, teams, escalation rules, and agent syste
 
 **Submit + watch**
 ```bash
-scripts/opc run --brief "…"                              # streams until terminal
+scripts/opc run --brief "…"                              # submits and returns immediately
+scripts/opc tail TASK-001                                # attach to live events (Ctrl-C detaches)
 ```
 
 **Pick up context on a past task**

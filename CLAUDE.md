@@ -154,6 +154,7 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |   |-- charter.md                     # reference doc
 |   |-- escalation-rules.md            # reference doc
 |   |-- teams.yaml                     # team layout
+|   |-- config.yaml                    # optional org overrides (e.g. session_timeout_seconds)
 |   +-- agents/
 |       |-- <name>.md                  # active agents
 |       +-- _pending/<name>.md         # awaiting founder approval
@@ -186,9 +187,19 @@ Operational settings use the `OPC_` environment variable prefix. Runtime paths (
 | `OPC_PERMISSION_MODE` | `auto` | Claude Code permission mode |
 | `OPC_PROTOCOL_DIR` | `protocol` | Protocol docs dirname (relative to project root) |
 | `OPC_MAX_ORCHESTRATION_STEPS` | `10` | Max EH decision steps before escalation |
-| `OPC_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout (30 min) |
+| `OPC_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout (30 min) — global default; see "Session timeout resolution" below |
 | `OPC_TIER_GREEN_THRESHOLD` | `0.90` | Acceptance rate for green tier |
 | `OPC_TIER_YELLOW_THRESHOLD` | `0.75` | Acceptance rate for yellow tier |
+
+### Session timeout resolution
+
+`Orchestrator._resolve_session_timeout(agent_name)` walks three layers, highest precedence first:
+
+1. **Agent override** — optional `session_timeout_seconds: <int>` in the agent's frontmatter (`<runtime>/org/agents/<name>.md`). Use for one slow worker (e.g. a Codex agent doing long builds) without affecting peers.
+2. **Org override** — optional `session_timeout_seconds: <int>` in `<runtime>/org/config.yaml`. Use to bump the whole runtime above the code default.
+3. **Code default** — `Settings.session_timeout_seconds` (1800s), itself overridable via the `OPC_SESSION_TIMEOUT_SECONDS` env var.
+
+Each layer accepts `null`/missing as "inherit from the next layer." Values must be positive integers; non-int (string, float, bool) or `<= 0` raises at parse time. The org config is loaded via `src/orchestrator/org_config.py` (`OrgConfig` dataclass + `load_org_config(runtime)`); `<runtime>/org/config.yaml` is optional and unknown keys are ignored for forward compatibility.
 
 ### Agent executors
 
@@ -303,6 +314,7 @@ Each runtime carries its own org content under `<runtime>/org/`:
 - `charter.md` — org-level reference doc (purpose, team scope, etc.)
 - `escalation-rules.md` — when to escalate to founder
 - `teams.yaml` — team layout (which manager owns which workers)
+- `config.yaml` — optional org-level setting overrides (currently `session_timeout_seconds`)
 - `agents/<name>.md` — active agent definitions (frontmatter + system prompt)
 - `agents/_pending/<name>.md` — pending enrollments awaiting founder approval
 
@@ -310,7 +322,9 @@ Each runtime carries its own org content under `<runtime>/org/`:
 markdown-with-YAML-frontmatter, parsed/rendered by `parse_agent_text` /
 `render_agent_text`. Fields: `name`, `team`, `role` (worker|manager),
 `executor` (claude|codex), `description`, `allow_rules`, `repos`,
-`enrolled_by`, `enrolled_at_task`, `enrolled_at`, `system_prompt` (body).
+`enrolled_by`, `enrolled_at_task`, `enrolled_at`, `session_timeout_seconds`
+(optional per-agent override; see "Session timeout resolution"),
+`system_prompt` (body).
 
 `src/orchestrator/prompt_loader.py` is the only API for reading and writing
 these files — `load_agent`, `list_agents`, `list_pending`, `write_pending_agent`,

@@ -55,6 +55,10 @@ class RuntimeDir:
         return self.org_dir / "teams.yaml"
 
     @property
+    def org_config_path(self) -> Path:
+        return self.org_dir / "config.yaml"
+
+    @property
     def slug(self) -> str:
         if self._cached_slug is not None:
             return self._cached_slug
