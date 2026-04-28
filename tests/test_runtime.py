@@ -99,3 +99,29 @@ def test_iter_org_roots_returns_subdirs(tmp_path: Path) -> None:
 
     slugs = sorted(slug for slug, _ in rt.iter_org_roots())
     assert slugs == ["alpha", "beta"]
+
+
+def test_iter_org_roots_skips_invalid_slug_dirs(tmp_path: Path) -> None:
+    """Directories whose names fail _SLUG_RE are silently skipped."""
+    rt = RuntimeDir.init(tmp_path / "rt")
+    (rt.orgs_dir / "alpha").mkdir()
+    (rt.orgs_dir / "alpha" / "org").mkdir()
+    (rt.orgs_dir / "alpha" / "org" / "teams.yaml").write_text("teams: {}\n")
+    (rt.orgs_dir / "Bad-Name").mkdir()
+    (rt.orgs_dir / "Bad-Name" / "org").mkdir()
+    (rt.orgs_dir / "Bad-Name" / "org" / "teams.yaml").write_text("teams: {}\n")
+
+    slugs = sorted(slug for slug, _ in rt.iter_org_roots())
+    assert slugs == ["alpha"]
+
+
+def test_iter_org_roots_skips_dirs_without_teams_yaml(tmp_path: Path) -> None:
+    """Directories that lack org/teams.yaml are silently skipped."""
+    rt = RuntimeDir.init(tmp_path / "rt")
+    (rt.orgs_dir / "alpha").mkdir()
+    (rt.orgs_dir / "alpha" / "org").mkdir()
+    (rt.orgs_dir / "alpha" / "org" / "teams.yaml").write_text("teams: {}\n")
+    (rt.orgs_dir / "beta").mkdir()
+
+    slugs = sorted(slug for slug, _ in rt.iter_org_roots())
+    assert slugs == ["alpha"]
