@@ -45,7 +45,7 @@ Authority comes from the OPEN talk itself: pass the `talk_id` of the talk you ar
 2. **Invoke as a single-line command:**
 
    ```bash
-   opc dispatch --from-file /tmp/dispatch-<talk_id>.json
+   opc dispatch --org {ORG_SLUG} --from-file /tmp/dispatch-<talk_id>.json
    ```
 
    The `--from-file` form is mandatory in agent sessions. Multi-line bash is rejected by the `Bash(opc:*)` permission rule because newlines count as command separators.
@@ -67,13 +67,13 @@ After dispatching, **record the call in the `transcript_markdown` you will send 
 [during talk] dispatched TASK-042 to dev_agent: "Implement Option B for TASK-087".
 ```
 
-The audit log captures the action (`opc audit TASK-042`), but the transcript is what the founder reads back. Skipping this silently mutates the queue from the founder's point of view.
+The audit log captures the action (`opc audit --org {ORG_SLUG} TASK-042`), but the transcript is what the founder reads back. Skipping this silently mutates the queue from the founder's point of view.
 
 ## What happens
 
 The orchestrator inserts a new root task with `assigned_agent` set to your `effective_target` and enqueues it for execution. Worker self-dispatch **bypasses the team manager's EH decision step** — the conversation is treated as the gating decision, so the worker runs directly. Manager dispatches to a team worker behave the same way: the manager has already decided, so the orchestrator runs the assignee.
 
-The new task carries `dispatched_from_talk_id = <your talk_id>` for observability. `opc details TASK-NNN` shows a "Dispatched from" line.
+The new task carries `dispatched_from_talk_id = <your talk_id>` for observability. `opc details --org {ORG_SLUG} TASK-NNN` shows a "Dispatched from" line.
 
 ## Error handling
 

@@ -263,7 +263,7 @@ async def init_agents(slug: str, body: InitBody, org: OrgDep):
         targets = [body.agent]
 
     async def gen():
-        ctx = ContextBuilder(org.settings, paths)
+        ctx = ContextBuilder(org.settings, paths, slug=org.slug)
         for agent_name in targets:
             workspace = paths.workspaces_dir / agent_name
             workspace.mkdir(parents=True, exist_ok=True)
@@ -321,7 +321,7 @@ async def manage_repo(
     if body.action in (RepoAction.add, RepoAction.update) and not body.url:
         raise HTTPException(status_code=422, detail=f"url required for {body.action!r}")
 
-    ctx = ContextBuilder(org.settings, paths)
+    ctx = ContextBuilder(org.settings, paths, slug=org.slug)
     agent_def = prompt_loader.load_agent(paths, agent_name)
     agent_prompt = agent_def.system_prompt if agent_def else ""
 
@@ -466,7 +466,7 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
         if body.system_prompt:
             workspace = paths.workspaces_dir / body.name
             if workspace.exists():
-                ctx = ContextBuilder(org.settings, paths)
+                ctx = ContextBuilder(org.settings, paths, slug=org.slug)
                 await asyncio.to_thread(
                     ctx.ensure_workspace_ready, workspace, body.name, body.system_prompt,
                 )
@@ -593,7 +593,7 @@ async def approve_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
         for repo_name, url in repos.items():
             add_repo(workspace, repo_name, url)
 
-    ctx = ContextBuilder(org.settings, paths)
+    ctx = ContextBuilder(org.settings, paths, slug=org.slug)
     for repo_name, url in repos.items():
         await asyncio.to_thread(ctx.clone_repo, workspace, repo_name, url)
 

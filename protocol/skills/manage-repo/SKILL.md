@@ -43,7 +43,7 @@ Manage the repositories cloned into your `repos/` directory. You can **add** a n
 2. **Invoke as a single-line command:**
 
    ```bash
-   opc manage-repo --from-file /tmp/manage-repo-<unique>.json
+   opc manage-repo --org {ORG_SLUG} --from-file /tmp/manage-repo-<unique>.json
    ```
 
    The `--from-file` form is mandatory for agent sessions. In Claude sessions,

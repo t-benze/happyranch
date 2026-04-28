@@ -15,11 +15,12 @@ logger = logging.getLogger(__name__)
 
 
 class ContextBuilder:
-    def __init__(self, settings: Settings, paths: OrgPaths) -> None:
+    def __init__(self, settings: Settings, paths: OrgPaths, *, slug: str) -> None:
         self._settings = settings
         self._paths = paths
-        self._claude = ClaudeWorkspaceAdapter(settings, paths)
-        self._codex = CodexWorkspaceAdapter(settings, paths)
+        self._slug = slug
+        self._claude = ClaudeWorkspaceAdapter(settings, paths, slug=slug)
+        self._codex = CodexWorkspaceAdapter(settings, paths, slug=slug)
 
     def _adapter(self, provider: str = "claude"):
         if provider == "claude":

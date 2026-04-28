@@ -31,7 +31,7 @@ def _write_agent(rt: OrgPaths, name: str, allow_rules: list[str]) -> None:
 
 
 def test_build_settings_json_no_repos(test_settings, tmp_dir, runtime):
-    builder = ContextBuilder(test_settings, runtime)
+    builder = ContextBuilder(test_settings, runtime, slug="test")
     workspace = tmp_dir / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
     builder.write_settings_json(workspace)
@@ -47,7 +47,7 @@ def test_build_settings_json_no_repos(test_settings, tmp_dir, runtime):
 
 
 def test_build_settings_json_with_repos(test_settings, tmp_dir, runtime):
-    builder = ContextBuilder(test_settings, runtime)
+    builder = ContextBuilder(test_settings, runtime, slug="test")
     workspace = tmp_dir / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
     builder.write_settings_json(workspace, repo_names=["my-opc", "web-app"])
@@ -70,7 +70,7 @@ def test_ensure_workspace_ready_grants_engineering_head_gh_resolve_rules(
     _write_agent(runtime, "engineering_head", [
         "gh pr close", "gh pr comment", "gh issue close", "gh issue comment",
     ])
-    builder = ContextBuilder(test_settings, runtime)
+    builder = ContextBuilder(test_settings, runtime, slug="test")
     workspace = tmp_dir / "workspaces" / "engineering_head"
     builder.ensure_workspace_ready(
         workspace=workspace,
@@ -95,7 +95,7 @@ def test_ensure_workspace_ready_does_not_grant_gh_to_non_eh_agents(
     test_settings, tmp_dir, runtime,
 ):
     """Only EH resolves PRs/issues; workers stay on the narrow opc allowlist."""
-    builder = ContextBuilder(test_settings, runtime)
+    builder = ContextBuilder(test_settings, runtime, slug="test")
     workspace = tmp_dir / "workspaces" / "dev_agent"
     builder.ensure_workspace_ready(
         workspace=workspace,
@@ -107,7 +107,7 @@ def test_ensure_workspace_ready_does_not_grant_gh_to_non_eh_agents(
 
 
 def test_build_claude_md_contains_system_prompt(test_settings, tmp_dir, runtime):
-    builder = ContextBuilder(test_settings, runtime)
+    builder = ContextBuilder(test_settings, runtime, slug="test")
     workspace = tmp_dir / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
     system_prompt = "You are the Dev Agent for a tourism services company."
@@ -124,7 +124,7 @@ def test_build_claude_md_contains_system_prompt(test_settings, tmp_dir, runtime)
 
 
 def test_build_claude_md_contains_persistent_file_pointers(test_settings, tmp_dir, runtime):
-    builder = ContextBuilder(test_settings, runtime)
+    builder = ContextBuilder(test_settings, runtime, slug="test")
     workspace = tmp_dir / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
     builder.write_claude_md(
@@ -140,7 +140,7 @@ def test_build_claude_md_contains_persistent_file_pointers(test_settings, tmp_di
 
 
 def test_ensure_workspace_ready_creates_persistent_files(test_settings, tmp_dir, runtime):
-    builder = ContextBuilder(test_settings, runtime)
+    builder = ContextBuilder(test_settings, runtime, slug="test")
     workspace = tmp_dir / "workspaces" / "dev_agent"
     builder.ensure_workspace_ready(
         workspace=workspace,
@@ -158,7 +158,7 @@ def test_ensure_workspace_ready_creates_persistent_files(test_settings, tmp_dir,
 def test_ensure_workspace_ready_migrates_recent_tasks_to_task_history(test_settings, tmp_dir, runtime):
     """Workspaces carried over from before the rename should have their
     recent_tasks.md renamed in place so no history is lost."""
-    builder = ContextBuilder(test_settings, runtime)
+    builder = ContextBuilder(test_settings, runtime, slug="test")
     workspace = tmp_dir / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
     (workspace / "recent_tasks.md").write_text(
@@ -177,7 +177,7 @@ def test_ensure_workspace_ready_migrates_recent_tasks_to_task_history(test_setti
 def test_build_claude_md_points_at_agent_yaml_for_repos(test_settings, tmp_dir, runtime):
     """CLAUDE.md should redirect readers to agent.yaml for the repo list,
     not duplicate it inline — agent.yaml is the source of truth."""
-    builder = ContextBuilder(test_settings, runtime)
+    builder = ContextBuilder(test_settings, runtime, slug="test")
     workspace = tmp_dir / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
     builder.write_claude_md(
@@ -198,7 +198,7 @@ def test_ensure_workspace_ready_detects_cloned_repos(test_settings, tmp_dir, run
     """Cloned repos drive the PreToolUse git-pull hook (so `git pull` fires
     per repo) but do not get enumerated in CLAUDE.md — agent.yaml is the
     single source of truth for that list."""
-    builder = ContextBuilder(test_settings, runtime)
+    builder = ContextBuilder(test_settings, runtime, slug="test")
     workspace = tmp_dir / "workspaces" / "dev_agent"
     # Simulate pre-existing cloned repos
     for name in ["my-opc", "web-app"]:
@@ -212,7 +212,7 @@ def test_ensure_workspace_ready_detects_cloned_repos(test_settings, tmp_dir, run
 
 
 def test_ensure_workspace_ready_does_not_overwrite_existing_learnings(test_settings, tmp_dir, runtime):
-    builder = ContextBuilder(test_settings, runtime)
+    builder = ContextBuilder(test_settings, runtime, slug="test")
     workspace = tmp_dir / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
     (workspace / "learnings.md").write_text("# Learnings\n\n- Important lesson\n")
@@ -234,7 +234,7 @@ def test_ensure_workspace_ready_copies_skills(test_settings, tmp_path, runtime):
     (skills_root / "make-worktree" / "SKILL.md").write_text("# make-worktree\n")
 
     workspace = tmp_path / "workspace"
-    ContextBuilder(test_settings, runtime).ensure_workspace_ready(workspace, "dev_agent", "system prompt")
+    ContextBuilder(test_settings, runtime, slug="test").ensure_workspace_ready(workspace, "dev_agent", "system prompt")
 
     assert (workspace / ".claude" / "skills" / "start-task" / "SKILL.md").read_text() == "# start-task\n"
     assert (workspace / ".claude" / "skills" / "make-worktree" / "SKILL.md").read_text() == "# make-worktree\n"
@@ -244,13 +244,13 @@ def test_ensure_workspace_ready_without_skills_dir_is_noop(test_settings, tmp_pa
     skills_root = test_settings.get_protocol_dir() / "skills"
     assert not skills_root.exists()
     workspace = tmp_path / "workspace"
-    ContextBuilder(test_settings, runtime).ensure_workspace_ready(workspace, "dev_agent", "system prompt")
+    ContextBuilder(test_settings, runtime, slug="test").ensure_workspace_ready(workspace, "dev_agent", "system prompt")
     assert not (workspace / ".claude" / "skills").exists()
 
 
 def test_ensure_workspace_ready_can_bootstrap_codex_workspace(test_settings, tmp_path, runtime):
     workspace = tmp_path / "workspace"
-    ContextBuilder(test_settings, runtime).ensure_workspace_ready(
+    ContextBuilder(test_settings, runtime, slug="test").ensure_workspace_ready(
         workspace,
         "dev_agent",
         "system prompt",
@@ -266,7 +266,7 @@ def test_ensure_workspace_ready_can_bootstrap_codex_workspace(test_settings, tmp
 
 def test_claude_md_drops_task_brief_and_completion_report(test_settings, tmp_path, runtime):
     workspace = tmp_path / "workspace"
-    ContextBuilder(test_settings, runtime).write_claude_md(workspace, "dev_agent", "system prompt")
+    ContextBuilder(test_settings, runtime, slug="test").write_claude_md(workspace, "dev_agent", "system prompt")
     text = (workspace / "CLAUDE.md").read_text()
     assert "Current Task" not in text
     assert "completion_report.json" not in text
@@ -275,7 +275,7 @@ def test_claude_md_drops_task_brief_and_completion_report(test_settings, tmp_pat
 def test_generated_claude_md_contains_kb_section(tmp_path):
     rt = RuntimeDir.init(tmp_path / "rt")
     paths = OrgPaths(root=rt.orgs_dir / "test")
-    builder = ContextBuilder(Settings(), paths)
+    builder = ContextBuilder(Settings(), paths, slug="test")
     workspace = tmp_path / "ws"
     builder.write_claude_md(
         workspace=workspace,
@@ -297,7 +297,7 @@ def test_generated_claude_md_contains_kb_section(tmp_path):
 def test_generated_claude_md_contains_task_recall_section(tmp_path):
     rt = RuntimeDir.init(tmp_path / "rt")
     paths = OrgPaths(root=rt.orgs_dir / "test")
-    builder = ContextBuilder(Settings(), paths)
+    builder = ContextBuilder(Settings(), paths, slug="test")
     workspace = tmp_path / "ws"
     builder.write_claude_md(
         workspace=workspace,
