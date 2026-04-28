@@ -344,6 +344,7 @@ def test_cmd_report_completion_posts_with_session_id():
     fake = MagicMock()
     fake.post.return_value.status_code = 200
     args = MagicMock(
+        org="alpha",
         from_file=None,
         task_id="TASK-001", session_id="sess-1", agent="dev_agent",
         status="completed", confidence=90, summary="ok",
@@ -352,7 +353,7 @@ def test_cmd_report_completion_posts_with_session_id():
     with patch("src.cli.OpcClient.from_env", return_value=fake):
         cmd_report_completion(args)
     args_pos, kwargs = fake.post.call_args
-    assert args_pos[0] == "/api/v1/tasks/TASK-001/completion"
+    assert args_pos[0] == "/api/v1/orgs/alpha/tasks/TASK-001/completion"
     assert kwargs["json"]["session_id"] == "sess-1"
 
 
@@ -380,6 +381,7 @@ def test_cmd_report_completion_from_file_posts_loaded_body(tmp_path):
     fake = MagicMock()
     fake.post.return_value.status_code = 200
     args = MagicMock(
+        org="alpha",
         from_file=str(completion_file),
         task_id=None, session_id=None, agent=None,
         status=None, confidence=80, summary=None,
@@ -389,7 +391,7 @@ def test_cmd_report_completion_from_file_posts_loaded_body(tmp_path):
         cmd_report_completion(args)
 
     args_pos, kwargs = fake.post.call_args
-    assert args_pos[0] == "/api/v1/tasks/TASK-042/completion"
+    assert args_pos[0] == "/api/v1/orgs/alpha/tasks/TASK-042/completion"
     body = kwargs["json"]
     assert body["session_id"] == "sess-x"
     assert body["agent"] == "dev_agent"
@@ -479,14 +481,25 @@ def test_completion_payload_from_file_omits_decision_when_absent(tmp_path):
 
 
 def test_report_completion_parser_accepts_from_file_alone():
-    """With --from-file, none of --task-id/--session-id/... are required."""
+    """With --from-file, none of --task-id/--session-id/... are required.
+    --org IS required for agent callbacks (see test_report_completion_parser_requires_org)."""
     parser = build_parser()
     args = parser.parse_args([
-        "report-completion", "--from-file", "/tmp/x.json",
+        "report-completion", "--org", "alpha", "--from-file", "/tmp/x.json",
     ])
     assert args.from_file == "/tmp/x.json"
     assert args.task_id is None
     assert args.summary is None
+    assert args.org == "alpha"
+
+
+def test_report_completion_parser_requires_org():
+    """The agent callback parser must REQUIRE --org. The slug is baked into
+    the agent's skill files literally — a missing --org is a programming
+    error, not a user typo, so it must fail at the parser layer."""
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["report-completion", "--from-file", "/tmp/x.json"])
 
 
 def test_cmd_learning_posts_with_session_id():
@@ -495,13 +508,14 @@ def test_cmd_learning_posts_with_session_id():
     fake = MagicMock()
     fake.post.return_value.status_code = 200
     args = MagicMock(
+        org="alpha",
         task_id="TASK-001", session_id="sess-1",
         agent="dev_agent", text="x",
     )
     with patch("src.cli.OpcClient.from_env", return_value=fake):
         cmd_learning(args)
     args_pos, kwargs = fake.post.call_args
-    assert args_pos[0] == "/api/v1/agents/dev_agent/learnings"
+    assert args_pos[0] == "/api/v1/orgs/alpha/agents/dev_agent/learnings"
     assert kwargs["json"]["session_id"] == "sess-1"
 
 
@@ -515,6 +529,7 @@ def test_cmd_report_completion_session_mismatch_friendly_message(capsys):
         "detail": {"code": "session_mismatch", "active": "sess-real", "got": "sess-stale"},
     }
     args = MagicMock(
+        org="alpha",
         from_file=None,
         task_id="TASK-001", session_id="sess-stale", agent="dev_agent",
         status="completed", confidence=80, summary="x",
@@ -539,6 +554,7 @@ def test_cmd_learning_unknown_session_friendly_message(capsys):
         "detail": {"code": "unknown_session", "task_id": "TASK-001", "agent": "dev_agent"},
     }
     args = MagicMock(
+        org="alpha",
         task_id="TASK-001", session_id="ghost", agent="dev_agent", text="x",
     )
     with patch("src.cli.OpcClient.from_env", return_value=fake):
@@ -688,7 +704,7 @@ def test_cmd_init_agent_handles_stream_http_error(capsys):
 def test_manage_repo_parser_add():
     parser = build_parser()
     args = parser.parse_args([
-        "manage-repo", "add",
+        "manage-repo", "--org", "alpha", "add",
         "--agent", "dev_agent",
         "--repo-name", "docs",
         "--url", "https://github.com/t-benze/docs.git",
@@ -698,12 +714,13 @@ def test_manage_repo_parser_add():
     assert args.agent == "dev_agent"
     assert args.repo_name == "docs"
     assert args.url == "https://github.com/t-benze/docs.git"
+    assert args.org == "alpha"
 
 
 def test_manage_repo_parser_remove():
     parser = build_parser()
     args = parser.parse_args([
-        "manage-repo", "remove",
+        "manage-repo", "--org", "alpha", "remove",
         "--agent", "dev_agent",
         "--repo-name", "docs",
     ])
@@ -714,9 +731,17 @@ def test_manage_repo_parser_remove():
 def test_manage_repo_parser_from_file():
     parser = build_parser()
     args = parser.parse_args([
-        "manage-repo", "--from-file", "/tmp/repo.json",
+        "manage-repo", "--org", "alpha", "--from-file", "/tmp/repo.json",
     ])
     assert args.from_file == "/tmp/repo.json"
+
+
+def test_manage_repo_parser_requires_org():
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            "manage-repo", "--from-file", "/tmp/repo.json",
+        ])
 
 
 def test_cmd_manage_repo_posts_to_daemon():
@@ -726,6 +751,7 @@ def test_cmd_manage_repo_posts_to_daemon():
     fake.post.return_value.status_code = 200
     fake.post.return_value.json.return_value = {"ok": True}
     args = MagicMock(
+        org="alpha",
         from_file=None,
         action="add", agent="dev_agent",
         repo_name="docs", url="https://github.com/t-benze/docs.git",
@@ -733,7 +759,7 @@ def test_cmd_manage_repo_posts_to_daemon():
     with patch("src.cli.OpcClient.from_env", return_value=fake):
         cmd_manage_repo(args)
     args_pos, kwargs = fake.post.call_args
-    assert args_pos[0] == "/api/v1/agents/dev_agent/repos"
+    assert args_pos[0] == "/api/v1/orgs/alpha/agents/dev_agent/repos"
     assert kwargs["json"]["action"] == "add"
     assert kwargs["json"]["repo_name"] == "docs"
     assert kwargs["json"]["url"] == "https://github.com/t-benze/docs.git"
@@ -756,13 +782,14 @@ def test_cmd_manage_repo_from_file(tmp_path):
     fake.post.return_value.status_code = 200
     fake.post.return_value.json.return_value = {"ok": True}
     args = MagicMock(
+        org="alpha",
         from_file=str(f),
         action=None, agent=None, repo_name=None, url=None,
     )
     with patch("src.cli.OpcClient.from_env", return_value=fake):
         cmd_manage_repo(args)
     args_pos, kwargs = fake.post.call_args
-    assert args_pos[0] == "/api/v1/agents/dev_agent/repos"
+    assert args_pos[0] == "/api/v1/orgs/alpha/agents/dev_agent/repos"
     assert kwargs["json"]["action"] == "remove"
     assert kwargs["json"]["repo_name"] == "docs"
 
@@ -770,18 +797,19 @@ def test_cmd_manage_repo_from_file(tmp_path):
 def test_manage_agent_parser_enroll():
     parser = build_parser()
     args = parser.parse_args([
-        "manage-agent", "enroll",
+        "manage-agent", "--org", "alpha", "enroll",
         "--from-file", "/tmp/enroll.json",
     ])
     assert args.command == "manage-agent"
     assert args.action == "enroll"
     assert args.from_file == "/tmp/enroll.json"
+    assert args.org == "alpha"
 
 
 def test_manage_agent_parser_terminate():
     parser = build_parser()
     args = parser.parse_args([
-        "manage-agent", "terminate",
+        "manage-agent", "--org", "alpha", "terminate",
         "--name", "content_writer",
         "--task-id", "TASK-001",
         "--session-id", "sess-123",
@@ -790,6 +818,15 @@ def test_manage_agent_parser_terminate():
     assert args.name == "content_writer"
     assert args.task_id == "TASK-001"
     assert args.session_id == "sess-123"
+
+
+def test_manage_agent_parser_requires_org():
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            "manage-agent", "enroll",
+            "--from-file", "/tmp/enroll.json",
+        ])
 
 
 def test_cmd_manage_agent_posts_to_daemon():
@@ -801,6 +838,7 @@ def test_cmd_manage_agent_posts_to_daemon():
     fake.post.return_value.status_code = 200
     fake.post.return_value.json.return_value = {"ok": True, "status": "pending"}
     args = argparse.Namespace(
+        org="alpha",
         from_file=None,
         action="enroll", name="content_writer",
         task_id="TASK-001", session_id="sess-123",
@@ -810,7 +848,7 @@ def test_cmd_manage_agent_posts_to_daemon():
     with patch("src.cli.OpcClient.from_env", return_value=fake):
         cmd_manage_agent(args)
     args_pos, kwargs = fake.post.call_args
-    assert args_pos[0] == "/api/v1/agents/manage"
+    assert args_pos[0] == "/api/v1/orgs/alpha/agents/manage"
     assert kwargs["json"]["action"] == "enroll"
     assert kwargs["json"]["name"] == "content_writer"
 
@@ -835,6 +873,7 @@ def test_cmd_manage_agent_from_file(tmp_path):
     fake.post.return_value.status_code = 200
     fake.post.return_value.json.return_value = {"ok": True, "status": "pending"}
     args = MagicMock(
+        org="alpha",
         from_file=str(f),
         action=None, name=None, description=None,
         system_prompt=None, repos=None,
@@ -842,6 +881,7 @@ def test_cmd_manage_agent_from_file(tmp_path):
     with patch("src.cli.OpcClient.from_env", return_value=fake):
         cmd_manage_agent(args)
     args_pos, kwargs = fake.post.call_args
+    assert args_pos[0] == "/api/v1/orgs/alpha/agents/manage"
     assert kwargs["json"]["action"] == "enroll"
     assert kwargs["json"]["name"] == "content_writer"
 
@@ -865,6 +905,7 @@ def test_cmd_manage_agent_from_file_talk_path(tmp_path):
     fake.post.return_value.status_code = 200
     fake.post.return_value.json.return_value = {"ok": True, "status": "pending"}
     args = MagicMock(
+        org="alpha",
         from_file=str(f),
         action=None, name=None, description=None,
         system_prompt=None, repos=None,
@@ -908,7 +949,7 @@ def test_manage_agent_payload_from_file_rejects_no_auth(tmp_path):
 def test_manage_agent_parser_accepts_talk_id():
     parser = build_parser()
     args = parser.parse_args([
-        "manage-agent", "enroll",
+        "manage-agent", "--org", "alpha", "enroll",
         "--name", "content_writer",
         "--talk-id", "TALK-002",
     ])
@@ -1074,11 +1115,30 @@ def test_kb_delete_parses_confirm_and_as_founder():
     from src.cli import build_parser
     parser = build_parser()
     ns = parser.parse_args([
-        "kb", "delete", "alipay-refund", "--agent", "engineering_head",
+        "kb", "delete", "--org", "alpha", "alipay-refund",
+        "--agent", "engineering_head",
         "--confirm", "--as-founder",
     ])
     assert ns.confirm is True
     assert ns.as_founder is True
+    assert ns.org == "alpha"
+
+
+def test_kb_write_parsers_require_org():
+    """KB write commands (add/update/delete/precedent) must require --org —
+    they're agent callbacks from skill files where the slug is baked in
+    literally."""
+    from src.cli import build_parser
+    parser = build_parser()
+    for argv in (
+        ["kb", "add", "--agent", "dev_agent", "--from-file", "/tmp/e.md"],
+        ["kb", "update", "alipay", "--agent", "dev_agent", "--from-file", "/tmp/e.md"],
+        ["kb", "delete", "alipay", "--agent", "engineering_head", "--confirm"],
+        ["kb", "precedent", "--task-id", "TASK-1",
+         "--decision", "approve", "--rationale", "x"],
+    ):
+        with pytest.raises(SystemExit):
+            parser.parse_args(argv)
 
 
 def test_cmd_tasks_shows_block_kind_when_present(capsys):
@@ -1715,10 +1775,10 @@ def test_cmd_dispatch_happy_path(tmp_path):
         "dispatched_from_talk_id": "TALK-001",
     }
     with patch("src.cli.OpcClient.from_env", return_value=fake):
-        cmd_dispatch(Namespace(from_file=str(payload_path)))
+        cmd_dispatch(Namespace(org="alpha", from_file=str(payload_path)))
 
     args_pos, kwargs = fake.post.call_args
-    assert args_pos[0] == "/api/v1/talks/TALK-001/dispatch"
+    assert args_pos[0] == "/api/v1/orgs/alpha/talks/TALK-001/dispatch"
     body = kwargs["json"]
     assert body == {
         "brief": "Investigate the daemon crash",
@@ -1742,7 +1802,7 @@ def test_cmd_dispatch_missing_talk_id_raises(tmp_path, capsys):
     fake = MagicMock()
     with patch("src.cli.OpcClient.from_env", return_value=fake):
         with pytest.raises(SystemExit):
-            cmd_dispatch(Namespace(from_file=str(payload_path)))
+            cmd_dispatch(Namespace(org="alpha", from_file=str(payload_path)))
     fake.post.assert_not_called()
 
 
@@ -1761,8 +1821,26 @@ def test_cmd_dispatch_whitespace_talk_id_raises(tmp_path, capsys):
     fake = MagicMock()
     with patch("src.cli.OpcClient.from_env", return_value=fake):
         with pytest.raises(SystemExit):
-            cmd_dispatch(Namespace(from_file=str(payload_path)))
+            cmd_dispatch(Namespace(org="alpha", from_file=str(payload_path)))
     fake.post.assert_not_called()
+
+
+def test_cmd_dispatch_parser_requires_org(tmp_path):
+    from src.cli import build_parser
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["dispatch", "--from-file", "/tmp/d.json"])
+
+
+def test_cmd_learning_parser_requires_org():
+    from src.cli import build_parser
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            "learning",
+            "--task-id", "TASK-1", "--session-id", "s",
+            "--agent", "a", "--text", "x",
+        ])
 
 
 def test_cmd_tasks_suffixes_revisit_rows(capsys):

@@ -112,8 +112,8 @@ def test_worker_self_dispatch_runs_to_completion(
     fake_plan_env.write_text(
         '#!/usr/bin/env bash\n'
         'set -e\n'
-        'task_id=$1; session_id=$2; agent=$3\n'
-        'opc report-completion \\\n'
+        'task_id=$1; session_id=$2; agent=$3; org_slug=$4\n'
+        'opc report-completion --org "$org_slug" \\\n'
         '  --task-id "$task_id" --session-id "$session_id" \\\n'
         '  --agent "$agent" --status completed --confidence 90 \\\n'
         '  --summary "dispatched task done"\n'

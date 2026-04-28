@@ -19,10 +19,16 @@ TASK_ID=$(echo "$PROMPT" | awk -F': ' '/^[[:space:]]*task_id: /{gsub(/^[[:space:
 SESSION_ID=$(echo "$PROMPT" | awk -F': ' '/^[[:space:]]*session_id: /{gsub(/^[[:space:]]*/, "", $0); print $2; exit}')
 AGENT=$(echo "$PROMPT" | awk '/^You are /{sub(/^You are /, "", $0); sub(/\..*$/, "", $0); print; exit}')
 
+# Multi-org: the executor cwd is <runtime>/orgs/<slug>/workspaces/<agent>.
+# Strip /workspaces/<agent> off the tail and take the basename — that's the slug.
+ORG_PARENT="${PWD%/workspaces/*}"
+ORG_SLUG="${ORG_PARENT##*/}"
+
 # If a plan file exists, source it (it can call opc). Pass the agent name as
-# $3 so plans can branch on which agent is currently running.
+# $3 and the org slug as $4 so plans can call agent-callback commands with
+# the required --org flag.
 if [[ -n "${FAKE_CLAUDE_PLAN:-}" && -f "$FAKE_CLAUDE_PLAN" ]]; then
-    bash "$FAKE_CLAUDE_PLAN" "$TASK_ID" "$SESSION_ID" "$AGENT"
+    bash "$FAKE_CLAUDE_PLAN" "$TASK_ID" "$SESSION_ID" "$AGENT" "$ORG_SLUG"
 fi
 
 exit 0

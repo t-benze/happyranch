@@ -550,6 +550,9 @@ def _completion_payload_from_file(path: str) -> tuple[str, dict]:
 
 def cmd_report_completion(args: argparse.Namespace) -> None:
     """Agent callback: report task completion to the daemon."""
+    if not args.org:
+        print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
+        sys.exit(1)
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
@@ -590,20 +593,23 @@ def cmd_report_completion(args: argparse.Namespace) -> None:
         }
         if args.artifact_dir:
             body["artifact_dir"] = args.artifact_dir
-    r = client.post(f"/api/v1/tasks/{task_id}/completion", json=body)
+    r = client.post(f"/api/v1/orgs/{args.org}/tasks/{task_id}/completion", json=body)
     if not _ok(r):
         return
 
 
 def cmd_learning(args: argparse.Namespace) -> None:
     """Agent callback: append a learning to the agent's learnings.md."""
+    if not args.org:
+        print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
+        sys.exit(1)
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
         print(f"Error: {exc}")
         sys.exit(1)
     r = client.post(
-        f"/api/v1/agents/{args.agent}/learnings",
+        f"/api/v1/orgs/{args.org}/agents/{args.agent}/learnings",
         json={"session_id": args.session_id, "task_id": args.task_id, "text": args.text},
     )
     if not _ok(r):
@@ -633,6 +639,9 @@ def _manage_repo_payload_from_file(path: str) -> tuple[str, dict]:
 
 def cmd_manage_repo(args: argparse.Namespace) -> None:
     """Agent callback: add, remove, or update a repo in agent.yaml."""
+    if not args.org:
+        print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
+        sys.exit(1)
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
@@ -652,7 +661,7 @@ def cmd_manage_repo(args: argparse.Namespace) -> None:
         if args.url:
             body["url"] = args.url
 
-    r = client.post(f"/api/v1/agents/{agent}/repos", json=body)
+    r = client.post(f"/api/v1/orgs/{args.org}/agents/{agent}/repos", json=body)
     if not _ok(r):
         return
     print(f"ok: {args.action or body['action']} {body['repo_name']}")
@@ -685,6 +694,9 @@ def _manage_agent_payload_from_file(path: str) -> dict:
 
 def cmd_manage_agent(args: argparse.Namespace) -> None:
     """Agent callback: enroll, update, or terminate an agent."""
+    if not args.org:
+        print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
+        sys.exit(1)
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
@@ -720,7 +732,7 @@ def cmd_manage_agent(args: argparse.Namespace) -> None:
         if args.repos:
             body["repos"] = _json.loads(args.repos)
 
-    r = client.post("/api/v1/agents/manage", json=body)
+    r = client.post(f"/api/v1/orgs/{args.org}/agents/manage", json=body)
     if not _ok(r):
         return
     result = r.json()
@@ -749,6 +761,9 @@ def _dispatch_payload_from_file(path: str) -> dict:
 
 def cmd_dispatch(args: argparse.Namespace) -> None:
     """Agent callback: dispatch a new task from inside an open talk."""
+    if not args.org:
+        print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
+        sys.exit(1)
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
@@ -769,7 +784,7 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
     if data.get("team"):
         body["team"] = data["team"]
 
-    r = client.post(f"/api/v1/talks/{talk_id}/dispatch", json=body)
+    r = client.post(f"/api/v1/orgs/{args.org}/talks/{talk_id}/dispatch", json=body)
     if not _ok(r):
         return
     result = r.json()
@@ -1011,10 +1026,11 @@ def cmd_kb_search(args: argparse.Namespace) -> None:
 
 
 def cmd_kb_add(args: argparse.Namespace) -> None:
+    if not args.org:
+        print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
+        sys.exit(1)
     client = OpcClient.from_env()
-    org_slug = resolve_org_slug(
-        args_org=args.org, available=_fetch_available_orgs(client),
-    )
+    org_slug = args.org
     try:
         body = _read_markdown_payload(args.from_file)
     except (OSError, ValueError) as exc:
@@ -1029,10 +1045,11 @@ def cmd_kb_add(args: argparse.Namespace) -> None:
 
 
 def cmd_kb_update(args: argparse.Namespace) -> None:
+    if not args.org:
+        print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
+        sys.exit(1)
     client = OpcClient.from_env()
-    org_slug = resolve_org_slug(
-        args_org=args.org, available=_fetch_available_orgs(client),
-    )
+    org_slug = args.org
     try:
         body = _read_markdown_payload(args.from_file)
     except (OSError, ValueError) as exc:
@@ -1049,10 +1066,11 @@ def cmd_kb_update(args: argparse.Namespace) -> None:
 
 
 def cmd_kb_delete(args: argparse.Namespace) -> None:
+    if not args.org:
+        print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
+        sys.exit(1)
     client = OpcClient.from_env()
-    org_slug = resolve_org_slug(
-        args_org=args.org, available=_fetch_available_orgs(client),
-    )
+    org_slug = args.org
     # OpcClient only wraps `get`/`post`; hit `._client` directly for DELETE
     # rather than expanding the client API for a single caller. If a second
     # DELETE ships later, promote this into a proper `client.delete(...)`.
@@ -1077,10 +1095,11 @@ def cmd_kb_reindex(args: argparse.Namespace) -> None:
 
 
 def cmd_kb_precedent(args: argparse.Namespace) -> None:
+    if not args.org:
+        print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
+        sys.exit(1)
     client = OpcClient.from_env()
-    org_slug = resolve_org_slug(
-        args_org=args.org, available=_fetch_available_orgs(client),
-    )
+    org_slug = args.org
     body = {
         "task_id": args.task_id,
         "decision": args.decision,
@@ -1487,6 +1506,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # opc manage-repo
     p_repo = sub.add_parser("manage-repo", help="Add, remove, or update a repo in an agent's config")
+    p_repo.add_argument("--org", required=True, help="Org slug (required for agent callbacks)")
     p_repo.add_argument("action", nargs="?", default=None, choices=["add", "remove", "update"],
                          help="Action to perform")
     p_repo.add_argument("--agent", default=None, help="Agent name")
@@ -1498,6 +1518,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # opc manage-agent
     p_ma = sub.add_parser("manage-agent", help="Enroll, update, or terminate an agent")
+    p_ma.add_argument("--org", required=True, help="Org slug (required for agent callbacks)")
     p_ma.add_argument("action", nargs="?", default=None, choices=["enroll", "update", "terminate"])
     p_ma.add_argument("--name", default=None, help="Agent name")
     p_ma.add_argument("--task-id", dest="task_id", default=None, help="Active task ID (task auth path)")
@@ -1513,6 +1534,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # opc dispatch
     p_dispatch = sub.add_parser("dispatch", help="Dispatch a new task from an open talk")
+    p_dispatch.add_argument("--org", required=True, help="Org slug (required for agent callbacks)")
     p_dispatch.add_argument(
         "--from-file", dest="from_file", required=True,
         help="Path to JSON file with dispatch payload (talk_id, brief, optional target_agent/team)",
@@ -1563,6 +1585,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_recall.set_defaults(func=cmd_recall)
 
     p_rep = sub.add_parser("report-completion", help="Agent callback: report task completion")
+    p_rep.add_argument("--org", required=True, help="Org slug (required for agent callbacks)")
     p_rep.add_argument(
         "--from-file", dest="from_file", default=None,
         help="Path to a JSON file containing the completion payload. "
@@ -1585,6 +1608,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_rep.set_defaults(func=cmd_report_completion)
 
     p_learn = sub.add_parser("learning", help="Agent callback: append a learning")
+    p_learn.add_argument("--org", required=True, help="Org slug (required for agent callbacks)")
     p_learn.add_argument("--task-id", required=True)
     p_learn.add_argument("--session-id", required=True)
     p_learn.add_argument("--agent", required=True)
@@ -1614,21 +1638,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_kb_search.set_defaults(func=cmd_kb_search)
 
     p_kb_add = kb_sub.add_parser("add", help="Add a KB entry from a markdown file")
-    p_kb_add.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_kb_add.add_argument("--org", required=True, help="Org slug (required for agent callbacks)")
     p_kb_add.add_argument("--agent", required=True)
     p_kb_add.add_argument("--from-file", required=True)
     p_kb_add.add_argument("--force-new-sibling", action="store_true")
     p_kb_add.set_defaults(func=cmd_kb_add)
 
     p_kb_update = kb_sub.add_parser("update", help="Update an existing KB entry")
-    p_kb_update.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_kb_update.add_argument("--org", required=True, help="Org slug (required for agent callbacks)")
     p_kb_update.add_argument("slug")
     p_kb_update.add_argument("--agent", required=True)
     p_kb_update.add_argument("--from-file", required=True)
     p_kb_update.set_defaults(func=cmd_kb_update)
 
     p_kb_delete = kb_sub.add_parser("delete", help="Delete a KB entry (EH only)")
-    p_kb_delete.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_kb_delete.add_argument("--org", required=True, help="Org slug (required for agent callbacks)")
     p_kb_delete.add_argument("slug")
     p_kb_delete.add_argument("--agent", required=True)
     p_kb_delete.add_argument("--confirm", action="store_true")
@@ -1640,7 +1664,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_kb_reindex.set_defaults(func=cmd_kb_reindex)
 
     p_kb_prec = kb_sub.add_parser("precedent", help="Record a precedent from an escalated task")
-    p_kb_prec.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_kb_prec.add_argument("--org", required=True, help="Org slug (required for agent callbacks)")
     p_kb_prec.add_argument("--task-id", required=True)
     p_kb_prec.add_argument("--decision", required=True, choices=["approve", "reject"])
     p_kb_prec.add_argument("--rationale", required=True)

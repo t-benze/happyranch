@@ -116,8 +116,8 @@ def test_register_and_run_completes_via_callback(
 
     fake_plan_env.write_text(
         '#!/usr/bin/env bash\n'
-        'task_id=$1; session_id=$2\n'
-        'opc report-completion \\\n'
+        'task_id=$1; session_id=$2; agent=$3; org_slug=$4\n'
+        'opc report-completion --org "$org_slug" \\\n'
         '  --task-id "$task_id" --session-id "$session_id" \\\n'
         '  --agent engineering_head --status completed --confidence 90 \\\n'
         '  --summary \'{"action":"done","summary":"ok"}\'\n'
@@ -179,7 +179,7 @@ def test_delegate_and_resume_roundtrip(
     fake_plan_env.write_text(
         '#!/usr/bin/env bash\n'
         'set -e\n'
-        'task_id=$1; session_id=$2; agent=$3\n'
+        'task_id=$1; session_id=$2; agent=$3; org_slug=$4\n'
         f'marker="{marker}"\n'
         'if [[ "$agent" == "engineering_head" ]]; then\n'
         '  if [[ -f "$marker" ]]; then\n'
@@ -191,7 +191,7 @@ def test_delegate_and_resume_roundtrip(
         'else\n'
         '  summary="dev_agent finished"\n'
         'fi\n'
-        'opc report-completion \\\n'
+        'opc report-completion --org "$org_slug" \\\n'
         '  --task-id "$task_id" --session-id "$session_id" \\\n'
         '  --agent "$agent" --status completed --confidence 90 \\\n'
         '  --summary "$summary"\n'
@@ -233,8 +233,8 @@ def test_idle_daemon_starts_workers_after_register(
 
     fake_plan_env.write_text(
         '#!/usr/bin/env bash\n'
-        'task_id=$1; session_id=$2\n'
-        'opc report-completion \\\n'
+        'task_id=$1; session_id=$2; agent=$3; org_slug=$4\n'
+        'opc report-completion --org "$org_slug" \\\n'
         '  --task-id "$task_id" --session-id "$session_id" \\\n'
         '  --agent engineering_head --status completed --confidence 80 \\\n'
         '  --summary \'{"action":"done","summary":"ok"}\'\n'
@@ -265,7 +265,8 @@ def test_register_and_run_completes_via_codex_callback(
         """
         task_id=$1
         session_id=$2
-        opc report-completion \
+        org_slug=$3
+        opc report-completion --org "$org_slug" \
           --task-id "$task_id" --session-id "$session_id" \
           --agent engineering_head --status completed --confidence 90 \
           --summary '{"action":"done","summary":"codex ok"}'
@@ -303,15 +304,17 @@ def test_mixed_fleet_roundtrip_uses_claude_and_codex(
         """
         task_id=$1
         session_id=$2
+        agent=$3
+        org_slug=$4
         state_file="${FAKE_CLAUDE_PLAN}.seen.${task_id}"
         if [[ ! -f "$state_file" ]]; then
             touch "$state_file"
-            opc report-completion \
+            opc report-completion --org "$org_slug" \
               --task-id "$task_id" --session-id "$session_id" \
               --agent engineering_head --status completed --confidence 90 \
               --summary '{"action":"delegate","agent":"dev_agent","prompt":"build the follow-up"}'
         else
-            opc report-completion \
+            opc report-completion --org "$org_slug" \
               --task-id "$task_id" --session-id "$session_id" \
               --agent engineering_head --status completed --confidence 90 \
               --summary '{"action":"done","summary":"parent done"}'
@@ -323,7 +326,8 @@ def test_mixed_fleet_roundtrip_uses_claude_and_codex(
         """
         task_id=$1
         session_id=$2
-        opc report-completion \
+        org_slug=$3
+        opc report-completion --org "$org_slug" \
           --task-id "$task_id" --session-id "$session_id" \
           --agent dev_agent --status completed --confidence 90 \
           --summary '{"action":"done","summary":"child done"}'
@@ -448,7 +452,7 @@ def test_revisit_roundtrip_creates_new_root_and_completes(
     fake_plan_env.write_text(
         '#!/usr/bin/env bash\n'
         'set -e\n'
-        'task_id=$1; session_id=$2; agent=$3\n'
+        'task_id=$1; session_id=$2; agent=$3; org_slug=$4\n'
         f'marker="{marker}"\n'
         'if [[ -f "$marker" ]]; then\n'
         '  summary=\'{"action":"done","summary":"revisit succeeded"}\'\n'
@@ -456,7 +460,7 @@ def test_revisit_roundtrip_creates_new_root_and_completes(
         '  touch "$marker"\n'
         '  summary=\'{"action":"escalate","reason":"need founder call"}\'\n'
         'fi\n'
-        'opc report-completion \\\n'
+        'opc report-completion --org "$org_slug" \\\n'
         '  --task-id "$task_id" --session-id "$session_id" \\\n'
         '  --agent "$agent" --status completed --confidence 90 \\\n'
         '  --summary "$summary"\n'
