@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 from src.runtime import RuntimeDir
 
@@ -13,29 +14,29 @@ from src.runtime import RuntimeDir
 
 
 def test_init_creates_marker_file(tmp_path: Path) -> None:
-    rt = RuntimeDir.init(tmp_path / "runtime", slug="test")
+    rt = RuntimeDir.init(tmp_path / "runtime")
     assert rt.marker_file.exists()
 
 
-def test_init_creates_workspaces_dir(tmp_path: Path) -> None:
-    rt = RuntimeDir.init(tmp_path / "runtime", slug="test")
-    assert rt.workspaces_dir.is_dir()
+def test_init_creates_orgs_dir(tmp_path: Path) -> None:
+    rt = RuntimeDir.init(tmp_path / "runtime")
+    assert rt.orgs_dir.is_dir()
 
 
 def test_init_idempotent(tmp_path: Path) -> None:
     """Calling init twice must not destroy existing data."""
     rt_dir = tmp_path / "runtime"
-    rt1 = RuntimeDir.init(rt_dir, slug="test")
+    rt1 = RuntimeDir.init(rt_dir)
 
-    # Place a sentinel file inside workspaces to verify it survives.
-    sentinel = rt1.workspaces_dir / "sentinel.txt"
+    # Place a sentinel file inside orgs to verify it survives.
+    sentinel = rt1.orgs_dir / "sentinel.txt"
     sentinel.write_text("keep me")
 
-    rt2 = RuntimeDir.init(rt_dir, slug="test")
+    rt2 = RuntimeDir.init(rt_dir)
 
     assert rt2.marker_file.exists()
-    assert rt2.workspaces_dir.is_dir()
-    assert sentinel.exists(), "Existing workspace data was destroyed by a second init"
+    assert rt2.orgs_dir.is_dir()
+    assert sentinel.exists(), "Existing org data was destroyed by a second init"
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +46,7 @@ def test_init_idempotent(tmp_path: Path) -> None:
 
 def test_load_valid_runtime(tmp_path: Path) -> None:
     rt_dir = tmp_path / "runtime"
-    RuntimeDir.init(rt_dir, slug="test")
+    RuntimeDir.init(rt_dir)
 
     loaded = RuntimeDir.load(rt_dir)
     assert loaded.root == rt_dir.resolve()
@@ -61,77 +62,40 @@ def test_load_invalid_runtime_raises(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Derived paths
+# v2 multi-org runtime
 # ---------------------------------------------------------------------------
 
 
-def test_db_path_derived_from_root(tmp_path: Path) -> None:
-    rt = RuntimeDir(tmp_path)
-    assert rt.db_path == tmp_path.resolve() / "opc.db"
-
-
-def test_workspaces_dir_derived_from_root(tmp_path: Path) -> None:
-    rt = RuntimeDir(tmp_path)
-    assert rt.workspaces_dir == tmp_path.resolve() / "workspaces"
-
-
-# ---------------------------------------------------------------------------
-# teams.yaml seeding
-# ---------------------------------------------------------------------------
-
-
-def test_init_seeds_empty_teams_yaml(tmp_path: Path) -> None:
-    import yaml
-    rt = RuntimeDir.init(tmp_path / "rt", slug="test")
-    assert rt.teams_config_path.exists()
-    data = yaml.safe_load(rt.teams_config_path.read_text())
-    assert data == {"teams": {}}
-
-
-def test_init_does_not_overwrite_existing_teams_yaml(tmp_path: Path) -> None:
-    import yaml
-    rt = RuntimeDir.init(tmp_path / "rt", slug="test")
-    rt.teams_config_path.write_text(
-        "teams:\n  custom:\n    manager: custom_mgr\n    workers: []\n"
-    )
-    RuntimeDir.init(tmp_path / "rt", slug="test")
-    data = yaml.safe_load(rt.teams_config_path.read_text())
-    assert set(data["teams"].keys()) == {"custom"}
-
-
-# ---------------------------------------------------------------------------
-# slug + org folder
-# ---------------------------------------------------------------------------
-
-
-def test_init_writes_slug_to_opc_yaml(tmp_path: Path) -> None:
-    import yaml
-    rt = RuntimeDir.init(tmp_path / "rt", slug="hk-tourism")
+def test_init_writes_v2_marker_without_slug(tmp_path: Path) -> None:
+    """Fresh runtime gets schema_version 2 and no slug at the runtime level."""
+    rt = RuntimeDir.init(tmp_path / "rt")
     data = yaml.safe_load(rt.marker_file.read_text())
-    assert data["slug"] == "hk-tourism"
-    assert data["schema_version"] == 1
-    assert "created_at" in data
+    assert data["schema_version"] == 2
+    assert data["type"] == "multi-org-runtime"
+    assert "slug" not in data
+    assert (rt.root / "orgs").is_dir()
 
 
-def test_slug_property_reads_opc_yaml(tmp_path: Path) -> None:
-    rt = RuntimeDir.init(tmp_path / "rt", slug="hk-tourism")
-    loaded = RuntimeDir.load(rt.root)
-    assert loaded.slug == "hk-tourism"
+def test_load_refuses_schema_v1(tmp_path: Path) -> None:
+    """A v1 marker (with slug) is rejected with a clear migration message."""
+    root = tmp_path / "legacy"
+    root.mkdir()
+    (root / "opc.yaml").write_text(
+        "slug: hk-tourism\nschema_version: 1\ncreated_at: 2026-04-01T00:00:00Z\n"
+    )
+    with pytest.raises(ValueError, match="migrate-to-multi-org"):
+        RuntimeDir.load(root)
 
 
-def test_init_creates_org_skeleton(tmp_path: Path) -> None:
-    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
-    assert rt.org_dir.is_dir()
-    assert rt.agents_dir.is_dir()
-    assert rt.pending_agents_dir.is_dir()
+def test_iter_org_roots_returns_subdirs(tmp_path: Path) -> None:
+    rt = RuntimeDir.init(tmp_path / "rt")
+    (rt.orgs_dir / "alpha").mkdir()
+    (rt.orgs_dir / "alpha" / "org").mkdir()
+    (rt.orgs_dir / "alpha" / "org" / "teams.yaml").write_text("teams: {}\n")
+    (rt.orgs_dir / "beta").mkdir()
+    (rt.orgs_dir / "beta" / "org").mkdir()
+    (rt.orgs_dir / "beta" / "org" / "teams.yaml").write_text("teams: {}\n")
+    (rt.orgs_dir / "_pending").mkdir()  # reserved name, must be skipped
 
-
-def test_teams_config_path_under_org(tmp_path: Path) -> None:
-    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
-    assert rt.teams_config_path == rt.root / "org" / "teams.yaml"
-
-
-def test_init_idempotent_keeps_slug(tmp_path: Path) -> None:
-    rt1 = RuntimeDir.init(tmp_path / "rt", slug="alpha")
-    rt2 = RuntimeDir.init(tmp_path / "rt", slug="beta")  # second call ignored
-    assert rt2.slug == "alpha"
+    slugs = sorted(slug for slug, _ in rt.iter_org_roots())
+    assert slugs == ["alpha", "beta"]
