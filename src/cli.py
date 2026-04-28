@@ -1269,8 +1269,11 @@ def cmd_cancel(args: argparse.Namespace) -> None:
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
         print(f"Error: {exc}")
         sys.exit(1)
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
     r = client.post(
-        f"/api/v1/tasks/{args.task_id}/cancel",
+        f"/api/v1/orgs/{slug}/tasks/{args.task_id}/cancel",
         json={"rationale": args.rationale or "", "cascade": not args.no_cascade},
     )
     if r.status_code == 404:
@@ -1771,6 +1774,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Cancel a task (founder): SIGTERMs live subprocesses and cascades down the subtree",
     )
     p_cancel.add_argument("task_id", help="Task ID to cancel (e.g. TASK-052)")
+    p_cancel.add_argument(
+        "--org", default=None,
+        help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)",
+    )
     p_cancel.add_argument(
         "--rationale", default="",
         help="Optional founder note recorded on every cancelled row",
