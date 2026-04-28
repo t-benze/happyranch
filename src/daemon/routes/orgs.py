@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, status
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 
 from src.daemon.auth import require_token
 from src.daemon.org_state import OrgState
@@ -21,13 +21,6 @@ _RESERVED = frozenset({"_pending", "_archive"})
 class InitOrgBody(BaseModel):
     slug: str
     from_example: str | None = None  # path to examples/orgs/<name> tree
-
-    @field_validator("slug")
-    @classmethod
-    def _validate_slug(cls, v: str) -> str:
-        if not _SLUG_RE.match(v) or v in _RESERVED:
-            raise ValueError(f"invalid slug: {v!r}")
-        return v
 
 
 def _require_runtime(state: DaemonState) -> None:
@@ -75,6 +68,11 @@ async def list_orgs(request: Request) -> dict:
 async def init_org(body: InitOrgBody, request: Request) -> dict:
     state: DaemonState = request.app.state.daemon
     _require_runtime(state)
+    if not _SLUG_RE.match(body.slug) or body.slug in _RESERVED:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_slug", "slug": body.slug},
+        )
     if body.slug in state.orgs:
         raise HTTPException(
             status_code=409,
