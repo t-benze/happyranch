@@ -21,10 +21,15 @@ def _auth_headers() -> dict:
     return {"Authorization": f"Bearer {paths.read_token()}"}
 
 
-def _register_runtime(base: str, runtime: Path) -> None:
+def _register_runtime(global_base: str, container: Path) -> None:
+    """POST /api/v1/runtime to register a runtime container with the daemon.
+
+    *global_base* must be the unprefixed API root
+    (``http://.../api/v1``) — ``/runtime`` is a singleton, not org-scoped.
+    """
     r = httpx.post(
-        f"{base}/runtimes/register",
-        json={"path": str(runtime)},
+        f"{global_base}/runtime",
+        json={"path": str(container)},
         headers=_auth_headers(),
         timeout=5.0,
     )
@@ -112,7 +117,7 @@ def test_register_and_run_completes_via_callback(
 ):
     """Regression guard for session-tracker wiring on the Claude path."""
     port = live_daemon
-    base = f"http://127.0.0.1:{port}/api/v1"
+    base = f"http://127.0.0.1:{port}/api/v1/orgs/test"
 
     fake_plan_env.write_text(
         '#!/usr/bin/env bash\n'
@@ -142,7 +147,7 @@ def test_completion_callback_rejected_when_session_unknown(
     fake_plan_env,
 ):
     port = live_daemon
-    base = f"http://127.0.0.1:{port}/api/v1"
+    base = f"http://127.0.0.1:{port}/api/v1/orgs/test"
 
     fake_plan_env.write_text("#!/usr/bin/env bash\nexit 0\n")
     fake_plan_env.chmod(0o755)
@@ -173,7 +178,7 @@ def test_delegate_and_resume_roundtrip(
     fake_plan_env,
 ):
     port = live_daemon
-    base = f"http://127.0.0.1:{port}/api/v1"
+    base = f"http://127.0.0.1:{port}/api/v1/orgs/test"
 
     marker = fake_plan_env.parent / "eh_called_once"
     fake_plan_env.write_text(
@@ -225,11 +230,13 @@ def test_delegate_and_resume_roundtrip(
 
 def test_idle_daemon_starts_workers_after_register(
     live_daemon_idle,
+    runtime_container,
     runtime,
     fake_plan_env,
 ):
     port = live_daemon_idle
-    base = f"http://127.0.0.1:{port}/api/v1"
+    global_base = f"http://127.0.0.1:{port}/api/v1"
+    base = f"{global_base}/orgs/test"
 
     fake_plan_env.write_text(
         '#!/usr/bin/env bash\n'
@@ -241,7 +248,7 @@ def test_idle_daemon_starts_workers_after_register(
     )
     fake_plan_env.chmod(0o755)
 
-    _register_runtime(base, runtime)
+    _register_runtime(global_base, runtime_container)
     seed_workspace(runtime, "engineering_head")
 
     task_id = _submit_task(base, brief="post-register smoke")
@@ -254,7 +261,7 @@ def test_register_and_run_completes_via_codex_callback(
     fake_codex_plan_env,
 ):
     port = live_daemon
-    base = f"http://127.0.0.1:{port}/api/v1"
+    base = f"http://127.0.0.1:{port}/api/v1/orgs/test"
     headers = _auth_headers()
 
     _write_agent_config(runtime, "engineering_head", "codex")
@@ -291,7 +298,7 @@ def test_mixed_fleet_roundtrip_uses_claude_and_codex(
     fake_codex_plan_env,
 ):
     port = live_daemon
-    base = f"http://127.0.0.1:{port}/api/v1"
+    base = f"http://127.0.0.1:{port}/api/v1/orgs/test"
     headers = _auth_headers()
 
     _write_agent_config(runtime, "engineering_head", "claude")
@@ -374,7 +381,7 @@ def test_cancel_sigterms_running_subprocess_and_marks_task_failed(
     import time as _time
 
     port = live_daemon
-    base = f"http://127.0.0.1:{port}/api/v1"
+    base = f"http://127.0.0.1:{port}/api/v1/orgs/test"
 
     # Plan: sleep 10s. We'll cancel within that window. When the subprocess
     # gets SIGTERM'd, `set -e` causes a non-zero exit; run_step's classifier
@@ -444,7 +451,7 @@ def test_revisit_roundtrip_creates_new_root_and_completes(
     predecessor stays `blocked(escalated)`. CLI is bypassed because the
     integration harness runs non-TTY (the CLI would refuse)."""
     port = live_daemon
-    base = f"http://127.0.0.1:{port}/api/v1"
+    base = f"http://127.0.0.1:{port}/api/v1/orgs/test"
 
     # Marker file switches behavior: first EH call escalates (predecessor),
     # every subsequent EH call (new root) returns done.

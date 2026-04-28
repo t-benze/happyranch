@@ -42,7 +42,7 @@ def _auth_headers() -> dict:
 
 
 def _base(port: str) -> str:
-    return f"http://127.0.0.1:{port}/api/v1"
+    return f"http://127.0.0.1:{port}/api/v1/orgs/test"
 
 
 def _seed_active_agent(runtime: Path, name: str) -> None:

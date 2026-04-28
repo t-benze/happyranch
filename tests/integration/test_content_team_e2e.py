@@ -66,7 +66,7 @@ def test_content_team_pass_path_completes(
 ) -> None:
     """Content Team PASS path: CM → writer → QA(PASS) → CM done → COMPLETED."""
     port = live_daemon
-    base = f"http://127.0.0.1:{port}/api/v1"
+    base = f"http://127.0.0.1:{port}/api/v1/orgs/test"
 
     # Seed workspaces for all three content agents.
     seed_workspace(runtime, "content_manager")
