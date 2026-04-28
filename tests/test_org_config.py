@@ -4,12 +4,16 @@ from pathlib import Path
 
 import pytest
 
+from src.orchestrator._paths import OrgPaths
 from src.orchestrator.org_config import OrgConfigError, load_org_config
 from src.runtime import RuntimeDir
 
 
-def _runtime(tmp_path: Path) -> RuntimeDir:
-    return RuntimeDir.init(tmp_path / "rt", slug="test")
+def _runtime(tmp_path: Path) -> OrgPaths:
+    rt = RuntimeDir.init(tmp_path / "rt")
+    paths = OrgPaths(root=rt.orgs_dir / "test")
+    paths.org_dir.mkdir(parents=True, exist_ok=True)
+    return paths
 
 
 def test_missing_file_returns_empty_config(tmp_path: Path) -> None:

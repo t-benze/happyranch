@@ -4,6 +4,7 @@ import pytest
 
 from src.config import Settings
 from src.infrastructure.database import Database
+from src.orchestrator._paths import OrgPaths
 from src.runtime import RuntimeDir
 
 
@@ -18,8 +19,15 @@ def test_settings(tmp_dir: Path) -> Settings:
 
 
 @pytest.fixture
-def test_runtime(tmp_dir: Path) -> RuntimeDir:
-    return RuntimeDir.init(tmp_dir / "runtime", slug="test")
+def test_runtime(tmp_dir: Path) -> OrgPaths:
+    """OrgPaths rooted at <tmp>/runtime/orgs/test/.
+
+    Historical name kept for backward compatibility — tests treat this as the
+    single per-org root, not the multi-org container. The multi-org RuntimeDir
+    is materialized at <tmp>/runtime/ so ``RuntimeDir.load`` could re-read it.
+    """
+    rt = RuntimeDir.init(tmp_dir / "runtime")
+    return OrgPaths(root=rt.orgs_dir / "test")
 
 
 @pytest.fixture

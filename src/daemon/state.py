@@ -27,7 +27,15 @@ class DaemonState:
     def from_runtime(cls, runtime: RuntimeDir, settings: Settings) -> "DaemonState":
         state = cls(runtime=runtime, settings=settings)
         for slug, root in runtime.iter_org_roots():
-            state.orgs[slug] = OrgState.load(slug=slug, root=root, settings=settings)
+            org = OrgState.load(slug=slug, root=root, settings=settings)
+            # Attach the global queue + per-org sessions so the orchestrator can
+            # re-enqueue tasks (e.g. parent wake-up after a child resolves).
+            # The lifespan wiring also does this, but `from_runtime` is used by
+            # tests that bypass lifespan, so we do it here too — idempotent.
+            if org.orchestrator is not None:
+                org.orchestrator.attach_queue(state.queue)
+                org.orchestrator.attach_sessions(org.sessions)
+            state.orgs[slug] = org
         return state
 
     @property
@@ -42,13 +50,21 @@ class DaemonState:
 
     async def add_org(self, slug: str) -> OrgState:
         """Lazy-load an org's OrgState. Idempotent — returns the existing
-        instance if the slug is already loaded."""
+        instance if the slug is already loaded.
+
+        The orchestrator's queue and per-org session tracker are attached
+        here so a freshly-added org is immediately runnable (the lifespan
+        ``_attach_org_runtime_wiring`` only runs over orgs present at boot).
+        """
         async with self.orgs_lock:
             if slug in self.orgs:
                 return self.orgs[slug]
             assert self.runtime is not None
             root = self.runtime.orgs_dir / slug
             org = OrgState.load(slug=slug, root=root, settings=self.settings)
+            if org.orchestrator is not None:
+                org.orchestrator.attach_queue(self.queue)
+                org.orchestrator.attach_sessions(org.sessions)
             self.orgs[slug] = org
             return org
 

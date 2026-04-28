@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from src.config import Settings
 
 if TYPE_CHECKING:
-    from src.runtime import RuntimeDir
+    from src.orchestrator._paths import OrgPaths
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ def _format_allow_rule(prefix: str, *, cli: bool) -> str:
 
 
 def allow_rules_for_agent(
-    runtime: "RuntimeDir", agent_name: str | None, *, cli: bool,
+    paths: "OrgPaths", agent_name: str | None, *, cli: bool,
 ) -> list[str]:
     """Build the Bash allow-rule list for ``agent_name``.
 
@@ -62,13 +62,13 @@ def allow_rules_for_agent(
     rules = [_format_allow_rule("opc", cli=cli)]
     if agent_name is None:
         return rules
-    for prefix in prompt_loader.allow_rules_for_agent(runtime, agent_name):
+    for prefix in prompt_loader.allow_rules_for_agent(paths, agent_name):
         rules.append(_format_allow_rule(prefix, cli=cli))
     return rules
 
 
 def build_settings_json(
-    runtime: "RuntimeDir",
+    paths: "OrgPaths",
     repo_names: list[str],
     agent_name: str | None = None,
 ) -> dict:
@@ -93,7 +93,7 @@ def build_settings_json(
 
     return {
         "permissions": {
-            "allow": allow_rules_for_agent(runtime, agent_name, cli=False),
+            "allow": allow_rules_for_agent(paths, agent_name, cli=False),
         },
         "hooks": hooks,
     }
@@ -141,9 +141,9 @@ class ClaudeWorkspaceAdapter:
 
     provider_name = "claude"
 
-    def __init__(self, settings: Settings, runtime: "RuntimeDir") -> None:
+    def __init__(self, settings: Settings, paths: "OrgPaths") -> None:
         self._settings = settings
-        self._runtime = runtime
+        self._paths = paths
         self._persistent = PersistentWorkspaceSetup(settings)
 
     def write_settings_json(
@@ -156,7 +156,7 @@ class ClaudeWorkspaceAdapter:
         claude_dir = workspace / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
         settings_data = build_settings_json(
-            self._runtime, repo_names or [], agent_name=agent_name,
+            self._paths, repo_names or [], agent_name=agent_name,
         )
         (claude_dir / "settings.json").write_text(
             json.dumps(settings_data, indent=2) + "\n"
@@ -287,9 +287,9 @@ class CodexWorkspaceAdapter:
 
     provider_name = "codex"
 
-    def __init__(self, settings: Settings, runtime: "RuntimeDir") -> None:
+    def __init__(self, settings: Settings, paths: "OrgPaths") -> None:
         self._settings = settings
-        self._runtime = runtime
+        self._paths = paths
         self._persistent = PersistentWorkspaceSetup(settings)
 
     def write_agents_md(
@@ -309,7 +309,7 @@ class CodexWorkspaceAdapter:
         completion contract. The skill itself is the source of truth.
         """
         workspace.mkdir(parents=True, exist_ok=True)
-        sections = ClaudeWorkspaceAdapter(self._settings, self._runtime)._build_sections(
+        sections = ClaudeWorkspaceAdapter(self._settings, self._paths)._build_sections(
             agent_name,
             system_prompt,
             include_start_task=True,

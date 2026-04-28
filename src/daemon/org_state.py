@@ -16,6 +16,8 @@ from src.daemon.event_bus import EventBus
 from src.daemon.sessions import SessionTracker
 from src.infrastructure.database import Database
 from src.models import BlockKind, TaskStatus
+from src.orchestrator._paths import OrgPaths
+from src.orchestrator.orchestrator import Orchestrator
 from src.orchestrator.teams import TeamsRegistry
 
 
@@ -26,6 +28,7 @@ class OrgState:
     db: Database
     teams: TeamsRegistry
     settings: Settings
+    orchestrator: Orchestrator | None = None
     sessions: SessionTracker = field(default_factory=SessionTracker)
     db_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     kb_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -67,14 +70,23 @@ class OrgState:
 
     @classmethod
     def load(cls, *, slug: str, root: Path, settings: Settings) -> "OrgState":
-        db = Database(root / "opc.db")
+        paths = OrgPaths(root=root)
+        db = Database(paths.db_path)
         teams = TeamsRegistry.load(root)
+        orchestrator = Orchestrator(
+            db=db,
+            settings=settings,
+            org_paths=paths,
+            slug=slug,
+            teams=teams,
+        )
         return cls(
             slug=slug,
             root=root,
             db=db,
             teams=teams,
             settings=settings,
+            orchestrator=orchestrator,
         )
 
     def close(self) -> None:

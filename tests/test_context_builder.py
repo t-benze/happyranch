@@ -4,16 +4,19 @@ from pathlib import Path
 import pytest
 
 from src.config import Settings
+from src.orchestrator._paths import OrgPaths
 from src.orchestrator.context_builder import ContextBuilder
 from src.runtime import RuntimeDir
 
 
 @pytest.fixture
-def runtime(tmp_path: Path) -> RuntimeDir:
-    return RuntimeDir.init(tmp_path / "rt", slug="test")
+def runtime(tmp_path: Path) -> OrgPaths:
+    rt = RuntimeDir.init(tmp_path / "rt")
+    return OrgPaths(root=rt.orgs_dir / "test")
 
 
-def _write_agent(rt: RuntimeDir, name: str, allow_rules: list[str]) -> None:
+def _write_agent(rt: OrgPaths, name: str, allow_rules: list[str]) -> None:
+    rt.agents_dir.mkdir(parents=True, exist_ok=True)
     rules_block = (
         "allow_rules: []\n" if not allow_rules
         else "allow_rules:\n" + "\n".join(f"  - {r!r}" for r in allow_rules) + "\n"
@@ -270,8 +273,9 @@ def test_claude_md_drops_task_brief_and_completion_report(test_settings, tmp_pat
 
 
 def test_generated_claude_md_contains_kb_section(tmp_path):
-    rt = RuntimeDir.init(tmp_path / "rt", slug="test")
-    builder = ContextBuilder(Settings(), rt)
+    rt = RuntimeDir.init(tmp_path / "rt")
+    paths = OrgPaths(root=rt.orgs_dir / "test")
+    builder = ContextBuilder(Settings(), paths)
     workspace = tmp_path / "ws"
     builder.write_claude_md(
         workspace=workspace,
@@ -291,8 +295,9 @@ def test_generated_claude_md_contains_kb_section(tmp_path):
 
 
 def test_generated_claude_md_contains_task_recall_section(tmp_path):
-    rt = RuntimeDir.init(tmp_path / "rt", slug="test")
-    builder = ContextBuilder(Settings(), rt)
+    rt = RuntimeDir.init(tmp_path / "rt")
+    paths = OrgPaths(root=rt.orgs_dir / "test")
+    builder = ContextBuilder(Settings(), paths)
     workspace = tmp_path / "ws"
     builder.write_claude_md(
         workspace=workspace,

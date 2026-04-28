@@ -3,16 +3,18 @@ from pathlib import Path
 
 import pytest
 
-from src.runtime import RuntimeDir
+from src.orchestrator._paths import OrgPaths
 from src.orchestrator.workspace_adapters import (
     ClaudeWorkspaceAdapter,
     CodexWorkspaceAdapter,
 )
+from src.runtime import RuntimeDir
 
 
 @pytest.fixture
-def runtime(tmp_path: Path) -> RuntimeDir:
-    return RuntimeDir.init(tmp_path / "rt", slug="test")
+def runtime(tmp_path: Path) -> OrgPaths:
+    rt = RuntimeDir.init(tmp_path / "rt")
+    return OrgPaths(root=rt.orgs_dir / "test")
 
 
 def test_claude_adapter_bootstrap_creates_claude_files_and_skills(test_settings, tmp_dir, runtime):

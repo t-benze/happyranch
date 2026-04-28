@@ -16,13 +16,13 @@ from src.config import Settings
 from src.daemon.agent_config import load_agent_config
 from src.infrastructure.audit_logger import AuditLogger
 from src.infrastructure.database import Database
-from src.runtime import RuntimeDir
 from src.models import (
     CompletionReport,
     NextStep,
     StepRecord,
     TaskRecord,
 )
+from src.orchestrator._paths import OrgPaths
 from src.orchestrator.executors import ClaudeExecutor, CodexExecutor, ExecutorResult
 from src.orchestrator.org_config import load_org_config
 from src.orchestrator.performance_tracker import PerformanceTracker
@@ -54,12 +54,14 @@ class Orchestrator:
         self,
         db: Database,
         settings: Settings,
-        runtime: RuntimeDir,
+        org_paths: OrgPaths,
+        slug: str,
         teams: TeamsRegistry,
     ) -> None:
         self._db = db
         self._settings = settings
-        self._runtime = runtime
+        self._paths = org_paths
+        self._slug = slug
         self._audit = AuditLogger(db)
         self._tracker = PerformanceTracker(db, settings)
         self._teams = teams
@@ -90,7 +92,7 @@ class Orchestrator:
         return f"sess-{uuid.uuid4().hex}"
 
     def _resolve_executor_name(self, agent_name: str) -> str:
-        workspace = self._runtime.workspaces_dir / agent_name
+        workspace = self._paths.workspaces_dir / agent_name
         cfg = load_agent_config(workspace)
         return cfg.get("executor") or "claude"
 
@@ -103,10 +105,10 @@ class Orchestrator:
         falls through to the next layer; the global Settings default is
         the final floor and is itself overridable via OPC_SESSION_TIMEOUT_SECONDS.
         """
-        agent = load_agent(self._runtime, agent_name)
+        agent = load_agent(self._paths, agent_name)
         if agent is not None and agent.session_timeout_seconds is not None:
             return agent.session_timeout_seconds
-        org = load_org_config(self._runtime)
+        org = load_org_config(self._paths)
         if org.session_timeout_seconds is not None:
             return org.session_timeout_seconds
         return self._settings.session_timeout_seconds
@@ -126,7 +128,7 @@ class Orchestrator:
             claude_cli_path=self._settings.claude_cli_path,
             permission_mode=self._settings.permission_mode,
             settings=self._settings,
-            runtime=self._runtime,
+            paths=self._paths,
         )
 
     def _build_agent_prompt(
@@ -275,7 +277,7 @@ class Orchestrator:
         """
         task = self._db.get_task(task_id)
         agent_name = agent
-        workspace = self._runtime.workspaces_dir / agent_name
+        workspace = self._paths.workspaces_dir / agent_name
         provider = self._resolve_executor_name(agent_name)
         executor = self._build_executor(provider)
 
@@ -366,7 +368,7 @@ class Orchestrator:
         task = self._db.get_task(task_id)
         if task is None or not task.assigned_agent:
             return
-        ws = self._runtime.workspaces_dir / task.assigned_agent
+        ws = self._paths.workspaces_dir / task.assigned_agent
         if not ws.exists():
             return
         path = ws / "task_history.md"

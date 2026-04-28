@@ -5,21 +5,21 @@ import subprocess
 from pathlib import Path
 
 from src.config import Settings
+from src.orchestrator._paths import OrgPaths
 from src.orchestrator.workspace_adapters import (
     ClaudeWorkspaceAdapter,
     CodexWorkspaceAdapter,
 )
-from src.runtime import RuntimeDir
 
 logger = logging.getLogger(__name__)
 
 
 class ContextBuilder:
-    def __init__(self, settings: Settings, runtime: RuntimeDir) -> None:
+    def __init__(self, settings: Settings, paths: OrgPaths) -> None:
         self._settings = settings
-        self._runtime = runtime
-        self._claude = ClaudeWorkspaceAdapter(settings, runtime)
-        self._codex = CodexWorkspaceAdapter(settings, runtime)
+        self._paths = paths
+        self._claude = ClaudeWorkspaceAdapter(settings, paths)
+        self._codex = CodexWorkspaceAdapter(settings, paths)
 
     def _adapter(self, provider: str = "claude"):
         if provider == "claude":

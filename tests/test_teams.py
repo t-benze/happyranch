@@ -4,15 +4,20 @@ from pathlib import Path
 
 import pytest
 
+from src.orchestrator._paths import OrgPaths
 from src.orchestrator.teams import TeamManager, TeamsRegistry
 from src.runtime import RuntimeDir
 
 
-def _runtime(tmp_path: Path) -> RuntimeDir:
-    return RuntimeDir.init(tmp_path / "rt", slug="test")
+def _runtime(tmp_path: Path) -> OrgPaths:
+    rt = RuntimeDir.init(tmp_path / "rt")
+    paths = OrgPaths(root=rt.orgs_dir / "test")
+    paths.org_dir.mkdir(parents=True, exist_ok=True)
+    paths.teams_config_path.write_text("teams: {}\n")
+    return paths
 
 
-def _runtime_with_teams(tmp_path: Path) -> RuntimeDir:
+def _runtime_with_teams(tmp_path: Path) -> OrgPaths:
     """Return a runtime pre-seeded with engineering + content teams."""
     rt = _runtime(tmp_path)
     rt.teams_config_path.write_text(
@@ -31,23 +36,23 @@ def test_load_missing_file_returns_empty_registry(tmp_path: Path) -> None:
     rt = _runtime(tmp_path)
     # Remove the seeded teams.yaml to simulate a runtime with no teams file.
     rt.teams_config_path.unlink()
-    reg = TeamsRegistry.load(rt)
+    reg = TeamsRegistry.load(rt.root)
     assert reg.teams() == []
     assert reg.team_for_agent("dev_agent") is None
 
 
 def test_save_then_load_roundtrips(tmp_path: Path) -> None:
     rt = _runtime_with_teams(tmp_path)
-    reg = TeamsRegistry.load(rt)
-    reg.save(rt)
-    reloaded = TeamsRegistry.load(rt)
+    reg = TeamsRegistry.load(rt.root)
+    reg.save(rt.root)
+    reloaded = TeamsRegistry.load(rt.root)
     assert reloaded.teams() == reg.teams()
     assert reloaded.manager_for_team("content").workers == reg.manager_for_team("content").workers
 
 
 def test_lookup_helpers(tmp_path: Path) -> None:
     rt = _runtime_with_teams(tmp_path)
-    reg = TeamsRegistry.load(rt)
+    reg = TeamsRegistry.load(rt.root)
     assert reg.team_for_agent("dev_agent") == "engineering"
     assert reg.team_for_agent("content_writer") == "content"
     assert reg.team_for_agent("unknown_agent") is None
@@ -61,61 +66,67 @@ def test_lookup_helpers(tmp_path: Path) -> None:
 
 def test_add_and_remove_worker_persists(tmp_path: Path) -> None:
     rt = _runtime_with_teams(tmp_path)
-    reg = TeamsRegistry.load(rt)
+    reg = TeamsRegistry.load(rt.root)
     reg.add_worker("content", "seo_agent")
-    reloaded = TeamsRegistry.load(rt)
+    reloaded = TeamsRegistry.load(rt.root)
     assert "seo_agent" in reloaded.manager_for_team("content").workers
     reloaded.remove_worker("content", "seo_agent")
-    again = TeamsRegistry.load(rt)
+    again = TeamsRegistry.load(rt.root)
     assert "seo_agent" not in again.manager_for_team("content").workers
 
 
 def test_add_worker_to_unknown_team_raises(tmp_path: Path) -> None:
     rt = _runtime(tmp_path)
-    reg = TeamsRegistry.load(rt)
+    reg = TeamsRegistry.load(rt.root)
     with pytest.raises(KeyError):
         reg.add_worker("ops", "partner_liaison")
 
 
 def test_manager_for_unknown_team_raises(tmp_path: Path) -> None:
     rt = _runtime(tmp_path)
-    reg = TeamsRegistry.load(rt)
+    reg = TeamsRegistry.load(rt.root)
     with pytest.raises(KeyError):
         reg.manager_for_team("ops")
 
 
 def test_all_agents_returns_managers_and_workers(tmp_path: Path) -> None:
     rt = _runtime_with_teams(tmp_path)
-    reg = TeamsRegistry.load(rt)
+    reg = TeamsRegistry.load(rt.root)
     agents = set(reg.all_agents())
     assert {"engineering_head", "content_manager", "dev_agent", "content_writer", "content_qa"} <= agents
 
 
 def test_seed_empty_writes_empty_teams_block(tmp_path):
-    rt = RuntimeDir.init(tmp_path / "rt", slug="test")
+    rt_dir = RuntimeDir.init(tmp_path / "rt")
+    rt = OrgPaths(root=rt_dir.orgs_dir / "test")
+    rt.org_dir.mkdir(parents=True, exist_ok=True)
     # init already calls seed_empty; calling again is idempotent.
-    TeamsRegistry.seed_empty(rt)
+    TeamsRegistry.seed_empty(rt.root)
     import yaml
     data = yaml.safe_load(rt.teams_config_path.read_text())
     assert data == {"teams": {}}
 
 
 def test_load_returns_empty_registry_when_no_teams(tmp_path):
-    rt = RuntimeDir.init(tmp_path / "rt", slug="test")
-    reg = TeamsRegistry.load(rt)
+    rt_dir = RuntimeDir.init(tmp_path / "rt")
+    rt = OrgPaths(root=rt_dir.orgs_dir / "test")
+    rt.org_dir.mkdir(parents=True, exist_ok=True)
+    reg = TeamsRegistry.load(rt.root)
     assert reg.teams() == []
     assert reg.team_for_agent("anybody") is None
 
 
 def test_load_reads_runtime_team_file(tmp_path):
-    rt = RuntimeDir.init(tmp_path / "rt", slug="test")
+    rt_dir = RuntimeDir.init(tmp_path / "rt")
+    rt = OrgPaths(root=rt_dir.orgs_dir / "test")
+    rt.org_dir.mkdir(parents=True, exist_ok=True)
     rt.teams_config_path.write_text(
         "teams:\n"
         "  eng:\n"
         "    manager: alice\n"
         "    workers: [bob, carol]\n"
     )
-    reg = TeamsRegistry.load(rt)
+    reg = TeamsRegistry.load(rt.root)
     assert reg.teams() == ["eng"]
     m = reg.manager_for_team("eng")
     assert m.name == "alice"

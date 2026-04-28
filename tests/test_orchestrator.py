@@ -15,9 +15,13 @@ from src.orchestrator.teams import TeamsRegistry
 
 @pytest.fixture
 def orchestrator(test_settings, test_runtime):
+    test_runtime.root.mkdir(parents=True, exist_ok=True)
     db = Database(test_runtime.db_path)
-    teams = TeamsRegistry.load(test_runtime)
-    return Orchestrator(db=db, settings=test_settings, runtime=test_runtime, teams=teams)
+    teams = TeamsRegistry.load(test_runtime.root)
+    return Orchestrator(
+        db=db, settings=test_settings,
+        org_paths=test_runtime, slug="test", teams=teams,
+    )
 
 
 _DEFAULT_AGENTS = ["engineering_head", "product_manager", "dev_agent", "payment_agent"]
@@ -450,13 +454,15 @@ def test_orchestrator_requires_teams() -> None:
     from pathlib import Path
     from src.config import Settings
     from src.infrastructure.database import Database
+    from src.orchestrator._paths import OrgPaths
     from src.orchestrator.orchestrator import Orchestrator
     from src.runtime import RuntimeDir
     import tempfile
 
     with tempfile.TemporaryDirectory() as td:
-        rt = RuntimeDir.init(Path(td) / "rt", slug="x")
-        db = Database(rt.db_path)
+        rt = RuntimeDir.init(Path(td) / "rt")
+        paths = OrgPaths(root=rt.orgs_dir / "x")
+        db = Database(paths.db_path)
         settings = Settings()
         with pytest.raises(TypeError):
-            Orchestrator(db=db, settings=settings, runtime=rt)  # missing teams
+            Orchestrator(db=db, settings=settings, org_paths=paths, slug="x")  # missing teams

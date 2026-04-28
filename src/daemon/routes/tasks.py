@@ -288,20 +288,12 @@ async def resolve_escalation(
             task_id=task_id, decision=body.decision, rationale=body.rationale
         )
     # Wake the parent (if any) so it can re-invoke the EH with the resolved outcome.
+    # The org's Orchestrator owns its slug + queue + db, so we just pass it
+    # through; ``_enqueue_parent_if_waiting`` reads ``orch._slug`` to push
+    # ``(slug, task_id)`` onto the global TaskQueue.
     from src.orchestrator.run_step import _enqueue_parent_if_waiting
-    # `_enqueue_parent_if_waiting` calls `_queue.put_nowait(task_id)` with a
-    # single arg, but TaskQueue wants ``(slug, task_id)`` now. Adapt by
-    # binding our org's slug on the way through.
-    class _SlugBoundQueue:
-        def __init__(self, slug: str, queue):
-            self._slug = slug
-            self._queue = queue
-        def put_nowait(self, task_id: str) -> None:
-            self._queue.put_nowait(self._slug, task_id)
-    class _Shim:
-        _db = org.db
-        _queue = _SlugBoundQueue(org.slug, state.queue)
-    _enqueue_parent_if_waiting(_Shim(), task_id)
+    assert org.orchestrator is not None, "OrgState.load must build the orchestrator"
+    _enqueue_parent_if_waiting(org.orchestrator, task_id)
     return {"ok": True, "task_id": task_id, "new_status": new_status.value}
 
 

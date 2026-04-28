@@ -8,6 +8,7 @@ import pytest
 from src.config import Settings
 from src.infrastructure.database import Database
 from src.models import BlockKind, CompletionReport, NextStep, TaskRecord, TaskStatus
+from src.orchestrator._paths import OrgPaths
 from src.orchestrator.orchestrator import Orchestrator
 from src.orchestrator.teams import TeamsRegistry
 from src.runtime import RuntimeDir
@@ -35,9 +36,11 @@ def test_registry_flags_cross_team_delegation() -> None:
 
 
 @pytest.fixture
-def runtime(tmp_path: Path) -> RuntimeDir:
-    rt = RuntimeDir.init(tmp_path / "rt", slug="test")
-    rt.teams_config_path.write_text(
+def paths(tmp_path: Path) -> OrgPaths:
+    rt = RuntimeDir.init(tmp_path / "rt")
+    op = OrgPaths(root=rt.orgs_dir / "test")
+    op.teams_config_path.parent.mkdir(parents=True, exist_ok=True)
+    op.teams_config_path.write_text(
         "teams:\n"
         "  engineering:\n"
         "    manager: engineering_head\n"
@@ -46,12 +49,12 @@ def runtime(tmp_path: Path) -> RuntimeDir:
         "    manager: content_manager\n"
         "    workers: [content_writer, content_qa]\n"
     )
-    return rt
+    return op
 
 
 @pytest.fixture
-def db(runtime: RuntimeDir) -> Database:
-    return Database(runtime.db_path)
+def db(paths: OrgPaths) -> Database:
+    return Database(paths.db_path)
 
 
 def _make_result(success: bool = True):
@@ -70,7 +73,7 @@ def _make_report_with_decision(agent: str, decision: NextStep) -> CompletionRepo
     )
 
 
-def test_cross_team_feedback_path(runtime: RuntimeDir, db: Database, monkeypatch) -> None:
+def test_cross_team_feedback_path(paths: OrgPaths, db: Database, monkeypatch) -> None:
     """When a manager delegates to a cross-team agent, run_step must:
 
     - Insert a task_result row with the feedback text.
@@ -81,9 +84,9 @@ def test_cross_team_feedback_path(runtime: RuntimeDir, db: Database, monkeypatch
     # Set up: content_manager task, content_writer workspace exists on disk.
     # dev_agent workspace also present so _validate_delegate passes before
     # the cross-team check fires.
-    (runtime.workspaces_dir / "content_manager").mkdir(parents=True)
-    (runtime.workspaces_dir / "content_writer").mkdir(parents=True)
-    (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
+    (paths.workspaces_dir / "content_manager").mkdir(parents=True)
+    (paths.workspaces_dir / "content_writer").mkdir(parents=True)
+    (paths.workspaces_dir / "dev_agent").mkdir(parents=True)
 
     db.insert_task(TaskRecord(
         id="T-1",
@@ -92,8 +95,25 @@ def test_cross_team_feedback_path(runtime: RuntimeDir, db: Database, monkeypatch
         assigned_agent="content_manager",
     ))
 
-    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10), runtime=runtime, teams=TeamsRegistry.load(runtime))
-    q: asyncio.Queue = asyncio.Queue()
+    orch = Orchestrator(
+        db=db,
+        settings=Settings(max_orchestration_steps=10),
+        org_paths=paths,
+        slug="test",
+        teams=TeamsRegistry.load(paths.root),
+    )
+
+    class _SlugQueue:
+        def __init__(self) -> None:
+            self.q: asyncio.Queue = asyncio.Queue()
+        def put_nowait(self, slug: str, task_id: str) -> None:
+            self.q.put_nowait((slug, task_id))
+        def qsize(self) -> int:
+            return self.q.qsize()
+        def get_nowait(self):
+            return self.q.get_nowait()
+
+    q = _SlugQueue()
     orch._queue = q
 
     # Stub the executor to return a cross-team delegation decision
@@ -136,4 +156,4 @@ def test_cross_team_feedback_path(runtime: RuntimeDir, db: Database, monkeypatch
 
     # The task must be re-enqueued for the next step
     assert q.qsize() == 1
-    assert q.get_nowait() == "T-1"
+    assert q.get_nowait() == ("test", "T-1")

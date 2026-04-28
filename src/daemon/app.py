@@ -19,6 +19,21 @@ from src.daemon.routes import (
 from src.daemon.state import DaemonState
 
 
+def _attach_org_runtime_wiring(state: DaemonState) -> None:
+    """Wire each loaded org's Orchestrator to the global queue + per-org sessions.
+
+    The Orchestrator is built inside ``OrgState.load`` so it knows its slug,
+    but its ``_queue`` and ``_sessions`` references are populated separately
+    so unit tests that build an OrgState without a daemon can still inspect
+    the orchestrator before the queue exists.
+    """
+    for org in state.orgs.values():
+        if org.orchestrator is None:
+            continue
+        org.orchestrator.attach_queue(state.queue)
+        org.orchestrator.attach_sessions(org.sessions)
+
+
 def ensure_workers_started(state: DaemonState) -> None:
     """Start the worker pool if a runtime is active and workers aren't running.
 
@@ -28,6 +43,7 @@ def ensure_workers_started(state: DaemonState) -> None:
     """
     if state.is_idle:
         return
+    _attach_org_runtime_wiring(state)
     if state.queue.is_running():
         return
     dispatcher = Dispatcher(state)
