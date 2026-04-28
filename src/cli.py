@@ -162,7 +162,7 @@ def cmd_orgs_init(args: argparse.Namespace) -> None:
     r = client.post("/api/v1/orgs", json=payload)
     if not _ok(r):
         return
-    print(f"created org: {r.json()['slug']}")
+    print(f"created: {r.json()['slug']}")
 
 
 def cmd_orgs_unload(args: argparse.Namespace) -> None:
@@ -175,7 +175,7 @@ def cmd_orgs_unload(args: argparse.Namespace) -> None:
     r = client.request("DELETE", f"/api/v1/orgs/{args.slug}")
     if not _ok(r):
         return
-    print(f"unloaded org: {r.json()['slug']}")
+    print(f"unloaded: {r.json()['slug']}")
 
 
 def _fmt_ts(iso: str | None, *, date_only: bool = False) -> str:

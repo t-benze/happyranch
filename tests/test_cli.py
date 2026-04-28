@@ -1868,7 +1868,7 @@ def test_cmd_orgs_init_basic(capsys):
         cmd_orgs_init(args)
 
     fake.post.assert_called_once_with("/api/v1/orgs", json={"slug": "alpha"})
-    assert "created org: alpha" in capsys.readouterr().out
+    assert "created: alpha" in capsys.readouterr().out
 
 
 def test_cmd_orgs_init_with_from(capsys):
@@ -1902,4 +1902,4 @@ def test_cmd_orgs_unload_basic(capsys):
         cmd_orgs_unload(args)
 
     fake.request.assert_called_once_with("DELETE", "/api/v1/orgs/alpha")
-    assert "unloaded org: alpha" in capsys.readouterr().out
+    assert "unloaded: alpha" in capsys.readouterr().out
