@@ -66,16 +66,15 @@ def test_init_agent_specific():
 
 def test_init_subcommand():
     parser = build_parser()
-    args = parser.parse_args(["init", "/tmp/my-runtime", "--slug", "hk-tourism"])
+    args = parser.parse_args(["init", "/tmp/my-runtime"])
     assert args.command == "init"
     assert args.path == "/tmp/my-runtime"
-    assert args.slug == "hk-tourism"
 
 
-def test_init_subcommand_requires_slug():
+def test_runtime_subcommand():
     parser = build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(["init", "/tmp/my-runtime"])
+    args = parser.parse_args(["runtime"])
+    assert args.command == "runtime"
 
 
 def test_no_command_prints_help(capsys):
@@ -100,36 +99,34 @@ def test_run_with_team_flag():
     assert args.team == "content"
 
 
-def test_cmd_init_calls_register_endpoint(tmp_path, capsys):
+def test_cmd_init_calls_runtime_endpoint(tmp_path, capsys):
     from src.cli import cmd_init
 
     fake_client = MagicMock()
     fake_client.post.return_value.status_code = 200
     fake_client.post.return_value.json.return_value = {
-        "active": str(tmp_path / "rt"),
-        "registered": [str(tmp_path / "rt")],
+        "runtime": str(tmp_path / "rt"),
     }
 
     with patch("src.cli.OpcClient.from_env", return_value=fake_client):
-        args = MagicMock(path=str(tmp_path / "rt"), slug="hk-tourism")
+        args = MagicMock(path=str(tmp_path / "rt"))
         cmd_init(args)
 
     fake_client.post.assert_called_once_with(
-        "/api/v1/runtimes/register",
-        json={"path": str(tmp_path / "rt"), "slug": "hk-tourism"},
+        "/api/v1/runtime",
+        json={"path": str(tmp_path / "rt")},
     )
     out = capsys.readouterr().out
-    assert "active runtime" in out.lower()
+    assert f"runtime: {tmp_path / 'rt'}" in out
 
 
-def test_cmd_use_calls_activate_endpoint(tmp_path, capsys):
+def test_cmd_use_calls_runtime_use_endpoint(tmp_path, capsys):
     from src.cli import cmd_use
 
     fake_client = MagicMock()
     fake_client.post.return_value.status_code = 200
     fake_client.post.return_value.json.return_value = {
-        "active": str(tmp_path / "rt"),
-        "registered": [str(tmp_path / "rt")],
+        "runtime": str(tmp_path / "rt"),
     }
 
     with patch("src.cli.OpcClient.from_env", return_value=fake_client):
@@ -137,8 +134,40 @@ def test_cmd_use_calls_activate_endpoint(tmp_path, capsys):
         cmd_use(args)
 
     fake_client.post.assert_called_once_with(
-        "/api/v1/runtimes/activate", json={"path": str(tmp_path / "rt")},
+        "/api/v1/runtime/use", json={"path": str(tmp_path / "rt")},
     )
+    out = capsys.readouterr().out
+    assert f"runtime: {tmp_path / 'rt'}" in out
+
+
+def test_cmd_runtime_active(capsys):
+    from src.cli import cmd_runtime
+
+    fake_client = MagicMock()
+    fake_client.get.return_value.status_code = 200
+    fake_client.get.return_value.json.return_value = {"runtime": "/tmp/rt"}
+
+    with patch("src.cli.OpcClient.from_env", return_value=fake_client):
+        args = MagicMock()
+        cmd_runtime(args)
+
+    fake_client.get.assert_called_once_with("/api/v1/runtime")
+    assert "runtime: /tmp/rt" in capsys.readouterr().out
+
+
+def test_cmd_runtime_idle(capsys):
+    from src.cli import cmd_runtime
+
+    fake_client = MagicMock()
+    fake_client.get.return_value.status_code = 200
+    fake_client.get.return_value.json.return_value = {"runtime": None}
+
+    with patch("src.cli.OpcClient.from_env", return_value=fake_client):
+        args = MagicMock()
+        cmd_runtime(args)
+
+    fake_client.get.assert_called_once_with("/api/v1/runtime")
+    assert "(no active runtime)" in capsys.readouterr().out
 
 
 def test_cmd_tasks_calls_list_endpoint(capsys):

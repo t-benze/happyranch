@@ -81,40 +81,58 @@ def _fetch_available_orgs(client) -> list[str]:
 
 
 def cmd_init(args: argparse.Namespace) -> None:
-    """Register a runtime directory with the daemon."""
+    """Create + register a multi-org runtime container with the daemon."""
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
         print(f"Error: {exc}")
         sys.exit(1)
     r = client.post(
-        "/api/v1/runtimes/register",
-        json={"path": str(Path(args.path).expanduser()), "slug": args.slug},
+        "/api/v1/runtime",
+        json={"path": str(Path(args.path).expanduser())},
     )
     if r.status_code != 200:
         print(f"Error ({r.status_code}): {r.text}")
         sys.exit(1)
-    body = r.json()
-    print(f"Active runtime: {body['active']}")
+    print(f"runtime: {r.json()['runtime']}")
 
 
-def cmd_use(args: argparse.Namespace) -> None:
-    """Switch the daemon's active runtime."""
+def cmd_runtime(args: argparse.Namespace) -> None:
+    """Show the active runtime container."""
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
         print(f"Error: {exc}")
         sys.exit(1)
-    r = client.post("/api/v1/runtimes/activate", json={"path": str(Path(args.path).expanduser())})
-    if r.status_code == 409:
-        detail = r.json().get("detail", {})
-        print(f"Cannot switch runtime: tasks in flight ({detail.get('task_ids')})")
-        sys.exit(1)
+    r = client.get("/api/v1/runtime")
     if r.status_code != 200:
         print(f"Error ({r.status_code}): {r.text}")
         sys.exit(1)
     body = r.json()
-    print(f"Active runtime: {body['active']}")
+    if body["runtime"] is None:
+        print("(no active runtime)")
+    else:
+        print(f"runtime: {body['runtime']}")
+
+
+def cmd_use(args: argparse.Namespace) -> None:
+    """Switch the daemon's active runtime container."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    r = client.post(
+        "/api/v1/runtime/use",
+        json={"path": str(Path(args.path).expanduser())},
+    )
+    if r.status_code == 409:
+        print(f"Cannot switch runtime: {r.json()['detail']}")
+        sys.exit(1)
+    if r.status_code != 200:
+        print(f"Error ({r.status_code}): {r.text}")
+        sys.exit(1)
+    print(f"runtime: {r.json()['runtime']}")
 
 
 def _fmt_ts(iso: str | None, *, date_only: bool = False) -> str:
@@ -1237,16 +1255,18 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
 
     # opc init
-    p_init_runtime = sub.add_parser("init", help="Initialize a new OPC runtime directory")
-    p_init_runtime.add_argument("path", help="Path for the new runtime directory")
-    p_init_runtime.add_argument(
-        "--slug", required=True,
-        help="Org slug stamped into opc.yaml on first init (required)",
+    p_init_runtime = sub.add_parser(
+        "init", help="create + register a multi-org runtime container",
     )
+    p_init_runtime.add_argument("path", help="Path for the new runtime container")
     p_init_runtime.set_defaults(func=cmd_init)
 
+    # opc runtime
+    p_runtime = sub.add_parser("runtime", help="show the active runtime")
+    p_runtime.set_defaults(func=cmd_runtime)
+
     # opc use
-    p_use = sub.add_parser("use", help="Switch the daemon's active runtime")
+    p_use = sub.add_parser("use", help="switch the active runtime container")
     p_use.add_argument("path", help="Path of an already-registered runtime")
     p_use.set_defaults(func=cmd_use)
 
