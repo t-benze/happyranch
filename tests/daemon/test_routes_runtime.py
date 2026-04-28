@@ -39,3 +39,56 @@ def test_post_runtime_registers(tmp_path: Path, auth) -> None:
     assert r.status_code == 200
     assert r.json()["runtime"] == str(target.resolve())
     assert state.runtime is not None
+
+
+def _seed_org(rt: RuntimeDir, slug: str) -> None:
+    org_root = rt.orgs_dir / slug
+    org_root.mkdir(parents=True)
+    (org_root / "org").mkdir()
+    (org_root / "org" / "teams.yaml").write_text("teams: {}\n")
+
+
+def test_post_runtime_refuses_swap_with_active_tasks(tmp_path: Path, auth) -> None:
+    """`opc init <new-path>` must not orphan in-flight work in the current
+    container — same guard as `/runtime/use`. Without it the old org's
+    in-progress tasks lose their OrgState mid-flight and get dropped by
+    the dispatcher as 'unknown org'."""
+    from src.models import TaskRecord, TaskStatus
+    rt = RuntimeDir.init(tmp_path / "rt-current")
+    _seed_org(rt, "alpha")
+    state = DaemonState.from_runtime(rt, Settings())
+    state.orgs["alpha"].db.insert_task(
+        TaskRecord(id="TASK-001", brief="x", status=TaskStatus.IN_PROGRESS)
+    )
+    client = TestClient(create_app(state))
+    r = client.post(
+        "/api/v1/runtime", headers=auth,
+        json={"path": str(tmp_path / "rt-new")},
+    )
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert detail["code"] == "active_tasks_in_flight"
+    assert detail["org"] == "alpha"
+    assert "TASK-001" in detail["task_ids"]
+    # Original runtime is still active; the swap did not happen.
+    assert state.runtime is not None
+    assert state.runtime.root == rt.root
+
+
+def test_post_runtime_swap_idempotent_to_same_path(tmp_path: Path, auth) -> None:
+    """Re-registering the *same* runtime path must not be blocked by its own
+    in-flight tasks — that would make `opc init <existing>` a no-op fail.
+    Skip the guard when the requested path resolves to the active root."""
+    from src.models import TaskRecord, TaskStatus
+    rt = RuntimeDir.init(tmp_path / "rt")
+    _seed_org(rt, "alpha")
+    state = DaemonState.from_runtime(rt, Settings())
+    state.orgs["alpha"].db.insert_task(
+        TaskRecord(id="TASK-001", brief="x", status=TaskStatus.IN_PROGRESS)
+    )
+    client = TestClient(create_app(state))
+    r = client.post(
+        "/api/v1/runtime", headers=auth,
+        json={"path": str(rt.root)},
+    )
+    assert r.status_code == 200, r.text

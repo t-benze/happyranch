@@ -46,7 +46,31 @@ async def register_runtime(body: RuntimePath, request: Request) -> dict:
         path.mkdir(parents=True, exist_ok=True)
     runtime = RuntimeDir.init(path)
     reg.register(path)
-    _swap(daemon, runtime)
+
+    # If we're swapping the active runtime out, refuse when any org still has
+    # in-flight work — same guard as `/runtime/use`. Re-registering the same
+    # path (idempotent `opc init <existing>`) is allowed: identical resolved
+    # root means there's no swap.
+    same_root = (
+        daemon.runtime is not None and daemon.runtime.root == runtime.root
+    )
+    async with daemon.orgs_lock:
+        if not same_root:
+            for org in daemon.orgs.values():
+                in_flight = org.db.get_nonterminal_task_ids()
+                if in_flight:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "active_tasks_in_flight",
+                            "org": org.slug,
+                            "task_ids": in_flight,
+                        },
+                    )
+            for org in list(daemon.orgs.values()):
+                org.close()
+            daemon.orgs.clear()
+        _swap(daemon, runtime)
     ensure_workers_started(daemon)
     return {"runtime": str(path.resolve())}
 
