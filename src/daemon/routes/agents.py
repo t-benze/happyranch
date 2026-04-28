@@ -12,7 +12,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, field_validator, model_validator
 from sse_starlette.sse import EventSourceResponse
 
@@ -25,10 +25,12 @@ from src.daemon.agent_config import (
     write_default_agent_config,
 )
 from src.daemon.auth import require_token
-from src.daemon.state import DaemonState
+from src.daemon.org_state import OrgState
+from src.daemon.routes._org_dep import OrgDep
 from src.infrastructure.audit_logger import AuditLogger
 from src.models import PerformanceTier, TalkStatus
 from src.orchestrator import prompt_loader
+from src.orchestrator._paths import OrgPaths
 from src.orchestrator.agent_def import AgentDef, AgentParseError
 from src.orchestrator.context_builder import ContextBuilder
 from src.orchestrator.performance_tracker import PerformanceTracker
@@ -110,15 +112,7 @@ class ManageAgentBody(BaseModel):
 _VALID_AGENT_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
-def _require_active(state: DaemonState) -> None:
-    if state.is_idle:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "no_active_runtime"},
-        )
-
-
-def _require_eh_auth(body: ManageAgentBody, state: DaemonState) -> None:
+def _require_eh_auth(body: ManageAgentBody, org: OrgState) -> None:
     """Validate the caller is authorized to run manage-agent as EH.
 
     Supports two auth paths:
@@ -131,7 +125,7 @@ def _require_eh_auth(body: ManageAgentBody, state: DaemonState) -> None:
     is set, so this function only checks the path that is present.
     """
     if body.talk_id is not None:
-        talk = state.db.get_talk(body.talk_id)
+        talk = org.db.get_talk(body.talk_id)
         if talk is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -150,7 +144,7 @@ def _require_eh_auth(body: ManageAgentBody, state: DaemonState) -> None:
         return
 
     # Task path
-    expected = state.sessions.get_active(body.task_id, "engineering_head")
+    expected = org.sessions.get_active(body.task_id, "engineering_head")
     if expected is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -163,7 +157,7 @@ def _require_eh_auth(body: ManageAgentBody, state: DaemonState) -> None:
         )
 
 
-def _require_team_manager_auth(body: ManageAgentBody, state: DaemonState) -> tuple[str, str]:
+def _require_team_manager_auth(body: ManageAgentBody, org: OrgState) -> tuple[str, str]:
     """Validate the caller is a team manager and return (manager_name, manager_team).
 
     Supports the same two auth paths as _require_eh_auth, but accepts *any*
@@ -175,20 +169,20 @@ def _require_team_manager_auth(body: ManageAgentBody, state: DaemonState) -> tup
 
     Returns (manager_name, manager_team) so callers can enforce team scoping.
     """
-    if state.teams is None:
+    if org.teams is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="manage-agent requires teams registry (no active runtime)",
         )
 
     if body.talk_id is not None:
-        talk = state.db.get_talk(body.talk_id)
+        talk = org.db.get_talk(body.talk_id)
         if talk is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"talk {body.talk_id!r} not found",
             )
-        if not state.teams.is_team_manager(talk.agent_name):
+        if not org.teams.is_team_manager(talk.agent_name):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="manage-agent requires a team-manager talk",
@@ -198,17 +192,17 @@ def _require_team_manager_auth(body: ManageAgentBody, state: DaemonState) -> tup
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"talk {body.talk_id!r} is {talk.status.value}, not open",
             )
-        manager_team = state.teams.team_for_manager(talk.agent_name)
+        manager_team = org.teams.team_for_manager(talk.agent_name)
         assert manager_team is not None  # guaranteed by is_team_manager check above
         return talk.agent_name, manager_team
 
     # Task path: find the team manager whose active session matches
-    for candidate in state.teams.all_agents():
-        if not state.teams.is_team_manager(candidate):
+    for candidate in org.teams.all_agents():
+        if not org.teams.is_team_manager(candidate):
             continue
-        active = state.sessions.get_active(body.task_id, candidate)
+        active = org.sessions.get_active(body.task_id, candidate)
         if active is not None and active == body.session_id:
-            manager_team = state.teams.team_for_manager(candidate)
+            manager_team = org.teams.team_for_manager(candidate)
             assert manager_team is not None
             return candidate, manager_team
 
@@ -221,7 +215,7 @@ def _require_team_manager_auth(body: ManageAgentBody, state: DaemonState) -> tup
 def _append_to_learnings_file(learnings_path: Path, agent_name: str, text: str) -> None:
     """Append a single learning line to learnings.md, creating the file+header if missing.
 
-    Callers are responsible for serialization (e.g. holding state.db_lock) when
+    Callers are responsible for serialization (e.g. holding org.db_lock) when
     concurrent writes are possible. The function itself performs no locking.
     """
     if not learnings_path.exists():
@@ -232,11 +226,9 @@ def _append_to_learnings_file(learnings_path: Path, agent_name: str, text: str) 
 
 
 @router.get("/agents")
-def list_agents(request: Request) -> dict:
-    state: DaemonState = request.app.state.daemon
-    _require_active(state)
-    tracker = PerformanceTracker(state.db, state.settings)
-    ws_dir = state.runtime.workspaces_dir
+def list_agents(slug: str, org: OrgDep) -> dict:
+    tracker = PerformanceTracker(org.db, org.settings)
+    ws_dir = org.root / "workspaces"
     if ws_dir.exists():
         agent_names = sorted(d.name for d in ws_dir.iterdir() if d.is_dir())
     else:
@@ -247,7 +239,7 @@ def list_agents(request: Request) -> dict:
             {
                 "name": name,
                 "tier": tiers.get(name, PerformanceTier.GREEN).value,
-                "scorecard": state.db.get_scorecard(name),
+                "scorecard": org.db.get_scorecard(name),
             }
             for name in agent_names
         ],
@@ -255,32 +247,31 @@ def list_agents(request: Request) -> dict:
 
 
 @router.post("/agents/init")
-async def init_agents(body: InitBody, request: Request):
-    state: DaemonState = request.app.state.daemon
-    _require_active(state)
+async def init_agents(slug: str, body: InitBody, org: OrgDep):
+    paths = OrgPaths(root=org.root)
 
     if body.agent is None:
-        ws_dir = state.runtime.workspaces_dir
+        ws_dir = paths.workspaces_dir
         known: set[str] = set()
-        if state.teams is not None:
-            known.update(state.teams.all_agents())
+        if org.teams is not None:
+            known.update(org.teams.all_agents())
         if ws_dir.exists():
             known.update(d.name for d in ws_dir.iterdir() if d.is_dir())
-        known.update([a.name for a in prompt_loader.list_agents(state.runtime)])
+        known.update([a.name for a in prompt_loader.list_agents(paths)])
         targets = sorted(known)
     else:
         targets = [body.agent]
 
     async def gen():
-        ctx = ContextBuilder(state.settings, state.runtime)
+        ctx = ContextBuilder(org.settings, paths)
         for agent_name in targets:
-            workspace = state.runtime.workspaces_dir / agent_name
+            workspace = paths.workspaces_dir / agent_name
             workspace.mkdir(parents=True, exist_ok=True)
             yield {"data": _json.dumps({"agent": agent_name, "phase": "starting"})}
             try:
                 had_agent_config = (workspace / "agent.yaml").exists()
                 write_default_agent_config(workspace)
-                agent_def = prompt_loader.load_agent(state.runtime, agent_name)
+                agent_def = prompt_loader.load_agent(paths, agent_name)
                 if not had_agent_config and agent_def is not None:
                     set_executor(workspace, agent_def.executor)
                 cfg = load_agent_config(workspace)
@@ -319,19 +310,19 @@ async def init_agents(body: InitBody, request: Request):
 
 
 @router.post("/agents/{agent_name}/repos")
-async def manage_repo(agent_name: str, body: ManageRepoBody, request: Request) -> dict:
-    state: DaemonState = request.app.state.daemon
-    _require_active(state)
-
-    workspace = state.runtime.workspaces_dir / agent_name
+async def manage_repo(
+    slug: str, agent_name: str, body: ManageRepoBody, org: OrgDep,
+) -> dict:
+    paths = OrgPaths(root=org.root)
+    workspace = paths.workspaces_dir / agent_name
     if not workspace.exists():
         raise HTTPException(status_code=404, detail=f"workspace {agent_name!r} not found")
 
     if body.action in (RepoAction.add, RepoAction.update) and not body.url:
         raise HTTPException(status_code=422, detail=f"url required for {body.action!r}")
 
-    ctx = ContextBuilder(state.settings, state.runtime)
-    agent_def = prompt_loader.load_agent(state.runtime, agent_name)
+    ctx = ContextBuilder(org.settings, paths)
+    agent_def = prompt_loader.load_agent(paths, agent_name)
     agent_prompt = agent_def.system_prompt if agent_def else ""
 
     if body.action == RepoAction.add:
@@ -367,17 +358,16 @@ async def manage_repo(agent_name: str, body: ManageRepoBody, request: Request) -
 
 
 @router.post("/agents/manage")
-async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
-    state: DaemonState = request.app.state.daemon
-    _require_active(state)
+async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
+    paths = OrgPaths(root=org.root)
 
     # Any team manager may manage agents within their team.
-    manager_name, manager_team = _require_team_manager_auth(body, state)
+    manager_name, manager_team = _require_team_manager_auth(body, org)
 
     scope_id = body.talk_id if body.talk_id is not None else body.task_id
     assert scope_id is not None  # guaranteed by ManageAgentBody._exactly_one_auth_path
     source = "talk" if body.talk_id is not None else "task"
-    audit = AuditLogger(state.db)
+    audit = AuditLogger(org.db)
 
     if not _VALID_AGENT_NAME.match(body.name):
         raise HTTPException(status_code=422, detail=f"invalid agent name: {body.name!r}")
@@ -386,11 +376,11 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
         if not body.description or not body.system_prompt:
             raise HTTPException(status_code=422, detail="description and system_prompt required for enroll")
         # Check for duplicate: look in both pending and active.
-        if (prompt_loader.load_pending_agent(state.runtime, body.name) is not None
-                or prompt_loader.load_agent(state.runtime, body.name) is not None):
+        if (prompt_loader.load_pending_agent(paths, body.name) is not None
+                or prompt_loader.load_agent(paths, body.name) is not None):
             raise HTTPException(status_code=409, detail=f"agent {body.name!r} already enrolled")
         # Validate target_team BEFORE inserting — avoid zombie enrollment files.
-        async with state.teams_lock:
+        async with org.teams_lock:
             target_team = body.target_team or manager_team
             if target_team != manager_team:
                 raise HTTPException(
@@ -414,9 +404,8 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
                 system_prompt=body.system_prompt,
                 description=body.description,
             )
-            prompt_loader.write_pending_agent(state.runtime, agent)
-            state.teams.add_worker(manager_team, body.name)
-            state.teams.save(state.runtime)
+            prompt_loader.write_pending_agent(paths, agent)
+            org.teams.add_worker(manager_team, body.name)
         audit.log_agent_managed(
             scope_id=scope_id,
             action="enroll",
@@ -427,13 +416,13 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
         return {"ok": True, "status": "pending"}
 
     elif body.action == ManageAgentAction.update:
-        existing = prompt_loader.load_agent(state.runtime, body.name)
+        existing = prompt_loader.load_agent(paths, body.name)
         if existing is None:
             raise HTTPException(status_code=404, detail=f"agent {body.name!r} not found")
         # Reject cross-team update attempts — hold the lock to prevent a torn
         # read racing against a concurrent terminate.
-        async with state.teams_lock:
-            agent_team = state.teams.team_for_agent(body.name) if state.teams is not None else None
+        async with org.teams_lock:
+            agent_team = org.teams.team_for_agent(body.name) if org.teams is not None else None
             if agent_team != manager_team:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -458,11 +447,11 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
             description=body.description if body.description is not None else existing.description,
         )
         # Atomic overwrite of the active file via tempfile + os.replace.
-        active_path = state.runtime.agents_dir / f"{body.name}.md"
+        active_path = paths.agents_dir / f"{body.name}.md"
         from src.orchestrator.agent_def import render_agent_text
         fd, tmp = tempfile.mkstemp(
             prefix=f".{body.name}.", suffix=".md",
-            dir=str(state.runtime.agents_dir),
+            dir=str(paths.agents_dir),
         )
         try:
             with os.fdopen(fd, "w") as fh:
@@ -475,14 +464,14 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
                 pass
             raise
         if body.system_prompt:
-            workspace = state.runtime.workspaces_dir / body.name
+            workspace = paths.workspaces_dir / body.name
             if workspace.exists():
-                ctx = ContextBuilder(state.settings, state.runtime)
+                ctx = ContextBuilder(org.settings, paths)
                 await asyncio.to_thread(
                     ctx.ensure_workspace_ready, workspace, body.name, body.system_prompt,
                 )
         if body.executor is not None:
-            workspace = state.runtime.workspaces_dir / body.name
+            workspace = paths.workspaces_dir / body.name
             if workspace.exists():
                 await asyncio.to_thread(set_executor, workspace, body.executor)
         audit.log_agent_managed(
@@ -495,11 +484,11 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
         return {"ok": True}
 
     elif body.action == ManageAgentAction.terminate:
-        existing = prompt_loader.load_agent(state.runtime, body.name)
+        existing = prompt_loader.load_agent(paths, body.name)
         if existing is None:
             raise HTTPException(status_code=404, detail=f"agent {body.name!r} not found")
-        async with state.teams_lock:
-            agent_team = state.teams.team_for_agent(body.name) if state.teams is not None else None
+        async with org.teams_lock:
+            agent_team = org.teams.team_for_agent(body.name) if org.teams is not None else None
             if agent_team != manager_team:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -510,11 +499,10 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
                     },
                 )
             # Unlink file first — if it raises, teams.yaml stays untouched.
-            active_path = state.runtime.agents_dir / f"{body.name}.md"
+            active_path = paths.agents_dir / f"{body.name}.md"
             active_path.unlink(missing_ok=True)
-            state.teams.remove_worker(manager_team, body.name)
-            state.teams.save(state.runtime)
-        workspace = state.runtime.workspaces_dir / body.name
+            org.teams.remove_worker(manager_team, body.name)
+        workspace = paths.workspaces_dir / body.name
         if workspace.exists():
             shutil.rmtree(workspace)
         audit.log_agent_managed(
@@ -531,7 +519,8 @@ async def manage_agent(body: ManageAgentBody, request: Request) -> dict:
 
 @router.get("/agents/enrollments")
 def list_enrollments(
-    request: Request,
+    slug: str,
+    org: OrgDep,
     enrollment_status: str | None = Query(default=None, alias="status"),
     team: str | None = Query(default=None),
 ) -> dict:
@@ -542,19 +531,18 @@ def list_enrollments(
     caller as a member of that team. Founders always get an unfiltered view
     when neither parameter is supplied.
     """
-    state: DaemonState = request.app.state.daemon
-    _require_active(state)
+    paths = OrgPaths(root=org.root)
 
     # Collect all enrollments from files.
     all_enrollments: list[dict] = []
-    for agent in prompt_loader.list_pending(state.runtime):
+    for agent in prompt_loader.list_pending(paths):
         all_enrollments.append({
             "name": agent.name,
             "description": agent.description or "",
             "status": "pending",
             "created_at": agent.enrolled_at.isoformat() if agent.enrolled_at else None,
         })
-    for agent in prompt_loader.list_agents(state.runtime):
+    for agent in prompt_loader.list_agents(paths):
         all_enrollments.append({
             "name": agent.name,
             "description": agent.description or "",
@@ -567,11 +555,11 @@ def list_enrollments(
         all_enrollments = [e for e in all_enrollments if e["status"] == enrollment_status]
 
     # Apply team filter.
-    if team is not None and state.teams is not None:
+    if team is not None and org.teams is not None:
         team_agents = {
             agent
-            for agent in state.teams.all_agents()
-            if state.teams.team_for_agent(agent) == team
+            for agent in org.teams.all_agents()
+            if org.teams.team_for_agent(agent) == team
         }
         all_enrollments = [e for e in all_enrollments if e["name"] in team_agents]
 
@@ -579,24 +567,23 @@ def list_enrollments(
 
 
 @router.post("/agents/{agent_name}/approve")
-async def approve_agent(agent_name: str, request: Request) -> dict:
-    state: DaemonState = request.app.state.daemon
-    _require_active(state)
+async def approve_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
+    paths = OrgPaths(root=org.root)
 
-    pending = prompt_loader.load_pending_agent(state.runtime, agent_name)
+    pending = prompt_loader.load_pending_agent(paths, agent_name)
     if pending is None:
         # Check if already approved (active).
-        existing = prompt_loader.load_agent(state.runtime, agent_name)
+        existing = prompt_loader.load_agent(paths, agent_name)
         if existing is not None:
             raise HTTPException(status_code=409, detail=f"agent is approved, not pending")
         raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
 
     try:
-        agent_def = prompt_loader.approve_agent(state.runtime, agent_name)
+        agent_def = prompt_loader.approve_agent(paths, agent_name)
     except FileExistsError:
         raise HTTPException(status_code=409, detail=f"agent is approved, not pending")
 
-    workspace = state.runtime.workspaces_dir / agent_name
+    workspace = paths.workspaces_dir / agent_name
     workspace.mkdir(parents=True, exist_ok=True)
     write_default_agent_config(workspace)
     set_executor(workspace, agent_def.executor)
@@ -606,7 +593,7 @@ async def approve_agent(agent_name: str, request: Request) -> dict:
         for repo_name, url in repos.items():
             add_repo(workspace, repo_name, url)
 
-    ctx = ContextBuilder(state.settings, state.runtime)
+    ctx = ContextBuilder(org.settings, paths)
     for repo_name, url in repos.items():
         await asyncio.to_thread(ctx.clone_repo, workspace, repo_name, url)
 
@@ -623,13 +610,12 @@ async def approve_agent(agent_name: str, request: Request) -> dict:
 
 
 @router.post("/agents/{agent_name}/reject")
-async def reject_agent(agent_name: str, request: Request) -> dict:
-    state: DaemonState = request.app.state.daemon
-    _require_active(state)
+async def reject_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
+    paths = OrgPaths(root=org.root)
 
-    pending = prompt_loader.load_pending_agent(state.runtime, agent_name)
+    pending = prompt_loader.load_pending_agent(paths, agent_name)
     if pending is None:
-        existing = prompt_loader.load_agent(state.runtime, agent_name)
+        existing = prompt_loader.load_agent(paths, agent_name)
         if existing is not None:
             raise HTTPException(status_code=409, detail=f"agent is approved, not pending")
         raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
@@ -637,9 +623,9 @@ async def reject_agent(agent_name: str, request: Request) -> dict:
     # Drop the file first; if it's already gone the reject_agent helper raises
     # FileNotFoundError. Holding teams_lock keeps the file-unlink + teams-yaml
     # mutation paired so a concurrent enrollment can't observe a half-state.
-    async with state.teams_lock:
+    async with org.teams_lock:
         try:
-            prompt_loader.reject_agent(state.runtime, agent_name)
+            prompt_loader.reject_agent(paths, agent_name)
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
         # manage_agent.enroll added this worker to teams.yaml when it wrote the
@@ -647,20 +633,18 @@ async def reject_agent(agent_name: str, request: Request) -> dict:
         # team membership forever and re-enrollment hits "duplicate" on the
         # team-side too. remove_worker is a no-op if the agent isn't a worker
         # under pending.team, so this is safe even if teams drifted.
-        if state.teams is not None and pending.team in state.teams.teams():
-            state.teams.remove_worker(pending.team, agent_name)
+        if org.teams is not None and pending.team in org.teams.teams():
+            org.teams.remove_worker(pending.team, agent_name)
 
     return {"ok": True}
 
 
 @router.post("/agents/backfill-enrollments")
-def backfill_enrollments(request: Request) -> dict:
+def backfill_enrollments(slug: str, org: OrgDep) -> dict:
     """Deprecated no-op. Previously imported pre-existing workspaces into the
     SQLite enrollment registry; that registry is replaced by file-based agents.
     Returns a success response with empty lists for backwards compatibility.
     """
-    state: DaemonState = request.app.state.daemon
-    _require_active(state)
     return {
         "backfilled": [],
         "skipped_already_enrolled": [],
@@ -671,11 +655,10 @@ def backfill_enrollments(request: Request) -> dict:
 
 
 @router.post("/agents/{agent_name}/learnings")
-async def append_learning(agent_name: str, body: LearningBody, request: Request) -> dict:
-    state: DaemonState = request.app.state.daemon
-    _require_active(state)
-
-    expected = state.sessions.get_active(body.task_id, agent_name)
+async def append_learning(
+    slug: str, agent_name: str, body: LearningBody, org: OrgDep,
+) -> dict:
+    expected = org.sessions.get_active(body.task_id, agent_name)
     if expected is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -687,11 +670,11 @@ async def append_learning(agent_name: str, body: LearningBody, request: Request)
             detail={"code": "session_mismatch", "active": expected, "got": body.session_id},
         )
 
-    workspace = state.runtime.workspaces_dir / agent_name
+    workspace = org.root / "workspaces" / agent_name
     learnings_path = workspace / "learnings.md"
 
     # Hold the lock across exists/init/append so two concurrent posts can't both
     # see the file as missing and race the header write.
-    async with state.db_lock:
+    async with org.db_lock:
         _append_to_learnings_file(learnings_path, agent_name, body.text)
     return {"ok": True}
