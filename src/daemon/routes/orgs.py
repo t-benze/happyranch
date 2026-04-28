@@ -99,5 +99,20 @@ async def unload_org(slug: str, request: Request) -> dict:
             status_code=404,
             detail={"code": "unknown_org", "slug": slug},
         )
+    # Refuse to unload an org with non-terminal tasks: doing so would let the
+    # dispatcher silently drop their re-enqueues as 'unknown org', and any
+    # in-flight agent callback would hit a 404 because OrgDep can no longer
+    # resolve the slug. blocked-escalated waits forever on a founder; do not
+    # strand it.
+    in_flight = state.orgs[slug].db.get_nonterminal_task_ids()
+    if in_flight:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "active_tasks_in_flight",
+                "slug": slug,
+                "task_ids": in_flight,
+            },
+        )
     await state.remove_org(slug)
     return {"slug": slug, "unloaded": True}
