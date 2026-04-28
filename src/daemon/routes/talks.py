@@ -14,6 +14,7 @@ from src.infrastructure.audit_logger import AuditLogger
 from src.infrastructure.kb_store import KBStore
 from src.infrastructure.talk_store import TalkStore
 from src.models import TalkRecord, TalkStatus, TaskRecord
+from src.orchestrator import prompt_loader
 
 router = APIRouter(dependencies=[require_token()])
 
@@ -316,10 +317,10 @@ async def dispatch_task(talk_id: str, body: DispatchBody, request: Request) -> d
                     },
                 )
 
-    # 6. Target agent is registered AND has a workspace.
-    enrollment = state.db.get_enrollment(effective_target)
+    # 6. Target agent is active (file under <runtime>/org/agents/) AND has a workspace.
+    agent_def = prompt_loader.load_agent(state.runtime, effective_target)
     workspace_exists = (state.runtime.workspaces_dir / effective_target).exists()
-    if enrollment is None or enrollment.get("status") != "approved" or not workspace_exists:
+    if agent_def is None or not workspace_exists:
         raise HTTPException(
             status_code=404,
             detail={"code": "unknown_agent", "agent": effective_target},

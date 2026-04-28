@@ -15,11 +15,10 @@ Conftest surprise notes:
 - Workspace bootstrap is done by the file-local ``seed_workspace``
   helper from ``tests/integration/conftest.py``; we reuse it for
   ``dev_agent`` here.
-- The dispatch endpoint requires the target agent to have an
-  ``approved`` enrollment row, which the conftest does not seed. We
-  insert it directly via the SQLite ``Database`` wrapper — same pattern
-  ``test_end_to_end.py::test_mixed_fleet_roundtrip_uses_claude_and_codex``
-  uses to read state out of band.
+- The dispatch endpoint requires the target agent to be active under
+  ``<runtime>/org/agents/<name>.md`` (via ``prompt_loader.load_agent``)
+  AND to have a workspace dir. We write the agent file directly via
+  ``render_agent_text`` — same pattern as ``tests/daemon/test_talks_dispatch.py``.
 """
 from __future__ import annotations
 
@@ -29,7 +28,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from src.infrastructure.database import Database
+from src.orchestrator.agent_def import AgentDef, render_agent_text
 from tests.integration.conftest import seed_workspace
 
 
@@ -46,22 +45,30 @@ def _base(port: str) -> str:
     return f"http://127.0.0.1:{port}/api/v1"
 
 
-def _seed_approved_enrollment(runtime: Path, name: str) -> None:
-    """Seed an approved enrollment row so the dispatch endpoint accepts the target.
+def _seed_active_agent(runtime: Path, name: str) -> None:
+    """Write an active agent file so the dispatch endpoint accepts the target.
 
-    The dispatch endpoint's step 6 requires both an approved enrollment
-    and a workspace directory — ``seed_workspace`` covers the latter.
+    ``seed_workspace`` covers the workspace dir; this covers the agent
+    file the dispatch route consults via ``prompt_loader.load_agent``.
+    The file's ``team`` field is a stub — dispatch reads team membership
+    from TeamsRegistry (seeded by conftest's teams.yaml).
     """
-    db = Database(runtime / "opc.db")
-    db.insert_enrollment(
+    agents_dir = runtime / "org" / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    agent = AgentDef(
         name=name,
-        description=name,
-        system_prompt="x",
+        team="engineering",
+        role="worker",
         executor="claude",
+        allow_rules=(),
         repos={},
-        allow_rules=[],
+        enrolled_by=None,
+        enrolled_at_task=None,
+        enrolled_at=None,
+        system_prompt="x\n",
+        description=name,
     )
-    db.update_enrollment_status(name, "approved")
+    (agents_dir / f"{name}.md").write_text(render_agent_text(agent))
 
 
 def _wait_for_terminal_status(
@@ -114,9 +121,9 @@ def test_worker_self_dispatch_runs_to_completion(
     fake_plan_env.chmod(0o755)
 
     # dev_agent needs both a workspace (with SKILL marker) and an
-    # approved enrollment row for the dispatch endpoint to accept it.
+    # active agent file for the dispatch endpoint to accept it.
     seed_workspace(runtime, "dev_agent")
-    _seed_approved_enrollment(runtime, "dev_agent")
+    _seed_active_agent(runtime, "dev_agent")
 
     # 1. Open a talk for dev_agent.
     r = httpx.post(

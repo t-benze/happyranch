@@ -4,22 +4,36 @@ import json as _json
 
 import pytest
 
+from src.orchestrator.agent_def import AgentDef, render_agent_text
 from tests.daemon.conftest import open_talk_for
 
 
 def _seed_workspace(daemon_state, name: str, *, with_dir: bool = True) -> None:
-    """Seed an approved enrollment + (optionally) workspace dir."""
+    """Seed an active agent file under <runtime>/org/agents/<name>.md and
+    (optionally) a workspace dir.
+
+    Mirrors the production layout the dispatch route now consults via
+    prompt_loader.load_agent. The file's `team` field is a stub — dispatch
+    routing reads team membership from TeamsRegistry (seeded by conftest's
+    teams.yaml), not from the agent file.
+    """
     if with_dir:
         (daemon_state.runtime.workspaces_dir / name).mkdir(parents=True, exist_ok=True)
-    daemon_state.db.insert_enrollment(
+    agent = AgentDef(
         name=name,
-        description=name,
-        system_prompt="x",
+        team="engineering",
+        role="worker",
         executor="claude",
+        allow_rules=(),
         repos={},
-        allow_rules=[],
+        enrolled_by=None,
+        enrolled_at_task=None,
+        enrolled_at=None,
+        system_prompt="x\n",
+        description=name,
     )
-    daemon_state.db.update_enrollment_status(name, "approved")
+    daemon_state.runtime.agents_dir.mkdir(parents=True, exist_ok=True)
+    (daemon_state.runtime.agents_dir / f"{name}.md").write_text(render_agent_text(agent))
 
 
 def test_worker_self_dispatch_happy_path(client_with_runtime):
