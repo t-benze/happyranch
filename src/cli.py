@@ -135,6 +135,49 @@ def cmd_use(args: argparse.Namespace) -> None:
     print(f"runtime: {r.json()['runtime']}")
 
 
+def cmd_orgs(args: argparse.Namespace) -> None:
+    """List orgs registered with the active runtime."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    r = client.get("/api/v1/orgs")
+    if not _ok(r):
+        return
+    for org in r.json()["orgs"]:
+        print(f"  {org['slug']:30s}  {org['root']}")
+
+
+def cmd_orgs_init(args: argparse.Namespace) -> None:
+    """Create a new org subfolder inside the active runtime."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    payload: dict = {"slug": args.slug}
+    if args.from_path:
+        payload["from_example"] = args.from_path
+    r = client.post("/api/v1/orgs", json=payload)
+    if not _ok(r):
+        return
+    print(f"created org: {r.json()['slug']}")
+
+
+def cmd_orgs_unload(args: argparse.Namespace) -> None:
+    """Drop an org's state from the daemon's in-memory registry."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    r = client.request("DELETE", f"/api/v1/orgs/{args.slug}")
+    if not _ok(r):
+        return
+    print(f"unloaded org: {r.json()['slug']}")
+
+
 def _fmt_ts(iso: str | None, *, date_only: bool = False) -> str:
     """Render a UTC ISO timestamp from the daemon in the machine's local tz.
 
@@ -1269,6 +1312,29 @@ def build_parser() -> argparse.ArgumentParser:
     p_use = sub.add_parser("use", help="switch the active runtime container")
     p_use.add_argument("path", help="Path of an already-registered runtime")
     p_use.set_defaults(func=cmd_use)
+
+    # opc orgs
+    p_orgs = sub.add_parser("orgs", help="manage orgs in the active runtime")
+    p_orgs.set_defaults(orgs_cmd="list", func=cmd_orgs)
+    orgs_sub = p_orgs.add_subparsers(dest="orgs_cmd")
+    orgs_sub.required = False
+
+    p_orgs_list = orgs_sub.add_parser("list", help="list orgs")
+    p_orgs_list.set_defaults(func=cmd_orgs)
+
+    p_orgs_init = orgs_sub.add_parser("init", help="create a new org")
+    p_orgs_init.add_argument("slug")
+    p_orgs_init.add_argument(
+        "--from", dest="from_path", default=None,
+        help="path to an examples/orgs/<name> tree to seed from",
+    )
+    p_orgs_init.set_defaults(func=cmd_orgs_init)
+
+    p_orgs_unload = orgs_sub.add_parser(
+        "unload", help="drop an org's state from the daemon",
+    )
+    p_orgs_unload.add_argument("slug")
+    p_orgs_unload.set_defaults(func=cmd_orgs_unload)
 
     # opc run
     p_run = sub.add_parser("run", help="Run a task")

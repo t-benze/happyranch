@@ -1783,3 +1783,123 @@ def test_resolve_org_multi_errors(monkeypatch, capsys) -> None:
     err = capsys.readouterr().err
     assert "alpha" in err
     assert "beta" in err
+
+
+# ── opc orgs family (Task 20) ────────────────────────────────
+
+
+def test_orgs_list_subcommand():
+    from src.cli import cmd_orgs
+
+    parser = build_parser()
+    args = parser.parse_args(["orgs", "list"])
+    assert args.command == "orgs"
+    assert args.func is cmd_orgs
+
+
+def test_orgs_no_subcommand_lists():
+    from src.cli import cmd_orgs
+
+    parser = build_parser()
+    args = parser.parse_args(["orgs"])
+    assert args.command == "orgs"
+    assert args.func is cmd_orgs
+
+
+def test_orgs_init_subcommand():
+    from src.cli import cmd_orgs_init
+
+    parser = build_parser()
+    args = parser.parse_args(["orgs", "init", "alpha"])
+    assert args.command == "orgs"
+    assert args.slug == "alpha"
+    assert args.from_path is None
+    assert args.func is cmd_orgs_init
+
+
+def test_orgs_init_with_from():
+    parser = build_parser()
+    args = parser.parse_args(["orgs", "init", "alpha", "--from", "/tmp/example"])
+    assert args.slug == "alpha"
+    assert args.from_path == "/tmp/example"
+
+
+def test_orgs_unload_subcommand():
+    from src.cli import cmd_orgs_unload
+
+    parser = build_parser()
+    args = parser.parse_args(["orgs", "unload", "alpha"])
+    assert args.command == "orgs"
+    assert args.slug == "alpha"
+    assert args.func is cmd_orgs_unload
+
+
+def test_cmd_orgs_lists(capsys):
+    from src.cli import cmd_orgs
+
+    fake = MagicMock()
+    fake.get.return_value.status_code = 200
+    fake.get.return_value.json.return_value = {
+        "orgs": [
+            {"slug": "alpha", "root": "/tmp/rt/orgs/alpha"},
+            {"slug": "beta", "root": "/tmp/rt/orgs/beta"},
+        ],
+    }
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_orgs(MagicMock())
+
+    fake.get.assert_called_once_with("/api/v1/orgs")
+    out = capsys.readouterr().out
+    assert "alpha" in out
+    assert "beta" in out
+    assert "/tmp/rt/orgs/alpha" in out
+
+
+def test_cmd_orgs_init_basic(capsys):
+    from src.cli import cmd_orgs_init
+
+    fake = MagicMock()
+    fake.post.return_value.status_code = 200
+    fake.post.return_value.json.return_value = {
+        "slug": "alpha", "root": "/tmp/rt/orgs/alpha",
+    }
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        args = MagicMock(slug="alpha", from_path=None)
+        cmd_orgs_init(args)
+
+    fake.post.assert_called_once_with("/api/v1/orgs", json={"slug": "alpha"})
+    assert "created org: alpha" in capsys.readouterr().out
+
+
+def test_cmd_orgs_init_with_from(capsys):
+    from src.cli import cmd_orgs_init
+
+    fake = MagicMock()
+    fake.post.return_value.status_code = 200
+    fake.post.return_value.json.return_value = {
+        "slug": "alpha", "root": "/tmp/rt/orgs/alpha",
+    }
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        args = MagicMock(slug="alpha", from_path="/tmp/ex")
+        cmd_orgs_init(args)
+
+    fake.post.assert_called_once_with(
+        "/api/v1/orgs",
+        json={"slug": "alpha", "from_example": "/tmp/ex"},
+    )
+
+
+def test_cmd_orgs_unload_basic(capsys):
+    from src.cli import cmd_orgs_unload
+
+    fake = MagicMock()
+    fake.request.return_value.status_code = 200
+    fake.request.return_value.json.return_value = {
+        "slug": "alpha", "unloaded": True,
+    }
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        args = MagicMock(slug="alpha")
+        cmd_orgs_unload(args)
+
+    fake.request.assert_called_once_with("DELETE", "/api/v1/orgs/alpha")
+    assert "unloaded org: alpha" in capsys.readouterr().out

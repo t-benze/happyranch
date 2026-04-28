@@ -43,6 +43,9 @@ class OpcClient:
     def post(self, path: str, **kwargs) -> httpx.Response:
         return self._client.post(path, **kwargs)
 
+    def request(self, method: str, path: str, **kwargs) -> httpx.Response:
+        return self._client.request(method, path, **kwargs)
+
     def stream(self, method: str, path: str, **kwargs) -> Iterator[str]:
         """Yield server-sent event payload lines (data: ... only)."""
         with self._client.stream(method, path, **kwargs) as response:
