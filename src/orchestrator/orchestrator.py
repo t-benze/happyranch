@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from pydantic import ValidationError
 
 if TYPE_CHECKING:
+    from src.daemon.queue import TaskQueue
     from src.daemon.sessions import SessionTracker
 
 from src.config import Settings
@@ -54,25 +55,25 @@ class Orchestrator:
         self,
         db: Database,
         settings: Settings,
-        org_paths: OrgPaths,
+        paths: OrgPaths,
         slug: str,
         teams: TeamsRegistry,
     ) -> None:
         self._db = db
         self._settings = settings
-        self._paths = org_paths
+        self._paths = paths
         self._slug = slug
         self._audit = AuditLogger(db)
         self._tracker = PerformanceTracker(db, settings)
         self._teams = teams
-        self._queue: "asyncio.Queue[str] | None" = None  # wired by daemon
+        self._queue: "TaskQueue | None" = None  # wired by daemon
         self._sessions: "SessionTracker | None" = None  # wired by daemon
 
     @property
     def teams(self) -> TeamsRegistry:
         return self._teams
 
-    def attach_queue(self, queue) -> None:
+    def attach_queue(self, queue: "TaskQueue") -> None:
         """Daemon boot wires its TaskQueue so run_step can enqueue follow-ups.
 
         Decoupled from __init__ because tests construct an Orchestrator

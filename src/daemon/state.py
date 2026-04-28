@@ -32,9 +32,8 @@ class DaemonState:
             # re-enqueue tasks (e.g. parent wake-up after a child resolves).
             # The lifespan wiring also does this, but `from_runtime` is used by
             # tests that bypass lifespan, so we do it here too — idempotent.
-            if org.orchestrator is not None:
-                org.orchestrator.attach_queue(state.queue)
-                org.orchestrator.attach_sessions(org.sessions)
+            org.orchestrator.attach_queue(state.queue)
+            org.orchestrator.attach_sessions(org.sessions)
             state.orgs[slug] = org
         return state
 
@@ -62,9 +61,8 @@ class DaemonState:
             assert self.runtime is not None
             root = self.runtime.orgs_dir / slug
             org = OrgState.load(slug=slug, root=root, settings=self.settings)
-            if org.orchestrator is not None:
-                org.orchestrator.attach_queue(self.queue)
-                org.orchestrator.attach_sessions(org.sessions)
+            org.orchestrator.attach_queue(self.queue)
+            org.orchestrator.attach_sessions(org.sessions)
             self.orgs[slug] = org
             return org
 

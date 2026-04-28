@@ -98,7 +98,7 @@ def test_cross_team_feedback_path(paths: OrgPaths, db: Database, monkeypatch) ->
     orch = Orchestrator(
         db=db,
         settings=Settings(max_orchestration_steps=10),
-        org_paths=paths,
+        paths=paths,
         slug="test",
         teams=TeamsRegistry.load(paths.root),
     )

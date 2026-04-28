@@ -28,8 +28,6 @@ def _attach_org_runtime_wiring(state: DaemonState) -> None:
     the orchestrator before the queue exists.
     """
     for org in state.orgs.values():
-        if org.orchestrator is None:
-            continue
         org.orchestrator.attach_queue(state.queue)
         org.orchestrator.attach_sessions(org.sessions)
 

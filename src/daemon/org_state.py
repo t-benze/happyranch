@@ -28,7 +28,7 @@ class OrgState:
     db: Database
     teams: TeamsRegistry
     settings: Settings
-    orchestrator: Orchestrator | None = None
+    orchestrator: Orchestrator
     sessions: SessionTracker = field(default_factory=SessionTracker)
     db_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     kb_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -76,7 +76,7 @@ class OrgState:
         orchestrator = Orchestrator(
             db=db,
             settings=settings,
-            org_paths=paths,
+            paths=paths,
             slug=slug,
             teams=teams,
         )

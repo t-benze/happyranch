@@ -35,7 +35,7 @@ def _make_orch(paths: OrgPaths, db: Database) -> Orchestrator:
     orch = Orchestrator(
         db=db,
         settings=Settings(max_orchestration_steps=15),
-        org_paths=paths,
+        paths=paths,
         slug="test",
         teams=TeamsRegistry.load(paths.root),
     )

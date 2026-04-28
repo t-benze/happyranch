@@ -20,7 +20,7 @@ def orchestrator(test_settings, test_runtime):
     teams = TeamsRegistry.load(test_runtime.root)
     return Orchestrator(
         db=db, settings=test_settings,
-        org_paths=test_runtime, slug="test", teams=teams,
+        paths=test_runtime, slug="test", teams=teams,
     )
 
 
@@ -465,4 +465,4 @@ def test_orchestrator_requires_teams() -> None:
         db = Database(paths.db_path)
         settings = Settings()
         with pytest.raises(TypeError):
-            Orchestrator(db=db, settings=settings, org_paths=paths, slug="x")  # missing teams
+            Orchestrator(db=db, settings=settings, paths=paths, slug="x")  # missing teams

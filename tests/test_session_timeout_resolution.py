@@ -20,7 +20,7 @@ def orchestrator(test_settings: Settings, test_runtime: OrgPaths) -> Orchestrato
     teams = TeamsRegistry.load(test_runtime.root)
     return Orchestrator(
         db=db, settings=test_settings,
-        org_paths=test_runtime, slug="test", teams=teams,
+        paths=test_runtime, slug="test", teams=teams,
     )
 
 
@@ -94,6 +94,6 @@ def test_settings_default_respects_env_override(
     teams = TeamsRegistry.load(test_runtime.root)
     orch = Orchestrator(
         db=db, settings=settings,
-        org_paths=test_runtime, slug="test", teams=teams,
+        paths=test_runtime, slug="test", teams=teams,
     )
     assert orch._resolve_session_timeout("any_agent") == 900

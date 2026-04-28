@@ -292,7 +292,6 @@ async def resolve_escalation(
     # through; ``_enqueue_parent_if_waiting`` reads ``orch._slug`` to push
     # ``(slug, task_id)`` onto the global TaskQueue.
     from src.orchestrator.run_step import _enqueue_parent_if_waiting
-    assert org.orchestrator is not None, "OrgState.load must build the orchestrator"
     _enqueue_parent_if_waiting(org.orchestrator, task_id)
     return {"ok": True, "task_id": task_id, "new_status": new_status.value}
 
