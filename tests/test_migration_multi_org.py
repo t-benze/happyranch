@@ -82,3 +82,17 @@ def test_migrate_refuses_with_active_tasks(tmp_path: Path) -> None:
     conn.close()
     with pytest.raises(RuntimeError, match="cannot_migrate_with_active_tasks"):
         migrate_to_multi_org(rt, apply=True, i_have_a_backup=True)
+
+
+def test_migrate_refuses_with_blocked_tasks(tmp_path: Path) -> None:
+    """blocked is non-terminal — a blocked-escalated task is still waiting on
+    a founder decision, and a blocked-delegated parent is still waiting on
+    its child. Migrating either silently makes that work invisible."""
+    rt = tmp_path / "rt"
+    _make_v1_runtime(rt)
+    conn = sqlite3.connect(rt / "opc.db")
+    conn.execute("INSERT INTO tasks(id, status) VALUES('TASK-007', 'blocked')")
+    conn.commit()
+    conn.close()
+    with pytest.raises(RuntimeError, match="cannot_migrate_with_active_tasks"):
+        migrate_to_multi_org(rt, apply=True, i_have_a_backup=True)

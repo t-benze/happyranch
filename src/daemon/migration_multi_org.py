@@ -26,11 +26,7 @@ def _list_active_tasks(db_path: Path) -> list[str]:
     conn = sqlite3.connect(db_path)
     try:
         cursor = conn.execute("SELECT id, status FROM tasks")
-        return [
-            row[0] for row in cursor
-            if row[1] not in _TERMINAL_TASK_STATUSES
-            and row[1] != "blocked"  # blocked-delegated is in-flight
-        ]
+        return [row[0] for row in cursor if row[1] not in _TERMINAL_TASK_STATUSES]
     finally:
         conn.close()
 
