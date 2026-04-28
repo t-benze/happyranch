@@ -1396,6 +1396,48 @@ def cmd_migrate_to_org_runtime(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_migrate_to_multi_org(args: argparse.Namespace) -> None:
+    """`opc migrate-to-multi-org <path> --i-have-a-backup [--apply]`."""
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print("refusing to migrate without an attached terminal", file=sys.stderr)
+        sys.exit(1)
+    from src.daemon.migration_multi_org import migrate_to_multi_org
+
+    rt = Path(args.path).expanduser().resolve()
+    print(f"about to migrate {rt} from schema v1 → v2")
+    print("this is a hard cut. there is no rollback path.")
+    if not args.apply:
+        print("(dry-run; pass --apply to execute)")
+    confirm = input("Continue? [y/N] ").strip().lower()
+    if confirm != "y":
+        print("aborted")
+        sys.exit(1)
+
+    try:
+        report = migrate_to_multi_org(
+            rt, apply=args.apply, i_have_a_backup=args.i_have_a_backup,
+        )
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if report.get("already_migrated"):
+        print(f"{rt} is already at schema v2 — nothing to do")
+        return
+
+    if not args.apply:
+        print("would move:")
+        for src, dst in report["would_move"]:
+            print(f"  {src} → {dst}")
+        print("\nrun with --apply to execute")
+        return
+
+    print(f"migrated. new layout:")
+    print(f"  {rt}/orgs/{report['slug']}/")
+    print(f"\nnext step:")
+    print(f"  uv run opc init-agent --org {report['slug']}")
+
+
 # ── parser ───────────────────────────────────────────────────
 
 
@@ -1768,6 +1810,23 @@ def build_parser() -> argparse.ArgumentParser:
     mig.add_argument("--apply", action="store_true",
                      help="Execute the migration. Without this, the command is a dry run.")
     mig.set_defaults(func=cmd_migrate_to_org_runtime)
+
+    # opc migrate-to-multi-org — convert v1 single-org runtime → v2 multi-org container.
+    mig2 = sub.add_parser(
+        "migrate-to-multi-org",
+        help="convert a v1 single-org runtime into a v2 multi-org container",
+    )
+    mig2.add_argument("path")
+    mig2.add_argument(
+        "--i-have-a-backup",
+        action="store_true",
+        help="acknowledgment that you have backed up the runtime folder",
+    )
+    mig2.add_argument(
+        "--apply", action="store_true",
+        help="actually execute (default: dry-run)",
+    )
+    mig2.set_defaults(func=cmd_migrate_to_multi_org)
 
     return parser
 
