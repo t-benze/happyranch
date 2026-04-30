@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     session_timeout_seconds: int = 1800  # 30 minutes
 
     # Orchestration loop
-    max_orchestration_steps: int = 10
+    max_orchestration_steps: int = 50
 
     # Performance tier thresholds
     tier_green_threshold: float = 0.90

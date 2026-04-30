@@ -250,7 +250,7 @@ Operational settings use the `OPC_` environment variable prefix. Runtime paths (
 | `OPC_CLAUDE_CLI_PATH` | `claude` | Path to Claude Code CLI |
 | `OPC_CODEX_CLI_PATH` | `codex` | Path to Codex CLI |
 | `OPC_PERMISSION_MODE` | `auto` | Claude Code permission mode |
-| `OPC_MAX_ORCHESTRATION_STEPS` | `10` | Max EH decision steps before escalation |
+| `OPC_MAX_ORCHESTRATION_STEPS` | `50` | Max EH decision steps before escalation |
 | `OPC_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout (30 min) — global default; can be overridden per-runtime in `<runtime>/org/config.yaml` and per-agent in the agent's frontmatter |
 | `OPC_TIER_GREEN_THRESHOLD` | `0.90` | Acceptance rate for green tier |
 | `OPC_TIER_YELLOW_THRESHOLD` | `0.75` | Acceptance rate for yellow tier |
