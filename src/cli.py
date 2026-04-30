@@ -260,8 +260,15 @@ def cmd_details(args: argparse.Namespace) -> None:
         print(f"Note:       {task['note']}")
     if body.get("results"):
         print(f"\nResults ({len(body['results'])}):")
+        full = getattr(args, "full", False)
         for r_ in body["results"]:
-            print(f"  - [{r_['agent']}] confidence={r_['confidence_score']}  {r_['output_summary'][:80]}")
+            header = f"  - [{r_['agent']}] confidence={r_['confidence_score']}"
+            if full:
+                print(header)
+                for line in (r_["output_summary"] or "").splitlines() or [""]:
+                    print(f"      {line}")
+            else:
+                print(f"{header}  {r_['output_summary'][:80]}")
     if body.get("audit_log"):
         print(f"\nAudit log ({len(body['audit_log'])} entries):")
         for log in body["audit_log"]:
@@ -1257,6 +1264,11 @@ def build_parser() -> argparse.ArgumentParser:
     # opc details
     p_details = sub.add_parser("details", help="Show task details")
     p_details.add_argument("task_id", help="Task ID (e.g. TASK-001)")
+    p_details.add_argument(
+        "--full",
+        action="store_true",
+        help="Show full per-step output summaries (no 80-char truncation)",
+    )
     p_details.set_defaults(func=cmd_details)
 
     # opc tail

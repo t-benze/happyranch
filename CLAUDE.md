@@ -415,6 +415,7 @@ opc run --team engineering --brief-file /tmp/eh-brief.md         # read brief fr
 opc tail TASK-001            # stream live SSE events for a task
 opc tasks                    # list recent tasks
 opc details TASK-001         # show task details (status, block_kind, note, results, audit log)
+opc details TASK-001 --full  # same, but print full per-step output_summary (no 80-char truncation)
 opc agents [--detail]        # show performance tiers
 opc audit TASK-007                               # filtered audit-log view (task, agent, action, since, limit)
 opc audit --agent engineering_head --limit 10    # recent entries for one agent, any task

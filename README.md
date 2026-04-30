@@ -132,7 +132,7 @@ Make a backup first — the flag is mandatory on purpose. Without `--apply` the 
 | `opc run --team TEAM --brief "..."` | Route a task to a team (e.g., `engineering`, `content`) |
 | `opc run --brief-file PATH` | Read the task brief from a file (use this for multi-line briefs); mutually exclusive with `--brief` |
 | `opc tail TASK-ID` | Stream live events for a running (or historical) task |
-| `opc details TASK-ID` | Show task details (status, block_kind, note, results, audit log) |
+| `opc details TASK-ID [--full]` | Show task details (status, block_kind, note, results, audit log). `--full` prints per-step `output_summary` untruncated. |
 | `opc tasks [--limit N]` | List recent tasks (default: 20) |
 | `opc agents [name] [--detail]` | Show agent performance tiers (all, or one agent's scorecard) |
 | `opc init-agent [name]` | Initialize agent workspaces (all or specific agent) |

@@ -1442,6 +1442,43 @@ def test_cmd_details_shows_note(capsys):
     assert "Feature landed" in out
 
 
+def test_cmd_details_full_flag_shows_untruncated_summary(capsys):
+    """--full prints the full output_summary; default truncates to 80 chars."""
+    from src.cli import cmd_details
+    from argparse import Namespace
+    from unittest.mock import MagicMock, patch
+
+    long_summary = "S" * 200  # well past the 80-char default cap
+    client = MagicMock()
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = {
+        "task": {
+            "id": "T-1", "type": "general", "status": "completed",
+            "assigned_agent": "engineering_head", "brief": "b",
+            "created_at": "2026-04-19T00:00:00", "updated_at": "2026-04-19T00:00:00",
+        },
+        "results": [
+            {"agent": "dev_agent", "confidence_score": 0.9, "output_summary": long_summary}
+        ],
+        "audit_log": [],
+    }
+    client.get.return_value = response
+
+    # Default: truncated.
+    with patch("src.cli.OpcClient.from_env", return_value=client):
+        cmd_details(Namespace(task_id="T-1", full=False))
+    out_default = capsys.readouterr().out
+    assert long_summary not in out_default
+    assert ("S" * 80) in out_default
+
+    # --full: full text present.
+    with patch("src.cli.OpcClient.from_env", return_value=client):
+        cmd_details(Namespace(task_id="T-1", full=True))
+    out_full = capsys.readouterr().out
+    assert long_summary in out_full
+
+
 def test_cmd_revisit_rejects_non_tty(capsys, monkeypatch):
     """No TTY => abort before any HTTP call."""
     from src.cli import cmd_revisit
