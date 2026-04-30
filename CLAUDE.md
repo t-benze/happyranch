@@ -453,9 +453,11 @@ opc migrate-to-multi-org <path> --i-have-a-backup --apply       # v1 → v2 in p
 # Per-org (every command takes --org <slug> or honors OPC_ORG_SLUG)
 opc run --org hk-tourism --brief "Explore the payment module"   # submit a task; EH decides approach
 opc run --org hk-tourism --team engineering --brief "Add Alipay support"
+opc run --org hk-tourism --team engineering --brief-file /tmp/eh-brief.md   # read brief from a file (mutually exclusive with --brief)
 opc tail --org hk-tourism TASK-001         # stream live SSE events for a task
 opc tasks --org hk-tourism                 # list recent tasks
 opc details --org hk-tourism TASK-001      # show task details
+opc details --org hk-tourism TASK-001 --full   # same, but print full per-step output_summary (no 80-char truncation)
 opc agents --org hk-tourism [--detail]     # show performance tiers
 opc audit --org hk-tourism TASK-007                              # filtered audit-log view
 opc audit --org hk-tourism --agent engineering_head --limit 10   # recent entries for one agent
@@ -473,7 +475,7 @@ opc kb delete --org hk-tourism <slug> --agent <you> --confirm [--as-founder]
 opc kb reindex --org hk-tourism
 opc kb precedent --org hk-tourism --task-id TASK-001 --decision approve|reject --rationale "..." [--slug <s>] --as-founder
 opc resolve-escalation --org hk-tourism --task-id TASK-001 --decision approve|reject --rationale "..."
-opc revisit --org hk-tourism TASK-052 [--note "..."]            # founder: spawn NEW root inheriting the predecessor's brief (TTY-gated)
+opc revisit --org hk-tourism TASK-052 [--note "..." | --note-file PATH]   # founder: spawn NEW root inheriting the predecessor's brief (TTY-gated)
 # Talk flow (founder↔agent conversations; per-org):
 opc talk start --org hk-tourism --agent <name>
 opc talk resume --org hk-tourism --talk-id TALK-001

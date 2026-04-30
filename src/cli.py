@@ -211,7 +211,18 @@ def cmd_run(args: argparse.Namespace) -> None:
     slug = resolve_org_slug(
         args_org=args.org, available=_fetch_available_orgs(client),
     )
-    payload: dict = {"brief": args.brief}
+    if args.brief_file:
+        try:
+            brief = Path(args.brief_file).expanduser().read_text(encoding="utf-8")
+        except OSError as exc:
+            print(f"Error reading brief file {args.brief_file}: {exc}")
+            sys.exit(1)
+    else:
+        brief = args.brief
+    if not brief.strip():
+        print("Error: brief is empty")
+        sys.exit(1)
+    payload: dict = {"brief": brief}
     if args.team:
         payload["team"] = args.team
     r = client.post(f"/api/v1/orgs/{slug}/tasks", json=payload)
@@ -355,8 +366,15 @@ def cmd_details(args: argparse.Namespace) -> None:
         print(f"Note:       {task['note']}")
     if body.get("results"):
         print(f"\nResults ({len(body['results'])}):")
+        full = getattr(args, "full", False)
         for r_ in body["results"]:
-            print(f"  - [{r_['agent']}] confidence={r_['confidence_score']}  {r_['output_summary'][:80]}")
+            header = f"  - [{r_['agent']}] confidence={r_['confidence_score']}"
+            if full:
+                print(header)
+                for line in (r_["output_summary"] or "").splitlines() or [""]:
+                    print(f"      {line}")
+            else:
+                print(f"{header}  {r_['output_summary'][:80]}")
     if body.get("audit_log"):
         print(f"\nAudit log ({len(body['audit_log'])} entries):")
         for log in body["audit_log"]:
@@ -1313,6 +1331,18 @@ def cmd_revisit(args: argparse.Namespace) -> None:
         print("opc revisit requires an interactive terminal (no --yes bypass).")
         sys.exit(1)
 
+    if args.note_file:
+        try:
+            note: str | None = Path(args.note_file).expanduser().read_text(encoding="utf-8")
+        except OSError as exc:
+            print(f"Error reading note file {args.note_file}: {exc}")
+            sys.exit(1)
+        if not note.strip():
+            print("Error: note is empty")
+            sys.exit(1)
+    else:
+        note = args.note
+
     print(f"About to revisit {args.task_id} (founder-initiated).")
     print("This creates a NEW root task that inherits the original brief.")
     print(
@@ -1339,7 +1369,7 @@ def cmd_revisit(args: argparse.Namespace) -> None:
     )
     r = client.post(
         f"/api/v1/orgs/{slug}/tasks/{args.task_id}/revisit",
-        json={"founder_note": args.note},
+        json={"founder_note": note},
     )
     if r.status_code == 404:
         print(f"Task {args.task_id} not found.")
@@ -1497,13 +1527,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--team", default=None,
         help="Team to route the task to (default: engineering)",
     )
-    p_run.add_argument("--brief", required=True, help="Task description")
+    p_run_brief = p_run.add_mutually_exclusive_group(required=True)
+    p_run_brief.add_argument("--brief", help="Task description (inline string)")
+    p_run_brief.add_argument(
+        "--brief-file",
+        help="Path to a file whose contents become the task brief",
+    )
     p_run.set_defaults(func=cmd_run)
 
     # opc details
     p_details = sub.add_parser("details", help="Show task details")
     p_details.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_details.add_argument("task_id", help="Task ID (e.g. TASK-001)")
+    p_details.add_argument(
+        "--full",
+        action="store_true",
+        help="Show full per-step output summaries (no 80-char truncation)",
+    )
     p_details.set_defaults(func=cmd_details)
 
     # opc tail
@@ -1799,9 +1839,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_revisit.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_revisit.add_argument("task_id", help="Any task id in the lineage to revisit")
-    p_revisit.add_argument(
+    p_revisit_note = p_revisit.add_mutually_exclusive_group()
+    p_revisit_note.add_argument(
         "--note", default=None,
         help="Optional founder hint surfaced to the EH in the first-step prompt header",
+    )
+    p_revisit_note.add_argument(
+        "--note-file", default=None,
+        help="Path to a file whose contents become the founder note (mutually exclusive with --note)",
     )
     p_revisit.set_defaults(func=cmd_revisit)
 

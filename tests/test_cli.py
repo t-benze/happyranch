@@ -276,7 +276,7 @@ def test_cmd_run_submits_and_returns_without_streaming(capsys):
 
     with patch("src.cli.OpcClient.from_env", return_value=fake), \
          patch("src.cli._fetch_available_orgs", return_value=["alpha"]):
-        args = MagicMock(org=None, team=None, brief="x")
+        args = MagicMock(org=None, team=None, brief="x", brief_file=None)
         cmd_run(args)
 
     fake.post.assert_called_once_with("/api/v1/orgs/alpha/tasks", json={"brief": "x"})
@@ -284,6 +284,58 @@ def test_cmd_run_submits_and_returns_without_streaming(capsys):
     out = capsys.readouterr().out
     assert "TASK-001" in out
     assert "opc tail TASK-001" in out
+
+
+def test_cmd_run_reads_brief_from_file(tmp_path, capsys):
+    """--brief-file reads the brief from disk and submits its contents."""
+    from src.cli import cmd_run
+
+    brief_path = tmp_path / "brief.md"
+    brief_path.write_text("multi-line\nbrief content\n", encoding="utf-8")
+
+    fake = MagicMock()
+    fake.post.return_value.status_code = 200
+    fake.post.return_value.json.return_value = {"task_id": "TASK-002"}
+    with patch("src.cli.OpcClient.from_env", return_value=fake), \
+         patch("src.cli._fetch_available_orgs", return_value=["alpha"]):
+        args = MagicMock(org=None, team=None, brief=None, brief_file=str(brief_path))
+        cmd_run(args)
+
+    fake.post.assert_called_once_with(
+        "/api/v1/orgs/alpha/tasks", json={"brief": "multi-line\nbrief content\n"}
+    )
+
+
+def test_cmd_run_brief_file_missing(tmp_path, capsys):
+    """--brief-file with a nonexistent path exits with a friendly error."""
+    from src.cli import cmd_run
+
+    args = MagicMock(org=None, team=None, brief=None, brief_file=str(tmp_path / "nope.md"))
+    fake = MagicMock()
+    with patch("src.cli.OpcClient.from_env", return_value=fake), \
+         patch("src.cli._fetch_available_orgs", return_value=["alpha"]):
+        with pytest.raises(SystemExit):
+            cmd_run(args)
+    out = capsys.readouterr().out
+    assert "Error reading brief file" in out
+    fake.post.assert_not_called()
+
+
+def test_cmd_run_brief_file_empty_rejected(tmp_path, capsys):
+    """An empty brief file is rejected before hitting the daemon."""
+    from src.cli import cmd_run
+
+    brief_path = tmp_path / "empty.md"
+    brief_path.write_text("   \n\n", encoding="utf-8")
+    fake = MagicMock()
+    with patch("src.cli.OpcClient.from_env", return_value=fake), \
+         patch("src.cli._fetch_available_orgs", return_value=["alpha"]):
+        args = MagicMock(org=None, team=None, brief=None, brief_file=str(brief_path))
+        with pytest.raises(SystemExit):
+            cmd_run(args)
+    out = capsys.readouterr().out
+    assert "brief is empty" in out
+    fake.post.assert_not_called()
 
 
 def test_cmd_tail_streams_existing_task(capsys):
@@ -308,7 +360,7 @@ def test_cmd_run_idle_daemon_prints_friendly_message(capsys):
     fake.post.return_value.json.return_value = {"detail": {"code": "no_active_runtime"}}
     with patch("src.cli.OpcClient.from_env", return_value=fake), \
          patch("src.cli._fetch_available_orgs", return_value=["alpha"]):
-        args = MagicMock(org=None, team=None, brief="x")
+        args = MagicMock(org=None, team=None, brief="x", brief_file=None)
         with pytest.raises(SystemExit):
             cmd_run(args)
     out = capsys.readouterr().out
@@ -1527,6 +1579,45 @@ def test_cmd_details_shows_note(capsys):
     assert "Feature landed" in out
 
 
+def test_cmd_details_full_flag_shows_untruncated_summary(capsys):
+    """--full prints the full output_summary; default truncates to 80 chars."""
+    from src.cli import cmd_details
+    from argparse import Namespace
+    from unittest.mock import MagicMock, patch
+
+    long_summary = "S" * 200  # well past the 80-char default cap
+    client = MagicMock()
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = {
+        "task": {
+            "id": "T-1", "type": "general", "status": "completed",
+            "assigned_agent": "engineering_head", "brief": "b",
+            "created_at": "2026-04-19T00:00:00", "updated_at": "2026-04-19T00:00:00",
+        },
+        "results": [
+            {"agent": "dev_agent", "confidence_score": 0.9, "output_summary": long_summary}
+        ],
+        "audit_log": [],
+    }
+    client.get.return_value = response
+
+    # Default: truncated.
+    with patch("src.cli.OpcClient.from_env", return_value=client), \
+         patch("src.cli._fetch_available_orgs", return_value=["alpha"]):
+        cmd_details(Namespace(org=None, task_id="T-1", full=False))
+    out_default = capsys.readouterr().out
+    assert long_summary not in out_default
+    assert ("S" * 80) in out_default
+
+    # --full: full text present.
+    with patch("src.cli.OpcClient.from_env", return_value=client), \
+         patch("src.cli._fetch_available_orgs", return_value=["alpha"]):
+        cmd_details(Namespace(org=None, task_id="T-1", full=True))
+    out_full = capsys.readouterr().out
+    assert long_summary in out_full
+
+
 def test_cmd_revisit_rejects_non_tty(capsys, monkeypatch):
     """No TTY => abort before any HTTP call."""
     from src.cli import cmd_revisit
@@ -1552,7 +1643,7 @@ def test_cmd_revisit_aborts_on_negative_confirmation(capsys, monkeypatch):
     monkeypatch.setattr("src.cli.sys.stdout.isatty", lambda: True)
     with patch("src.cli.OpcClient.from_env", return_value=fake), \
          patch("builtins.input", return_value="n"):
-        args = MagicMock(task_id="TASK-052", note=None)
+        args = MagicMock(task_id="TASK-052", note=None, note_file=None)
         with pytest.raises(SystemExit):
             cmd_revisit(args)
     fake.post.assert_not_called()
@@ -1578,7 +1669,7 @@ def test_cmd_revisit_submits_without_streaming_on_yes(capsys, monkeypatch):
     with patch("src.cli.OpcClient.from_env", return_value=fake), \
          patch("src.cli._fetch_available_orgs", return_value=["alpha"]), \
          patch("builtins.input", return_value="y"):
-        args = MagicMock(org=None, task_id="TASK-052", note="PR merged")
+        args = MagicMock(org=None, task_id="TASK-052", note="PR merged", note_file=None)
         cmd_revisit(args)
 
     fake.post.assert_called_once_with(
@@ -1589,6 +1680,72 @@ def test_cmd_revisit_submits_without_streaming_on_yes(capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "TASK-072" in out
     assert "opc tail TASK-072" in out
+
+
+def test_cmd_revisit_reads_note_from_file(tmp_path, capsys, monkeypatch):
+    """--note-file reads the founder note from disk and forwards it as founder_note."""
+    from src.cli import cmd_revisit
+
+    note_path = tmp_path / "note.md"
+    note_path.write_text("multi-line\nfounder hint\n", encoding="utf-8")
+
+    fake = MagicMock()
+    fake.post.return_value.status_code = 200
+    fake.post.return_value.json.return_value = {
+        "new_root_task_id": "TASK-072",
+        "predecessor_root_task_id": "TASK-052",
+        "flagged_task_id": "TASK-052",
+        "cascade": ["TASK-052"],
+        "predecessor_status": "failed",
+    }
+    monkeypatch.setattr("src.cli.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("src.cli.sys.stdout.isatty", lambda: True)
+    with patch("src.cli.OpcClient.from_env", return_value=fake), \
+         patch("src.cli._fetch_available_orgs", return_value=["alpha"]), \
+         patch("builtins.input", return_value="y"):
+        args = MagicMock(org=None, task_id="TASK-052", note=None, note_file=str(note_path))
+        cmd_revisit(args)
+
+    fake.post.assert_called_once_with(
+        "/api/v1/orgs/alpha/tasks/TASK-052/revisit",
+        json={"founder_note": "multi-line\nfounder hint\n"},
+    )
+
+
+def test_cmd_revisit_note_file_missing(tmp_path, capsys, monkeypatch):
+    """--note-file with a nonexistent path exits with a friendly error and never POSTs."""
+    from src.cli import cmd_revisit
+
+    fake = MagicMock()
+    monkeypatch.setattr("src.cli.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("src.cli.sys.stdout.isatty", lambda: True)
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        args = MagicMock(
+            task_id="TASK-052", note=None, note_file=str(tmp_path / "nope.md")
+        )
+        with pytest.raises(SystemExit):
+            cmd_revisit(args)
+    out = capsys.readouterr().out
+    assert "Error reading note file" in out
+    fake.post.assert_not_called()
+
+
+def test_cmd_revisit_note_file_empty_rejected(tmp_path, capsys, monkeypatch):
+    """An empty --note-file is rejected before the confirm prompt — likely a bug."""
+    from src.cli import cmd_revisit
+
+    note_path = tmp_path / "empty.md"
+    note_path.write_text("   \n\n", encoding="utf-8")
+    fake = MagicMock()
+    monkeypatch.setattr("src.cli.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("src.cli.sys.stdout.isatty", lambda: True)
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        args = MagicMock(task_id="TASK-052", note=None, note_file=str(note_path))
+        with pytest.raises(SystemExit):
+            cmd_revisit(args)
+    out = capsys.readouterr().out
+    assert "note is empty" in out
+    fake.post.assert_not_called()
 
 
 def test_cmd_details_shows_revisit_header_chain_and_footer(capsys):
@@ -2052,7 +2209,7 @@ def test_cmd_run_resolves_org_explicit_flag(monkeypatch):
     fake.post.return_value.json.return_value = {"task_id": "TASK-001"}
 
     with patch("src.cli.OpcClient.from_env", return_value=fake):
-        args = MagicMock(org="from-flag", team=None, brief="x")
+        args = MagicMock(org="from-flag", team=None, brief="x", brief_file=None)
         cmd_run(args)
 
     fake.post.assert_called_once_with(
@@ -2074,7 +2231,7 @@ def test_cmd_run_resolves_org_via_env_var(monkeypatch):
     fake.post.return_value.json.return_value = {"task_id": "TASK-002"}
 
     with patch("src.cli.OpcClient.from_env", return_value=fake):
-        args = MagicMock(org=None, team=None, brief="x")
+        args = MagicMock(org=None, team=None, brief="x", brief_file=None)
         cmd_run(args)
 
     fake.post.assert_called_once_with(
@@ -2094,7 +2251,7 @@ def test_cmd_run_resolves_org_auto_infer_single(monkeypatch):
     fake.post.return_value.json.return_value = {"task_id": "TASK-003"}
 
     with patch("src.cli.OpcClient.from_env", return_value=fake):
-        args = MagicMock(org=None, team=None, brief="x")
+        args = MagicMock(org=None, team=None, brief="x", brief_file=None)
         cmd_run(args)
 
     fake.post.assert_called_once_with(

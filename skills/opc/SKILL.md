@@ -31,13 +31,15 @@ Manage the OPC (one-person company) AI tourism organization: submit tasks to the
 ## Tasks
 
 ```bash
-# Submit a task — EH decides the approach; CLI streams SSE events until terminal.
+# Submit a task — the team manager decides the approach; CLI returns immediately.
 scripts/opc run --brief "Explore how the payment module handles refunds"
 
-# Task-type hint (steers the EH without hardcoding a chain)
-scripts/opc run --task implement_feature --brief "Add Alipay for international cards"
-scripts/opc run --task bug_fix           --brief "HK booking confirmation emails failing"
-scripts/opc run --task payment_change    --brief "Add WeChat Pay as an option"
+# Multi-line brief from a file (mutually exclusive with --brief)
+scripts/opc run --brief-file /tmp/brief.md
+
+# Route to a team
+scripts/opc run --team engineering --brief "Add Alipay for international cards"
+scripts/opc run --team content     --brief "Write a Macau visa walkthrough"
 
 # Reattach to a running (or historical) task and stream its events
 scripts/opc tail TASK-001
@@ -60,7 +62,7 @@ scripts/opc recall TASK-001 --fetch-artifact <relpath>   # read one artifact
 
 # Revisit — founder-initiated: spawn a NEW root task that inherits the brief of a terminal predecessor.
 # TTY-gated; no --yes bypass; prompts for confirmation before POSTing.
-scripts/opc revisit TASK-052 [--note "founder hint to the new-root EH"]
+scripts/opc revisit TASK-052 [--note "founder hint" | --note-file PATH]
 ```
 
 ## Agents
@@ -166,6 +168,7 @@ A runtime is org-specific: its charter, teams, escalation rules, and agent syste
 **Submit + watch**
 ```bash
 scripts/opc run --brief "…"                              # submits and returns immediately
+scripts/opc run --brief-file /tmp/brief.md               # for multi-line briefs
 scripts/opc tail TASK-001                                # attach to live events (Ctrl-C detaches)
 ```
 
