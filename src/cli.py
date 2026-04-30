@@ -558,9 +558,9 @@ def _completion_payload_from_file(path: str) -> tuple[str, dict]:
     }
     if data.get("artifact_dir"):
         body["artifact_dir"] = data["artifact_dir"]
-    # EH-only. Workers omit `decision`; EH sets it to a NextStep object
-    # (delegate/done/escalate). Passed through verbatim — the orchestrator
-    # parses it via the NextStep pydantic model.
+    # Manager-only. Workers omit `decision`; team managers set it to a
+    # NextStep object (delegate/done/escalate). Passed through verbatim —
+    # the orchestrator parses it via the NextStep pydantic model.
     if data.get("decision") is not None:
         body["decision"] = data["decision"]
     return data["task_id"], body
@@ -1325,8 +1325,8 @@ def cmd_cancel(args: argparse.Namespace) -> None:
 
 def cmd_revisit(args: argparse.Namespace) -> None:
     """Founder action: spawn a NEW root task that inherits a terminal
-    predecessor's brief, with the EH gated on an audit-log-backed context
-    header. TTY-gated — no --yes bypass."""
+    predecessor's brief, with the team manager gated on an audit-log-backed
+    context header. TTY-gated — no --yes bypass."""
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print("opc revisit requires an interactive terminal (no --yes bypass).")
         sys.exit(1)
@@ -1350,7 +1350,7 @@ def cmd_revisit(args: argparse.Namespace) -> None:
         "(read-only history)."
     )
     print(
-        "The EH for the new root can inspect the old lineage via "
+        "The team manager for the new root can inspect the old lineage via "
         "`opc details` / `opc audit` / `opc recall`."
     )
     reply = input("Continue? [y/N] ").strip().lower()
@@ -1607,8 +1607,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_ma.add_argument("action", nargs="?", default=None, choices=["enroll", "update", "terminate"])
     p_ma.add_argument("--name", default=None, help="Agent name")
     p_ma.add_argument("--task-id", dest="task_id", default=None, help="Active task ID (task auth path)")
-    p_ma.add_argument("--session-id", dest="session_id", default=None, help="Active EH session ID (task auth path)")
-    p_ma.add_argument("--talk-id", dest="talk_id", default=None, help="Open EH talk ID (talk auth path)")
+    p_ma.add_argument("--session-id", dest="session_id", default=None, help="Active team-manager session ID (task auth path)")
+    p_ma.add_argument("--talk-id", dest="talk_id", default=None, help="Open team-manager talk ID (talk auth path)")
     p_ma.add_argument("--description", default=None, help="Agent description")
     p_ma.add_argument("--system-prompt", dest="system_prompt", default=None, help="System prompt")
     p_ma.add_argument("--executor", default=None, help="Agent executor (default: claude)")
@@ -1736,7 +1736,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_kb_update.add_argument("--from-file", required=True)
     p_kb_update.set_defaults(func=cmd_kb_update)
 
-    p_kb_delete = kb_sub.add_parser("delete", help="Delete a KB entry (EH only)")
+    p_kb_delete = kb_sub.add_parser("delete", help="Delete a KB entry (team manager; founder may override with --as-founder)")
     p_kb_delete.add_argument("--org", required=True, help="Org slug (required for agent callbacks)")
     p_kb_delete.add_argument("slug")
     p_kb_delete.add_argument("--agent", required=True)
@@ -1842,7 +1842,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_revisit_note = p_revisit.add_mutually_exclusive_group()
     p_revisit_note.add_argument(
         "--note", default=None,
-        help="Optional founder hint surfaced to the EH in the first-step prompt header",
+        help="Optional founder hint surfaced to the team manager in the first-step prompt header",
     )
     p_revisit_note.add_argument(
         "--note-file", default=None,

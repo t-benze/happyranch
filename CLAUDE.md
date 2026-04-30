@@ -1,15 +1,17 @@
-# Project: OPC Multi-Agent Tourism Organization
+# Project: OPC — Multi-Agent Org Runtime
 
 ## What This Is
-A one-person company (OPC) that provides online tourism information and booking services for foreign tourists visiting Hong Kong SAR and Macau SAR. The entire operation is run by AI agents supervised by a single human founder.
+OPC is an **org-agnostic runtime** for operating a multi-agent organization supervised by a single human founder. The repo provides the system kernel (orchestrator, daemon + CLI, audit, scoring, KB, talk, revisit, escalation primitives); the *organization* it runs — charter, teams, agents, escalation rules, jurisdictions, budget authority — is loaded per-runtime from `<runtime>/org/`.
+
+A canonical sample org shipped at `examples/orgs/hk-macau-tourism/` runs a one-person tourism company serving foreign visitors to Hong Kong SAR and Macau SAR. Treat it as the reference shape when bootstrapping a new org; nothing about its specific teams, agents, or constraints is baked into the system.
 
 ## Architecture Summary
-- **Layer 1**: Founder (human) — sets rules, handles escalations, reviews weekly dashboard
-- **Layer 2**: 4 Manager Agents — Content Manager, Engineering Head, Operations Manager, CX Manager
-- **Layer 3**: 10 Worker Agents — Content Writer, SEO Agent, Content QA, Product Manager, Dev Agent, Payment Agent, QA Engineer, Partner Liaison, Compliance Agent, Support Agent
-- **Infrastructure**: Audit Logger, Escalation Router, Knowledge Base
+- **Layer 1**: Founder (human) — sets org rules, handles escalations, reviews weekly dashboard
+- **Layer 2**: Manager agents — defined per-org in `<runtime>/org/agents/<name>.md` with `role: manager`. Each manager owns one team listed in `<runtime>/org/teams.yaml`.
+- **Layer 3**: Worker agents — defined per-org in `<runtime>/org/agents/<name>.md` with `role: worker`. Workers are assigned to a team via `<runtime>/org/teams.yaml`.
+- **Infrastructure (org-agnostic, lives in this repo)**: orchestrator, FastAPI daemon + `opc` CLI, audit logger, performance scoring, knowledge base, talk store, revisit primitive, escalation routing.
 
-Agents operate autonomously within defined authority. Managers cross-audit each other (peer review). No agent both proposes and approves consequential actions (maker-checker pattern).
+Agents operate autonomously within authority defined by their org. The system enforces structural patterns regardless of org: managers cross-audit each other (peer review), and no agent both proposes and approves consequential actions (maker-checker pattern). Org-specific authority (e.g., budget thresholds, refund limits) lives in `<runtime>/org/escalation-rules.md` and the agents' system prompts.
 
 A single runtime container (`<runtime>/`) hosts **multiple orgs** under `<runtime>/orgs/<slug>/`. Each org has its own `org/` content (charter, agents, teams, escalation rules), its own SQLite DB, its own workspaces, its own KB, and its own talks. One daemon serves all orgs in the container concurrently. A canonical sample tree ships at `examples/orgs/hk-macau-tourism/` and is materialized into a container via `opc orgs init <slug> --from examples/orgs/hk-macau-tourism` (after `opc init <runtime>` creates the empty container).
 
@@ -17,7 +19,7 @@ A single runtime container (`<runtime>/`) hosts **multiple orgs** under `<runtim
 
 The following documents are in the `protocol/` folder.
 
-- `00-completion-contract.md` — Universal completion-report format, EH decision schema, agent-callback list
+- `00-completion-contract.md` — Universal completion-report format, manager decision schema, agent-callback list
 - `05-runtime-blueprint.md` — Index pointing to the split blueprint documents:
   - `05b-agent-runtime.md` — Executor model, memory architecture, lifecycle & scheduling
   - `05c-orchestrator.md` — Orchestrator responsibilities, performance tiers, permissions, task state machine
@@ -37,33 +39,29 @@ at `examples/orgs/hk-macau-tourism/` for the HK/Macau tourism org.
 - **Daemon**: FastAPI HTTP service (`src/daemon/`) — serves orchestrator work, SSE task events, agent callbacks
 - **CLI**: Thin HTTP client (`src/client/`) that talks to the daemon over localhost
 - **Agent workflow**: Shared workspace skills (`protocol/skills/`) — `start-task`, `make-worktree`, `manage-repo`, `manage-agent`. The orchestrator prompt references the same SOPs for both Claude and Codex workspaces
-- **Orchestrator**: Custom Python application. `run_step` is the only primitive — each invocation advances one task by one subprocess call; an async `TaskQueue` + worker pool (`src/daemon/queue.py`) drives re-enqueues across steps. EH drives decisions; performance scoring derived from implicit review verdicts on delegated work
+- **Orchestrator**: Custom Python application. `run_step` is the only primitive — each invocation advances one task by one subprocess call; an async `TaskQueue` + worker pool (`src/daemon/queue.py`) drives re-enqueues across steps. The team manager drives decisions; performance scoring derived from implicit review verdicts on delegated work
 - **Data models**: Pydantic v2 + pydantic-settings
 - **Database**: SQLite with WAL mode (audit logs, scorecards, task state)
 - **Knowledge base**: File-backed markdown under `<runtime>/kb/` with atomic writes, substring/tag search, and regenerated `_index.md` (see `src/infrastructure/kb_store.py`). Vector store / RAG not yet added
 - **LLM**: Provider depends on the selected executor (Claude Code or Codex)
 - **Hosting**: Local Mac Mini
 
-## Implementation Order (follow this sequence)
-1. ~~**Product & Engineering Team**~~ done — Engineering Head + Product Manager + Dev Agent + Payment Agent + QA Engineer with executor-backed agent sessions. EH-driven orchestration loop (EH decides each step: delegate, handle directly, or escalate). Audit logging, agent memory, performance scoring all implemented.
-2. ~~**Audit logging**~~ done — SQLite-backed audit logger with session start/end, completion reports, orchestration steps, escalations.
-3. ~~**EH-driven orchestration**~~ done — Engineering Head analyzes each task and decides the approach. No hardcoded task chains. Max 10 orchestration steps before escalation.
-4. ~~**Agent memory**~~ done — Persistent workspaces with executor-specific bootstrap docs (`CLAUDE.md` or `AGENTS.md`), learnings.md, task_history.md. Context builder regenerates identity on tier changes.
-5. ~~**Performance scoring**~~ done — Rolling 30-day scorecards, green/yellow/red tiers, exposed to EH via capabilities prompt.
-6. **Content Team** — Content Writer + Content QA + SEO Agent + Content Manager.
-7. **Ops Team** — Partner Liaison + Compliance Agent + Operations Manager. Enables real cross-team audits for payment changes.
-8. **Inter-Team communication** — Orchestrator routes tasks between Teams.
-9. **CX Team** — Support Agent may run as persistent agent for real-time chat, not batch.
-10. **Founder dashboard** — Aggregate audit logs, escalation summaries, scorecards into weekly view.
-11. ~~**Talk flow**~~ done — founder↔agent conversations with SQLite-tracked talks, transcripts under `<runtime>/talks/`, end-of-talk learnings + KB entries.
+## Implementation Order (system features)
 
-## Key Constraints
-- **Two jurisdictions**: Hong Kong (PDPO), Macau (PDPA) — both must be complied with simultaneously. Mainland China is explicitly out of scope (PIPL/CSL/DSL do not apply).
-- **PCI-DSS**: No raw card data storage — ever
-- **Political sensitivity**: Any content about China/HK/Macau relations escalates to founder
-- **Budget authority**: Auto-approved up to $200 USD single / $100/month recurring. Above that -> founder
-- **Refund authority**: CX Manager up to $150 USD. Above that -> founder
-- **Downtime tolerance**: 30 minutes max before escalation
+This list tracks **system kernel** milestones — the org-agnostic infrastructure. Building out the agent roster of a specific organization (managers + workers per team) is *org content work*, not system work, and lives in `<runtime>/org/agents/` + `<runtime>/org/teams.yaml`.
+
+1. ~~**Bootstrap orchestrator + first team**~~ done — orchestrator with executor-backed agent sessions, manager-driven decision loop (the team manager analyzes each step: delegate / handle directly / escalate). Validated end-to-end against the engineering team in the HK/Macau sample org (Engineering Head + Product Manager + Dev Agent + Payment Agent + QA Engineer).
+2. ~~**Audit logging**~~ done — SQLite-backed audit logger with session start/end, completion reports, orchestration steps, escalations.
+3. ~~**Manager-driven orchestration**~~ done — the team manager analyzes each task and decides the approach. No hardcoded task chains. Max 10 orchestration steps before escalation.
+4. ~~**Agent memory**~~ done — persistent workspaces with executor-specific bootstrap docs (`CLAUDE.md` or `AGENTS.md`), `learnings.md`, `task_history.md`. Context builder regenerates identity on tier changes.
+5. ~~**Performance scoring**~~ done — rolling 30-day scorecards, green/yellow/red tiers, exposed to managers via capabilities prompt.
+6. ~~**Talk flow**~~ done — founder↔agent conversations with SQLite-tracked talks, transcripts under `<runtime>/talks/`, end-of-talk learnings + KB entries.
+7. ~~**Knowledge Base**~~ done — shared precedents + reference under `<runtime>/kb/` with atomic file-backed writes and substring/tag search.
+8. ~~**Revisit primitive**~~ done — founder spawns a new root task that inherits a terminal predecessor's brief while leaving the old lineage frozen.
+9. ~~**Org-per-runtime layout**~~ done — `<runtime>/org/{charter.md,escalation-rules.md,teams.yaml,config.yaml,agents/}` plus `opc migrate-to-org-runtime` for legacy runtimes.
+10. **Inter-team communication** — orchestrator routes tasks between teams (e.g., engineering manager hands a payment-change review to a compliance team manager). Currently `--team <name>` works because most runtimes have a single team; cross-team handoff is not yet implemented.
+11. **Founder dashboard** — aggregate audit logs, escalation summaries, scorecards into a weekly view. Design doc: `protocol/05e-dashboard.md`.
+12. **Persistent agents** — long-running agent loops for runtime patterns that don't fit single-task batch execution (e.g., a real-time customer-chat worker). Currently every agent session is one task → one subprocess.
 
 ## Directory Layout
 
@@ -84,7 +82,7 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |       |-- start-task/                # Parses injected params, runs role, reports via CLI callback
 |       |-- make-worktree/             # Creates an isolated git worktree under .claude/worktrees/
 |       |-- manage-repo/              # Agent-driven repo add/remove/update via opc manage-repo
-|       +-- manage-agent/            # EH-driven agent enroll/update/terminate via opc manage-agent
+|       +-- manage-agent/            # manager-driven agent enroll/update/terminate via opc manage-agent
 |-- scripts/
 |   +-- daemon.sh                      # Starts the FastAPI daemon (uv run python -m src.daemon)
 |-- src/
@@ -117,7 +115,7 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
 |   |-- orchestrator/
 |   |   |-- orchestrator.py            # Orchestrator facade: holds deps, exposes run_step (no more run_task)
 |   |   |-- run_step.py                # Single-step primitive — advance one task by one subprocess call
-|   |   |-- capabilities.py            # Builds capabilities prompt for EH decision sessions
+|   |   |-- capabilities.py            # Builds capabilities prompt for manager decision sessions
 |   |   |-- executors.py               # Provider-specific executor subprocess launchers
 |   |   |-- performance_tracker.py     # 30-day rolling scorecards, tier calculation
 |   |   |-- context_builder.py         # Delegates workspace bootstrap to provider-specific adapters
@@ -202,7 +200,7 @@ Operational settings use the `OPC_` environment variable prefix. Runtime paths (
 | `OPC_CODEX_CLI_PATH` | `codex` | Path to Codex CLI |
 | `OPC_PERMISSION_MODE` | `auto` | Claude Code permission mode |
 | `OPC_PROTOCOL_DIR` | `protocol` | Protocol docs dirname (relative to project root) |
-| `OPC_MAX_ORCHESTRATION_STEPS` | `10` | Max EH decision steps before escalation |
+| `OPC_MAX_ORCHESTRATION_STEPS` | `10` | Max manager decision steps before escalation |
 | `OPC_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout (30 min) — global default; see "Session timeout resolution" below |
 | `OPC_TIER_GREEN_THRESHOLD` | `0.90` | Acceptance rate for green tier |
 | `OPC_TIER_YELLOW_THRESHOLD` | `0.75` | Acceptance rate for yellow tier |
@@ -222,7 +220,7 @@ Each layer accepts `null`/missing as "inherit from the next layer." Values must 
 
 Each workspace declares an `executor` in `agent.yaml`. Supported values are `claude` and `codex`; missing values in older workspaces default to `claude`.
 
-If the Engineering Head wants to enroll a new Codex-backed worker, the
+If a team manager wants to enroll a new Codex-backed worker, the
 `opc manage-agent --from-file ...` payload should set `"executor": "codex"`.
 Example:
 
@@ -247,9 +245,9 @@ workspace will be bootstrapped as a Codex workspace: `agent.yaml` keeps
 Claude-specific `.claude/settings.json` path is not the primary bootstrap
 surface.
 
-Payloads can authenticate via either an active EH task session
-(`task_id` + `session_id`) or an open EH talk (`talk_id`). The two paths
-are mutually exclusive. See `protocol/skills/manage-agent/SKILL.md` for
+Payloads can authenticate via either an active team-manager task session
+(`task_id` + `session_id`) or an open team-manager talk (`talk_id`). The two
+paths are mutually exclusive. See `protocol/skills/manage-agent/SKILL.md` for
 the full payload shapes.
 
 **Codex agents share the same skills tree as Claude agents.** Codex CLI
@@ -310,7 +308,7 @@ Both surfaces are generated from `allow_rules_for_agent(agent_name, cli=...)` in
 
 **Baseline grant (every agent):** `opc` — the callback channel.
 
-**Engineering Head extras** (see `### Allow Rules` under "Engineering Head" in `protocol/02-system-prompts-managers.md`): `gh pr close`, `gh pr comment`, `gh issue close`, `gh issue comment`. Purpose: EH needs to close superseded/stale PRs and close issues substantively fixed on `main` during revisit cleanup — without these, Claude Code's headless risk heuristic refuses those calls even in `--permission-mode auto` (see TASK-067, where `gh issue close 93` was declined). The extras are deliberately narrow — no `gh pr merge`, no `gh pr create`, no `gh issue delete` — because each extra prefix can silently mutate shared external state on every future task.
+**Per-agent extras** are declared in the agent's frontmatter (`<runtime>/org/agents/<name>.md`) under `allow_rules:`. The HK/Macau sample org's `engineering_head` declares `gh pr close`, `gh pr comment`, `gh issue close`, `gh issue comment` — purpose: the team manager needs to close superseded/stale PRs and close issues substantively fixed on `main` during revisit cleanup. Without these, Claude Code's headless risk heuristic refuses those calls even in `--permission-mode auto` (see TASK-067, where `gh issue close 93` was declined). The extras are deliberately narrow — no `gh pr merge`, no `gh pr create`, no `gh issue delete` — because each extra prefix can silently mutate shared external state on every future task. The same scoping discipline applies whenever an org adds new manager allow_rules: justify each prefix and keep the set minimal.
 
 **Why both surfaces for Claude:** in headless `-p` mode, Claude Code 2.1.105 ignores the workspace's `permissions.allow` list (observed empirically: `command_permissions.allowedTools: []` regardless of settings.json). Without the `--allowedTools` flag the agent's first `opc ...` call is blocked by auto-mode prompting, the callback never reaches the daemon, and the task silently rejects — see the TASK-007/008/009 post-mortem.
 
@@ -383,30 +381,40 @@ the `tasks` row and is distinct: it takes one of `{pending, in_progress,
 blocked, completed, failed}` based on orchestration classification, with
 `block_kind` (`delegated` | `escalated`) specifying the reason.
 
-## EH decision contract
+## Manager decision contract
 
-Engineering Head completion payloads carry two fields with distinct purposes
-— keep them both when modifying the EH-facing prompt or skill:
+Team-manager completion payloads carry two fields with distinct purposes
+— keep them both when modifying the manager-facing prompt or skill:
 
-- **`summary`** (prose) — human-readable description of what the EH did or
-  concluded this step. Rendered in `opc details`, audit logs, `task_history.md`.
-  Stored on `task_results.output_summary` exactly like worker summaries.
+- **`summary`** (prose) — human-readable description of what the manager did
+  or concluded this step. Rendered in `opc details`, audit logs,
+  `task_history.md`. Stored on `task_results.output_summary` exactly like
+  worker summaries.
 - **`decision`** (JSON object, NextStep schema) — the structured action the
   orchestrator will execute: `{"action": "delegate"|"done"|"escalate", ...}`.
-  Stored on `task_results.decision_json` (EH-only column; workers leave it
-  NULL). Parsed by `Orchestrator._parse_next_step` directly — no prose
+  Stored on `task_results.decision_json` (manager-only column; workers leave
+  it NULL). Parsed by `Orchestrator._parse_next_step` directly — no prose
   inference.
 
 Pre-TASK-071 contract had `output_summary` itself be the JSON decision. That
-double-encoding trap tripped whenever EH ran commands itself and wrote a prose
-"here's what I did" at completion time (e.g. `gh issue close` cleanup tasks).
-The structured `decision` field eliminates the trap: EH can write natural prose
-in `summary` while the orchestrator acts on a separately-typed `decision`.
+double-encoding trap tripped whenever the manager ran commands itself and
+wrote a prose "here's what I did" at completion time (e.g. `gh issue close`
+cleanup tasks). The structured `decision` field eliminates the trap: the
+manager can write natural prose in `summary` while the orchestrator acts on
+a separately-typed `decision`.
 
 A legacy fallback (parse `output_summary` as JSON when `decision` is NULL)
 stays in the parser during the transition so in-flight workspaces on older
 skill copies still work; remove it after confirming every workspace has been
 `opc init-agent`-regenerated with the new skill.
+
+The full schema lives in `protocol/00-completion-contract.md` (under
+"Manager decision field (manager-only)") with worked examples for all three
+actions (`delegate`, `done`, `escalate`). The decision-field name for a
+delegated child task's brief is `prompt`, **not** `brief` — Pydantic v2
+silently ignores extras, so writing `"brief"` produces a child task with an
+empty brief. The `start-task` skill in every workspace gets the field name
+right; the contract previously did not, and was fixed in-tree.
 
 ## Running Tests
 ```bash
@@ -451,20 +459,20 @@ opc orgs unload <slug>                                          # detach an org 
 opc migrate-to-multi-org <path> --i-have-a-backup --apply       # v1 → v2 in place (TTY-gated, refuses with active tasks/open talks)
 
 # Per-org (every command takes --org <slug> or honors OPC_ORG_SLUG)
-opc run --org hk-tourism --brief "Explore the payment module"   # submit a task; EH decides approach
+opc run --org hk-tourism --brief "Explore the payment module"   # submit a task; the team manager decides approach
 opc run --org hk-tourism --team engineering --brief "Add Alipay support"
-opc run --org hk-tourism --team engineering --brief-file /tmp/eh-brief.md   # read brief from a file (mutually exclusive with --brief)
+opc run --org hk-tourism --team engineering --brief-file /tmp/manager-brief.md   # read brief from a file (mutually exclusive with --brief)
 opc tail --org hk-tourism TASK-001         # stream live SSE events for a task
 opc tasks --org hk-tourism                 # list recent tasks
-opc details --org hk-tourism TASK-001      # show task details
+opc details --org hk-tourism TASK-001      # show task details (status, block_kind, note, results, audit log)
 opc details --org hk-tourism TASK-001 --full   # same, but print full per-step output_summary (no 80-char truncation)
 opc agents --org hk-tourism [--detail]     # show performance tiers
-opc audit --org hk-tourism TASK-007                              # filtered audit-log view
-opc audit --org hk-tourism --agent engineering_head --limit 10   # recent entries for one agent
+opc audit --org hk-tourism TASK-007                              # filtered audit-log view (task, agent, action, since, limit)
+opc audit --org hk-tourism --agent engineering_head --limit 10   # recent entries for one agent, any task
 opc audit --org hk-tourism TASK-007 --json                       # raw JSON with full payloads
-opc init-agent --org hk-tourism             # initialize all agent workspaces in the org
+opc init-agent --org hk-tourism             # initialize all agent workspaces (repo clones + system prompts + skills)
 opc init-agent --org hk-tourism dev_agent   # initialize a specific agent
-opc recall --org hk-tourism TASK-001 [--tree] [--fetch-artifact <relpath>]
+opc recall --org hk-tourism TASK-001 [--tree] [--fetch-artifact <relpath>]   # fetch task brief + artifact tree/content
 # Knowledge base (per-org; read: any; write: any via --from-file; delete: any team manager (audited); founder via --as-founder; precedent: founder):
 opc kb list --org hk-tourism [--topic <t>] [--type reference|precedent]
 opc kb get --org hk-tourism <slug>
@@ -473,8 +481,8 @@ opc kb add --org hk-tourism --agent <you> --from-file /tmp/kb-<slug>.md
 opc kb update --org hk-tourism <slug> --agent <you> --from-file /tmp/kb-<slug>.md
 opc kb delete --org hk-tourism <slug> --agent <you> --confirm [--as-founder]
 opc kb reindex --org hk-tourism
-opc kb precedent --org hk-tourism --task-id TASK-001 --decision approve|reject --rationale "..." [--slug <s>] --as-founder
-opc resolve-escalation --org hk-tourism --task-id TASK-001 --decision approve|reject --rationale "..."
+opc kb precedent --org hk-tourism --task-id TASK-001 --decision approve|reject --rationale "..." [--slug <s>] --as-founder   # founder-only; follows resolve-escalation
+opc resolve-escalation --org hk-tourism --task-id TASK-001 --decision approve|reject --rationale "..."                       # founder state transition (precedes kb precedent)
 opc revisit --org hk-tourism TASK-052 [--note "..." | --note-file PATH]   # founder: spawn NEW root inheriting the predecessor's brief (TTY-gated)
 # Talk flow (founder↔agent conversations; per-org):
 opc talk start --org hk-tourism --agent <name>
@@ -488,13 +496,13 @@ opc talk show --org hk-tourism TALK-001
 opc report-completion --org hk-tourism --task-id TASK-001 --session-id <sid> --status completed ...
 opc learning --org hk-tourism --agent dev_agent --session-id <sid> --task-id TASK-001 --text "..."
 opc manage-repo --org hk-tourism add --agent dev_agent --repo-name docs --url https://github.com/t-benze/docs.git
-opc manage-agent --org hk-tourism --from-file /tmp/manage-agent-enroll.json
-opc dispatch --org hk-tourism --from-file /tmp/dispatch-<talk_id>.json
+opc manage-agent --org hk-tourism --from-file /tmp/manage-agent-enroll.json   # enroll/update/terminate an agent (task-path or talk-path auth)
+opc dispatch --org hk-tourism --from-file /tmp/dispatch-<talk_id>.json         # agent: dispatch a new task from inside an open talk (workers self-only; team managers intra-team)
 # Founder-side enrollment management (per-org):
-opc enrollments --org hk-tourism [--status pending]
-opc approve-agent --org hk-tourism <name>
-opc reject-agent --org hk-tourism <name>
-opc backfill-enrollments --org hk-tourism            # founder recovery: import pre-existing workspaces (TTY-gated)
+opc enrollments --org hk-tourism [--status pending]   # list enrollment requests
+opc approve-agent --org hk-tourism <name>             # approve and bootstrap workspace
+opc reject-agent --org hk-tourism <name>              # reject enrollment
+opc backfill-enrollments --org hk-tourism             # founder recovery: import pre-existing workspaces (TTY-gated)
 opc migrate-to-org-runtime <path> --slug <slug> --i-have-a-backup --apply   # legacy: v0 (DB-backed agents) → v1 (file-based org/)
 ```
 
@@ -556,10 +564,10 @@ Historical revisits (created before the column existed) are backfilled on
 daemon startup from the `revisit_of` audit entries; the UPDATE is guarded by
 `IS NULL` so restarts are idempotent.
 
-First EH step injection — on the new root's first `orchestration_step`,
+First manager step injection — on the new root's first `orchestration_step`,
 `_revisit_header_if_applicable(orch, task_id)` prepends a 5-6 line context
-header to the EH prompt. Detected by: `revisit_of` audit entry present AND
-no `orchestration_step` entry yet. Header points the EH at
+header to the manager prompt. Detected by: `revisit_of` audit entry present
+AND no `orchestration_step` entry yet. Header points the manager at
 `opc details` / `opc audit` / `opc recall` for the frozen predecessor.
 
 Why TTY-gated — no `--yes` bypass, no scripted callers. The CLI (`cmd_revisit`

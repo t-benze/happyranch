@@ -33,32 +33,16 @@ class AuditLogger:
             },
         )
 
-    def log_completion_report(
-        self,
-        report: CompletionReport,
-        session_id: str,
-        duration_seconds: int,
-        token_count: int | None = None,
-        estimated_cost: float | None = None,
-    ) -> None:
+    def log_completion_report(self, report: CompletionReport) -> None:
+        # The task_results row is written by the agent callback at
+        # POST /tasks/{task_id}/completion (routes/tasks.py); audit logger only
+        # records the semantic event. Writing both produced duplicate rows
+        # (one per task_result, ~20s apart) — see TASK-137 post-mortem.
         self._db.insert_audit_log(
             task_id=report.task_id,
             agent=report.agent,
             action="completion_report",
             payload=report.model_dump(),
-        )
-        self._db.insert_task_result(
-            task_id=report.task_id,
-            agent=report.agent,
-            session_id=session_id,
-            status=report.status,
-            output_summary=report.output_summary,
-            confidence_score=report.confidence,
-            risks_flagged=report.risks_flagged,
-            duration_seconds=duration_seconds,
-            token_count=token_count,
-            estimated_cost=estimated_cost,
-            artifact_dir=report.artifact_dir,
         )
 
     def log_review_verdict(
@@ -245,15 +229,14 @@ class AuditLogger:
         action: str,
         name: str,
         source: str,
-        actor: str = "engineering_head",
+        actor: str,
     ) -> None:
         """Record a successful manage-agent call.
 
         `scope_id` populates `audit_log.task_id` (the generic scope column
         described at line 173): TASK-xxx for task-path calls, TALK-xxx for
         talk-path calls. `source` is 'task' or 'talk' for quick filtering.
-        `actor` defaults to 'engineering_head' for backward compat; pass the
-        actual manager_name when called from the generalised team-manager route.
+        `actor` is the manager_name resolved by the team-manager auth helper.
         """
         self._db.insert_audit_log(
             task_id=scope_id,

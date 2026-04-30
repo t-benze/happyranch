@@ -131,6 +131,45 @@ def test_completion_persists_when_session_matches(tmp_home, app, daemon_state, o
     assert any(r["session_id"] == "sess-1" for r in rows)
 
 
+def test_completion_callback_plus_audit_logger_does_not_duplicate_row(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Regression for TASK-137: every task ended up with two task_results rows
+    per agent step. The agent callback wrote the row (via insert_task_result),
+    and then the orchestrator's post-processing called AuditLogger.log_completion_report
+    which silently re-wrote the same row. Both writes are real and converge at
+    `task_results`. The fix: log_completion_report only audits — the callback
+    is the single source of truth."""
+    from src.infrastructure.audit_logger import AuditLogger
+    from src.models import CompletionReport
+
+    sub = TestClient(app).post(
+        "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    org_state.sessions.set_active(task_id, "dev_agent", "sess-1")
+
+    callback = TestClient(app).post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
+        json={
+            "session_id": "sess-1", "agent": "dev_agent",
+            "status": "completed", "confidence": 90, "output_summary": "ok",
+        },
+        headers=auth_headers,
+    )
+    assert callback.status_code == 200
+    assert len(org_state.db.get_task_results(task_id)) == 1
+
+    # Replay what the orchestrator does after the subprocess returns.
+    AuditLogger(org_state.db).log_completion_report(
+        CompletionReport(
+            task_id=task_id, agent="dev_agent", status="completed",
+            confidence=90, output_summary="ok",
+        )
+    )
+    assert len(org_state.db.get_task_results(task_id)) == 1
+
+
 def test_completion_clears_session_so_duplicate_rejected(
     tmp_home, app, daemon_state, org_state, auth_headers,
 ) -> None:

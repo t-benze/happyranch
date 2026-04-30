@@ -68,14 +68,15 @@ def test_start_task_skill_documents_kb_contribute() -> None:
     assert "--from-file" in body
 
 
-def test_start_task_skill_documents_eh_decision_field() -> None:
-    """EH needs explicit guidance that its completion payload must include a
-    top-level `decision` field alongside the prose `summary`. Without this
-    note the skill looks identical for EH and workers, which caused TASK-071
-    (EH wrote prose-only and the orchestrator escalated for missing
-    decision)."""
+def test_start_task_skill_documents_manager_decision_field() -> None:
+    """Team-manager sessions need explicit guidance that the completion payload
+    must include a top-level `decision` field alongside the prose `summary`.
+    Without this note the skill looks identical for managers and workers,
+    which caused TASK-071 (the manager wrote prose-only and the orchestrator
+    escalated for missing decision)."""
     body = (SKILLS_ROOT / "start-task" / "SKILL.md").read_text()
-    assert "Engineering Head" in body
+    # The skill must distinguish the manager path from the worker path.
+    assert "Team-manager" in body or "team manager" in body or "team-manager" in body
     assert "decision" in body
     # The three legal decision actions must be discoverable from the skill.
     assert "delegate" in body

@@ -87,14 +87,30 @@ def test_prompt_includes_available_actions():
 
 
 def test_prompt_includes_constraints():
+    """The capabilities block is org-agnostic: it must NOT bake in
+    org-specific budget / jurisdictional / content thresholds (those live in
+    each agent's role_guidance / system prompt, loaded from
+    <runtime>/org/agents/<name>.md). The block must still:
+      - render a step-budget line so the manager paces decisions, and
+      - point the manager at the founder for out-of-scope work.
+    """
     prompt = build_capabilities_prompt(
         brief="Do something",
         agents=[],
-        step_number=1,
+        step_number=3,
         max_steps=10,
     )
-    assert "$200" in prompt
+    # Step budget must be rendered.
+    assert "step 3" in prompt.lower()
+    assert "10" in prompt
+    # Generic escalation pointer to the founder must remain.
     assert "founder" in prompt.lower()
+    # Org-specific HK/Macau constraints must NOT be inlined into the
+    # org-agnostic capabilities block (regression guard for the cleanup).
+    assert "$200" not in prompt
+    assert "HK/Macau" not in prompt
+    assert "PCI" not in prompt
+    assert "PDPO" not in prompt
 
 
 def test_prompt_frames_json_as_mandatory():

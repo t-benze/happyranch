@@ -177,7 +177,7 @@ class CompletionBody(BaseModel):
     status: str
     confidence: int
     output_summary: str
-    # EH-only. Structured next-step decision; workers omit or pass null.
+    # Manager-only. Structured next-step decision; workers omit or pass null.
     # Must be a dict matching the NextStep schema if present — validated
     # on the orchestrator side when the parser runs.
     decision: dict | None = None
@@ -276,9 +276,9 @@ async def resolve_escalation(
             detail={"code": "task_not_escalated", "current_status": task.status.value},
         )
     new_status = TaskStatus.COMPLETED if body.decision == "approve" else TaskStatus.FAILED
-    # Overwrite `note` with the resolution so that a resumed parent EH sees the
-    # founder's rationale (via _build_prior_steps_from_db) instead of the stale
-    # escalation reason the child originally parked with.
+    # Overwrite `note` with the resolution so that a resumed parent manager
+    # sees the founder's rationale (via _build_prior_steps_from_db) instead
+    # of the stale escalation reason the child originally parked with.
     resolved_note = f"Founder {body.decision}d: {body.rationale}"
     async with org.db_lock:
         org.db.update_task(
@@ -287,10 +287,10 @@ async def resolve_escalation(
         AuditLogger(org.db).log_escalation_resolved(
             task_id=task_id, decision=body.decision, rationale=body.rationale
         )
-    # Wake the parent (if any) so it can re-invoke the EH with the resolved outcome.
-    # The org's Orchestrator owns its slug + queue + db, so we just pass it
-    # through; ``_enqueue_parent_if_waiting`` reads ``orch._slug`` to push
-    # ``(slug, task_id)`` onto the global TaskQueue.
+    # Wake the parent (if any) so it can re-invoke the team manager with the
+    # resolved outcome. The org's Orchestrator owns its slug + queue + db, so
+    # we just pass it through; ``_enqueue_parent_if_waiting`` reads
+    # ``orch._slug`` to push ``(slug, task_id)`` onto the global TaskQueue.
     from src.orchestrator.run_step import _enqueue_parent_if_waiting
     _enqueue_parent_if_waiting(org.orchestrator, task_id)
     return {"ok": True, "task_id": task_id, "new_status": new_status.value}
@@ -317,7 +317,7 @@ class RevisitBody(BaseModel):
 # Predecessor-root states that revisit accepts. Everything else is 409.
 # `failed-cancelled` is not a DB value — it's the normalized label for
 # (status=failed, cancelled_at!=NULL) that the response body returns and
-# the EH prompt header surfaces.
+# the team-manager prompt header surfaces.
 _REVISIT_ELIGIBLE_STATUSES = frozenset({
     TaskStatus.FAILED, TaskStatus.COMPLETED,
 })
