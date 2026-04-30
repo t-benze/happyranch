@@ -440,7 +440,7 @@ opc kb update <slug> --agent <you> --from-file /tmp/kb-<slug>.md
 opc kb delete <slug> --agent <you> --confirm [--as-founder]
 opc kb reindex
 opc kb precedent --task-id TASK-001 --decision approve|reject --rationale "..." [--slug <s>] --as-founder   # founder-only; follows resolve-escalation
-opc resolve-escalation --task-id TASK-001 --decision approve|reject --rationale "..."                       # founder state transition (precedes kb precedent)
+opc resolve-escalation --task-id TASK-001 --decision approve|reject --rationale "..."                       # approve resumes the task (PENDING + re-enqueue) with rationale injected as a one-shot prompt header; reject fails it and cascades to parent. Precedes kb precedent.
 opc revisit TASK-052 [--note "..." | --note-file PATH]          # founder: spawn NEW root that inherits the predecessor's brief (TTY-gated)
 # Talk flow (founder↔agent conversations):
 opc talk start --agent <name>

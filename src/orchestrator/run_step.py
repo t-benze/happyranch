@@ -281,9 +281,15 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
         prior_steps=prior_steps,
         manager_name=agent,
     )
-    header = _revisit_header_if_applicable(orch, task.id)
-    if header is not None:
-        return header + base
+    headers: list[str] = []
+    revisit = _revisit_header_if_applicable(orch, task.id)
+    if revisit is not None:
+        headers.append(revisit)
+    resolved = _resolved_escalation_header_if_applicable(orch, task.id)
+    if resolved is not None:
+        headers.append(resolved)
+    if headers:
+        return "".join(headers) + base
     return base
 
 
@@ -354,6 +360,43 @@ def _revisit_header_if_applicable(orch: "Orchestrator", task_id: str) -> str | N
         "new child briefs); old child task rows stay frozen."
     )
     return "\n".join(lines) + "\n\n"
+
+
+def _resolved_escalation_header_if_applicable(
+    orch: "Orchestrator", task_id: str,
+) -> str | None:
+    """Return a 2-3 line header on the first manager step after a founder
+    `resolve-escalation --approve`, otherwise None.
+
+    Trigger: the most recent `escalation_resolved` audit entry for this task
+    has a higher row id than the most recent `orchestration_step` entry —
+    i.e. the founder approved AND the manager hasn't run yet. Audit `id` is
+    autoincrement, so id-ordering is equivalent to chronological ordering.
+    Once the manager produces its first decision after re-enqueue,
+    `log_orchestration_step` writes a row with a higher id and this helper
+    returns None on every subsequent call.
+    """
+    logs = orch._db.get_audit_logs(task_id)
+    last_resolved = None
+    last_step = None
+    for entry in logs:
+        action = entry["action"]
+        if action == "escalation_resolved":
+            last_resolved = entry
+        elif action == "orchestration_step":
+            last_step = entry
+    if last_resolved is None:
+        return None
+    if last_step is not None and last_step["id"] > last_resolved["id"]:
+        return None
+    payload = last_resolved["payload"] or {}
+    decision = payload.get("decision", "approve")
+    rationale = payload.get("rationale", "(no rationale recorded)")
+    return (
+        f"ESCALATION RESOLVED: founder {decision}d your prior escalation.\n"
+        f"Rationale: {rationale}\n"
+        "Continue from where you parked, with this verdict in mind.\n\n"
+    )
 
 
 def _build_prior_steps_from_db(orch: "Orchestrator", task_id: str):

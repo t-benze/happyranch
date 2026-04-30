@@ -293,24 +293,54 @@ async def resolve_escalation(
             status_code=409,
             detail={"code": "task_not_escalated", "current_status": task.status.value},
         )
-    new_status = TaskStatus.COMPLETED if body.decision == "approve" else TaskStatus.FAILED
-    # Overwrite `note` with the resolution so that a resumed parent manager
-    # sees the founder's rationale (via _build_prior_steps_from_db) instead
-    # of the stale escalation reason the child originally parked with.
+    # approve resumes the work itself; reject terminates it. Pre-resolve we
+    # used to mark approve→COMPLETED and lean on parent wake-up to carry the
+    # work forward. That left root escalations (no parent) silently dropping
+    # the work the approval was meant to authorize. New shape: approve sends
+    # the task back to PENDING with the rationale on `note`, and the team
+    # manager picks it up on the next step with a one-shot prompt header
+    # (see `_resolved_escalation_header_if_applicable` in run_step.py).
     resolved_note = f"Founder {body.decision}d: {body.rationale}"
     async with state.db_lock:
-        state.db.update_task(
-            task_id, status=new_status, block_kind=None, note=resolved_note,
-        )
+        if body.decision == "approve":
+            state.db.update_task(
+                task_id,
+                status=TaskStatus.PENDING,
+                block_kind=None,
+                note=resolved_note,
+            )
+        else:
+            state.db.update_task(
+                task_id,
+                status=TaskStatus.FAILED,
+                block_kind=None,
+                note=resolved_note,
+            )
         AuditLogger(state.db).log_escalation_resolved(
             task_id=task_id, decision=body.decision, rationale=body.rationale
         )
-    # Wake the parent (if any) so it can re-invoke the team manager with the resolved outcome.
-    from src.orchestrator.run_step import _enqueue_parent_if_waiting
-    class _Shim:
-        _db = state.db
-        _queue = state.queue
-    _enqueue_parent_if_waiting(_Shim(), task_id)
+    if body.decision == "approve":
+        # Re-enqueue self. The manager's next step sees the rationale via the
+        # escalation-resolved prompt header. Parent (if any) stays blocked
+        # (DELEGATED) and will be woken when this task next reaches a true
+        # terminal — no immediate wake here.
+        if state.queue is not None:
+            state.queue.put_nowait(task_id)
+        new_status = TaskStatus.PENDING
+    else:
+        # Cascade-fail upward: the parent (if any) must learn this branch
+        # failed. _enqueue_parent_if_waiting calls _fail on the parent on
+        # FAILED siblings, which needs the full Orchestrator surface
+        # (_update_task_history, _audit, teams, _tracker), not a shim.
+        from src.orchestrator.orchestrator import Orchestrator
+        from src.orchestrator.run_step import _enqueue_parent_if_waiting
+        orch = Orchestrator(
+            db=state.db, settings=state.settings,
+            runtime=state.runtime, teams=state.teams,
+        )
+        orch.attach_queue(state.queue)
+        _enqueue_parent_if_waiting(orch, task_id)
+        new_status = TaskStatus.FAILED
     return {"ok": True, "task_id": task_id, "new_status": new_status.value}
 
 

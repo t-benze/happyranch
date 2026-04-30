@@ -185,8 +185,8 @@ There are four types of permission blocks, each handled differently:
 pending → (run_step pickup) → in_progress → { completed | failed | blocked(delegated) | blocked(escalated) }
 
 blocked(delegated) → (child terminates, sibling sweep clears) → in_progress (re-entry)
-blocked(escalated) → (POST /resolve-escalation approve) → completed
-blocked(escalated) → (POST /resolve-escalation reject)  → failed
+blocked(escalated) → (POST /resolve-escalation approve) → pending (re-enqueued; manager's next prompt carries an ESCALATION RESOLVED header with the founder's rationale)
+blocked(escalated) → (POST /resolve-escalation reject)  → failed (cascade-fails the parent if any)
 ```
 
 #### Execution model

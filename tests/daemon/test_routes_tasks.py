@@ -557,21 +557,26 @@ def test_resolve_escalation_rejects_non_blocked_task(client_with_runtime):
     assert r.json()["detail"]["code"] == "task_not_escalated"
 
 
-def test_resolve_escalation_approve_transitions_to_completed(client_with_runtime):
+def test_resolve_escalation_approve_resumes_task(client_with_runtime):
     from src.models import TaskRecord, TaskStatus, BlockKind
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-1", brief="x"))
     state.db.update_task("T-1", status=TaskStatus.BLOCKED,
                          block_kind=BlockKind.ESCALATED, note="halted")
+    while not state.queue._queue.empty():
+        state.queue._queue.get_nowait()
 
     r = client.post(
         "/api/v1/tasks/T-1/resolve-escalation",
         json={"decision": "approve", "rationale": "ok"},
     )
     assert r.status_code == 200
+    assert r.json()["new_status"] == "pending"
     t = state.db.get_task("T-1")
-    assert t.status == TaskStatus.COMPLETED
+    assert t.status == TaskStatus.PENDING
     assert t.block_kind is None
+    # Self re-enqueued so the manager picks it up next.
+    assert state.queue._queue.get_nowait() == "T-1"
 
 
 def test_resolve_escalation_reject_transitions_to_failed(client_with_runtime):
@@ -609,12 +614,14 @@ def test_resolve_escalation_overwrites_note_with_rationale(client_with_runtime):
     )
     assert r.status_code == 200
     t = state.db.get_task("T-1")
-    assert t.status == TaskStatus.COMPLETED
+    assert t.status == TaskStatus.PENDING
     assert t.note and "proceed with caveats" in t.note
     assert "Original escalation reason" not in (t.note or "")
 
 
-def test_resolve_escalation_enqueues_parent_if_waiting(client_with_runtime):
+def test_resolve_escalation_approve_reenqueues_child_not_parent(client_with_runtime):
+    """Approve resumes the child itself; parent stays blocked(DELEGATED) and
+    will be woken later when the child reaches a true terminal."""
     from src.models import TaskRecord, TaskStatus, BlockKind
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-PAR", brief="p"))
@@ -625,7 +632,6 @@ def test_resolve_escalation_enqueues_parent_if_waiting(client_with_runtime):
     state.db.update_task("T-CHD", status=TaskStatus.BLOCKED,
                          block_kind=BlockKind.ESCALATED, note="halt")
 
-    # Drain queue before the request so we only see post-resolve puts.
     while not state.queue._queue.empty():
         state.queue._queue.get_nowait()
 
@@ -634,8 +640,39 @@ def test_resolve_escalation_enqueues_parent_if_waiting(client_with_runtime):
         json={"decision": "approve", "rationale": "ok"},
     )
     assert r.status_code == 200
-    # Parent now enqueued
-    assert state.queue._queue.get_nowait() == "T-PAR"
+    assert state.queue._queue.get_nowait() == "T-CHD"
+    assert state.queue._queue.empty()
+    par = state.db.get_task("T-PAR")
+    assert par.status == TaskStatus.BLOCKED
+    assert par.block_kind == BlockKind.DELEGATED
+
+
+def test_resolve_escalation_reject_cascades_to_parent(client_with_runtime):
+    """Reject on a child fails it and cascade-fails the parent (existing
+    `_enqueue_parent_if_waiting` behavior on FAILED siblings)."""
+    from src.models import TaskRecord, TaskStatus, BlockKind
+    client, state = client_with_runtime
+    state.db.insert_task(TaskRecord(id="T-PAR", brief="p"))
+    state.db.update_task("T-PAR", status=TaskStatus.BLOCKED,
+                         block_kind=BlockKind.DELEGATED, note="waiting")
+    state.db.insert_task(TaskRecord(
+        id="T-CHD", brief="c", parent_task_id="T-PAR"))
+    state.db.update_task("T-CHD", status=TaskStatus.BLOCKED,
+                         block_kind=BlockKind.ESCALATED, note="halt")
+
+    while not state.queue._queue.empty():
+        state.queue._queue.get_nowait()
+
+    r = client.post(
+        "/api/v1/tasks/T-CHD/resolve-escalation",
+        json={"decision": "reject", "rationale": "no"},
+    )
+    assert r.status_code == 200
+    chd = state.db.get_task("T-CHD")
+    assert chd.status == TaskStatus.FAILED
+    par = state.db.get_task("T-PAR")
+    # _enqueue_parent_if_waiting cascade-fails on FAILED child
+    assert par.status == TaskStatus.FAILED
 
 
 # -------- /tasks/{id}/cancel --------

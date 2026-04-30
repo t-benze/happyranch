@@ -715,6 +715,77 @@ def test_run_step_revisit_header_omits_note_line_when_none(
     assert "Founder note:" not in captured["prompt"]
 
 
+def test_run_step_resolved_escalation_header_injected_after_approve(
+    runtime, db, monkeypatch,
+):
+    """After /resolve-escalation --approve, the task is re-enqueued (PENDING).
+    On the manager's next decision step, the prompt must start with the
+    ESCALATION RESOLVED header so the manager sees the founder's verdict."""
+    from src.orchestrator.orchestrator import Orchestrator
+    db.insert_task(TaskRecord(
+        id="TASK-080", brief="Refund $800?",
+        assigned_agent="engineering_head",
+    ))
+    db.update_task("TASK-080", orchestration_step_count=1)
+    db.insert_audit_log(
+        task_id="TASK-080", agent="orchestrator", action="orchestration_step",
+        payload={"step_number": 1, "decision": {"action": "escalate"}},
+    )
+    db.insert_audit_log(
+        task_id="TASK-080", agent="founder", action="escalation_resolved",
+        payload={"decision": "approve", "rationale": "approved one-time exception"},
+    )
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime, teams=TeamsRegistry.load(runtime))
+
+    captured = {}
+    def capture(task_id, agent, prompt, on_session_started=None):
+        captured["prompt"] = prompt
+        raise RuntimeError("abort after prompt build")
+    monkeypatch.setattr(orch, "_run_agent", capture)
+    orch.run_step("TASK-080")
+
+    prompt = captured["prompt"]
+    assert prompt.startswith("ESCALATION RESOLVED:")
+    assert "approved one-time exception" in prompt
+    assert "founder approved" in prompt
+
+
+def test_run_step_resolved_escalation_header_absent_after_next_step(
+    runtime, db, monkeypatch,
+):
+    """Once the manager has taken a decision step after the resolution, the
+    header must disappear — its trigger is `latest escalation_resolved id >
+    latest orchestration_step id`."""
+    from src.orchestrator.orchestrator import Orchestrator
+    db.insert_task(TaskRecord(
+        id="TASK-081", brief="x",
+        assigned_agent="engineering_head",
+    ))
+    db.update_task("TASK-081", orchestration_step_count=2)
+    db.insert_audit_log(
+        task_id="TASK-081", agent="orchestrator", action="orchestration_step",
+        payload={"step_number": 1, "decision": {"action": "escalate"}},
+    )
+    db.insert_audit_log(
+        task_id="TASK-081", agent="founder", action="escalation_resolved",
+        payload={"decision": "approve", "rationale": "ok"},
+    )
+    db.insert_audit_log(
+        task_id="TASK-081", agent="orchestrator", action="orchestration_step",
+        payload={"step_number": 2, "decision": {"action": "done"}},
+    )
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime, teams=TeamsRegistry.load(runtime))
+
+    captured = {}
+    def capture(task_id, agent, prompt, on_session_started=None):
+        captured["prompt"] = prompt
+        raise RuntimeError("abort")
+    monkeypatch.setattr(orch, "_run_agent", capture)
+    orch.run_step("TASK-081")
+
+    assert not captured["prompt"].startswith("ESCALATION RESOLVED:")
+
+
 def test_run_step_concurrent_claim_spawns_only_one_agent(
     runtime, db, monkeypatch,
 ):
