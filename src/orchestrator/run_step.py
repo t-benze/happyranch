@@ -249,12 +249,13 @@ def _default_agent_for_root(orch: "Orchestrator", task) -> str:
 
 
 def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
-    """Build the capabilities prompt for an EH decision step, or pass the
-    brief verbatim for a worker. Prior steps are rebuilt from the DB so this
-    works identically on first pickup and on post-delegation resumption.
+    """Build the capabilities prompt for a team-manager decision step, or pass
+    the brief verbatim for a worker. Prior steps are rebuilt from the DB so
+    this works identically on first pickup and on post-delegation resumption.
 
-    For revisited roots, a one-shot context header is prepended to the EH
-    prompt on the very first orchestration step (detected via audit log).
+    For revisited roots, a one-shot context header is prepended to the
+    manager prompt on the very first orchestration step (detected via audit
+    log).
     """
     from src.orchestrator.capabilities import build_capabilities_prompt
     if not orch.teams.is_team_manager(agent):
@@ -315,8 +316,8 @@ def _revisit_header_if_applicable(orch: "Orchestrator", task_id: str) -> str | N
 
     Trigger: the task has a `revisit_of` audit entry AND no `orchestration_step`
     audit entry. The latter is how we detect "first step" without timestamps —
-    once the EH has produced a decision, `log_orchestration_step` writes a row
-    and this helper returns None on every subsequent call.
+    once the team manager has produced a decision, `log_orchestration_step`
+    writes a row and this helper returns None on every subsequent call.
     """
     logs = orch._db.get_audit_logs(task_id)
     revisit_entry = next(
@@ -356,9 +357,10 @@ def _revisit_header_if_applicable(orch: "Orchestrator", task_id: str) -> str | N
 
 
 def _build_prior_steps_from_db(orch: "Orchestrator", task_id: str):
-    """Reconstruct StepRecord[] for the EH by reading children's terminal
-    outcomes from the DB. Only direct children of `task_id` count — each child
-    is one past orchestration step. Order: creation order, 1-indexed."""
+    """Reconstruct StepRecord[] for the team manager by reading children's
+    terminal outcomes from the DB. Only direct children of `task_id` count
+    — each child is one past orchestration step. Order: creation order,
+    1-indexed."""
     from src.models import StepRecord
     steps: list[StepRecord] = []
     for i, child_id in enumerate(orch._db.get_children(task_id), start=1):
@@ -455,13 +457,15 @@ def _enqueue_parent_if_waiting(orch: "Orchestrator", task_id: str) -> None:
     lineage (blocked+DELEGATED) AND all its children are now terminal.
 
     Two outcomes:
-      - every child COMPLETED → enqueue parent for its next EH decision step.
+      - every child COMPLETED → enqueue parent for its next manager decision
+        step.
       - any child FAILED → cascade-fail the parent with a referencing note
-        and recurse up. No retry: the EH does not get another decision step
-        after a failed delegation. The alternative (re-enqueueing so the EH
-        can "try again") has historically produced runs of 6+ failed
-        retries on the same brief (TASK-033..038, TASK-041..045), burning
-        tokens and masking the real failure mode.
+        and recurse up. No retry: the team manager does not get another
+        decision step after a failed delegation. The alternative
+        (re-enqueueing so the manager can "try again") has historically
+        produced runs of 6+ failed retries on the same brief
+        (TASK-033..038, TASK-041..045), burning tokens and masking the real
+        failure mode.
     """
     task = orch._db.get_task(task_id)
     if task is None or task.parent_task_id is None:

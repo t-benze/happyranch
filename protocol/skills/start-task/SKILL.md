@@ -48,9 +48,9 @@ Parameters:
    ```
 
    **Consult triggers** — scan the KB whenever your brief touches:
-   - regulatory / compliance rules (visa, PCI-DSS, PDPO, PDPA);
-   - partner APIs, integration quirks, rate limits;
-   - payment flows, refund policies;
+   - regulatory / compliance rules that bind your org;
+   - partner / vendor APIs, integration quirks, rate limits;
+   - payment, refund, or other money-flow policies;
    - any topic where a past escalation likely set precedent.
 
    If nothing matches, proceed. If something matches, treat it as authoritative unless the brief explicitly contradicts it — in which case escalate rather than silently override.
@@ -114,13 +114,17 @@ Parameters:
    reason in `summary`. Optional keys (`risks`, `dependencies`,
    `reviewer_focus`, `confidence`, `artifact_dir`) may be omitted.
 
-   **Engineering Head only — add a `decision` field.** Alongside the prose
-   `summary`, EH must include a top-level `decision` object that the
-   orchestrator will execute. Omitting it escalates the task. See the
-   response-format section of your role_guidance for the exact shapes. The
-   `action` must be one of `delegate`, `done`, or `escalate`:
+   **Team-manager only — add a `decision` field.** Alongside the prose
+   `summary`, a team-manager session must include a top-level `decision`
+   object that the orchestrator will execute. Workers omit it. Omitting it
+   from a manager session escalates the task. See the response-format
+   section of your role_guidance for the exact shapes. The `action` must be
+   one of `delegate`, `done`, or `escalate`:
 
    - `delegate` — hand the next subtask to a worker; requires `agent` and `prompt`.
+     Note the field is `prompt`, **not** `brief` — the orchestrator silently
+     drops unknown keys, so writing `"brief"` produces a child task with an
+     empty brief.
    - `done` — the task is complete; requires `summary` of the outcome.
    - `escalate` — the task needs founder intervention; requires `reason`.
 
@@ -130,11 +134,11 @@ Parameters:
    {
      "task_id": "TASK-XXX",
      "session_id": "<sid>",
-     "agent": "engineering_head",
+     "agent": "<your_agent_name>",
      "status": "completed",
      "confidence": 90,
-     "summary": "Triaged and staged implementation for dev_agent.",
-     "decision": {"action": "delegate", "agent": "dev_agent", "prompt": "..."}
+     "summary": "Triaged and staged implementation for the worker.",
+     "decision": {"action": "delegate", "agent": "<worker_agent_name>", "prompt": "..."}
    }
    ```
 

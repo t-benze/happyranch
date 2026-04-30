@@ -118,60 +118,17 @@ def _require_active(state: DaemonState) -> None:
         )
 
 
-def _require_eh_auth(body: ManageAgentBody, state: DaemonState) -> None:
-    """Validate the caller is authorized to run manage-agent as EH.
-
-    Supports two auth paths:
-      - Task path: (task_id, session_id) must map to an active
-        engineering_head session in SessionTracker.
-      - Talk path: talk_id must reference an open talk whose
-        agent_name == 'engineering_head'.
-
-    The pydantic validator on ManageAgentBody guarantees exactly one path
-    is set, so this function only checks the path that is present.
-    """
-    if body.talk_id is not None:
-        talk = state.db.get_talk(body.talk_id)
-        if talk is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"talk {body.talk_id!r} not found",
-            )
-        if talk.agent_name != "engineering_head":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="manage-agent requires an engineering_head talk",
-            )
-        if talk.status != TalkStatus.OPEN:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"talk {body.talk_id!r} is {talk.status.value}, not open",
-            )
-        return
-
-    # Task path
-    expected = state.sessions.get_active(body.task_id, "engineering_head")
-    if expected is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="manage-agent requires an active engineering_head session",
-        )
-    if expected != body.session_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="session_id does not match the active engineering_head session",
-        )
-
-
 def _require_team_manager_auth(body: ManageAgentBody, state: DaemonState) -> tuple[str, str]:
     """Validate the caller is a team manager and return (manager_name, manager_team).
 
-    Supports the same two auth paths as _require_eh_auth, but accepts *any*
-    team manager (not just engineering_head):
+    Supports two auth paths:
       - Talk path: talk_id must reference an open talk whose agent_name is a
         registered team manager.
       - Task path: iterate all team managers, find the one with a matching
         active (task_id, session_id) session.
+
+    The pydantic validator on ManageAgentBody guarantees exactly one path is
+    set, so this function only checks the path that is present.
 
     Returns (manager_name, manager_team) so callers can enforce team scoping.
     """

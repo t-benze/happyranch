@@ -121,8 +121,8 @@ class ClaudeExecutor:
         # 2.1.105 records `command_permissions.allowedTools: []` regardless of
         # what's in settings.json). Pass --allowedTools on the CLI instead so
         # agents can reliably call `opc ...` callbacks. Per-agent extras come
-        # from the ``### Allow Rules`` subsection in ``protocol/02-system-prompts-managers.md``
-        # (and the workers file for worker agents).
+        # from the optional ``allow_rules:`` list in the agent's frontmatter
+        # at ``<runtime>/org/agents/<name>.md``.
         from src.orchestrator.workspace_adapters import allow_rules_for_agent
 
         # Workspace layout is `<runtime>/workspaces/<agent_name>`, so the

@@ -58,7 +58,7 @@ class TaskRecord(BaseModel):
 
 
 class NextStep(BaseModel):
-    """Decision returned by the Engineering Head for what the orchestrator should do next."""
+    """Decision returned by a team manager for what the orchestrator should do next."""
     action: Literal["delegate", "done", "escalate"]
     agent: str | None = None
     prompt: str | None = None
@@ -72,10 +72,10 @@ class CompletionReport(BaseModel):
     status: str
     confidence: int = Field(ge=0, le=100)
     output_summary: str
-    # EH-only: structured next-step decision. Workers leave this None.
+    # Manager-only: structured next-step decision. Workers leave this None.
     # Separating the decision from the prose summary eliminates the
-    # double-encoding trap where EH's output_summary had to itself be
-    # JSON (see TASK-071 post-mortem).
+    # double-encoding trap where the manager's output_summary had to itself
+    # be JSON (see TASK-071 post-mortem).
     decision: NextStep | None = None
     risks_flagged: list[str] = Field(default_factory=list)
     dependencies: list[str] = Field(default_factory=list)
@@ -90,7 +90,7 @@ class TaskStep(BaseModel):
 
 
 class StepRecord(BaseModel):
-    """Record of a completed orchestration step, shown to EH as history."""
+    """Record of a completed orchestration step, shown to the team manager as history."""
     step_number: int
     agent: str
     action: str

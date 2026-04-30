@@ -204,12 +204,12 @@ class Orchestrator:
         run_step_impl(self, task_id)
 
     def _parse_next_step(self, report: CompletionReport | None) -> NextStep:
-        """Parse the Engineering Head's decision from its completion report.
+        """Parse the team manager's decision from its completion report.
 
         Preferred path: ``report.decision`` is a structured NextStep supplied
-        by EH alongside a prose ``output_summary``. That separation eliminates
-        the old double-encoding trap where ``output_summary`` itself had to be
-        a JSON decision envelope (see TASK-071 post-mortem).
+        by the manager alongside a prose ``output_summary``. That separation
+        eliminates the old double-encoding trap where ``output_summary``
+        itself had to be a JSON decision envelope (see TASK-071 post-mortem).
 
         Legacy path: if ``decision`` is absent (in-flight workspaces on the
         old skill), we still attempt to parse ``output_summary`` as JSON for
@@ -218,7 +218,7 @@ class Orchestrator:
         the root cause of TASK-013 / TASK-016.
         """
         if report is None:
-            return NextStep(action="escalate", reason="No completion report from Engineering Head")
+            return NextStep(action="escalate", reason="No completion report from team manager")
         if report.decision is not None:
             return report.decision
         text = report.output_summary or ""
@@ -227,7 +227,7 @@ class Orchestrator:
             return NextStep(
                 action="escalate",
                 reason=(
-                    "EH returned neither a `decision` field nor an "
+                    "Team manager returned neither a `decision` field nor an "
                     "`output_summary`; no decision to act on."
                 ),
             )
@@ -238,9 +238,10 @@ class Orchestrator:
             return NextStep(
                 action="escalate",
                 reason=(
-                    "EH omitted the `decision` field and its `output_summary` "
-                    "is not JSON. The completion payload must include a "
-                    "`decision` object (delegate/done/escalate). "
+                    "Team manager omitted the `decision` field and its "
+                    "`output_summary` is not JSON. The completion payload "
+                    "must include a `decision` object "
+                    "(delegate/done/escalate). "
                     f"Preview: {preview!r}"
                 ),
             )
@@ -248,8 +249,8 @@ class Orchestrator:
             return NextStep(
                 action="escalate",
                 reason=(
-                    "EH legacy output_summary parsed as non-object JSON; "
-                    f"expected a decision object. Got: {type(data).__name__}"
+                    "Team manager legacy output_summary parsed as non-object "
+                    f"JSON; expected a decision object. Got: {type(data).__name__}"
                 ),
             )
         try:
@@ -257,7 +258,7 @@ class Orchestrator:
         except (KeyError, ValueError, ValidationError) as exc:
             return NextStep(
                 action="escalate",
-                reason=f"Malformed EH decision: {exc}",
+                reason=f"Malformed team-manager decision: {exc}",
             )
 
     def _run_agent(

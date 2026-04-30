@@ -166,8 +166,8 @@ class Database:
             "ALTER TABLE tasks ADD COLUMN final_output_summary TEXT",
             "ALTER TABLE tasks ADD COLUMN final_artifact_dir TEXT",
             "ALTER TABLE task_results ADD COLUMN artifact_dir TEXT",
-            # EH-only structured decision payload (serialized NextStep JSON).
-            # NULL for worker rows. Replaces the prose-in-output_summary
+            # Manager-only structured decision payload (serialized NextStep
+            # JSON). NULL for worker rows. Replaces the prose-in-output_summary
             # double-encoding contract — see TASK-071 post-mortem.
             "ALTER TABLE task_results ADD COLUMN decision_json TEXT",
             "ALTER TABLE agent_enrollments ADD COLUMN executor TEXT NOT NULL DEFAULT 'claude'",

@@ -9,13 +9,15 @@ def build_capabilities_prompt(
     step_number: int,
     max_steps: int,
     prior_steps: list[StepRecord] | None = None,
-    manager_name: str = "engineering_head",
+    manager_name: str = "team_manager",
 ) -> str:
     """Build the prompt sent to a team manager for each decision step.
 
     ``agents`` is a list of dicts with keys: name, description, tier.
     ``manager_name`` is the agent name of the calling manager; it is used to
     address the manager by role in the prompt (e.g. "You are the Content Manager.").
+    The default value is a generic placeholder for tests; live callers in
+    ``run_step._build_agent_prompt`` always pass the actual manager name.
     """
     pretty = manager_name.replace("_", " ").title()  # "content_manager" -> "Content Manager"
     sections = [
@@ -63,11 +65,11 @@ def build_capabilities_prompt(
         "{",
         '  "task_id": "TASK-XXX",',
         '  "session_id": "<sid>",',
-        '  "agent": "engineering_head",',
+        f'  "agent": "{manager_name}",',
         '  "status": "completed",',
         '  "confidence": 90,',
-        '  "summary": "Triaged issue #93 and staged implementation plan for dev_agent.",',
-        '  "decision": {"action": "delegate", "agent": "dev_agent", "prompt": "Implement issue #93: ..."}',
+        '  "summary": "Triaged the request and staged implementation for the worker.",',
+        '  "decision": {"action": "delegate", "agent": "<worker_agent_name>", "prompt": "<detailed instructions>"}',
         "}",
         "```\n",
         "The `summary` is prose — it can describe what you did, what you found, "
@@ -78,9 +80,9 @@ def build_capabilities_prompt(
         "{",
         '  "task_id": "TASK-XXX",',
         '  "session_id": "<sid>",',
-        '  "agent": "engineering_head",',
+        f'  "agent": "{manager_name}",',
         '  "status": "completed",',
-        '  "summary": "Cleanup done — issue #93 and PR #105 closed."',
+        '  "summary": "Cleanup done — closed superseded items."',
         "}",
         "```",
         "DO NOT omit `decision`. Even for a direct-action cleanup you ran "
@@ -95,8 +97,10 @@ def build_capabilities_prompt(
         "your `decision` field still has to be one of delegate/done/escalate.\n",
         "### Constraints\n",
         f"- This is step {step_number} of maximum {max_steps}",
-        "- Budget authority: auto-approved up to $200 USD single / $100 USD monthly recurring",
-        "- Any content about China/HK/Macau political relations must escalate to founder",
+        "- Org-specific authority limits (budget, jurisdictional, content)"
+        " come from your role_guidance / system prompt — not this capabilities"
+        " block. Escalate to the founder anything outside the bounds your"
+        " role describes.",
     ])
 
     if prior_steps:
