@@ -31,14 +31,15 @@ def test_log_completion_report(db):
         output_summary="Implemented feature",
         risks_flagged=["sandbox mismatch"],
     )
-    logger.log_completion_report(report, session_id="sess-abc", duration_seconds=120, token_count=5000, estimated_cost=0.15)
+    logger.log_completion_report(report)
     logs = db.get_audit_logs("TASK-001")
     assert len(logs) == 1
     assert logs[0]["action"] == "completion_report"
-    results = db.get_task_results("TASK-001")
-    assert len(results) == 1
-    assert results[0]["confidence_score"] == 85
-    assert results[0]["duration_seconds"] == 120
+    assert logs[0]["payload"]["confidence"] == 85
+    # task_results is owned by the agent callback (POST /tasks/{id}/completion);
+    # log_completion_report no longer writes a row — that double-write produced
+    # the duplicate task_results rows seen in TASK-137.
+    assert db.get_task_results("TASK-001") == []
 
 
 def test_log_review_verdict(db):

@@ -393,8 +393,4 @@ class Orchestrator:
     ) -> None:
         if report is None:
             return
-        self._audit.log_completion_report(
-            report=report,
-            session_id=result.session_id,
-            duration_seconds=result.duration_seconds,
-        )
+        self._audit.log_completion_report(report=report)

@@ -33,32 +33,16 @@ class AuditLogger:
             },
         )
 
-    def log_completion_report(
-        self,
-        report: CompletionReport,
-        session_id: str,
-        duration_seconds: int,
-        token_count: int | None = None,
-        estimated_cost: float | None = None,
-    ) -> None:
+    def log_completion_report(self, report: CompletionReport) -> None:
+        # The task_results row is written by the agent callback at
+        # POST /tasks/{task_id}/completion (routes/tasks.py); audit logger only
+        # records the semantic event. Writing both produced duplicate rows
+        # (one per task_result, ~20s apart) — see TASK-137 post-mortem.
         self._db.insert_audit_log(
             task_id=report.task_id,
             agent=report.agent,
             action="completion_report",
             payload=report.model_dump(),
-        )
-        self._db.insert_task_result(
-            task_id=report.task_id,
-            agent=report.agent,
-            session_id=session_id,
-            status=report.status,
-            output_summary=report.output_summary,
-            confidence_score=report.confidence,
-            risks_flagged=report.risks_flagged,
-            duration_seconds=duration_seconds,
-            token_count=token_count,
-            estimated_cost=estimated_cost,
-            artifact_dir=report.artifact_dir,
         )
 
     def log_review_verdict(
