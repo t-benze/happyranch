@@ -130,6 +130,7 @@ Make a backup first — the flag is mandatory on purpose. Without `--apply` the 
 | `opc use <path>` | Switch the daemon's active runtime directory |
 | `opc run --brief "..."` | Submit a task and return immediately. The team manager decides the approach. Use `opc tail TASK-ID` to attach. |
 | `opc run --team TEAM --brief "..."` | Route a task to a team (e.g., `engineering`, `content`) |
+| `opc run --brief-file PATH` | Read the task brief from a file (use this for multi-line briefs); mutually exclusive with `--brief` |
 | `opc tail TASK-ID` | Stream live events for a running (or historical) task |
 | `opc details TASK-ID` | Show task details (status, block_kind, note, results, audit log) |
 | `opc tasks [--limit N]` | List recent tasks (default: 20) |
@@ -216,7 +217,7 @@ opc kb reindex
 opc kb precedent --task-id <id> --decision approve|reject --rationale "..." [--slug <s>]
 
 opc resolve-escalation --task-id <id> --decision approve|reject --rationale "..."
-opc revisit TASK-052 [--note "..."]   # founder: spawn a new root that inherits a terminal predecessor's brief
+opc revisit TASK-052 [--note "..." | --note-file PATH]   # founder: spawn a new root that inherits a terminal predecessor's brief
 ```
 
 `opc revisit` takes any task id in a lineage, walks to its root, and — if the

@@ -411,6 +411,7 @@ opc init /path/to/runtime --slug hk-tourism                     # create + regis
 opc use /path/to/other-runtime                                  # switch the daemon's active runtime
 opc run --brief "Explore the payment module"                    # submit a task; EH decides approach
 opc run --team engineering --brief "Add Alipay support"          # route to a team
+opc run --team engineering --brief-file /tmp/eh-brief.md         # read brief from a file (mutually exclusive with --brief)
 opc tail TASK-001            # stream live SSE events for a task
 opc tasks                    # list recent tasks
 opc details TASK-001         # show task details (status, block_kind, note, results, audit log)
@@ -431,7 +432,7 @@ opc kb delete <slug> --agent <you> --confirm [--as-founder]
 opc kb reindex
 opc kb precedent --task-id TASK-001 --decision approve|reject --rationale "..." [--slug <s>] --as-founder   # founder-only; follows resolve-escalation
 opc resolve-escalation --task-id TASK-001 --decision approve|reject --rationale "..."                       # founder state transition (precedes kb precedent)
-opc revisit TASK-052 [--note "..."]                             # founder: spawn NEW root that inherits the predecessor's brief (TTY-gated)
+opc revisit TASK-052 [--note "..." | --note-file PATH]          # founder: spawn NEW root that inherits the predecessor's brief (TTY-gated)
 # Talk flow (founder↔agent conversations):
 opc talk start --agent <name>
 opc talk resume --talk-id TALK-001

@@ -114,7 +114,18 @@ def cmd_run(args: argparse.Namespace) -> None:
         print(f"Error: {exc}")
         sys.exit(1)
 
-    payload: dict = {"brief": args.brief}
+    if args.brief_file:
+        try:
+            brief = Path(args.brief_file).expanduser().read_text(encoding="utf-8")
+        except OSError as exc:
+            print(f"Error reading brief file {args.brief_file}: {exc}")
+            sys.exit(1)
+    else:
+        brief = args.brief
+    if not brief.strip():
+        print("Error: brief is empty")
+        sys.exit(1)
+    payload: dict = {"brief": brief}
     if args.team:
         payload["team"] = args.team
     r = client.post("/api/v1/tasks", json=payload)
@@ -1110,6 +1121,18 @@ def cmd_revisit(args: argparse.Namespace) -> None:
         print("opc revisit requires an interactive terminal (no --yes bypass).")
         sys.exit(1)
 
+    if args.note_file:
+        try:
+            note: str | None = Path(args.note_file).expanduser().read_text(encoding="utf-8")
+        except OSError as exc:
+            print(f"Error reading note file {args.note_file}: {exc}")
+            sys.exit(1)
+        if not note.strip():
+            print("Error: note is empty")
+            sys.exit(1)
+    else:
+        note = args.note
+
     print(f"About to revisit {args.task_id} (founder-initiated).")
     print("This creates a NEW root task that inherits the original brief.")
     print(
@@ -1133,7 +1156,7 @@ def cmd_revisit(args: argparse.Namespace) -> None:
 
     r = client.post(
         f"/api/v1/tasks/{args.task_id}/revisit",
-        json={"founder_note": args.note},
+        json={"founder_note": note},
     )
     if r.status_code == 404:
         print(f"Task {args.task_id} not found.")
@@ -1223,7 +1246,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--team", default=None,
         help="Team to route the task to (default: engineering)",
     )
-    p_run.add_argument("--brief", required=True, help="Task description")
+    p_run_brief = p_run.add_mutually_exclusive_group(required=True)
+    p_run_brief.add_argument("--brief", help="Task description (inline string)")
+    p_run_brief.add_argument(
+        "--brief-file",
+        help="Path to a file whose contents become the task brief",
+    )
     p_run.set_defaults(func=cmd_run)
 
     # opc details
@@ -1488,9 +1516,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_revisit.add_argument("task_id", help="Any task id in the lineage to revisit")
-    p_revisit.add_argument(
+    p_revisit_note = p_revisit.add_mutually_exclusive_group()
+    p_revisit_note.add_argument(
         "--note", default=None,
         help="Optional founder hint surfaced to the EH in the first-step prompt header",
+    )
+    p_revisit_note.add_argument(
+        "--note-file", default=None,
+        help="Path to a file whose contents become the founder note (mutually exclusive with --note)",
     )
     p_revisit.set_defaults(func=cmd_revisit)
 
