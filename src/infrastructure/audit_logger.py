@@ -92,6 +92,21 @@ class AuditLogger:
             payload={"rationale": rationale, "cascade": cascade},
         )
 
+    def log_progress(self, task_id: str, agent: str, message: str) -> None:
+        """Record an agent-controlled mid-task progress note.
+
+        Distinct from completion_report: this is a semantic checkpoint the
+        agent emits while still working. Used by `opc tail` and `opc details`
+        to give the founder visibility into long-running tasks without
+        waiting for the final completion callback.
+        """
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent=agent,
+            action="progress",
+            payload={"message": message},
+        )
+
     def log_orchestration_step(
         self, task_id: str, step_number: int, decision: dict
     ) -> None:

@@ -59,13 +59,28 @@ Parameters:
 
    If the task produces a standalone document (report, plan, analysis), write its files under `artifacts/<task_id>/` in your workspace root — **not** inside any repo or worktree. Capture the relative path (e.g. `artifacts/TASK-001`) and include it as `artifact_dir` in your completion payload so future sessions can retrieve it via `opc recall <task_id>`.
 
-5. **Report mid-task learnings (optional).** Whenever you discover something reusable for future tasks:
+5. **Report progress (long-running tasks).** If the task spans more than a
+   few minutes — multi-phase implementation, lengthy build/test, large
+   research sweep — emit a one-line progress note at every meaningful
+   milestone so the founder can `opc tail` / `opc details` and see live
+   movement instead of a black box until completion.
+
+   ```bash
+   opc progress --task-id <task_id> --session-id <session_id> --agent <your_agent_name> --message "Phase 3 of 6: tests passing"
+   ```
+
+   When to emit: phase boundaries, before/after long shell-outs (>1 min),
+   when changing direction, on a non-fatal blocker you're working around.
+   When NOT to emit: every file edit, every grep, anything you'd consider
+   trivial mid-step bookkeeping. Treat it like a status line, not a log.
+
+6. **Report mid-task learnings (optional).** Whenever you discover something reusable for future tasks:
 
    ```bash
    opc learning --task-id <task_id> --session-id <session_id> --agent <your_agent_name> --text "..."
    ```
 
-6. **Contribute to the KB (optional).** Before reporting completion, ask yourself: did I discover or confirm durable, cross-agent-relevant knowledge that isn't already in the KB?
+7. **Contribute to the KB (optional).** Before reporting completion, ask yourself: did I discover or confirm durable, cross-agent-relevant knowledge that isn't already in the KB?
 
    **Contribute YES if any are true:**
    - Factual rule other agents would need (API rate limit, regulatory deadline, partner contract term).
@@ -86,7 +101,7 @@ Parameters:
 
    For updates: `opc kb update <slug> --agent <you> --from-file /tmp/kb-<slug>.md`. Resolve collision 409s by updating the existing entry instead of forcing a sibling. The `--from-file` pattern is mandatory across executors; in Claude sessions multi-line `opc` payloads are rejected by the `Bash(opc:*)` permission rule.
 
-7. **Report completion.** When you finish (success or blocker), write a JSON
+8. **Report completion.** When you finish (success or blocker), write a JSON
    payload to a file and invoke `opc report-completion --from-file <path>` as
    a single-line command. The file form is mandatory across executors. In
    Claude sessions, multi-line bash commands with backslash continuations are
@@ -148,7 +163,7 @@ Parameters:
    opc report-completion --from-file /tmp/completion-<task_id>.json
    ```
 
-8. **Cleanup.** Always run worktree cleanup as the final step, even on the blocker path. The make-worktree skill describes how.
+9. **Cleanup.** Always run worktree cleanup as the final step, even on the blocker path. The make-worktree skill describes how.
 
 ## Error handling
 

@@ -1866,3 +1866,38 @@ def test_cmd_tasks_suffixes_revisit_rows(capsys):
     plain_line = next(line for line in lines if "TASK-001" in line)
     assert "↩ TASK-052" in revisit_line
     assert "↩" not in plain_line
+
+
+def test_progress_parser_requires_all_args():
+    parser = build_parser()
+    args = parser.parse_args([
+        "progress",
+        "--task-id", "TASK-001",
+        "--session-id", "sess-1",
+        "--agent", "dev_agent",
+        "--message", "Phase 3 of 6",
+    ])
+    assert args.task_id == "TASK-001"
+    assert args.session_id == "sess-1"
+    assert args.agent == "dev_agent"
+    assert args.message == "Phase 3 of 6"
+
+
+def test_cmd_progress_posts_to_progress_endpoint():
+    from src.cli import cmd_progress
+
+    fake = MagicMock()
+    fake.post.return_value.status_code = 200
+    args = MagicMock(
+        task_id="TASK-001", session_id="sess-1",
+        agent="dev_agent", message="Phase 3 of 6",
+    )
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_progress(args)
+    pos, kwargs = fake.post.call_args
+    assert pos[0] == "/api/v1/tasks/TASK-001/progress"
+    assert kwargs["json"] == {
+        "session_id": "sess-1",
+        "agent": "dev_agent",
+        "message": "Phase 3 of 6",
+    }

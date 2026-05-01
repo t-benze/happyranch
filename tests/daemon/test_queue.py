@@ -76,6 +76,73 @@ def test_daemon_state_terminal_event_map_covers_new_statuses(tmp_path):
     }
 
 
+@pytest.mark.asyncio
+async def test_heartbeat_initial_tap_writes_last_heartbeat(tmp_path):
+    """The heartbeat coroutine taps tasks.last_heartbeat synchronously at
+    start (before its first sleep), so even short-lived tasks leave a
+    non-null marker proving the worker actually picked them up."""
+    from src.config import Settings
+    from src.daemon.queue import TaskQueue
+    from src.daemon.state import DaemonState
+    from src.models import TaskRecord
+    from src.runtime import RuntimeDir
+
+    rt = RuntimeDir.init(tmp_path / "rt", slug="test")
+    state = DaemonState.from_runtime(rt, Settings())
+    state.db.insert_task(TaskRecord(id="T-HB", brief="x"))
+
+    orch = MagicMock()
+    orch.db = state.db
+
+    hb = asyncio.create_task(TaskQueue._heartbeat(orch, "T-HB"))
+    # The initial tap is synchronous (no await before update_task), so any
+    # event-loop yield is enough to let the coroutine run it before sleep(30).
+    await asyncio.sleep(0.05)
+    hb.cancel()
+    try:
+        await hb
+    except asyncio.CancelledError:
+        pass
+
+    task = state.db.get_task("T-HB")
+    assert task.last_heartbeat is not None
+
+
+@pytest.mark.asyncio
+async def test_worker_loop_stamps_heartbeat_and_cancels_after_run_step(tmp_path):
+    """End-to-end: enqueue a task, the worker spawns a heartbeat alongside
+    run_step, and after run_step returns the heartbeat coroutine has been
+    cancelled (no leak) but last_heartbeat was set during the run."""
+    import time
+
+    from src.config import Settings
+    from src.daemon.queue import TaskQueue
+    from src.daemon.state import DaemonState
+    from src.models import TaskRecord
+    from src.runtime import RuntimeDir
+
+    rt = RuntimeDir.init(tmp_path / "rt", slug="test")
+    state = DaemonState.from_runtime(rt, Settings())
+    state.db.insert_task(TaskRecord(id="T-HB", brief="x"))
+
+    orch = MagicMock()
+    orch.db = state.db
+    # Block for 100ms in the executor thread so the event loop has time to
+    # schedule the heartbeat coroutine and run its initial tap.
+    orch.run_step = MagicMock(side_effect=lambda task_id: time.sleep(0.1))
+
+    q = TaskQueue()
+    q.start_workers(orch, n=1)
+    q.enqueue("T-HB")
+    await asyncio.wait_for(q._queue.join(), timeout=2.0)
+    # Give the worker's finally-block a tick to cancel + await the heartbeat.
+    await asyncio.sleep(0.05)
+    await q.stop()
+
+    task = state.db.get_task("T-HB")
+    assert task.last_heartbeat is not None
+
+
 def test_synthesize_terminal_event_rules(tmp_path):
     """P1 regression: BLOCKED(DELEGATED) is non-terminal for event purposes —
     the parent resumes when children finish. Only BLOCKED(ESCALATED) should

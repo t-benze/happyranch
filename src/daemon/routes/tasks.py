@@ -267,6 +267,55 @@ async def submit_completion(task_id: str, body: CompletionBody, request: Request
     return {"ok": True}
 
 
+class ProgressBody(BaseModel):
+    session_id: str
+    agent: str
+    message: str
+
+
+@router.post("/tasks/{task_id}/progress")
+async def submit_progress(task_id: str, body: ProgressBody, request: Request) -> dict:
+    """Agent-controlled mid-task progress note.
+
+    Same auth shape as /completion (active session must match), but does NOT
+    clear the tracker — the agent keeps working after a progress beat. Audit-
+    logged as `action=progress` and broadcast on SSE so `opc tail` shows live
+    movement on long-running tasks.
+    """
+    from src.infrastructure.audit_logger import AuditLogger
+
+    state: DaemonState = request.app.state.daemon
+    _require_active(state)
+    expected = state.sessions.get_active(task_id, body.agent)
+    if expected is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "unknown_session", "task_id": task_id, "agent": body.agent},
+        )
+    if expected != body.session_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "session_mismatch", "active": expected, "got": body.session_id},
+        )
+    message = body.message.strip()
+    if not message:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "message_required"},
+        )
+    async with state.db_lock:
+        AuditLogger(state.db).log_progress(
+            task_id=task_id, agent=body.agent, message=message,
+        )
+    await state.event_bus.publish(task_id, {
+        "type": "progress",
+        "agent": body.agent,
+        "session_id": body.session_id,
+        "message": message,
+    })
+    return {"ok": True}
+
+
 class ResolveEscalationBody(BaseModel):
     decision: str  # "approve" | "reject"
     rationale: str

@@ -1187,3 +1187,101 @@ def test_get_task_does_not_crash_on_long_revisit_chain(
     assert len(body["revisit_chain"]) == 20
     # Truncation preserves the most-recent end (head of the walk).
     assert body["revisit_chain"][0] == prev
+
+
+# --- Progress endpoint ---
+
+
+def test_progress_unknown_session_409(tmp_home, app, daemon_state, auth_headers) -> None:
+    sub = TestClient(app).post(
+        "/api/v1/tasks", json={"brief": "x"}, headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    r = TestClient(app).post(
+        f"/api/v1/tasks/{task_id}/progress",
+        json={"session_id": "fabricated", "agent": "dev_agent",
+              "message": "phase 1"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "unknown_session"
+
+
+def test_progress_session_mismatch_409(tmp_home, app, daemon_state, auth_headers) -> None:
+    sub = TestClient(app).post(
+        "/api/v1/tasks", json={"brief": "x"}, headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    daemon_state.sessions.set_active(task_id, "dev_agent", "sess-real")
+    r = TestClient(app).post(
+        f"/api/v1/tasks/{task_id}/progress",
+        json={"session_id": "sess-stale", "agent": "dev_agent",
+              "message": "phase 1"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "session_mismatch"
+
+
+def test_progress_persists_audit_entry(tmp_home, app, daemon_state, auth_headers) -> None:
+    """A successful progress POST writes an audit entry with action=progress
+    and the supplied message — visible to `opc details` / `opc audit`."""
+    sub = TestClient(app).post(
+        "/api/v1/tasks", json={"brief": "x"}, headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    daemon_state.sessions.set_active(task_id, "dev_agent", "sess-1")
+
+    r = TestClient(app).post(
+        f"/api/v1/tasks/{task_id}/progress",
+        json={"session_id": "sess-1", "agent": "dev_agent",
+              "message": "Phase 3 of 6: tests passing"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    logs = daemon_state.db.get_audit_logs(task_id)
+    progress_logs = [log for log in logs if log["action"] == "progress"]
+    assert len(progress_logs) == 1
+    assert progress_logs[0]["agent"] == "dev_agent"
+    assert progress_logs[0]["payload"]["message"] == "Phase 3 of 6: tests passing"
+
+
+def test_progress_does_not_clear_session(tmp_home, app, daemon_state, auth_headers) -> None:
+    """Unlike completion, progress is mid-task — the session must stay live so
+    the agent can keep emitting beats and eventually report completion."""
+    sub = TestClient(app).post(
+        "/api/v1/tasks", json={"brief": "x"}, headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    daemon_state.sessions.set_active(task_id, "dev_agent", "sess-1")
+
+    r1 = TestClient(app).post(
+        f"/api/v1/tasks/{task_id}/progress",
+        json={"session_id": "sess-1", "agent": "dev_agent", "message": "step 1"},
+        headers=auth_headers,
+    )
+    assert r1.status_code == 200
+    # Second beat with the same session must still succeed.
+    r2 = TestClient(app).post(
+        f"/api/v1/tasks/{task_id}/progress",
+        json={"session_id": "sess-1", "agent": "dev_agent", "message": "step 2"},
+        headers=auth_headers,
+    )
+    assert r2.status_code == 200
+    assert daemon_state.sessions.get_active(task_id, "dev_agent") == "sess-1"
+
+
+def test_progress_empty_message_rejected(tmp_home, app, daemon_state, auth_headers) -> None:
+    sub = TestClient(app).post(
+        "/api/v1/tasks", json={"brief": "x"}, headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    daemon_state.sessions.set_active(task_id, "dev_agent", "sess-1")
+
+    r = TestClient(app).post(
+        f"/api/v1/tasks/{task_id}/progress",
+        json={"session_id": "sess-1", "agent": "dev_agent", "message": "   "},
+        headers=auth_headers,
+    )
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "message_required"

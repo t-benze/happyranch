@@ -254,6 +254,12 @@ def cmd_details(args: argparse.Namespace) -> None:
     print(f"Brief:      {task['brief']}")
     print(f"Created:    {_fmt_ts(task['created_at'])}")
     print(f"Updated:    {_fmt_ts(task['updated_at'])}")
+    # Liveness — useful only while a subprocess is alive. After terminal
+    # transitions the heartbeat is stale by definition (queue worker
+    # cancelled the heartbeat coroutine on completion), so suppress to
+    # avoid implying the task is still moving.
+    if task["status"] == "in_progress" and task.get("last_heartbeat"):
+        print(f"Heartbeat:  {_fmt_ts(task['last_heartbeat'])}")
     if task.get("block_kind"):
         print(f"Block kind: {task['block_kind']}")
     if task.get("note"):
@@ -272,7 +278,17 @@ def cmd_details(args: argparse.Namespace) -> None:
     if body.get("audit_log"):
         print(f"\nAudit log ({len(body['audit_log'])} entries):")
         for log in body["audit_log"]:
-            print(f"  {_fmt_ts(log['timestamp'])}  {log['agent']:20s}  {log['action']}")
+            line = (
+                f"  {_fmt_ts(log['timestamp'])}  {log['agent']:20s}  {log['action']}"
+            )
+            # Inline the progress message so a long-running task's history
+            # reads as a story instead of a sequence of identical "progress"
+            # rows. Other actions stay terse — payload is in `opc audit --json`.
+            if log["action"] == "progress":
+                msg = (log.get("payload") or {}).get("message", "")
+                if msg:
+                    line += f"  {msg}"
+            print(line)
 
     # Revisit footer: shown only when this task HAS been revisited.
     direct = body.get("direct_revisits") or []
@@ -508,6 +524,30 @@ def cmd_learning(args: argparse.Namespace) -> None:
     r = client.post(
         f"/api/v1/agents/{args.agent}/learnings",
         json={"session_id": args.session_id, "task_id": args.task_id, "text": args.text},
+    )
+    if not _ok(r):
+        return
+
+
+def cmd_progress(args: argparse.Namespace) -> None:
+    """Agent callback: emit a mid-task progress note.
+
+    Single-arg flow only — message text is short enough that a JSON file
+    isn't needed. The Bash(opc:*) baseline allow rule matches the whole
+    invocation as one line.
+    """
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    r = client.post(
+        f"/api/v1/tasks/{args.task_id}/progress",
+        json={
+            "session_id": args.session_id,
+            "agent": args.agent,
+            "message": args.message,
+        },
     )
     if not _ok(r):
         return
@@ -1409,6 +1449,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_learn.add_argument("--agent", required=True)
     p_learn.add_argument("--text", required=True)
     p_learn.set_defaults(func=cmd_learning)
+
+    p_prog = sub.add_parser(
+        "progress", help="Agent callback: emit a mid-task progress note"
+    )
+    p_prog.add_argument("--task-id", required=True)
+    p_prog.add_argument("--session-id", required=True)
+    p_prog.add_argument("--agent", required=True)
+    p_prog.add_argument(
+        "--message", required=True,
+        help="Short, human-readable description of the current step "
+             "(e.g. 'Phase 3 of 6: tests passing'). Quote it as one shell arg.",
+    )
+    p_prog.set_defaults(func=cmd_progress)
 
     # opc kb ...
     p_kb = sub.add_parser("kb", help="Shared knowledge base")

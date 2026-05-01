@@ -70,6 +70,13 @@ class Orchestrator:
     def teams(self) -> TeamsRegistry:
         return self._teams
 
+    @property
+    def db(self) -> Database:
+        """Read-only handle to the Database — used by the queue worker's
+        heartbeat coroutine to stamp tasks.last_heartbeat without reaching
+        into the private attribute."""
+        return self._db
+
     def attach_queue(self, queue) -> None:
         """Daemon boot wires its TaskQueue so run_step can enqueue follow-ups.
 
