@@ -9,6 +9,7 @@ from src.orchestrator.executors import (
     ClaudeExecutor,
     CodexExecutor,
     ExecutorResult,
+    OpencodeExecutor,
 )
 from src.runtime import RuntimeDir
 
@@ -164,6 +165,86 @@ def test_settings_exposes_codex_executor_defaults() -> None:
 
     assert settings.codex_cli_path == "codex"
     assert settings.codex_sandbox_mode == "workspace-write"
+
+
+def test_settings_exposes_opencode_executor_defaults() -> None:
+    settings = Settings(project_root=Path("/tmp/project"))
+
+    assert settings.opencode_cli_path == "opencode"
+
+
+@patch("src.orchestrator.executors.subprocess")
+def test_opencode_executor_launches_run_with_workspace_dir(mock_subprocess, tmp_path):
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+
+    mock_subprocess.Popen.return_value = _popen_mock(stdout="event stream")
+
+    executor = OpencodeExecutor(opencode_cli_path="opencode")
+    result = executor.run(
+        workspace=workspace,
+        prompt="Implement Alipay support",
+        timeout_seconds=30,
+    )
+
+    assert result.success is True
+    assert result.session_id is not None
+
+    cmd = mock_subprocess.Popen.call_args[0][0]
+    assert cmd[:2] == ["opencode", "run"]
+    assert "--dir" in cmd
+    assert cmd[cmd.index("--dir") + 1] == str(workspace)
+    assert "--format" in cmd
+    assert cmd[cmd.index("--format") + 1] == "json"
+    assert "--prompt" in cmd
+    assert cmd[cmd.index("--prompt") + 1] == "Implement Alipay support"
+    # Permission discipline lives in opencode.json — bypass flag must NOT be present.
+    assert "--dangerously-skip-permissions" not in cmd
+
+
+@patch("src.orchestrator.executors.subprocess")
+def test_opencode_executor_returns_failure_on_nonzero_exit(mock_subprocess, tmp_path):
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=3, stdout="", stderr="permission denied: rm *",
+    )
+
+    executor = OpencodeExecutor(opencode_cli_path="opencode")
+    result = executor.run(
+        workspace=workspace,
+        prompt="x",
+        timeout_seconds=30,
+    )
+
+    assert result.success is False
+    assert result.returncode == 3
+    assert "permission denied" in (result.stderr_tail or "")
+
+
+@patch("src.orchestrator.executors.subprocess")
+def test_opencode_executor_timeout(mock_subprocess, tmp_path):
+    import subprocess
+
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+
+    proc = MagicMock()
+    proc.pid = 5151
+    proc.communicate.side_effect = [
+        subprocess.TimeoutExpired(cmd="opencode", timeout=30),
+        ("", ""),
+    ]
+    mock_subprocess.TimeoutExpired = subprocess.TimeoutExpired
+    mock_subprocess.Popen.return_value = proc
+
+    executor = OpencodeExecutor(opencode_cli_path="opencode")
+    result = executor.run(workspace=workspace, prompt="long task", timeout_seconds=30)
+
+    assert result.success is False
+    assert "timed out" in (result.error or "").lower()
+    assert proc.kill.called
 
 
 @patch("src.orchestrator.executors.subprocess")

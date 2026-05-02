@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     codex_cli_path: str = "codex"
     codex_sandbox_mode: str = "workspace-write"
 
+    # opencode executor
+    opencode_cli_path: str = "opencode"
+
     # Protocol docs (relative to project_root)
     protocol_dir: str = "protocol"
 

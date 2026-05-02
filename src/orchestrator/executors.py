@@ -184,4 +184,49 @@ class CodexExecutor:
         )
 
 
+class OpencodeExecutor:
+    """Headless opencode invocation.
+
+    opencode has no `--allowedTools`-style flag; permissions are configured
+    via the workspace's ``opencode.json`` (written by
+    ``OpencodeWorkspaceAdapter``). Headless runs honor that file directly,
+    so the sanctioned-channel discipline (allow ``opc`` + agent-specific
+    extras, deny everything else) lives in a single surface — cleaner than
+    Claude's two-surface settings.json + ``--allowedTools`` workaround.
+
+    We deliberately do NOT pass ``--dangerously-skip-permissions``: the
+    permission file is the enforcement surface, and bypassing it would
+    erase the per-prefix discipline that CLAUDE.md mandates.
+    """
+
+    def __init__(self, opencode_cli_path: str) -> None:
+        self._cli_path = opencode_cli_path
+
+    def run(
+        self,
+        workspace: Path,
+        prompt: str,
+        session_id: str | None = None,
+        timeout_seconds: int = 1800,
+        on_started: Callable[[int], None] | None = None,
+    ) -> ExecutorResult:
+        cmd = [
+            self._cli_path,
+            "run",
+            "--dir",
+            str(workspace),
+            "--format",
+            "json",
+            "--prompt",
+            prompt,
+        ]
+        return _run_command(
+            cmd,
+            workspace,
+            session_id,
+            timeout_seconds,
+            on_started=on_started,
+        )
+
+
 AgentExecutor = ClaudeExecutor

@@ -8,6 +8,7 @@ from src.config import Settings
 from src.orchestrator.workspace_adapters import (
     ClaudeWorkspaceAdapter,
     CodexWorkspaceAdapter,
+    OpencodeWorkspaceAdapter,
 )
 from src.runtime import RuntimeDir
 
@@ -20,12 +21,15 @@ class ContextBuilder:
         self._runtime = runtime
         self._claude = ClaudeWorkspaceAdapter(settings, runtime)
         self._codex = CodexWorkspaceAdapter(settings, runtime)
+        self._opencode = OpencodeWorkspaceAdapter(settings, runtime)
 
     def _adapter(self, provider: str = "claude"):
         if provider == "claude":
             return self._claude
         if provider == "codex":
             return self._codex
+        if provider == "opencode":
+            return self._opencode
         raise ValueError(f"unknown workspace provider: {provider}")
 
     def write_settings_json(self, workspace: Path, repo_names: list[str] | None = None) -> None:

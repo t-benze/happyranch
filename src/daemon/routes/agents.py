@@ -73,7 +73,7 @@ class ManageAgentBody(BaseModel):
     description: str | None = None
     system_prompt: str | None = None
     repos: dict[str, str] | None = None
-    executor: Literal["claude", "codex"] | None = None
+    executor: Literal["claude", "codex", "opencode"] | None = None
     allow_rules: list[str] | None = None
     target_team: str | None = None
 
