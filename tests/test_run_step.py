@@ -282,10 +282,15 @@ def test_run_step_invalid_delegate_fails_task(runtime, db, monkeypatch):
 def test_run_step_session_failure_cascades_to_parent_no_retry(
     runtime, db, monkeypatch,
 ):
-    """No-retry policy: when a delegated child fails, the parent must FAIL
-    too with a cascading note. The EH does not get another decision step —
-    the alternative (re-enqueueing the parent) has historically produced
-    runs of 6+ failed retries on the same brief (TASK-033..038, TASK-041..045).
+    """In-tree no-retry policy: when a delegated child fails, the parent
+    must FAIL too with a cascading note — the EH does not get another
+    decision step in the original lineage. (Re-enqueueing the parent has
+    historically produced runs of 6+ failed retries: TASK-033..045.)
+
+    The auto-revisit that fires alongside the cascade is a SEPARATE,
+    independent root, not a re-enqueue of the parent — so this test only
+    asserts the in-tree cascade behavior. See
+    test_run_step_opaque_failure_spawns_auto_revisit for the new tree.
     """
     import asyncio
     from src.orchestrator.orchestrator import Orchestrator
@@ -317,7 +322,13 @@ def test_run_step_session_failure_cascades_to_parent_no_retry(
     assert parent.block_kind is None
     assert "T-CHD" in (parent.note or "")
     assert "delegated child" in (parent.note or "")
-    assert q.qsize() == 0
+    # Queue holds the spawned auto-revisit root (NOT a re-enqueue of T-PAR).
+    assert q.qsize() == 1
+    revisit_id = q.get_nowait()
+    assert revisit_id != "T-PAR"
+    revisit = db.get_task(revisit_id)
+    assert revisit.parent_task_id is None
+    assert revisit.revisit_of_task_id == "T-PAR"
 
 
 def test_run_step_session_failure_cascades_up_chain(
@@ -354,7 +365,15 @@ def test_run_step_session_failure_cascades_up_chain(
     assert db.get_task("T-LEAF").status == TaskStatus.FAILED
     assert db.get_task("T-MID").status == TaskStatus.FAILED
     assert db.get_task("T-ROOT").status == TaskStatus.FAILED
-    assert orch._queue.qsize() == 0
+    # Cascade in-tree happens as before; the auto-revisit is a SEPARATE
+    # new root (queued once, predecessor=T-ROOT). Queue contains the new
+    # root only — no in-tree re-enqueues.
+    assert orch._queue.qsize() == 1
+    revisit_id = orch._queue.get_nowait()
+    assert revisit_id not in ("T-ROOT", "T-MID", "T-LEAF")
+    revisit = db.get_task(revisit_id)
+    assert revisit.parent_task_id is None
+    assert revisit.revisit_of_task_id == "T-ROOT"
 
 
 def test_run_step_session_failure_note_includes_diagnostics(
@@ -389,6 +408,243 @@ def test_run_step_session_failure_note_includes_diagnostics(
     assert "rc=0" in note
     assert "no completion callback" in note
     assert "wrote ExplorePage.tsx" in note
+
+
+def test_run_step_opaque_failure_spawns_auto_revisit_with_error_context(
+    runtime, db, monkeypatch,
+):
+    """On the 3 opaque failures, the orchestrator packs structured error
+    context and spawns a NEW root linked to the predecessor root via
+    revisit_of_task_id. The team manager owns the new root and can decide
+    what to do next."""
+    import asyncio
+    from src.orchestrator.executors import ExecutorResult
+    from src.orchestrator.orchestrator import Orchestrator
+
+    db.insert_task(TaskRecord(id="T-PAR", brief="parent brief",
+                              team="engineering",
+                              assigned_agent="engineering_head"))
+    db.update_task("T-PAR", status=TaskStatus.BLOCKED,
+                   block_kind=BlockKind.DELEGATED, note="waiting")
+    db.insert_task(TaskRecord(
+        id="T-CHD", brief="c", team="engineering",
+        assigned_agent="dev_agent", parent_task_id="T-PAR",
+    ))
+
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime,
+                        teams=TeamsRegistry.load(runtime))
+    orch._queue = asyncio.Queue()
+
+    failing_result = ExecutorResult(
+        success=True,  # rc=0 but no callback — TASK-045 class
+        duration_seconds=120,
+        session_id="sess-x",
+        returncode=0,
+        stdout_tail="wrote ExplorePage.tsx\n",
+        stderr_tail="",
+    )
+    monkeypatch.setattr(orch, "_run_agent",
+                        lambda *a, **k: (failing_result, None))
+
+    orch.run_step("T-CHD")
+
+    revisit_id = orch._queue.get_nowait()
+    revisit = db.get_task(revisit_id)
+    # New root inherits brief + team from the predecessor root.
+    assert revisit.brief == "parent brief"
+    assert revisit.team == "engineering"
+    assert revisit.assigned_agent == "engineering_head"
+    assert revisit.parent_task_id is None
+    assert revisit.revisit_of_task_id == "T-PAR"
+    assert revisit.status == TaskStatus.PENDING
+
+    # Audit on the new root carries the structured error context.
+    rows = db.get_audit_logs(revisit_id)
+    auto_entry = next(r for r in rows if r["action"] == "auto_revisit_of")
+    payload = auto_entry["payload"]
+    assert payload["predecessor_root"] == "T-PAR"
+    assert payload["failed_task"] == "T-CHD"
+    assert payload["failed_agent"] == "dev_agent"
+    assert payload["attempt"] == 1
+    err = payload["error_context"]
+    assert err["mode"] == "session_failure"
+    assert err["rc"] == 0
+    assert err["missing_callback"] is True
+    assert "wrote ExplorePage.tsx" in err["stdout_tail"]
+
+
+def test_run_step_opaque_failure_on_root_manager_spawns_auto_revisit(
+    runtime, db, monkeypatch,
+):
+    """Manager-level opaque failure (root task itself crashes) also
+    triggers auto-revisit. Predecessor is the failed root itself."""
+    import asyncio
+    from src.orchestrator.orchestrator import Orchestrator
+
+    db.insert_task(TaskRecord(id="T-ROOT", brief="root brief",
+                              team="engineering",
+                              assigned_agent="engineering_head"))
+
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime,
+                        teams=TeamsRegistry.load(runtime))
+    orch._queue = asyncio.Queue()
+
+    monkeypatch.setattr(orch, "_run_agent",
+                        lambda *a, **k: (_make_result(success=False), None))
+
+    orch.run_step("T-ROOT")
+
+    assert db.get_task("T-ROOT").status == TaskStatus.FAILED
+    revisit_id = orch._queue.get_nowait()
+    revisit = db.get_task(revisit_id)
+    assert revisit.revisit_of_task_id == "T-ROOT"
+    assert revisit.brief == "root brief"
+
+
+def test_run_step_opaque_failure_on_exception_spawns_auto_revisit(
+    runtime, db, monkeypatch,
+):
+    """Exception escaping _run_agent triggers auto-revisit with mode=exception."""
+    import asyncio
+    from src.orchestrator.orchestrator import Orchestrator
+
+    db.insert_task(TaskRecord(id="T-1", brief="x",
+                              assigned_agent="engineering_head"))
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime,
+                        teams=TeamsRegistry.load(runtime))
+    orch._queue = asyncio.Queue()
+
+    def boom(task_id, agent, prompt, on_session_started=None):
+        raise RuntimeError("workspace not initialized")
+
+    monkeypatch.setattr(orch, "_run_agent", boom)
+
+    orch.run_step("T-1")
+
+    revisit_id = orch._queue.get_nowait()
+    rows = db.get_audit_logs(revisit_id)
+    auto_entry = next(r for r in rows if r["action"] == "auto_revisit_of")
+    err = auto_entry["payload"]["error_context"]
+    assert err["mode"] == "exception"
+    assert "workspace not initialized" in err["detail"]
+
+
+def test_run_step_auto_revisit_capped_at_two(
+    runtime, db, monkeypatch,
+):
+    """After 2 prior auto-revisits in the chain, no more are spawned —
+    the cascade still runs but the queue stays empty."""
+    import asyncio
+    from src.orchestrator.orchestrator import Orchestrator
+
+    # Chain: T-ORIG <- T-AR1 (auto-revisit of T-ORIG) <- T-AR2 (auto of T-AR1)
+    # T-AR2 is the current task; if it fails, no more auto-revisits.
+    db.insert_task(TaskRecord(id="T-ORIG", brief="b",
+                              assigned_agent="engineering_head",
+                              status=TaskStatus.FAILED))
+    db.insert_task(TaskRecord(
+        id="T-AR1", brief="b", assigned_agent="engineering_head",
+        revisit_of_task_id="T-ORIG", status=TaskStatus.FAILED,
+    ))
+    db.insert_task(TaskRecord(
+        id="T-AR2", brief="b", assigned_agent="engineering_head",
+        revisit_of_task_id="T-AR1",
+    ))
+    # Mark T-AR1 and T-AR2 as auto-revisits in the audit log.
+    from src.infrastructure.audit_logger import AuditLogger
+    audit = AuditLogger(db)
+    audit.log_auto_revisit_of(
+        task_id="T-AR1", predecessor_root="T-ORIG",
+        failed_task="T-ORIG", failed_agent="engineering_head",
+        cascade=["T-ORIG"], error_context={"mode": "session_failure"},
+        attempt=1,
+    )
+    audit.log_auto_revisit_of(
+        task_id="T-AR2", predecessor_root="T-AR1",
+        failed_task="T-AR1", failed_agent="engineering_head",
+        cascade=["T-AR1"], error_context={"mode": "session_failure"},
+        attempt=2,
+    )
+
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime,
+                        teams=TeamsRegistry.load(runtime))
+    orch._queue = asyncio.Queue()
+    monkeypatch.setattr(orch, "_run_agent",
+                        lambda *a, **k: (_make_result(success=False), None))
+
+    orch.run_step("T-AR2")
+
+    # T-AR2 fails; no further auto-revisit is spawned.
+    assert db.get_task("T-AR2").status == TaskStatus.FAILED
+    assert orch._queue.qsize() == 0
+
+
+def test_run_step_self_blocked_does_not_spawn_auto_revisit(
+    runtime, db, monkeypatch,
+):
+    """Self-blocked is a deliberate agent decision — not an opaque failure.
+    No auto-revisit should be spawned."""
+    import asyncio
+    from src.orchestrator.orchestrator import Orchestrator
+
+    db.insert_task(TaskRecord(id="T-1", brief="x",
+                              assigned_agent="engineering_head"))
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime,
+                        teams=TeamsRegistry.load(runtime))
+    orch._queue = asyncio.Queue()
+
+    monkeypatch.setattr(orch, "_run_agent",
+                        lambda *a, **k: (_make_result(),
+                                         _make_report("blocked on prereq",
+                                                      status="blocked")))
+
+    orch.run_step("T-1")
+
+    assert db.get_task("T-1").status == TaskStatus.FAILED
+    assert orch._queue.qsize() == 0
+
+
+def test_run_step_auto_revisit_header_injected_on_first_step(
+    runtime, db, monkeypatch,
+):
+    """The team manager's first prompt on the auto-revisit root must
+    include AUTO-REVISIT CONTEXT with the structured error payload."""
+    import asyncio
+    from src.orchestrator.orchestrator import Orchestrator
+    from src.orchestrator.run_step import _build_agent_prompt
+
+    db.insert_task(TaskRecord(id="T-PAR", brief="parent brief",
+                              team="engineering",
+                              assigned_agent="engineering_head",
+                              status=TaskStatus.FAILED))
+    db.insert_task(TaskRecord(
+        id="T-NEW", brief="parent brief", team="engineering",
+        assigned_agent="engineering_head",
+        revisit_of_task_id="T-PAR",
+    ))
+    from src.infrastructure.audit_logger import AuditLogger
+    AuditLogger(db).log_auto_revisit_of(
+        task_id="T-NEW", predecessor_root="T-PAR",
+        failed_task="T-CHD", failed_agent="dev_agent",
+        cascade=["T-PAR", "T-CHD"],
+        error_context={
+            "mode": "session_failure", "rc": 0, "missing_callback": True,
+            "stderr_tail": "", "stdout_tail": "wrote files",
+            "executor_error": None,
+        },
+        attempt=1,
+    )
+
+    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime,
+                        teams=TeamsRegistry.load(runtime))
+    task = db.get_task("T-NEW")
+    prompt = _build_agent_prompt(orch, task, "engineering_head")
+    assert "AUTO-REVISIT CONTEXT" in prompt
+    assert "T-PAR" in prompt
+    assert "T-CHD" in prompt
+    assert "dev_agent" in prompt
+    assert "no completion callback" in prompt
+    assert "wrote files" in prompt
 
 
 def test_run_step_worker_self_blocked_fails_task(runtime, db, monkeypatch):
