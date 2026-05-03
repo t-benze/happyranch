@@ -1407,12 +1407,19 @@ def cmd_revisit(args: argparse.Namespace) -> None:
         print(f"Error: {exc}")
         sys.exit(1)
 
+    if args.session_timeout_seconds is not None and args.session_timeout_seconds <= 0:
+        print("Error: --session-timeout-seconds must be a positive integer")
+        sys.exit(1)
+
     slug = resolve_org_slug(
         args_org=args.org, available=_fetch_available_orgs(client),
     )
+    payload: dict = {"founder_note": note}
+    if args.session_timeout_seconds is not None:
+        payload["session_timeout_seconds"] = args.session_timeout_seconds
     r = client.post(
         f"/api/v1/orgs/{slug}/tasks/{args.task_id}/revisit",
-        json={"founder_note": note},
+        json=payload,
     )
     if r.status_code == 404:
         print(f"Task {args.task_id} not found.")
@@ -1904,6 +1911,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_revisit_note.add_argument(
         "--note-file", default=None,
         help="Path to a file whose contents become the founder note (mutually exclusive with --note)",
+    )
+    p_revisit.add_argument(
+        "--session-timeout-seconds", type=int, default=None, dest="session_timeout_seconds",
+        help=(
+            "Per-task subprocess timeout in seconds. Persisted on the new root and "
+            "inherited by every delegated child + auto-revisit. Omit to inherit from "
+            "the predecessor (which itself falls through to org/Settings)."
+        ),
     )
     p_revisit.set_defaults(func=cmd_revisit)
 

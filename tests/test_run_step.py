@@ -275,6 +275,41 @@ def test_run_step_delegate_spawns_child_and_blocks_self(
     assert q.get_nowait() == ("test", child_id)
 
 
+def test_run_step_delegate_inherits_session_timeout(runtime, db, monkeypatch):
+    """A delegated child copies the parent's session_timeout_seconds so a
+    revisit-time bump propagates down the whole lineage."""
+    import asyncio
+    import json
+    from src.orchestrator.orchestrator import Orchestrator
+
+    (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
+
+    db.insert_task(TaskRecord(
+        id="T-1", brief="root", assigned_agent="engineering_head",
+        session_timeout_seconds=7200,
+    ))
+    orch = Orchestrator(
+        db=db, settings=Settings(),
+        paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root),
+    )
+    orch._queue = _SlugQueue()
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(
+            output_summary=json.dumps({
+                "action": "delegate", "agent": "dev_agent", "prompt": "Do it",
+            }),
+        )
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    orch.run_step("T-1")
+
+    children = db.get_children("T-1")
+    assert len(children) == 1
+    child = db.get_task(children[0])
+    assert child.session_timeout_seconds == 7200
+
+
 def test_run_step_invalid_delegate_fails_task(runtime, db, monkeypatch):
     """A delegate with no agent name is unrecoverable — fail the task and
     notify the parent (which may itself be root — no-op in that case)."""

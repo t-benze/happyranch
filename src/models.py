@@ -51,6 +51,11 @@ class TaskRecord(BaseModel):
     final_artifact_dir: str | None = None
     orchestration_step_count: int = 0
     revision_count: int = 0
+    # Per-task override for the agent-session subprocess timeout (seconds).
+    # NULL → fall through to org/config.yaml, then Settings default. Set by
+    # `opc revisit --session-timeout-seconds`; inherited from parent on
+    # delegate, and from predecessor root on revisit.
+    session_timeout_seconds: int | None = None
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
     completed_at: datetime | None = None

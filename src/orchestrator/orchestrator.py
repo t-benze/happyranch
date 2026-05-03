@@ -32,7 +32,6 @@ from src.orchestrator.executors import (
 )
 from src.orchestrator.org_config import load_org_config
 from src.orchestrator.performance_tracker import PerformanceTracker
-from src.orchestrator.prompt_loader import load_agent
 from src.orchestrator.teams import TeamsRegistry
 
 logger = logging.getLogger(__name__)
@@ -109,18 +108,24 @@ class Orchestrator:
         cfg = load_agent_config(workspace)
         return cfg.get("executor") or "claude"
 
-    def _resolve_session_timeout(self, agent_name: str) -> int:
-        """Resolve the per-session timeout, walking agent -> org -> settings.
+    def _resolve_session_timeout(self, agent_name: str, task_id: str | None = None) -> int:
+        """Resolve the per-session timeout, walking task -> org -> settings.
 
-        Agent override lives in the AgentDef frontmatter
-        (`<runtime>/org/agents/<name>.md`). Org override lives in
-        `<runtime>/org/config.yaml`. Either being absent (or set to null)
-        falls through to the next layer; the global Settings default is
-        the final floor and is itself overridable via OPC_SESSION_TIMEOUT_SECONDS.
+        Per-task override lives on the `tasks` row's `session_timeout_seconds`
+        column — set by `opc revisit --session-timeout-seconds` and inherited
+        from parent on delegate / from predecessor root on revisit. Org
+        override lives in `<runtime>/org/config.yaml`. Either being absent
+        (or NULL) falls through to the next layer; the global Settings default
+        is the final floor and is itself overridable via OPC_SESSION_TIMEOUT_SECONDS.
+
+        ``agent_name`` is unused today but kept on the signature for callers
+        and future per-agent overrides we don't have a mechanism for yet.
         """
-        agent = load_agent(self._paths, agent_name)
-        if agent is not None and agent.session_timeout_seconds is not None:
-            return agent.session_timeout_seconds
+        del agent_name  # see docstring
+        if task_id is not None:
+            task = self._db.get_task(task_id)
+            if task is not None and task.session_timeout_seconds is not None:
+                return task.session_timeout_seconds
         org = load_org_config(self._paths)
         if org.session_timeout_seconds is not None:
             return org.session_timeout_seconds
@@ -357,7 +362,7 @@ class Orchestrator:
             workspace=workspace,
             prompt=full_prompt,
             session_id=session_id,
-            timeout_seconds=self._resolve_session_timeout(agent_name),
+            timeout_seconds=self._resolve_session_timeout(agent_name, task_id=task_id),
             on_started=_on_started,
         )
         self._audit.log_session_end(task_id, agent_name, result.duration_seconds)

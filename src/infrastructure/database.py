@@ -220,6 +220,11 @@ class Database:
             # is alive so `opc details` can show progress on long-running
             # tasks. Distinct from updated_at (which advances on any write).
             "ALTER TABLE tasks ADD COLUMN last_heartbeat TEXT",
+            # Per-task subprocess timeout override. NULL → resolver falls
+            # through to org/config.yaml then Settings default. Founder sets
+            # via `opc revisit --session-timeout-seconds`; inherited from
+            # parent on delegate and from predecessor root on revisit.
+            "ALTER TABLE tasks ADD COLUMN session_timeout_seconds INTEGER",
         ):
             try:
                 self._conn.execute(ddl)
@@ -317,6 +322,7 @@ class Database:
             task.block_kind.value if task.block_kind else None,
             task.note,
             task.orchestration_step_count,
+            task.session_timeout_seconds,
         )
         if self._tasks_has_legacy_type_column:
             # Legacy DBs (created before the Task-4 schema refactor) retain a
@@ -328,8 +334,8 @@ class Database:
                 """INSERT INTO tasks (id, type, status, assigned_agent, team, brief,
                    revision_count, created_at, updated_at, completed_at, parent_task_id,
                    revisit_of_task_id, dispatched_from_talk_id, block_kind, note,
-                   orchestration_step_count)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   orchestration_step_count, session_timeout_seconds)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (params[0], "general") + params[1:],
             )
         else:
@@ -337,8 +343,8 @@ class Database:
                 """INSERT INTO tasks (id, status, assigned_agent, team, brief,
                    revision_count, created_at, updated_at, completed_at, parent_task_id,
                    revisit_of_task_id, dispatched_from_talk_id, block_kind, note,
-                   orchestration_step_count)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   orchestration_step_count, session_timeout_seconds)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 params,
             )
         self._conn.commit()
@@ -368,6 +374,7 @@ class Database:
             final_artifact_dir=row["final_artifact_dir"],
             cancelled_at=row["cancelled_at"],
             last_heartbeat=row["last_heartbeat"],
+            session_timeout_seconds=row["session_timeout_seconds"],
         )
 
     @_synchronized
@@ -395,6 +402,7 @@ class Database:
                 final_artifact_dir=row["final_artifact_dir"],
                 cancelled_at=row["cancelled_at"],
                 last_heartbeat=row["last_heartbeat"],
+                session_timeout_seconds=row["session_timeout_seconds"],
             )
             for row in cursor.fetchall()
         ]
@@ -539,6 +547,7 @@ class Database:
                 final_artifact_dir=row["final_artifact_dir"],
                 cancelled_at=row["cancelled_at"],
                 last_heartbeat=row["last_heartbeat"],
+                session_timeout_seconds=row["session_timeout_seconds"],
             )
             for row in cursor.fetchall()
         ]

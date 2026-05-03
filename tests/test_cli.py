@@ -1669,7 +1669,13 @@ def test_cmd_revisit_submits_without_streaming_on_yes(capsys, monkeypatch):
     with patch("src.cli.OpcClient.from_env", return_value=fake), \
          patch("src.cli._fetch_available_orgs", return_value=["alpha"]), \
          patch("builtins.input", return_value="y"):
-        args = MagicMock(org=None, task_id="TASK-052", note="PR merged", note_file=None)
+        args = MagicMock(
+            org=None,
+            task_id="TASK-052",
+            note="PR merged",
+            note_file=None,
+            session_timeout_seconds=None,
+        )
         cmd_revisit(args)
 
     fake.post.assert_called_once_with(
@@ -1703,7 +1709,13 @@ def test_cmd_revisit_reads_note_from_file(tmp_path, capsys, monkeypatch):
     with patch("src.cli.OpcClient.from_env", return_value=fake), \
          patch("src.cli._fetch_available_orgs", return_value=["alpha"]), \
          patch("builtins.input", return_value="y"):
-        args = MagicMock(org=None, task_id="TASK-052", note=None, note_file=str(note_path))
+        args = MagicMock(
+            org=None,
+            task_id="TASK-052",
+            note=None,
+            note_file=str(note_path),
+            session_timeout_seconds=None,
+        )
         cmd_revisit(args)
 
     fake.post.assert_called_once_with(
