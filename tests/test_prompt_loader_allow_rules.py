@@ -4,10 +4,17 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.orchestrator import prompt_loader
+from src.orchestrator._paths import OrgPaths
 from src.runtime import RuntimeDir
 
 
-def _write(runtime: RuntimeDir, name: str, allow_rules: list[str]) -> None:
+def _make_paths(tmp_path: Path) -> OrgPaths:
+    rt = RuntimeDir.init(tmp_path / "rt")
+    return OrgPaths(root=rt.orgs_dir / "x")
+
+
+def _write(paths: OrgPaths, name: str, allow_rules: list[str]) -> None:
+    paths.agents_dir.mkdir(parents=True, exist_ok=True)
     rules_block = (
         "allow_rules: []\n" if not allow_rules
         else "allow_rules:\n" + "\n".join(f"  - {r!r}" for r in allow_rules) + "\n"
@@ -19,21 +26,21 @@ def _write(runtime: RuntimeDir, name: str, allow_rules: list[str]) -> None:
         "repos: {}\nenrolled_by: null\nenrolled_at_task: null\nenrolled_at: null\n"
         "---\n\nbody\n"
     )
-    (runtime.agents_dir / f"{name}.md").write_text(text)
+    (paths.agents_dir / f"{name}.md").write_text(text)
 
 
 def test_returns_empty_for_unknown_agent(tmp_path: Path) -> None:
-    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
-    assert prompt_loader.allow_rules_for_agent(rt, "ghost") == ()
+    paths = _make_paths(tmp_path)
+    assert prompt_loader.allow_rules_for_agent(paths, "ghost") == ()
 
 
 def test_returns_declared_rules(tmp_path: Path) -> None:
-    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
-    _write(rt, "eh", ["gh pr close", "gh issue close"])
-    assert prompt_loader.allow_rules_for_agent(rt, "eh") == ("gh pr close", "gh issue close")
+    paths = _make_paths(tmp_path)
+    _write(paths, "eh", ["gh pr close", "gh issue close"])
+    assert prompt_loader.allow_rules_for_agent(paths, "eh") == ("gh pr close", "gh issue close")
 
 
 def test_returns_empty_when_field_empty(tmp_path: Path) -> None:
-    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
-    _write(rt, "dev", [])
-    assert prompt_loader.allow_rules_for_agent(rt, "dev") == ()
+    paths = _make_paths(tmp_path)
+    _write(paths, "dev", [])
+    assert prompt_loader.allow_rules_for_agent(paths, "dev") == ()

@@ -13,8 +13,12 @@ fi
 TASK_ID=$(echo "$PROMPT" | awk -F': ' '/^[[:space:]]*task_id: /{gsub(/^[[:space:]]*/, "", $0); print $2; exit}')
 SESSION_ID=$(echo "$PROMPT" | awk -F': ' '/^[[:space:]]*session_id: /{gsub(/^[[:space:]]*/, "", $0); print $2; exit}')
 
+# Multi-org: the executor cwd is <runtime>/orgs/<slug>/workspaces/<agent>.
+ORG_PARENT="${PWD%/workspaces/*}"
+ORG_SLUG="${ORG_PARENT##*/}"
+
 if [[ -n "${FAKE_CODEX_PLAN:-}" && -f "$FAKE_CODEX_PLAN" ]]; then
-    bash "$FAKE_CODEX_PLAN" "$TASK_ID" "$SESSION_ID"
+    bash "$FAKE_CODEX_PLAN" "$TASK_ID" "$SESSION_ID" "$ORG_SLUG"
 fi
 
 exit 0

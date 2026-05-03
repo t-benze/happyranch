@@ -11,13 +11,15 @@ from src.orchestrator.executors import (
     ExecutorResult,
     OpencodeExecutor,
 )
+from src.orchestrator._paths import OrgPaths
 from src.runtime import RuntimeDir
 
 
 @pytest.fixture
-def runtime(tmp_path: Path) -> RuntimeDir:
-    """A minimal RuntimeDir with engineering_head.md pre-seeded."""
-    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
+def runtime(tmp_path: Path) -> OrgPaths:
+    """A minimal OrgPaths with engineering_head.md pre-seeded."""
+    rt = RuntimeDir.init(tmp_path / "rt")
+    paths = OrgPaths(root=rt.orgs_dir / "x")
     from src.orchestrator.agent_def import AgentDef, render_agent_text
     from datetime import datetime, timezone
     eh = AgentDef(
@@ -32,9 +34,9 @@ def runtime(tmp_path: Path) -> RuntimeDir:
         enrolled_at=datetime.now(timezone.utc),
         system_prompt="You are the Engineering Head.\n",
     )
-    rt.agents_dir.mkdir(parents=True, exist_ok=True)
-    (rt.agents_dir / "engineering_head.md").write_text(render_agent_text(eh))
-    return rt
+    paths.agents_dir.mkdir(parents=True, exist_ok=True)
+    (paths.agents_dir / "engineering_head.md").write_text(render_agent_text(eh))
+    return paths
 
 
 def _popen_mock(returncode: int = 0, stdout: str = "", stderr: str = "", pid: int = 4242):
@@ -52,7 +54,7 @@ def test_claude_executor_launches_with_current_semantics(mock_subprocess, tmp_pa
 
     mock_subprocess.Popen.return_value = _popen_mock(stdout="Agent output")
 
-    executor = ClaudeExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings(), runtime=runtime)
+    executor = ClaudeExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings(), paths=runtime)
     result = executor.run(
         workspace=workspace,
         prompt="Implement Alipay support",
@@ -88,7 +90,7 @@ def test_claude_executor_grants_engineering_head_gh_resolve_rules(
 
     mock_subprocess.Popen.return_value = _popen_mock(stdout="EH output")
 
-    executor = ClaudeExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings(), runtime=runtime)
+    executor = ClaudeExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings(), paths=runtime)
     executor.run(workspace=workspace, prompt="decide next step", timeout_seconds=30)
 
     cmd = mock_subprocess.Popen.call_args[0][0]
@@ -287,7 +289,7 @@ def test_run_invokes_on_started_with_pid(mock_subprocess, tmp_path, runtime):
 
     mock_subprocess.Popen.return_value = _popen_mock(pid=9123)
 
-    executor = AgentExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings(), runtime=runtime)
+    executor = AgentExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings(), paths=runtime)
     received: list[int] = []
     executor.run(
         workspace=workspace,
@@ -318,7 +320,7 @@ def test_claude_executor_populates_returncode_and_stdout_tail_on_success(
         returncode=0, stdout="wrote ExplorePage.tsx\nbuild ok\n", stderr="",
     )
 
-    executor = ClaudeExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings(), runtime=runtime)
+    executor = ClaudeExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings(), paths=runtime)
     result = executor.run(workspace=workspace, prompt="x", timeout_seconds=30)
 
     assert result.success is True

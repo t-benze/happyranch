@@ -12,8 +12,8 @@ import asyncio
 from src.config import Settings
 from src.infrastructure.database import Database
 from src.models import NextStep, TaskRecord, TaskStatus
+from src.orchestrator._paths import OrgPaths
 from src.orchestrator.orchestrator import Orchestrator
-from src.runtime import RuntimeDir
 from tests.orchestrator.conftest import ScriptedRunAgent, run_task_to_completion
 
 
@@ -21,23 +21,32 @@ from tests.orchestrator.conftest import ScriptedRunAgent, run_task_to_completion
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_orch(runtime: RuntimeDir, db: Database) -> Orchestrator:
+def _make_orch(paths: OrgPaths, db: Database) -> Orchestrator:
     """Build an Orchestrator with a real async queue (needed by _enqueue_parent_if_waiting)."""
     from src.orchestrator.teams import TeamsRegistry
+
+    class _SlugQueue:
+        """Adapter so put_nowait(slug, task_id) works against a stdlib asyncio.Queue."""
+        def __init__(self) -> None:
+            self._q: asyncio.Queue = asyncio.Queue()
+        def put_nowait(self, slug: str, task_id: str) -> None:
+            self._q.put_nowait((slug, task_id))
+
     orch = Orchestrator(
         db=db,
         settings=Settings(max_orchestration_steps=15),
-        runtime=runtime,
-        teams=TeamsRegistry.load(runtime),
+        paths=paths,
+        slug="test",
+        teams=TeamsRegistry.load(paths.root),
     )
-    orch._queue = asyncio.Queue()
+    orch._queue = _SlugQueue()
     return orch
 
 
-def _seed_workspaces(runtime: RuntimeDir) -> None:
+def _seed_workspaces(paths: OrgPaths) -> None:
     """Create the minimal workspace directories that run_step checks exist."""
     for agent in ("content_manager", "content_writer", "content_qa"):
-        (runtime.workspaces_dir / agent).mkdir(parents=True, exist_ok=True)
+        (paths.workspaces_dir / agent).mkdir(parents=True, exist_ok=True)
 
 
 def _seed_task(db: Database, task_id: str = "TASK-C1") -> str:
@@ -55,10 +64,10 @@ def _seed_task(db: Database, task_id: str = "TASK-C1") -> str:
 # Tests
 # ---------------------------------------------------------------------------
 
-def test_pass_path_completes_task(runtime: RuntimeDir, db: Database, monkeypatch) -> None:
+def test_pass_path_completes_task(paths: OrgPaths, db: Database, monkeypatch) -> None:
     """Happy path: CM → writer → QA(PASS) → CM done → task COMPLETED."""
-    _seed_workspaces(runtime)
-    orch = _make_orch(runtime, db)
+    _seed_workspaces(paths)
+    orch = _make_orch(paths, db)
     tid = _seed_task(db)
 
     scripted = ScriptedRunAgent()
@@ -100,15 +109,15 @@ def test_pass_path_completes_task(runtime: RuntimeDir, db: Database, monkeypatch
     assert task.status == TaskStatus.COMPLETED, f"expected COMPLETED, got {task.status} (note={task.note!r})"
 
 
-def test_revise_path_bumps_revision_count(runtime: RuntimeDir, db: Database, monkeypatch) -> None:
+def test_revise_path_bumps_revision_count(paths: OrgPaths, db: Database, monkeypatch) -> None:
     """REVISE path: one QA rejection cycle; final PASS; revision_count == 1.
 
     The cycle is W1 → Q1 → W2 (revision) → Q2 (re-review). Only the W2
     re-delegation is a revision — the Q2 re-review must not also bump the
     counter (regression guard for the over-counting bug fixed alongside
     this test)."""
-    _seed_workspaces(runtime)
-    orch = _make_orch(runtime, db)
+    _seed_workspaces(paths)
+    orch = _make_orch(paths, db)
     tid = _seed_task(db)
 
     scripted = ScriptedRunAgent()
@@ -164,10 +173,10 @@ def test_revise_path_bumps_revision_count(runtime: RuntimeDir, db: Database, mon
     )
 
 
-def test_reject_path_escalates(runtime: RuntimeDir, db: Database, monkeypatch) -> None:
+def test_reject_path_escalates(paths: OrgPaths, db: Database, monkeypatch) -> None:
     """REJECT path: QA rejects → CM escalates → task ends BLOCKED(ESCALATED)."""
-    _seed_workspaces(runtime)
-    orch = _make_orch(runtime, db)
+    _seed_workspaces(paths)
+    orch = _make_orch(paths, db)
     tid = _seed_task(db)
 
     scripted = ScriptedRunAgent()

@@ -4,13 +4,14 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 _log = logging.getLogger(__name__)
 
 from src.daemon.auth import require_token
-from src.daemon.state import DaemonState
+from src.daemon.org_state import OrgState
+from src.daemon.routes._org_dep import OrgDep
 from src.infrastructure.kb_store import (
     InvalidEntry,
     InvalidSlug,
@@ -23,28 +24,18 @@ from src.infrastructure.kb_store import (
 router = APIRouter(dependencies=[require_token()])
 
 
-def _require_active(state: DaemonState) -> DaemonState:
-    if state.is_idle:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "no_active_runtime"},
-        )
-    return state
-
-
-def _store(state: DaemonState) -> KBStore:
-    assert state.runtime is not None
-    return KBStore(state.runtime.root / "kb")
+def _store(org: OrgState) -> KBStore:
+    return KBStore(org.root / "kb")
 
 
 @router.get("/kb")
 def list_kb(
-    request: Request,
+    slug: str,
+    org: OrgDep,
     topic: Optional[str] = None,
     type: Optional[str] = None,  # noqa: A002
 ) -> dict:
-    state: DaemonState = _require_active(request.app.state.daemon)
-    summaries = _store(state).list_entries(topic=topic, type=type)
+    summaries = _store(org).list_entries(topic=topic, type=type)
     return {
         "entries": [
             {
@@ -61,9 +52,8 @@ def list_kb(
 
 
 @router.get("/kb/search")
-def search_kb(request: Request, q: str, limit: int = 20) -> dict:
-    state: DaemonState = _require_active(request.app.state.daemon)
-    hits = _store(state).search(q, limit=limit)
+def search_kb(slug: str, org: OrgDep, q: str, limit: int = 20) -> dict:
+    hits = _store(org).search(q, limit=limit)
     return {
         "hits": [
             {"slug": h.slug, "title": h.title, "snippet": h.snippet, "score": h.score}
@@ -72,14 +62,13 @@ def search_kb(request: Request, q: str, limit: int = 20) -> dict:
     }
 
 
-@router.get("/kb/{slug}")
-def get_kb(slug: str, request: Request) -> dict:
-    state: DaemonState = _require_active(request.app.state.daemon)
+@router.get("/kb/{entry_slug}")
+def get_kb(slug: str, entry_slug: str, org: OrgDep) -> dict:
     try:
-        entry = _store(state).read_entry(slug)
+        entry = _store(org).read_entry(entry_slug)
     except NotFound:
         raise HTTPException(
-            status_code=404, detail={"code": "not_found", "slug": slug}
+            status_code=404, detail={"code": "not_found", "slug": entry_slug}
         )
     return {
         "slug": entry.slug,
@@ -129,9 +118,9 @@ def _raise_invalid_entry(exc: InvalidEntry) -> None:
 
 
 def _kb_write(
-    state: DaemonState, entry: KBEntry, agent: str, force_new_sibling: bool
+    org: OrgState, entry: KBEntry, agent: str, force_new_sibling: bool
 ) -> KBEntry:
-    store = _store(state)
+    store = _store(org)
     try:
         store.validate_slug(entry.slug)
     except InvalidSlug as exc:
@@ -173,8 +162,7 @@ def _kb_write(
 
 
 @router.post("/kb")
-async def add_kb(body: KBAddBody, request: Request) -> dict:
-    state: DaemonState = _require_active(request.app.state.daemon)
+async def add_kb(slug: str, body: KBAddBody, org: OrgDep) -> dict:
     entry = KBEntry(
         slug=body.slug,
         title=body.title,
@@ -185,16 +173,15 @@ async def add_kb(body: KBAddBody, request: Request) -> dict:
         source_task=body.source_task,
         supersedes=body.supersedes,
     )
-    async with state.kb_lock:
-        written = _kb_write(state, entry, agent=body.agent, force_new_sibling=body.force_new_sibling)
+    async with org.kb_lock:
+        written = _kb_write(org, entry, agent=body.agent, force_new_sibling=body.force_new_sibling)
     return {"slug": written.slug, "updated_at": written.updated_at}
 
 
 @router.post("/kb/reindex")
-async def reindex_kb(request: Request) -> dict:
-    state: DaemonState = _require_active(request.app.state.daemon)
-    async with state.kb_lock:
-        _store(state).regenerate_index()
+async def reindex_kb(slug: str, org: OrgDep) -> dict:
+    async with org.kb_lock:
+        _store(org).regenerate_index()
     return {"ok": True}
 
 
@@ -207,8 +194,7 @@ class KBPrecedentBody(BaseModel):
 
 
 @router.post("/kb/precedent")
-async def precedent_kb(body: KBPrecedentBody, request: Request) -> dict:
-    state: DaemonState = _require_active(request.app.state.daemon)
+async def precedent_kb(slug: str, body: KBPrecedentBody, org: OrgDep) -> dict:
     # Founder-only per spec §4.6. `as_founder` is intent, not identity —
     # real auth awaits the Feishu integration (blueprint step 10).
     if not body.as_founder:
@@ -220,7 +206,7 @@ async def precedent_kb(body: KBPrecedentBody, request: Request) -> dict:
         raise HTTPException(status_code=400, detail={"code": "invalid_decision"})
     if not body.rationale.strip():
         raise HTTPException(status_code=400, detail={"code": "rationale_required"})
-    task = state.db.get_task(body.task_id)
+    task = org.db.get_task(body.task_id)
     if task is None:
         raise HTTPException(
             status_code=404,
@@ -228,7 +214,7 @@ async def precedent_kb(body: KBPrecedentBody, request: Request) -> dict:
         )
 
     escalation_rows = [
-        r for r in state.db.get_audit_logs(body.task_id) if r["action"] == "escalation"
+        r for r in org.db.get_audit_logs(body.task_id) if r["action"] == "escalation"
     ]
     if not escalation_rows:
         raise HTTPException(
@@ -237,7 +223,7 @@ async def precedent_kb(body: KBPrecedentBody, request: Request) -> dict:
     escalation_reason = escalation_rows[-1]["payload"].get("reason", "")
 
     default_slug = f"precedent-{body.task_id.lower().replace('_', '-')}-{body.decision}"
-    slug = body.slug or default_slug
+    entry_slug = body.slug or default_slug
     topic = task.team
     title = f"{task.brief} — {body.decision}"
     entry_body = (
@@ -250,7 +236,7 @@ async def precedent_kb(body: KBPrecedentBody, request: Request) -> dict:
         f"## Rationale\n\n{body.rationale}\n"
     )
     entry = KBEntry(
-        slug=slug,
+        slug=entry_slug,
         title=title,
         type="precedent",
         topic=topic,
@@ -261,17 +247,16 @@ async def precedent_kb(body: KBPrecedentBody, request: Request) -> dict:
         founder_decision=body.decision,
         founder_rationale=body.rationale,
     )
-    async with state.kb_lock:
-        written = _kb_write(state, entry, agent="founder", force_new_sibling=True)
+    async with org.kb_lock:
+        written = _kb_write(org, entry, agent="founder", force_new_sibling=True)
     return {"slug": written.slug, "task_id": body.task_id}
 
 
-@router.post("/kb/{slug}")
-async def update_kb(slug: str, body: KBUpdateBody, request: Request) -> dict:
-    state: DaemonState = _require_active(request.app.state.daemon)
-    if body.slug != slug:
+@router.post("/kb/{entry_slug}")
+async def update_kb(slug: str, entry_slug: str, body: KBUpdateBody, org: OrgDep) -> dict:
+    if body.slug != entry_slug:
         raise HTTPException(status_code=400, detail={"code": "slug_mismatch"})
-    store = _store(state)
+    store = _store(org)
     entry = KBEntry(
         slug=body.slug,
         title=body.title,
@@ -282,7 +267,7 @@ async def update_kb(slug: str, body: KBUpdateBody, request: Request) -> dict:
         source_task=body.source_task,
         supersedes=body.supersedes,
     )
-    async with state.kb_lock:
+    async with org.kb_lock:
         try:
             store.validate_slug(entry.slug)
         except InvalidSlug as exc:
@@ -290,7 +275,7 @@ async def update_kb(slug: str, body: KBUpdateBody, request: Request) -> dict:
         try:
             updated = store.update_entry(entry, agent=body.agent)
         except NotFound:
-            raise HTTPException(status_code=404, detail={"code": "not_found", "slug": slug})
+            raise HTTPException(status_code=404, detail={"code": "not_found", "slug": entry_slug})
         except InvalidEntry as exc:
             _raise_invalid_entry(exc)
         try:
@@ -300,30 +285,30 @@ async def update_kb(slug: str, body: KBUpdateBody, request: Request) -> dict:
     return {"slug": updated.slug, "updated_at": updated.updated_at, "updated_by": updated.updated_by}
 
 
-@router.delete("/kb/{slug}")
+@router.delete("/kb/{entry_slug}")
 async def delete_kb(
     slug: str,
-    request: Request,
+    entry_slug: str,
+    org: OrgDep,
     agent: str,
     confirm: bool = False,
     as_founder: bool = False,
 ) -> dict:
-    state: DaemonState = _require_active(request.app.state.daemon)
-    if not as_founder and (state.teams is None or not state.teams.is_team_manager(agent)):
+    if not as_founder and (org.teams is None or not org.teams.is_team_manager(agent)):
         raise HTTPException(
             status_code=403,
             detail={"code": "delete_forbidden", "required": "team_manager"},
         )
     if not confirm:
         raise HTTPException(status_code=400, detail={"code": "confirm_required"})
-    store = _store(state)
-    async with state.kb_lock:
+    store = _store(org)
+    async with org.kb_lock:
         try:
-            store.delete_entry(slug)
+            store.delete_entry(entry_slug)
         except NotFound:
-            raise HTTPException(status_code=404, detail={"code": "not_found", "slug": slug})
+            raise HTTPException(status_code=404, detail={"code": "not_found", "slug": entry_slug})
         try:
             store.regenerate_index()
         except Exception:  # noqa: BLE001 — regen is non-fatal per spec §6.3
             _log.warning("kb _index.md regeneration failed after write", exc_info=True)
-    return {"ok": True, "slug": slug}
+    return {"ok": True, "slug": entry_slug}

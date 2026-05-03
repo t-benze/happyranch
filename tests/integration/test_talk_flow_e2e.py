@@ -29,7 +29,7 @@ def _auth_headers() -> dict:
 
 
 def _base(port: str) -> str:
-    return f"http://127.0.0.1:{port}/api/v1"
+    return f"http://127.0.0.1:{port}/api/v1/orgs/test"
 
 
 def test_full_talk_lifecycle(live_daemon, runtime: Path) -> None:

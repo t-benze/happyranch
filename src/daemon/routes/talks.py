@@ -3,10 +3,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from src.daemon.auth import require_token
+from src.daemon.org_state import OrgState
+from src.daemon.routes._org_dep import OrgDep
 from src.daemon.routes.agents import _append_to_learnings_file
 from src.daemon.runner import enqueue_task
 from src.daemon.state import DaemonState
@@ -15,22 +17,13 @@ from src.infrastructure.kb_store import KBStore
 from src.infrastructure.talk_store import TalkStore
 from src.models import TalkRecord, TalkStatus, TaskRecord
 from src.orchestrator import prompt_loader
+from src.orchestrator._paths import OrgPaths
 
 router = APIRouter(dependencies=[require_token()])
 
 
-def _require_active(state: DaemonState) -> DaemonState:
-    if state.is_idle:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "no_active_runtime"},
-        )
-    return state
-
-
-def _store(state: DaemonState) -> TalkStore:
-    assert state.runtime is not None
-    return TalkStore(state.runtime.root / "talks")
+def _store(org: OrgState) -> TalkStore:
+    return TalkStore(org.root / "talks")
 
 
 class StartTalkBody(BaseModel):
@@ -38,10 +31,9 @@ class StartTalkBody(BaseModel):
 
 
 @router.post("/talks")
-async def start_talk(body: StartTalkBody, request: Request) -> dict:
-    state: DaemonState = _require_active(request.app.state.daemon)
-    async with state.db_lock:
-        existing = state.db.list_open_talks_for_agent(body.agent_name)
+async def start_talk(slug: str, body: StartTalkBody, org: OrgDep) -> dict:
+    async with org.db_lock:
+        existing = org.db.list_open_talks_for_agent(body.agent_name)
         if existing:
             prior = existing[0]
             raise HTTPException(
@@ -52,11 +44,11 @@ async def start_talk(body: StartTalkBody, request: Request) -> dict:
                     "prior_started_at": prior.started_at.isoformat(),
                 },
             )
-        talk_id = state.db.next_talk_id()
+        talk_id = org.db.next_talk_id()
         talk = TalkRecord(id=talk_id, agent_name=body.agent_name)
-        state.db.insert_talk(talk)
-    AuditLogger(state.db).log_talk_started(talk_id, body.agent_name, resumed_from=None)
-    stored = state.db.get_talk(talk_id)
+        org.db.insert_talk(talk)
+    AuditLogger(org.db).log_talk_started(talk_id, body.agent_name, resumed_from=None)
+    stored = org.db.get_talk(talk_id)
     return {
         "talk_id": talk_id,
         "started_at": stored.started_at.isoformat(),
@@ -107,10 +99,9 @@ class DispatchBody(BaseModel):
 
 
 @router.post("/talks/{talk_id}/resume")
-async def resume_talk(talk_id: str, request: Request) -> dict:
-    state: DaemonState = _require_active(request.app.state.daemon)
-    async with state.db_lock:
-        talk = state.db.get_talk(talk_id)
+async def resume_talk(slug: str, talk_id: str, org: OrgDep) -> dict:
+    async with org.db_lock:
+        talk = org.db.get_talk(talk_id)
         if talk is None:
             raise HTTPException(status_code=404, detail={"code": "not_found", "talk_id": talk_id})
         if talk.status != TalkStatus.OPEN:
@@ -118,7 +109,7 @@ async def resume_talk(talk_id: str, request: Request) -> dict:
                 status_code=400,
                 detail={"code": "talk_not_open", "status": talk.status.value},
             )
-    AuditLogger(state.db).log_talk_resumed(talk_id, talk.agent_name)
+    AuditLogger(org.db).log_talk_resumed(talk_id, talk.agent_name)
     return {
         "talk_id": talk_id,
         "started_at": talk.started_at.isoformat(),
@@ -126,10 +117,9 @@ async def resume_talk(talk_id: str, request: Request) -> dict:
 
 
 @router.post("/talks/{talk_id}/abandon")
-async def abandon_talk(talk_id: str, body: AbandonBody, request: Request) -> dict:
-    state: DaemonState = _require_active(request.app.state.daemon)
-    async with state.db_lock:
-        talk = state.db.get_talk(talk_id)
+async def abandon_talk(slug: str, talk_id: str, body: AbandonBody, org: OrgDep) -> dict:
+    async with org.db_lock:
+        talk = org.db.get_talk(talk_id)
         if talk is None:
             raise HTTPException(status_code=404, detail={"code": "not_found", "talk_id": talk_id})
         if talk.status != TalkStatus.OPEN:
@@ -137,16 +127,15 @@ async def abandon_talk(talk_id: str, body: AbandonBody, request: Request) -> dic
                 status_code=400,
                 detail={"code": "talk_not_open", "status": talk.status.value},
             )
-        state.db.update_talk(talk_id, status=TalkStatus.ABANDONED)
-    AuditLogger(state.db).log_talk_abandoned(talk_id, talk.agent_name, reason=body.reason)
+        org.db.update_talk(talk_id, status=TalkStatus.ABANDONED)
+    AuditLogger(org.db).log_talk_abandoned(talk_id, talk.agent_name, reason=body.reason)
     return {"talk_id": talk_id, "status": "abandoned"}
 
 
 @router.post("/talks/{talk_id}/end")
-async def end_talk(talk_id: str, body: EndTalkBody, request: Request) -> dict:
-    state: DaemonState = _require_active(request.app.state.daemon)
-    async with state.db_lock:
-        talk = state.db.get_talk(talk_id)
+async def end_talk(slug: str, talk_id: str, body: EndTalkBody, org: OrgDep) -> dict:
+    async with org.db_lock:
+        talk = org.db.get_talk(talk_id)
         if talk is None:
             raise HTTPException(status_code=404, detail={"code": "not_found", "talk_id": talk_id})
         if talk.status != TalkStatus.OPEN:
@@ -155,15 +144,15 @@ async def end_talk(talk_id: str, body: EndTalkBody, request: Request) -> dict:
                 detail={"code": "talk_not_open", "status": talk.status.value},
             )
         # Validate kb_slugs — every claimed slug must exist in the KB.
-        kb_store = KBStore(state.runtime.root / "kb")
-        for slug in body.kb_slugs:
-            if not kb_store.path_for(slug).exists():
+        kb_store = KBStore(org.root / "kb")
+        for kb_slug in body.kb_slugs:
+            if not kb_store.path_for(kb_slug).exists():
                 raise HTTPException(
                     status_code=400,
-                    detail={"code": "unknown_kb_slug", "slug": slug},
+                    detail={"code": "unknown_kb_slug", "slug": kb_slug},
                 )
         now_iso = datetime.now(timezone.utc).isoformat()
-        transcript_path = _store(state).write_transcript(
+        transcript_path = _store(org).write_transcript(
             talk_id=talk_id,
             agent_name=talk.agent_name,
             started_at=talk.started_at.isoformat(),
@@ -176,10 +165,10 @@ async def end_talk(talk_id: str, body: EndTalkBody, request: Request) -> dict:
         )
         # Append learnings to the agent's learnings.md — same helper the
         # /agents/{name}/learnings route uses, minus the session guard.
-        learnings_path = state.runtime.workspaces_dir / talk.agent_name / "learnings.md"
+        learnings_path = org.root / "workspaces" / talk.agent_name / "learnings.md"
         for entry in body.learnings:
             _append_to_learnings_file(learnings_path, talk.agent_name, entry.text)
-        state.db.update_talk(
+        org.db.update_talk(
             talk_id,
             status=TalkStatus.CLOSED,
             summary=body.summary,
@@ -189,7 +178,7 @@ async def end_talk(talk_id: str, body: EndTalkBody, request: Request) -> dict:
             transcript_path=str(transcript_path),
             ended_at=now_iso,
         )
-    AuditLogger(state.db).log_talk_ended(
+    AuditLogger(org.db).log_talk_ended(
         talk_id,
         talk.agent_name,
         new_learnings_count=len(body.learnings),
@@ -205,26 +194,25 @@ async def end_talk(talk_id: str, body: EndTalkBody, request: Request) -> dict:
 
 @router.get("/talks")
 def list_talks(
-    request: Request,
+    slug: str,
+    org: OrgDep,
     agent: str | None = None,
     status: str | None = None,
     limit: int = 50,
 ) -> dict:
-    state: DaemonState = _require_active(request.app.state.daemon)
-    rows = state.db.list_talks(agent=agent, status=status, limit=limit)
+    rows = org.db.list_talks(agent=agent, status=status, limit=limit)
     return {"talks": [_talk_to_dict(t) for t in rows]}
 
 
 @router.get("/talks/{talk_id}")
-def get_talk(talk_id: str, request: Request) -> dict:
-    state: DaemonState = _require_active(request.app.state.daemon)
-    talk = state.db.get_talk(talk_id)
+def get_talk(slug: str, talk_id: str, org: OrgDep) -> dict:
+    talk = org.db.get_talk(talk_id)
     if talk is None:
         raise HTTPException(status_code=404, detail={"code": "not_found", "talk_id": talk_id})
     transcript = None
     if talk.status == TalkStatus.CLOSED and talk.transcript_path:
         try:
-            content = _store(state).read_transcript(talk_id)
+            content = _store(org).read_transcript(talk_id)
             if len(content.encode("utf-8")) <= _INLINE_TRANSCRIPT_MAX_BYTES:
                 transcript = content
             # else: caller follows transcript_path directly — spec §11.
@@ -234,11 +222,13 @@ def get_talk(talk_id: str, request: Request) -> dict:
 
 
 @router.post("/talks/{talk_id}/dispatch")
-async def dispatch_task(talk_id: str, body: DispatchBody, request: Request) -> dict:
-    state: DaemonState = _require_active(request.app.state.daemon)
+async def dispatch_task(
+    slug: str, talk_id: str, body: DispatchBody, org: OrgDep, request: Request
+) -> dict:
+    state: DaemonState = request.app.state.daemon
 
     # 1. Talk exists + open.
-    talk = state.db.get_talk(talk_id)
+    talk = org.db.get_talk(talk_id)
     if talk is None:
         raise HTTPException(status_code=404, detail={"code": "not_found", "talk_id": talk_id})
     if talk.status != TalkStatus.OPEN:
@@ -259,18 +249,18 @@ async def dispatch_task(talk_id: str, body: DispatchBody, request: Request) -> d
         raise HTTPException(status_code=422, detail={"code": "empty_target_agent"})
 
     # 2c. Teams registry must be available for role/membership checks.
-    if state.teams is None:
+    if org.teams is None:
         raise HTTPException(status_code=403, detail={"code": "teams_registry_unavailable"})
 
     # 3. Resolve dispatcher's team. 4. Forbid cross-team. 5. Role-based assignment.
     # All three steps read the teams registry — hold teams_lock so a concurrent
     # manage-agent mutation cannot tear membership reads.
     dispatcher = talk.agent_name
-    async with state.teams_lock:
-        is_manager = state.teams.is_team_manager(dispatcher)
+    async with org.teams_lock:
+        is_manager = org.teams.is_team_manager(dispatcher)
         dispatcher_team = (
-            state.teams.team_for_manager(dispatcher) if is_manager
-            else state.teams.team_for_agent(dispatcher)
+            org.teams.team_for_manager(dispatcher) if is_manager
+            else org.teams.team_for_agent(dispatcher)
         )
         if dispatcher_team is None:
             raise HTTPException(
@@ -302,7 +292,7 @@ async def dispatch_task(talk_id: str, body: DispatchBody, request: Request) -> d
                 },
             )
         if is_manager:
-            team_meta = state.teams.manager_for_team(dispatcher_team)
+            team_meta = org.teams.manager_for_team(dispatcher_team)
             in_team = (
                 effective_target == team_meta.name
                 or effective_target in team_meta.workers
@@ -318,8 +308,8 @@ async def dispatch_task(talk_id: str, body: DispatchBody, request: Request) -> d
                 )
 
     # 6. Target agent is active (file under <runtime>/org/agents/) AND has a workspace.
-    agent_def = prompt_loader.load_agent(state.runtime, effective_target)
-    workspace_exists = (state.runtime.workspaces_dir / effective_target).exists()
+    agent_def = prompt_loader.load_agent(OrgPaths(root=org.root), effective_target)
+    workspace_exists = (org.root / "workspaces" / effective_target).exists()
     if agent_def is None or not workspace_exists:
         raise HTTPException(
             status_code=404,
@@ -327,16 +317,16 @@ async def dispatch_task(talk_id: str, body: DispatchBody, request: Request) -> d
         )
 
     # 7. Insert + audit + enqueue.
-    async with state.db_lock:
-        task_id = state.db.next_task_id()
-        state.db.insert_task(TaskRecord(
+    async with org.db_lock:
+        task_id = org.db.next_task_id()
+        org.db.insert_task(TaskRecord(
             id=task_id,
             brief=brief,
             team=effective_team,
             assigned_agent=effective_target,
             dispatched_from_talk_id=talk_id,
         ))
-        AuditLogger(state.db).log_task_dispatched(
+        AuditLogger(org.db).log_task_dispatched(
             task_id=task_id,
             talk_id=talk_id,
             dispatcher_agent=dispatcher,
@@ -345,7 +335,7 @@ async def dispatch_task(talk_id: str, body: DispatchBody, request: Request) -> d
             team=effective_team,
         )
 
-    enqueue_task(state, task_id)
+    enqueue_task(state, org.slug, task_id)
 
     return {
         "task_id": task_id,

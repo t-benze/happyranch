@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 import yaml
 
-from src.runtime import RuntimeDir
+from src.orchestrator._paths import OrgPaths
 
 
 class OrgConfigError(ValueError):
@@ -22,13 +22,13 @@ class OrgConfig:
     session_timeout_seconds: int | None = None
 
 
-def load_org_config(runtime: RuntimeDir) -> OrgConfig:
+def load_org_config(paths: OrgPaths) -> OrgConfig:
     """Load <runtime>/org/config.yaml. Missing file -> empty OrgConfig.
 
     Validates types and ranges; does not fall back to defaults — callers
     layer this on top of Settings.
     """
-    path = runtime.org_config_path
+    path = paths.org_config_path
     if not path.exists():
         return OrgConfig()
 

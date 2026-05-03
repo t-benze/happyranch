@@ -1,132 +1,92 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Iterator
 
 import yaml
 
+_RESERVED_ORG_SLUGS = frozenset({"_pending", "_archive"})
+_SLUG_RE = re.compile(r"^[a-z0-9-]{1,40}$")
+
 
 class RuntimeDir:
-    """Value object representing a self-describing OPC runtime folder.
+    """A multi-org runtime container.
 
-    The presence of an ``opc.yaml`` marker file distinguishes a valid
-    runtime directory from an arbitrary path. The marker file carries the
-    runtime's slug, creation timestamp, and schema version.
+    The container itself has no slug — orgs live under ``orgs/<slug>/`` and
+    each org's slug is its directory name. The container's ``opc.yaml``
+    marker only carries ``schema_version: 2`` and ``type: multi-org-runtime``.
     """
 
     def __init__(self, path: Path) -> None:
         self._path = path.resolve()
-        self._cached_slug: str | None = None
-
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
 
     @property
     def root(self) -> Path:
         return self._path
 
     @property
-    def db_path(self) -> Path:
-        return self._path / "opc.db"
-
-    @property
-    def workspaces_dir(self) -> Path:
-        return self._path / "workspaces"
-
-    @property
     def marker_file(self) -> Path:
         return self._path / "opc.yaml"
 
     @property
-    def org_dir(self) -> Path:
-        return self._path / "org"
-
-    @property
-    def agents_dir(self) -> Path:
-        return self.org_dir / "agents"
-
-    @property
-    def pending_agents_dir(self) -> Path:
-        return self.agents_dir / "_pending"
-
-    @property
-    def teams_config_path(self) -> Path:
-        return self.org_dir / "teams.yaml"
-
-    @property
-    def org_config_path(self) -> Path:
-        return self.org_dir / "config.yaml"
-
-    @property
-    def slug(self) -> str:
-        if self._cached_slug is not None:
-            return self._cached_slug
-        if not self.marker_file.exists():
-            raise ValueError(f"{self.marker_file} missing")
-        data = yaml.safe_load(self.marker_file.read_text()) or {}
-        slug = data.get("slug")
-        if not isinstance(slug, str) or not slug:
-            raise ValueError(f"{self.marker_file} missing slug")
-        self._cached_slug = slug
-        return slug
-
-    # ------------------------------------------------------------------
-    # Validation
-    # ------------------------------------------------------------------
+    def orgs_dir(self) -> Path:
+        return self._path / "orgs"
 
     def is_valid(self) -> bool:
-        """Return True if the marker file exists."""
         return self.marker_file.exists()
 
-    # ------------------------------------------------------------------
-    # Constructors
-    # ------------------------------------------------------------------
+    def iter_org_roots(self) -> Iterator[tuple[str, Path]]:
+        """Yield ``(slug, org_root)`` for every valid org subdirectory.
+
+        Reserved names (``_pending``, ``_archive``) are skipped. A directory
+        without ``org/teams.yaml`` is treated as not-yet-initialized and
+        skipped silently — this is what lets ``opc orgs init`` materialize
+        the skeleton lazily.
+        """
+        if not self.orgs_dir.is_dir():
+            return
+        for entry in sorted(self.orgs_dir.iterdir()):
+            if not entry.is_dir():
+                continue
+            if entry.name in _RESERVED_ORG_SLUGS:
+                continue
+            if not _SLUG_RE.match(entry.name):
+                continue
+            if not (entry / "org" / "teams.yaml").is_file():
+                continue
+            yield entry.name, entry
 
     @classmethod
-    def init(cls, path: Path, *, slug: str | None = None) -> RuntimeDir:
-        """Create a runtime directory at *path*.
-
-        On first creation, writes ``opc.yaml`` with the supplied ``slug``,
-        a ``created_at`` timestamp, and ``schema_version: 1``. Subsequent
-        calls are idempotent — the existing slug is preserved.
-
-        Creates the ``workspaces/`` and ``org/agents/_pending/`` sub-directories.
-        """
+    def init(cls, path: Path) -> RuntimeDir:
         instance = cls(path)
         instance.root.mkdir(parents=True, exist_ok=True)
-
+        instance.orgs_dir.mkdir(parents=True, exist_ok=True)
         if not instance.marker_file.exists():
-            if slug is None:
-                raise ValueError("slug is required to initialize a new runtime")
-            payload = {
-                "slug": slug,
-                "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                "schema_version": 1,
-            }
-            instance.marker_file.write_text(yaml.safe_dump(payload, sort_keys=False))
-
-        instance.workspaces_dir.mkdir(parents=True, exist_ok=True)
-        instance.org_dir.mkdir(parents=True, exist_ok=True)
-        instance.agents_dir.mkdir(parents=True, exist_ok=True)
-        instance.pending_agents_dir.mkdir(parents=True, exist_ok=True)
-
-        # Deferred import: teams.py imports RuntimeDir, so the import lives
-        # inside the function to avoid a cycle at module-load time.
-        from src.orchestrator.teams import TeamsRegistry
-        TeamsRegistry.seed_empty(instance)
+            instance.marker_file.write_text(yaml.safe_dump({
+                "schema_version": 2,
+                "type": "multi-org-runtime",
+                "created_at": datetime.now(timezone.utc).isoformat().replace(
+                    "+00:00", "Z"
+                ),
+            }, sort_keys=False))
         return instance
 
     @classmethod
     def load(cls, path: Path) -> RuntimeDir:
-        """Load an existing runtime directory from *path*.
-
-        Raises ``ValueError`` if the marker file is absent.
-        """
         instance = cls(path)
         if not instance.is_valid():
             raise ValueError(
                 f"{path} is not a valid OPC runtime directory "
                 f"(missing {instance.marker_file})"
+            )
+        data = yaml.safe_load(instance.marker_file.read_text()) or {}
+        version = data.get("schema_version")
+        if version != 2:
+            raise ValueError(
+                f"runtime at {path} is schema_version {version!r} (single-org). "
+                f"run `opc migrate-to-multi-org {path} "
+                f"--i-have-a-backup --apply` to migrate."
             )
         return instance

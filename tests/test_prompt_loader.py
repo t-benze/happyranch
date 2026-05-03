@@ -6,11 +6,12 @@ from pathlib import Path
 import pytest
 
 from src.orchestrator import prompt_loader
+from src.orchestrator._paths import OrgPaths
 from src.orchestrator.agent_def import AgentDef
 from src.runtime import RuntimeDir
 
 
-def _write_agent(runtime: RuntimeDir, name: str, **fm) -> Path:
+def _write_agent(runtime: OrgPaths, name: str, **fm) -> Path:
     """Helper: write a minimal valid agent file."""
     parts = [
         "---",
@@ -34,13 +35,15 @@ def _write_agent(runtime: RuntimeDir, name: str, **fm) -> Path:
     parts.append(fm.get("body", f"You are {name}.\n"))
     pending = fm.get("pending", False)
     target_dir = runtime.pending_agents_dir if pending else runtime.agents_dir
+    target_dir.mkdir(parents=True, exist_ok=True)
     path = target_dir / f"{name}.md"
     path.write_text("\n".join(parts))
     return path
 
 
 def test_load_agent_returns_agentdef(tmp_path: Path) -> None:
-    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
+    rt_dir = RuntimeDir.init(tmp_path / "rt")
+    rt = OrgPaths(root=rt_dir.orgs_dir / "x")
     _write_agent(rt, "dev_agent", role="worker", team="engineering")
     agent = prompt_loader.load_agent(rt, "dev_agent")
     assert agent is not None
@@ -49,18 +52,21 @@ def test_load_agent_returns_agentdef(tmp_path: Path) -> None:
 
 
 def test_load_agent_returns_none_when_missing(tmp_path: Path) -> None:
-    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
+    rt_dir = RuntimeDir.init(tmp_path / "rt")
+    rt = OrgPaths(root=rt_dir.orgs_dir / "x")
     assert prompt_loader.load_agent(rt, "nope") is None
 
 
 def test_load_agent_does_not_return_pending(tmp_path: Path) -> None:
-    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
+    rt_dir = RuntimeDir.init(tmp_path / "rt")
+    rt = OrgPaths(root=rt_dir.orgs_dir / "x")
     _write_agent(rt, "draft", pending=True)
     assert prompt_loader.load_agent(rt, "draft") is None
 
 
 def test_list_agents_excludes_pending(tmp_path: Path) -> None:
-    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
+    rt_dir = RuntimeDir.init(tmp_path / "rt")
+    rt = OrgPaths(root=rt_dir.orgs_dir / "x")
     _write_agent(rt, "active1")
     _write_agent(rt, "active2")
     _write_agent(rt, "draft", pending=True)
@@ -69,7 +75,8 @@ def test_list_agents_excludes_pending(tmp_path: Path) -> None:
 
 
 def test_list_pending_only_pending(tmp_path: Path) -> None:
-    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
+    rt_dir = RuntimeDir.init(tmp_path / "rt")
+    rt = OrgPaths(root=rt_dir.orgs_dir / "x")
     _write_agent(rt, "active1")
     _write_agent(rt, "draft", pending=True)
     names = sorted(a.name for a in prompt_loader.list_pending(rt))
@@ -77,7 +84,8 @@ def test_list_pending_only_pending(tmp_path: Path) -> None:
 
 
 def test_write_pending_agent_creates_file(tmp_path: Path) -> None:
-    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
+    rt_dir = RuntimeDir.init(tmp_path / "rt")
+    rt = OrgPaths(root=rt_dir.orgs_dir / "x")
     agent = AgentDef(
         name="newbie",
         team="engineering",
@@ -98,7 +106,8 @@ def test_write_pending_agent_creates_file(tmp_path: Path) -> None:
 
 
 def test_write_pending_agent_atomic_overwrite(tmp_path: Path) -> None:
-    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
+    rt_dir = RuntimeDir.init(tmp_path / "rt")
+    rt = OrgPaths(root=rt_dir.orgs_dir / "x")
     agent = AgentDef(
         name="newbie", team="engineering", role="worker", executor="claude",
         allow_rules=(), repos={}, enrolled_by=None, enrolled_at_task=None,
@@ -112,7 +121,8 @@ def test_write_pending_agent_atomic_overwrite(tmp_path: Path) -> None:
 
 
 def test_approve_agent_moves_pending_to_active(tmp_path: Path) -> None:
-    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
+    rt_dir = RuntimeDir.init(tmp_path / "rt")
+    rt = OrgPaths(root=rt_dir.orgs_dir / "x")
     _write_agent(rt, "newbie", pending=True)
     agent = prompt_loader.approve_agent(rt, "newbie")
     assert agent.name == "newbie"
@@ -121,13 +131,15 @@ def test_approve_agent_moves_pending_to_active(tmp_path: Path) -> None:
 
 
 def test_approve_agent_404_when_no_pending(tmp_path: Path) -> None:
-    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
+    rt_dir = RuntimeDir.init(tmp_path / "rt")
+    rt = OrgPaths(root=rt_dir.orgs_dir / "x")
     with pytest.raises(FileNotFoundError):
         prompt_loader.approve_agent(rt, "nope")
 
 
 def test_approve_agent_409_when_active_already_exists(tmp_path: Path) -> None:
-    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
+    rt_dir = RuntimeDir.init(tmp_path / "rt")
+    rt = OrgPaths(root=rt_dir.orgs_dir / "x")
     _write_agent(rt, "dup")  # already active
     _write_agent(rt, "dup", pending=True)  # somehow also pending
     with pytest.raises(FileExistsError):
@@ -135,13 +147,15 @@ def test_approve_agent_409_when_active_already_exists(tmp_path: Path) -> None:
 
 
 def test_reject_agent_unlinks_pending(tmp_path: Path) -> None:
-    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
+    rt_dir = RuntimeDir.init(tmp_path / "rt")
+    rt = OrgPaths(root=rt_dir.orgs_dir / "x")
     _write_agent(rt, "drop", pending=True)
     prompt_loader.reject_agent(rt, "drop")
     assert not (rt.pending_agents_dir / "drop.md").exists()
 
 
 def test_reject_agent_404_when_missing(tmp_path: Path) -> None:
-    rt = RuntimeDir.init(tmp_path / "rt", slug="x")
+    rt_dir = RuntimeDir.init(tmp_path / "rt")
+    rt = OrgPaths(root=rt_dir.orgs_dir / "x")
     with pytest.raises(FileNotFoundError):
         prompt_loader.reject_agent(rt, "nope")

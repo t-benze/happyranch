@@ -11,13 +11,30 @@ from typing import TYPE_CHECKING
 from src.config import Settings
 
 if TYPE_CHECKING:
-    from src.runtime import RuntimeDir
+    from src.orchestrator._paths import OrgPaths
 
 logger = logging.getLogger(__name__)
 
 
+# Test override: when set (via monkeypatch), takes precedence over the
+# settings-derived skills source. Production code leaves this ``None`` and
+# adapters resolve the source via ``self._settings.get_protocol_dir() / "skills"``.
+_SKILLS_SRC: Path | None = None
 
-def _copy_skills_tree(src: Path, dst: Path) -> None:
+
+def _resolve_skills_src(settings: Settings) -> Path:
+    """Source directory for ``protocol/skills/``.
+
+    Honors the module-level ``_SKILLS_SRC`` test override before falling back
+    to the settings-derived path so unit tests can stand up a fake skills tree
+    in ``tmp_path`` without altering production behavior.
+    """
+    if _SKILLS_SRC is not None:
+        return _SKILLS_SRC
+    return settings.get_protocol_dir() / "skills"
+
+
+def _copy_skills_tree(src: Path, dst: Path, *, slug: str) -> None:
     """Copy each skill directory from ``src`` into ``dst``, replacing existing copies.
 
     Used by both Claude (``<ws>/.claude/skills/``) and Codex
@@ -25,6 +42,10 @@ def _copy_skills_tree(src: Path, dst: Path) -> None:
     walking ``.agents/skills/`` from the working directory up to the repo root,
     so the destination differs by platform but the source — ``protocol/skills/``
     — is shared.
+
+    Every ``.md`` file has ``{ORG_SLUG}`` substituted with ``slug`` so example
+    ``opc`` invocations carry the per-workspace ``--org`` automatically. Other
+    file types are copied byte-for-byte.
     """
     if not src.exists():
         return
@@ -33,7 +54,31 @@ def _copy_skills_tree(src: Path, dst: Path) -> None:
         target = dst / child.name
         if target.exists():
             shutil.rmtree(target)
-        shutil.copytree(child, target)
+        if child.is_dir():
+            _copy_skill_dir(child, target, slug=slug)
+        else:
+            _copy_skill_file(child, target, slug=slug)
+
+
+def _copy_skill_dir(src: Path, dst: Path, *, slug: str) -> None:
+    """Recursively copy ``src`` to ``dst``, substituting ``{ORG_SLUG}`` in .md files."""
+    dst.mkdir(parents=True, exist_ok=True)
+    for child in src.iterdir():
+        target = dst / child.name
+        if child.is_dir():
+            _copy_skill_dir(child, target, slug=slug)
+        else:
+            _copy_skill_file(child, target, slug=slug)
+
+
+def _copy_skill_file(src: Path, dst: Path, *, slug: str) -> None:
+    """Copy a single skill file. ``.md`` files get ``{ORG_SLUG}`` substituted."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if src.suffix == ".md":
+        text = src.read_text()
+        dst.write_text(text.replace("{ORG_SLUG}", slug))
+    else:
+        shutil.copy2(src, dst)
 
 
 def _format_allow_rule(prefix: str, *, cli: bool) -> str:
@@ -50,7 +95,7 @@ def _format_allow_rule(prefix: str, *, cli: bool) -> str:
 
 
 def allow_rules_for_agent(
-    runtime: "RuntimeDir", agent_name: str | None, *, cli: bool,
+    paths: "OrgPaths", agent_name: str | None, *, cli: bool,
 ) -> list[str]:
     """Build the Bash allow-rule list for ``agent_name``.
 
@@ -62,13 +107,13 @@ def allow_rules_for_agent(
     rules = [_format_allow_rule("opc", cli=cli)]
     if agent_name is None:
         return rules
-    for prefix in prompt_loader.allow_rules_for_agent(runtime, agent_name):
+    for prefix in prompt_loader.allow_rules_for_agent(paths, agent_name):
         rules.append(_format_allow_rule(prefix, cli=cli))
     return rules
 
 
 def bash_allow_prefixes_for_agent(
-    runtime: "RuntimeDir", agent_name: str | None,
+    paths: "OrgPaths", agent_name: str | None,
 ) -> list[str]:
     """Return raw Bash allow-rule prefixes (no syntax wrapping).
 
@@ -82,13 +127,13 @@ def bash_allow_prefixes_for_agent(
     prefixes = ["opc"]
     if agent_name is None:
         return prefixes
-    for prefix in prompt_loader.allow_rules_for_agent(runtime, agent_name):
+    for prefix in prompt_loader.allow_rules_for_agent(paths, agent_name):
         prefixes.append(prefix)
     return prefixes
 
 
 def build_settings_json(
-    runtime: "RuntimeDir",
+    paths: "OrgPaths",
     repo_names: list[str],
     agent_name: str | None = None,
 ) -> dict:
@@ -113,7 +158,7 @@ def build_settings_json(
 
     return {
         "permissions": {
-            "allow": allow_rules_for_agent(runtime, agent_name, cli=False),
+            "allow": allow_rules_for_agent(paths, agent_name, cli=False),
         },
         "hooks": hooks,
     }
@@ -161,9 +206,10 @@ class ClaudeWorkspaceAdapter:
 
     provider_name = "claude"
 
-    def __init__(self, settings: Settings, runtime: "RuntimeDir") -> None:
+    def __init__(self, settings: Settings, paths: "OrgPaths", *, slug: str) -> None:
         self._settings = settings
-        self._runtime = runtime
+        self._paths = paths
+        self._slug = slug
         self._persistent = PersistentWorkspaceSetup(settings)
 
     def write_settings_json(
@@ -176,7 +222,7 @@ class ClaudeWorkspaceAdapter:
         claude_dir = workspace / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
         settings_data = build_settings_json(
-            self._runtime, repo_names or [], agent_name=agent_name,
+            self._paths, repo_names or [], agent_name=agent_name,
         )
         (claude_dir / "settings.json").write_text(
             json.dumps(settings_data, indent=2) + "\n"
@@ -297,8 +343,9 @@ class ClaudeWorkspaceAdapter:
     def _copy_skills(self, workspace: Path) -> None:
         """Copy protocol/skills/ tree into workspace/.claude/skills/."""
         _copy_skills_tree(
-            self._settings.get_protocol_dir() / "skills",
+            _resolve_skills_src(self._settings),
             workspace / ".claude" / "skills",
+            slug=self._slug,
         )
 
 
@@ -307,9 +354,10 @@ class CodexWorkspaceAdapter:
 
     provider_name = "codex"
 
-    def __init__(self, settings: Settings, runtime: "RuntimeDir") -> None:
+    def __init__(self, settings: Settings, paths: "OrgPaths", *, slug: str) -> None:
         self._settings = settings
-        self._runtime = runtime
+        self._paths = paths
+        self._slug = slug
         self._persistent = PersistentWorkspaceSetup(settings)
 
     def write_agents_md(
@@ -329,7 +377,7 @@ class CodexWorkspaceAdapter:
         completion contract. The skill itself is the source of truth.
         """
         workspace.mkdir(parents=True, exist_ok=True)
-        sections = ClaudeWorkspaceAdapter(self._settings, self._runtime)._build_sections(
+        sections = ClaudeWorkspaceAdapter(self._settings, self._paths, slug=self._slug)._build_sections(
             agent_name,
             system_prompt,
             include_start_task=True,
@@ -353,8 +401,9 @@ class CodexWorkspaceAdapter:
     def _copy_skills(self, workspace: Path) -> None:
         """Copy protocol/skills/ tree into workspace/.agents/skills/."""
         _copy_skills_tree(
-            self._settings.get_protocol_dir() / "skills",
+            _resolve_skills_src(self._settings),
             workspace / ".agents" / "skills",
+            slug=self._slug,
         )
 
     def ensure_workspace_ready(
@@ -388,12 +437,13 @@ class OpencodeWorkspaceAdapter:
 
     provider_name = "opencode"
 
-    def __init__(self, settings: Settings, runtime: "RuntimeDir") -> None:
+    def __init__(self, settings: Settings, paths: "OrgPaths", *, slug: str) -> None:
         self._settings = settings
-        self._runtime = runtime
+        self._paths = paths
+        self._slug = slug
         self._persistent = PersistentWorkspaceSetup(settings)
         # AGENTS.md generation is identical to Codex — delegate.
-        self._codex_adapter = CodexWorkspaceAdapter(settings, runtime)
+        self._codex_adapter = CodexWorkspaceAdapter(settings, paths, slug=slug)
 
     def write_agents_md(
         self,
@@ -418,7 +468,7 @@ class OpencodeWorkspaceAdapter:
         sanctioned channel (``opc``) is always allowed; per-agent extras
         come from the same ``allow_rules`` frontmatter Claude reads.
         """
-        prefixes = bash_allow_prefixes_for_agent(self._runtime, agent_name)
+        prefixes = bash_allow_prefixes_for_agent(self._paths, agent_name)
         permission_bash: dict[str, str] = {"*": "deny"}
         for prefix in prefixes:
             permission_bash[f"{prefix} *"] = "allow"
@@ -439,8 +489,9 @@ class OpencodeWorkspaceAdapter:
         re-bootstrapped between executors without churn.
         """
         _copy_skills_tree(
-            self._settings.get_protocol_dir() / "skills",
+            _resolve_skills_src(self._settings),
             workspace / ".agents" / "skills",
+            slug=self._slug,
         )
 
     def ensure_workspace_ready(

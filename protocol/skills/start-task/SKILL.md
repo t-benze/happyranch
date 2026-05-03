@@ -26,7 +26,7 @@ Parameters:
    2. If the current brief references prior work — phrases like "follow up on", "continue", "the report from last week", a specific date, or an explicit `TASK-xxx` — identify the matching entry and fetch the details:
 
       ```bash
-      opc recall <task_id> --fetch-artifact
+      opc recall --org {ORG_SLUG} <task_id> --fetch-artifact
       ```
 
       Add `--tree` if you need the child tasks too.
@@ -37,14 +37,14 @@ Parameters:
    Run either:
 
    ```bash
-   opc kb list --topic <guess>                # browse a topic
-   opc kb search "<terms from brief>"         # keyword search
+   opc kb list --org {ORG_SLUG} --topic <guess>                # browse a topic
+   opc kb search --org {ORG_SLUG} "<terms from brief>"         # keyword search
    ```
 
    Fetch full entries with:
 
    ```bash
-   opc kb get <slug>
+   opc kb get --org {ORG_SLUG} <slug>
    ```
 
    **Consult triggers** — scan the KB whenever your brief touches:
@@ -57,7 +57,7 @@ Parameters:
 
 4. **Plan and execute.** Treat `role_guidance` as your primary instruction. If repo writes are needed, invoke the **make-worktree** skill first.
 
-   If the task produces a standalone document (report, plan, analysis), write its files under `artifacts/<task_id>/` in your workspace root — **not** inside any repo or worktree. Capture the relative path (e.g. `artifacts/TASK-001`) and include it as `artifact_dir` in your completion payload so future sessions can retrieve it via `opc recall <task_id>`.
+   If the task produces a standalone document (report, plan, analysis), write its files under `artifacts/<task_id>/` in your workspace root — **not** inside any repo or worktree. Capture the relative path (e.g. `artifacts/TASK-001`) and include it as `artifact_dir` in your completion payload so future sessions can retrieve it via `opc recall --org {ORG_SLUG} <task_id>`.
 
 5. **Report progress (long-running tasks).** If the task spans more than a
    few minutes — multi-phase implementation, lengthy build/test, large
@@ -66,7 +66,7 @@ Parameters:
    movement instead of a black box until completion.
 
    ```bash
-   opc progress --task-id <task_id> --session-id <session_id> --agent <your_agent_name> --message "Phase 3 of 6: tests passing"
+   opc progress --org {ORG_SLUG} --task-id <task_id> --session-id <session_id> --agent <your_agent_name> --message "Phase 3 of 6: tests passing"
    ```
 
    When to emit: phase boundaries, before/after long shell-outs (>1 min),
@@ -77,7 +77,7 @@ Parameters:
 6. **Report mid-task learnings (optional).** Whenever you discover something reusable for future tasks:
 
    ```bash
-   opc learning --task-id <task_id> --session-id <session_id> --agent <your_agent_name> --text "..."
+   opc learning --org {ORG_SLUG} --task-id <task_id> --session-id <session_id> --agent <your_agent_name> --text "..."
    ```
 
 7. **Contribute to the KB (optional).** Before reporting completion, ask yourself: did I discover or confirm durable, cross-agent-relevant knowledge that isn't already in the KB?
@@ -96,13 +96,13 @@ Parameters:
    Write `/tmp/kb-<slug>.md` with YAML frontmatter (`slug`, `title`, `type`, `topic`, optional `tags`, `source_task`) followed by a markdown body, then:
 
    ```bash
-   opc kb add --agent <your_agent_name> --from-file /tmp/kb-<slug>.md
+   opc kb add --org {ORG_SLUG} --agent <your_agent_name> --from-file /tmp/kb-<slug>.md
    ```
 
-   For updates: `opc kb update <slug> --agent <you> --from-file /tmp/kb-<slug>.md`. Resolve collision 409s by updating the existing entry instead of forcing a sibling. The `--from-file` pattern is mandatory across executors; in Claude sessions multi-line `opc` payloads are rejected by the `Bash(opc:*)` permission rule.
+   For updates: `opc kb update --org {ORG_SLUG} <slug> --agent <you> --from-file /tmp/kb-<slug>.md`. Resolve collision 409s by updating the existing entry instead of forcing a sibling. The `--from-file` pattern is mandatory across executors; in Claude sessions multi-line `opc` payloads are rejected by the `Bash(opc:*)` permission rule.
 
 8. **Report completion.** When you finish (success or blocker), write a JSON
-   payload to a file and invoke `opc report-completion --from-file <path>` as
+   payload to a file and invoke `opc report-completion --org {ORG_SLUG} --from-file <path>` as
    a single-line command. The file form is mandatory across executors. In
    Claude sessions, multi-line bash commands with backslash continuations are
    rejected by the permission rule because newlines count as command
@@ -160,7 +160,7 @@ Parameters:
    Then submit:
 
    ```bash
-   opc report-completion --from-file /tmp/completion-<task_id>.json
+   opc report-completion --org {ORG_SLUG} --from-file /tmp/completion-<task_id>.json
    ```
 
 9. **Cleanup.** Always run worktree cleanup as the final step, even on the blocker path. The make-worktree skill describes how.
