@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sse_starlette.sse import EventSourceResponse
 
 from src.daemon.auth import require_token
@@ -409,6 +409,20 @@ _TERMINAL_TASK_STATUSES = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED})
 
 class RevisitBody(BaseModel):
     founder_note: str | None = None
+    # Founder-supplied per-task subprocess timeout (seconds). Persisted on the
+    # new root and inherited by every delegated child + auto-revisit. NULL
+    # falls through to the predecessor's value (so a manual revisit of an
+    # already-bumped task keeps the bump) and then to org/Settings.
+    session_timeout_seconds: int | None = None
+
+    @field_validator("session_timeout_seconds")
+    @classmethod
+    def _positive_int(cls, v: int | None) -> int | None:
+        if v is None:
+            return None
+        if not isinstance(v, int) or isinstance(v, bool) or v <= 0:
+            raise ValueError("session_timeout_seconds must be a positive integer")
+        return v
 
 
 # Predecessor-root states that revisit accepts. Everything else is 409.
@@ -493,6 +507,11 @@ async def revisit_task(
     # so reverse it. When flagged == root, this is a single-element list.
     cascade = [t.id for t in reversed(chain)]
 
+    new_timeout = (
+        body.session_timeout_seconds
+        if body.session_timeout_seconds is not None
+        else predecessor.session_timeout_seconds
+    )
     async with state.db_lock:
         new_id = state.db.next_task_id()
         state.db.insert_task(TaskRecord(
@@ -503,6 +522,7 @@ async def revisit_task(
             status=TaskStatus.PENDING,
             parent_task_id=None,
             revisit_of_task_id=predecessor.id,
+            session_timeout_seconds=new_timeout,
         ))
         audit = AuditLogger(state.db)
         audit.log_revisit_of(

@@ -217,7 +217,7 @@ opc kb reindex
 opc kb precedent --task-id <id> --decision approve|reject --rationale "..." [--slug <s>]
 
 opc resolve-escalation --task-id <id> --decision approve|reject --rationale "..."
-opc revisit TASK-052 [--note "..." | --note-file PATH]   # founder: spawn a new root that inherits a terminal predecessor's brief
+opc revisit TASK-052 [--note "..." | --note-file PATH] [--session-timeout-seconds N]   # founder: spawn a new root that inherits a terminal predecessor's brief
 ```
 
 `opc revisit` takes any task id in a lineage, walks to its root, and — if the
@@ -251,7 +251,7 @@ Operational settings use the `OPC_` environment variable prefix. Runtime paths (
 | `OPC_CODEX_CLI_PATH` | `codex` | Path to Codex CLI |
 | `OPC_PERMISSION_MODE` | `auto` | Claude Code permission mode |
 | `OPC_MAX_ORCHESTRATION_STEPS` | `50` | Max EH decision steps before escalation |
-| `OPC_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout (30 min) — global default; can be overridden per-runtime in `<runtime>/org/config.yaml` and per-agent in the agent's frontmatter |
+| `OPC_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout (30 min) — global default; can be overridden per-runtime in `<runtime>/org/config.yaml` and per-task via `opc revisit --session-timeout-seconds <int>` |
 | `OPC_TIER_GREEN_THRESHOLD` | `0.90` | Acceptance rate for green tier |
 | `OPC_TIER_YELLOW_THRESHOLD` | `0.75` | Acceptance rate for yellow tier |
 
@@ -274,7 +274,7 @@ Repos are cloned into the agent's workspace on `opc init-agent` and auto-pulled 
 
 The per-session timeout (default 1800s / 30 min) is resolved in three layers, highest precedence first:
 
-1. **Per-agent**: add `session_timeout_seconds: <int>` to the agent's frontmatter at `<runtime>/org/agents/<name>.md`. Use this for one slow worker without affecting peers.
+1. **Per-task**: pass `--session-timeout-seconds <int>` when revisiting a stuck task — `opc revisit <task-id> --session-timeout-seconds 7200`. The override is stored on the new root task and inherited by every child the orchestrator spawns from it (delegated children + auto-revisits + later founder-revisits when the flag is omitted). Use this when a single failing lineage needs longer (or shorter) sessions than the rest of the runtime.
 2. **Per-runtime (org)**: create `<runtime>/org/config.yaml` with `session_timeout_seconds: <int>`. Use this to bump every agent in this runtime above the global default.
 3. **Global default**: `OPC_SESSION_TIMEOUT_SECONDS` env var (or the built-in 1800s).
 

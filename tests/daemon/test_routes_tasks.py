@@ -1104,6 +1104,69 @@ def test_revisit_writes_revisit_of_task_id_on_new_root(
     assert new_root.revisit_of_task_id == "TASK-052"
 
 
+def test_revisit_persists_session_timeout_seconds_from_payload(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """Founder passes --session-timeout-seconds; the value is persisted on the
+    new root verbatim and shadows the predecessor's value."""
+    from src.models import TaskRecord, TaskStatus
+    db = daemon_state.db
+    db.insert_task(TaskRecord(
+        id="TASK-052", brief="b", session_timeout_seconds=600,
+    ))
+    db.update_task("TASK-052", status=TaskStatus.FAILED, note="rc=1")
+
+    r = TestClient(app).post(
+        "/api/v1/tasks/TASK-052/revisit",
+        json={"session_timeout_seconds": 7200},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    new_id = r.json()["new_root_task_id"]
+    new_root = db.get_task(new_id)
+    assert new_root.session_timeout_seconds == 7200
+
+
+def test_revisit_inherits_session_timeout_from_predecessor_when_omitted(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """Omitted payload → new root inherits the predecessor's value, so a
+    second revisit of an already-bumped task keeps the bump."""
+    from src.models import TaskRecord, TaskStatus
+    db = daemon_state.db
+    db.insert_task(TaskRecord(
+        id="TASK-052", brief="b", session_timeout_seconds=5400,
+    ))
+    db.update_task("TASK-052", status=TaskStatus.FAILED, note="rc=1")
+
+    r = TestClient(app).post(
+        "/api/v1/tasks/TASK-052/revisit",
+        json={},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    new_id = r.json()["new_root_task_id"]
+    new_root = db.get_task(new_id)
+    assert new_root.session_timeout_seconds == 5400
+
+
+def test_revisit_rejects_non_positive_session_timeout(
+    tmp_home, app, daemon_state, auth_headers,
+) -> None:
+    """0 / negative / non-int values are 422 from the pydantic validator."""
+    from src.models import TaskRecord, TaskStatus
+    db = daemon_state.db
+    db.insert_task(TaskRecord(id="TASK-052", brief="b"))
+    db.update_task("TASK-052", status=TaskStatus.FAILED, note="rc=1")
+
+    r = TestClient(app).post(
+        "/api/v1/tasks/TASK-052/revisit",
+        json={"session_timeout_seconds": 0},
+        headers=auth_headers,
+    )
+    assert r.status_code == 422
+
+
 def test_plain_run_leaves_revisit_of_task_id_null(
     tmp_home, app, daemon_state, auth_headers,
 ) -> None:

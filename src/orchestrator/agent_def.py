@@ -36,7 +36,6 @@ class AgentDef:
     enrolled_at: datetime | None
     system_prompt: str
     description: str | None = None
-    session_timeout_seconds: int | None = None
 
 
 def _parse_iso(ts: object) -> datetime | None:
@@ -134,17 +133,6 @@ def parse_agent_text(text: str, *, expected_name: str) -> AgentDef:
     if description is not None and not isinstance(description, str):
         raise AgentParseError("description must be a string or null")
 
-    session_timeout_seconds = fm.get("session_timeout_seconds")
-    if session_timeout_seconds is not None:
-        if (
-            not isinstance(session_timeout_seconds, int)
-            or isinstance(session_timeout_seconds, bool)
-            or session_timeout_seconds <= 0
-        ):
-            raise AgentParseError(
-                f"session_timeout_seconds must be a positive integer, got {session_timeout_seconds!r}"
-            )
-
     return AgentDef(
         name=name,
         team=team,
@@ -157,7 +145,6 @@ def parse_agent_text(text: str, *, expected_name: str) -> AgentDef:
         enrolled_at=enrolled_at,
         system_prompt=body if body.endswith("\n") else body + "\n",
         description=description,
-        session_timeout_seconds=session_timeout_seconds,
     )
 
 
@@ -178,7 +165,6 @@ def render_agent_text(agent: AgentDef) -> str:
             if agent.enrolled_at is not None
             else None
         ),
-        "session_timeout_seconds": agent.session_timeout_seconds,
     }
     fm_text = yaml.safe_dump(fm, sort_keys=False).strip()
     body = agent.system_prompt if agent.system_prompt.endswith("\n") else agent.system_prompt + "\n"

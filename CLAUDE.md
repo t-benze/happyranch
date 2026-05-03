@@ -192,13 +192,21 @@ Operational settings use the `OPC_` environment variable prefix. Runtime paths (
 
 ### Session timeout resolution
 
-`Orchestrator._resolve_session_timeout(agent_name)` walks three layers, highest precedence first:
+`Orchestrator._resolve_session_timeout(agent_name, task_id=...)` walks three layers, highest precedence first:
 
-1. **Agent override** — optional `session_timeout_seconds: <int>` in the agent's frontmatter (`<runtime>/org/agents/<name>.md`). Use for one slow worker (e.g. a Codex agent doing long builds) without affecting peers.
+1. **Task override** — optional `tasks.session_timeout_seconds` column on the task row, set by the founder via `opc revisit <task-id> --session-timeout-seconds <int>` and inherited by every child the orchestrator spawns from that task (delegate children, auto-revisits, founder-revisits when `--session-timeout-seconds` is omitted). Use this when a single revisited lineage needs longer (or shorter) sessions than the rest of the runtime.
 2. **Org override** — optional `session_timeout_seconds: <int>` in `<runtime>/org/config.yaml`. Use to bump the whole runtime above the code default.
 3. **Code default** — `Settings.session_timeout_seconds` (1800s), itself overridable via the `OPC_SESSION_TIMEOUT_SECONDS` env var.
 
 Each layer accepts `null`/missing as "inherit from the next layer." Values must be positive integers; non-int (string, float, bool) or `<= 0` raises at parse time. The org config is loaded via `src/orchestrator/org_config.py` (`OrgConfig` dataclass + `load_org_config(runtime)`); `<runtime>/org/config.yaml` is optional and unknown keys are ignored for forward compatibility.
+
+**Inheritance** — the task-row layer is propagated by the orchestrator wherever a new task is born from an existing one:
+
+- `run_step._handle_delegate` copies `parent.session_timeout_seconds` onto every delegated child.
+- `run_step` auto-revisit (opaque-failure recovery) copies it onto the new revisit root.
+- The `/tasks/{id}/revisit` endpoint copies it onto the founder-spawned revisit root unless the founder explicitly passes `--session-timeout-seconds`.
+
+The agent name is accepted for symmetry with older call sites but is not used by the resolver — there is no per-agent layer. Legacy `session_timeout_seconds` in agent frontmatter is silently ignored so older runtimes still parse cleanly.
 
 ### Agent executors
 
@@ -357,9 +365,12 @@ Each runtime carries its own org content under `<runtime>/org/`:
 markdown-with-YAML-frontmatter, parsed/rendered by `parse_agent_text` /
 `render_agent_text`. Fields: `name`, `team`, `role` (worker|manager),
 `executor` (claude|codex), `description`, `allow_rules`, `repos`,
-`enrolled_by`, `enrolled_at_task`, `enrolled_at`, `session_timeout_seconds`
-(optional per-agent override; see "Session timeout resolution"),
-`system_prompt` (body).
+`enrolled_by`, `enrolled_at_task`, `enrolled_at`, `system_prompt` (body).
+
+There is **no `session_timeout_seconds` per-agent field** — the runtime
+walks task → org → settings (see "Session timeout resolution"). Legacy
+files that still carry the field parse cleanly (the value is silently
+dropped) so older runtimes keep booting.
 
 `src/orchestrator/prompt_loader.py` is the only API for reading and writing
 these files — `load_agent`, `list_agents`, `list_pending`, `write_pending_agent`,
@@ -478,7 +489,7 @@ opc kb delete <slug> --agent <you> --confirm [--as-founder]
 opc kb reindex
 opc kb precedent --task-id TASK-001 --decision approve|reject --rationale "..." [--slug <s>] --as-founder   # founder-only; follows resolve-escalation
 opc resolve-escalation --task-id TASK-001 --decision approve|reject --rationale "..."                       # approve resumes the task (PENDING + re-enqueue) with rationale injected as a one-shot prompt header; reject fails it and cascades to parent. Precedes kb precedent.
-opc revisit TASK-052 [--note "..." | --note-file PATH]          # founder: spawn NEW root that inherits the predecessor's brief (TTY-gated)
+opc revisit TASK-052 [--note "..." | --note-file PATH] [--session-timeout-seconds N]   # founder: spawn NEW root that inherits the predecessor's brief (TTY-gated). --session-timeout-seconds optionally bumps the lineage timeout (positive integer); omitted -> inherit predecessor's value
 # Talk flow (founder↔agent conversations):
 opc talk start --agent <name>
 opc talk resume --talk-id TALK-001

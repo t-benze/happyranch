@@ -224,6 +224,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
             assigned_agent=decision.agent,
             parent_task_id=task_id,
             status=TaskStatus.PENDING,
+            session_timeout_seconds=task.session_timeout_seconds,
         ))
         db.update_task(
             task_id,
@@ -685,6 +686,7 @@ def _maybe_spawn_auto_revisit(
         status=TaskStatus.PENDING,
         parent_task_id=None,
         revisit_of_task_id=root.id,
+        session_timeout_seconds=root.session_timeout_seconds,
     ))
 
     cascade = [t.id for t in reversed(chain)]
