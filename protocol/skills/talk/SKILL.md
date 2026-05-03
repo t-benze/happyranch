@@ -23,7 +23,7 @@ Read your agent name from `agent.yaml` in the workspace root if you don't alread
 1. **Check for an existing open talk.**
 
    ```bash
-   opc talk status --agent <your_name>
+   opc talk status --org {ORG_SLUG} --agent <your_name>
    ```
 
    If it prints `no open talks`, continue to step 2.
@@ -32,27 +32,27 @@ Read your agent name from `agent.yaml` in the workspace root if you don't alread
 
    > "There's an open talk TALK-NNN from <started_at>. Do you want to **resume** it or **abandon** it and start fresh?"
 
-   - On **resume** → run `opc talk resume --talk-id TALK-NNN` and skip the opening report. Prior context is in the founder's head; just pick up where you left off.
-   - On **abandon** → run `opc talk abandon --talk-id TALK-NNN --reason orphan_at_new_start`, then continue to step 2.
+   - On **resume** → run `opc talk resume --org {ORG_SLUG} --talk-id TALK-NNN` and skip the opening report. Prior context is in the founder's head; just pick up where you left off.
+   - On **abandon** → run `opc talk abandon --org {ORG_SLUG} --talk-id TALK-NNN --reason orphan_at_new_start`, then continue to step 2.
 
 2. **Start a new talk.**
 
    ```bash
-   opc talk start --agent <your_name>
+   opc talk start --org {ORG_SLUG} --agent <your_name>
    ```
 
    Capture the `TALK-NNN` that comes back.
 
 3. **Find the window for the report.**
 
-   Run `opc talk list --agent <your_name> --limit 5` and find the most recent talk with `status=closed`. Its `ended_at` is the window start. If no prior closed talk exists, use "all-time, capped at 30 days."
+   Run `opc talk list --org {ORG_SLUG} --agent <your_name> --limit 5` and find the most recent talk with `status=closed`. Its `ended_at` is the window start. If no prior closed talk exists, use "all-time, capped at 30 days."
 
 4. **Gather inputs:**
 
    - `task_history.md` (in the workspace root).
    - `learnings.md` (entries added in the window).
    - `scorecard.md`.
-   - `opc audit --agent <your_name> --since <window_start>`.
+   - `opc audit --org {ORG_SLUG} --agent <your_name> --since <window_start>`.
 
 5. **Emit the opening report.** Use exactly these section headings, in this order:
 
@@ -87,7 +87,7 @@ Read your agent name from `agent.yaml` in the workspace root if you don't alread
    ```bash
    # Write a markdown file with the frontmatter that the KB add route expects.
    # See .claude/skills/manage-repo or the existing opc kb add docs for the shape.
-   opc kb add --agent <your_name> --from-file /tmp/kb-<slug>.md
+   opc kb add --org {ORG_SLUG} --agent <your_name> --from-file /tmp/kb-<slug>.md
    ```
 
    Collect each slug you wrote.
@@ -110,7 +110,7 @@ Read your agent name from `agent.yaml` in the workspace root if you don't alread
 5. **Single-line call** (write the JSON to the temp path first, then run the CLI once):
 
    ```bash
-   opc talk end --talk-id TALK-NNN --from-file /tmp/talk-end-TALK-NNN.json
+   opc talk end --org {ORG_SLUG} --talk-id TALK-NNN --from-file /tmp/talk-end-TALK-NNN.json
    ```
 
 6. **Confirm to the founder:** the transcript path, the number of new learnings, and any KB slugs written.

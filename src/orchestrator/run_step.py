@@ -193,7 +193,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
             # orchestration_step_count atomically before the agent runs).
             db.update_task(task_id, status=TaskStatus.PENDING, block_kind=None)
             if orch._queue is not None:
-                orch._queue.put_nowait(task_id)
+                orch._queue.put_nowait(orch._slug, task_id)
             return
         from src.models import TaskRecord
         # Revision tracking: bump the delegating task's revision_count only
@@ -233,7 +233,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
             note=f"Delegated to {decision.agent} (child={child_id})",
         )
         if orch._queue is not None:
-            orch._queue.put_nowait(child_id)
+            orch._queue.put_nowait(orch._slug, child_id)
         return
 
     # ---- 8. Unknown action ----
@@ -246,7 +246,7 @@ def _validate_delegate(orch: "Orchestrator", decision) -> str | None:
     unusable, or None if it's good to spawn."""
     if not decision.agent:
         return "missing agent name"
-    workspace = orch._runtime.workspaces_dir / decision.agent
+    workspace = orch._paths.workspaces_dir / decision.agent
     if not workspace.exists():
         return f"no workspace for agent {decision.agent!r}"
     return None
@@ -273,7 +273,7 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
     agent_names, tiers = _list_candidate_agents(orch, agent)
     agents_for_prompt = []
     for name in agent_names:
-        candidate = prompt_loader.load_agent(orch._runtime, name)
+        candidate = prompt_loader.load_agent(orch._paths, name)
         desc = (candidate.description if candidate is not None else None) or name
         tier = tiers.get(name)
         agents_for_prompt.append({
@@ -315,9 +315,9 @@ def _list_candidate_agents(orch: "Orchestrator", calling_manager: str):
     team_members = set(orch.teams.manager_for_team(caller_team).workers)
     team_members.discard(calling_manager)  # manager should not delegate to itself
 
-    if orch._runtime.workspaces_dir.exists():
+    if orch._paths.workspaces_dir.exists():
         names = sorted(
-            d.name for d in orch._runtime.workspaces_dir.iterdir()
+            d.name for d in orch._paths.workspaces_dir.iterdir()
             if d.is_dir() and d.name in team_members
         )
     else:
@@ -601,7 +601,7 @@ def _enqueue_parent_if_waiting(orch: "Orchestrator", task_id: str) -> None:
 
     queue = getattr(orch, "_queue", None)
     if queue is not None:
-        queue.put_nowait(parent.id)
+        queue.put_nowait(orch._slug, parent.id)
 
 
 _AUTO_REVISIT_CAP = 2
@@ -705,7 +705,7 @@ def _maybe_spawn_auto_revisit(
 
     queue = getattr(orch, "_queue", None)
     if queue is not None:
-        queue.put_nowait(new_id)
+        queue.put_nowait(orch._slug, new_id)
 
 
 def _session_failed_note(result, report) -> str:

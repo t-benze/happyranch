@@ -49,6 +49,11 @@ class Database:
         self._create_tables()
         self._detect_legacy_columns()
 
+    @property
+    def path(self) -> Path:
+        """Alias for ``db_path``. Convenience for callers that prefer ``.path``."""
+        return self.db_path
+
     def _detect_legacy_columns(self) -> None:
         """Detect legacy columns that may still exist on upgraded DBs.
 

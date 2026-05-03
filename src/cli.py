@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -44,44 +45,137 @@ def _ok(r) -> bool:
     sys.exit(1)
 
 
+def resolve_org_slug(*, args_org: str | None, available: list[str]) -> str:
+    """Resolve the per-command --org per the spec §7.4 chain."""
+    if args_org:
+        return args_org
+    env = os.environ.get("OPC_ORG_SLUG")
+    if env:
+        return env
+    if len(available) == 1:
+        return available[0]
+    if not available:
+        print(
+            "error: no orgs registered yet\n"
+            "create one with: opc orgs init <slug> [--from <example-path>]",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    print(
+        "error: --org <slug> is required\navailable orgs:",
+        file=sys.stderr,
+    )
+    for slug in sorted(available):
+        print(f"  {slug}", file=sys.stderr)
+    sys.exit(1)
+
+
+def _fetch_available_orgs(client) -> list[str]:
+    r = client.get("/api/v1/orgs")
+    if r.status_code != 200:
+        return []
+    return [o["slug"] for o in r.json().get("orgs", [])]
+
+
 # ── subcommands ──────────────────────────────────────────────
 
 
 def cmd_init(args: argparse.Namespace) -> None:
-    """Register a runtime directory with the daemon."""
+    """Create + register a multi-org runtime container with the daemon."""
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
         print(f"Error: {exc}")
         sys.exit(1)
     r = client.post(
-        "/api/v1/runtimes/register",
-        json={"path": str(Path(args.path).expanduser()), "slug": args.slug},
+        "/api/v1/runtime",
+        json={"path": str(Path(args.path).expanduser())},
     )
     if r.status_code != 200:
         print(f"Error ({r.status_code}): {r.text}")
         sys.exit(1)
-    body = r.json()
-    print(f"Active runtime: {body['active']}")
+    print(f"runtime: {r.json()['runtime']}")
 
 
-def cmd_use(args: argparse.Namespace) -> None:
-    """Switch the daemon's active runtime."""
+def cmd_runtime(args: argparse.Namespace) -> None:
+    """Show the active runtime container."""
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
         print(f"Error: {exc}")
         sys.exit(1)
-    r = client.post("/api/v1/runtimes/activate", json={"path": str(Path(args.path).expanduser())})
-    if r.status_code == 409:
-        detail = r.json().get("detail", {})
-        print(f"Cannot switch runtime: tasks in flight ({detail.get('task_ids')})")
-        sys.exit(1)
+    r = client.get("/api/v1/runtime")
     if r.status_code != 200:
         print(f"Error ({r.status_code}): {r.text}")
         sys.exit(1)
     body = r.json()
-    print(f"Active runtime: {body['active']}")
+    if body["runtime"] is None:
+        print("(no active runtime)")
+    else:
+        print(f"runtime: {body['runtime']}")
+
+
+def cmd_use(args: argparse.Namespace) -> None:
+    """Switch the daemon's active runtime container."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    r = client.post(
+        "/api/v1/runtime/use",
+        json={"path": str(Path(args.path).expanduser())},
+    )
+    if r.status_code == 409:
+        print(f"Cannot switch runtime: {r.json()['detail']}")
+        sys.exit(1)
+    if r.status_code != 200:
+        print(f"Error ({r.status_code}): {r.text}")
+        sys.exit(1)
+    print(f"runtime: {r.json()['runtime']}")
+
+
+def cmd_orgs(args: argparse.Namespace) -> None:
+    """List orgs registered with the active runtime."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    r = client.get("/api/v1/orgs")
+    if not _ok(r):
+        return
+    for org in r.json()["orgs"]:
+        print(f"  {org['slug']:30s}  {org['root']}")
+
+
+def cmd_orgs_init(args: argparse.Namespace) -> None:
+    """Create a new org subfolder inside the active runtime."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    payload: dict = {"slug": args.slug}
+    if args.from_path:
+        payload["from_example"] = args.from_path
+    r = client.post("/api/v1/orgs", json=payload)
+    if not _ok(r):
+        return
+    print(f"created: {r.json()['slug']}")
+
+
+def cmd_orgs_unload(args: argparse.Namespace) -> None:
+    """Drop an org's state from the daemon's in-memory registry."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    r = client.request("DELETE", f"/api/v1/orgs/{args.slug}")
+    if not _ok(r):
+        return
+    print(f"unloaded: {r.json()['slug']}")
 
 
 def _fmt_ts(iso: str | None, *, date_only: bool = False) -> str:
@@ -114,6 +208,9 @@ def cmd_run(args: argparse.Namespace) -> None:
         print(f"Error: {exc}")
         sys.exit(1)
 
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
     if args.brief_file:
         try:
             brief = Path(args.brief_file).expanduser().read_text(encoding="utf-8")
@@ -128,7 +225,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     payload: dict = {"brief": brief}
     if args.team:
         payload["team"] = args.team
-    r = client.post("/api/v1/tasks", json=payload)
+    r = client.post(f"/api/v1/orgs/{slug}/tasks", json=payload)
     if not _ok(r):
         return
     task_id = r.json()["task_id"]
@@ -142,16 +239,19 @@ def cmd_tail(args: argparse.Namespace) -> None:
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
         print(f"Error: {exc}")
         sys.exit(1)
-    _stream_task_events(client, args.task_id)
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
+    _stream_task_events(client, slug, args.task_id)
 
 
-def _stream_task_events(client: OpcClient, task_id: str) -> None:
+def _stream_task_events(client: OpcClient, slug: str, task_id: str) -> None:
     import json as _json
 
     import httpx
 
     try:
-        for payload in client.stream("GET", f"/api/v1/tasks/{task_id}/events"):
+        for payload in client.stream("GET", f"/api/v1/orgs/{slug}/tasks/{task_id}/events"):
             try:
                 event = _json.loads(payload)
             except _json.JSONDecodeError:
@@ -178,7 +278,10 @@ def cmd_tasks(args: argparse.Namespace) -> None:
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
         print(f"Error: {exc}")
         sys.exit(1)
-    r = client.get("/api/v1/tasks", params={"limit": args.limit})
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
+    r = client.get(f"/api/v1/orgs/{slug}/tasks", params={"limit": args.limit})
     if not _ok(r):
         return
     tasks = r.json()["tasks"]
@@ -208,7 +311,10 @@ def cmd_details(args: argparse.Namespace) -> None:
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
         print(f"Error: {exc}")
         sys.exit(1)
-    r = client.get(f"/api/v1/tasks/{args.task_id}")
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
+    r = client.get(f"/api/v1/orgs/{slug}/tasks/{args.task_id}")
     if r.status_code == 404:
         print(f"Task {args.task_id} not found.")
         sys.exit(1)
@@ -303,7 +409,10 @@ def cmd_agents(args: argparse.Namespace) -> None:
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
         print(f"Error: {exc}")
         sys.exit(1)
-    r = client.get("/api/v1/agents")
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
+    r = client.get(f"/api/v1/orgs/{slug}/agents")
     if not _ok(r):
         return
     entries = r.json()["agents"]
@@ -349,9 +458,12 @@ def cmd_init_agent(args: argparse.Namespace) -> None:
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
         print(f"Error: {exc}")
         sys.exit(1)
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
     try:
         for payload in client.stream(
-            "POST", "/api/v1/agents/init", json={"agent": args.agent},
+            "POST", f"/api/v1/orgs/{slug}/agents/init", json={"agent": args.agent},
         ):
             try:
                 event = _json.loads(payload)
@@ -390,6 +502,9 @@ def cmd_audit(args: argparse.Namespace) -> None:
         print(f"Error: {exc}")
         sys.exit(1)
 
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
     params: dict[str, str | int] = {}
     if args.task_id is not None:
         params["task_id"] = args.task_id
@@ -402,7 +517,7 @@ def cmd_audit(args: argparse.Namespace) -> None:
     if args.limit is not None:
         params["limit"] = args.limit
 
-    r = client.get("/api/v1/audit", params=params)
+    r = client.get(f"/api/v1/orgs/{slug}/audit", params=params)
     if not _ok(r):
         return
     entries = r.json()["entries"]
@@ -469,6 +584,9 @@ def _completion_payload_from_file(path: str) -> tuple[str, dict]:
 
 def cmd_report_completion(args: argparse.Namespace) -> None:
     """Agent callback: report task completion to the daemon."""
+    if not args.org:
+        print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
+        sys.exit(1)
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
@@ -509,20 +627,23 @@ def cmd_report_completion(args: argparse.Namespace) -> None:
         }
         if args.artifact_dir:
             body["artifact_dir"] = args.artifact_dir
-    r = client.post(f"/api/v1/tasks/{task_id}/completion", json=body)
+    r = client.post(f"/api/v1/orgs/{args.org}/tasks/{task_id}/completion", json=body)
     if not _ok(r):
         return
 
 
 def cmd_learning(args: argparse.Namespace) -> None:
     """Agent callback: append a learning to the agent's learnings.md."""
+    if not args.org:
+        print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
+        sys.exit(1)
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
         print(f"Error: {exc}")
         sys.exit(1)
     r = client.post(
-        f"/api/v1/agents/{args.agent}/learnings",
+        f"/api/v1/orgs/{args.org}/agents/{args.agent}/learnings",
         json={"session_id": args.session_id, "task_id": args.task_id, "text": args.text},
     )
     if not _ok(r):
@@ -536,13 +657,16 @@ def cmd_progress(args: argparse.Namespace) -> None:
     isn't needed. The Bash(opc:*) baseline allow rule matches the whole
     invocation as one line.
     """
+    if not args.org:
+        print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
+        sys.exit(1)
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
         print(f"Error: {exc}")
         sys.exit(1)
     r = client.post(
-        f"/api/v1/tasks/{args.task_id}/progress",
+        f"/api/v1/orgs/{args.org}/tasks/{args.task_id}/progress",
         json={
             "session_id": args.session_id,
             "agent": args.agent,
@@ -576,6 +700,9 @@ def _manage_repo_payload_from_file(path: str) -> tuple[str, dict]:
 
 def cmd_manage_repo(args: argparse.Namespace) -> None:
     """Agent callback: add, remove, or update a repo in agent.yaml."""
+    if not args.org:
+        print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
+        sys.exit(1)
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
@@ -595,7 +722,7 @@ def cmd_manage_repo(args: argparse.Namespace) -> None:
         if args.url:
             body["url"] = args.url
 
-    r = client.post(f"/api/v1/agents/{agent}/repos", json=body)
+    r = client.post(f"/api/v1/orgs/{args.org}/agents/{agent}/repos", json=body)
     if not _ok(r):
         return
     print(f"ok: {args.action or body['action']} {body['repo_name']}")
@@ -628,6 +755,9 @@ def _manage_agent_payload_from_file(path: str) -> dict:
 
 def cmd_manage_agent(args: argparse.Namespace) -> None:
     """Agent callback: enroll, update, or terminate an agent."""
+    if not args.org:
+        print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
+        sys.exit(1)
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
@@ -663,7 +793,7 @@ def cmd_manage_agent(args: argparse.Namespace) -> None:
         if args.repos:
             body["repos"] = _json.loads(args.repos)
 
-    r = client.post("/api/v1/agents/manage", json=body)
+    r = client.post(f"/api/v1/orgs/{args.org}/agents/manage", json=body)
     if not _ok(r):
         return
     result = r.json()
@@ -692,6 +822,9 @@ def _dispatch_payload_from_file(path: str) -> dict:
 
 def cmd_dispatch(args: argparse.Namespace) -> None:
     """Agent callback: dispatch a new task from inside an open talk."""
+    if not args.org:
+        print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
+        sys.exit(1)
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
@@ -712,7 +845,7 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
     if data.get("team"):
         body["team"] = data["team"]
 
-    r = client.post(f"/api/v1/talks/{talk_id}/dispatch", json=body)
+    r = client.post(f"/api/v1/orgs/{args.org}/talks/{talk_id}/dispatch", json=body)
     if not _ok(r):
         return
     result = r.json()
@@ -730,10 +863,13 @@ def cmd_enrollments(args: argparse.Namespace) -> None:
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
         print(f"Error: {exc}")
         sys.exit(1)
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
     params = {}
     if args.status:
         params["status"] = args.status
-    r = client.get("/api/v1/agents/enrollments", params=params)
+    r = client.get(f"/api/v1/orgs/{slug}/agents/enrollments", params=params)
     if not _ok(r):
         return
     enrollments = r.json()["enrollments"]
@@ -754,7 +890,10 @@ def cmd_approve_agent(args: argparse.Namespace) -> None:
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
         print(f"Error: {exc}")
         sys.exit(1)
-    r = client.post(f"/api/v1/agents/{args.name}/approve", json={})
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
+    r = client.post(f"/api/v1/orgs/{slug}/agents/{args.name}/approve", json={})
     if not _ok(r):
         return
     print(f"Approved: {args.name}")
@@ -767,7 +906,10 @@ def cmd_reject_agent(args: argparse.Namespace) -> None:
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
         print(f"Error: {exc}")
         sys.exit(1)
-    r = client.post(f"/api/v1/agents/{args.name}/reject", json={})
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
+    r = client.post(f"/api/v1/orgs/{slug}/agents/{args.name}/reject", json={})
     if not _ok(r):
         return
     print(f"Rejected: {args.name}")
@@ -798,7 +940,10 @@ def cmd_backfill_enrollments(args: argparse.Namespace) -> None:
         print(f"Error: {exc}")
         sys.exit(1)
 
-    r = client.post("/api/v1/agents/backfill-enrollments", json={})
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
+    r = client.post(f"/api/v1/orgs/{slug}/agents/backfill-enrollments", json={})
     if not _ok(r):
         return
     body = r.json()
@@ -836,12 +981,15 @@ def cmd_recall(args: argparse.Namespace) -> None:
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
         print(f"Error: {exc}")
         sys.exit(1)
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
     params: dict[str, str] = {}
     if args.tree:
         params["tree"] = "true"
     if args.fetch_artifact:
         params["include_artifact"] = "true"
-    r = client.get(f"/api/v1/tasks/{args.task_id}/recall", params=params)
+    r = client.get(f"/api/v1/orgs/{slug}/tasks/{args.task_id}/recall", params=params)
     if r.status_code == 404:
         print(f"Task {args.task_id} not found.")
         sys.exit(1)
@@ -883,12 +1031,15 @@ def _read_markdown_payload(path: str) -> dict:
 
 def cmd_kb_list(args: argparse.Namespace) -> None:
     client = OpcClient.from_env()
+    org_slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
     params = {}
     if args.topic:
         params["topic"] = args.topic
     if args.type:
         params["type"] = args.type
-    r = client.get("/api/v1/kb", params=params)
+    r = client.get(f"/api/v1/orgs/{org_slug}/kb", params=params)
     if not _ok(r):
         return
     for e in r.json()["entries"]:
@@ -897,7 +1048,10 @@ def cmd_kb_list(args: argparse.Namespace) -> None:
 
 def cmd_kb_get(args: argparse.Namespace) -> None:
     client = OpcClient.from_env()
-    r = client.get(f"/api/v1/kb/{args.slug}")
+    org_slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
+    r = client.get(f"/api/v1/orgs/{org_slug}/kb/{args.slug}")
     if not _ok(r):
         return
     e = r.json()
@@ -910,7 +1064,13 @@ def cmd_kb_get(args: argparse.Namespace) -> None:
 
 def cmd_kb_search(args: argparse.Namespace) -> None:
     client = OpcClient.from_env()
-    r = client.get("/api/v1/kb/search", params={"q": args.query, "limit": args.limit})
+    org_slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
+    r = client.get(
+        f"/api/v1/orgs/{org_slug}/kb/search",
+        params={"q": args.query, "limit": args.limit},
+    )
     if not _ok(r):
         return
     hits = r.json()["hits"]
@@ -927,7 +1087,11 @@ def cmd_kb_search(args: argparse.Namespace) -> None:
 
 
 def cmd_kb_add(args: argparse.Namespace) -> None:
+    if not args.org:
+        print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
+        sys.exit(1)
     client = OpcClient.from_env()
+    org_slug = args.org
     try:
         body = _read_markdown_payload(args.from_file)
     except (OSError, ValueError) as exc:
@@ -935,14 +1099,18 @@ def cmd_kb_add(args: argparse.Namespace) -> None:
         sys.exit(1)
     body["agent"] = args.agent
     body["force_new_sibling"] = args.force_new_sibling
-    r = client.post("/api/v1/kb", json=body)
+    r = client.post(f"/api/v1/orgs/{org_slug}/kb", json=body)
     if not _ok(r):
         return
     print(f"ok: added {r.json()['slug']}")
 
 
 def cmd_kb_update(args: argparse.Namespace) -> None:
+    if not args.org:
+        print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
+        sys.exit(1)
     client = OpcClient.from_env()
+    org_slug = args.org
     try:
         body = _read_markdown_payload(args.from_file)
     except (OSError, ValueError) as exc:
@@ -952,19 +1120,23 @@ def cmd_kb_update(args: argparse.Namespace) -> None:
         print(f"Error: slug in file ({body['slug']!r}) does not match CLI arg ({args.slug!r})")
         sys.exit(1)
     body["agent"] = args.agent
-    r = client.post(f"/api/v1/kb/{args.slug}", json=body)
+    r = client.post(f"/api/v1/orgs/{org_slug}/kb/{args.slug}", json=body)
     if not _ok(r):
         return
     print(f"ok: updated {r.json()['slug']}")
 
 
 def cmd_kb_delete(args: argparse.Namespace) -> None:
+    if not args.org:
+        print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
+        sys.exit(1)
     client = OpcClient.from_env()
+    org_slug = args.org
     # OpcClient only wraps `get`/`post`; hit `._client` directly for DELETE
     # rather than expanding the client API for a single caller. If a second
     # DELETE ships later, promote this into a proper `client.delete(...)`.
     r = client._client.delete(
-        f"/api/v1/kb/{args.slug}",
+        f"/api/v1/orgs/{org_slug}/kb/{args.slug}",
         params={"agent": args.agent, "confirm": args.confirm, "as_founder": args.as_founder},
     )
     if not _ok(r):
@@ -974,14 +1146,21 @@ def cmd_kb_delete(args: argparse.Namespace) -> None:
 
 def cmd_kb_reindex(args: argparse.Namespace) -> None:
     client = OpcClient.from_env()
-    r = client.post("/api/v1/kb/reindex")
+    org_slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
+    r = client.post(f"/api/v1/orgs/{org_slug}/kb/reindex")
     if not _ok(r):
         return
     print("ok: reindexed")
 
 
 def cmd_kb_precedent(args: argparse.Namespace) -> None:
+    if not args.org:
+        print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
+        sys.exit(1)
     client = OpcClient.from_env()
+    org_slug = args.org
     body = {
         "task_id": args.task_id,
         "decision": args.decision,
@@ -990,7 +1169,7 @@ def cmd_kb_precedent(args: argparse.Namespace) -> None:
     }
     if args.slug:
         body["slug"] = args.slug
-    r = client.post("/api/v1/kb/precedent", json=body)
+    r = client.post(f"/api/v1/orgs/{org_slug}/kb/precedent", json=body)
     if not _ok(r):
         return
     print(f"ok: wrote precedent {r.json()['slug']}")
@@ -998,7 +1177,10 @@ def cmd_kb_precedent(args: argparse.Namespace) -> None:
 
 def cmd_talk_start(args: argparse.Namespace) -> None:
     client = OpcClient.from_env()
-    r = client.post("/api/v1/talks", json={"agent_name": args.agent})
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
+    r = client.post(f"/api/v1/orgs/{slug}/talks", json={"agent_name": args.agent})
     if r.status_code == 409:
         detail = r.json().get("detail", {})
         if detail.get("code") == "talk_already_open":
@@ -1017,7 +1199,10 @@ def cmd_talk_start(args: argparse.Namespace) -> None:
 
 def cmd_talk_resume(args: argparse.Namespace) -> None:
     client = OpcClient.from_env()
-    r = client.post(f"/api/v1/talks/{args.talk_id}/resume")
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
+    r = client.post(f"/api/v1/orgs/{slug}/talks/{args.talk_id}/resume")
     if not _ok(r):
         return
     print(f"ok: resumed {args.talk_id}")
@@ -1025,8 +1210,11 @@ def cmd_talk_resume(args: argparse.Namespace) -> None:
 
 def cmd_talk_abandon(args: argparse.Namespace) -> None:
     client = OpcClient.from_env()
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
     r = client.post(
-        f"/api/v1/talks/{args.talk_id}/abandon",
+        f"/api/v1/orgs/{slug}/talks/{args.talk_id}/abandon",
         json={"reason": args.reason or "manual"},
     )
     if not _ok(r):
@@ -1037,12 +1225,15 @@ def cmd_talk_abandon(args: argparse.Namespace) -> None:
 def cmd_talk_end(args: argparse.Namespace) -> None:
     import json as _json
     client = OpcClient.from_env()
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
     try:
         body = _json.loads(Path(args.from_file).read_text())
     except (OSError, ValueError) as exc:
         print(f"Error reading {args.from_file}: {exc}")
         sys.exit(1)
-    r = client.post(f"/api/v1/talks/{args.talk_id}/end", json=body)
+    r = client.post(f"/api/v1/orgs/{slug}/talks/{args.talk_id}/end", json=body)
     if not _ok(r):
         return
     resp = r.json()
@@ -1054,10 +1245,13 @@ def cmd_talk_end(args: argparse.Namespace) -> None:
 
 def cmd_talk_status(args: argparse.Namespace) -> None:
     client = OpcClient.from_env()
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
     params = {"status": "open"}
     if args.agent:
         params["agent"] = args.agent
-    r = client.get("/api/v1/talks", params=params)
+    r = client.get(f"/api/v1/orgs/{slug}/talks", params=params)
     if not _ok(r):
         return
     talks = r.json()["talks"]
@@ -1070,10 +1264,13 @@ def cmd_talk_status(args: argparse.Namespace) -> None:
 
 def cmd_talk_list(args: argparse.Namespace) -> None:
     client = OpcClient.from_env()
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
     params = {"limit": args.limit}
     if args.agent:
         params["agent"] = args.agent
-    r = client.get("/api/v1/talks", params=params)
+    r = client.get(f"/api/v1/orgs/{slug}/talks", params=params)
     if not _ok(r):
         return
     for t in r.json()["talks"]:
@@ -1087,7 +1284,10 @@ def cmd_talk_list(args: argparse.Namespace) -> None:
 def cmd_talk_show(args: argparse.Namespace) -> None:
     import json as _json
     client = OpcClient.from_env()
-    r = client.get(f"/api/v1/talks/{args.talk_id}")
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
+    r = client.get(f"/api/v1/orgs/{slug}/talks/{args.talk_id}")
     if not _ok(r):
         return
     t = r.json()
@@ -1110,8 +1310,11 @@ def cmd_talk_show(args: argparse.Namespace) -> None:
 
 def cmd_resolve_escalation(args: argparse.Namespace) -> None:
     client = OpcClient.from_env()
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
     r = client.post(
-        f"/api/v1/tasks/{args.task_id}/resolve-escalation",
+        f"/api/v1/orgs/{slug}/tasks/{args.task_id}/resolve-escalation",
         json={"decision": args.decision, "rationale": args.rationale},
     )
     if not _ok(r):
@@ -1127,8 +1330,11 @@ def cmd_cancel(args: argparse.Namespace) -> None:
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
         print(f"Error: {exc}")
         sys.exit(1)
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
     r = client.post(
-        f"/api/v1/tasks/{args.task_id}/cancel",
+        f"/api/v1/orgs/{slug}/tasks/{args.task_id}/cancel",
         json={"rationale": args.rationale or "", "cascade": not args.no_cascade},
     )
     if r.status_code == 404:
@@ -1205,11 +1411,14 @@ def cmd_revisit(args: argparse.Namespace) -> None:
         print("Error: --session-timeout-seconds must be a positive integer")
         sys.exit(1)
 
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
     payload: dict = {"founder_note": note}
     if args.session_timeout_seconds is not None:
         payload["session_timeout_seconds"] = args.session_timeout_seconds
     r = client.post(
-        f"/api/v1/tasks/{args.task_id}/revisit",
+        f"/api/v1/orgs/{slug}/tasks/{args.task_id}/revisit",
         json=payload,
     )
     if r.status_code == 404:
@@ -1270,6 +1479,48 @@ def cmd_migrate_to_org_runtime(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_migrate_to_multi_org(args: argparse.Namespace) -> None:
+    """`opc migrate-to-multi-org <path> --i-have-a-backup [--apply]`."""
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print("refusing to migrate without an attached terminal", file=sys.stderr)
+        sys.exit(1)
+    from src.daemon.migration_multi_org import migrate_to_multi_org
+
+    rt = Path(args.path).expanduser().resolve()
+    print(f"about to migrate {rt} from schema v1 → v2")
+    print("this is a hard cut. there is no rollback path.")
+    if not args.apply:
+        print("(dry-run; pass --apply to execute)")
+    confirm = input("Continue? [y/N] ").strip().lower()
+    if confirm != "y":
+        print("aborted")
+        sys.exit(1)
+
+    try:
+        report = migrate_to_multi_org(
+            rt, apply=args.apply, i_have_a_backup=args.i_have_a_backup,
+        )
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if report.get("already_migrated"):
+        print(f"{rt} is already at schema v2 — nothing to do")
+        return
+
+    if not args.apply:
+        print("would move:")
+        for src, dst in report["would_move"]:
+            print(f"  {src} → {dst}")
+        print("\nrun with --apply to execute")
+        return
+
+    print(f"migrated. new layout:")
+    print(f"  {rt}/orgs/{report['slug']}/")
+    print(f"\nnext step:")
+    print(f"  uv run opc init-agent --org {report['slug']}")
+
+
 # ── parser ───────────────────────────────────────────────────
 
 
@@ -1281,21 +1532,47 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
 
     # opc init
-    p_init_runtime = sub.add_parser("init", help="Initialize a new OPC runtime directory")
-    p_init_runtime.add_argument("path", help="Path for the new runtime directory")
-    p_init_runtime.add_argument(
-        "--slug", required=True,
-        help="Org slug stamped into opc.yaml on first init (required)",
+    p_init_runtime = sub.add_parser(
+        "init", help="create + register a multi-org runtime container",
     )
+    p_init_runtime.add_argument("path", help="Path for the new runtime container")
     p_init_runtime.set_defaults(func=cmd_init)
 
+    # opc runtime
+    p_runtime = sub.add_parser("runtime", help="show the active runtime")
+    p_runtime.set_defaults(func=cmd_runtime)
+
     # opc use
-    p_use = sub.add_parser("use", help="Switch the daemon's active runtime")
+    p_use = sub.add_parser("use", help="switch the active runtime container")
     p_use.add_argument("path", help="Path of an already-registered runtime")
     p_use.set_defaults(func=cmd_use)
 
+    # opc orgs
+    p_orgs = sub.add_parser("orgs", help="manage orgs in the active runtime")
+    p_orgs.set_defaults(orgs_cmd="list", func=cmd_orgs)
+    orgs_sub = p_orgs.add_subparsers(dest="orgs_cmd")
+    orgs_sub.required = False
+
+    p_orgs_list = orgs_sub.add_parser("list", help="list orgs")
+    p_orgs_list.set_defaults(func=cmd_orgs)
+
+    p_orgs_init = orgs_sub.add_parser("init", help="create a new org")
+    p_orgs_init.add_argument("slug")
+    p_orgs_init.add_argument(
+        "--from", dest="from_path", default=None,
+        help="path to an examples/orgs/<name> tree to seed from",
+    )
+    p_orgs_init.set_defaults(func=cmd_orgs_init)
+
+    p_orgs_unload = orgs_sub.add_parser(
+        "unload", help="drop an org's state from the daemon",
+    )
+    p_orgs_unload.add_argument("slug")
+    p_orgs_unload.set_defaults(func=cmd_orgs_unload)
+
     # opc run
     p_run = sub.add_parser("run", help="Run a task")
+    p_run.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_run.add_argument(
         "--team", default=None,
         help="Team to route the task to (default: engineering)",
@@ -1310,6 +1587,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # opc details
     p_details = sub.add_parser("details", help="Show task details")
+    p_details.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_details.add_argument("task_id", help="Task ID (e.g. TASK-001)")
     p_details.add_argument(
         "--full",
@@ -1320,16 +1598,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     # opc tail
     p_tail = sub.add_parser("tail", help="Stream events for an existing task")
+    p_tail.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_tail.add_argument("task_id", help="Task ID")
     p_tail.set_defaults(func=cmd_tail)
 
     # opc tasks
     p_tasks = sub.add_parser("tasks", help="List recent tasks")
+    p_tasks.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_tasks.add_argument("--limit", type=int, default=20, help="Max tasks to show")
     p_tasks.set_defaults(func=cmd_tasks)
 
     # opc agents
     p_agents = sub.add_parser("agents", help="Show agent performance tiers")
+    p_agents.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_agents.add_argument("agent", nargs="?", default=None,
                           help="Optional agent name; show that agent's scorecard only")
     p_agents.add_argument("--detail", action="store_true", help="Show detailed scorecards")
@@ -1337,6 +1618,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # opc audit
     p_audit = sub.add_parser("audit", help="Show filtered audit-log entries")
+    p_audit.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_audit.add_argument("task_id", nargs="?", default=None,
                          help="Optional task id to filter by (e.g. TASK-007)")
     p_audit.add_argument("--agent", default=None, help="Filter by agent name")
@@ -1352,12 +1634,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     # opc init-agent
     p_init_agent = sub.add_parser("init-agent", help="Initialize agent workspaces with system prompts and repo clone")
+    p_init_agent.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_init_agent.add_argument("agent", nargs="?", default=None,
                         help="Specific agent to initialize (default: all)")
     p_init_agent.set_defaults(func=cmd_init_agent)
 
     # opc manage-repo
     p_repo = sub.add_parser("manage-repo", help="Add, remove, or update a repo in an agent's config")
+    p_repo.add_argument("--org", required=True, help="Org slug (required for agent callbacks)")
     p_repo.add_argument("action", nargs="?", default=None, choices=["add", "remove", "update"],
                          help="Action to perform")
     p_repo.add_argument("--agent", default=None, help="Agent name")
@@ -1369,6 +1653,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # opc manage-agent
     p_ma = sub.add_parser("manage-agent", help="Enroll, update, or terminate an agent")
+    p_ma.add_argument("--org", required=True, help="Org slug (required for agent callbacks)")
     p_ma.add_argument("action", nargs="?", default=None, choices=["enroll", "update", "terminate"])
     p_ma.add_argument("--name", default=None, help="Agent name")
     p_ma.add_argument("--task-id", dest="task_id", default=None, help="Active task ID (task auth path)")
@@ -1384,6 +1669,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # opc dispatch
     p_dispatch = sub.add_parser("dispatch", help="Dispatch a new task from an open talk")
+    p_dispatch.add_argument("--org", required=True, help="Org slug (required for agent callbacks)")
     p_dispatch.add_argument(
         "--from-file", dest="from_file", required=True,
         help="Path to JSON file with dispatch payload (talk_id, brief, optional target_agent/team)",
@@ -1392,16 +1678,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     # opc enrollments
     p_enroll = sub.add_parser("enrollments", help="List agent enrollment requests")
+    p_enroll.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_enroll.add_argument("--status", default=None, choices=["pending", "approved", "rejected", "terminated"])
     p_enroll.set_defaults(func=cmd_enrollments)
 
     # opc approve-agent
     p_approve = sub.add_parser("approve-agent", help="Approve a pending agent enrollment")
+    p_approve.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_approve.add_argument("name", help="Agent name to approve")
     p_approve.set_defaults(func=cmd_approve_agent)
 
     # opc reject-agent
     p_reject = sub.add_parser("reject-agent", help="Reject a pending agent enrollment")
+    p_reject.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_reject.add_argument("name", help="Agent name to reject")
     p_reject.set_defaults(func=cmd_reject_agent)
 
@@ -1413,6 +1702,7 @@ def build_parser() -> argparse.ArgumentParser:
             "(founder; TTY-gated)"
         ),
     )
+    p_backfill.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_backfill.set_defaults(func=cmd_backfill_enrollments)
 
     # opc recall
@@ -1420,6 +1710,7 @@ def build_parser() -> argparse.ArgumentParser:
         "recall",
         help="Recall a task: brief, outcome, optional artifact contents",
     )
+    p_recall.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_recall.add_argument("task_id", help="Task ID (e.g. TASK-001)")
     p_recall.add_argument("--tree", action="store_true",
                           help="Include the full subtree of child tasks")
@@ -1429,6 +1720,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_recall.set_defaults(func=cmd_recall)
 
     p_rep = sub.add_parser("report-completion", help="Agent callback: report task completion")
+    p_rep.add_argument("--org", required=True, help="Org slug (required for agent callbacks)")
     p_rep.add_argument(
         "--from-file", dest="from_file", default=None,
         help="Path to a JSON file containing the completion payload. "
@@ -1451,6 +1743,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_rep.set_defaults(func=cmd_report_completion)
 
     p_learn = sub.add_parser("learning", help="Agent callback: append a learning")
+    p_learn.add_argument("--org", required=True, help="Org slug (required for agent callbacks)")
     p_learn.add_argument("--task-id", required=True)
     p_learn.add_argument("--session-id", required=True)
     p_learn.add_argument("--agent", required=True)
@@ -1460,6 +1753,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_prog = sub.add_parser(
         "progress", help="Agent callback: emit a mid-task progress note"
     )
+    p_prog.add_argument("--org", required=True, help="Org slug (required for agent callbacks)")
     p_prog.add_argument("--task-id", required=True)
     p_prog.add_argument("--session-id", required=True)
     p_prog.add_argument("--agent", required=True)
@@ -1475,33 +1769,39 @@ def build_parser() -> argparse.ArgumentParser:
     kb_sub = p_kb.add_subparsers(dest="kb_command", required=True)
 
     p_kb_list = kb_sub.add_parser("list", help="List KB entries")
+    p_kb_list.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_kb_list.add_argument("--topic")
     p_kb_list.add_argument("--type", choices=["reference", "precedent"])
     p_kb_list.set_defaults(func=cmd_kb_list)
 
     p_kb_get = kb_sub.add_parser("get", help="Read a KB entry")
+    p_kb_get.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_kb_get.add_argument("slug")
     p_kb_get.set_defaults(func=cmd_kb_get)
 
     p_kb_search = kb_sub.add_parser("search", help="Search KB entries")
+    p_kb_search.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_kb_search.add_argument("query")
     p_kb_search.add_argument("--limit", type=int, default=20)
     p_kb_search.add_argument("--json", action="store_true")
     p_kb_search.set_defaults(func=cmd_kb_search)
 
     p_kb_add = kb_sub.add_parser("add", help="Add a KB entry from a markdown file")
+    p_kb_add.add_argument("--org", required=True, help="Org slug (required for agent callbacks)")
     p_kb_add.add_argument("--agent", required=True)
     p_kb_add.add_argument("--from-file", required=True)
     p_kb_add.add_argument("--force-new-sibling", action="store_true")
     p_kb_add.set_defaults(func=cmd_kb_add)
 
     p_kb_update = kb_sub.add_parser("update", help="Update an existing KB entry")
+    p_kb_update.add_argument("--org", required=True, help="Org slug (required for agent callbacks)")
     p_kb_update.add_argument("slug")
     p_kb_update.add_argument("--agent", required=True)
     p_kb_update.add_argument("--from-file", required=True)
     p_kb_update.set_defaults(func=cmd_kb_update)
 
     p_kb_delete = kb_sub.add_parser("delete", help="Delete a KB entry (team manager; founder may override with --as-founder)")
+    p_kb_delete.add_argument("--org", required=True, help="Org slug (required for agent callbacks)")
     p_kb_delete.add_argument("slug")
     p_kb_delete.add_argument("--agent", required=True)
     p_kb_delete.add_argument("--confirm", action="store_true")
@@ -1509,9 +1809,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_kb_delete.set_defaults(func=cmd_kb_delete)
 
     p_kb_reindex = kb_sub.add_parser("reindex", help="Regenerate _index.md")
+    p_kb_reindex.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_kb_reindex.set_defaults(func=cmd_kb_reindex)
 
     p_kb_prec = kb_sub.add_parser("precedent", help="Record a precedent from an escalated task")
+    p_kb_prec.add_argument("--org", required=True, help="Org slug (required for agent callbacks)")
     p_kb_prec.add_argument("--task-id", required=True)
     p_kb_prec.add_argument("--decision", required=True, choices=["approve", "reject"])
     p_kb_prec.add_argument("--rationale", required=True)
@@ -1524,39 +1826,47 @@ def build_parser() -> argparse.ArgumentParser:
     talk_sub = p_talk.add_subparsers(dest="talk_command", required=True)
 
     p_talk_start = talk_sub.add_parser("start", help="Start a new talk")
+    p_talk_start.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_talk_start.add_argument("--agent", required=True)
     p_talk_start.set_defaults(func=cmd_talk_start)
 
     p_talk_resume = talk_sub.add_parser("resume", help="Resume an open talk")
+    p_talk_resume.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_talk_resume.add_argument("--talk-id", required=True)
     p_talk_resume.set_defaults(func=cmd_talk_resume)
 
     p_talk_abandon = talk_sub.add_parser("abandon", help="Abandon an open talk")
+    p_talk_abandon.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_talk_abandon.add_argument("--talk-id", required=True)
     p_talk_abandon.add_argument("--reason", default="manual")
     p_talk_abandon.set_defaults(func=cmd_talk_abandon)
 
     p_talk_end = talk_sub.add_parser("end", help="End a talk (agent callback)")
+    p_talk_end.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_talk_end.add_argument("--talk-id", required=True)
     p_talk_end.add_argument("--from-file", required=True)
     p_talk_end.set_defaults(func=cmd_talk_end)
 
     p_talk_status = talk_sub.add_parser("status", help="List open talks")
+    p_talk_status.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_talk_status.add_argument("--agent")
     p_talk_status.set_defaults(func=cmd_talk_status)
 
     p_talk_list = talk_sub.add_parser("list", help="List recent talks")
+    p_talk_list.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_talk_list.add_argument("--agent")
     p_talk_list.add_argument("--limit", type=int, default=20)
     p_talk_list.set_defaults(func=cmd_talk_list)
 
     p_talk_show = talk_sub.add_parser("show", help="Show a talk's metadata + transcript")
+    p_talk_show.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_talk_show.add_argument("talk_id")
     p_talk_show.add_argument("--json", action="store_true", help="Emit raw JSON instead of human output")
     p_talk_show.set_defaults(func=cmd_talk_show)
 
     # opc resolve-escalation
     p_resolve = sub.add_parser("resolve-escalation", help="Resolve an escalated task (founder only)")
+    p_resolve.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_resolve.add_argument("--task-id", required=True)
     p_resolve.add_argument("--decision", required=True, choices=["approve", "reject"])
     p_resolve.add_argument("--rationale", required=True)
@@ -1568,6 +1878,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Cancel a task (founder): SIGTERMs live subprocesses and cascades down the subtree",
     )
     p_cancel.add_argument("task_id", help="Task ID to cancel (e.g. TASK-052)")
+    p_cancel.add_argument(
+        "--org", default=None,
+        help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)",
+    )
     p_cancel.add_argument(
         "--rationale", default="",
         help="Optional founder note recorded on every cancelled row",
@@ -1587,6 +1901,7 @@ def build_parser() -> argparse.ArgumentParser:
             "(founder; TTY-gated)"
         ),
     )
+    p_revisit.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_revisit.add_argument("task_id", help="Any task id in the lineage to revisit")
     p_revisit_note = p_revisit.add_mutually_exclusive_group()
     p_revisit_note.add_argument(
@@ -1619,6 +1934,23 @@ def build_parser() -> argparse.ArgumentParser:
     mig.add_argument("--apply", action="store_true",
                      help="Execute the migration. Without this, the command is a dry run.")
     mig.set_defaults(func=cmd_migrate_to_org_runtime)
+
+    # opc migrate-to-multi-org — convert v1 single-org runtime → v2 multi-org container.
+    mig2 = sub.add_parser(
+        "migrate-to-multi-org",
+        help="convert a v1 single-org runtime into a v2 multi-org container",
+    )
+    mig2.add_argument("path")
+    mig2.add_argument(
+        "--i-have-a-backup",
+        action="store_true",
+        help="acknowledgment that you have backed up the runtime folder",
+    )
+    mig2.add_argument(
+        "--apply", action="store_true",
+        help="actually execute (default: dry-run)",
+    )
+    mig2.set_defaults(func=cmd_migrate_to_multi_org)
 
     return parser
 

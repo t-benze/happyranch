@@ -1,8 +1,17 @@
 # Multi-Org Runtime Design
 
-**Status:** Draft
+**Status:** Superseded by [2026-04-28-parallel-multi-org-runtime-design.md](2026-04-28-parallel-multi-org-runtime-design.md)
 **Author:** Founder + Claude
 **Date:** 2026-04-26
+
+> **Note (2026-04-28):** This spec adopted a "one runtime = one org, N runtimes
+> registered" model with daemon-internal sharding. Subsequent design work
+> collapsed that into a simpler "one runtime container, N org subfolders,
+> orgs run in parallel inside one daemon" model. The new spec preserves most
+> of this document's substantive decisions (per-org `OrgState`, path-prefix
+> routing, file-based agents, no active-org concept) but reshapes the
+> filesystem layout and the registry semantics. Read the new spec for the
+> authoritative design.
 
 ## 1. Problem
 

@@ -13,6 +13,8 @@ from pydantic import BaseModel, field_validator
 from sse_starlette.sse import EventSourceResponse
 
 from src.daemon.auth import require_token
+from src.daemon.org_state import OrgState
+from src.daemon.routes._org_dep import OrgDep
 from src.daemon.runner import enqueue_task
 from src.daemon.state import DaemonState
 from src.models import TaskRecord, TaskStatus
@@ -31,20 +33,11 @@ class SubmitTask(BaseModel):
     brief: str
 
 
-def _require_active(state: DaemonState) -> None:
-    if state.is_idle:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "no_active_runtime"},
-        )
-
-
 @router.post("/tasks")
-async def submit_task(body: SubmitTask, request: Request) -> dict:
+async def submit_task(body: SubmitTask, org: OrgDep, request: Request) -> dict:
     state: DaemonState = request.app.state.daemon
-    _require_active(state)
     team = body.team or "engineering"
-    registry = state.teams
+    registry = org.teams
     if registry is None or team not in registry.teams():
         valid = registry.teams() if registry is not None else []
         raise HTTPException(
@@ -52,9 +45,9 @@ async def submit_task(body: SubmitTask, request: Request) -> dict:
             detail={"code": "unknown_team", "valid": valid},
         )
     manager = registry.manager_for_team(team)
-    async with state.db_lock:
-        task_id = state.db.next_task_id()
-        state.db.insert_task(
+    async with org.db_lock:
+        task_id = org.db.next_task_id()
+        org.db.insert_task(
             TaskRecord(
                 id=task_id,
                 brief=body.brief,
@@ -63,23 +56,19 @@ async def submit_task(body: SubmitTask, request: Request) -> dict:
             )
         )
 
-    enqueue_task(state, task_id)
+    enqueue_task(state, org.slug, task_id)
     return {"task_id": task_id, "team": team, "assigned_agent": manager.name}
 
 
 @router.get("/tasks")
-def list_tasks(request: Request, limit: int = 20) -> dict:
-    state: DaemonState = request.app.state.daemon
-    _require_active(state)
-    tasks = state.db.list_tasks(limit=limit)
+def list_tasks(org: OrgDep, limit: int = 20) -> dict:
+    tasks = org.db.list_tasks(limit=limit)
     return {"tasks": [t.model_dump() for t in tasks]}
 
 
 @router.get("/tasks/{task_id}")
-def get_task(task_id: str, request: Request) -> dict:
-    state: DaemonState = request.app.state.daemon
-    _require_active(state)
-    task = state.db.get_task(task_id)
+def get_task(task_id: str, org: OrgDep) -> dict:
+    task = org.db.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
 
@@ -88,9 +77,9 @@ def get_task(task_id: str, request: Request) -> dict:
     # prior_status (pulled from the revisit_of audit entry).
     # truncate=True: revisit history grows naturally over a task's lifetime,
     # so the read path must not 500 once the chain exceeds the defensive bound.
-    chain = [t.id for t in state.db.walk_revisit_chain(task_id, truncate=True)]
-    direct_revisits = state.db.get_direct_revisits(task_id)
-    audit_log = state.db.get_audit_logs(task_id)
+    chain = [t.id for t in org.db.walk_revisit_chain(task_id, truncate=True)]
+    direct_revisits = org.db.get_direct_revisits(task_id)
+    audit_log = org.db.get_audit_logs(task_id)
     prior_status = None
     if task.revisit_of_task_id is not None:
         for entry in audit_log:
@@ -101,7 +90,7 @@ def get_task(task_id: str, request: Request) -> dict:
 
     return {
         "task": task.model_dump(),
-        "results": state.db.get_task_results(task_id),
+        "results": org.db.get_task_results(task_id),
         "audit_log": audit_log,
         "revisit_chain": chain,
         "direct_revisits": direct_revisits,
@@ -149,21 +138,21 @@ def _read_artifact(
 
 
 def _recall_node(
-    state: DaemonState, task_id: str, tree: bool, include_artifact: bool,
+    org: OrgState, task_id: str, tree: bool, include_artifact: bool,
 ) -> dict | None:
-    payload = state.db.get_recall_payload(task_id)
+    payload = org.db.get_recall_payload(task_id)
     if payload is None:
         return None
     if include_artifact:
         payload["artifact"] = _read_artifact(
-            state.runtime.workspaces_dir,
+            org.root / "workspaces",
             payload.get("assigned_agent"),
             payload.get("artifact_dir"),
         )
     if tree:
         child_ids = payload["children"]
         payload["children"] = [
-            _recall_node(state, cid, tree=True, include_artifact=include_artifact)
+            _recall_node(org, cid, tree=True, include_artifact=include_artifact)
             for cid in child_ids
         ]
     return payload
@@ -172,13 +161,11 @@ def _recall_node(
 @router.get("/tasks/{task_id}/recall")
 def recall_task(
     task_id: str,
-    request: Request,
+    org: OrgDep,
     tree: bool = False,
     include_artifact: bool = False,
 ) -> dict:
-    state: DaemonState = request.app.state.daemon
-    _require_active(state)
-    node = _recall_node(state, task_id, tree=tree, include_artifact=include_artifact)
+    node = _recall_node(org, task_id, tree=tree, include_artifact=include_artifact)
     if node is None:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     return node
@@ -201,27 +188,23 @@ class CompletionBody(BaseModel):
 
 
 @router.get("/tasks/{task_id}/events")
-async def task_events(task_id: str, request: Request):
-    state: DaemonState = request.app.state.daemon
-    _require_active(state)
+async def task_events(task_id: str, org: OrgDep):
     # Reject unknown task IDs up front — otherwise EventBus.subscribe() replays
     # no history for a fabricated id and then blocks forever, which makes
     # `opc tail <bad-id>` hang instead of surfacing a 404.
-    if state.db.get_task(task_id) is None:
+    if org.db.get_task(task_id) is None:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
 
     async def gen():
-        async for event in state.event_bus.subscribe(task_id):
+        async for event in org.event_bus.subscribe(task_id):
             yield {"data": _json.dumps(event)}
 
     return EventSourceResponse(gen())
 
 
 @router.post("/tasks/{task_id}/completion")
-async def submit_completion(task_id: str, body: CompletionBody, request: Request) -> dict:
-    state: DaemonState = request.app.state.daemon
-    _require_active(state)
-    expected = state.sessions.get_active(task_id, body.agent)
+async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> dict:
+    expected = org.sessions.get_active(task_id, body.agent)
     # Reject callbacks the daemon never spawned. Both branches are 409 — the
     # tracker is the source of truth for "is this a real session". Unknown
     # comes first so an empty tracker can't silently accept a fabricated id.
@@ -238,8 +221,8 @@ async def submit_completion(task_id: str, body: CompletionBody, request: Request
     decision_json = (
         _json.dumps(body.decision) if body.decision is not None else None
     )
-    async with state.db_lock:
-        state.db.insert_task_result(
+    async with org.db_lock:
+        org.db.insert_task_result(
             task_id=task_id,
             agent=body.agent,
             session_id=body.session_id,
@@ -252,13 +235,13 @@ async def submit_completion(task_id: str, body: CompletionBody, request: Request
         )
     # Clear the tracker so a duplicate POST for the same session is rejected as
     # unknown_session rather than silently persisting a second row.
-    state.sessions.clear(task_id, body.agent)
+    org.sessions.clear(task_id, body.agent)
     # TODO(events): subscribers that connect after this point won't replay
     # `completion_reported`. The terminal task_* event is still synthesized
     # from the DB status, but per-agent completion beats are lost. Acceptable
     # today because the orchestrator consumes completions via DB (not SSE) and
     # SSE is for human observers.
-    await state.event_bus.publish(task_id, {
+    await org.event_bus.publish(task_id, {
         "type": "completion_reported",
         "agent": body.agent,
         "session_id": body.session_id,
@@ -274,7 +257,7 @@ class ProgressBody(BaseModel):
 
 
 @router.post("/tasks/{task_id}/progress")
-async def submit_progress(task_id: str, body: ProgressBody, request: Request) -> dict:
+async def submit_progress(task_id: str, body: ProgressBody, org: OrgDep) -> dict:
     """Agent-controlled mid-task progress note.
 
     Same auth shape as /completion (active session must match), but does NOT
@@ -284,9 +267,7 @@ async def submit_progress(task_id: str, body: ProgressBody, request: Request) ->
     """
     from src.infrastructure.audit_logger import AuditLogger
 
-    state: DaemonState = request.app.state.daemon
-    _require_active(state)
-    expected = state.sessions.get_active(task_id, body.agent)
+    expected = org.sessions.get_active(task_id, body.agent)
     if expected is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -303,11 +284,11 @@ async def submit_progress(task_id: str, body: ProgressBody, request: Request) ->
             status_code=400,
             detail={"code": "message_required"},
         )
-    async with state.db_lock:
-        AuditLogger(state.db).log_progress(
+    async with org.db_lock:
+        AuditLogger(org.db).log_progress(
             task_id=task_id, agent=body.agent, message=message,
         )
-    await state.event_bus.publish(task_id, {
+    await org.event_bus.publish(task_id, {
         "type": "progress",
         "agent": body.agent,
         "session_id": body.session_id,
@@ -323,18 +304,17 @@ class ResolveEscalationBody(BaseModel):
 
 @router.post("/tasks/{task_id}/resolve-escalation")
 async def resolve_escalation(
-    task_id: str, body: ResolveEscalationBody, request: Request
+    task_id: str, body: ResolveEscalationBody, org: OrgDep, request: Request,
 ) -> dict:
     from src.infrastructure.audit_logger import AuditLogger
     from src.models import BlockKind, TaskStatus
 
     state: DaemonState = request.app.state.daemon
-    _require_active(state)
     if not body.rationale.strip():
         raise HTTPException(status_code=400, detail={"code": "rationale_required"})
     if body.decision not in ("approve", "reject"):
         raise HTTPException(status_code=400, detail={"code": "invalid_decision"})
-    task = state.db.get_task(task_id)
+    task = org.db.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     if task.status != TaskStatus.BLOCKED or task.block_kind != BlockKind.ESCALATED:
@@ -350,46 +330,32 @@ async def resolve_escalation(
     # manager picks it up on the next step with a one-shot prompt header
     # (see `_resolved_escalation_header_if_applicable` in run_step.py).
     resolved_note = f"Founder {body.decision}d: {body.rationale}"
-    async with state.db_lock:
+    async with org.db_lock:
         if body.decision == "approve":
-            state.db.update_task(
-                task_id,
-                status=TaskStatus.PENDING,
-                block_kind=None,
-                note=resolved_note,
-            )
+            new_status = TaskStatus.PENDING
         else:
-            state.db.update_task(
-                task_id,
-                status=TaskStatus.FAILED,
-                block_kind=None,
-                note=resolved_note,
-            )
-        AuditLogger(state.db).log_escalation_resolved(
+            new_status = TaskStatus.FAILED
+        org.db.update_task(
+            task_id, status=new_status, block_kind=None, note=resolved_note,
+        )
+        AuditLogger(org.db).log_escalation_resolved(
             task_id=task_id, decision=body.decision, rationale=body.rationale
         )
     if body.decision == "approve":
         # Re-enqueue self. The manager's next step sees the rationale via the
-        # escalation-resolved prompt header. Parent (if any) stays blocked
-        # (DELEGATED) and will be woken when this task next reaches a true
-        # terminal — no immediate wake here.
+        # escalation-resolved prompt header (see
+        # ``_resolved_escalation_header_if_applicable`` in run_step.py).
+        # Parent (if any) stays blocked (DELEGATED) and will be woken when
+        # this task next reaches a true terminal — no immediate wake here.
         if state.queue is not None:
-            state.queue.put_nowait(task_id)
-        new_status = TaskStatus.PENDING
+            state.queue.put_nowait(org.slug, task_id)
     else:
         # Cascade-fail upward: the parent (if any) must learn this branch
-        # failed. _enqueue_parent_if_waiting calls _fail on the parent on
-        # FAILED siblings, which needs the full Orchestrator surface
-        # (_update_task_history, _audit, teams, _tracker), not a shim.
-        from src.orchestrator.orchestrator import Orchestrator
+        # failed. The org's Orchestrator owns its slug + queue + db, so we
+        # just pass it through; ``_enqueue_parent_if_waiting`` calls _fail
+        # on the parent on FAILED siblings.
         from src.orchestrator.run_step import _enqueue_parent_if_waiting
-        orch = Orchestrator(
-            db=state.db, settings=state.settings,
-            runtime=state.runtime, teams=state.teams,
-        )
-        orch.attach_queue(state.queue)
-        _enqueue_parent_if_waiting(orch, task_id)
-        new_status = TaskStatus.FAILED
+        _enqueue_parent_if_waiting(org.orchestrator, task_id)
     return {"ok": True, "task_id": task_id, "new_status": new_status.value}
 
 
@@ -455,7 +421,7 @@ def _classify_predecessor_status(task: TaskRecord) -> str | None:
 
 @router.post("/tasks/{task_id}/revisit")
 async def revisit_task(
-    task_id: str, body: RevisitBody, request: Request,
+    task_id: str, body: RevisitBody, org: OrgDep, request: Request,
 ) -> dict:
     """Founder-initiated: spawn a fresh root that inherits the predecessor's
     brief and references it via audit-log entries.
@@ -468,15 +434,14 @@ async def revisit_task(
     from src.infrastructure.database import LineageTooDeep
 
     state: DaemonState = request.app.state.daemon
-    _require_active(state)
 
-    flagged = state.db.get_task(task_id)
+    flagged = org.db.get_task(task_id)
     if flagged is None:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
 
     # Walk to the predecessor root. Defensive bound guards against corrupt cycles.
     try:
-        chain = state.db.walk_ancestors(task_id, max_hops=20)
+        chain = org.db.walk_ancestors(task_id, max_hops=20)
     except LineageTooDeep as exc:
         raise HTTPException(
             status_code=500,
@@ -512,9 +477,9 @@ async def revisit_task(
         if body.session_timeout_seconds is not None
         else predecessor.session_timeout_seconds
     )
-    async with state.db_lock:
-        new_id = state.db.next_task_id()
-        state.db.insert_task(TaskRecord(
+    async with org.db_lock:
+        new_id = org.db.next_task_id()
+        org.db.insert_task(TaskRecord(
             id=new_id,
             brief=predecessor.brief,
             team=predecessor.team,
@@ -524,7 +489,7 @@ async def revisit_task(
             revisit_of_task_id=predecessor.id,
             session_timeout_seconds=new_timeout,
         ))
-        audit = AuditLogger(state.db)
+        audit = AuditLogger(org.db)
         audit.log_revisit_of(
             task_id=new_id,
             predecessor_root=predecessor.id,
@@ -537,7 +502,7 @@ async def revisit_task(
             predecessor_task_id=predecessor.id, new_root=new_id,
         )
 
-    enqueue_task(state, new_id)
+    enqueue_task(state, org.slug, new_id)
 
     return {
         "new_root_task_id": new_id,
@@ -550,7 +515,7 @@ async def revisit_task(
 
 @router.post("/tasks/{task_id}/cancel")
 async def cancel_task(
-    task_id: str, body: CancelBody, request: Request,
+    task_id: str, body: CancelBody, org: OrgDep,
 ) -> dict:
     """Founder-initiated cancel of a task and (by default) its descendants.
 
@@ -565,10 +530,7 @@ async def cancel_task(
     """
     from src.infrastructure.audit_logger import AuditLogger
 
-    state: DaemonState = request.app.state.daemon
-    _require_active(state)
-
-    root = state.db.get_task(task_id)
+    root = org.db.get_task(task_id)
     if root is None:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     if root.status in _TERMINAL_TASK_STATUSES:
@@ -584,12 +546,12 @@ async def cancel_task(
     stack = [task_id]
     while stack:
         tid = stack.pop()
-        t = state.db.get_task(tid)
+        t = org.db.get_task(tid)
         if t is None or t.status in _TERMINAL_TASK_STATUSES:
             continue
         to_cancel.append(tid)
         if body.cascade:
-            stack.extend(state.db.get_children(tid))
+            stack.extend(org.db.get_children(tid))
 
     now = datetime.now(timezone.utc).isoformat()
     rationale = body.rationale.strip()
@@ -598,10 +560,10 @@ async def cancel_task(
     # Phase 1: DB writes + audit under the lock, to serialise with run_step
     # transitions. Collect PIDs while we hold the lock — we'll SIGTERM outside.
     pids_to_kill: list[tuple[str, str, int]] = []
-    audit = AuditLogger(state.db)
-    async with state.db_lock:
+    audit = AuditLogger(org.db)
+    async with org.db_lock:
         for tid in to_cancel:
-            state.db.update_task(
+            org.db.update_task(
                 tid,
                 status=TaskStatus.FAILED,
                 block_kind=None,
@@ -609,7 +571,7 @@ async def cancel_task(
                 cancelled_at=now,
                 completed_at=now,
             )
-            for agent, pid in state.sessions.iter_task_pids(tid):
+            for agent, pid in org.sessions.iter_task_pids(tid):
                 pids_to_kill.append((tid, agent, pid))
             audit.log_task_cancelled(
                 task_id=tid, rationale=rationale, cascade=body.cascade,
@@ -633,13 +595,13 @@ async def cancel_task(
         # Clear the tracker entry so a parent auto-resume (if one gets
         # enqueued via run_step's dependent-child check) can't find a stale
         # pid and mis-route a subsequent cancel.
-        state.sessions.clear(tid, agent)
+        org.sessions.clear(tid, agent)
 
     # Phase 3: publish terminal events for any live SSE tails. EventBus
     # recognises `task_failed` as terminal (see _TERMINAL_TYPES in
     # event_bus.py) and closes the stream on the observer side.
     for tid in to_cancel:
-        await state.event_bus.publish(tid, {
+        await org.event_bus.publish(tid, {
             "type": "task_failed",
             "outcome": "cancelled",
             "task_id": tid,

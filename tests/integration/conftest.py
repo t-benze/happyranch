@@ -19,13 +19,32 @@ def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path / ".opc"
 
 
+DEFAULT_TEST_SLUG = "test"
+
+
 @pytest.fixture
-def runtime(tmp_path: Path) -> Path:
-    rt = RuntimeDir.init(tmp_path / "runtime", slug="test")
+def runtime_container(tmp_path: Path) -> Path:
+    """Create a fresh multi-org runtime container."""
+    return RuntimeDir.init(tmp_path / "runtime").root
+
+
+@pytest.fixture
+def runtime(runtime_container: Path) -> Path:
+    """Materialize a default org under <container>/orgs/test/.
+
+    Returns the ORG ROOT so existing tests that reference
+    ``runtime/org/agents`` and ``runtime/workspaces/<agent>`` keep working
+    against the multi-org layout. The daemon ``register`` call uses the
+    container path (see ``live_daemon``), not this org root.
+    """
+    org_root = runtime_container / "orgs" / DEFAULT_TEST_SLUG
+    (org_root / "org" / "agents").mkdir(parents=True, exist_ok=True)
+    (org_root / "workspaces").mkdir(parents=True, exist_ok=True)
+    (org_root / "kb").mkdir(parents=True, exist_ok=True)
+    (org_root / "talks").mkdir(parents=True, exist_ok=True)
     # Seed engineering + content teams so /tasks (which defaults to team=engineering)
     # and the content-team end-to-end flows have valid managers to dispatch to.
-    # Mirrors tests/daemon/conftest.py since DEFAULT_LAYOUT was removed in Phase 5.
-    rt.teams_config_path.write_text(
+    (org_root / "org" / "teams.yaml").write_text(
         "teams:\n"
         "  engineering:\n"
         "    manager: engineering_head\n"
@@ -34,10 +53,10 @@ def runtime(tmp_path: Path) -> Path:
         "    manager: content_manager\n"
         "    workers: [content_writer, content_qa, seo_agent]\n"
     )
-    return rt.root
+    return org_root
 
 
-def seed_workspace(runtime_root: Path, agent: str) -> Path:
+def seed_workspace(org_root: Path, agent: str) -> Path:
     """Create the minimum workspace layout needed for `_run_agent`.
 
     The orchestrator's WorkspaceNotInitialized guard only checks the
@@ -45,7 +64,7 @@ def seed_workspace(runtime_root: Path, agent: str) -> Path:
     settings.json, or task_history.md for the fake Claude binary to
     succeed, because `fake_claude.sh` parses task_id/session_id out of the
     prompt instead of running the skill."""
-    ws = runtime_root / "workspaces" / agent
+    ws = org_root / "workspaces" / agent
     skill_dir = ws / ".claude" / "skills" / "start-task"
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text("# start-task (test stub)\n")
@@ -101,6 +120,7 @@ def fake_plan_env(fake_claude_plan_env: Path) -> Path:
 @pytest.fixture
 def live_daemon(
     tmp_home,
+    runtime_container,
     runtime,
     fake_claude,
     fake_codex,
@@ -113,7 +133,7 @@ def live_daemon(
     monkeypatch.setenv("OPC_CODEX_CLI_PATH", str(fake_codex))
     from src.daemon import runtimes as runtimes_mod
 
-    runtimes_mod.register(runtime)
+    runtimes_mod.register(runtime_container)
     script = Path(__file__).resolve().parent.parent.parent / "scripts" / "daemon.sh"
     subprocess.run([str(script), "start"], check=True)
     # Wait for /health to respond

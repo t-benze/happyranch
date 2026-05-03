@@ -3,93 +3,77 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from src.config import Settings
-from src.daemon.event_bus import EventBus
-from src.daemon.sessions import SessionTracker
+from src.daemon.org_state import OrgState
 from src.daemon.queue import TaskQueue
-from src.infrastructure.database import Database
-from src.models import BlockKind, TaskStatus
-from src.orchestrator.teams import TeamsRegistry
 from src.runtime import RuntimeDir
 
 
 @dataclass
 class DaemonState:
-    """Holds the active runtime, its DB, and the asyncio resources."""
-
-    # BLOCKED is intentionally absent here — block_kind decides:
-    #   DELEGATED  → non-terminal (parent resumes when children terminate)
-    #   ESCALATED  → synthesized as task_blocked (awaiting founder resolution)
-    # See _synthesize_terminal_event for the full rule.
-    _TERMINAL_STATUS_TO_EVENT = {
-        TaskStatus.COMPLETED: "task_complete",
-        TaskStatus.FAILED: "task_failed",
-    }
-
     runtime: RuntimeDir | None
-    db: Database | None
     settings: Settings
-    db_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    kb_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    teams_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    teams: TeamsRegistry | None = None
-    sessions: SessionTracker = field(default_factory=SessionTracker)
+    orgs: dict[str, OrgState] = field(default_factory=dict)
     queue: TaskQueue = field(default_factory=TaskQueue)
-    event_bus: EventBus = field(init=False)
-
-    def __post_init__(self) -> None:
-        def loader(task_id: str) -> list[dict]:
-            if self.db is None:
-                return []
-            history: list[dict] = [
-                {"type": "audit", **log}
-                for log in self.db.get_audit_logs(task_id)
-            ]
-            task = self.db.get_task(task_id)
-            terminal = self._synthesize_terminal_event(task) if task else None
-            if terminal is not None:
-                history.append(terminal)
-            return history
-        self.event_bus = EventBus(history_loader=loader)
-
-    def _synthesize_terminal_event(self, task) -> dict | None:
-        """Return a synthesized terminal event for a late subscriber, or None
-        if the task is still in-flight from the subscriber's POV.
-
-        COMPLETED / FAILED are unconditional terminals. BLOCKED(ESCALATED) is
-        a human-in-the-loop pause, which is terminal-enough for `opc tail`.
-        BLOCKED(DELEGATED) is explicitly NOT terminal — the parent resumes
-        automatically when its children finish, and closing the stream here
-        would make observers report waiting parents as done.
-        """
-        if task.status in self._TERMINAL_STATUS_TO_EVENT:
-            return {
-                "type": self._TERMINAL_STATUS_TO_EVENT[task.status],
-                "outcome": task.status.value,
-                "synthesized": True,
-            }
-        if task.status == TaskStatus.BLOCKED and task.block_kind == BlockKind.ESCALATED:
-            return {
-                "type": "task_blocked",
-                "outcome": "escalated",
-                "synthesized": True,
-            }
-        return None
+    orgs_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @classmethod
     def idle(cls, settings: Settings) -> "DaemonState":
-        return cls(runtime=None, db=None, settings=settings)
+        return cls(runtime=None, settings=settings)
 
     @classmethod
     def from_runtime(cls, runtime: RuntimeDir, settings: Settings) -> "DaemonState":
-        return cls(
-            runtime=runtime,
-            db=Database(runtime.db_path),
-            settings=settings,
-            teams=TeamsRegistry.load(runtime),
-        )
+        state = cls(runtime=runtime, settings=settings)
+        for slug, root in runtime.iter_org_roots():
+            org = OrgState.load(slug=slug, root=root, settings=settings)
+            # Attach the global queue + per-org sessions so the orchestrator can
+            # re-enqueue tasks (e.g. parent wake-up after a child resolves).
+            # The lifespan wiring also does this, but `from_runtime` is used by
+            # tests that bypass lifespan, so we do it here too — idempotent.
+            org.orchestrator.attach_queue(state.queue)
+            org.orchestrator.attach_sessions(org.sessions)
+            state.orgs[slug] = org
+        return state
 
     @property
     def is_idle(self) -> bool:
         return self.runtime is None
+
+    def get_org(self, slug: str) -> OrgState:
+        try:
+            return self.orgs[slug]
+        except KeyError as exc:
+            raise KeyError(slug) from exc
+
+    async def add_org(self, slug: str) -> OrgState:
+        """Lazy-load an org's OrgState. Idempotent — returns the existing
+        instance if the slug is already loaded.
+
+        The orchestrator's queue and per-org session tracker are attached
+        here so a freshly-added org is immediately runnable (the lifespan
+        ``_attach_org_runtime_wiring`` only runs over orgs present at boot).
+        """
+        async with self.orgs_lock:
+            if slug in self.orgs:
+                return self.orgs[slug]
+            assert self.runtime is not None
+            root = self.runtime.orgs_dir / slug
+            org = OrgState.load(slug=slug, root=root, settings=self.settings)
+            org.orchestrator.attach_queue(self.queue)
+            org.orchestrator.attach_sessions(org.sessions)
+            self.orgs[slug] = org
+            return org
+
+    async def remove_org(self, slug: str) -> None:
+        async with self.orgs_lock:
+            org = self.orgs.pop(slug, None)
+            if org is not None:
+                org.close()
+
+    async def close_all(self) -> None:
+        async with self.orgs_lock:
+            for org in self.orgs.values():
+                org.close()
+            self.orgs.clear()

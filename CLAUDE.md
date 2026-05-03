@@ -13,7 +13,7 @@ A canonical sample org shipped at `examples/orgs/hk-macau-tourism/` runs a one-p
 
 Agents operate autonomously within authority defined by their org. The system enforces structural patterns regardless of org: managers cross-audit each other (peer review), and no agent both proposes and approves consequential actions (maker-checker pattern). Org-specific authority (e.g., budget thresholds, refund limits) lives in `<runtime>/org/escalation-rules.md` and the agents' system prompts.
 
-The org content lives **per runtime** under `<runtime>/org/`, not in the repo. A canonical sample tree ships at `examples/orgs/hk-macau-tourism/` — future runtimes will be bootstrapped via `opc init <path> --slug <slug> --from examples/orgs/hk-macau-tourism` (this CLI form lands in Plan 2; for now the example tree serves as the reference shape).
+A single runtime container (`<runtime>/`) hosts **multiple orgs** under `<runtime>/orgs/<slug>/`. Each org has its own `org/` content (charter, agents, teams, escalation rules), its own SQLite DB, its own workspaces, its own KB, and its own talks. One daemon serves all orgs in the container concurrently. A canonical sample tree ships at `examples/orgs/hk-macau-tourism/` and is materialized into a container via `opc orgs init <slug> --from examples/orgs/hk-macau-tourism` (after `opc init <runtime>` creates the empty container).
 
 ## Design Documents (read these first)
 
@@ -174,6 +174,22 @@ Source code and protocol docs live in the repo. Runtime data lives in a dedicate
     +-- TALK-NNN.md
 ```
 
+The `<runtime-dir>/` tree above shows the **legacy v1 single-org layout**. The current **v2 multi-org layout** wraps it under `orgs/<slug>/`:
+
+```
+<runtime-dir>/                         # Created by `opc init <path>` (no slug — slug is per-org)
+|-- opc.yaml                           # container marker (schema_version: 2, type: multi-org-runtime)
++-- orgs/
+    +-- <slug>/                        # Created by `opc orgs init <slug> [--from examples/...]`
+        |-- opc.db                     # per-org SQLite
+        |-- org/                       # editable org content (charter, teams.yaml, agents/, config.yaml, ...)
+        |-- workspaces/                # per-agent workspaces (laid out as before)
+        |-- kb/                        # per-org knowledge base
+        +-- talks/                     # per-org talk transcripts
+```
+
+A single daemon serves every org in the container concurrently. Per-org HTTP routes live under `/api/v1/orgs/<slug>/...`; container-level routes live under `/api/v1/runtime` (singleton) and `/api/v1/orgs` (list/init/unload). Migrate a v1 single-org runtime in place with `opc migrate-to-multi-org <path> --i-have-a-backup --apply` — see `src/daemon/migration_multi_org.py`.
+
 ## Configuration
 
 Operational settings use the `OPC_` environment variable prefix. Runtime paths (database, workspaces) are derived from the runtime directory, not from env vars.
@@ -189,16 +205,17 @@ Operational settings use the `OPC_` environment variable prefix. Runtime paths (
 | `OPC_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout (30 min) — global default; see "Session timeout resolution" below |
 | `OPC_TIER_GREEN_THRESHOLD` | `0.90` | Acceptance rate for green tier |
 | `OPC_TIER_YELLOW_THRESHOLD` | `0.75` | Acceptance rate for yellow tier |
+| `OPC_ORG_SLUG` | _(unset)_ | Default org slug for per-org CLI commands. Set this in your shell to avoid passing `--org <slug>` on every command in a multi-org container. The CLI resolves slug as: explicit `--org` flag > `OPC_ORG_SLUG` env > auto-infer (only if exactly one org exists in the container) > error. |
 
 ### Session timeout resolution
 
 `Orchestrator._resolve_session_timeout(agent_name, task_id=...)` walks three layers, highest precedence first:
 
 1. **Task override** — optional `tasks.session_timeout_seconds` column on the task row, set by the founder via `opc revisit <task-id> --session-timeout-seconds <int>` and inherited by every child the orchestrator spawns from that task (delegate children, auto-revisits, founder-revisits when `--session-timeout-seconds` is omitted). Use this when a single revisited lineage needs longer (or shorter) sessions than the rest of the runtime.
-2. **Org override** — optional `session_timeout_seconds: <int>` in `<runtime>/org/config.yaml`. Use to bump the whole runtime above the code default.
+2. **Org override** — optional `session_timeout_seconds: <int>` in `<runtime>/orgs/<slug>/org/config.yaml`. Use to bump one org above the code default without affecting sibling orgs in the container.
 3. **Code default** — `Settings.session_timeout_seconds` (1800s), itself overridable via the `OPC_SESSION_TIMEOUT_SECONDS` env var.
 
-Each layer accepts `null`/missing as "inherit from the next layer." Values must be positive integers; non-int (string, float, bool) or `<= 0` raises at parse time. The org config is loaded via `src/orchestrator/org_config.py` (`OrgConfig` dataclass + `load_org_config(runtime)`); `<runtime>/org/config.yaml` is optional and unknown keys are ignored for forward compatibility.
+Each layer accepts `null`/missing as "inherit from the next layer." Values must be positive integers; non-int (string, float, bool) or `<= 0` raises at parse time. The org config is loaded via `src/orchestrator/org_config.py` (`OrgConfig` dataclass + `load_org_config(org_root)`); `<runtime>/orgs/<slug>/org/config.yaml` is optional and unknown keys are ignored for forward compatibility.
 
 **Inheritance** — the task-row layer is propagated by the orchestrator wherever a new task is born from an existing one:
 
@@ -350,9 +367,9 @@ Both surfaces are generated from `allow_rules_for_agent(agent_name, cli=...)` in
 - Tests for business logic (escalation rules, scoring, tier calculation)
 - `from __future__ import annotations` in all source files
 
-## Org-per-runtime layout
+## Multi-org runtime layout
 
-Each runtime carries its own org content under `<runtime>/org/`:
+Each org in the container carries its own org content under `<runtime>/orgs/<slug>/org/`:
 
 - `charter.md` — org-level reference doc (purpose, team scope, etc.)
 - `escalation-rules.md` — when to escalate to founder
@@ -376,23 +393,33 @@ dropped) so older runtimes keep booting.
 these files — `load_agent`, `list_agents`, `list_pending`, `write_pending_agent`,
 `approve_agent`, `reject_agent`. Routes (`src/daemon/routes/agents.py`) and
 the orchestrator (`src/orchestrator/run_step.py`,
-`src/orchestrator/workspace_adapters.py`) all read through this module. Do
-NOT reach into the legacy `agent_enrollments` SQLite table for new code paths
-— it's preserved for migration only.
+`src/orchestrator/workspace_adapters.py`) all read through this module against
+the per-org root. Do NOT reach into the legacy `agent_enrollments` SQLite
+table for new code paths — it's preserved for migration only.
 
 `TeamsRegistry` (in `src/orchestrator/teams.py`) is seeded from
-`<runtime>/org/teams.yaml` and auto-persists on `add_worker` / `remove_worker`.
-There is no `DEFAULT_LAYOUT` — a runtime without a `teams.yaml` is treated as
-an empty registry until the founder writes one.
+`<runtime>/orgs/<slug>/org/teams.yaml` and auto-persists on `add_worker` /
+`remove_worker`. There is no `DEFAULT_LAYOUT` — an org without a `teams.yaml`
+is treated as an empty registry until the founder writes one.
 
-`opc init <path> --slug <slug>` is the only way to create a new runtime;
-`--slug` is mandatory on first init. `RuntimeDir.init(path, slug=...)`
-raises `ValueError` if the slug is missing on a fresh path. Idempotent
-re-runs preserve the existing slug.
+`opc init <path>` creates the multi-org **container** (no slug — the container
+itself is slugless; orgs live as subdirectories under `orgs/<slug>/`). Each
+org is then materialized via `opc orgs init <slug> [--from <example-tree>]`,
+which writes `<runtime>/orgs/<slug>/org/` and registers the org with the
+running daemon. `RuntimeDir.init` is idempotent on the container marker;
+`opc orgs init` errors `org_exists` / `org_dir_exists` if the slug already
+resolves under the container.
 
-For runtimes created before the `org/` folder existed, `opc migrate-to-org-runtime
-<path> --slug <slug> --i-have-a-backup --apply` lifts the legacy DB-backed
-agents into the file-based layout.
+For runtimes created before the `orgs/` wrapper existed (legacy v1, single-org),
+`opc migrate-to-multi-org <path> --i-have-a-backup --apply` moves
+`org/`, `workspaces/`, `kb/`, `talks/`, and `opc.db` into `orgs/<slug>/`,
+rewrites the top-level marker to `schema_version: 2,
+type: multi-org-runtime`, and is TTY-gated (no `--yes` bypass). The script
+refuses to migrate a runtime with active tasks or open talks.
+
+The earlier in-place agent migration (`opc migrate-to-org-runtime`) lifts a
+v0 DB-backed agents runtime into the v1 file-based shape; pair it with
+`opc migrate-to-multi-org` for the full v0 → v2 path.
 
 ## Task status vocabularies
 
@@ -459,62 +486,77 @@ post-mortem). CI should run them on every PR for the same reason.
 
 The CLI is an HTTP client. Start the daemon once, then run CLI commands.
 
+In a multi-org container, every per-org command takes `--org <slug>`. The CLI
+resolves the slug as: explicit `--org` flag > `OPC_ORG_SLUG` env var >
+auto-infer (only if exactly one org exists in the container) > error. Setting
+`export OPC_ORG_SLUG=hk-tourism` in your shell is the usual ergonomic shortcut
+when you only work against one org at a time. Container-level commands (`opc
+init`, `opc use`, `opc orgs ...`, `opc migrate-to-multi-org`) take no
+`--org` — they operate on the container as a whole.
+
 ```bash
 scripts/daemon.sh start                                         # start daemon in background (pid/port under ~/.opc/)
 scripts/daemon.sh status                                        # or stop
 
-opc init /path/to/runtime --slug hk-tourism                     # create + register + activate a runtime dir (slug required)
-opc use /path/to/other-runtime                                  # switch the daemon's active runtime
-opc run --brief "Explore the payment module"                    # submit a task; the team manager decides approach
-opc run --team engineering --brief "Add Alipay support"          # route to a team
-opc run --team engineering --brief-file /tmp/eh-brief.md         # read brief from a file (mutually exclusive with --brief)
-opc tail TASK-001            # stream live SSE events for a task
-opc tasks                    # list recent tasks
-opc details TASK-001         # show task details (status, block_kind, note, results, audit log)
-opc details TASK-001 --full  # same, but print full per-step output_summary (no 80-char truncation)
-opc agents [--detail]        # show performance tiers
-opc audit TASK-007                               # filtered audit-log view (task, agent, action, since, limit)
-opc audit --agent engineering_head --limit 10    # recent entries for one agent, any task
-opc audit TASK-007 --json                        # raw JSON with full payloads
-opc init-agent               # initialize all agent workspaces (repo clones + system prompts + skills)
-opc init-agent dev_agent     # initialize a specific agent
-opc recall TASK-001 [--tree] [--fetch-artifact <relpath>]   # fetch task brief + artifact tree/content
-# Knowledge base (read: any; write: any via --from-file; delete: any team manager (audited); founder via --as-founder; precedent: founder):
-opc kb list [--topic <t>] [--type reference|precedent]
-opc kb get <slug>
-opc kb search <query> [--limit N]
-opc kb add --agent <you> --from-file /tmp/kb-<slug>.md
-opc kb update <slug> --agent <you> --from-file /tmp/kb-<slug>.md
-opc kb delete <slug> --agent <you> --confirm [--as-founder]
-opc kb reindex
-opc kb precedent --task-id TASK-001 --decision approve|reject --rationale "..." [--slug <s>] --as-founder   # founder-only; follows resolve-escalation
-opc resolve-escalation --task-id TASK-001 --decision approve|reject --rationale "..."                       # approve resumes the task (PENDING + re-enqueue) with rationale injected as a one-shot prompt header; reject fails it and cascades to parent. Precedes kb precedent.
-opc revisit TASK-052 [--note "..." | --note-file PATH] [--session-timeout-seconds N]   # founder: spawn NEW root that inherits the predecessor's brief (TTY-gated). --session-timeout-seconds optionally bumps the lineage timeout (positive integer); omitted -> inherit predecessor's value
-# Talk flow (founder↔agent conversations):
-opc talk start --agent <name>
-opc talk resume --talk-id TALK-001
-opc talk abandon --talk-id TALK-001 [--reason <why>]
-opc talk end --talk-id TALK-001 --from-file /tmp/talk-end-TALK-001.json
-opc talk status [--agent <name>]
-opc talk list [--agent <name>] [--limit N]
-opc talk show TALK-001
-# Agent-side callbacks (invoked by skills):
-opc report-completion --task-id TASK-001 --session-id <sid> --status completed ...
-opc learning --agent dev_agent --session-id <sid> --task-id TASK-001 --text "..."
-opc manage-repo add --agent dev_agent --repo-name docs --url https://github.com/t-benze/docs.git
-opc manage-agent --from-file /tmp/manage-agent-enroll.json  # enroll/update/terminate an agent (task-path or talk-path auth)
-opc dispatch --from-file /tmp/dispatch-<talk_id>.json   # agent: dispatch a new task from inside an open talk (workers self-only; team managers intra-team)
-# Founder-side enrollment management:
-opc enrollments [--status pending]     # list enrollment requests
-opc approve-agent <name>               # approve and bootstrap workspace
-opc reject-agent <name>                # reject enrollment
-opc backfill-enrollments               # founder recovery: import pre-existing workspaces into the registry (TTY-gated)
-opc migrate-to-org-runtime <path> --slug <slug> --i-have-a-backup --apply   # one-shot: lift legacy runtime into the org/ shape
+# Container-level
+opc init /path/to/runtime                                       # create + register + activate a runtime container (no slug — container is slugless)
+opc use /path/to/other-runtime                                  # switch the daemon's active runtime container
+opc orgs                                                        # list orgs in the active container
+opc orgs init <slug> [--from <example-tree>]                    # materialize a new org under <runtime>/orgs/<slug>/
+opc orgs unload <slug>                                          # detach an org from the daemon (does not delete its files)
+opc migrate-to-multi-org <path> --i-have-a-backup --apply       # v1 → v2 in place (TTY-gated, refuses with active tasks/open talks)
+
+# Per-org (every command takes --org <slug> or honors OPC_ORG_SLUG)
+opc run --org hk-tourism --brief "Explore the payment module"   # submit a task; the team manager decides approach
+opc run --org hk-tourism --team engineering --brief "Add Alipay support"
+opc run --org hk-tourism --team engineering --brief-file /tmp/manager-brief.md   # read brief from a file (mutually exclusive with --brief)
+opc tail --org hk-tourism TASK-001         # stream live SSE events for a task
+opc tasks --org hk-tourism                 # list recent tasks
+opc details --org hk-tourism TASK-001      # show task details (status, block_kind, note, results, audit log)
+opc details --org hk-tourism TASK-001 --full   # same, but print full per-step output_summary (no 80-char truncation)
+opc agents --org hk-tourism [--detail]     # show performance tiers
+opc audit --org hk-tourism TASK-007                              # filtered audit-log view (task, agent, action, since, limit)
+opc audit --org hk-tourism --agent engineering_head --limit 10   # recent entries for one agent, any task
+opc audit --org hk-tourism TASK-007 --json                       # raw JSON with full payloads
+opc init-agent --org hk-tourism             # initialize all agent workspaces (repo clones + system prompts + skills)
+opc init-agent --org hk-tourism dev_agent   # initialize a specific agent
+opc recall --org hk-tourism TASK-001 [--tree] [--fetch-artifact <relpath>]   # fetch task brief + artifact tree/content
+# Knowledge base (per-org; read: any; write: any via --from-file; delete: any team manager (audited); founder via --as-founder; precedent: founder):
+opc kb list --org hk-tourism [--topic <t>] [--type reference|precedent]
+opc kb get --org hk-tourism <slug>
+opc kb search --org hk-tourism <query> [--limit N]
+opc kb add --org hk-tourism --agent <you> --from-file /tmp/kb-<slug>.md
+opc kb update --org hk-tourism <slug> --agent <you> --from-file /tmp/kb-<slug>.md
+opc kb delete --org hk-tourism <slug> --agent <you> --confirm [--as-founder]
+opc kb reindex --org hk-tourism
+opc kb precedent --org hk-tourism --task-id TASK-001 --decision approve|reject --rationale "..." [--slug <s>] --as-founder   # founder-only; follows resolve-escalation
+opc resolve-escalation --org hk-tourism --task-id TASK-001 --decision approve|reject --rationale "..."                       # approve resumes the task (PENDING + re-enqueue) with rationale injected as a one-shot prompt header; reject fails it and cascades to parent. Precedes kb precedent.
+opc revisit --org hk-tourism TASK-052 [--note "..." | --note-file PATH] [--session-timeout-seconds N]   # founder: spawn NEW root inheriting the predecessor's brief (TTY-gated). --session-timeout-seconds optionally bumps the lineage timeout (positive integer); omitted -> inherit predecessor's value
+# Talk flow (founder↔agent conversations; per-org):
+opc talk start --org hk-tourism --agent <name>
+opc talk resume --org hk-tourism --talk-id TALK-001
+opc talk abandon --org hk-tourism --talk-id TALK-001 [--reason <why>]
+opc talk end --org hk-tourism --talk-id TALK-001 --from-file /tmp/talk-end-TALK-001.json
+opc talk status --org hk-tourism [--agent <name>]
+opc talk list --org hk-tourism [--agent <name>] [--limit N]
+opc talk show --org hk-tourism TALK-001
+# Agent-side callbacks (invoked by skills; --org is mandatory and never auto-inferred):
+opc report-completion --org hk-tourism --task-id TASK-001 --session-id <sid> --status completed ...
+opc learning --org hk-tourism --agent dev_agent --session-id <sid> --task-id TASK-001 --text "..."
+opc manage-repo --org hk-tourism add --agent dev_agent --repo-name docs --url https://github.com/t-benze/docs.git
+opc manage-agent --org hk-tourism --from-file /tmp/manage-agent-enroll.json   # enroll/update/terminate an agent (task-path or talk-path auth)
+opc dispatch --org hk-tourism --from-file /tmp/dispatch-<talk_id>.json         # agent: dispatch a new task from inside an open talk (workers self-only; team managers intra-team)
+# Founder-side enrollment management (per-org):
+opc enrollments --org hk-tourism [--status pending]   # list enrollment requests
+opc approve-agent --org hk-tourism <name>             # approve and bootstrap workspace
+opc reject-agent --org hk-tourism <name>              # reject enrollment
+opc backfill-enrollments --org hk-tourism             # founder recovery: import pre-existing workspaces (TTY-gated)
+opc migrate-to-org-runtime <path> --slug <slug> --i-have-a-backup --apply   # legacy: v0 (DB-backed agents) → v1 (file-based org/)
 ```
 
 ## Knowledge Base
 
-Shared precedents + domain reference live under `<runtime>/kb/`. Any agent can
+Shared precedents + domain reference live under `<runtime>/orgs/<slug>/kb/` (per-org — orgs do not share a KB). Any agent can
 read; any agent can write (via `opc kb add --from-file`); any team manager deletes (audited); founder overrides via `--as-founder`. Full rules: `protocol/06-knowledge-base.md`. The founder records
 precedents via the two-command flow `opc resolve-escalation ...` (state
 transition) followed by `opc kb precedent --as-founder ...` (KB write, founder-only

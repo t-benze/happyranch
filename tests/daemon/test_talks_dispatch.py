@@ -4,12 +4,13 @@ import json as _json
 
 import pytest
 
+from src.orchestrator._paths import OrgPaths
 from src.orchestrator.agent_def import AgentDef, render_agent_text
 from tests.daemon.conftest import open_talk_for
 
 
-def _seed_workspace(daemon_state, name: str, *, with_dir: bool = True) -> None:
-    """Seed an active agent file under <runtime>/org/agents/<name>.md and
+def _seed_workspace(org_state, name: str, *, with_dir: bool = True) -> None:
+    """Seed an active agent file under <org-root>/org/agents/<name>.md and
     (optionally) a workspace dir.
 
     Mirrors the production layout the dispatch route now consults via
@@ -17,8 +18,9 @@ def _seed_workspace(daemon_state, name: str, *, with_dir: bool = True) -> None:
     routing reads team membership from TeamsRegistry (seeded by conftest's
     teams.yaml), not from the agent file.
     """
+    paths = OrgPaths(root=org_state.root)
     if with_dir:
-        (daemon_state.runtime.workspaces_dir / name).mkdir(parents=True, exist_ok=True)
+        (paths.workspaces_dir / name).mkdir(parents=True, exist_ok=True)
     agent = AgentDef(
         name=name,
         team="engineering",
@@ -32,8 +34,8 @@ def _seed_workspace(daemon_state, name: str, *, with_dir: bool = True) -> None:
         system_prompt="x\n",
         description=name,
     )
-    daemon_state.runtime.agents_dir.mkdir(parents=True, exist_ok=True)
-    (daemon_state.runtime.agents_dir / f"{name}.md").write_text(render_agent_text(agent))
+    paths.agents_dir.mkdir(parents=True, exist_ok=True)
+    (paths.agents_dir / f"{name}.md").write_text(render_agent_text(agent))
 
 
 def test_worker_self_dispatch_happy_path(client_with_runtime):
@@ -42,7 +44,7 @@ def test_worker_self_dispatch_happy_path(client_with_runtime):
 
     talk_id = open_talk_for(client, "dev_agent")
     r = client.post(
-        f"/api/v1/talks/{talk_id}/dispatch",
+        f"/api/v1/orgs/alpha/talks/{talk_id}/dispatch",
         json={"brief": "Add a /healthz route to the daemon"},
     )
     assert r.status_code == 200, r.text
@@ -91,7 +93,7 @@ def test_dispatch_empty_team_rejected(client_with_runtime):
     _seed_workspace(state, "dev_agent")
     talk_id = open_talk_for(client, "dev_agent")
     r = client.post(
-        f"/api/v1/talks/{talk_id}/dispatch",
+        f"/api/v1/orgs/alpha/talks/{talk_id}/dispatch",
         json={"brief": "x", "team": ""},
     )
     assert r.status_code == 422
@@ -103,7 +105,7 @@ def test_dispatch_empty_target_agent_rejected(client_with_runtime):
     _seed_workspace(state, "dev_agent")
     talk_id = open_talk_for(client, "dev_agent")
     r = client.post(
-        f"/api/v1/talks/{talk_id}/dispatch",
+        f"/api/v1/orgs/alpha/talks/{talk_id}/dispatch",
         json={"brief": "x", "target_agent": ""},
     )
     assert r.status_code == 422
@@ -116,7 +118,7 @@ def test_dispatch_empty_target_agent_rejected(client_with_runtime):
 def test_dispatch_unknown_talk_returns_404(client_with_runtime):
     client, _ = client_with_runtime
     r = client.post(
-        "/api/v1/talks/TALK-999/dispatch",
+        "/api/v1/orgs/alpha/talks/TALK-999/dispatch",
         json={"brief": "irrelevant"},
     )
     assert r.status_code == 404
@@ -129,12 +131,12 @@ def test_dispatch_closed_talk_returns_400(client_with_runtime):
     talk_id = open_talk_for(client, "dev_agent")
     # Close the talk via the abandon endpoint.
     ar = client.post(
-        f"/api/v1/talks/{talk_id}/abandon",
+        f"/api/v1/orgs/alpha/talks/{talk_id}/abandon",
         json={"reason": "test"},
     )
     assert ar.status_code == 200, ar.text
     r = client.post(
-        f"/api/v1/talks/{talk_id}/dispatch",
+        f"/api/v1/orgs/alpha/talks/{talk_id}/dispatch",
         json={"brief": "irrelevant"},
     )
     assert r.status_code == 400
@@ -151,7 +153,7 @@ def test_dispatch_empty_brief_rejected(client_with_runtime, bad_brief):
     _seed_workspace(state, "dev_agent")
     talk_id = open_talk_for(client, "dev_agent")
     r = client.post(
-        f"/api/v1/talks/{talk_id}/dispatch",
+        f"/api/v1/orgs/alpha/talks/{talk_id}/dispatch",
         json={"brief": bad_brief},
     )
     assert r.status_code == 422
@@ -168,7 +170,7 @@ def test_dispatch_dispatcher_team_unknown(client_with_runtime):
 
     talk_id = open_talk_for(client, "orphan_agent")
     r = client.post(
-        f"/api/v1/talks/{talk_id}/dispatch",
+        f"/api/v1/orgs/alpha/talks/{talk_id}/dispatch",
         json={"brief": "anything"},
     )
     assert r.status_code == 403
@@ -180,7 +182,7 @@ def test_dispatch_cross_team_forbidden(client_with_runtime):
     _seed_workspace(state, "dev_agent")
     talk_id = open_talk_for(client, "dev_agent")
     r = client.post(
-        f"/api/v1/talks/{talk_id}/dispatch",
+        f"/api/v1/orgs/alpha/talks/{talk_id}/dispatch",
         json={"brief": "x", "team": "content"},
     )
     assert r.status_code == 403
@@ -198,7 +200,7 @@ def test_dispatch_worker_must_self_dispatch(client_with_runtime):
 
     talk_id = open_talk_for(client, "dev_agent")
     r = client.post(
-        f"/api/v1/talks/{talk_id}/dispatch",
+        f"/api/v1/orgs/alpha/talks/{talk_id}/dispatch",
         json={"brief": "x", "target_agent": "qa_engineer"},
     )
     assert r.status_code == 403
@@ -218,7 +220,7 @@ def test_manager_dispatches_to_team_worker(client_with_runtime):
 
     talk_id = open_talk_for(client, "engineering_head")
     r = client.post(
-        f"/api/v1/talks/{talk_id}/dispatch",
+        f"/api/v1/orgs/alpha/talks/{talk_id}/dispatch",
         json={"brief": "implement X", "target_agent": "dev_agent"},
     )
     assert r.status_code == 200, r.text
@@ -247,7 +249,7 @@ def test_manager_target_not_in_team(client_with_runtime):
 
     talk_id = open_talk_for(client, "engineering_head")
     r = client.post(
-        f"/api/v1/talks/{talk_id}/dispatch",
+        f"/api/v1/orgs/alpha/talks/{talk_id}/dispatch",
         json={"brief": "x", "target_agent": "content_writer"},
     )
     assert r.status_code == 403
@@ -269,7 +271,7 @@ def test_dispatch_unknown_agent_when_workspace_missing(client_with_runtime):
 
     talk_id = open_talk_for(client, "engineering_head")
     r = client.post(
-        f"/api/v1/talks/{talk_id}/dispatch",
+        f"/api/v1/orgs/alpha/talks/{talk_id}/dispatch",
         json={"brief": "x", "target_agent": "dev_agent"},
     )
     assert r.status_code == 404

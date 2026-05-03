@@ -2,12 +2,26 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from tests.daemon.conftest import client, open_talk_for  # type: ignore  # noqa: F401
+from src.daemon.org_state import OrgState
+from src.models import TalkRecord
 
 
-def test_content_manager_can_enroll_into_content(client: TestClient) -> None:
-    talk_id = open_talk_for(client, "content_manager")
-    resp = client.post("/api/v1/agents/manage", json={
+def _seed_open_talk(org_state: OrgState, agent_name: str) -> str:
+    """Seed an open talk for *agent_name* directly via the org's DB.
+
+    The talks HTTP route (POST /talks/start) hasn't been migrated to per-org
+    URLs yet (Task 14), so we insert directly via the per-org DB to keep these
+    agent-route tests independent of talks.py.
+    """
+    talk_id = org_state.db.next_talk_id()
+    org_state.db.insert_talk(TalkRecord(id=talk_id, agent_name=agent_name))
+    return talk_id
+
+
+def test_content_manager_can_enroll_into_content(client_with_runtime) -> None:
+    client, org_state = client_with_runtime
+    talk_id = _seed_open_talk(org_state, "content_manager")
+    resp = client.post("/api/v1/orgs/alpha/agents/manage", json={
         "action": "enroll",
         "name": "seo_agent",
         "talk_id": talk_id,
@@ -16,9 +30,10 @@ def test_content_manager_can_enroll_into_content(client: TestClient) -> None:
     assert resp.status_code == 200, resp.text
 
 
-def test_content_manager_cannot_enroll_into_engineering(client: TestClient) -> None:
-    talk_id = open_talk_for(client, "content_manager")
-    resp = client.post("/api/v1/agents/manage", json={
+def test_content_manager_cannot_enroll_into_engineering(client_with_runtime) -> None:
+    client, org_state = client_with_runtime
+    talk_id = _seed_open_talk(org_state, "content_manager")
+    resp = client.post("/api/v1/orgs/alpha/agents/manage", json={
         "action": "enroll",
         "name": "hostile_agent",
         "talk_id": talk_id,
@@ -29,9 +44,10 @@ def test_content_manager_cannot_enroll_into_engineering(client: TestClient) -> N
     assert resp.json()["detail"]["code"] == "cross_team_forbidden"
 
 
-def test_engineering_head_still_works(client: TestClient) -> None:
-    talk_id = open_talk_for(client, "engineering_head")
-    resp = client.post("/api/v1/agents/manage", json={
+def test_engineering_head_still_works(client_with_runtime) -> None:
+    client, org_state = client_with_runtime
+    talk_id = _seed_open_talk(org_state, "engineering_head")
+    resp = client.post("/api/v1/orgs/alpha/agents/manage", json={
         "action": "enroll",
         "name": "codex_dev",
         "talk_id": talk_id,

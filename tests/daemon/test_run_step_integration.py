@@ -13,15 +13,18 @@ from src.daemon.queue import TaskQueue
 from src.daemon.agent_config import load_agent_config
 from src.infrastructure.database import Database
 from src.models import TaskRecord, TaskStatus
+from src.orchestrator._paths import OrgPaths
 from src.orchestrator.orchestrator import Orchestrator
 from src.orchestrator.teams import TeamsRegistry
 from src.runtime import RuntimeDir
 
 
-def _seed_teams(runtime: RuntimeDir) -> None:
-    """Seed a minimal teams.yaml so team manager lookups work."""
-    runtime.teams_config_path.parent.mkdir(parents=True, exist_ok=True)
-    runtime.teams_config_path.write_text(
+def _seed_teams(paths: OrgPaths) -> None:
+    """Seed a minimal teams.yaml so team manager lookups work and the org is
+    discoverable by ``RuntimeDir.iter_org_roots`` (which gates on the
+    presence of ``org/teams.yaml``)."""
+    paths.teams_config_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.teams_config_path.write_text(
         "teams:\n"
         "  engineering:\n"
         "    manager: engineering_head\n"
@@ -32,19 +35,50 @@ def _seed_teams(runtime: RuntimeDir) -> None:
     )
 
 
+def _make_org_paths(tmp_path: Path) -> tuple[RuntimeDir, OrgPaths]:
+    rt = RuntimeDir.init(tmp_path / "rt")
+    paths = OrgPaths(root=rt.orgs_dir / "test")
+    paths.root.mkdir(parents=True, exist_ok=True)
+    return rt, paths
+
+
+class _LocalDispatcher:
+    """Minimal dispatcher that ignores the slug and dispatches to a single
+    Orchestrator. ``TaskQueue.drain_sync`` requires a dispatcher with
+    ``run_step(slug, task_id)`` + ``heartbeat(slug, task_id)``; for tests
+    that only exercise a single org we just forward to the orchestrator."""
+
+    def __init__(self, orch: Orchestrator) -> None:
+        self._orch = orch
+
+    def run_step(self, slug: str, task_id: str) -> None:
+        self._orch.run_step(task_id)
+
+    def heartbeat(self, slug: str, task_id: str) -> None:
+        # No-op — heartbeat liveness isn't exercised by these tests.
+        pass
+
+
 @pytest.mark.asyncio
 async def test_full_delegation_roundtrip(tmp_path: Path, monkeypatch):
-    runtime = RuntimeDir.init(tmp_path / "rt", slug="test")
-    _seed_teams(runtime)
-    (runtime.workspaces_dir / "engineering_head" / ".claude" / "skills" / "start-task").mkdir(parents=True)
-    (runtime.workspaces_dir / "engineering_head" / ".claude" / "skills" / "start-task" / "SKILL.md").touch()
-    (runtime.workspaces_dir / "dev_agent" / ".claude" / "skills" / "start-task").mkdir(parents=True)
-    (runtime.workspaces_dir / "dev_agent" / ".claude" / "skills" / "start-task" / "SKILL.md").touch()
-    db = Database(runtime.db_path)
+    rt, paths = _make_org_paths(tmp_path)
+    _seed_teams(paths)
+    (paths.workspaces_dir / "engineering_head" / ".claude" / "skills" / "start-task").mkdir(parents=True)
+    (paths.workspaces_dir / "engineering_head" / ".claude" / "skills" / "start-task" / "SKILL.md").touch()
+    (paths.workspaces_dir / "dev_agent" / ".claude" / "skills" / "start-task").mkdir(parents=True)
+    (paths.workspaces_dir / "dev_agent" / ".claude" / "skills" / "start-task" / "SKILL.md").touch()
+    db = Database(paths.db_path)
 
-    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10), runtime=runtime, teams=TeamsRegistry.load(runtime))
+    orch = Orchestrator(
+        db=db,
+        settings=Settings(max_orchestration_steps=10),
+        paths=paths,
+        slug="test",
+        teams=TeamsRegistry.load(paths.root),
+    )
     queue = TaskQueue()
     orch.attach_queue(queue)
+    dispatcher = _LocalDispatcher(orch)
 
     # Fake `_run_agent`: EH first returns delegate, second call returns done;
     # dev_agent returns done.
@@ -75,14 +109,14 @@ async def test_full_delegation_roundtrip(tmp_path: Path, monkeypatch):
 
     # Seed the root
     db.insert_task(TaskRecord(id="TASK-001", brief="build"))
-    queue.enqueue("TASK-001")
+    queue.enqueue("test", "TASK-001")
 
     # Drain in two passes — delegate creates a child and enqueues it, which
     # drain_sync will pick up on the same pass. But run_step is synchronous
     # inside drain, so one drain_sync call may not suffice; iterate until
     # queue is empty AND the root is terminal.
     for _ in range(6):
-        await queue.drain_sync(orch)
+        await queue.drain_sync(dispatcher)
         root = db.get_task("TASK-001")
         if root.status in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
             break
@@ -100,19 +134,22 @@ async def test_full_delegation_roundtrip(tmp_path: Path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_escalation_roundtrip(tmp_path: Path, monkeypatch):
-    from src.daemon.state import DaemonState
-    from fastapi.testclient import TestClient
-    from src.daemon.app import create_app
+    rt, paths = _make_org_paths(tmp_path)
+    _seed_teams(paths)
+    (paths.workspaces_dir / "engineering_head" / ".claude" / "skills" / "start-task").mkdir(parents=True)
+    (paths.workspaces_dir / "engineering_head" / ".claude" / "skills" / "start-task" / "SKILL.md").touch()
+    db = Database(paths.db_path)
 
-    runtime = RuntimeDir.init(tmp_path / "rt", slug="test")
-    _seed_teams(runtime)
-    (runtime.workspaces_dir / "engineering_head" / ".claude" / "skills" / "start-task").mkdir(parents=True)
-    (runtime.workspaces_dir / "engineering_head" / ".claude" / "skills" / "start-task" / "SKILL.md").touch()
-    db = Database(runtime.db_path)
-
-    orch = Orchestrator(db=db, settings=Settings(), runtime=runtime, teams=TeamsRegistry.load(runtime))
+    orch = Orchestrator(
+        db=db,
+        settings=Settings(),
+        paths=paths,
+        slug="test",
+        teams=TeamsRegistry.load(paths.root),
+    )
     queue = TaskQueue()
     orch.attach_queue(queue)
+    dispatcher = _LocalDispatcher(orch)
 
     def fake_run_agent(task_id, agent, prompt, on_session_started=None):
         from src.orchestrator.executors import ExecutorResult
@@ -133,8 +170,8 @@ async def test_escalation_roundtrip(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
 
     db.insert_task(TaskRecord(id="TASK-001", brief="x"))
-    queue.enqueue("TASK-001")
-    await queue.drain_sync(orch)
+    queue.enqueue("test", "TASK-001")
+    await queue.drain_sync(dispatcher)
 
     # Task should now be blocked(escalated)
     t = db.get_task("TASK-001")
@@ -165,25 +202,24 @@ async def test_init_agents_uses_enrollment_executor_for_workspace_bootstrap(
     from src.orchestrator.agent_def import AgentDef, render_agent_text
     from datetime import datetime, timezone
 
-    runtime = RuntimeDir.init(tmp_path / "rt", slug="test")
-    _seed_teams(runtime)
+    rt, paths = _make_org_paths(tmp_path)
+    _seed_teams(paths)
     # Seed an active agent file with executor=codex.
     agent = AgentDef(
         name="content_writer", team="content", role="worker", executor="codex",
         allow_rules=(), repos={}, enrolled_by=None, enrolled_at_task=None,
         enrolled_at=datetime.now(timezone.utc), system_prompt="prompt\n",
     )
-    runtime.agents_dir.mkdir(parents=True, exist_ok=True)
-    (runtime.agents_dir / "content_writer.md").write_text(render_agent_text(agent))
-    db = Database(runtime.db_path)
+    paths.agents_dir.mkdir(parents=True, exist_ok=True)
+    (paths.agents_dir / "content_writer.md").write_text(render_agent_text(agent))
     settings = Settings(project_root=Path("/Users/tangbz/projects/my-opc/.worktrees/codex-executor"))
 
     daemon_home = tmp_path / "home"
     monkeypatch.setenv("OPC_DAEMON_HOME", str(daemon_home))
     token = ensure_token()
-    runtimes_mod.register(runtime.root)
+    runtimes_mod.register(rt.root)
 
-    state = DaemonState.from_runtime(runtime, settings)
+    state = DaemonState.from_runtime(rt, settings)
     app = create_app(state)
 
     with patch("src.daemon.routes.agents.ContextBuilder") as MockCB:
@@ -193,13 +229,13 @@ async def test_init_agents_uses_enrollment_executor_for_workspace_bootstrap(
         mock_ctx.create_agent_dirs.return_value = None
 
         response = TestClient(app).post(
-            "/api/v1/agents/init",
+            "/api/v1/orgs/test/agents/init",
             json={"agent": "content_writer"},
             headers={"Authorization": f"Bearer {token}"},
         )
 
     assert response.status_code == 200
-    workspace = runtime.workspaces_dir / "content_writer"
+    workspace = paths.workspaces_dir / "content_writer"
     cfg = load_agent_config(workspace)
     assert cfg["executor"] == "codex"
     assert mock_ctx.ensure_workspace_ready.call_args.kwargs["provider"] == "codex"
@@ -219,24 +255,23 @@ async def test_approve_agent_uses_provider_specific_workspace_bootstrap(
     from src.orchestrator.agent_def import AgentDef
     from datetime import datetime, timezone
 
-    runtime = RuntimeDir.init(tmp_path / "rt", slug="test")
-    _seed_teams(runtime)
+    rt, paths = _make_org_paths(tmp_path)
+    _seed_teams(paths)
     # Seed a pending agent file with executor=codex.
     agent = AgentDef(
         name="content_writer", team="content", role="worker", executor="codex",
         allow_rules=(), repos={}, enrolled_by=None, enrolled_at_task=None,
         enrolled_at=datetime.now(timezone.utc), system_prompt="prompt\n",
     )
-    prompt_loader.write_pending_agent(runtime, agent)
-    db = Database(runtime.db_path)
+    prompt_loader.write_pending_agent(paths, agent)
     settings = Settings(project_root=Path("/Users/tangbz/projects/my-opc/.worktrees/codex-executor"))
 
     daemon_home = tmp_path / "home"
     monkeypatch.setenv("OPC_DAEMON_HOME", str(daemon_home))
     token = ensure_token()
-    runtimes_mod.register(runtime.root)
+    runtimes_mod.register(rt.root)
 
-    state = DaemonState.from_runtime(runtime, settings)
+    state = DaemonState.from_runtime(rt, settings)
     app = create_app(state)
 
     with patch("src.daemon.routes.agents.ContextBuilder") as MockCB:
@@ -246,12 +281,12 @@ async def test_approve_agent_uses_provider_specific_workspace_bootstrap(
         mock_ctx.create_agent_dirs.return_value = None
 
         response = TestClient(app).post(
-            "/api/v1/agents/content_writer/approve",
+            "/api/v1/orgs/test/agents/content_writer/approve",
             headers={"Authorization": f"Bearer {token}"},
         )
 
     assert response.status_code == 200
-    workspace = runtime.workspaces_dir / "content_writer"
+    workspace = paths.workspaces_dir / "content_writer"
     cfg = load_agent_config(workspace)
     assert cfg["executor"] == "codex"
     assert mock_ctx.ensure_workspace_ready.call_args.kwargs["provider"] == "codex"

@@ -6,25 +6,18 @@ this route is the one read path we want to keep stable.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter
 
 from src.daemon.auth import require_token
-from src.daemon.state import DaemonState
+from src.daemon.routes._org_dep import OrgDep
 
 router = APIRouter(dependencies=[require_token()])
 
 
-def _require_active(state: DaemonState) -> None:
-    if state.is_idle:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "no_active_runtime"},
-        )
-
-
 @router.get("/audit")
 def list_audit(
-    request: Request,
+    slug: str,
+    org: OrgDep,
     task_id: str | None = None,
     agent: str | None = None,
     action: str | None = None,
@@ -36,9 +29,7 @@ def list_audit(
     All filters AND-compose. ``since`` is an ISO-8601 timestamp. ``limit``
     caps to the most recent N entries (chronological order preserved).
     """
-    state: DaemonState = request.app.state.daemon
-    _require_active(state)
-    entries = state.db.query_audit_logs(
+    entries = org.db.query_audit_logs(
         task_id=task_id,
         agent=agent,
         action=action,

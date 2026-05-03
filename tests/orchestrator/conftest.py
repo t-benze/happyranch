@@ -9,6 +9,7 @@ import pytest
 
 from src.infrastructure.database import Database
 from src.models import BlockKind, CompletionReport, NextStep, TaskStatus
+from src.orchestrator._paths import OrgPaths
 from src.orchestrator.orchestrator import Orchestrator
 from src.orchestrator.executors import ExecutorResult
 from src.runtime import RuntimeDir
@@ -155,12 +156,18 @@ def run_task_to_completion(orch: Orchestrator, task_id: str, max_steps: int = 20
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def runtime(tmp_path: Path) -> RuntimeDir:
-    rt = RuntimeDir.init(tmp_path / "rt", slug="test")
-    # Seed a minimal teams.yaml so content_manager and engineering_head are
-    # recognized as managers and their workers as workers.
-    rt.teams_config_path.parent.mkdir(parents=True, exist_ok=True)
-    rt.teams_config_path.write_text(
+def paths(tmp_path: Path) -> OrgPaths:
+    """An OrgPaths rooted at <tmp>/rt/orgs/test/ with a minimal teams.yaml.
+
+    The RuntimeDir multi-org container is materialized at <tmp>/rt/ for tests
+    that want to call ``RuntimeDir.load(...)``; the OrgPaths returned points
+    at the single seeded ``test`` org root.
+    """
+    rt = RuntimeDir.init(tmp_path / "rt")
+    org_root = rt.orgs_dir / "test"
+    op = OrgPaths(root=org_root)
+    op.teams_config_path.parent.mkdir(parents=True, exist_ok=True)
+    op.teams_config_path.write_text(
         "teams:\n"
         "  engineering:\n"
         "    manager: engineering_head\n"
@@ -169,9 +176,9 @@ def runtime(tmp_path: Path) -> RuntimeDir:
         "    manager: content_manager\n"
         "    workers: [content_writer, content_qa]\n"
     )
-    return rt
+    return op
 
 
 @pytest.fixture
-def db(runtime: RuntimeDir) -> Database:
-    return Database(runtime.db_path)
+def db(paths: OrgPaths) -> Database:
+    return Database(paths.db_path)

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.config import Settings
-from src.runtime import RuntimeDir
+from src.orchestrator._paths import OrgPaths
 
 
 @dataclass
@@ -102,11 +102,11 @@ def _run_command(
 
 
 class ClaudeExecutor:
-    def __init__(self, claude_cli_path: str, permission_mode: str, settings: Settings, runtime: RuntimeDir | None = None) -> None:
+    def __init__(self, claude_cli_path: str, permission_mode: str, settings: Settings, paths: OrgPaths | None = None) -> None:
         self._cli_path = claude_cli_path
         self._permission_mode = permission_mode
         self._settings = settings
-        self._runtime = runtime
+        self._paths = paths
 
     def run(
         self,
@@ -127,7 +127,7 @@ class ClaudeExecutor:
 
         # Workspace layout is `<runtime>/workspaces/<agent_name>`, so the
         # directory name is the canonical agent identifier.
-        allowed = " ".join(allow_rules_for_agent(self._runtime, workspace.name, cli=True))
+        allowed = " ".join(allow_rules_for_agent(self._paths, workspace.name, cli=True))
         cmd = [
             self._cli_path,
             "-p",

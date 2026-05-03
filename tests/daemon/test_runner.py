@@ -1,27 +1,33 @@
 from __future__ import annotations
 
-import asyncio
+from pathlib import Path
+
 import pytest
-from unittest.mock import MagicMock
+
+from src.config import Settings
+from src.daemon.runner import enqueue_task
+from src.daemon.state import DaemonState
+from src.runtime import RuntimeDir
 
 
-@pytest.mark.asyncio
-async def test_enqueue_task_puts_id_on_state_queue(tmp_path):
-    from src.config import Settings
-    from src.daemon.runner import enqueue_task
-    from src.daemon.state import DaemonState
-    from src.runtime import RuntimeDir
-    rt = RuntimeDir.init(tmp_path / "rt", slug="test")
+def _seed_org(org_root: Path) -> None:
+    org_root.mkdir(parents=True)
+    (org_root / "org").mkdir()
+    (org_root / "org" / "teams.yaml").write_text("teams: {}\n")
+    (org_root / "workspaces").mkdir()
+    (org_root / "kb").mkdir()
+    (org_root / "talks").mkdir()
+
+
+def test_enqueue_task_pushes_tuple(tmp_path: Path) -> None:
+    rt = RuntimeDir.init(tmp_path / "rt")
+    _seed_org(rt.orgs_dir / "alpha")
     state = DaemonState.from_runtime(rt, Settings())
-    enqueue_task(state, "TASK-001")
-    assert state.queue._queue.get_nowait() == "TASK-001"
+    enqueue_task(state, "alpha", "TASK-001")
+    assert state.queue._queue.get_nowait() == ("alpha", "TASK-001")
 
 
-@pytest.mark.asyncio
-async def test_enqueue_task_raises_when_idle():
-    from src.config import Settings
-    from src.daemon.runner import enqueue_task
-    from src.daemon.state import DaemonState
+def test_enqueue_task_idle_raises(tmp_path: Path) -> None:
     state = DaemonState.idle(Settings())
-    with pytest.raises(RuntimeError):
-        enqueue_task(state, "TASK-001")
+    with pytest.raises(RuntimeError, match="idle"):
+        enqueue_task(state, "alpha", "TASK-001")

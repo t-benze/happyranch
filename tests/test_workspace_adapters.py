@@ -3,17 +3,19 @@ from pathlib import Path
 
 import pytest
 
-from src.runtime import RuntimeDir
+from src.orchestrator._paths import OrgPaths
 from src.orchestrator.workspace_adapters import (
     ClaudeWorkspaceAdapter,
     CodexWorkspaceAdapter,
     OpencodeWorkspaceAdapter,
 )
+from src.runtime import RuntimeDir
 
 
 @pytest.fixture
-def runtime(tmp_path: Path) -> RuntimeDir:
-    return RuntimeDir.init(tmp_path / "rt", slug="test")
+def runtime(tmp_path: Path) -> OrgPaths:
+    rt = RuntimeDir.init(tmp_path / "rt")
+    return OrgPaths(root=rt.orgs_dir / "test")
 
 
 def test_claude_adapter_bootstrap_creates_claude_files_and_skills(test_settings, tmp_dir, runtime):
@@ -24,7 +26,7 @@ def test_claude_adapter_bootstrap_creates_claude_files_and_skills(test_settings,
     workspace = tmp_dir / "workspaces" / "dev_agent"
     (workspace / "repos" / "my-opc" / ".git").mkdir(parents=True)
 
-    ClaudeWorkspaceAdapter(test_settings, runtime).ensure_workspace_ready(
+    ClaudeWorkspaceAdapter(test_settings, runtime, slug="test").ensure_workspace_ready(
         workspace=workspace,
         agent_name="dev_agent",
         system_prompt="You are the Dev Agent.",
@@ -62,7 +64,7 @@ def test_codex_adapter_bootstrap_creates_agents_md_and_skills_tree(test_settings
     workspace.mkdir(parents=True)
     (workspace / "recent_tasks.md").write_text("# Recent Tasks: dev_agent\n\n- TASK-001\n")
 
-    CodexWorkspaceAdapter(test_settings, runtime).ensure_workspace_ready(
+    CodexWorkspaceAdapter(test_settings, runtime, slug="test").ensure_workspace_ready(
         workspace=workspace,
         agent_name="dev_agent",
         system_prompt="You are the Dev Agent.",
@@ -89,6 +91,37 @@ def test_codex_adapter_bootstrap_creates_agents_md_and_skills_tree(test_settings
     assert "Bash(opc:*)" not in body
 
 
+def test_copy_skills_substitutes_org_slug(tmp_path: Path, monkeypatch) -> None:
+    """`_copy_skills` must replace `{ORG_SLUG}` in every copied .md file with
+    the adapter's own slug. Skills source is shared across orgs, but each
+    workspace ends up with its own org's slug baked into the example `opc`
+    invocations so agent callbacks always carry `--org`.
+    """
+    from src.config import Settings
+
+    proto = tmp_path / "protocol" / "skills" / "start-task"
+    proto.mkdir(parents=True)
+    (proto / "SKILL.md").write_text(
+        "Run: opc report-completion --org {ORG_SLUG} --task-id ...\n"
+    )
+    monkeypatch.setattr(
+        "src.orchestrator.workspace_adapters._SKILLS_SRC",
+        tmp_path / "protocol" / "skills",
+    )
+
+    rt = RuntimeDir.init(tmp_path / "rt")
+    paths = OrgPaths(root=rt.orgs_dir / "hk-tourism")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    adapter = ClaudeWorkspaceAdapter(Settings(), paths, slug="hk-tourism")
+    adapter._copy_skills(workspace)
+
+    out = (workspace / ".claude" / "skills" / "start-task" / "SKILL.md").read_text()
+    assert "{ORG_SLUG}" not in out
+    assert "--org hk-tourism" in out
+
+
 def test_opencode_adapter_bootstrap_creates_agents_md_skills_and_opencode_json(
     test_settings, tmp_dir, runtime,
 ):
@@ -106,7 +139,7 @@ def test_opencode_adapter_bootstrap_creates_agents_md_skills_and_opencode_json(
     workspace = tmp_dir / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
 
-    OpencodeWorkspaceAdapter(test_settings, runtime).ensure_workspace_ready(
+    OpencodeWorkspaceAdapter(test_settings, runtime, slug="test").ensure_workspace_ready(
         workspace=workspace,
         agent_name="dev_agent",
         system_prompt="You are the Dev Agent.",
@@ -138,7 +171,7 @@ def test_opencode_json_strict_deny_default_with_opc_baseline(
     workspace = tmp_dir / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
 
-    OpencodeWorkspaceAdapter(test_settings, runtime).ensure_workspace_ready(
+    OpencodeWorkspaceAdapter(test_settings, runtime, slug="test").ensure_workspace_ready(
         workspace=workspace,
         agent_name="dev_agent",
         system_prompt="You are the Dev Agent.",
@@ -183,7 +216,7 @@ def test_opencode_json_includes_agent_specific_allow_rules(
     workspace = tmp_dir / "workspaces" / "engineering_head"
     workspace.mkdir(parents=True)
 
-    OpencodeWorkspaceAdapter(test_settings, runtime).ensure_workspace_ready(
+    OpencodeWorkspaceAdapter(test_settings, runtime, slug="test").ensure_workspace_ready(
         workspace=workspace,
         agent_name="engineering_head",
         system_prompt="You are the Engineering Head.",
@@ -221,7 +254,7 @@ def test_codex_agents_md_does_not_inline_completion_contract(test_settings, tmp_
     workspace = tmp_dir / "workspaces" / "senior_dev"
     workspace.mkdir(parents=True)
 
-    CodexWorkspaceAdapter(test_settings, runtime).ensure_workspace_ready(
+    CodexWorkspaceAdapter(test_settings, runtime, slug="test").ensure_workspace_ready(
         workspace=workspace,
         agent_name="senior_dev",
         system_prompt="You are the Senior Developer.",
