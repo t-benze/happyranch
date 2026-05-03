@@ -7,6 +7,7 @@ from src.orchestrator._paths import OrgPaths
 from src.orchestrator.workspace_adapters import (
     ClaudeWorkspaceAdapter,
     CodexWorkspaceAdapter,
+    OpencodeWorkspaceAdapter,
 )
 from src.runtime import RuntimeDir
 
@@ -119,6 +120,115 @@ def test_copy_skills_substitutes_org_slug(tmp_path: Path, monkeypatch) -> None:
     out = (workspace / ".claude" / "skills" / "start-task" / "SKILL.md").read_text()
     assert "{ORG_SLUG}" not in out
     assert "--org hk-tourism" in out
+
+
+def test_opencode_adapter_bootstrap_creates_agents_md_skills_and_opencode_json(
+    test_settings, tmp_dir, runtime,
+):
+    """opencode reads AGENTS.md and discovers skills under .agents/skills/.
+    The opencode-specific surface is opencode.json — a structured permission
+    file that gates bash by command-prefix glob. The adapter must write all
+    three.
+    """
+    skills_root = test_settings.get_protocol_dir() / "skills"
+    (skills_root / "start-task").mkdir(parents=True)
+    (skills_root / "start-task" / "SKILL.md").write_text(
+        "---\nname: start-task\ndescription: Use this skill at the start of every task.\n---\n"
+    )
+
+    workspace = tmp_dir / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+
+    OpencodeWorkspaceAdapter(test_settings, runtime, slug="test").ensure_workspace_ready(
+        workspace=workspace,
+        agent_name="dev_agent",
+        system_prompt="You are the Dev Agent.",
+    )
+
+    assert (workspace / "AGENTS.md").exists()
+    assert not (workspace / "CLAUDE.md").exists()
+    # Skills under .agents/skills/ — same layout as Codex.
+    assert (workspace / ".agents" / "skills" / "start-task" / "SKILL.md").exists()
+    assert not (workspace / ".claude" / "skills" / "start-task").exists()
+    assert (workspace / "learnings.md").exists()
+    assert (workspace / "task_history.md").exists()
+    # opencode-specific permission file.
+    assert (workspace / "opencode.json").exists()
+    # Claude-specific surfaces must NOT be present in an opencode workspace.
+    assert not (workspace / ".claude" / "settings.json").exists()
+
+
+def test_opencode_json_strict_deny_default_with_opc_baseline(
+    test_settings, tmp_dir, runtime,
+):
+    """opencode.json must default to ``bash.*: deny`` and explicitly allow
+    only sanctioned prefixes. The baseline ``opc *`` is always allowed; an
+    agent without per-agent extras gets exactly the baseline."""
+    skills_root = test_settings.get_protocol_dir() / "skills"
+    (skills_root / "start-task").mkdir(parents=True)
+    (skills_root / "start-task" / "SKILL.md").write_text("# start-task\n")
+
+    workspace = tmp_dir / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+
+    OpencodeWorkspaceAdapter(test_settings, runtime, slug="test").ensure_workspace_ready(
+        workspace=workspace,
+        agent_name="dev_agent",
+        system_prompt="You are the Dev Agent.",
+    )
+
+    config = json.loads((workspace / "opencode.json").read_text())
+    bash = config["permission"]["bash"]
+    assert bash["*"] == "deny"
+    assert bash["opc *"] == "allow"
+    # No --dangerously-skip-permissions surrogate (e.g. global "*" allow).
+    assert config["permission"].get("*") != "allow"
+
+
+def test_opencode_json_includes_agent_specific_allow_rules(
+    test_settings, tmp_dir, runtime,
+):
+    """Per-agent allow_rules in agent frontmatter must surface as opencode
+    bash allow entries. Source of truth is the same frontmatter Claude reads;
+    only the rendering differs (Bash(prefix:*) → "prefix *": "allow")."""
+    from datetime import datetime, timezone
+    from src.orchestrator.agent_def import AgentDef, render_agent_text
+
+    eh = AgentDef(
+        name="engineering_head",
+        team="engineering",
+        role="manager",
+        executor="opencode",
+        allow_rules=("gh pr close", "gh issue close"),
+        repos={},
+        enrolled_by=None,
+        enrolled_at_task=None,
+        enrolled_at=datetime.now(timezone.utc),
+        system_prompt="You are the Engineering Head.\n",
+    )
+    runtime.agents_dir.mkdir(parents=True, exist_ok=True)
+    (runtime.agents_dir / "engineering_head.md").write_text(render_agent_text(eh))
+
+    skills_root = test_settings.get_protocol_dir() / "skills"
+    (skills_root / "start-task").mkdir(parents=True)
+    (skills_root / "start-task" / "SKILL.md").write_text("# start-task\n")
+
+    workspace = tmp_dir / "workspaces" / "engineering_head"
+    workspace.mkdir(parents=True)
+
+    OpencodeWorkspaceAdapter(test_settings, runtime, slug="test").ensure_workspace_ready(
+        workspace=workspace,
+        agent_name="engineering_head",
+        system_prompt="You are the Engineering Head.",
+    )
+
+    bash = json.loads((workspace / "opencode.json").read_text())["permission"]["bash"]
+    assert bash["opc *"] == "allow"
+    assert bash["gh pr close *"] == "allow"
+    assert bash["gh issue close *"] == "allow"
+    # Guardrail: scopes that are NOT in allow_rules must not leak in.
+    assert "gh pr merge *" not in bash
+    assert "gh pr create *" not in bash
 
 
 def test_codex_agents_md_does_not_inline_completion_contract(test_settings, tmp_dir, runtime):

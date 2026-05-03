@@ -55,6 +55,7 @@ class TaskRecord(BaseModel):
     updated_at: datetime = Field(default_factory=_now)
     completed_at: datetime | None = None
     cancelled_at: datetime | None = None
+    last_heartbeat: datetime | None = None
 
 
 class NextStep(BaseModel):

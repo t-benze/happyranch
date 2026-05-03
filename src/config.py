@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     codex_cli_path: str = "codex"
     codex_sandbox_mode: str = "workspace-write"
 
+    # opencode executor
+    opencode_cli_path: str = "opencode"
+
     # Protocol docs (relative to project_root)
     protocol_dir: str = "protocol"
 
@@ -31,7 +34,7 @@ class Settings(BaseSettings):
     session_timeout_seconds: int = 1800  # 30 minutes
 
     # Orchestration loop
-    max_orchestration_steps: int = 10
+    max_orchestration_steps: int = 50
 
     # Performance tier thresholds
     tier_green_threshold: float = 0.90

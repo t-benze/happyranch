@@ -92,6 +92,57 @@ class AuditLogger:
             payload={"rationale": rationale, "cascade": cascade},
         )
 
+    def log_progress(self, task_id: str, agent: str, message: str) -> None:
+        """Record an agent-controlled mid-task progress note.
+
+        Distinct from completion_report: this is a semantic checkpoint the
+        agent emits while still working. Used by `opc tail` and `opc details`
+        to give the founder visibility into long-running tasks without
+        waiting for the final completion callback.
+        """
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent=agent,
+            action="progress",
+            payload={"message": message},
+        )
+
+    def log_auto_revisit_of(
+        self,
+        task_id: str,
+        predecessor_root: str,
+        failed_task: str,
+        failed_agent: str,
+        cascade: list[str],
+        error_context: dict,
+        attempt: int,
+    ) -> None:
+        """Record on the NEW root that it is an orchestrator-triggered revisit.
+
+        Parallel to ``log_revisit_of`` (founder-triggered) but distinguished
+        by action name so the prompt-injection step can render a different
+        first-step header — and so we can count auto-revisits in the chain
+        without conflating them with founder revisits when enforcing the
+        per-chain cap.
+
+        ``error_context`` is the structured failure payload produced by
+        ``_executor_failure_context``: mode, rc, stderr/stdout tail, etc.
+        ``attempt`` is the 1-indexed auto-revisit number in this chain.
+        """
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="orchestrator",
+            action="auto_revisit_of",
+            payload={
+                "predecessor_root": predecessor_root,
+                "failed_task": failed_task,
+                "failed_agent": failed_agent,
+                "cascade": cascade,
+                "error_context": error_context,
+                "attempt": attempt,
+            },
+        )
+
     def log_orchestration_step(
         self, task_id: str, step_number: int, decision: dict
     ) -> None:

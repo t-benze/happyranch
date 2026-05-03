@@ -94,6 +94,21 @@ def test_parse_rejects_invalid_executor() -> None:
         parse_agent_text(text, expected_name="x")
 
 
+@pytest.mark.parametrize("executor", ["claude", "codex", "opencode"])
+def test_parse_accepts_supported_executors(executor: str) -> None:
+    text = (
+        "---\n"
+        "name: x\n"
+        "team: t\n"
+        "role: worker\n"
+        f"executor: {executor}\n"
+        "---\n"
+        "body\n"
+    )
+    agent = parse_agent_text(text, expected_name="x")
+    assert agent.executor == executor
+
+
 def test_parse_rejects_empty_body() -> None:
     text = "---\nname: x\nteam: t\nrole: worker\nexecutor: claude\n---\n\n"
     with pytest.raises(AgentParseError, match="empty body"):

@@ -98,6 +98,7 @@ import pytest
 import yaml
 
 from src.orchestrator.migration import migrate_to_org_runtime, MigrationResult
+from src.orchestrator._paths import OrgPaths
 from src.runtime import RuntimeDir
 
 
@@ -168,17 +169,21 @@ def test_apply_writes_org_tree(tmp_path: Path) -> None:
         i_have_a_backup=True, apply=True,
     )
     assert result.applied is True
-    rt = RuntimeDir.load(rt_root)
-    assert rt.slug == "hk-tourism"
+    # The v0→v1 migration writes a v1-marker (schema_version=1, slug=<slug>);
+    # RuntimeDir.load now refuses v1, so verify the layout directly via OrgPaths
+    # rooted at rt_root and read the marker for slug.
+    marker = yaml.safe_load((rt_root / "opc.yaml").read_text())
+    assert marker["slug"] == "hk-tourism"
+    paths = OrgPaths(root=rt_root)
     # teams.yaml moved.
-    assert rt.teams_config_path.exists()
+    assert paths.teams_config_path.exists()
     assert not (rt_root / "teams.yaml").exists()
     # Approved enrollment exported to active agents/.
-    assert (rt.agents_dir / "custom_dev.md").exists()
+    assert (paths.agents_dir / "custom_dev.md").exists()
     # Pending enrollment exported to _pending/.
-    assert (rt.pending_agents_dir / "draft_writer.md").exists()
+    assert (paths.pending_agents_dir / "draft_writer.md").exists()
     # agent_enrollments table dropped.
-    conn = sqlite3.connect(rt.db_path)
+    conn = sqlite3.connect(paths.db_path)
     cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='agent_enrollments'")
     assert cur.fetchone() is None
     conn.close()
@@ -209,8 +214,8 @@ def test_apply_preserves_description_field(tmp_path: Path) -> None:
     AgentDef.description field — Codex review caught it being dropped."""
     rt_root = _build_legacy_runtime(tmp_path)
     migrate_to_org_runtime(rt_root, slug="hk", i_have_a_backup=True, apply=True)
-    rt = RuntimeDir.load(rt_root)
-    custom_dev_text = (rt.agents_dir / "custom_dev.md").read_text()
+    paths = OrgPaths(root=rt_root)
+    custom_dev_text = (paths.agents_dir / "custom_dev.md").read_text()
     assert "description: A custom dev" in custom_dev_text
 
 
@@ -231,7 +236,7 @@ def test_strips_completion_contract_block(tmp_path: Path) -> None:
     conn.commit()
     conn.close()
     migrate_to_org_runtime(rt_root, slug="x", i_have_a_backup=True, apply=True)
-    rt = RuntimeDir.load(rt_root)
-    text = (rt.agents_dir / "role_x.md").read_text()
+    paths = OrgPaths(root=rt_root)
+    text = (paths.agents_dir / "role_x.md").read_text()
     assert "Task completion report" not in text
     assert "do X" in text

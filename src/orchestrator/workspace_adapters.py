@@ -112,6 +112,26 @@ def allow_rules_for_agent(
     return rules
 
 
+def bash_allow_prefixes_for_agent(
+    paths: "OrgPaths", agent_name: str | None,
+) -> list[str]:
+    """Return raw Bash allow-rule prefixes (no syntax wrapping).
+
+    Used by ``OpencodeWorkspaceAdapter`` to build ``opencode.json``, where
+    each prefix is rendered as ``"<prefix> *": "allow"`` rather than
+    ``Bash(<prefix>:*)`` (settings.json) or ``Bash(<prefix> *)``
+    (Claude ``--allowedTools``). Source of truth (the per-agent
+    ``allow_rules`` frontmatter) is the same; only the rendering differs.
+    """
+    from src.orchestrator import prompt_loader
+    prefixes = ["opc"]
+    if agent_name is None:
+        return prefixes
+    for prefix in prompt_loader.allow_rules_for_agent(paths, agent_name):
+        prefixes.append(prefix)
+    return prefixes
+
+
 def build_settings_json(
     paths: "OrgPaths",
     repo_names: list[str],
@@ -396,3 +416,92 @@ class CodexWorkspaceAdapter:
         self._persistent.ensure(workspace, agent_name)
         self.write_agents_md(workspace, agent_name, system_prompt)
         self._copy_skills(workspace)
+
+
+class OpencodeWorkspaceAdapter:
+    """Bootstrap and maintain opencode workspaces.
+
+    opencode reads ``AGENTS.md`` (with ``CLAUDE.md`` as a fallback) and
+    discovers skills under ``.opencode/skills/``, ``.claude/skills/``, or
+    ``.agents/skills/``. We use the same ``AGENTS.md`` + ``.agents/skills/``
+    layout as Codex so a single workspace shape works for both executors.
+
+    The opencode-specific surface is ``opencode.json``: a structured
+    permission file that gates bash by command-prefix glob. We write a
+    strict default (``"*": "deny"``) plus per-agent allow rules sourced
+    from the same ``allow_rules`` frontmatter Claude reads. No
+    ``--dangerously-skip-permissions`` — the file is the enforcement
+    surface, and bypassing it would erase the per-prefix discipline that
+    CLAUDE.md mandates.
+    """
+
+    provider_name = "opencode"
+
+    def __init__(self, settings: Settings, paths: "OrgPaths", *, slug: str) -> None:
+        self._settings = settings
+        self._paths = paths
+        self._slug = slug
+        self._persistent = PersistentWorkspaceSetup(settings)
+        # AGENTS.md generation is identical to Codex — delegate.
+        self._codex_adapter = CodexWorkspaceAdapter(settings, paths, slug=slug)
+
+    def write_agents_md(
+        self,
+        workspace: Path,
+        agent_name: str,
+        system_prompt: str,
+        repo_names: list[str] | None = None,
+    ) -> None:
+        """Write AGENTS.md to workspace. Same shape as Codex's AGENTS.md."""
+        self._codex_adapter.write_agents_md(
+            workspace, agent_name, system_prompt, repo_names=repo_names,
+        )
+
+    def write_opencode_json(
+        self, workspace: Path, agent_name: str | None = None,
+    ) -> None:
+        """Write ``opencode.json`` with the agent's bash allow list.
+
+        Default for unmatched bash is ``"deny"`` so an agent attempting an
+        unsanctioned command fails fast rather than waiting on an
+        interactive prompt that will never arrive in headless mode. The
+        sanctioned channel (``opc``) is always allowed; per-agent extras
+        come from the same ``allow_rules`` frontmatter Claude reads.
+        """
+        prefixes = bash_allow_prefixes_for_agent(self._paths, agent_name)
+        permission_bash: dict[str, str] = {"*": "deny"}
+        for prefix in prefixes:
+            permission_bash[f"{prefix} *"] = "allow"
+        config = {
+            "$schema": "https://opencode.ai/config.json",
+            "permission": {"bash": permission_bash},
+        }
+        (workspace / "opencode.json").write_text(
+            json.dumps(config, indent=2) + "\n"
+        )
+
+    def _copy_skills(self, workspace: Path) -> None:
+        """Copy protocol/skills/ tree into workspace/.agents/skills/.
+
+        opencode discovers skills under ``.opencode/skills/``,
+        ``.claude/skills/``, or ``.agents/skills/``. We pick ``.agents/``
+        to share the layout with Codex workspaces — a workspace can be
+        re-bootstrapped between executors without churn.
+        """
+        _copy_skills_tree(
+            _resolve_skills_src(self._settings),
+            workspace / ".agents" / "skills",
+            slug=self._slug,
+        )
+
+    def ensure_workspace_ready(
+        self,
+        workspace: Path,
+        agent_name: str,
+        system_prompt: str,
+    ) -> None:
+        """Make sure an opencode workspace has every file the orchestrator requires."""
+        self._persistent.ensure(workspace, agent_name)
+        self.write_agents_md(workspace, agent_name, system_prompt)
+        self._copy_skills(workspace)
+        self.write_opencode_json(workspace, agent_name=agent_name)

@@ -24,7 +24,12 @@ from src.models import (
     TaskRecord,
 )
 from src.orchestrator._paths import OrgPaths
-from src.orchestrator.executors import ClaudeExecutor, CodexExecutor, ExecutorResult
+from src.orchestrator.executors import (
+    ClaudeExecutor,
+    CodexExecutor,
+    ExecutorResult,
+    OpencodeExecutor,
+)
 from src.orchestrator.org_config import load_org_config
 from src.orchestrator.performance_tracker import PerformanceTracker
 from src.orchestrator.prompt_loader import load_agent
@@ -73,6 +78,13 @@ class Orchestrator:
     def teams(self) -> TeamsRegistry:
         return self._teams
 
+    @property
+    def db(self) -> Database:
+        """Read-only handle to the Database — used by the daemon's
+        Dispatcher.heartbeat to stamp tasks.last_heartbeat for the
+        currently-executing task without reaching into the private attribute."""
+        return self._db
+
     def attach_queue(self, queue: "TaskQueue") -> None:
         """Daemon boot wires its TaskQueue so run_step can enqueue follow-ups.
 
@@ -117,6 +129,11 @@ class Orchestrator:
     def _readiness_marker(self, workspace: Path, provider: str) -> Path:
         if provider == "codex":
             return workspace / "AGENTS.md"
+        if provider == "opencode":
+            # opencode reads AGENTS.md and discovers skills via .agents/skills/.
+            # AGENTS.md alone is sufficient as the readiness signal — its
+            # presence implies the adapter ran and copied the skills tree.
+            return workspace / "AGENTS.md"
         return workspace / ".claude" / "skills" / "start-task" / "SKILL.md"
 
     def _build_executor(self, provider: str):
@@ -124,6 +141,10 @@ class Orchestrator:
             return CodexExecutor(
                 codex_cli_path=self._settings.codex_cli_path,
                 sandbox_mode=self._settings.codex_sandbox_mode,
+            )
+        if provider == "opencode":
+            return OpencodeExecutor(
+                opencode_cli_path=self._settings.opencode_cli_path,
             )
         return ClaudeExecutor(
             claude_cli_path=self._settings.claude_cli_path,
@@ -141,11 +162,18 @@ class Orchestrator:
         brief: str,
         prompt: str,
     ) -> str:
-        intro = (
-            f"You are {agent_name}. Use the injected task parameters directly to handle this task.\n"
-            if provider == "codex"
-            else f"You are {agent_name}. Use the start-task skill to handle this task.\n"
-        )
+        if provider == "codex":
+            intro = (
+                f"You are {agent_name}. Use the injected task parameters directly to handle this task.\n"
+            )
+        else:
+            # Both Claude and opencode have an in-context start-task skill —
+            # Claude via auto-loaded ``.claude/skills/``, opencode via its
+            # built-in ``skill`` tool that lists and loads skills from
+            # ``.agents/skills/`` on demand. The same nudge works for both.
+            intro = (
+                f"You are {agent_name}. Use the start-task skill to handle this task.\n"
+            )
         return (
             f"{intro}"
             f"\n"

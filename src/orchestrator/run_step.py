@@ -99,12 +99,20 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
     except Exception as exc:
         _fail(orch, task_id, note=f"agent invocation failed: {exc}")
         _enqueue_parent_if_waiting(orch, task_id)
+        _maybe_spawn_auto_revisit(
+            orch, task_id, agent,
+            error_context={"mode": "exception", "detail": str(exc)},
+        )
         return
 
     # ---- 5. Classify outcome ----
     if not result.success or report is None:
         _fail(orch, task_id, note=_session_failed_note(result, report))
         _enqueue_parent_if_waiting(orch, task_id)
+        _maybe_spawn_auto_revisit(
+            orch, task_id, agent,
+            error_context=_executor_failure_context(result, report),
+        )
         return
 
     orch._log_step_result(task_id, result, report)
@@ -281,9 +289,15 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
         prior_steps=prior_steps,
         manager_name=agent,
     )
-    header = _revisit_header_if_applicable(orch, task.id)
-    if header is not None:
-        return header + base
+    headers: list[str] = []
+    revisit = _revisit_header_if_applicable(orch, task.id)
+    if revisit is not None:
+        headers.append(revisit)
+    resolved = _resolved_escalation_header_if_applicable(orch, task.id)
+    if resolved is not None:
+        headers.append(resolved)
+    if headers:
+        return "".join(headers) + base
     return base
 
 
@@ -314,19 +328,24 @@ def _list_candidate_agents(orch: "Orchestrator", calling_manager: str):
 def _revisit_header_if_applicable(orch: "Orchestrator", task_id: str) -> str | None:
     """Return a 5-6 line revisit context header, or None.
 
-    Trigger: the task has a `revisit_of` audit entry AND no `orchestration_step`
-    audit entry. The latter is how we detect "first step" without timestamps —
-    once the team manager has produced a decision, `log_orchestration_step`
-    writes a row and this helper returns None on every subsequent call.
+    Trigger: the task has a `revisit_of` OR `auto_revisit_of` audit entry
+    AND no `orchestration_step` audit entry. The latter is how we detect
+    "first step" without timestamps — once the team manager has produced
+    a decision, `log_orchestration_step` writes a row and this helper
+    returns None on every subsequent call.
     """
     logs = orch._db.get_audit_logs(task_id)
     revisit_entry = next(
-        (e for e in logs if e["action"] == "revisit_of"), None,
+        (e for e in logs if e["action"] in ("revisit_of", "auto_revisit_of")),
+        None,
     )
     if revisit_entry is None:
         return None
     if any(e["action"] == "orchestration_step" for e in logs):
         return None
+
+    if revisit_entry["action"] == "auto_revisit_of":
+        return _auto_revisit_header(revisit_entry["payload"])
 
     payload = revisit_entry["payload"]
     predecessor = payload["predecessor_root"]
@@ -354,6 +373,96 @@ def _revisit_header_if_applicable(orch: "Orchestrator", task_id: str) -> str | N
         "new child briefs); old child task rows stay frozen."
     )
     return "\n".join(lines) + "\n\n"
+
+
+def _auto_revisit_header(payload: dict) -> str:
+    """Render the first-step header for an orchestrator-triggered auto-revisit.
+
+    Different language from the founder-revisit header: the manager needs
+    to know an opaque agent failure happened (not a founder-flagged
+    problem) and to consider whether the original approach is still sound
+    or whether the failure mode suggests a different decomposition.
+    """
+    predecessor = payload["predecessor_root"]
+    failed_task = payload["failed_task"]
+    failed_agent = payload["failed_agent"]
+    cascade = payload.get("cascade") or [failed_task]
+    err = payload.get("error_context") or {}
+    attempt = payload.get("attempt", 1)
+
+    err_bits: list[str] = []
+    mode = err.get("mode")
+    if mode == "exception":
+        err_bits.append(f"exception: {err.get('detail', '?')}")
+    elif mode == "session_failure":
+        rc = err.get("rc")
+        err_bits.append(f"rc={rc if rc is not None else '?'}")
+        if err.get("missing_callback"):
+            err_bits.append("no completion callback")
+        executor_error = err.get("executor_error")
+        if executor_error:
+            err_bits.append(executor_error)
+        stderr_tail = err.get("stderr_tail") or ""
+        stdout_tail = err.get("stdout_tail") or ""
+        preview = stderr_tail or stdout_tail
+        if preview:
+            label = "stderr" if stderr_tail else "stdout"
+            err_bits.append(f"{label}: {preview.replace(chr(10), ' ')}")
+    err_summary = "; ".join(err_bits) if err_bits else "(no diagnostics)"
+
+    lines = [
+        f"AUTO-REVISIT CONTEXT (orchestrator-triggered, attempt {attempt} "
+        f"of {_AUTO_REVISIT_CAP}): this root is a revisit of {predecessor}, "
+        "spawned because an agent in the predecessor lineage hit an opaque "
+        "failure.",
+        f"Failed task: {failed_task} (agent: {failed_agent}).",
+        f"Failure: {err_summary}",
+        "Cascade chain (predecessor root -> failed task): "
+        + " -> ".join(cascade),
+        f"Inspect via: `opc details {predecessor}`, "
+        f"`opc audit {predecessor}`, `opc recall {predecessor}`.",
+        "Re-evaluate the approach — the failure may be transient (worth "
+        "the same plan with a fresh subprocess) or structural (a different "
+        "decomposition is needed). Decide accordingly.",
+    ]
+    return "\n".join(lines) + "\n\n"
+
+
+def _resolved_escalation_header_if_applicable(
+    orch: "Orchestrator", task_id: str,
+) -> str | None:
+    """Return a 2-3 line header on the first manager step after a founder
+    `resolve-escalation --approve`, otherwise None.
+
+    Trigger: the most recent `escalation_resolved` audit entry for this task
+    has a higher row id than the most recent `orchestration_step` entry —
+    i.e. the founder approved AND the manager hasn't run yet. Audit `id` is
+    autoincrement, so id-ordering is equivalent to chronological ordering.
+    Once the manager produces its first decision after re-enqueue,
+    `log_orchestration_step` writes a row with a higher id and this helper
+    returns None on every subsequent call.
+    """
+    logs = orch._db.get_audit_logs(task_id)
+    last_resolved = None
+    last_step = None
+    for entry in logs:
+        action = entry["action"]
+        if action == "escalation_resolved":
+            last_resolved = entry
+        elif action == "orchestration_step":
+            last_step = entry
+    if last_resolved is None:
+        return None
+    if last_step is not None and last_step["id"] > last_resolved["id"]:
+        return None
+    payload = last_resolved["payload"] or {}
+    decision = payload.get("decision", "approve")
+    rationale = payload.get("rationale", "(no rationale recorded)")
+    return (
+        f"ESCALATION RESOLVED: founder {decision}d your prior escalation.\n"
+        f"Rationale: {rationale}\n"
+        "Continue from where you parked, with this verdict in mind.\n\n"
+    )
 
 
 def _build_prior_steps_from_db(orch: "Orchestrator", task_id: str):
@@ -492,6 +601,109 @@ def _enqueue_parent_if_waiting(orch: "Orchestrator", task_id: str) -> None:
     queue = getattr(orch, "_queue", None)
     if queue is not None:
         queue.put_nowait(orch._slug, parent.id)
+
+
+_AUTO_REVISIT_CAP = 2
+
+
+def _executor_failure_context(result, report) -> dict:
+    """Build the structured error_context payload for the auto_revisit_of audit.
+
+    Captures rc, stderr/stdout tail, executor error string, and a flag for
+    the "rc=0 but no completion callback" branch. The team manager's first
+    step on the auto-revisit reads this back via the revisit header so the
+    decision is grounded in the actual failure mode, not a free-form note.
+    """
+    if result is None:
+        return {"mode": "exception"}
+    rc = getattr(result, "returncode", None)
+    err = (getattr(result, "stderr_tail", "") or "").strip()
+    out = (getattr(result, "stdout_tail", "") or "").strip()
+    return {
+        "mode": "session_failure",
+        "rc": rc,
+        "stderr_tail": err[-300:],
+        "stdout_tail": out[-300:],
+        "executor_error": getattr(result, "error", None),
+        "missing_callback": (
+            report is None and getattr(result, "success", False)
+        ),
+    }
+
+
+def _maybe_spawn_auto_revisit(
+    orch: "Orchestrator",
+    failed_task_id: str,
+    failed_agent: str,
+    error_context: dict,
+) -> None:
+    """Spawn an orchestrator-triggered revisit on an opaque agent failure.
+
+    Triggered ONLY by the three opaque agent-error paths in run_step (an
+    exception escaping ``_run_agent``, a non-success ``ExecutorResult``, or
+    a clean exit with no completion callback). Self-blocked workers,
+    invalid-delegate JSON, max-step escalations, and founder cancellations
+    do NOT auto-revisit — those failures are deliberate or load-bearing.
+
+    Walks parent links to find the team-manager root (the original task the
+    founder dispatched), then spawns a NEW root linked via
+    ``revisit_of_task_id``. The original lineage's cascade-to-parent
+    behavior is unchanged; the auto-revisit runs as an independent tree
+    so the team manager can re-decide with the structured ``error_context``
+    in hand.
+
+    Capped at ``_AUTO_REVISIT_CAP`` auto-revisits per chain — if two prior
+    auto-revisits already exist in the predecessor chain, give up rather
+    than burning tokens on the TASK-033..045 retry-loop pattern. Founder
+    revisits do not count toward the cap (they're intentional human retries).
+    """
+    db = orch._db
+    chain = db.walk_ancestors(failed_task_id)
+    if not chain:
+        return
+    root = chain[-1]
+
+    revisit_chain = db.walk_revisit_chain(root.id, truncate=True)
+    auto_count = 0
+    for r in revisit_chain:
+        if any(
+            e["action"] == "auto_revisit_of"
+            for e in db.get_audit_logs(r.id)
+        ):
+            auto_count += 1
+    if auto_count >= _AUTO_REVISIT_CAP:
+        return
+
+    from src.models import TaskRecord
+
+    new_id = db.next_task_id()
+    db.insert_task(TaskRecord(
+        id=new_id,
+        brief=root.brief,
+        team=root.team,
+        assigned_agent=root.assigned_agent,
+        status=TaskStatus.PENDING,
+        parent_task_id=None,
+        revisit_of_task_id=root.id,
+    ))
+
+    cascade = [t.id for t in reversed(chain)]
+    orch._audit.log_auto_revisit_of(
+        task_id=new_id,
+        predecessor_root=root.id,
+        failed_task=failed_task_id,
+        failed_agent=failed_agent,
+        cascade=cascade,
+        error_context=error_context,
+        attempt=auto_count + 1,
+    )
+    orch._audit.log_revisit_spawned(
+        predecessor_task_id=root.id, new_root=new_id,
+    )
+
+    queue = getattr(orch, "_queue", None)
+    if queue is not None:
+        queue.put_nowait(orch._slug, new_id)
 
 
 def _session_failed_note(result, report) -> str:

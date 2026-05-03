@@ -45,6 +45,15 @@ def _setup_codex_workspace(runtime, agent: str) -> None:
     (ws / "AGENTS.md").write_text(f"# Agent: {agent}\n")
 
 
+def _setup_opencode_workspace(runtime, agent: str) -> None:
+    ws = runtime.workspaces_dir / agent
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / "task_history.md").write_text(f"# Task History: {agent}\n\n")
+    write_default_agent_config(ws)
+    set_executor(ws, "opencode")
+    (ws / "AGENTS.md").write_text(f"# Agent: {agent}\n")
+
+
 def test_orchestrator_no_longer_has_run_task():
     """run_task was removed in favor of the async run_step queue model."""
     from src.orchestrator.orchestrator import Orchestrator
@@ -211,6 +220,37 @@ def test_run_agent_accepts_codex_readiness_marker(orchestrator, test_runtime, mo
     assert result.success is True
     assert report is None
     assert mock_executor.run.call_count == 1
+
+
+def test_run_agent_routes_opencode_workspace_to_opencode_executor(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """An opencode-configured workspace must dispatch to OpencodeExecutor,
+    not Claude or Codex. Readiness is the AGENTS.md marker — same as Codex —
+    because opencode reads AGENTS.md and discovers skills under
+    .agents/skills/."""
+    _setup_opencode_workspace(test_runtime, "engineering_head")
+    task_id = orchestrator.create_task("ping")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
+
+    with patch("src.orchestrator.orchestrator.OpencodeExecutor") as MockExecutor:
+        mock_executor = MockExecutor.return_value
+        mock_executor.run.return_value = ExecutorResult(
+            success=True,
+            duration_seconds=1,
+            session_id="sess-eh",
+        )
+
+        result, report = orchestrator._run_agent(task_id, "engineering_head", "any prompt")
+
+    assert result.success is True
+    assert report is None
+    assert mock_executor.run.call_count == 1
+    # opencode shares the Claude-style "use the start-task skill" nudge
+    # because opencode's `skill` tool resolves the skill on demand.
+    prompt = mock_executor.run.call_args.kwargs["prompt"]
+    assert "Use the start-task skill" in prompt
+    assert "Use the injected task parameters directly" not in prompt
 
 
 def test_run_agent_defaults_missing_executor_to_claude(orchestrator, test_runtime, monkeypatch):

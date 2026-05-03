@@ -198,9 +198,10 @@ Operational settings use the `OPC_` environment variable prefix. Runtime paths (
 |----------|---------|-------------|
 | `OPC_CLAUDE_CLI_PATH` | `claude` | Path to Claude Code CLI |
 | `OPC_CODEX_CLI_PATH` | `codex` | Path to Codex CLI |
+| `OPC_OPENCODE_CLI_PATH` | `opencode` | Path to opencode CLI |
 | `OPC_PERMISSION_MODE` | `auto` | Claude Code permission mode |
 | `OPC_PROTOCOL_DIR` | `protocol` | Protocol docs dirname (relative to project root) |
-| `OPC_MAX_ORCHESTRATION_STEPS` | `10` | Max manager decision steps before escalation |
+| `OPC_MAX_ORCHESTRATION_STEPS` | `50` | Max manager decision steps before escalation |
 | `OPC_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout (30 min) — global default; see "Session timeout resolution" below |
 | `OPC_TIER_GREEN_THRESHOLD` | `0.90` | Acceptance rate for green tier |
 | `OPC_TIER_YELLOW_THRESHOLD` | `0.75` | Acceptance rate for yellow tier |
@@ -218,7 +219,7 @@ Each layer accepts `null`/missing as "inherit from the next layer." Values must 
 
 ### Agent executors
 
-Each workspace declares an `executor` in `agent.yaml`. Supported values are `claude` and `codex`; missing values in older workspaces default to `claude`.
+Each workspace declares an `executor` in `agent.yaml`. Supported values are `claude`, `codex`, and `opencode`; missing values in older workspaces default to `claude`.
 
 If a team manager wants to enroll a new Codex-backed worker, the
 `opc manage-agent --from-file ...` payload should set `"executor": "codex"`.
@@ -287,6 +288,42 @@ the daemon polls). TASK-080 (2026-04-25) is the canonical failure:
 `senior_dev` produced a complete 130-line `design-review.md` artifact,
 exited rc=0, then was auto-rejected because the final HTTP callback
 never made it past the sandbox.
+
+**opencode shares the AGENTS.md + `.agents/skills/` layout with Codex.**
+opencode reads `AGENTS.md` (with `CLAUDE.md` as a fallback) and
+discovers skills under `.opencode/skills/`, `.claude/skills/`, or
+`.agents/skills/` — walking from the working directory up to the
+git worktree. `OpencodeWorkspaceAdapter` writes the same `AGENTS.md`
+the Codex adapter does and copies `protocol/skills/` into
+`<workspace>/.agents/skills/`, so a workspace can be re-bootstrapped
+between Codex and opencode without churn. Skills are loaded
+on-demand via opencode's built-in `skill` tool (the agent calls it
+to list and load skill content), which is why the orchestrator's
+prompt intro nudges the agent the same way Claude does — *"Use the
+start-task skill."*
+
+**opencode's permission model is a single structured surface.**
+Unlike Claude (which needs both `permissions.allow` in
+`.claude/settings.json` AND `--allowedTools` on the CLI in headless
+mode — see TASK-007/008/009), opencode reads `opencode.json` from
+the workspace and honors it directly in headless `opencode run`.
+`OpencodeWorkspaceAdapter.write_opencode_json` writes a strict
+default — `{"permission": {"bash": {"*": "deny", "opc *": "allow",
+... per-agent allow_rules ...}}}` — so an agent attempting an
+unsanctioned bash call fails fast rather than waiting on an
+interactive prompt that will never arrive. We deliberately do NOT
+pass `--dangerously-skip-permissions` on the CLI: bypassing the
+file would erase the per-prefix discipline that the rest of this
+section mandates. The same `allow_rules` frontmatter that drives
+Claude's two surfaces drives opencode's single surface — the
+`bash_allow_prefixes_for_agent` helper renders the raw prefix list,
+and the adapter wraps each entry as `"<prefix> *": "allow"`.
+
+If a team manager wants to enroll an opencode-backed worker, the
+`opc manage-agent --from-file ...` payload sets `"executor": "opencode"`.
+The approved workspace is bootstrapped with `AGENTS.md`,
+`opencode.json`, and `.agents/skills/` — no `.claude/settings.json`,
+no Codex sandbox flag, no `--allowedTools` flag.
 
 Repos are configured per agent in `<runtime>/workspaces/<agent>/agent.yaml`:
 ```yaml
@@ -482,7 +519,7 @@ opc kb update --org hk-tourism <slug> --agent <you> --from-file /tmp/kb-<slug>.m
 opc kb delete --org hk-tourism <slug> --agent <you> --confirm [--as-founder]
 opc kb reindex --org hk-tourism
 opc kb precedent --org hk-tourism --task-id TASK-001 --decision approve|reject --rationale "..." [--slug <s>] --as-founder   # founder-only; follows resolve-escalation
-opc resolve-escalation --org hk-tourism --task-id TASK-001 --decision approve|reject --rationale "..."                       # founder state transition (precedes kb precedent)
+opc resolve-escalation --org hk-tourism --task-id TASK-001 --decision approve|reject --rationale "..."                       # approve resumes the task (PENDING + re-enqueue) with rationale injected as a one-shot prompt header; reject fails it and cascades to parent. Precedes kb precedent.
 opc revisit --org hk-tourism TASK-052 [--note "..." | --note-file PATH]   # founder: spawn NEW root inheriting the predecessor's brief (TTY-gated)
 # Talk flow (founder↔agent conversations; per-org):
 opc talk start --org hk-tourism --agent <name>

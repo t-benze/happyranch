@@ -32,4 +32,5 @@ logs/
 
 # Claude
 .claude/worktrees
+.claude/settings.local.json
 .worktrees

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from src.daemon.state import DaemonState
 
@@ -32,3 +33,17 @@ class Dispatcher:
             )
             return
         org.orchestrator.run_step(task_id)
+
+    def heartbeat(self, slug: str, task_id: str) -> None:
+        """Stamp ``tasks.last_heartbeat`` on the per-org DB.
+
+        Called periodically by the queue's heartbeat coroutine while
+        ``run_step`` is in flight. Silently no-ops if the org has been
+        unloaded since the task was enqueued.
+        """
+        try:
+            org = self._state.get_org(slug)
+        except KeyError:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        org.db.update_task(task_id, last_heartbeat=now)

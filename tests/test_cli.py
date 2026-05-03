@@ -2280,3 +2280,42 @@ def test_cmd_run_multi_org_no_flag_no_env_errors(monkeypatch, capsys):
     assert "--org <slug> is required" in err
     assert "alpha" in err
     assert "beta" in err
+# ── progress callback ────────────────────────────────────────
+
+
+def test_progress_parser_requires_all_args():
+    parser = build_parser()
+    args = parser.parse_args([
+        "progress",
+        "--org", "alpha",
+        "--task-id", "TASK-001",
+        "--session-id", "sess-1",
+        "--agent", "dev_agent",
+        "--message", "Phase 3 of 6",
+    ])
+    assert args.org == "alpha"
+    assert args.task_id == "TASK-001"
+    assert args.session_id == "sess-1"
+    assert args.agent == "dev_agent"
+    assert args.message == "Phase 3 of 6"
+
+
+def test_cmd_progress_posts_to_progress_endpoint():
+    from src.cli import cmd_progress
+
+    fake = MagicMock()
+    fake.post.return_value.status_code = 200
+    args = MagicMock(
+        org="alpha",
+        task_id="TASK-001", session_id="sess-1",
+        agent="dev_agent", message="Phase 3 of 6",
+    )
+    with patch("src.cli.OpcClient.from_env", return_value=fake):
+        cmd_progress(args)
+    pos, kwargs = fake.post.call_args
+    assert pos[0] == "/api/v1/orgs/alpha/tasks/TASK-001/progress"
+    assert kwargs["json"] == {
+        "session_id": "sess-1",
+        "agent": "dev_agent",
+        "message": "Phase 3 of 6",
+    }

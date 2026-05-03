@@ -22,14 +22,19 @@ def test_agent_writes_other_agent_reads(tmp_path: Path, monkeypatch):
     paths_mod.ensure_token()
     headers = {"Authorization": f"Bearer {paths_mod.read_token()}"}
 
-    runtime = RuntimeDir.init(tmp_path / "runtime", slug="test")
-    state = DaemonState.from_runtime(runtime, Settings())
+    rt = RuntimeDir.init(tmp_path / "runtime")
+    # Materialize a discoverable org under <rt>/orgs/test/. The org is
+    # discoverable iff <org>/org/teams.yaml exists.
+    org_root = rt.orgs_dir / "test"
+    (org_root / "org").mkdir(parents=True, exist_ok=True)
+    (org_root / "org" / "teams.yaml").write_text("teams: {}\n")
+    state = DaemonState.from_runtime(rt, Settings())
     app = create_app(state)
     client = TestClient(app)
 
     # Agent A writes
     r_add = client.post(
-        "/api/v1/kb",
+        "/api/v1/orgs/test/kb",
         json={
             "agent": "compliance_agent",
             "slug": "hk-visa-90day",
@@ -46,17 +51,17 @@ def test_agent_writes_other_agent_reads(tmp_path: Path, monkeypatch):
 
     # Agent B searches and reads
     r_search = client.get(
-        "/api/v1/kb/search", params={"q": "tourist visa"}, headers=headers
+        "/api/v1/orgs/test/kb/search", params={"q": "tourist visa"}, headers=headers
     )
     assert r_search.status_code == 200
     hits = r_search.json()["hits"]
     assert hits and hits[0]["slug"] == "hk-visa-90day"
 
-    r_get = client.get(f"/api/v1/kb/{hits[0]['slug']}", headers=headers)
+    r_get = client.get(f"/api/v1/orgs/test/kb/{hits[0]['slug']}", headers=headers)
     assert r_get.status_code == 200
     entry = r_get.json()
     assert entry["authored_by"] == "compliance_agent"
     assert "Eligibility" in entry["body"]
 
-    # Index exists on disk
-    assert (runtime.root / "kb" / "_index.md").exists()
+    # Index exists on disk under the per-org KB folder.
+    assert (org_root / "kb" / "_index.md").exists()

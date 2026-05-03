@@ -250,6 +250,53 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
     return {"ok": True}
 
 
+class ProgressBody(BaseModel):
+    session_id: str
+    agent: str
+    message: str
+
+
+@router.post("/tasks/{task_id}/progress")
+async def submit_progress(task_id: str, body: ProgressBody, org: OrgDep) -> dict:
+    """Agent-controlled mid-task progress note.
+
+    Same auth shape as /completion (active session must match), but does NOT
+    clear the tracker — the agent keeps working after a progress beat. Audit-
+    logged as `action=progress` and broadcast on SSE so `opc tail` shows live
+    movement on long-running tasks.
+    """
+    from src.infrastructure.audit_logger import AuditLogger
+
+    expected = org.sessions.get_active(task_id, body.agent)
+    if expected is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "unknown_session", "task_id": task_id, "agent": body.agent},
+        )
+    if expected != body.session_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "session_mismatch", "active": expected, "got": body.session_id},
+        )
+    message = body.message.strip()
+    if not message:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "message_required"},
+        )
+    async with org.db_lock:
+        AuditLogger(org.db).log_progress(
+            task_id=task_id, agent=body.agent, message=message,
+        )
+    await org.event_bus.publish(task_id, {
+        "type": "progress",
+        "agent": body.agent,
+        "session_id": body.session_id,
+        "message": message,
+    })
+    return {"ok": True}
+
+
 class ResolveEscalationBody(BaseModel):
     decision: str  # "approve" | "reject"
     rationale: str
@@ -275,24 +322,40 @@ async def resolve_escalation(
             status_code=409,
             detail={"code": "task_not_escalated", "current_status": task.status.value},
         )
-    new_status = TaskStatus.COMPLETED if body.decision == "approve" else TaskStatus.FAILED
-    # Overwrite `note` with the resolution so that a resumed parent manager
-    # sees the founder's rationale (via _build_prior_steps_from_db) instead
-    # of the stale escalation reason the child originally parked with.
+    # approve resumes the work itself; reject terminates it. Pre-resolve we
+    # used to mark approve→COMPLETED and lean on parent wake-up to carry the
+    # work forward. That left root escalations (no parent) silently dropping
+    # the work the approval was meant to authorize. New shape: approve sends
+    # the task back to PENDING with the rationale on `note`, and the team
+    # manager picks it up on the next step with a one-shot prompt header
+    # (see `_resolved_escalation_header_if_applicable` in run_step.py).
     resolved_note = f"Founder {body.decision}d: {body.rationale}"
     async with org.db_lock:
+        if body.decision == "approve":
+            new_status = TaskStatus.PENDING
+        else:
+            new_status = TaskStatus.FAILED
         org.db.update_task(
             task_id, status=new_status, block_kind=None, note=resolved_note,
         )
         AuditLogger(org.db).log_escalation_resolved(
             task_id=task_id, decision=body.decision, rationale=body.rationale
         )
-    # Wake the parent (if any) so it can re-invoke the team manager with the
-    # resolved outcome. The org's Orchestrator owns its slug + queue + db, so
-    # we just pass it through; ``_enqueue_parent_if_waiting`` reads
-    # ``orch._slug`` to push ``(slug, task_id)`` onto the global TaskQueue.
-    from src.orchestrator.run_step import _enqueue_parent_if_waiting
-    _enqueue_parent_if_waiting(org.orchestrator, task_id)
+    if body.decision == "approve":
+        # Re-enqueue self. The manager's next step sees the rationale via the
+        # escalation-resolved prompt header (see
+        # ``_resolved_escalation_header_if_applicable`` in run_step.py).
+        # Parent (if any) stays blocked (DELEGATED) and will be woken when
+        # this task next reaches a true terminal — no immediate wake here.
+        if state.queue is not None:
+            state.queue.put_nowait(org.slug, task_id)
+    else:
+        # Cascade-fail upward: the parent (if any) must learn this branch
+        # failed. The org's Orchestrator owns its slug + queue + db, so we
+        # just pass it through; ``_enqueue_parent_if_waiting`` calls _fail
+        # on the parent on FAILED siblings.
+        from src.orchestrator.run_step import _enqueue_parent_if_waiting
+        _enqueue_parent_if_waiting(org.orchestrator, task_id)
     return {"ok": True, "task_id": task_id, "new_status": new_status.value}
 
 

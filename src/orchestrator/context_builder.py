@@ -9,6 +9,7 @@ from src.orchestrator._paths import OrgPaths
 from src.orchestrator.workspace_adapters import (
     ClaudeWorkspaceAdapter,
     CodexWorkspaceAdapter,
+    OpencodeWorkspaceAdapter,
 )
 
 logger = logging.getLogger(__name__)
@@ -21,12 +22,15 @@ class ContextBuilder:
         self._slug = slug
         self._claude = ClaudeWorkspaceAdapter(settings, paths, slug=slug)
         self._codex = CodexWorkspaceAdapter(settings, paths, slug=slug)
+        self._opencode = OpencodeWorkspaceAdapter(settings, paths, slug=slug)
 
     def _adapter(self, provider: str = "claude"):
         if provider == "claude":
             return self._claude
         if provider == "codex":
             return self._codex
+        if provider == "opencode":
+            return self._opencode
         raise ValueError(f"unknown workspace provider: {provider}")
 
     def write_settings_json(self, workspace: Path, repo_names: list[str] | None = None) -> None:

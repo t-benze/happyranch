@@ -216,6 +216,10 @@ class Database:
             # created via `opc run` or revisit. Most tasks have no talk
             # provenance, so the index below is partial.
             "ALTER TABLE tasks ADD COLUMN dispatched_from_talk_id TEXT",
+            # Liveness heartbeat: queue worker stamps this while a subprocess
+            # is alive so `opc details` can show progress on long-running
+            # tasks. Distinct from updated_at (which advances on any write).
+            "ALTER TABLE tasks ADD COLUMN last_heartbeat TEXT",
         ):
             try:
                 self._conn.execute(ddl)
@@ -363,6 +367,7 @@ class Database:
             orchestration_step_count=row["orchestration_step_count"] or 0,
             final_artifact_dir=row["final_artifact_dir"],
             cancelled_at=row["cancelled_at"],
+            last_heartbeat=row["last_heartbeat"],
         )
 
     @_synchronized
@@ -389,6 +394,7 @@ class Database:
                 orchestration_step_count=row["orchestration_step_count"] or 0,
                 final_artifact_dir=row["final_artifact_dir"],
                 cancelled_at=row["cancelled_at"],
+                last_heartbeat=row["last_heartbeat"],
             )
             for row in cursor.fetchall()
         ]
@@ -532,6 +538,7 @@ class Database:
                 orchestration_step_count=row["orchestration_step_count"] or 0,
                 final_artifact_dir=row["final_artifact_dir"],
                 cancelled_at=row["cancelled_at"],
+                last_heartbeat=row["last_heartbeat"],
             )
             for row in cursor.fetchall()
         ]
@@ -541,7 +548,7 @@ class Database:
         allowed = {
             "status", "assigned_agent", "revision_count", "completed_at",
             "block_kind", "note", "orchestration_step_count",
-            "final_artifact_dir", "cancelled_at",
+            "final_artifact_dir", "cancelled_at", "last_heartbeat",
         }
         # NOTE: filter on membership, not on None-ness — block_kind must be
         # resettable to NULL when a task unblocks.
