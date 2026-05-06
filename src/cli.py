@@ -544,6 +544,92 @@ def cmd_audit(args: argparse.Namespace) -> None:
         print(f"{ts:<20} {task:<10} {agent:<22} {action:<22} {payload_s}")
 
 
+def cmd_tokens(args: argparse.Namespace) -> None:
+    """Show per-session token usage rows or rollup aggregates via the daemon.
+
+    Default view is the most recent N (20 by default) ``session_token_usage``
+    rows, descending by ``created_at``. ``--by-agent`` / ``--by-task`` switch
+    to a rollup keyed by that column. ``--json`` emits raw JSON for either
+    view. ``total = (input or 0) + (output or 0) + (reasoning or 0)`` —
+    cache reads are reported separately, never folded into ``total``.
+    """
+    import json as _json
+
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
+
+    if args.by_agent or args.by_task:
+        group_by = "agent" if args.by_agent else "task"
+        rollup = client.aggregate_tokens(
+            slug=slug, group_by=group_by,
+            task_id=args.task_id, agent=args.agent, since=args.since,
+        )
+        if args.json:
+            print(_json.dumps(rollup, indent=2))
+            return
+        if not rollup:
+            print("No token usage rows match the filters.")
+            return
+        if group_by == "agent":
+            header_label, key = "Agent", "agent"
+            label_width = 22
+        else:
+            header_label, key = "Task", "task_id"
+            label_width = 14
+        print(
+            f"{header_label:<{label_width}} {'Sessions':>8} "
+            f"{'Input':>12} {'Output':>12} {'CacheR':>12} {'Total':>14}"
+        )
+        print("-" * (label_width + 1 + 8 + 1 + 12 + 1 + 12 + 1 + 12 + 1 + 14))
+        for r in rollup:
+            inp = r.get("input_tokens") or 0
+            out = r.get("output_tokens") or 0
+            rea = r.get("reasoning_tokens") or 0
+            cr = r.get("cache_read_tokens") or 0
+            total = inp + out + rea
+            label = r.get(key) or "-"
+            print(
+                f"{label:<{label_width}} {r['sessions']:>8} "
+                f"{inp:>12,} {out:>12,} {cr:>12,} {total:>14,}"
+            )
+        return
+
+    rows = client.list_tokens(
+        slug=slug, task_id=args.task_id, agent=args.agent,
+        since=args.since, limit=args.limit if args.limit is not None else 20,
+    )
+    if args.json:
+        print(_json.dumps(rows, indent=2))
+        return
+    if not rows:
+        print("No token usage rows match the filters.")
+        return
+    print(
+        f"{'Created':<20} {'Task':<10} {'Agent':<22} {'Exec':<10} "
+        f"{'Input':>12} {'Output':>12} {'CacheR':>12} {'Total':>14}"
+    )
+    print("-" * (20 + 1 + 10 + 1 + 22 + 1 + 10 + 1 + 12 + 1 + 12 + 1 + 12 + 1 + 14))
+    for r in rows:
+        ts = _fmt_ts(r.get("created_at"))
+        inp = r.get("input_tokens") or 0
+        out = r.get("output_tokens") or 0
+        rea = r.get("reasoning_tokens") or 0
+        cr = r.get("cache_read_tokens") or 0
+        total = inp + out + rea
+        print(
+            f"{ts:<20} {(r.get('task_id') or '-'):<10} "
+            f"{(r.get('agent') or '-'):<22} {(r.get('executor') or '-'):<10} "
+            f"{inp:>12,} {out:>12,} {cr:>12,} {total:>14,}"
+        )
+
+
 def _completion_payload_from_file(path: str) -> tuple[str, dict]:
     """Load a completion payload from a JSON file.
 
@@ -1631,6 +1717,29 @@ def build_parser() -> argparse.ArgumentParser:
     p_audit.add_argument("--json", action="store_true",
                          help="Emit raw JSON instead of the human-readable table")
     p_audit.set_defaults(func=cmd_audit)
+
+    # opc tokens
+    p_tokens = sub.add_parser(
+        "tokens",
+        help="Show per-session token usage (or rollups via --by-agent / --by-task)",
+    )
+    p_tokens.add_argument("--org", default=None,
+                          help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_tokens.add_argument("--task-id", dest="task_id", default=None,
+                          help="Filter by task id (e.g. TASK-007)")
+    p_tokens.add_argument("--agent", default=None, help="Filter by agent name")
+    p_tokens.add_argument("--since", default=None,
+                          help="ISO-8601 date or timestamp; only rows at or after this time")
+    p_tokens.add_argument("--limit", type=int, default=None,
+                          help="Cap to the most recent N rows (default: 20; ignored for rollups)")
+    p_tokens.add_argument("--json", action="store_true",
+                          help="Emit raw JSON instead of the human-readable table")
+    p_tokens_group = p_tokens.add_mutually_exclusive_group()
+    p_tokens_group.add_argument("--by-agent", dest="by_agent", action="store_true",
+                                help="Rollup: one row per agent")
+    p_tokens_group.add_argument("--by-task", dest="by_task", action="store_true",
+                                help="Rollup: one row per task")
+    p_tokens.set_defaults(func=cmd_tokens)
 
     # opc init-agent
     p_init_agent = sub.add_parser("init-agent", help="Initialize agent workspaces with system prompts and repo clone")
