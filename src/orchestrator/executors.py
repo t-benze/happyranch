@@ -36,6 +36,7 @@ class ExecutorResult:
     stdout_tail: str = ""
     stderr_tail: str = ""
     error: str | None = None
+    token_usage: TokenUsage | None = None
 
 
 _TAIL_BYTES = 2000
@@ -161,6 +162,7 @@ def _run_command(
     timeout_seconds: int,
     input_text: str | None = None,
     on_started: Callable[[int], None] | None = None,
+    usage_parser: Callable[[str], "TokenUsage | None"] | None = None,
 ) -> ExecutorResult:
     sid = session_id or f"sess-{uuid.uuid4().hex}"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -194,10 +196,13 @@ def _run_command(
             session_id=sid,
             error=f"Session timed out after {timeout_seconds} seconds",
         )
-    stdout_tail = (stdout or "")[-_TAIL_BYTES:]
-    stderr_tail = (stderr or "")[-_TAIL_BYTES:]
+    full_stdout = stdout or ""
+    full_stderr = stderr or ""
+    stdout_tail = full_stdout[-_TAIL_BYTES:]
+    stderr_tail = full_stderr[-_TAIL_BYTES:]
     if proc.returncode != 0:
-        error_summary = (stderr or stdout or "").strip()
+        # Subprocess failed → no token_usage row, per spec §4.3.
+        error_summary = (full_stderr or full_stdout or "").strip()
         if error_summary:
             error_summary = f": {error_summary}"
         return ExecutorResult(
@@ -209,6 +214,13 @@ def _run_command(
             stderr_tail=stderr_tail,
             error=f"Command exited with code {proc.returncode}{error_summary}",
         )
+    token_usage: TokenUsage | None = None
+    if usage_parser is not None:
+        try:
+            token_usage = usage_parser(full_stdout)
+        except Exception as exc:  # parser must never break the task
+            logger.warning("usage parser raised: %s", exc)
+            token_usage = None
     return ExecutorResult(
         success=True,
         duration_seconds=int(time.monotonic() - start_time),
@@ -216,6 +228,7 @@ def _run_command(
         returncode=proc.returncode,
         stdout_tail=stdout_tail,
         stderr_tail=stderr_tail,
+        token_usage=token_usage,
     )
 
 
@@ -254,9 +267,16 @@ class ClaudeExecutor:
             self._permission_mode,
             "--allowedTools",
             allowed,
+            "--output-format",
+            "json",
         ]
         return _run_command(
-            cmd, workspace, session_id, timeout_seconds, on_started=on_started,
+            cmd,
+            workspace,
+            session_id,
+            timeout_seconds,
+            on_started=on_started,
+            usage_parser=_parse_claude_usage,
         )
 
 
@@ -299,6 +319,7 @@ class CodexExecutor:
             timeout_seconds,
             input_text=prompt,
             on_started=on_started,
+            usage_parser=_parse_codex_usage,
         )
 
 
@@ -344,6 +365,7 @@ class OpencodeExecutor:
             session_id,
             timeout_seconds,
             on_started=on_started,
+            usage_parser=_parse_opencode_usage,
         )
 
 
