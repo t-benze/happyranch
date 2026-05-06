@@ -153,3 +153,35 @@ def test_parse_opencode_usage_no_assistant_messages():
 
 def test_parse_opencode_usage_empty_stdout():
     assert _parse_opencode_usage("") is None
+
+
+def test_parse_opencode_usage_top_level_is_a_list():
+    """Spec §8.1: parsers handle unexpected payload schema, never raise."""
+    u = _parse_opencode_usage("[1, 2, 3]")
+    assert u is not None
+    assert u.input_tokens is None
+    assert u.usage_raw_json is not None
+
+
+def test_parse_opencode_usage_messages_is_not_a_list():
+    """`messages` is a string instead of a list — must not raise."""
+    u = _parse_opencode_usage('{"messages": "oops"}')
+    assert u is not None
+    assert u.input_tokens is None
+    assert u.usage_raw_json is not None
+
+
+def test_parse_opencode_usage_assistant_missing_usage_field():
+    """One assistant turn lacks `usage`, another has it — only sum the one with data."""
+    import json as _json
+    payload = _json.dumps({
+        "messages": [
+            {"role": "assistant", "model": "x", "content": "tool call"},  # no usage
+            {"role": "assistant", "model": "x", "content": "final",
+             "usage": {"input_tokens": 50, "output_tokens": 25}},
+        ]
+    })
+    u = _parse_opencode_usage(payload)
+    assert u is not None
+    assert u.input_tokens == 50
+    assert u.output_tokens == 25

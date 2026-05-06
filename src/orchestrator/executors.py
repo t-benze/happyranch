@@ -124,6 +124,7 @@ def _parse_opencode_usage(stdout: str) -> TokenUsage | None:
     try:
         obj = json.loads(stdout.strip())
     except json.JSONDecodeError:
+        logger.warning("opencode usage parser: stdout is not valid JSON")
         return TokenUsage(usage_raw_json=stdout[:_TAIL_BYTES])
     if not isinstance(obj, dict):
         return TokenUsage(usage_raw_json=stdout[:_TAIL_BYTES])
@@ -138,7 +139,7 @@ def _parse_opencode_usage(stdout: str) -> TokenUsage | None:
 
     def _sum(field: str) -> int | None:
         vals = [m["usage"].get(field) for m in assistant_msgs]
-        nums = [v for v in vals if isinstance(v, int)]
+        nums = [v for v in vals if isinstance(v, int) and not isinstance(v, bool)]
         return sum(nums) if nums else None
 
     last_model = next((m.get("model") for m in reversed(assistant_msgs) if m.get("model")), None)
