@@ -72,6 +72,46 @@ def _parse_claude_usage(stdout: str) -> TokenUsage | None:
     )
 
 
+def _parse_codex_usage(stdout: str) -> TokenUsage | None:
+    """Parse Codex `exec --json` NDJSON event stream into TokenUsage.
+
+    Walks events, picks the last `session_complete`. Returns None on empty
+    stdout, TokenUsage with NULL token fields if no session_complete found
+    (forensic preservation), populated TokenUsage on success.
+
+    Note: the Codex event name "session_complete" is the documented terminal
+    event. Verify against the running Codex CLI version during integration
+    testing — if the schema changes, only this function needs updating.
+    """
+    if not stdout or not stdout.strip():
+        return None
+    last_complete: dict | None = None
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict) and event.get("type") == "session_complete":
+            last_complete = event
+    if last_complete is None:
+        return TokenUsage(usage_raw_json=stdout[:_TAIL_BYTES])
+    tu = last_complete.get("token_usage") or {}
+    if not isinstance(tu, dict):
+        tu = {}
+    return TokenUsage(
+        input_tokens=tu.get("input_tokens"),
+        output_tokens=tu.get("output_tokens"),
+        cache_read_tokens=tu.get("cached_tokens"),
+        cache_creation_tokens=None,
+        reasoning_tokens=tu.get("reasoning_tokens"),
+        model=last_complete.get("model"),
+        usage_raw_json=json.dumps(last_complete),
+    )
+
+
 def _run_command(
     cmd: list[str],
     workspace: Path,

@@ -1,0 +1,4 @@
+{"type":"agent_message","content":"hello"}
+{"type":"tool_call","name":"shell","args":{}}
+{"type":"agent_message","content":"done"}
+{"type":"session_complete","model":"gpt-5","token_usage":{"input_tokens":34887,"output_tokens":9003,"cached_tokens":15003,"reasoning_tokens":1234}}

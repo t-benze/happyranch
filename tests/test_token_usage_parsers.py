@@ -69,3 +69,51 @@ def test_parse_claude_usage_usage_field_is_not_a_dict():
     assert u.input_tokens is None
     assert u.model == "claude"
     assert u.usage_raw_json is not None
+
+
+from src.orchestrator.executors import _parse_codex_usage
+
+
+def _codex_fixture() -> str:
+    return (FIXTURES / "usage_codex.jsonl").read_text()
+
+
+def test_parse_codex_usage_happy_path():
+    u = _parse_codex_usage(_codex_fixture())
+    assert u is not None
+    assert u.input_tokens == 34887
+    assert u.output_tokens == 9003
+    assert u.cache_read_tokens == 15003
+    assert u.cache_creation_tokens is None  # Codex doesn't separate creation
+    assert u.reasoning_tokens == 1234
+    assert u.model == "gpt-5"
+
+
+def test_parse_codex_usage_no_session_complete_event():
+    stream = '{"type":"agent_message","content":"hi"}\n{"type":"tool_call","name":"x"}\n'
+    u = _parse_codex_usage(stream)
+    assert u is not None
+    assert u.input_tokens is None
+    assert u.usage_raw_json is not None
+
+
+def test_parse_codex_usage_skips_non_json_lines():
+    stream = '\nWARNING: some stderr\n{"type":"session_complete","model":"gpt-5","token_usage":{"input_tokens":1,"output_tokens":2}}\n'
+    u = _parse_codex_usage(stream)
+    assert u is not None
+    assert u.input_tokens == 1
+    assert u.output_tokens == 2
+
+
+def test_parse_codex_usage_takes_last_session_complete():
+    stream = (
+        '{"type":"session_complete","model":"gpt-5","token_usage":{"input_tokens":1}}\n'
+        '{"type":"session_complete","model":"gpt-5","token_usage":{"input_tokens":99}}\n'
+    )
+    u = _parse_codex_usage(stream)
+    assert u is not None
+    assert u.input_tokens == 99
+
+
+def test_parse_codex_usage_empty_stdout():
+    assert _parse_codex_usage("") is None
