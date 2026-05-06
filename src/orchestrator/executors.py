@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import logging
 import subprocess
 import time
 import uuid
@@ -8,7 +10,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.config import Settings
+from src.models import TokenUsage
 from src.orchestrator._paths import OrgPaths
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -34,6 +39,37 @@ class ExecutorResult:
 
 
 _TAIL_BYTES = 2000
+
+
+def _parse_claude_usage(stdout: str) -> TokenUsage | None:
+    """Parse Claude Code's `--output-format json` stdout into TokenUsage.
+
+    Best-effort: returns TokenUsage(usage_raw_json=...) on parse failure
+    (token fields NULL) so the row still gets written for forensics.
+    Returns None only when stdout is empty (no parse attempted).
+    """
+    if not stdout or not stdout.strip():
+        return None
+    try:
+        obj = json.loads(stdout.strip())
+    except json.JSONDecodeError:
+        logger.warning("claude usage parser: stdout is not valid JSON")
+        return TokenUsage(usage_raw_json=stdout[:4000])
+    usage = obj.get("usage") if isinstance(obj, dict) else None
+    if not isinstance(usage, dict):
+        return TokenUsage(
+            model=obj.get("model") if isinstance(obj, dict) else None,
+            usage_raw_json=stdout[:4000],
+        )
+    return TokenUsage(
+        input_tokens=usage.get("input_tokens"),
+        output_tokens=usage.get("output_tokens"),
+        cache_read_tokens=usage.get("cache_read_input_tokens"),
+        cache_creation_tokens=usage.get("cache_creation_input_tokens"),
+        reasoning_tokens=None,
+        model=obj.get("model"),
+        usage_raw_json=json.dumps(usage),
+    )
 
 
 def _run_command(
