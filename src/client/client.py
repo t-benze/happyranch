@@ -46,6 +46,61 @@ class OpcClient:
     def request(self, method: str, path: str, **kwargs) -> httpx.Response:
         return self._client.request(method, path, **kwargs)
 
+    def list_tokens(
+        self,
+        slug: str,
+        task_id: str | None = None,
+        agent: str | None = None,
+        since: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict]:
+        """Return per-session token usage rows for an org.
+
+        Calls ``GET /api/v1/orgs/{slug}/tokens``. Filters AND-compose; ``None``
+        values are omitted from the query string. Raises on non-2xx.
+        """
+        params = {
+            k: v
+            for k, v in {
+                "task_id": task_id,
+                "agent": agent,
+                "since": since,
+                "limit": limit,
+            }.items()
+            if v is not None
+        }
+        r = self.get(f"/api/v1/orgs/{slug}/tokens", params=params)
+        r.raise_for_status()
+        return r.json()["rows"]
+
+    def aggregate_tokens(
+        self,
+        slug: str,
+        group_by: str,
+        task_id: str | None = None,
+        agent: str | None = None,
+        since: str | None = None,
+    ) -> list[dict]:
+        """Return a token-usage rollup grouped by ``agent`` or ``task``.
+
+        Calls ``GET /api/v1/orgs/{slug}/tokens?group_by=...``. Filters
+        AND-compose; ``None`` values are omitted. Raises on non-2xx.
+        """
+        if group_by not in ("agent", "task"):
+            raise ValueError(
+                f"group_by must be 'agent' or 'task', got: {group_by!r}"
+            )
+        params: dict[str, str] = {"group_by": group_by}
+        if task_id is not None:
+            params["task_id"] = task_id
+        if agent is not None:
+            params["agent"] = agent
+        if since is not None:
+            params["since"] = since
+        r = self.get(f"/api/v1/orgs/{slug}/tokens", params=params)
+        r.raise_for_status()
+        return r.json()["rollup"]
+
     def stream(self, method: str, path: str, **kwargs) -> Iterator[str]:
         """Yield server-sent event payload lines (data: ... only)."""
         with self._client.stream(method, path, **kwargs) as response:
