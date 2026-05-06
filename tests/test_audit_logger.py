@@ -14,11 +14,13 @@ def test_log_session_start(db):
 
 def test_log_session_end(db):
     logger = AuditLogger(db)
-    logger.log_session_end("TASK-001", "dev_agent", duration_seconds=120, token_count=5000)
+    logger.log_session_end("TASK-001", "dev_agent", duration_seconds=120)
     logs = db.get_audit_logs("TASK-001")
     assert len(logs) == 1
     assert logs[0]["action"] == "session_end"
     assert logs[0]["payload"]["duration_seconds"] == 120
+    # No token_usage provided -> token_count is null for back-compat readers.
+    assert logs[0]["payload"]["token_count"] is None
 
 
 def test_log_completion_report(db):

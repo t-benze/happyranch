@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from src.infrastructure.database import Database
-from src.models import CompletionReport
+from src.models import CompletionReport, TokenUsage
 
 
 class AuditLogger:
@@ -21,16 +21,19 @@ class AuditLogger:
         task_id: str,
         agent: str,
         duration_seconds: int,
-        token_count: int | None = None,
+        token_usage: TokenUsage | None = None,
     ) -> None:
+        payload: dict = {"duration_seconds": duration_seconds}
+        if token_usage is not None:
+            payload["token_usage"] = token_usage.model_dump()
+            payload["token_count"] = token_usage.total
+        else:
+            payload["token_count"] = None
         self._db.insert_audit_log(
             task_id=task_id,
             agent=agent,
             action="session_end",
-            payload={
-                "duration_seconds": duration_seconds,
-                "token_count": token_count,
-            },
+            payload=payload,
         )
 
     def log_completion_report(self, report: CompletionReport) -> None:
