@@ -6,8 +6,12 @@ import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from src.models import BlockKind, TalkRecord, TaskRecord, TaskStatus
+
+if TYPE_CHECKING:
+    from src.models import TokenUsage
 
 
 class LineageTooDeep(Exception):
@@ -150,6 +154,25 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_talks_agent_status ON talks(agent_name, status);
             CREATE INDEX IF NOT EXISTS idx_talks_started ON talks(started_at);
+
+            CREATE TABLE IF NOT EXISTS session_token_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id    TEXT NOT NULL,
+                agent      TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                executor   TEXT NOT NULL,
+                model      TEXT,
+                input_tokens          INTEGER,
+                output_tokens         INTEGER,
+                cache_read_tokens     INTEGER,
+                cache_creation_tokens INTEGER,
+                reasoning_tokens      INTEGER,
+                usage_raw_json TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE (task_id, agent, session_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_token_usage_task   ON session_token_usage (task_id);
+            CREATE INDEX IF NOT EXISTS idx_session_token_usage_agent  ON session_token_usage (agent, created_at);
         """)
         # Best-effort migration for DBs created before `status` existed. SQLite
         # has no IF NOT EXISTS for ADD COLUMN; swallow the duplicate-column
@@ -857,6 +880,118 @@ class Database:
         if d.get("risks_flagged"):
             d["risks_flagged"] = json.loads(d["risks_flagged"])
         return d
+
+    # --- Session Token Usage ---
+
+    @_synchronized
+    def insert_session_token_usage(
+        self,
+        task_id: str,
+        agent: str,
+        session_id: str,
+        executor: str,
+        token_usage: "TokenUsage",
+    ) -> None:
+        """Insert one row per (task, agent, session). INSERT OR IGNORE on the
+        UNIQUE (task_id, agent, session_id) key — first write wins."""
+        self._conn.execute(
+            """INSERT OR IGNORE INTO session_token_usage
+               (task_id, agent, session_id, executor, model,
+                input_tokens, output_tokens, cache_read_tokens,
+                cache_creation_tokens, reasoning_tokens,
+                usage_raw_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                task_id, agent, session_id, executor, token_usage.model,
+                token_usage.input_tokens, token_usage.output_tokens,
+                token_usage.cache_read_tokens, token_usage.cache_creation_tokens,
+                token_usage.reasoning_tokens, token_usage.usage_raw_json,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def list_session_token_usage(
+        self,
+        task_id: str | None = None,
+        agent: str | None = None,
+        since: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict]:
+        """Return per-session rows, newest first."""
+        where: list[str] = []
+        params: list[object] = []
+        if task_id is not None:
+            where.append("task_id = ?")
+            params.append(task_id)
+        if agent is not None:
+            where.append("agent = ?")
+            params.append(agent)
+        if since is not None:
+            where.append("created_at >= ?")
+            params.append(since)
+        sql = "SELECT * FROM session_token_usage"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY created_at DESC, id DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    @_synchronized
+    def aggregate_session_token_usage_by_agent(
+        self, since: str | None = None, task_id: str | None = None,
+    ) -> list[dict]:
+        where: list[str] = []
+        params: list[object] = []
+        if since is not None:
+            where.append("created_at >= ?")
+            params.append(since)
+        if task_id is not None:
+            where.append("task_id = ?")
+            params.append(task_id)
+        sql = """SELECT agent,
+                        COUNT(*) AS sessions,
+                        SUM(input_tokens)          AS input_tokens,
+                        SUM(output_tokens)         AS output_tokens,
+                        SUM(cache_read_tokens)     AS cache_read_tokens,
+                        SUM(cache_creation_tokens) AS cache_creation_tokens,
+                        SUM(reasoning_tokens)      AS reasoning_tokens
+                 FROM session_token_usage"""
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " GROUP BY agent ORDER BY agent"
+        rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    @_synchronized
+    def aggregate_session_token_usage_by_task(
+        self, since: str | None = None, agent: str | None = None,
+    ) -> list[dict]:
+        where: list[str] = []
+        params: list[object] = []
+        if since is not None:
+            where.append("created_at >= ?")
+            params.append(since)
+        if agent is not None:
+            where.append("agent = ?")
+            params.append(agent)
+        sql = """SELECT task_id,
+                        COUNT(*) AS sessions,
+                        SUM(input_tokens)          AS input_tokens,
+                        SUM(output_tokens)         AS output_tokens,
+                        SUM(cache_read_tokens)     AS cache_read_tokens,
+                        SUM(cache_creation_tokens) AS cache_creation_tokens,
+                        SUM(reasoning_tokens)      AS reasoning_tokens
+                 FROM session_token_usage"""
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " GROUP BY task_id ORDER BY task_id"
+        rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
 
     # --- Scorecards ---
 

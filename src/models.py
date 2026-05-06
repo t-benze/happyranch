@@ -104,6 +104,26 @@ class StepRecord(BaseModel):
     success: bool
 
 
+class TokenUsage(BaseModel):
+    """Per-session token usage, unified across executors.
+
+    All fields nullable so we can write a row even when parsing partially
+    succeeds (per spec §4.3). `total` deliberately excludes cache reads —
+    cache hits are an effectiveness signal, not new consumption.
+    """
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_creation_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    model: str | None = None
+    usage_raw_json: str | None = None
+
+    @property
+    def total(self) -> int:
+        return (self.input_tokens or 0) + (self.output_tokens or 0) + (self.reasoning_tokens or 0)
+
+
 class TalkStatus(StrEnum):
     OPEN = "open"
     CLOSED = "closed"
