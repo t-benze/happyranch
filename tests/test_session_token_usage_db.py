@@ -166,3 +166,45 @@ def test_aggregate_by_task_filters_by_agent(db: Database):
     )
     rollup = db.aggregate_session_token_usage_by_task(agent="qa")
     assert rollup[0]["input_tokens"] == 99
+
+
+def test_aggregate_by_agent_filters_by_agent(db: Database):
+    """`group_by=agent` with an `agent=` filter yields a one-row rollup for that agent."""
+    db.insert_session_token_usage(
+        task_id="T1", agent="dev", session_id="s1", executor="claude",
+        token_usage=_usage(input_tokens=10),
+    )
+    db.insert_session_token_usage(
+        task_id="T2", agent="dev", session_id="s2", executor="claude",
+        token_usage=_usage(input_tokens=20),
+    )
+    db.insert_session_token_usage(
+        task_id="T3", agent="qa", session_id="s3", executor="claude",
+        token_usage=_usage(input_tokens=999),
+    )
+    rollup = db.aggregate_session_token_usage_by_agent(agent="dev")
+    assert len(rollup) == 1
+    assert rollup[0]["agent"] == "dev"
+    assert rollup[0]["sessions"] == 2
+    assert rollup[0]["input_tokens"] == 30
+
+
+def test_aggregate_by_task_filters_by_task_id(db: Database):
+    """`group_by=task` with a `task_id=` filter yields a one-row rollup for that task."""
+    db.insert_session_token_usage(
+        task_id="T1", agent="dev", session_id="s1", executor="claude",
+        token_usage=_usage(input_tokens=10),
+    )
+    db.insert_session_token_usage(
+        task_id="T1", agent="qa", session_id="s2", executor="claude",
+        token_usage=_usage(input_tokens=20),
+    )
+    db.insert_session_token_usage(
+        task_id="T2", agent="dev", session_id="s3", executor="claude",
+        token_usage=_usage(input_tokens=999),
+    )
+    rollup = db.aggregate_session_token_usage_by_task(task_id="T1")
+    assert len(rollup) == 1
+    assert rollup[0]["task_id"] == "T1"
+    assert rollup[0]["sessions"] == 2
+    assert rollup[0]["input_tokens"] == 30

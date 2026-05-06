@@ -186,3 +186,41 @@ def test_tokens_invalid_group_by_returns_400(
         headers=auth_headers,
     )
     assert r.status_code == 400
+
+
+def test_tokens_group_by_agent_with_agent_filter(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """`group_by=agent&agent=X` returns a one-row rollup scoped to X."""
+    _seed(org_state)
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tokens",
+        params={"group_by": "agent", "agent": "dev_agent"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    rollup = r.json()["rollup"]
+    assert len(rollup) == 1
+    assert rollup[0]["agent"] == "dev_agent"
+    assert rollup[0]["sessions"] == 2
+    assert rollup[0]["input_tokens"] == 120
+    assert rollup[0]["output_tokens"] == 60
+
+
+def test_tokens_group_by_task_with_task_id_filter(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """`group_by=task&task_id=X` returns a one-row rollup scoped to X."""
+    _seed(org_state)
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tokens",
+        params={"group_by": "task", "task_id": "TASK-001"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    rollup = r.json()["rollup"]
+    assert len(rollup) == 1
+    assert rollup[0]["task_id"] == "TASK-001"
+    assert rollup[0]["sessions"] == 1
+    assert rollup[0]["input_tokens"] == 100
+    assert rollup[0]["output_tokens"] == 50

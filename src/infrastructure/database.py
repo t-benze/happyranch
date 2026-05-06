@@ -939,7 +939,10 @@ class Database:
 
     @_synchronized
     def aggregate_session_token_usage_by_agent(
-        self, since: str | None = None, task_id: str | None = None,
+        self,
+        since: str | None = None,
+        task_id: str | None = None,
+        agent: str | None = None,
     ) -> list[dict]:
         where: list[str] = []
         params: list[object] = []
@@ -949,6 +952,9 @@ class Database:
         if task_id is not None:
             where.append("task_id = ?")
             params.append(task_id)
+        if agent is not None:
+            where.append("agent = ?")
+            params.append(agent)
         sql = """SELECT agent,
                         COUNT(*) AS sessions,
                         SUM(input_tokens)          AS input_tokens,
@@ -965,7 +971,10 @@ class Database:
 
     @_synchronized
     def aggregate_session_token_usage_by_task(
-        self, since: str | None = None, agent: str | None = None,
+        self,
+        since: str | None = None,
+        agent: str | None = None,
+        task_id: str | None = None,
     ) -> list[dict]:
         where: list[str] = []
         params: list[object] = []
@@ -975,6 +984,9 @@ class Database:
         if agent is not None:
             where.append("agent = ?")
             params.append(agent)
+        if task_id is not None:
+            where.append("task_id = ?")
+            params.append(task_id)
         sql = """SELECT task_id,
                         COUNT(*) AS sessions,
                         SUM(input_tokens)          AS input_tokens,

@@ -83,8 +83,7 @@ The route lives in `src/daemon/routes/tokens.py` (new module), wired into the Fa
 
 Errors:
 - `400` if `--by-agent` and `--by-task` (`group_by=agent&group_by=task`) both supplied — handled at CLI layer; route accepts at most one `group_by`.
-- `404` if `task_id` is supplied and matches no task in this org.
-- `200 {"rows": []}` if filters match but yield no rows. Empty is not an error.
+- `200 {"rows": []}` (or `{"rollup": []}` for rollups) whenever filters yield no rows — including when `task_id` matches no task. Empty is not an error and the route does not distinguish "unknown task" from "known task with no recorded usage"; both legitimately mean "no data" and callers shouldn't have to query `opc tasks` first to interpret the response.
 
 ## 4. Architecture
 

@@ -40,12 +40,12 @@ def list_tokens(
 
     if group_by == "agent":
         rollup = org.db.aggregate_session_token_usage_by_agent(
-            since=since, task_id=task_id,
+            since=since, task_id=task_id, agent=agent,
         )
         return {"rollup": rollup}
     if group_by == "task":
         rollup = org.db.aggregate_session_token_usage_by_task(
-            since=since, agent=agent,
+            since=since, agent=agent, task_id=task_id,
         )
         return {"rollup": rollup}
 
