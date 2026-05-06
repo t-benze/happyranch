@@ -4,10 +4,16 @@
 set -e
 
 PROMPT=""
+JSON_OUTPUT=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -p) PROMPT="$2"; shift 2 ;;
         --permission-mode) shift 2 ;;
+        --output-format)
+            if [[ "$2" == "json" ]]; then
+                JSON_OUTPUT=1
+            fi
+            shift 2 ;;
         *) shift ;;
     esac
 done
@@ -27,8 +33,25 @@ ORG_SLUG="${ORG_PARENT##*/}"
 # If a plan file exists, source it (it can call opc). Pass the agent name as
 # $3 and the org slug as $4 so plans can call agent-callback commands with
 # the required --org flag.
+#
+# The plan's stdout is redirected to stderr so the fixture-shaped JSON we emit
+# below is the ONLY thing on our stdout. ClaudeExecutor passes
+# `--output-format json` and the parser does `json.loads(stdout.strip())`, so
+# any opc-error messages or plan diagnostic prints would otherwise corrupt
+# the JSON parse. Plans only need stdout-clean execution; their side effects
+# (calling opc, touching files) are unaffected.
 if [[ -n "${FAKE_CLAUDE_PLAN:-}" && -f "$FAKE_CLAUDE_PLAN" ]]; then
-    bash "$FAKE_CLAUDE_PLAN" "$TASK_ID" "$SESSION_ID" "$AGENT" "$ORG_SLUG"
+    bash "$FAKE_CLAUDE_PLAN" "$TASK_ID" "$SESSION_ID" "$AGENT" "$ORG_SLUG" 1>&2
+fi
+
+# When the orchestrator runs Claude with `--output-format json` (always, since
+# T5), emit a fixture-shaped result blob so `_parse_claude_usage` writes a
+# session_token_usage row. Without this, integration runs would never exercise
+# the parser and every fake-Claude session would leave the row table empty.
+if [[ "$JSON_OUTPUT" == 1 ]]; then
+    cat <<'EOF'
+{"type":"result","result":"ok","model":"claude-sonnet-4-6","usage":{"input_tokens":1000,"output_tokens":500,"cache_creation_input_tokens":300,"cache_read_input_tokens":200}}
+EOF
 fi
 
 exit 0
