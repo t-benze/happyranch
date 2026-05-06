@@ -6,12 +6,8 @@ import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-from src.models import BlockKind, TalkRecord, TaskRecord, TaskStatus
-
-if TYPE_CHECKING:
-    from src.models import TokenUsage
+from src.models import BlockKind, TalkRecord, TaskRecord, TaskStatus, TokenUsage
 
 
 class LineageTooDeep(Exception):
@@ -890,7 +886,7 @@ class Database:
         agent: str,
         session_id: str,
         executor: str,
-        token_usage: "TokenUsage",
+        token_usage: TokenUsage,
     ) -> None:
         """Insert one row per (task, agent, session). INSERT OR IGNORE on the
         UNIQUE (task_id, agent, session_id) key — first write wins."""

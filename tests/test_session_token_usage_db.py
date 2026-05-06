@@ -1,19 +1,7 @@
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
-
-import pytest
-
 from src.infrastructure.database import Database
 from src.models import TokenUsage
-
-
-@pytest.fixture
-def db():
-    with tempfile.TemporaryDirectory() as tmp:
-        db = Database(Path(tmp) / "test.db")
-        yield db
 
 
 def _usage(input_tokens=100, output_tokens=50, **kw):
@@ -100,3 +88,81 @@ def test_aggregate_by_task_groups_per_task(db: Database):
     by_task = {r["task_id"]: r for r in rollup}
     assert by_task["T1"]["sessions"] == 2
     assert by_task["T1"]["input_tokens"] == 30
+
+
+def test_round_trip_all_fields_populated(db: Database):
+    u = TokenUsage(
+        input_tokens=11,
+        output_tokens=22,
+        cache_read_tokens=33,
+        cache_creation_tokens=44,
+        reasoning_tokens=55,
+        model="claude-sonnet-4-6",
+        usage_raw_json='{"raw":"payload"}',
+    )
+    db.insert_session_token_usage(
+        task_id="TASK-1", agent="dev_agent", session_id="sess-a",
+        executor="claude", token_usage=u,
+    )
+    rows = db.list_session_token_usage()
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["input_tokens"] == 11
+    assert r["output_tokens"] == 22
+    assert r["cache_read_tokens"] == 33
+    assert r["cache_creation_tokens"] == 44
+    assert r["reasoning_tokens"] == 55
+    assert r["model"] == "claude-sonnet-4-6"
+    assert r["usage_raw_json"] == '{"raw":"payload"}'
+    assert r["task_id"] == "TASK-1"
+    assert r["agent"] == "dev_agent"
+    assert r["session_id"] == "sess-a"
+    assert r["executor"] == "claude"
+    assert r["created_at"] is not None
+
+
+def test_aggregate_by_agent_filters_by_since(db: Database):
+    """ISO timestamps compare lexicographically. since= filters out older rows."""
+    import time
+    db.insert_session_token_usage(
+        task_id="T1", agent="dev", session_id="s1", executor="claude",
+        token_usage=_usage(input_tokens=10),
+    )
+    # Sleep a fraction so the second row's created_at timestamp is strictly later.
+    time.sleep(0.01)
+    cutoff_iso = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+    time.sleep(0.01)
+    db.insert_session_token_usage(
+        task_id="T2", agent="dev", session_id="s2", executor="claude",
+        token_usage=_usage(input_tokens=999),
+    )
+    rollup = db.aggregate_session_token_usage_by_agent(since=cutoff_iso)
+    assert len(rollup) == 1
+    assert rollup[0]["agent"] == "dev"
+    assert rollup[0]["input_tokens"] == 999  # only the post-cutoff row counted
+
+
+def test_aggregate_by_agent_filters_by_task_id(db: Database):
+    db.insert_session_token_usage(
+        task_id="T1", agent="dev", session_id="s1", executor="claude",
+        token_usage=_usage(input_tokens=10),
+    )
+    db.insert_session_token_usage(
+        task_id="T2", agent="dev", session_id="s2", executor="claude",
+        token_usage=_usage(input_tokens=99),
+    )
+    rollup = db.aggregate_session_token_usage_by_agent(task_id="T2")
+    assert rollup[0]["input_tokens"] == 99
+
+
+def test_aggregate_by_task_filters_by_agent(db: Database):
+    db.insert_session_token_usage(
+        task_id="T1", agent="dev", session_id="s1", executor="claude",
+        token_usage=_usage(input_tokens=10),
+    )
+    db.insert_session_token_usage(
+        task_id="T1", agent="qa", session_id="s2", executor="claude",
+        token_usage=_usage(input_tokens=99),
+    )
+    rollup = db.aggregate_session_token_usage_by_task(agent="qa")
+    assert rollup[0]["input_tokens"] == 99
