@@ -105,6 +105,20 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
         )
         return
 
+    # Persist token usage for this session, regardless of session outcome.
+    # Spec 4.3: skip when None; otherwise write — including the parse-failure
+    # case where token columns are NULL but ``usage_raw_json`` carries the
+    # raw payload. Done before outcome classification so timeouts / blocked
+    # sessions still land their usage row.
+    if result.token_usage is not None:
+        db.insert_session_token_usage(
+            task_id=task_id,
+            agent=agent,
+            session_id=result.session_id,
+            executor=orch._resolve_executor_name(agent),
+            token_usage=result.token_usage,
+        )
+
     # ---- 5. Classify outcome ----
     if not result.success or report is None:
         _fail(orch, task_id, note=_session_failed_note(result, report))

@@ -365,7 +365,12 @@ class Orchestrator:
             timeout_seconds=self._resolve_session_timeout(agent_name, task_id=task_id),
             on_started=_on_started,
         )
-        self._audit.log_session_end(task_id, agent_name, result.duration_seconds)
+        self._audit.log_session_end(
+            task_id=task_id,
+            agent=agent_name,
+            duration_seconds=result.duration_seconds,
+            token_usage=result.token_usage,
+        )
 
         report = self._read_completion_from_db(task_id, agent_name, session_id)
         return result, report
