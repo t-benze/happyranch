@@ -41,7 +41,7 @@ at `examples/orgs/hk-macau-tourism/` for the HK/Macau tourism org.
 - **Agent workflow**: Shared workspace skills (`protocol/skills/`) — `start-task`, `make-worktree`, `manage-repo`, `manage-agent`. The orchestrator prompt references the same SOPs for both Claude and Codex workspaces
 - **Orchestrator**: Custom Python application. `run_step` is the only primitive — each invocation advances one task by one subprocess call; an async `TaskQueue` + worker pool (`src/daemon/queue.py`) drives re-enqueues across steps. The team manager drives decisions; performance scoring derived from implicit review verdicts on delegated work
 - **Data models**: Pydantic v2 + pydantic-settings
-- **Database**: SQLite with WAL mode (audit logs, scorecards, task state)
+- **Database**: SQLite with WAL mode (audit logs, scorecards, task state). Per-session token usage rows live in `session_token_usage` (one per successful subprocess); see `docs/superpowers/specs/2026-05-05-token-usage-tracking-design.md`.
 - **Knowledge base**: File-backed markdown under `<runtime>/kb/` with atomic writes, substring/tag search, and regenerated `_index.md` (see `src/infrastructure/kb_store.py`). Vector store / RAG not yet added
 - **LLM**: Provider depends on the selected executor (Claude Code or Codex)
 - **Hosting**: Local Mac Mini
@@ -51,7 +51,7 @@ at `examples/orgs/hk-macau-tourism/` for the HK/Macau tourism org.
 This list tracks **system kernel** milestones — the org-agnostic infrastructure. Building out the agent roster of a specific organization (managers + workers per team) is *org content work*, not system work, and lives in `<runtime>/org/agents/` + `<runtime>/org/teams.yaml`.
 
 1. ~~**Bootstrap orchestrator + first team**~~ done — orchestrator with executor-backed agent sessions, manager-driven decision loop (the team manager analyzes each step: delegate / handle directly / escalate). Validated end-to-end against the engineering team in the HK/Macau sample org (Engineering Head + Product Manager + Dev Agent + Payment Agent + QA Engineer).
-2. ~~**Audit logging**~~ done — SQLite-backed audit logger with session start/end, completion reports, orchestration steps, escalations.
+2. ~~**Audit logging**~~ done — SQLite-backed audit logger with session start/end, completion reports, orchestration steps, escalations. Per-session `session_end` payloads now carry full `token_usage` dict (input/output/cache_read/cache_creation/reasoning) plus a derived back-compat scalar `token_count`.
 3. ~~**Manager-driven orchestration**~~ done — the team manager analyzes each task and decides the approach. No hardcoded task chains. Max 10 orchestration steps before escalation.
 4. ~~**Agent memory**~~ done — persistent workspaces with executor-specific bootstrap docs (`CLAUDE.md` or `AGENTS.md`), `learnings.md`, `task_history.md`. Context builder regenerates identity on tier changes.
 5. ~~**Performance scoring**~~ done — rolling 30-day scorecards, green/yellow/red tiers, exposed to managers via capabilities prompt.
@@ -518,6 +518,8 @@ opc agents --org hk-tourism [--detail]     # show performance tiers
 opc audit --org hk-tourism TASK-007                              # filtered audit-log view (task, agent, action, since, limit)
 opc audit --org hk-tourism --agent engineering_head --limit 10   # recent entries for one agent, any task
 opc audit --org hk-tourism TASK-007 --json                       # raw JSON with full payloads
+opc tokens --org hk-tourism [--task-id X --agent Y --since DATE --limit N --json]   # per-session token usage
+opc tokens --org hk-tourism --by-agent | --by-task                                  # rollup view
 opc init-agent --org hk-tourism             # initialize all agent workspaces (repo clones + system prompts + skills)
 opc init-agent --org hk-tourism dev_agent   # initialize a specific agent
 opc recall --org hk-tourism TASK-001 [--tree] [--fetch-artifact <relpath>]   # fetch task brief + artifact tree/content

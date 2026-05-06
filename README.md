@@ -137,6 +137,7 @@ Make a backup first — the flag is mandatory on purpose. Without `--apply` the 
 | `opc agents [name] [--detail]` | Show agent performance tiers (all, or one agent's scorecard) |
 | `opc init-agent [name]` | Initialize agent workspaces (all or specific agent) |
 | `opc audit TASK-ID [--json]` | View audit log for a task (or filter by `--agent`, `--action`) |
+| `opc tokens --org <slug> [--task-id X --agent Y --since DATE --limit N]` | Per-session token usage; `--by-agent` / `--by-task` for rollups |
 | `opc manage-repo add\|remove\|update` | Add, remove, or update a repo in an agent's workspace |
 | `opc manage-agent --from-file F` | Enroll, update, or terminate an agent (used by EH skill) |
 | `opc dispatch --from-file F` | Dispatch a new task from inside an open talk (workers self-only; team managers intra-team) |
