@@ -117,3 +117,39 @@ def test_parse_codex_usage_takes_last_session_complete():
 
 def test_parse_codex_usage_empty_stdout():
     assert _parse_codex_usage("") is None
+
+
+from src.orchestrator.executors import _parse_opencode_usage
+
+
+def _opencode_fixture() -> str:
+    return (FIXTURES / "usage_opencode.json").read_text()
+
+
+def test_parse_opencode_usage_sums_assistant_messages():
+    u = _parse_opencode_usage(_opencode_fixture())
+    assert u is not None
+    assert u.input_tokens == 300       # 100 + 200
+    assert u.output_tokens == 125      # 50 + 75
+    assert u.cache_read_tokens == 100  # 0 + 100
+    assert u.cache_creation_tokens == 100  # mapped from cache_write_tokens; 100 + 0
+    assert u.model == "claude-sonnet-4-6"
+
+
+def test_parse_opencode_usage_malformed_json():
+    u = _parse_opencode_usage("not json")
+    assert u is not None
+    assert u.input_tokens is None
+    assert u.usage_raw_json is not None
+
+
+def test_parse_opencode_usage_no_assistant_messages():
+    stream = '{"messages": [{"role": "user", "content": "hi"}]}'
+    u = _parse_opencode_usage(stream)
+    assert u is not None
+    assert u.input_tokens is None
+    assert u.usage_raw_json is not None
+
+
+def test_parse_opencode_usage_empty_stdout():
+    assert _parse_opencode_usage("") is None

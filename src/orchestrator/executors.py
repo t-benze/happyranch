@@ -112,6 +112,47 @@ def _parse_codex_usage(stdout: str) -> TokenUsage | None:
     )
 
 
+def _parse_opencode_usage(stdout: str) -> TokenUsage | None:
+    """Parse opencode `--format json` stdout into TokenUsage.
+
+    Sums assistant-role message usage. Model taken from last assistant
+    message (sessions can span multiple models for tool use; last is the
+    canonical 'this session ran on' answer).
+    """
+    if not stdout or not stdout.strip():
+        return None
+    try:
+        obj = json.loads(stdout.strip())
+    except json.JSONDecodeError:
+        return TokenUsage(usage_raw_json=stdout[:_TAIL_BYTES])
+    if not isinstance(obj, dict):
+        return TokenUsage(usage_raw_json=stdout[:_TAIL_BYTES])
+    messages = obj.get("messages") or []
+    assistant_msgs = [
+        m
+        for m in messages
+        if isinstance(m, dict) and m.get("role") == "assistant" and isinstance(m.get("usage"), dict)
+    ]
+    if not assistant_msgs:
+        return TokenUsage(usage_raw_json=stdout[:_TAIL_BYTES])
+
+    def _sum(field: str) -> int | None:
+        vals = [m["usage"].get(field) for m in assistant_msgs]
+        nums = [v for v in vals if isinstance(v, int)]
+        return sum(nums) if nums else None
+
+    last_model = next((m.get("model") for m in reversed(assistant_msgs) if m.get("model")), None)
+    return TokenUsage(
+        input_tokens=_sum("input_tokens"),
+        output_tokens=_sum("output_tokens"),
+        cache_read_tokens=_sum("cache_read_tokens"),
+        cache_creation_tokens=_sum("cache_write_tokens"),
+        reasoning_tokens=_sum("reasoning_tokens"),
+        model=last_model,
+        usage_raw_json=json.dumps([m["usage"] for m in assistant_msgs]),
+    )
+
+
 def _run_command(
     cmd: list[str],
     workspace: Path,
