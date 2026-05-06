@@ -54,12 +54,12 @@ def _parse_claude_usage(stdout: str) -> TokenUsage | None:
         obj = json.loads(stdout.strip())
     except json.JSONDecodeError:
         logger.warning("claude usage parser: stdout is not valid JSON")
-        return TokenUsage(usage_raw_json=stdout[:4000])
+        return TokenUsage(usage_raw_json=stdout[:_TAIL_BYTES])
     usage = obj.get("usage") if isinstance(obj, dict) else None
     if not isinstance(usage, dict):
         return TokenUsage(
             model=obj.get("model") if isinstance(obj, dict) else None,
-            usage_raw_json=stdout[:4000],
+            usage_raw_json=stdout[:_TAIL_BYTES],
         )
     return TokenUsage(
         input_tokens=usage.get("input_tokens"),

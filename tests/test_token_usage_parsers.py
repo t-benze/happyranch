@@ -49,5 +49,23 @@ def test_parse_claude_usage_missing_usage_block():
 
 
 def test_parse_claude_usage_empty_stdout():
-    u = _parse_claude_usage("")
-    assert u is None or (u.input_tokens is None and (u.usage_raw_json is None or u.usage_raw_json == ""))
+    assert _parse_claude_usage("") is None
+    assert _parse_claude_usage("   \n  ") is None  # whitespace-only is also empty
+
+
+def test_parse_claude_usage_top_level_is_a_list():
+    """Spec §8.1: parsers handle unexpected payload schema, never raise."""
+    u = _parse_claude_usage("[1, 2, 3]")
+    assert u is not None
+    assert u.input_tokens is None
+    assert u.model is None
+    assert u.usage_raw_json is not None  # raw payload preserved
+
+
+def test_parse_claude_usage_usage_field_is_not_a_dict():
+    payload = json.dumps({"model": "claude", "usage": ["unexpected", "list"]})
+    u = _parse_claude_usage(payload)
+    assert u is not None
+    assert u.input_tokens is None
+    assert u.model == "claude"
+    assert u.usage_raw_json is not None
