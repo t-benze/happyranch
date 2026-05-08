@@ -189,3 +189,45 @@ def test_log_task_dispatched_records_payload(db):
         "effective_target": "dev_agent",
         "team": "engineering",
     }
+
+
+def test_log_escalation_notify_sent(db):
+    logger = AuditLogger(db)
+    logger.log_escalation_notify_sent(
+        task_id="TASK-1", feishu_message_id="om_xyz",
+    )
+    rows = db.get_audit_logs("TASK-1")
+    assert len(rows) == 1
+    assert rows[0]["action"] == "escalation_notify_sent"
+    assert rows[0]["payload"]["feishu_message_id"] == "om_xyz"
+
+
+def test_log_escalation_notify_failed(db):
+    logger = AuditLogger(db)
+    logger.log_escalation_notify_failed(
+        task_id="TASK-1", error="feishu send code=99991663",
+    )
+    rows = db.get_audit_logs("TASK-1")
+    assert rows[0]["action"] == "escalation_notify_failed"
+    assert rows[0]["payload"]["error"] == "feishu send code=99991663"
+
+
+def test_log_escalation_reply_processed(db):
+    logger = AuditLogger(db)
+    logger.log_escalation_reply_processed(
+        task_id="TASK-1", decision="approve", rationale="ok"
+    )
+    rows = db.get_audit_logs("TASK-1")
+    assert rows[0]["action"] == "escalation_reply_processed"
+    assert rows[0]["payload"]["decision"] == "approve"
+    assert rows[0]["payload"]["rationale"] == "ok"
+
+
+def test_log_escalation_reply_rejected(db):
+    logger = AuditLogger(db)
+    logger.log_escalation_reply_rejected(
+        task_id="TASK-1", reason="bad_decision",
+    )
+    rows = db.get_audit_logs("TASK-1")
+    assert rows[0]["action"] == "escalation_reply_rejected"
+    assert rows[0]["payload"]["reason"] == "bad_decision"

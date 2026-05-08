@@ -85,6 +85,42 @@ class AuditLogger:
             payload={"decision": decision, "rationale": rationale},
         )
 
+    def log_escalation_notify_sent(
+        self, task_id: str, feishu_message_id: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="daemon",
+            action="escalation_notify_sent",
+            payload={"feishu_message_id": feishu_message_id},
+        )
+
+    def log_escalation_notify_failed(self, task_id: str, error: str) -> None:
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="daemon",
+            action="escalation_notify_failed",
+            payload={"error": error},
+        )
+
+    def log_escalation_reply_processed(
+        self, task_id: str, decision: str, rationale: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="founder",
+            action="escalation_reply_processed",
+            payload={"decision": decision, "rationale": rationale},
+        )
+
+    def log_escalation_reply_rejected(self, task_id: str, reason: str) -> None:
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="daemon",
+            action="escalation_reply_rejected",
+            payload={"reason": reason},
+        )
+
     def log_task_cancelled(
         self, task_id: str, rationale: str, cascade: bool,
     ) -> None:
