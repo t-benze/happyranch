@@ -1006,3 +1006,29 @@ def test_dispatched_from_talk_id_index_queryable(tmp_path):
     )
     rows = [r["id"] for r in cur.fetchall()]
     assert rows == ["TASK-001"]
+
+
+def test_escalation_notifications_table_exists(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    cur = db._conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='escalation_notifications'"
+    )
+    assert cur.fetchone() is not None
+
+
+def test_escalation_notifications_index_exists(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    cur = db._conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' "
+        "AND tbl_name='escalation_notifications'"
+    )
+    names = {row[0] for row in cur.fetchall()}
+    assert "idx_escalation_notifications_task" in names
+
+
+def test_processed_event_ids_table_exists(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    cur = db._conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='processed_event_ids'"
+    )
+    assert cur.fetchone() is not None

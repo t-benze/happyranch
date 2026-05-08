@@ -169,6 +169,28 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_session_token_usage_task   ON session_token_usage (task_id);
             CREATE INDEX IF NOT EXISTS idx_session_token_usage_agent  ON session_token_usage (agent, created_at);
+
+            CREATE TABLE IF NOT EXISTS escalation_notifications (
+                feishu_message_id TEXT PRIMARY KEY,
+                org_slug          TEXT NOT NULL,
+                task_id           TEXT NOT NULL,
+                chat_id           TEXT NOT NULL,
+                created_at        TEXT NOT NULL,
+                expires_at        TEXT NOT NULL,
+                consumed_at       TEXT,
+                consumed_by       TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_escalation_notifications_task
+                ON escalation_notifications (task_id);
+
+            CREATE TABLE IF NOT EXISTS processed_event_ids (
+                org_slug          TEXT NOT NULL,
+                feishu_event_id   TEXT NOT NULL,
+                processed_at      TEXT NOT NULL,
+                outcome           TEXT NOT NULL,
+                reason            TEXT,
+                PRIMARY KEY (org_slug, feishu_event_id)
+            );
         """)
         # Best-effort migration for DBs created before `status` existed. SQLite
         # has no IF NOT EXISTS for ADD COLUMN; swallow the duplicate-column
