@@ -1292,6 +1292,83 @@ class Database:
         rows = self.list_talks(agent=agent, status="closed", limit=1)
         return rows[0] if rows else None
 
+    # --- Escalation Notifications ---
+
+    @_synchronized
+    def mint_escalation_notification(
+        self,
+        feishu_message_id: str,
+        org_slug: str,
+        task_id: str,
+        chat_id: str,
+        expires_at: datetime,
+    ) -> None:
+        self._conn.execute(
+            """INSERT INTO escalation_notifications
+               (feishu_message_id, org_slug, task_id, chat_id,
+                created_at, expires_at, consumed_at, consumed_by)
+               VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)""",
+            (
+                feishu_message_id, org_slug, task_id, chat_id,
+                datetime.now(timezone.utc).isoformat(),
+                expires_at.astimezone(timezone.utc).isoformat(),
+            ),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def get_escalation_notification(self, feishu_message_id: str) -> dict | None:
+        cur = self._conn.execute(
+            """SELECT feishu_message_id, org_slug, task_id, chat_id,
+                      created_at, expires_at, consumed_at, consumed_by
+               FROM escalation_notifications WHERE feishu_message_id = ?""",
+            (feishu_message_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return dict(row)
+
+    @_synchronized
+    def consume_escalation_notification(
+        self, feishu_message_id: str, consumed_by: str,
+    ) -> bool:
+        """Atomically mark a notification consumed. Returns True on first
+        consume, False if already consumed or missing."""
+        cur = self._conn.execute(
+            """UPDATE escalation_notifications
+               SET consumed_at = ?, consumed_by = ?
+               WHERE feishu_message_id = ? AND consumed_at IS NULL""",
+            (datetime.now(timezone.utc).isoformat(), consumed_by, feishu_message_id),
+        )
+        self._conn.commit()
+        return cur.rowcount == 1
+
+    # --- Processed Event Dedup ---
+
+    @_synchronized
+    def record_processed_event(
+        self,
+        org_slug: str,
+        feishu_event_id: str,
+        outcome: str,
+        reason: str | None,
+    ) -> bool:
+        """INSERT OR IGNORE into the dedup table. Returns True on first insert,
+        False on duplicate."""
+        cur = self._conn.execute(
+            """INSERT OR IGNORE INTO processed_event_ids
+               (org_slug, feishu_event_id, processed_at, outcome, reason)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                org_slug, feishu_event_id,
+                datetime.now(timezone.utc).isoformat(),
+                outcome, reason,
+            ),
+        )
+        self._conn.commit()
+        return cur.rowcount == 1
+
     @_synchronized
     def close(self) -> None:
         self._conn.close()

@@ -1032,3 +1032,73 @@ def test_processed_event_ids_table_exists(tmp_path):
         "SELECT name FROM sqlite_master WHERE type='table' AND name='processed_event_ids'"
     )
     assert cur.fetchone() is not None
+
+
+from datetime import datetime, timedelta, timezone
+
+
+def test_mint_escalation_notification_writes_row(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    expires = datetime.now(timezone.utc) + timedelta(hours=72)
+    db.mint_escalation_notification(
+        feishu_message_id="om_xyz",
+        org_slug="hk-macau-tourism",
+        task_id="TASK-001",
+        chat_id="oc_abc",
+        expires_at=expires,
+    )
+    row = db.get_escalation_notification("om_xyz")
+    assert row is not None
+    assert row["org_slug"] == "hk-macau-tourism"
+    assert row["task_id"] == "TASK-001"
+    assert row["chat_id"] == "oc_abc"
+    assert row["consumed_at"] is None
+
+
+def test_get_escalation_notification_missing_returns_none(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    assert db.get_escalation_notification("om_missing") is None
+
+
+def test_consume_escalation_notification_marks_consumed(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    expires = datetime.now(timezone.utc) + timedelta(hours=72)
+    db.mint_escalation_notification(
+        feishu_message_id="om_1", org_slug="o", task_id="T1",
+        chat_id="oc", expires_at=expires,
+    )
+    assert db.consume_escalation_notification("om_1", consumed_by="cli-fallback") is True
+    row = db.get_escalation_notification("om_1")
+    assert row["consumed_at"] is not None
+    assert row["consumed_by"] == "cli-fallback"
+
+
+def test_consume_escalation_notification_twice_returns_false(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    expires = datetime.now(timezone.utc) + timedelta(hours=72)
+    db.mint_escalation_notification(
+        feishu_message_id="om_1", org_slug="o", task_id="T1",
+        chat_id="oc", expires_at=expires,
+    )
+    assert db.consume_escalation_notification("om_1", consumed_by="feishu-reply") is True
+    assert db.consume_escalation_notification("om_1", consumed_by="feishu-reply") is False
+
+
+def test_record_processed_event_first_call_returns_true(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    assert db.record_processed_event(
+        org_slug="o", feishu_event_id="evt_1",
+        outcome="consumed", reason=None,
+    ) is True
+
+
+def test_record_processed_event_duplicate_returns_false(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    db.record_processed_event(
+        org_slug="o", feishu_event_id="evt_1",
+        outcome="consumed", reason=None,
+    )
+    assert db.record_processed_event(
+        org_slug="o", feishu_event_id="evt_1",
+        outcome="rejected", reason="dup",
+    ) is False
