@@ -1,0 +1,14 @@
+# Optional org-level overrides. Missing file = global defaults.
+# session_timeout_seconds: 1800   # uncomment to override
+
+# Feishu notifications.
+# Disabled by default in the sample tree — flip enabled: true and provide
+# OPC_FEISHU_APP_ID / OPC_FEISHU_APP_SECRET in the daemon environment to
+# activate. See docs/setup/feishu-notifications.md for full setup.
+#
+# feishu_notifications:
+#   enabled: false
+#   provider: feishu
+#   region: feishu                       # feishu (CN) | lark (intl)
+#   chat_id: oc_xxxxxxxxxxxxxxxxxxxxxx   # 1:1 group between bot and founder
+#   reply_ttl_hours: 72
