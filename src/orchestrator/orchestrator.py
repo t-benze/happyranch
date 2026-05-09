@@ -72,6 +72,7 @@ class Orchestrator:
         self._teams = teams
         self._queue: "TaskQueue | None" = None  # wired by daemon
         self._sessions: "SessionTracker | None" = None  # wired by daemon
+        self._notifier = None  # wired by daemon
 
     @property
     def teams(self) -> TeamsRegistry:
@@ -99,6 +100,38 @@ class Orchestrator:
         completion endpoint rejects every callback as `unknown_session` (409)
         and the task fails silently with note="agent session failed"."""
         self._sessions = tracker
+
+    def attach_notifier(self, notifier) -> None:
+        """Wire a notifier (mirrors attach_queue / attach_sessions)."""
+        self._notifier = notifier
+
+    def notify_escalated(
+        self, *, task_id: str, agent: str, reason: str, last_summary: str = "",
+    ) -> None:
+        """Schedule an out-of-band notification. Fire-and-forget — the
+        orchestration loop never blocks on the network round-trip and never
+        sees an exception from the notifier (the notifier swallows + audits
+        its own errors)."""
+        if self._notifier is None:
+            return
+        import asyncio
+        import threading
+        coro_factory = lambda: self._notifier.notify_escalated(
+            task_id=task_id, agent=agent, reason=reason,
+            last_summary=last_summary,
+        )
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop in this thread (typical: thread-pool worker
+            # driven by run_step). Spawn a daemon thread that owns its own
+            # event loop so the worker thread isn't blocked.
+            threading.Thread(
+                target=lambda: asyncio.run(coro_factory()),
+                daemon=True,
+            ).start()
+        else:
+            loop.create_task(coro_factory())
 
     def _build_session_id(self) -> str:
         return f"sess-{uuid.uuid4().hex}"
