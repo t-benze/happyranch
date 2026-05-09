@@ -93,3 +93,27 @@ def test_sweep_pending_stays_pending_but_gets_enqueued(tmp_path):
 
     assert db.get_task("T-1").status == TaskStatus.PENDING
     assert queue._queue.get_nowait() == ("test", "T-1")
+
+
+def test_sweep_calls_notify_escalated_on_in_progress_recovery(tmp_path):
+    db = _seed_org(tmp_path)
+    db.insert_task(TaskRecord(id="T-RECOV", brief="x"))
+    db.update_task("T-RECOV", status=TaskStatus.IN_PROGRESS)
+
+    seen: list[dict] = []
+
+    class _FakeOrch:
+        def notify_escalated(self, **kwargs):
+            seen.append(kwargs)
+
+    _sweep_on_startup(db, TaskQueue(), "test", _FakeOrch())
+    assert seen and seen[0]["task_id"] == "T-RECOV"
+    assert seen[0]["agent"] == "daemon"
+
+
+def test_sweep_works_without_orchestrator_arg(tmp_path):
+    db = _seed_org(tmp_path)
+    db.insert_task(TaskRecord(id="T-BC", brief="x"))
+    db.update_task("T-BC", status=TaskStatus.IN_PROGRESS)
+    _sweep_on_startup(db, TaskQueue(), "test")
+    assert db.get_task("T-BC").status == TaskStatus.FAILED
