@@ -37,7 +37,7 @@ In the `protocol/` folder:
 - **Agent workflow**: Shared workspace skills (`protocol/skills/`) — `start-task`, `make-worktree`, `manage-repo`, `manage-agent`. The orchestrator prompt references the same SOPs across all executors
 - **Orchestrator**: Custom Python application. `run_step` is the only primitive — each invocation advances one task by one subprocess call; an async `TaskQueue` + worker pool (`src/daemon/queue.py`) drives re-enqueues across steps. The team manager drives decisions; performance scoring derives from implicit review verdicts on delegated work
 - **Data models**: Pydantic v2 + pydantic-settings
-- **Database**: SQLite with WAL mode (audit logs, scorecards, task state) — per-org under `<runtime>/orgs/<slug>/opc.db`. Per-session token usage rows live in `session_token_usage` (one per successful subprocess); see `docs/superpowers/specs/2026-05-05-token-usage-tracking-design.md`.
+- **Database**: SQLite with WAL mode (audit logs, scorecards, task state) — per-org under `<runtime>/orgs/<slug>/opc.db`. Per-session token usage rows live in `session_token_usage`; see `docs/superpowers/specs/2026-05-05-token-usage-tracking-design.md`. Per-escalation Feishu correlation rows live in `escalation_notifications`; see `docs/superpowers/specs/2026-05-08-feishu-notification-design.md`.
 - **Knowledge base**: File-backed markdown under `<runtime>/orgs/<slug>/kb/` with atomic writes, substring/tag search, `_index.md` regeneration. No vector store yet
 - **LLM**: Provider depends on the selected executor
 - **Hosting**: Local Mac Mini
