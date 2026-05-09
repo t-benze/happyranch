@@ -349,6 +349,12 @@ async def resolve_escalation_in_process(
         AuditLogger(org.db).log_escalation_resolved(
             task_id=task_id, decision=decision, rationale=rationale,
         )
+        # Best-effort: mark any open Feishu notification rows for this task
+        # consumed, so they don't dangle if the founder later replies in-thread.
+        for nrow in org.db.list_open_notifications_for_task(task_id):
+            org.db.consume_escalation_notification(
+                nrow["feishu_message_id"], consumed_by="cli-fallback",
+            )
     if decision == "approve":
         # Re-enqueue self. The manager's next step sees the rationale via the
         # escalation-resolved prompt header (see
