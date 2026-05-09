@@ -49,6 +49,7 @@ class OrgState:
     settings: Settings
     orchestrator: Orchestrator
     notifier: EscalationNotifier | None = None
+    feishu_listener: object | None = None  # FeishuEventListener at runtime; typed as object to avoid circular import
     # Captured Feishu attrs — used by Phase 2's FeishuEventListener:
     feishu_app_id: str | None = None
     feishu_app_secret: str | None = None
