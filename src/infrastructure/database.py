@@ -1370,5 +1370,36 @@ class Database:
         return cur.rowcount == 1
 
     @_synchronized
+    def update_processed_event_outcome(
+        self,
+        org_slug: str,
+        feishu_event_id: str,
+        outcome: str,
+        reason: str | None = None,
+    ) -> None:
+        """Update the outcome on an existing processed_event_ids row. Used when
+        the listener has decided how the event was disposed (consumed/rejected/ignored)."""
+        self._conn.execute(
+            """UPDATE processed_event_ids
+               SET outcome = ?, reason = ?
+               WHERE org_slug = ? AND feishu_event_id = ?""",
+            (outcome, reason, org_slug, feishu_event_id),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def list_open_notifications_for_task(self, task_id: str) -> list[dict]:
+        """Return un-consumed notification rows for a task. Used by CLI
+        resolve-escalation to mark the matching Feishu row consumed."""
+        cur = self._conn.execute(
+            """SELECT feishu_message_id, org_slug, task_id, chat_id,
+                      created_at, expires_at, consumed_at, consumed_by
+               FROM escalation_notifications
+               WHERE task_id = ? AND consumed_at IS NULL""",
+            (task_id,),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+    @_synchronized
     def close(self) -> None:
         self._conn.close()

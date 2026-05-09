@@ -183,3 +183,47 @@ async def test_handler_handles_post_message(listener):
     kwargs = resolve_mock.await_args.kwargs
     assert kwargs["decision"] == "approve"
     assert kwargs["rationale"] == "shipping it"
+
+
+@pytest.mark.asyncio
+async def test_handler_records_consumed_outcome(listener):
+    listener_obj, db, resolve_mock = listener
+    _seed_notification(db)
+    await listener_obj._handle_event_async(_event())
+    cur = db._conn.execute(
+        "SELECT outcome, reason FROM processed_event_ids "
+        "WHERE feishu_event_id = ?", ("evt_1",),
+    )
+    row = cur.fetchone()
+    assert row["outcome"] == "consumed"
+    assert row["reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_handler_records_wrong_chat_ignored(listener):
+    listener_obj, db, resolve_mock = listener
+    _seed_notification(db)
+    await listener_obj._handle_event_async(_event(chat_id="oc_other"))
+    cur = db._conn.execute(
+        "SELECT outcome, reason FROM processed_event_ids "
+        "WHERE feishu_event_id = ?", ("evt_1",),
+    )
+    row = cur.fetchone()
+    assert row["outcome"] == "ignored"
+    assert row["reason"] == "wrong_chat"
+
+
+@pytest.mark.asyncio
+async def test_handler_records_bad_decision_rejected(listener):
+    listener_obj, db, resolve_mock = listener
+    _seed_notification(db)
+    await listener_obj._handle_event_async(_event(
+        content='{"text": "MAYBE\\nnot sure"}',
+    ))
+    cur = db._conn.execute(
+        "SELECT outcome, reason FROM processed_event_ids "
+        "WHERE feishu_event_id = ?", ("evt_1",),
+    )
+    row = cur.fetchone()
+    assert row["outcome"] == "rejected"
+    assert row["reason"] == "bad_decision"

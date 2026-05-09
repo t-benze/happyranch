@@ -112,37 +112,51 @@ class FeishuEventListener:
             ):
                 return
 
+            def _close(outcome: str, reason: str | None = None) -> None:
+                self._db.update_processed_event_outcome(
+                    org_slug=self._slug, feishu_event_id=event_id,
+                    outcome=outcome, reason=reason,
+                )
+
             # 2. Chat filter
             if msg.chat_id != self._chat_id:
+                _close("ignored", "wrong_chat")
                 return
 
             # 3. Threading filter
             if not msg.root_id:
+                _close("ignored", "no_root_id")
                 return
 
             # 4. Sender filter
             if data.event.sender.sender_type != "user":
+                _close("ignored", "not_user_sender")
                 return
 
             # 5. Notification lookup
             row = self._db.get_escalation_notification(msg.root_id)
             if row is None:
+                _close("ignored", "notification_not_found")
                 return
             if row["consumed_at"] is not None:
+                _close("ignored", "notification_consumed")
                 return
             expires_at = datetime.fromisoformat(row["expires_at"])
             if datetime.now(timezone.utc) >= expires_at:
+                _close("ignored", "notification_expired")
                 return
 
             # 6. Parse text
             text = extract_text_from_content(msg.message_type, msg.content)
             if text is None:
+                _close("rejected", "unsupported_msg_type")
                 return
             parsed = parse_reply(text)
             if parsed is None:
                 self._audit.log_escalation_reply_rejected(
                     task_id=row["task_id"], reason="bad_decision",
                 )
+                _close("rejected", "bad_decision")
                 return
 
             # 7. Apply
@@ -160,5 +174,14 @@ class FeishuEventListener:
                 decision=parsed.decision,
                 rationale=parsed.rationale,
             )
+            _close("consumed", None)
         except Exception:
             logger.exception("event handler error (org=%s)", self._slug)
+            try:
+                self._db.update_processed_event_outcome(
+                    org_slug=self._slug,
+                    feishu_event_id=getattr(data.header, "event_id", "?"),
+                    outcome="rejected", reason="handler_exception",
+                )
+            except Exception:
+                logger.exception("failed to record handler-exception outcome")
