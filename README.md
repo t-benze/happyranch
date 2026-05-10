@@ -258,6 +258,8 @@ Operational settings use the `OPC_` env prefix. Runtime paths are derived from t
 | `OPC_TIER_GREEN_THRESHOLD` | `0.90` | Acceptance rate for green tier |
 | `OPC_TIER_YELLOW_THRESHOLD` | `0.75` | Acceptance rate for yellow tier |
 | `OPC_ORG_SLUG` | _(unset)_ | Default org slug for per-org CLI commands |
+| `OPC_FEISHU_APP_ID` | _(unset)_ | Feishu self-built app ID (required if any org enables `feishu_notifications`) |
+| `OPC_FEISHU_APP_SECRET` | _(unset)_ | Feishu app secret (required when `OPC_FEISHU_APP_ID` is set) |
 
 ### Per-Agent Configuration
 
@@ -283,6 +285,64 @@ The per-session timeout (default 1800s / 30 min) is resolved in three layers, hi
 3. **Global default**: `OPC_SESSION_TIMEOUT_SECONDS` env var (or the built-in 1800s).
 
 A missing file or `null` value at any layer falls through to the next layer. Values must be positive integers.
+
+### Founder notifications via Feishu
+
+Each org can opt into Feishu push notifications so that escalations reach the founder out-of-band, with a reply-in-thread protocol that unblocks the task without leaving the chat. The CLI `opc resolve-escalation` continues to work as a fallback.
+
+**One-time founder setup** — full walkthrough in [`docs/setup/feishu-notifications.md`](docs/setup/feishu-notifications.md):
+
+1. Create a self-built app at https://open.feishu.cn (CN) or https://open.larksuite.com (intl). Note the `App ID` (starts with `cli_`) and `App Secret`.
+2. Add scopes `im:message`, `im:message:send_as_bot`, `im:resource`.
+3. Enable **Event Subscription → WebSocket** mode and subscribe to `im.message.receive_v1`. (No public callback URL needed; the daemon connects out.)
+4. Add the bot to a 1:1 chat with you and copy the resulting `chat_id` (starts with `oc_`).
+
+**Daemon environment** — set once, applies to every org that opts in:
+
+```bash
+export OPC_FEISHU_APP_ID=cli_xxxxxxxxxxxxxxxx
+export OPC_FEISHU_APP_SECRET=yyyyyyyyyyyyyyyyyyyyyyyy
+```
+
+If a single daemon hosts multiple orgs that should use different Feishu apps, override per-org via slug-suffixed variants (uppercase + hyphens → underscores):
+
+```bash
+export OPC_FEISHU_APP_ID__HK_MACAU_TOURISM=cli_aaa
+export OPC_FEISHU_APP_SECRET__HK_MACAU_TOURISM=secret_aaa
+```
+
+The unsuffixed values remain the fallback for orgs without a per-org override.
+
+**Per-org config** — add a `feishu_notifications` block to `<runtime>/orgs/<slug>/org/config.yaml`:
+
+```yaml
+feishu_notifications:
+  enabled: true
+  provider: feishu                          # only "feishu" supported in v1
+  region: feishu                            # feishu (CN) | lark (intl)
+  chat_id: oc_xxxxxxxxxxxxxxxxxxxxxx        # 1:1 group between bot and founder
+  reply_ttl_hours: 72                       # window during which a reply can resolve; default 72
+```
+
+| Field | Required | Notes |
+|---|---|---|
+| `enabled` | yes | Master switch. `false` or block missing → Feishu subsystem is a no-op for this org. |
+| `provider` | yes when enabled | Must be `feishu`. Reserved for future channels. |
+| `region` | yes when enabled | `feishu` → `open.feishu.cn`, `lark` → `open.larksuite.com`. |
+| `chat_id` | yes when enabled | The chat where notifications are posted and replies are read from. |
+| `reply_ttl_hours` | no | Default `72`. Range `[1, 720]`. Replies after this window are ignored. |
+
+If `enabled: true` but credentials are missing in the environment, the daemon logs a clear error at startup and skips the Feishu subsystem **for that org only** — other orgs and the rest of the daemon are unaffected.
+
+**Verification** — restart the daemon. On startup, look for:
+
+```
+INFO src.daemon.feishu_listener: started Feishu event listener for org=<slug>
+```
+
+Trigger a test escalation (e.g., via `opc revisit ...` to a stuck task) and confirm the bot posts in your chat. Reply with `APPROVE\nlooks fine` and confirm the task transitions to `pending` (or `REJECT\nnot now` to fail it).
+
+The reply protocol: first non-empty line must be `APPROVE` or `REJECT` (case-insensitive); subsequent lines become the rationale. Replies must be sent **in the message thread** of the original notification — Feishu's `root_id` is the correlation key. Stray messages in the chat without a thread parent are ignored.
 
 ## Performance Tiers
 

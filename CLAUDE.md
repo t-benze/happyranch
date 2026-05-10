@@ -37,7 +37,8 @@ In the `protocol/` folder:
 - **Agent workflow**: Shared workspace skills (`protocol/skills/`) — `start-task`, `make-worktree`, `manage-repo`, `manage-agent`. The orchestrator prompt references the same SOPs across all executors
 - **Orchestrator**: Custom Python application. `run_step` is the only primitive — each invocation advances one task by one subprocess call; an async `TaskQueue` + worker pool (`src/daemon/queue.py`) drives re-enqueues across steps. The team manager drives decisions; performance scoring derives from implicit review verdicts on delegated work
 - **Data models**: Pydantic v2 + pydantic-settings
-- **Database**: SQLite with WAL mode (audit logs, scorecards, task state) — per-org under `<runtime>/orgs/<slug>/opc.db`. Per-session token usage rows live in `session_token_usage`; see `docs/superpowers/specs/2026-05-05-token-usage-tracking-design.md`. Per-escalation Feishu correlation rows live in `escalation_notifications`; see `docs/superpowers/specs/2026-05-08-feishu-notification-design.md`.
+- **Database**: SQLite with WAL mode (audit logs, scorecards, task state) — per-org under `<runtime>/orgs/<slug>/opc.db`. Per-session token usage rows live in `session_token_usage`; see `docs/superpowers/specs/2026-05-05-token-usage-tracking-design.md`. Per-escalation Feishu correlation rows live in `escalation_notifications` and inbound-event dedup rows in `processed_event_ids`; see `docs/superpowers/specs/2026-05-08-feishu-notification-design.md`.
+- **Feishu integration**: `lark-oapi>=1.6,<2` (official ByteDance SDK) — used by `src/infrastructure/feishu/` (outbound `im.v1.message.create`) and `src/daemon/feishu_listener.py` (inbound WebSocket subscription to `im.message.receive_v1`).
 - **Knowledge base**: File-backed markdown under `<runtime>/orgs/<slug>/kb/` with atomic writes, substring/tag search, `_index.md` regeneration. No vector store yet
 - **LLM**: Provider depends on the selected executor
 - **Hosting**: Local Mac Mini
@@ -56,9 +57,10 @@ System kernel milestones — the org-agnostic infrastructure. Building out a spe
 8. ~~**Revisit primitive**~~ done — founder spawns a new root task that inherits a terminal predecessor's brief while leaving the old lineage frozen.
 9. ~~**Org-per-runtime layout**~~ done — file-backed `org/{charter.md,escalation-rules.md,teams.yaml,config.yaml,agents/}`, with `opc migrate-to-org-runtime` for legacy DB-backed agents.
 10. ~~**Multi-org container**~~ done — one runtime hosts multiple orgs under `<runtime>/orgs/<slug>/`. Per-org DB, workspaces, KB, talks. `opc migrate-to-multi-org` for in-place v1 → v2 migration.
-11. **Inter-team communication** — orchestrator routes tasks between teams (e.g., engineering manager hands a payment-change review to a compliance team manager). Currently `--team <name>` works because most runtimes have a single team; cross-team handoff is not yet implemented.
-12. **Founder dashboard** — aggregate audit logs, escalation summaries, scorecards into a weekly view. Design doc: `protocol/05e-dashboard.md`.
-13. **Persistent agents** — long-running agent loops for runtime patterns that don't fit single-task batch execution (e.g., a real-time customer-chat worker). Currently every agent session is one task → one subprocess.
+11. ~~**Feishu notifications**~~ done — push escalation notifications to a configured Feishu chat; founder replies in-thread with `APPROVE` or `REJECT` plus a rationale and the listener calls the same in-process resolve-escalation route the CLI uses. Per-org opt-in via `feishu_notifications` in `org/config.yaml`. Spec: `docs/superpowers/specs/2026-05-08-feishu-notification-design.md`.
+12. **Inter-team communication** — orchestrator routes tasks between teams (e.g., engineering manager hands a payment-change review to a compliance team manager). Currently `--team <name>` works because most runtimes have a single team; cross-team handoff is not yet implemented.
+13. **Founder dashboard** — aggregate audit logs, escalation summaries, scorecards into a weekly view. Design doc: `protocol/05e-dashboard.md`.
+14. **Persistent agents** — long-running agent loops for runtime patterns that don't fit single-task batch execution (e.g., a real-time customer-chat worker). Currently every agent session is one task → one subprocess.
 
 ## Directory Layout
 
@@ -101,6 +103,7 @@ Source code lives in the repo. Runtime data lives in a dedicated **runtime conta
 |   |   |-- event_bus.py               # Per-task event pub/sub with DB replay + synthesized terminals
 |   |   |-- agent_config.py            # Read/write workspaces/<agent>/agent.yaml
 |   |   |-- migration_multi_org.py     # opc migrate-to-multi-org — v1 → v2
+|   |   |-- feishu_listener.py         # Per-org WebSocket listener (lark-oapi); routes APPROVE/REJECT replies into resolve_escalation_in_process
 |   |   +-- routes/                    # health, runtimes, tasks, agents, audit, kb, talks
 |   |-- orchestrator/
 |   |   |-- orchestrator.py            # Orchestrator facade: holds deps, exposes run_step
@@ -116,10 +119,14 @@ Source code lives in the repo. Runtime data lives in a dedicated **runtime conta
 |   |   |-- org_config.py              # OrgConfig — loads optional org/config.yaml
 |   |   +-- migration.py               # opc migrate-to-org-runtime — v0 (DB) → v1 (file-based)
 |   +-- infrastructure/
-|       |-- database.py                # SQLite (WAL), typed CRUD, task_results, parent_task_id, revisit_of_task_id, etc.
+|       |-- database.py                # SQLite (WAL), typed CRUD, task_results, parent_task_id, revisit_of_task_id, escalation_notifications, processed_event_ids, etc.
 |       |-- audit_logger.py            # Semantic logging
 |       |-- kb_store.py                # Knowledge base store
-|       +-- talk_store.py              # Transcript file writer
+|       |-- talk_store.py              # Transcript file writer
+|       +-- feishu/
+|           |-- client.py              # FeishuClient — lark-oapi wrapper for im.v1.message.create
+|           |-- notifier.py            # EscalationNotifier — builds post body, sends, mints escalation_notifications row
+|           +-- reply_parser.py        # Pure functions: extract text from msg envelopes, parse APPROVE/REJECT + rationale
 |-- tests/                             # Unit + integration (with fake CLIs)
 +-- examples/orgs/                     # Canonical sample org trees
     +-- hk-macau-tourism/
@@ -369,6 +376,56 @@ On the new root's first orchestration step, `_revisit_header_if_applicable(orch,
 `opc revisit` is **TTY-gated** — no `--yes` bypass. The CLI hard-requires `sys.stdin.isatty() and sys.stdout.isatty()` then prompts `Continue? [y/N]`. Agent sessions run headless, so the only way a revisit lands in the audit log is if a human typed it.
 
 `run_step` also auto-revisits on opaque-failure recovery; the task-row `session_timeout_seconds` is copied onto every spawned revisit root (founder or auto).
+
+## Feishu notifications (founder push + reply-to-unblock)
+
+Per-org opt-in via `feishu_notifications` in `<runtime>/orgs/<slug>/org/config.yaml`. Spec: `docs/superpowers/specs/2026-05-08-feishu-notification-design.md`. Setup runbook: `docs/setup/feishu-notifications.md`. Founder-facing config docs are in `README.md`.
+
+### Outbound (Phase 1)
+
+`run_step.py` and `_sweep_on_startup` (daemon recovery) call `Orchestrator.notify_escalated(...)` immediately after each `audit.log_escalation(...)`. The orchestrator method is **fire-and-forget** and never blocks the orchestration loop:
+- If a running asyncio loop is detected → `loop.create_task(coro)`.
+- If not (typical: thread-pool worker driven by `run_step`) → spawn a daemon thread that calls `asyncio.run(coro)`.
+
+The notifier (`src/infrastructure/feishu/notifier.py`) builds a `msg_type=post` body, sends via `FeishuClient.send_post_message`, mints a row in `escalation_notifications` keyed by the Feishu-returned `message_id`, and audits `escalation_notify_sent`. Send failures audit `escalation_notify_failed` and are swallowed; **no notification row is minted on failure** (mint follows send).
+
+### Inbound (Phase 2)
+
+`FeishuEventListener` (`src/daemon/feishu_listener.py`) starts one WebSocket connection per org with full Feishu config:
+- WS thread runs `lark.ws.Client.start()` (blocking SDK call).
+- Inbound events bridge to the asyncio loop via `asyncio.run_coroutine_threadsafe(self._handle_event_async(data), self._loop)`.
+
+`_handle_event_async` is an 8-step pipeline that updates `processed_event_ids.outcome` on every branch (`consumed | rejected | ignored`):
+1. Dedup — `record_processed_event(slug, event_id, "pending")`. Duplicate → return.
+2. Chat filter — drop unless `msg.chat_id == configured chat_id`.
+3. Threading filter — require `msg.root_id` (Feishu's thread-root key).
+4. Sender filter — drop `sender_type=app` (the bot itself).
+5. Notification lookup — `get_escalation_notification(root_id)`; drop if missing/consumed/expired.
+6. Parse — `extract_text_from_content` + `parse_reply`. None → audit `escalation_reply_rejected`.
+7. Resolve — `await resolve_escalation_in_process(...)` — same code path as the HTTP route.
+8. Consume + audit — `consume_escalation_notification(root_id, "feishu-reply")` + `escalation_reply_processed`.
+
+**Critical contract**: the lifespan wrapper `_resolve_for_listener` in `app.py` MUST NOT swallow exceptions from `resolve_escalation_in_process`. If resolution fails (e.g., 409 task_not_escalated because the task already transitioned via CLI), the outer `try/except` in `_handle_event_async` records `outcome="rejected", reason="handler_exception"` and leaves the notification row unconsumed — the founder's reply is preserved instead of silently lost.
+
+### Listener lifecycle
+
+Listener helpers live in `feishu_listener.py` (not `app.py`) to avoid a circular import with `state.py`:
+- `maybe_start_feishu_listener_for_org(org, state, loop)` — idempotent per-org constructor.
+- `start_feishu_listeners_for_state(state, loop)` — iterates all orgs.
+
+Both call sites:
+- FastAPI lifespan (`app._lifespan`) on daemon startup.
+- `DaemonState.add_org` for orgs created at runtime via `POST /api/v1/orgs`.
+
+WS threads are `daemon=True` so they die with the process; no graceful shutdown is wired (deferred — process restart is clean enough on the local Mac Mini).
+
+### CLI/Feishu interaction
+
+`opc resolve-escalation` (CLI fallback) calls the same `resolve_escalation_in_process` and additionally consumes any open notification row for the task with `consumed_by="cli-fallback"`. So if the founder resolves via CLI first and then replies in Feishu later, the Feishu listener finds the notification already consumed and silently no-ops.
+
+### Per-org credentials
+
+`OPC_FEISHU_APP_ID` / `OPC_FEISHU_APP_SECRET` are global defaults. Per-org override pattern: `OPC_FEISHU_APP_ID__<UPPER_SLUG>` (hyphens → underscores). `resolve_feishu_credentials(slug)` in `org_config.py` returns the resolved tuple; missing creds with `enabled: true` log a warning and skip Feishu for that org only.
 
 ## Maintaining Documentation
 - **README.md** is for end users — setup, CLI commands, configuration. No developer internals.
