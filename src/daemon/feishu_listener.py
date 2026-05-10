@@ -185,3 +185,56 @@ class FeishuEventListener:
                 )
             except Exception:
                 logger.exception("failed to record handler-exception outcome")
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers — used by both daemon lifespan (app.py) and add_org
+# (state.py) so neither has to import the other (which would be circular).
+# ---------------------------------------------------------------------------
+
+
+def maybe_start_feishu_listener_for_org(org, state, loop) -> None:
+    """Construct and start a FeishuEventListener for one org IF its config is
+    complete. Idempotent — does nothing if the listener is already running on
+    this OrgState. Safe to call from both daemon startup and add_org."""
+    if org.feishu_listener is not None:
+        return
+    if (
+        org.feishu_app_id is None or org.feishu_app_secret is None
+        or org.feishu_chat_id is None or org.feishu_domain is None
+    ):
+        return
+
+    from src.daemon.routes.tasks import resolve_escalation_in_process
+    from src.infrastructure.audit_logger import AuditLogger
+
+    async def _resolve_for_listener(_org=org, _state=state, **kw):
+        # Strip slug kwarg forwarded by the listener — already bound via _org.
+        kw.pop("slug", None)
+        # NOTE: do NOT swallow exceptions here. If resolve_escalation_in_process
+        # raises (e.g. 409 task_not_escalated because the task transitioned via
+        # CLI fallback), the listener's outer try/except records the event as
+        # rejected and leaves the notification row unconsumed. Swallowing here
+        # would let the listener falsely claim success, consume the row, and
+        # silently lose the founder's reply.
+        await resolve_escalation_in_process(_org, _state, **kw)
+
+    listener = FeishuEventListener(
+        slug=org.slug,
+        db=org.db,
+        audit=AuditLogger(org.db),
+        chat_id=org.feishu_chat_id,
+        resolve_escalation=_resolve_for_listener,
+        loop=loop,
+        app_id=org.feishu_app_id,
+        app_secret=org.feishu_app_secret,
+        domain=org.feishu_domain,
+    )
+    listener.start()
+    org.feishu_listener = listener
+
+
+def start_feishu_listeners_for_state(state, loop) -> None:
+    """For each org in state with full Feishu config, ensure a listener exists."""
+    for org in state.orgs.values():
+        maybe_start_feishu_listener_for_org(org, state, loop)

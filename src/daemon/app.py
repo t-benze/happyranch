@@ -51,46 +51,9 @@ def ensure_workers_started(state: DaemonState) -> None:
 
 def _start_feishu_listeners(state: DaemonState, loop) -> None:
     """For each org with full Feishu config, construct and start a listener."""
-    import logging
+    from src.daemon.feishu_listener import start_feishu_listeners_for_state
 
-    from src.daemon.feishu_listener import FeishuEventListener
-    from src.daemon.routes.tasks import resolve_escalation_in_process
-    from src.infrastructure.audit_logger import AuditLogger
-
-    _log = logging.getLogger(__name__)
-
-    for org in state.orgs.values():
-        if (
-            org.feishu_app_id is None or org.feishu_app_secret is None
-            or org.feishu_chat_id is None or org.feishu_domain is None
-        ):
-            continue
-
-        async def _resolve_for_listener(_org=org, _state=state, **kw):
-            # Strip slug kwarg forwarded by the listener — already bound via _org.
-            kw.pop("slug", None)
-            # Listener should never raise; swallow validation errors and log.
-            try:
-                await resolve_escalation_in_process(_org, _state, **kw)
-            except Exception:
-                _log.exception(
-                    "resolve_escalation_in_process rejected reply for task %s",
-                    kw.get("task_id"),
-                )
-
-        listener = FeishuEventListener(
-            slug=org.slug,
-            db=org.db,
-            audit=AuditLogger(org.db),
-            chat_id=org.feishu_chat_id,
-            resolve_escalation=_resolve_for_listener,
-            loop=loop,
-            app_id=org.feishu_app_id,
-            app_secret=org.feishu_app_secret,
-            domain=org.feishu_domain,
-        )
-        listener.start()
-        org.feishu_listener = listener
+    start_feishu_listeners_for_state(state, loop)
 
 
 @asynccontextmanager

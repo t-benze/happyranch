@@ -227,3 +227,35 @@ async def test_handler_records_bad_decision_rejected(listener):
     row = cur.fetchone()
     assert row["outcome"] == "rejected"
     assert row["reason"] == "bad_decision"
+
+
+@pytest.mark.asyncio
+async def test_handler_does_not_consume_when_resolve_raises(listener):
+    """If the resolve_escalation callable raises (e.g. task already moved out
+    of ESCALATED state), the listener must NOT consume the notification row
+    and must NOT audit reply_processed. The outer try/except records
+    handler_exception so the founder can re-trigger via CLI if needed."""
+    listener_obj, db, _ = listener
+    _seed_notification(db)
+
+    boom = AsyncMock(side_effect=RuntimeError("task already transitioned"))
+    listener_obj._resolve_escalation = boom
+
+    await listener_obj._handle_event_async(_event())
+
+    boom.assert_awaited_once()
+    # Notification row must NOT be consumed.
+    row = db.get_escalation_notification("om_target")
+    assert row["consumed_at"] is None
+    assert row["consumed_by"] is None
+    # Audit log must NOT contain reply_processed.
+    actions = [r["action"] for r in db.get_audit_logs("TASK-1")]
+    assert "escalation_reply_processed" not in actions
+    # Dedup outcome should reflect the failure.
+    cur = db._conn.execute(
+        "SELECT outcome, reason FROM processed_event_ids "
+        "WHERE feishu_event_id = ?", ("evt_1",),
+    )
+    drow = cur.fetchone()
+    assert drow["outcome"] == "rejected"
+    assert drow["reason"] == "handler_exception"
