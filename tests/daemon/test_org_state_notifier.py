@@ -110,3 +110,42 @@ def test_lifespan_creates_listener_when_feishu_configured(
     finally:
         loop.close()
     assert isinstance(org.feishu_listener, FeishuEventListener)
+
+
+@pytest.mark.asyncio
+async def test_add_org_starts_feishu_listener_when_configured(
+    tmp_path, test_settings, monkeypatch,
+):
+    """DaemonState.add_org must start a FeishuEventListener for orgs created
+    after daemon startup when their config is complete."""
+    from src.daemon.feishu_listener import FeishuEventListener
+    from src.daemon.state import DaemonState
+    from src.runtime import RuntimeDir
+
+    monkeypatch.setenv("OPC_FEISHU_APP_ID", "cli_x")
+    monkeypatch.setenv("OPC_FEISHU_APP_SECRET", "secret_x")
+
+    rt = RuntimeDir.init(tmp_path / "rt")
+    org_root = rt.orgs_dir / "newbie"
+    org_root.mkdir(parents=True)
+    (org_root / "org").mkdir()
+    (org_root / "org" / "config.yaml").write_text(textwrap.dedent("""
+        feishu_notifications:
+          enabled: true
+          provider: feishu
+          region: feishu
+          chat_id: oc_x
+    """))
+
+    # Don't actually start the WS thread.
+    started: list[FeishuEventListener] = []
+    monkeypatch.setattr(
+        FeishuEventListener, "start",
+        lambda self: started.append(self),
+    )
+
+    state = DaemonState.from_runtime(rt, test_settings)
+    org = await state.add_org("newbie")
+
+    assert isinstance(org.feishu_listener, FeishuEventListener)
+    assert org.feishu_listener in started
