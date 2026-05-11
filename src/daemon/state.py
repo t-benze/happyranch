@@ -64,6 +64,17 @@ class DaemonState:
             org.orchestrator.attach_queue(self.queue)
             org.orchestrator.attach_sessions(org.sessions)
             self.orgs[slug] = org
+            # Start the Feishu listener if the new org has full config.
+            # When called from a lifespan/route context there's a running loop;
+            # outside of one (e.g. unit tests bypassing the FastAPI lifespan)
+            # we silently skip — those tests never inject a loop anyway.
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is not None:
+                from src.daemon.feishu_listener import maybe_start_feishu_listener_for_org
+                maybe_start_feishu_listener_for_org(org, self, loop)
             return org
 
     async def remove_org(self, slug: str) -> None:

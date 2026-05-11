@@ -49,10 +49,20 @@ def ensure_workers_started(state: DaemonState) -> None:
     state.queue.start_workers(dispatcher, n=3)
 
 
+def _start_feishu_listeners(state: DaemonState, loop) -> None:
+    """For each org with full Feishu config, construct and start a listener."""
+    from src.daemon.feishu_listener import start_feishu_listeners_for_state
+
+    start_feishu_listeners_for_state(state, loop)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    import asyncio
+
     state: DaemonState = app.state.daemon
     ensure_workers_started(state)
+    _start_feishu_listeners(state, asyncio.get_running_loop())
     try:
         yield
     finally:

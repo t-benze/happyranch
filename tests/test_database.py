@@ -1006,3 +1006,136 @@ def test_dispatched_from_talk_id_index_queryable(tmp_path):
     )
     rows = [r["id"] for r in cur.fetchall()]
     assert rows == ["TASK-001"]
+
+
+def test_escalation_notifications_table_exists(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    cur = db._conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='escalation_notifications'"
+    )
+    assert cur.fetchone() is not None
+
+
+def test_escalation_notifications_index_exists(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    cur = db._conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' "
+        "AND tbl_name='escalation_notifications'"
+    )
+    names = {row[0] for row in cur.fetchall()}
+    assert "idx_escalation_notifications_task" in names
+
+
+def test_processed_event_ids_table_exists(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    cur = db._conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='processed_event_ids'"
+    )
+    assert cur.fetchone() is not None
+
+
+from datetime import datetime, timedelta, timezone
+
+
+def test_mint_escalation_notification_writes_row(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    expires = datetime.now(timezone.utc) + timedelta(hours=72)
+    db.mint_escalation_notification(
+        feishu_message_id="om_xyz",
+        org_slug="hk-macau-tourism",
+        task_id="TASK-001",
+        chat_id="oc_abc",
+        expires_at=expires,
+    )
+    row = db.get_escalation_notification("om_xyz")
+    assert row is not None
+    assert row["org_slug"] == "hk-macau-tourism"
+    assert row["task_id"] == "TASK-001"
+    assert row["chat_id"] == "oc_abc"
+    assert row["consumed_at"] is None
+
+
+def test_get_escalation_notification_missing_returns_none(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    assert db.get_escalation_notification("om_missing") is None
+
+
+def test_consume_escalation_notification_marks_consumed(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    expires = datetime.now(timezone.utc) + timedelta(hours=72)
+    db.mint_escalation_notification(
+        feishu_message_id="om_1", org_slug="o", task_id="T1",
+        chat_id="oc", expires_at=expires,
+    )
+    assert db.consume_escalation_notification("om_1", consumed_by="cli-fallback") is True
+    row = db.get_escalation_notification("om_1")
+    assert row["consumed_at"] is not None
+    assert row["consumed_by"] == "cli-fallback"
+
+
+def test_consume_escalation_notification_twice_returns_false(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    expires = datetime.now(timezone.utc) + timedelta(hours=72)
+    db.mint_escalation_notification(
+        feishu_message_id="om_1", org_slug="o", task_id="T1",
+        chat_id="oc", expires_at=expires,
+    )
+    assert db.consume_escalation_notification("om_1", consumed_by="feishu-reply") is True
+    assert db.consume_escalation_notification("om_1", consumed_by="feishu-reply") is False
+
+
+def test_record_processed_event_first_call_returns_true(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    assert db.record_processed_event(
+        org_slug="o", feishu_event_id="evt_1",
+        outcome="consumed", reason=None,
+    ) is True
+
+
+def test_record_processed_event_duplicate_returns_false(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    db.record_processed_event(
+        org_slug="o", feishu_event_id="evt_1",
+        outcome="consumed", reason=None,
+    )
+    assert db.record_processed_event(
+        org_slug="o", feishu_event_id="evt_1",
+        outcome="rejected", reason="dup",
+    ) is False
+
+
+def test_update_processed_event_outcome(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    db.record_processed_event(
+        org_slug="o", feishu_event_id="evt_1",
+        outcome="pending", reason=None,
+    )
+    db.update_processed_event_outcome(
+        org_slug="o", feishu_event_id="evt_1",
+        outcome="consumed", reason=None,
+    )
+    cur = db._conn.execute(
+        "SELECT outcome, reason FROM processed_event_ids "
+        "WHERE org_slug = ? AND feishu_event_id = ?",
+        ("o", "evt_1"),
+    )
+    row = cur.fetchone()
+    assert row["outcome"] == "consumed"
+    assert row["reason"] is None
+
+
+def test_list_open_notifications_for_task(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    expires = datetime.now(timezone.utc) + timedelta(hours=72)
+    db.mint_escalation_notification(
+        feishu_message_id="om_1", org_slug="o", task_id="T1",
+        chat_id="oc", expires_at=expires,
+    )
+    db.mint_escalation_notification(
+        feishu_message_id="om_2", org_slug="o", task_id="T1",
+        chat_id="oc", expires_at=expires,
+    )
+    db.consume_escalation_notification("om_1", consumed_by="x")
+    rows = db.list_open_notifications_for_task("T1")
+    ids = [r["feishu_message_id"] for r in rows]
+    assert ids == ["om_2"]  # only the unconsumed one

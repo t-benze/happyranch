@@ -169,6 +169,28 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_session_token_usage_task   ON session_token_usage (task_id);
             CREATE INDEX IF NOT EXISTS idx_session_token_usage_agent  ON session_token_usage (agent, created_at);
+
+            CREATE TABLE IF NOT EXISTS escalation_notifications (
+                feishu_message_id TEXT PRIMARY KEY,
+                org_slug          TEXT NOT NULL,
+                task_id           TEXT NOT NULL,
+                chat_id           TEXT NOT NULL,
+                created_at        TEXT NOT NULL,
+                expires_at        TEXT NOT NULL,
+                consumed_at       TEXT,
+                consumed_by       TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_escalation_notifications_task
+                ON escalation_notifications (task_id);
+
+            CREATE TABLE IF NOT EXISTS processed_event_ids (
+                org_slug          TEXT NOT NULL,
+                feishu_event_id   TEXT NOT NULL,
+                processed_at      TEXT NOT NULL,
+                outcome           TEXT NOT NULL,
+                reason            TEXT,
+                PRIMARY KEY (org_slug, feishu_event_id)
+            );
         """)
         # Best-effort migration for DBs created before `status` existed. SQLite
         # has no IF NOT EXISTS for ADD COLUMN; swallow the duplicate-column
@@ -1269,6 +1291,114 @@ class Database:
     def last_closed_talk_for_agent(self, agent: str) -> TalkRecord | None:
         rows = self.list_talks(agent=agent, status="closed", limit=1)
         return rows[0] if rows else None
+
+    # --- Escalation Notifications ---
+
+    @_synchronized
+    def mint_escalation_notification(
+        self,
+        feishu_message_id: str,
+        org_slug: str,
+        task_id: str,
+        chat_id: str,
+        expires_at: datetime,
+    ) -> None:
+        self._conn.execute(
+            """INSERT INTO escalation_notifications
+               (feishu_message_id, org_slug, task_id, chat_id,
+                created_at, expires_at, consumed_at, consumed_by)
+               VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)""",
+            (
+                feishu_message_id, org_slug, task_id, chat_id,
+                datetime.now(timezone.utc).isoformat(),
+                expires_at.astimezone(timezone.utc).isoformat(),
+            ),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def get_escalation_notification(self, feishu_message_id: str) -> dict | None:
+        cur = self._conn.execute(
+            """SELECT feishu_message_id, org_slug, task_id, chat_id,
+                      created_at, expires_at, consumed_at, consumed_by
+               FROM escalation_notifications WHERE feishu_message_id = ?""",
+            (feishu_message_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return dict(row)
+
+    @_synchronized
+    def consume_escalation_notification(
+        self, feishu_message_id: str, consumed_by: str,
+    ) -> bool:
+        """Atomically mark a notification consumed. Returns True on first
+        consume, False if already consumed or missing."""
+        cur = self._conn.execute(
+            """UPDATE escalation_notifications
+               SET consumed_at = ?, consumed_by = ?
+               WHERE feishu_message_id = ? AND consumed_at IS NULL""",
+            (datetime.now(timezone.utc).isoformat(), consumed_by, feishu_message_id),
+        )
+        self._conn.commit()
+        return cur.rowcount == 1
+
+    # --- Processed Event Dedup ---
+
+    @_synchronized
+    def record_processed_event(
+        self,
+        org_slug: str,
+        feishu_event_id: str,
+        outcome: str,
+        reason: str | None,
+    ) -> bool:
+        """INSERT OR IGNORE into the dedup table. Returns True on first insert,
+        False on duplicate."""
+        cur = self._conn.execute(
+            """INSERT OR IGNORE INTO processed_event_ids
+               (org_slug, feishu_event_id, processed_at, outcome, reason)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                org_slug, feishu_event_id,
+                datetime.now(timezone.utc).isoformat(),
+                outcome, reason,
+            ),
+        )
+        self._conn.commit()
+        return cur.rowcount == 1
+
+    @_synchronized
+    def update_processed_event_outcome(
+        self,
+        org_slug: str,
+        feishu_event_id: str,
+        outcome: str,
+        reason: str | None = None,
+    ) -> None:
+        """Update the outcome on an existing processed_event_ids row. Used when
+        the listener has decided how the event was disposed (consumed/rejected/ignored)."""
+        self._conn.execute(
+            """UPDATE processed_event_ids
+               SET outcome = ?, reason = ?
+               WHERE org_slug = ? AND feishu_event_id = ?""",
+            (outcome, reason, org_slug, feishu_event_id),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def list_open_notifications_for_task(self, task_id: str) -> list[dict]:
+        """Return un-consumed notification rows for a task. Used by CLI
+        resolve-escalation to mark the matching Feishu row consumed."""
+        cur = self._conn.execute(
+            """SELECT feishu_message_id, org_slug, task_id, chat_id,
+                      created_at, expires_at, consumed_at, consumed_by
+               FROM escalation_notifications
+               WHERE task_id = ? AND consumed_at IS NULL""",
+            (task_id,),
+        )
+        return [dict(row) for row in cur.fetchall()]
 
     @_synchronized
     def close(self) -> None:

@@ -1,0 +1,19 @@
+# Optional org-level overrides. Missing file = global defaults.
+# session_timeout_seconds: 1800   # uncomment to override
+
+# Feishu notifications.
+# Disabled by default in the sample tree — flip enabled: true, fill in
+# app_id, app_secret, and chat_id to activate.
+# See docs/setup/feishu-notifications.md for full setup.
+#
+# SECURITY: this file holds secrets when enabled. Run `chmod 600 config.yaml`
+# and never commit the live runtime copy to version control.
+#
+# feishu_notifications:
+#   enabled: false
+#   provider: feishu
+#   region: feishu                       # feishu (CN) | lark (intl)
+#   chat_id: oc_xxxxxxxxxxxxxxxxxxxxxx   # 1:1 group between bot and founder
+#   app_id: cli_xxxxxxxxxxxxxxxx         # Feishu self-built app ID
+#   app_secret: yyyyyyyyyyyyyyyyyyyyyyyy # Feishu app secret
+#   reply_ttl_hours: 72

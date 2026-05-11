@@ -302,17 +302,28 @@ class ResolveEscalationBody(BaseModel):
     rationale: str
 
 
-@router.post("/tasks/{task_id}/resolve-escalation")
-async def resolve_escalation(
-    task_id: str, body: ResolveEscalationBody, org: OrgDep, request: Request,
-) -> dict:
+async def resolve_escalation_in_process(
+    org,
+    state,
+    *,
+    task_id: str,
+    decision: str,
+    rationale: str,
+) -> str:
+    """Same DB transition / audit / queue re-enqueue as the HTTP handler at
+    POST /tasks/{task_id}/resolve-escalation. Reused by the Feishu listener.
+
+    Returns the new task status value (e.g. "pending" or "failed").
+    Raises HTTPException for the same validation failures the route raises so
+    the HTTP wrapper can re-raise as-is.
+    """
     from src.infrastructure.audit_logger import AuditLogger
     from src.models import BlockKind, TaskStatus
+    from src.orchestrator.run_step import _enqueue_parent_if_waiting
 
-    state: DaemonState = request.app.state.daemon
-    if not body.rationale.strip():
+    if not rationale.strip():
         raise HTTPException(status_code=400, detail={"code": "rationale_required"})
-    if body.decision not in ("approve", "reject"):
+    if decision not in ("approve", "reject"):
         raise HTTPException(status_code=400, detail={"code": "invalid_decision"})
     task = org.db.get_task(task_id)
     if task is None:
@@ -329,19 +340,22 @@ async def resolve_escalation(
     # the task back to PENDING with the rationale on `note`, and the team
     # manager picks it up on the next step with a one-shot prompt header
     # (see `_resolved_escalation_header_if_applicable` in run_step.py).
-    resolved_note = f"Founder {body.decision}d: {body.rationale}"
+    resolved_note = f"Founder {decision}d: {rationale}"
     async with org.db_lock:
-        if body.decision == "approve":
-            new_status = TaskStatus.PENDING
-        else:
-            new_status = TaskStatus.FAILED
+        new_status = TaskStatus.PENDING if decision == "approve" else TaskStatus.FAILED
         org.db.update_task(
             task_id, status=new_status, block_kind=None, note=resolved_note,
         )
         AuditLogger(org.db).log_escalation_resolved(
-            task_id=task_id, decision=body.decision, rationale=body.rationale
+            task_id=task_id, decision=decision, rationale=rationale,
         )
-    if body.decision == "approve":
+        # Best-effort: mark any open Feishu notification rows for this task
+        # consumed, so they don't dangle if the founder later replies in-thread.
+        for nrow in org.db.list_open_notifications_for_task(task_id):
+            org.db.consume_escalation_notification(
+                nrow["feishu_message_id"], consumed_by="cli-fallback",
+            )
+    if decision == "approve":
         # Re-enqueue self. The manager's next step sees the rationale via the
         # escalation-resolved prompt header (see
         # ``_resolved_escalation_header_if_applicable`` in run_step.py).
@@ -354,9 +368,20 @@ async def resolve_escalation(
         # failed. The org's Orchestrator owns its slug + queue + db, so we
         # just pass it through; ``_enqueue_parent_if_waiting`` calls _fail
         # on the parent on FAILED siblings.
-        from src.orchestrator.run_step import _enqueue_parent_if_waiting
         _enqueue_parent_if_waiting(org.orchestrator, task_id)
-    return {"ok": True, "task_id": task_id, "new_status": new_status.value}
+    return new_status.value
+
+
+@router.post("/tasks/{task_id}/resolve-escalation")
+async def resolve_escalation(
+    task_id: str, body: ResolveEscalationBody, org: OrgDep, request: Request,
+) -> dict:
+    state: DaemonState = request.app.state.daemon
+    new_status = await resolve_escalation_in_process(
+        org, state,
+        task_id=task_id, decision=body.decision, rationale=body.rationale,
+    )
+    return {"ok": True, "task_id": task_id, "new_status": new_status}
 
 
 class CancelBody(BaseModel):

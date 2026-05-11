@@ -506,3 +506,78 @@ def test_orchestrator_requires_teams() -> None:
         settings = Settings()
         with pytest.raises(TypeError):
             Orchestrator(db=db, settings=settings, paths=paths, slug="x")  # missing teams
+
+
+def test_orchestrator_notifier_default_none(tmp_path, test_settings):
+    from src.infrastructure.database import Database
+    from src.orchestrator._paths import OrgPaths
+    from src.orchestrator.orchestrator import Orchestrator
+    from src.orchestrator.teams import TeamsRegistry
+
+    root = tmp_path / "orgs" / "x"
+    root.mkdir(parents=True)
+    db = Database(root / "opc.db")
+    orch = Orchestrator(
+        db=db, settings=test_settings,
+        paths=OrgPaths(root=root), slug="x",
+        teams=TeamsRegistry.load(root),
+    )
+    assert orch._notifier is None
+
+
+def test_orchestrator_notify_escalated_no_op_when_unset(tmp_path, test_settings):
+    from src.infrastructure.database import Database
+    from src.orchestrator._paths import OrgPaths
+    from src.orchestrator.orchestrator import Orchestrator
+    from src.orchestrator.teams import TeamsRegistry
+
+    root = tmp_path / "orgs" / "x"
+    root.mkdir(parents=True)
+    db = Database(root / "opc.db")
+    orch = Orchestrator(
+        db=db, settings=test_settings,
+        paths=OrgPaths(root=root), slug="x",
+        teams=TeamsRegistry.load(root),
+    )
+    orch.notify_escalated(task_id="TASK-X", agent="a", reason="r")  # must not raise
+
+
+def test_orchestrator_notify_does_not_block_synchronous_caller(tmp_path, test_settings):
+    """When called from a thread without an event loop, notify_escalated
+    must spawn a background worker rather than blocking on asyncio.run."""
+    import threading
+    import time
+
+    from src.infrastructure.database import Database
+    from src.orchestrator._paths import OrgPaths
+    from src.orchestrator.orchestrator import Orchestrator
+    from src.orchestrator.teams import TeamsRegistry
+
+    root = tmp_path / "orgs" / "x"
+    root.mkdir(parents=True)
+    db = Database(root / "opc.db")
+    orch = Orchestrator(
+        db=db, settings=test_settings,
+        paths=OrgPaths(root=root), slug="x",
+        teams=TeamsRegistry.load(root),
+    )
+
+    started = threading.Event()
+    finish = threading.Event()
+    finished = threading.Event()
+
+    class _SlowNotifier:
+        async def notify_escalated(self, **kwargs):
+            started.set()
+            finish.wait(timeout=5.0)
+            finished.set()
+
+    orch.attach_notifier(_SlowNotifier())
+
+    t0 = time.monotonic()
+    orch.notify_escalated(task_id="TASK-X", agent="a", reason="r")
+    elapsed = time.monotonic() - t0
+    assert elapsed < 1.0, f"notify_escalated blocked for {elapsed:.2f}s"
+    assert started.wait(timeout=2.0), "background notifier never ran"
+    finish.set()
+    assert finished.wait(timeout=2.0)

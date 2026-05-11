@@ -22,12 +22,16 @@ from src.daemon.state import DaemonState
 from src.infrastructure.audit_logger import AuditLogger
 from src.infrastructure.database import Database
 from src.models import BlockKind, TaskStatus
+from src.orchestrator.orchestrator import Orchestrator
 from src.runtime import RuntimeDir
 
 logger = logging.getLogger("opc.daemon")
 
 
-def _sweep_on_startup(db: Database, queue: TaskQueue, slug: str) -> None:
+def _sweep_on_startup(
+    db: Database, queue: TaskQueue, slug: str,
+    orchestrator: Orchestrator | None = None,
+) -> None:
     """Post-restart recovery for a single org:
       - in_progress rows → failed (we killed the subprocess)
       - pending rows → re-enqueue (lost the original POST enqueue)
@@ -43,6 +47,11 @@ def _sweep_on_startup(db: Database, queue: TaskQueue, slug: str) -> None:
         if t.status == TaskStatus.IN_PROGRESS:
             db.update_task(task_id, status=TaskStatus.FAILED, note="daemon restart")
             audit.log_escalation(task_id, "daemon", "daemon restarted mid-task")
+            if orchestrator is not None:
+                orchestrator.notify_escalated(
+                    task_id=task_id, agent="daemon",
+                    reason="daemon restarted mid-task",
+                )
             # Notify parent if this failure unblocks it
             parent_id = t.parent_task_id
             if parent_id is not None:
@@ -73,7 +82,7 @@ def _build_state(settings: Settings) -> DaemonState:
     runtime = RuntimeDir.load(reg.active)
     state = DaemonState.from_runtime(runtime, settings)
     for org in state.orgs.values():
-        _sweep_on_startup(org.db, state.queue, org.slug)
+        _sweep_on_startup(org.db, state.queue, org.slug, org.orchestrator)
     # Worker-pool bootstrap is deferred to the FastAPI lifespan startup
     # event because we need a running event loop. See `create_app` →
     # lifespan.

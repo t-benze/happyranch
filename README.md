@@ -284,6 +284,56 @@ The per-session timeout (default 1800s / 30 min) is resolved in three layers, hi
 
 A missing file or `null` value at any layer falls through to the next layer. Values must be positive integers.
 
+### Founder notifications via Feishu
+
+Each org can opt into Feishu push notifications so that escalations reach the founder out-of-band, with a reply-in-thread protocol that unblocks the task without leaving the chat. The CLI `opc resolve-escalation` continues to work as a fallback.
+
+**One-time founder setup** — full walkthrough in [`docs/setup/feishu-notifications.md`](docs/setup/feishu-notifications.md):
+
+1. Create a self-built app at https://open.feishu.cn (CN) or https://open.larksuite.com (intl). Note the `App ID` (starts with `cli_`) and `App Secret`.
+2. Add scopes `im:message`, `im:message:send_as_bot`, `im:resource`.
+3. Enable **Event Subscription → WebSocket** mode and subscribe to `im.message.receive_v1`. (No public callback URL needed; the daemon connects out.)
+4. Add the bot to a 1:1 chat with you and copy the resulting `chat_id` (starts with `oc_`).
+
+**Per-org config** — add a `feishu_notifications` block to `<runtime>/orgs/<slug>/org/config.yaml`:
+
+```yaml
+feishu_notifications:
+  enabled: true
+  provider: feishu                          # only "feishu" supported in v1
+  region: feishu                            # feishu (CN) | lark (intl)
+  chat_id: oc_xxxxxxxxxxxxxxxxxxxxxx        # 1:1 group between bot and founder
+  app_id: cli_xxxxxxxxxxxxxxxx              # Feishu self-built app ID
+  app_secret: yyyyyyyyyyyyyyyyyyyyyyyy      # Feishu app secret
+  reply_ttl_hours: 72                       # window during which a reply can resolve; default 72
+```
+
+**Security note**: the config file holds secrets when `enabled: true`. Set restrictive permissions and never commit the live runtime config to version control:
+
+```bash
+chmod 600 <runtime>/orgs/<slug>/org/config.yaml
+```
+
+| Field | Required | Notes |
+|---|---|---|
+| `enabled` | yes | Master switch. `false` or block missing → Feishu subsystem is a no-op for this org. |
+| `provider` | yes when enabled | Must be `feishu`. Reserved for future channels. |
+| `region` | yes when enabled | `feishu` → `open.feishu.cn`, `lark` → `open.larksuite.com`. |
+| `chat_id` | yes when enabled | The chat where notifications are posted and replies are read from. |
+| `app_id` | yes when enabled | Feishu self-built app ID (starts with `cli_`). |
+| `app_secret` | yes when enabled | Feishu app secret. |
+| `reply_ttl_hours` | no | Default `72`. Range `[1, 720]`. Replies after this window are ignored. |
+
+**Verification** — restart the daemon. On startup, look for:
+
+```
+INFO src.daemon.feishu_listener: started Feishu event listener for org=<slug>
+```
+
+Trigger a test escalation (e.g., via `opc revisit ...` to a stuck task) and confirm the bot posts in your chat. Reply with `APPROVE\nlooks fine` and confirm the task transitions to `pending` (or `REJECT\nnot now` to fail it).
+
+The reply protocol: first non-empty line must be `APPROVE` or `REJECT` (case-insensitive); subsequent lines become the rationale. Replies must be sent **in the message thread** of the original notification — Feishu's `root_id` is the correlation key. Stray messages in the chat without a thread parent are ignored.
+
 ## Performance Tiers
 
 Agents are scored on a rolling 30-day window based on the team manager's verdicts after delegation:
