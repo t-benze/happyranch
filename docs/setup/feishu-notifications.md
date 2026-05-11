@@ -45,12 +45,8 @@ print(resp.data.items)
 
 ## 5. Configure OPC
 
-```bash
-export OPC_FEISHU_APP_ID=cli_xxxxxxxxxxxxxxxx
-export OPC_FEISHU_APP_SECRET=yyyyyyyyyyyyyyyyyyyyyyyy
-```
-
-Edit `<runtime>/orgs/<slug>/org/config.yaml`:
+Edit `<runtime>/orgs/<slug>/org/config.yaml` to add the `feishu_notifications`
+block with your app credentials:
 
 ```yaml
 feishu_notifications:
@@ -58,7 +54,16 @@ feishu_notifications:
   provider: feishu
   region: feishu
   chat_id: oc_aaaaaaaaaaaaaaa
+  app_id: cli_xxxxxxxxxxxxxxxx
+  app_secret: yyyyyyyyyyyyyyyyyyyyyyyy
   reply_ttl_hours: 72
+```
+
+**Security note**: this file now holds secrets. Set restrictive permissions and
+never commit the live runtime config to version control:
+
+```bash
+chmod 600 <runtime>/orgs/<slug>/org/config.yaml
 ```
 
 Restart the daemon. On startup, look for log lines like:
@@ -72,19 +77,3 @@ INFO src.daemon.feishu_listener: started Feishu event listener for org=<slug>
 Trigger an escalation (e.g. via `opc revisit ...` to a stuck task) and
 confirm the bot posts in your chat. Reply with `APPROVE\nlooks fine` and
 confirm the task transitions to `pending`.
-
-## Per-org credential overrides
-
-If a single daemon hosts multiple orgs that should use different Feishu apps,
-override per-org via the slug-suffixed env vars:
-
-```bash
-export OPC_FEISHU_APP_ID__HK_MACAU_TOURISM=cli_aaa
-export OPC_FEISHU_APP_SECRET__HK_MACAU_TOURISM=secret_aaa
-export OPC_FEISHU_APP_ID__OTHER_ORG=cli_bbb
-export OPC_FEISHU_APP_SECRET__OTHER_ORG=secret_bbb
-```
-
-Slug normalization: uppercase + hyphens → underscores. So `hk-macau-tourism`
-maps to `HK_MACAU_TOURISM`. The unsuffixed `OPC_FEISHU_APP_ID` is the fallback
-when a per-org variant is missing.

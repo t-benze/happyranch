@@ -56,9 +56,6 @@ def test_escalation_via_run_step_sends_feishu_message(
     import src.daemon.org_state as org_state_mod
     monkeypatch.setitem(org_state_mod._REGION_TO_DOMAIN, "feishu", base_url)
 
-    monkeypatch.setenv("OPC_FEISHU_APP_ID", "cli_test")
-    monkeypatch.setenv("OPC_FEISHU_APP_SECRET", "secret_test")
-
     root = tmp_path / "orgs" / "test"
     root.mkdir(parents=True)
     (root / "org").mkdir()
@@ -68,6 +65,8 @@ def test_escalation_via_run_step_sends_feishu_message(
         "  provider: feishu\n"
         "  region: feishu\n"
         "  chat_id: oc_test\n"
+        "  app_id: cli_test\n"
+        "  app_secret: secret_test\n"
     )
 
     from src.daemon.org_state import OrgState

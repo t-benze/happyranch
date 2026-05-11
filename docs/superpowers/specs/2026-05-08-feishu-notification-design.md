@@ -104,6 +104,8 @@ feishu_notifications:
   provider: feishu                          # only "feishu" supported in v1
   region: feishu                            # feishu (CN) | lark (intl)
   chat_id: oc_xxxxxxxxxxxxxxxxxxxxxx        # 1:1 group between bot and founder
+  app_id: cli_xxxxxxxxxxxxxxxx              # Feishu self-built app ID
+  app_secret: yyyyyyyyyyyyyyyyyyyyyyyy      # Feishu app secret
   reply_ttl_hours: 72                       # window during which a reply can resolve
 ```
 
@@ -115,18 +117,11 @@ Field semantics:
 | `provider` | yes when enabled | Must be `feishu`. Reserved for future channels. |
 | `region` | yes when enabled | `feishu` → CN domain (`open.feishu.cn`), `lark` → intl (`open.larksuite.com`). Maps to `lark_oapi.FEISHU_DOMAIN` / `LARK_DOMAIN`. |
 | `chat_id` | yes when enabled | The chat where notifications are posted and replies are read from. Found via Feishu's `chat list` API or the bot's "joined groups" list during setup. |
+| `app_id` | yes when enabled | Feishu self-built app ID (starts with `cli_`). |
+| `app_secret` | yes when enabled | Feishu app secret. |
 | `reply_ttl_hours` | no | Default `72`. Min `1`, max `720` (30 days). After this window, replies are ignored. |
 
-Secrets via env, never on disk:
-
-- `OPC_FEISHU_APP_ID`
-- `OPC_FEISHU_APP_SECRET`
-
-Per-org override pattern (when one runtime hosts orgs with distinct Feishu apps):
-
-- `OPC_FEISHU_APP_ID__<UPPER_SLUG_WITH_UNDERSCORES>` falls back to the unsuffixed env var when missing. Same convention used elsewhere in OPC.
-
-If `enabled: true` but credentials are missing at daemon start, the daemon logs an error and skips the Feishu subsystem for that org. Other orgs unaffected; daemon does not crash.
+Credentials live in the per-org config file alongside the other settings. The founder is responsible for treating the file as secret-bearing: `chmod 600` and never commit the live runtime config to version control. Each org has its own `app_id`/`app_secret` in its own config block — there is no env-var credential path.
 
 ### 3.4 Founder one-time setup
 
@@ -139,8 +134,8 @@ Out-of-band, before enabling per-org:
    - `im:resource` (download attachments — used only if the founder ever sends one; harmless otherwise)
 3. **Event subscription** — enable WebSocket mode (not HTTP callback). Subscribe to event `im.message.receive_v1`.
 4. Add the bot to a 1:1 group chat with the founder (or just DM the bot). Note the resulting `chat_id`.
-5. `export OPC_FEISHU_APP_ID=cli_xxxxx`, `export OPC_FEISHU_APP_SECRET=yyyyy`.
-6. Edit `<runtime>/orgs/<slug>/org/config.yaml` to add the `feishu_notifications` block.
+5. Edit `<runtime>/orgs/<slug>/org/config.yaml` to add the `feishu_notifications` block with `app_id` and `app_secret` from step 1.
+6. Set restrictive permissions: `chmod 600 <runtime>/orgs/<slug>/org/config.yaml`.
 7. Restart daemon.
 
 The setup steps are documented as a runbook in `docs/setup/feishu-notifications.md` (the implementation plan creates this).
@@ -215,7 +210,7 @@ The event handler (registered via `lark_oapi.EventDispatcherHandler.builder().re
 | `src/daemon/app.py` | Lifespan: start each org's `FeishuEventListener` if configured; signal stop on shutdown. |
 | `src/daemon/state.py` / `org_state.py` | Each `OrgState` carries `notifier: EscalationNotifier \| None` and `feishu_listener: FeishuEventListener \| None`. |
 | `src/orchestrator/orchestrator.py` | `attach_notifier(notifier)` + `notify_escalated(...)` — fire-and-forget bridge. |
-| `src/orchestrator/org_config.py` | New `FeishuNotificationsConfig` dataclass + parser; `resolve_feishu_credentials(slug)` env helper. |
+| `src/orchestrator/org_config.py` | New `FeishuNotificationsConfig` dataclass + parser; `app_id` and `app_secret` are required fields when `enabled: true`. |
 | `src/infrastructure/database.py` | `escalation_notifications` and `processed_event_ids` tables + CRUD. |
 | `src/infrastructure/audit_logger.py` | `log_escalation_notify_sent`, `log_escalation_notify_failed`, `log_escalation_reply_processed`, `log_escalation_reply_rejected`. |
 | `pyproject.toml` | Add `lark-oapi>=1.6,<2`. |
@@ -375,7 +370,7 @@ Unknown region → config validation error.
 | Wrong-thread reply targeting | `root_id` must match a `feishu_message_id` from our notifications table. Stray messages in the chat (not threaded) are dropped. |
 | Token consumption race | `UPDATE escalation_notifications SET consumed_at = ? WHERE feishu_message_id = ? AND consumed_at IS NULL` — atomic in SQLite; double-reply hits rowcount=0 and silently no-ops. |
 | Subprocess injection via reply text | Reply text is passed as a string to the typed `resolve_escalation` route; route writes via parameterized queries; no shell. |
-| App credential leak | Stored only in env vars, never written to disk. SDK does not log the secret. |
+| App credential leak | Stored in the per-org config file (`org/config.yaml`). Founder disciplines: `chmod 600`, never commit the live runtime config. SDK does not log the secret. |
 
 Audit log entries for every decision point (sent / failed / reply_processed / reply_rejected with reason) — queryable via `opc audit`.
 
@@ -387,8 +382,8 @@ Resolution rule:
 
 - File missing or block missing → `feishu_notifications = None` → notifier and listener skip this org.
 - Block present with `enabled: false` → same.
-- Block present with `enabled: true` but secrets missing in env → log error at daemon start, skip Feishu subsystem for this org only.
-- Block present with `enabled: true` and secrets present → fully active.
+- Block present with `enabled: true` but `app_id` or `app_secret` missing → `OrgConfigError` raised at parse time.
+- Block present with `enabled: true` and all fields present → fully active.
 
 Hot-reload not supported (consistent with other config); founder restarts daemon to pick up changes.
 
@@ -397,8 +392,7 @@ Hot-reload not supported (consistent with other config); founder restarts daemon
 ### 10.1 Unit tests
 
 - **DB CRUD** (`tests/test_database.py` extensions) — mint, get, consume escalation_notifications; insert dedup processed_event_ids.
-- **`OrgConfig`/`FeishuNotificationsConfig` parser** — happy path, missing block, partial block, invalid region, invalid TTL bounds, missing required field.
-- **`resolve_feishu_credentials`** env helper — per-org override, default fallback, missing returns None tuple.
+- **`OrgConfig`/`FeishuNotificationsConfig` parser** — happy path, missing block, partial block, invalid region, invalid TTL bounds, missing required field (chat_id, app_id, app_secret).
 - **`reply_parser.parse_reply`** — table-driven:
   - APPROVE clean
   - REJECT clean

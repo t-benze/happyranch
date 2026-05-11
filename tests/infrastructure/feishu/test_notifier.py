@@ -25,7 +25,8 @@ class _FakeFeishuClient:
 def _cfg(chat_id: str = "oc_x") -> FeishuNotificationsConfig:
     return FeishuNotificationsConfig(
         provider="feishu", region="feishu",
-        chat_id=chat_id, reply_ttl_hours=72,
+        chat_id=chat_id, app_id="cli_test", app_secret="secret_test",
+        reply_ttl_hours=72,
     )
 
 

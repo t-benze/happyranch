@@ -258,8 +258,6 @@ Operational settings use the `OPC_` env prefix. Runtime paths are derived from t
 | `OPC_TIER_GREEN_THRESHOLD` | `0.90` | Acceptance rate for green tier |
 | `OPC_TIER_YELLOW_THRESHOLD` | `0.75` | Acceptance rate for yellow tier |
 | `OPC_ORG_SLUG` | _(unset)_ | Default org slug for per-org CLI commands |
-| `OPC_FEISHU_APP_ID` | _(unset)_ | Feishu self-built app ID (required if any org enables `feishu_notifications`) |
-| `OPC_FEISHU_APP_SECRET` | _(unset)_ | Feishu app secret (required when `OPC_FEISHU_APP_ID` is set) |
 
 ### Per-Agent Configuration
 
@@ -297,22 +295,6 @@ Each org can opt into Feishu push notifications so that escalations reach the fo
 3. Enable **Event Subscription → WebSocket** mode and subscribe to `im.message.receive_v1`. (No public callback URL needed; the daemon connects out.)
 4. Add the bot to a 1:1 chat with you and copy the resulting `chat_id` (starts with `oc_`).
 
-**Daemon environment** — set once, applies to every org that opts in:
-
-```bash
-export OPC_FEISHU_APP_ID=cli_xxxxxxxxxxxxxxxx
-export OPC_FEISHU_APP_SECRET=yyyyyyyyyyyyyyyyyyyyyyyy
-```
-
-If a single daemon hosts multiple orgs that should use different Feishu apps, override per-org via slug-suffixed variants (uppercase + hyphens → underscores):
-
-```bash
-export OPC_FEISHU_APP_ID__HK_MACAU_TOURISM=cli_aaa
-export OPC_FEISHU_APP_SECRET__HK_MACAU_TOURISM=secret_aaa
-```
-
-The unsuffixed values remain the fallback for orgs without a per-org override.
-
 **Per-org config** — add a `feishu_notifications` block to `<runtime>/orgs/<slug>/org/config.yaml`:
 
 ```yaml
@@ -321,7 +303,15 @@ feishu_notifications:
   provider: feishu                          # only "feishu" supported in v1
   region: feishu                            # feishu (CN) | lark (intl)
   chat_id: oc_xxxxxxxxxxxxxxxxxxxxxx        # 1:1 group between bot and founder
+  app_id: cli_xxxxxxxxxxxxxxxx              # Feishu self-built app ID
+  app_secret: yyyyyyyyyyyyyyyyyyyyyyyy      # Feishu app secret
   reply_ttl_hours: 72                       # window during which a reply can resolve; default 72
+```
+
+**Security note**: the config file holds secrets when `enabled: true`. Set restrictive permissions and never commit the live runtime config to version control:
+
+```bash
+chmod 600 <runtime>/orgs/<slug>/org/config.yaml
 ```
 
 | Field | Required | Notes |
@@ -330,9 +320,9 @@ feishu_notifications:
 | `provider` | yes when enabled | Must be `feishu`. Reserved for future channels. |
 | `region` | yes when enabled | `feishu` → `open.feishu.cn`, `lark` → `open.larksuite.com`. |
 | `chat_id` | yes when enabled | The chat where notifications are posted and replies are read from. |
+| `app_id` | yes when enabled | Feishu self-built app ID (starts with `cli_`). |
+| `app_secret` | yes when enabled | Feishu app secret. |
 | `reply_ttl_hours` | no | Default `72`. Range `[1, 720]`. Replies after this window are ignored. |
-
-If `enabled: true` but credentials are missing in the environment, the daemon logs a clear error at startup and skips the Feishu subsystem **for that org only** — other orgs and the rest of the daemon are unaffected.
 
 **Verification** — restart the daemon. On startup, look for:
 

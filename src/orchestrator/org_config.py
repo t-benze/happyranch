@@ -6,7 +6,6 @@ defaults exactly as before.
 """
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 
 import yaml
@@ -27,6 +26,8 @@ class FeishuNotificationsConfig:
     provider: str
     region: str
     chat_id: str
+    app_id: str
+    app_secret: str
     reply_ttl_hours: int = 72
 
 
@@ -74,6 +75,18 @@ def _parse_feishu_notifications(
             f"{path}: feishu_notifications.chat_id is required when enabled"
         )
 
+    app_id = block.get("app_id")
+    if not app_id or not isinstance(app_id, str):
+        raise OrgConfigError(
+            f"{path}: feishu_notifications.app_id is required when enabled"
+        )
+
+    app_secret = block.get("app_secret")
+    if not app_secret or not isinstance(app_secret, str):
+        raise OrgConfigError(
+            f"{path}: feishu_notifications.app_secret is required when enabled"
+        )
+
     ttl = _validate_positive_int(
         block.get("reply_ttl_hours", 72),
         "feishu_notifications.reply_ttl_hours",
@@ -84,6 +97,8 @@ def _parse_feishu_notifications(
         provider=provider,
         region=region,
         chat_id=chat_id,
+        app_id=app_id,
+        app_secret=app_secret,
         reply_ttl_hours=ttl,
     )
 
@@ -124,21 +139,3 @@ def load_org_config(paths: OrgPaths) -> OrgConfig:
     )
 
 
-def _slug_env_suffix(slug: str) -> str:
-    return slug.upper().replace("-", "_")
-
-
-def resolve_feishu_credentials(slug: str) -> tuple[str | None, str | None]:
-    """Look up Feishu app credentials for an org from environment.
-
-    Per-org override takes precedence over the unsuffixed default:
-
-        OPC_FEISHU_APP_ID__<SUFFIX>     # checked first
-        OPC_FEISHU_APP_ID               # fallback
-    """
-    suffix = _slug_env_suffix(slug)
-    app_id = os.environ.get(f"OPC_FEISHU_APP_ID__{suffix}") \
-        or os.environ.get("OPC_FEISHU_APP_ID")
-    app_secret = os.environ.get(f"OPC_FEISHU_APP_SECRET__{suffix}") \
-        or os.environ.get("OPC_FEISHU_APP_SECRET")
-    return app_id, app_secret

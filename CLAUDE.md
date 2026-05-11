@@ -425,7 +425,7 @@ WS threads are `daemon=True` so they die with the process; no graceful shutdown 
 
 ### Per-org credentials
 
-`OPC_FEISHU_APP_ID` / `OPC_FEISHU_APP_SECRET` are global defaults. Per-org override pattern: `OPC_FEISHU_APP_ID__<UPPER_SLUG>` (hyphens → underscores). `resolve_feishu_credentials(slug)` in `org_config.py` returns the resolved tuple; missing creds with `enabled: true` log a warning and skip Feishu for that org only.
+Feishu credentials (`app_id`, `app_secret`) live in the per-org config file at `<runtime>/orgs/<slug>/org/config.yaml` under the `feishu_notifications` block. They are required fields when `enabled: true` — the config parser raises `OrgConfigError` if either is missing or empty. The founder is responsible for treating the config file as secret-bearing: `chmod 600` and never commit the live runtime copy to version control. There are no env-var credential paths.
 
 ## Maintaining Documentation
 - **README.md** is for end users — setup, CLI commands, configuration. No developer internals.

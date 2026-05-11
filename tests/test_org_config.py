@@ -104,6 +104,8 @@ feishu_notifications:
   provider: feishu
   region: feishu
   chat_id: oc_aaa111
+  app_id: cli_x
+  app_secret: secret_x
   reply_ttl_hours: 48
 """)
     from src.orchestrator.org_config import load_org_config, FeishuNotificationsConfig
@@ -113,6 +115,8 @@ feishu_notifications:
     assert f.provider == "feishu"
     assert f.region == "feishu"
     assert f.chat_id == "oc_aaa111"
+    assert f.app_id == "cli_x"
+    assert f.app_secret == "secret_x"
     assert f.reply_ttl_hours == 48
 
 
@@ -124,6 +128,8 @@ feishu_notifications:
   provider: feishu
   region: feishu
   chat_id: oc_aaa
+  app_id: cli_test
+  app_secret: secret_test
 """)
     from src.orchestrator.org_config import load_org_config
     cfg = load_org_config(runtime)
@@ -138,6 +144,8 @@ feishu_notifications:
   provider: slack
   region: feishu
   chat_id: oc_xxx
+  app_id: cli_test
+  app_secret: secret_test
 """)
     from src.orchestrator.org_config import load_org_config
     try:
@@ -156,6 +164,8 @@ feishu_notifications:
   provider: feishu
   region: us
   chat_id: oc_xxx
+  app_id: cli_test
+  app_secret: secret_test
 """)
     from src.orchestrator.org_config import load_org_config
     try:
@@ -173,6 +183,8 @@ feishu_notifications:
   enabled: true
   provider: feishu
   region: feishu
+  app_id: cli_test
+  app_secret: secret_test
 """)
     from src.orchestrator.org_config import load_org_config
     try:
@@ -191,6 +203,8 @@ feishu_notifications:
   provider: feishu
   region: feishu
   chat_id: oc_x
+  app_id: cli_test
+  app_secret: secret_test
   reply_ttl_hours: 9999
 """)
     from src.orchestrator.org_config import load_org_config
@@ -202,34 +216,39 @@ feishu_notifications:
         raise AssertionError("expected OrgConfigError")
 
 
-def test_resolve_feishu_credentials_org_specific(monkeypatch) -> None:
-    from src.orchestrator.org_config import resolve_feishu_credentials
-    monkeypatch.setenv("OPC_FEISHU_APP_ID__HK_MACAU_TOURISM", "id-org")
-    monkeypatch.setenv("OPC_FEISHU_APP_SECRET__HK_MACAU_TOURISM", "secret-org")
-    monkeypatch.setenv("OPC_FEISHU_APP_ID", "id-default")
-    monkeypatch.setenv("OPC_FEISHU_APP_SECRET", "secret-default")
-    aid, sec = resolve_feishu_credentials("hk-macau-tourism")
-    assert aid == "id-org"
-    assert sec == "secret-org"
+def test_feishu_notifications_missing_app_id_raises(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    _write_config(runtime, """
+feishu_notifications:
+  enabled: true
+  provider: feishu
+  region: feishu
+  chat_id: oc_xxx
+  app_secret: s
+""")
+    from src.orchestrator.org_config import load_org_config
+    try:
+        load_org_config(runtime)
+    except OrgConfigError as exc:
+        assert "app_id" in str(exc)
+    else:
+        raise AssertionError("expected OrgConfigError")
 
 
-def test_resolve_feishu_credentials_falls_back_to_default(monkeypatch) -> None:
-    from src.orchestrator.org_config import resolve_feishu_credentials
-    monkeypatch.delenv("OPC_FEISHU_APP_ID__OTHER", raising=False)
-    monkeypatch.delenv("OPC_FEISHU_APP_SECRET__OTHER", raising=False)
-    monkeypatch.setenv("OPC_FEISHU_APP_ID", "id-d")
-    monkeypatch.setenv("OPC_FEISHU_APP_SECRET", "secret-d")
-    aid, sec = resolve_feishu_credentials("other")
-    assert aid == "id-d"
-    assert sec == "secret-d"
-
-
-def test_resolve_feishu_credentials_missing_returns_none(monkeypatch) -> None:
-    from src.orchestrator.org_config import resolve_feishu_credentials
-    monkeypatch.delenv("OPC_FEISHU_APP_ID", raising=False)
-    monkeypatch.delenv("OPC_FEISHU_APP_SECRET", raising=False)
-    monkeypatch.delenv("OPC_FEISHU_APP_ID__SLUG", raising=False)
-    monkeypatch.delenv("OPC_FEISHU_APP_SECRET__SLUG", raising=False)
-    aid, sec = resolve_feishu_credentials("slug")
-    assert aid is None
-    assert sec is None
+def test_feishu_notifications_missing_app_secret_raises(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    _write_config(runtime, """
+feishu_notifications:
+  enabled: true
+  provider: feishu
+  region: feishu
+  chat_id: oc_xxx
+  app_id: cli_x
+""")
+    from src.orchestrator.org_config import load_org_config
+    try:
+        load_org_config(runtime)
+    except OrgConfigError as exc:
+        assert "app_secret" in str(exc)
+    else:
+        raise AssertionError("expected OrgConfigError")

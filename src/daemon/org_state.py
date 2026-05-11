@@ -27,7 +27,6 @@ from src.orchestrator.orchestrator import Orchestrator
 from src.orchestrator.org_config import (
     OrgConfig,
     load_org_config,
-    resolve_feishu_credentials,
 )
 from src.orchestrator.teams import TeamsRegistry
 
@@ -138,19 +137,8 @@ def _build_feishu_attrs(
     if cfg.feishu_notifications is None:
         return None
 
-    app_id, app_secret = resolve_feishu_credentials(slug)
-    if not app_id or not app_secret:
-        logger.warning(
-            "feishu_notifications enabled for org '%s' but "
-            "OPC_FEISHU_APP_ID / SECRET are not set; skipping for this org",
-            slug,
-        )
-        return {
-            "notifier": None,
-            "app_id": None, "app_secret": None,
-            "domain": None, "chat_id": None,
-        }
-
+    app_id = cfg.feishu_notifications.app_id
+    app_secret = cfg.feishu_notifications.app_secret
     domain = _REGION_TO_DOMAIN[cfg.feishu_notifications.region]
     sdk_client = (
         lark.Client.builder()
