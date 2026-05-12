@@ -48,9 +48,11 @@ def _sweep_on_startup(
             db.update_task(task_id, status=TaskStatus.FAILED, note="daemon restart")
             audit.log_escalation(task_id, "daemon", "daemon restarted mid-task")
             if orchestrator is not None:
-                orchestrator.notify_escalated(
-                    task_id=task_id, agent="daemon",
-                    reason="daemon restarted mid-task",
+                orchestrator.notify_failed(
+                    task_id=task_id,
+                    agent=t.assigned_agent or "(unknown)",
+                    failure_kind="daemon_restart",
+                    failure_note="daemon restarted mid-task",
                 )
             # Notify parent if this failure unblocks it
             parent_id = t.parent_task_id
