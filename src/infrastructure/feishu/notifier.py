@@ -22,6 +22,40 @@ class _Sender(Protocol):
         self, *, chat_id: str, title: str, body_lines: list[str],
     ) -> str: ...
 
+    def send_thread_reply(
+        self, *, parent_message_id: str, title: str, body_lines: list[str],
+    ) -> str: ...
+
+
+_HINT_PREVIEW_CAP = 200
+
+
+def _build_parse_hint_body(*, text_preview: str) -> tuple[str, list[str]]:
+    """Body for the threaded reply we send when parse_reply rejects the founder's text."""
+    preview = (
+        text_preview if len(text_preview) <= _HINT_PREVIEW_CAP
+        else text_preview[:_HINT_PREVIEW_CAP] + "…"
+    )
+    title = "Couldn't parse your reply — try again"
+    lines = [
+        "Your last reply couldn't be parsed.",
+        "",
+        "Got:",
+        f"  {preview}" if preview else "  (empty)",
+        "",
+        "Expected the first non-empty line to be exactly one of:",
+        "  APPROVE",
+        "  REJECT",
+        "  REVISIT",
+        "",
+        "Put your rationale on the lines after the verb. Example:",
+        "  APPROVE",
+        "  skip device verification this time",
+        "",
+        "Reply again in this thread to retry.",
+    ]
+    return title, lines
+
 
 def _build_body_phase1(
     *,
@@ -243,6 +277,44 @@ class EscalationNotifier:
                 )
             except Exception:
                 logger.exception("audit log_failure_notify_failed also failed")
+
+    async def send_parse_hint(
+        self,
+        *,
+        parent_message_id: str,
+        task_id: str,
+        text_preview: str,
+        feishu_event_id: str | None = None,
+    ) -> None:
+        """Reply (threaded) to a founder's unparseable text with a grammar hint.
+
+        Best-effort: any exception is swallowed and audited so the listener's
+        bad_decision flow always completes. The notification row is left
+        UNCONSUMED by the caller, so the founder can simply reply again in
+        the same thread.
+        """
+        title, body_lines = _build_parse_hint_body(text_preview=text_preview)
+        try:
+            hint_msg_id = self._client.send_thread_reply(
+                parent_message_id=parent_message_id,
+                title=title,
+                body_lines=body_lines,
+            )
+            self._audit.log_parse_hint_sent(
+                task_id=task_id,
+                hint_message_id=hint_msg_id,
+                feishu_event_id=feishu_event_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("send_parse_hint failed for task %s", task_id)
+            try:
+                self._audit.log_parse_hint_send_failed(
+                    task_id=task_id,
+                    error=f"{type(exc).__name__}: {exc}",
+                    feishu_event_id=feishu_event_id,
+                )
+            except Exception:
+                logger.exception("audit log_parse_hint_send_failed also failed")
 
     async def send_dispatch_confirmation(
         self, *, task_id: str, team: str | None, brief: str,

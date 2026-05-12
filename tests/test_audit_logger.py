@@ -231,3 +231,55 @@ def test_log_escalation_reply_rejected(db):
     rows = db.get_audit_logs("TASK-1")
     assert rows[0]["action"] == "escalation_reply_rejected"
     assert rows[0]["payload"]["reason"] == "bad_decision"
+    assert "text_preview" not in rows[0]["payload"]
+
+
+def test_log_escalation_reply_rejected_preserves_text_preview(db):
+    logger = AuditLogger(db)
+    logger.log_escalation_reply_rejected(
+        task_id="TASK-1",
+        reason="bad_decision",
+        feishu_event_id="evt_abc",
+        text_preview="approve: skip device check",
+    )
+    payload = db.get_audit_logs("TASK-1")[0]["payload"]
+    assert payload["reason"] == "bad_decision"
+    assert payload["feishu_event_id"] == "evt_abc"
+    assert payload["text_preview"] == "approve: skip device check"
+
+
+def test_log_escalation_reply_rejected_truncates_long_text(db):
+    logger = AuditLogger(db)
+    long_text = "x" * 500
+    logger.log_escalation_reply_rejected(
+        task_id="TASK-1", reason="bad_decision", text_preview=long_text,
+    )
+    preview = db.get_audit_logs("TASK-1")[0]["payload"]["text_preview"]
+    assert len(preview) == 200
+    assert preview == "x" * 200
+
+
+def test_log_parse_hint_sent(db):
+    logger = AuditLogger(db)
+    logger.log_parse_hint_sent(
+        task_id="TASK-1",
+        feishu_event_id="evt_a",
+        hint_message_id="om_hint_7",
+    )
+    row = db.get_audit_logs("TASK-1")[0]
+    assert row["action"] == "escalation_parse_hint_sent"
+    assert row["payload"]["hint_message_id"] == "om_hint_7"
+    assert row["payload"]["feishu_event_id"] == "evt_a"
+
+
+def test_log_parse_hint_send_failed(db):
+    logger = AuditLogger(db)
+    logger.log_parse_hint_send_failed(
+        task_id="TASK-1",
+        feishu_event_id="evt_b",
+        error="FeishuSendError: code=230020 msg=message_not_found",
+    )
+    row = db.get_audit_logs("TASK-1")[0]
+    assert row["action"] == "escalation_parse_hint_send_failed"
+    assert "message_not_found" in row["payload"]["error"]
+    assert row["payload"]["feishu_event_id"] == "evt_b"

@@ -64,3 +64,41 @@ def test_send_post_message_raises_on_error_response():
         client.send_post_message(chat_id="oc_x", title="t", body_lines=["b"])
     assert ei.value.code == 99991663
     assert "permission denied" in str(ei.value)
+
+
+def test_send_thread_reply_calls_reply_endpoint_with_post_payload():
+    sdk = MagicMock()
+    sdk.im.v1.message.reply.return_value = _ok_response("om_hint_42")
+
+    client = FeishuClient(sdk_client=sdk)
+    msg_id = client.send_thread_reply(
+        parent_message_id="om_parent",
+        title="hint title",
+        body_lines=["got: foo", "expected: APPROVE"],
+    )
+    assert msg_id == "om_hint_42"
+
+    args, kwargs = sdk.im.v1.message.reply.call_args
+    req = args[0]
+    assert req.message_id == "om_parent"
+    assert req.paths.get("message_id") == "om_parent"
+    payload = json.loads(req.body.content)
+    assert payload["zh_cn"]["title"] == "hint title"
+    assert payload["zh_cn"]["content"] == [
+        [{"tag": "text", "text": "got: foo"}],
+        [{"tag": "text", "text": "expected: APPROVE"}],
+    ]
+    assert req.body.msg_type == "post"
+    assert req.body.reply_in_thread is True
+
+
+def test_send_thread_reply_raises_on_error_response():
+    sdk = MagicMock()
+    sdk.im.v1.message.reply.return_value = _err_response(230020, "message not found")
+    client = FeishuClient(sdk_client=sdk)
+    with pytest.raises(FeishuSendError) as ei:
+        client.send_thread_reply(
+            parent_message_id="om_x", title="t", body_lines=["b"],
+        )
+    assert ei.value.code == 230020
+    assert "message not found" in str(ei.value)

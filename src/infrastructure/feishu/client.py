@@ -80,3 +80,40 @@ class FeishuClient:
                 msg=getattr(resp, "msg", "") or "(no msg)",
             )
         return resp.data.message_id
+
+    def send_thread_reply(
+        self,
+        *,
+        parent_message_id: str,
+        title: str,
+        body_lines: list[str],
+    ) -> str:
+        """Reply (threaded) to an existing Feishu message. Returns message_id.
+
+        Used to send the founder a parse-failure hint nested under the
+        notification thread, so retries land back in the same thread.
+        """
+        from lark_oapi.api.im.v1 import (
+            ReplyMessageRequest,
+            ReplyMessageRequestBody,
+        )
+
+        req = (
+            ReplyMessageRequest.builder()
+            .message_id(parent_message_id)
+            .request_body(
+                ReplyMessageRequestBody.builder()
+                .msg_type("post")
+                .content(_build_post_content(title, body_lines))
+                .reply_in_thread(True)
+                .build()
+            )
+            .build()
+        )
+        resp = self._sdk.im.v1.message.reply(req)
+        if not resp.success():
+            raise FeishuSendError(
+                code=getattr(resp, "code", None),
+                msg=getattr(resp, "msg", "") or "(no msg)",
+            )
+        return resp.data.message_id

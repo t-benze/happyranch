@@ -81,6 +81,27 @@ def listener(tmp_path):
     return listener, db, resolve_mock
 
 
+@pytest.fixture
+def listener_with_hint(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    resolve_mock = AsyncMock()
+    hint_mock = AsyncMock()
+    listener = FeishuEventListener(
+        slug="o", db=db, audit=AuditLogger(db),
+        chat_id="oc_target",
+        resolve_escalation=resolve_mock,
+        revisit_from_notification=AsyncMock(),
+        dispatch_via_feishu=AsyncMock(),
+        send_dispatch_confirmation=AsyncMock(),
+        send_dispatch_error=AsyncMock(),
+        send_parse_hint=hint_mock,
+        allow_dispatch=False,
+        loop=asyncio.get_event_loop(),
+        app_id="cli_x", app_secret="s_x", domain="https://x",
+    )
+    return listener, db, resolve_mock, hint_mock
+
+
 @pytest.mark.asyncio
 async def test_handler_calls_resolve_on_approve(listener):
     listener_obj, db, resolve_mock = listener
@@ -232,6 +253,65 @@ async def test_handler_records_bad_decision_rejected(listener):
     row = cur.fetchone()
     assert row["outcome"] == "rejected"
     assert row["reason"] == "bad_decision"
+    rejected = [
+        r for r in db.get_audit_logs("TASK-1")
+        if r["action"] == "escalation_reply_rejected"
+    ]
+    assert len(rejected) == 1
+    payload = rejected[0]["payload"]
+    assert payload["reason"] == "bad_decision"
+    assert payload["feishu_event_id"] == "evt_1"
+    assert payload["text_preview"] == "MAYBE\nnot sure"
+
+
+@pytest.mark.asyncio
+async def test_bad_decision_invokes_parse_hint_callback(listener_with_hint):
+    listener_obj, db, _resolve, hint_mock = listener_with_hint
+    _seed_notification(db)
+    await listener_obj._handle_event_async(_event(
+        content='{"text": "MAYBE\\nnot sure"}',
+    ))
+    hint_mock.assert_awaited_once()
+    kwargs = hint_mock.await_args.kwargs
+    assert kwargs["parent_message_id"] == "om_reply"  # founder's bad reply id
+    assert kwargs["task_id"] == "TASK-1"
+    assert kwargs["text_preview"] == "MAYBE\nnot sure"
+    assert kwargs["feishu_event_id"] == "evt_1"
+
+
+@pytest.mark.asyncio
+async def test_parse_hint_failure_does_not_break_bad_decision(listener_with_hint):
+    """If the hint callback raises, the bad_decision flow still completes:
+    audit row + processed_event_ids outcome are both written."""
+    listener_obj, db, _resolve, hint_mock = listener_with_hint
+    hint_mock.side_effect = RuntimeError("feishu down")
+    _seed_notification(db)
+    await listener_obj._handle_event_async(_event(
+        content='{"text": "MAYBE\\nnot sure"}',
+    ))
+    cur = db._conn.execute(
+        "SELECT outcome, reason FROM processed_event_ids "
+        "WHERE feishu_event_id = ?", ("evt_1",),
+    )
+    row = cur.fetchone()
+    assert row["outcome"] == "rejected"
+    assert row["reason"] == "bad_decision"
+    rejected = [
+        r for r in db.get_audit_logs("TASK-1")
+        if r["action"] == "escalation_reply_rejected"
+    ]
+    assert len(rejected) == 1
+
+
+@pytest.mark.asyncio
+async def test_parse_hint_not_sent_when_callback_unset(listener):
+    """Existing listener fixture has send_parse_hint=None — must still work."""
+    listener_obj, db, _resolve = listener
+    _seed_notification(db)
+    # Should not raise even though no hint callback is wired.
+    await listener_obj._handle_event_async(_event(
+        content='{"text": "MAYBE\\nnot sure"}',
+    ))
 
 
 @pytest.mark.asyncio

@@ -118,3 +118,110 @@ async def test_notify_escalated_missing_task_is_no_op(tmp_path):
         task_id="TASK-DOES-NOT-EXIST", agent="x", reason="r",
     )
     assert fake.sent == []
+
+
+@dataclass
+class _ThreadReplyClient:
+    """Fake supporting send_thread_reply for parse-hint tests."""
+    replies: list[dict]
+    next_message_id: str = "om_hint"
+
+    def send_post_message(self, *, chat_id, title, body_lines):
+        # Unused by parse-hint path; keep signature for shared Protocol.
+        raise AssertionError("send_post_message should not be called")
+
+    def send_thread_reply(self, *, parent_message_id, title, body_lines):
+        self.replies.append({
+            "parent_message_id": parent_message_id,
+            "title": title,
+            "body_lines": body_lines,
+        })
+        return self.next_message_id
+
+
+@pytest.mark.asyncio
+async def test_send_parse_hint_replies_in_thread_and_audits(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    _seed_task(db)
+    fake = _ThreadReplyClient(replies=[], next_message_id="om_hint_7")
+    notifier = EscalationNotifier(
+        slug="o", db=db, audit=AuditLogger(db),
+        client=fake, config=_cfg(),
+    )
+
+    await notifier.send_parse_hint(
+        parent_message_id="om_founder_reply",
+        task_id="TASK-1",
+        text_preview="approve: skip device check",
+        feishu_event_id="evt_42",
+    )
+
+    assert len(fake.replies) == 1
+    sent = fake.replies[0]
+    assert sent["parent_message_id"] == "om_founder_reply"
+    body_text = "\n".join(sent["body_lines"])
+    assert "approve: skip device check" in body_text
+    assert "APPROVE" in body_text
+    assert "REJECT" in body_text
+    assert "REVISIT" in body_text
+    # Founder is told they can retry without going to CLI.
+    assert "thread" in body_text.lower()
+
+    rows = db.get_audit_logs("TASK-1")
+    actions = {r["action"]: r["payload"] for r in rows}
+    assert "escalation_parse_hint_sent" in actions
+    payload = actions["escalation_parse_hint_sent"]
+    assert payload["hint_message_id"] == "om_hint_7"
+    assert payload["feishu_event_id"] == "evt_42"
+
+
+@dataclass
+class _ExplodingThreadReplyClient:
+    def send_post_message(self, *, chat_id, title, body_lines):
+        raise AssertionError("not used")
+
+    def send_thread_reply(self, *, parent_message_id, title, body_lines):
+        raise FeishuSendError(code=230020, msg="message_not_found")
+
+
+@pytest.mark.asyncio
+async def test_send_parse_hint_swallows_send_failure(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    _seed_task(db)
+    notifier = EscalationNotifier(
+        slug="o", db=db, audit=AuditLogger(db),
+        client=_ExplodingThreadReplyClient(), config=_cfg(),
+    )
+    # Must not raise.
+    await notifier.send_parse_hint(
+        parent_message_id="om_p",
+        task_id="TASK-1",
+        text_preview="anything",
+        feishu_event_id="evt_x",
+    )
+    actions = [r["action"] for r in db.get_audit_logs("TASK-1")]
+    assert "escalation_parse_hint_sent" not in actions
+    assert "escalation_parse_hint_send_failed" in actions
+
+
+@pytest.mark.asyncio
+async def test_send_parse_hint_truncates_long_preview_in_body(tmp_path):
+    """The hint body should display a bounded preview so an attacker (or a
+    pasted novel) can't bloat the Feishu post payload arbitrarily."""
+    db = Database(tmp_path / "opc.db")
+    _seed_task(db)
+    fake = _ThreadReplyClient(replies=[])
+    notifier = EscalationNotifier(
+        slug="o", db=db, audit=AuditLogger(db),
+        client=fake, config=_cfg(),
+    )
+    await notifier.send_parse_hint(
+        parent_message_id="om_p",
+        task_id="TASK-1",
+        text_preview="x" * 500,
+        feishu_event_id="evt_x",
+    )
+    body_text = "\n".join(fake.replies[0]["body_lines"])
+    # 200-char cap + ellipsis marker
+    assert "x" * 200 in body_text
+    assert "x" * 201 not in body_text

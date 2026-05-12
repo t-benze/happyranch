@@ -161,15 +161,56 @@ class AuditLogger:
         )
 
     def log_escalation_reply_rejected(
-        self, task_id: str, reason: str, *, feishu_event_id: str | None = None,
+        self,
+        task_id: str,
+        reason: str,
+        *,
+        feishu_event_id: str | None = None,
+        text_preview: str | None = None,
     ) -> None:
         payload: dict = {"reason": reason}
+        if feishu_event_id is not None:
+            payload["feishu_event_id"] = feishu_event_id
+        if text_preview is not None:
+            payload["text_preview"] = text_preview[:200]
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="daemon",
+            action="escalation_reply_rejected",
+            payload=payload,
+        )
+
+    def log_parse_hint_sent(
+        self,
+        task_id: str,
+        *,
+        hint_message_id: str,
+        feishu_event_id: str | None = None,
+    ) -> None:
+        payload: dict = {"hint_message_id": hint_message_id}
         if feishu_event_id is not None:
             payload["feishu_event_id"] = feishu_event_id
         self._db.insert_audit_log(
             task_id=task_id,
             agent="daemon",
-            action="escalation_reply_rejected",
+            action="escalation_parse_hint_sent",
+            payload=payload,
+        )
+
+    def log_parse_hint_send_failed(
+        self,
+        task_id: str,
+        *,
+        error: str,
+        feishu_event_id: str | None = None,
+    ) -> None:
+        payload: dict = {"error": error}
+        if feishu_event_id is not None:
+            payload["feishu_event_id"] = feishu_event_id
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="daemon",
+            action="escalation_parse_hint_send_failed",
             payload=payload,
         )
 

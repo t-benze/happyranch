@@ -33,6 +33,7 @@ RevisitFn = Callable[..., Awaitable[object]]
 DispatchFn = Callable[..., Awaitable[tuple[str, str]]]
 SendConfirmFn = Callable[..., Awaitable[None]]
 SendErrorFn = Callable[..., Awaitable[None]]
+SendParseHintFn = Callable[..., Awaitable[None]]
 
 
 class FeishuEventListener:
@@ -53,6 +54,7 @@ class FeishuEventListener:
         app_id: str,
         app_secret: str,
         domain: str,
+        send_parse_hint: SendParseHintFn | None = None,
     ) -> None:
         self._slug = slug
         self._db = db
@@ -63,6 +65,7 @@ class FeishuEventListener:
         self._dispatch_via_feishu = dispatch_via_feishu
         self._send_dispatch_confirmation = send_dispatch_confirmation
         self._send_dispatch_error = send_dispatch_error
+        self._send_parse_hint = send_parse_hint
         self._allow_dispatch = allow_dispatch
         self._loop = loop
         self._app_id = app_id
@@ -185,8 +188,26 @@ class FeishuEventListener:
         parsed = parse_reply(text)
         if parsed is None:
             self._audit.log_escalation_reply_rejected(
-                task_id=row["task_id"], reason="bad_decision",
+                task_id=row["task_id"],
+                reason="bad_decision",
+                feishu_event_id=event_id,
+                text_preview=text,
             )
+            if self._send_parse_hint is not None:
+                try:
+                    await self._send_parse_hint(
+                        parent_message_id=msg.message_id,
+                        task_id=row["task_id"],
+                        text_preview=text,
+                        feishu_event_id=event_id,
+                    )
+                except Exception:  # noqa: BLE001
+                    # Hint helper audits its own failure; never block the
+                    # listener — the audit row + processed_event_ids outcome
+                    # still record the parse failure.
+                    logger.exception(
+                        "send_parse_hint raised for task %s", row["task_id"],
+                    )
             _close("rejected", "bad_decision")
             return
 
@@ -389,6 +410,18 @@ def maybe_start_feishu_listener_for_org(org, state, loop) -> None:
             reason=reason, valid_teams=valid_teams,
         )
 
+    async def _send_parse_hint_for_listener(
+        *, parent_message_id, task_id, text_preview, feishu_event_id,
+    ):
+        if org.notifier is None:
+            return
+        return await org.notifier.send_parse_hint(
+            parent_message_id=parent_message_id,
+            task_id=task_id,
+            text_preview=text_preview,
+            feishu_event_id=feishu_event_id,
+        )
+
     listener = FeishuEventListener(
         slug=org.slug,
         db=org.db,
@@ -399,6 +432,7 @@ def maybe_start_feishu_listener_for_org(org, state, loop) -> None:
         dispatch_via_feishu=_dispatch_for_listener,
         send_dispatch_confirmation=_send_confirm_for_listener,
         send_dispatch_error=_send_error_for_listener,
+        send_parse_hint=_send_parse_hint_for_listener,
         allow_dispatch=allow_dispatch,
         loop=loop,
         app_id=org.feishu_app_id,
