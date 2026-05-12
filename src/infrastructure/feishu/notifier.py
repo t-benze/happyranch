@@ -243,3 +243,43 @@ class EscalationNotifier:
                 )
             except Exception:
                 logger.exception("audit log_failure_notify_failed also failed")
+
+    async def send_dispatch_confirmation(
+        self, *, task_id: str, team: str | None, brief: str,
+    ) -> None:
+        """Top-level post (not threaded) confirming a Feishu dispatch.
+        Best-effort; swallows + audits exceptions."""
+        try:
+            brief_trunc = brief if len(brief) <= 240 else brief[:240] + "…"
+            title = f"[OPC {self._slug}] Task {task_id} dispatched"
+            body_lines = [
+                f"Team:  {team or '(auto)'}",
+                f"Brief: {brief_trunc}",
+                "",
+                "Track with:",
+                f"  opc tail --org {self._slug} {task_id}",
+            ]
+            self._client.send_post_message(
+                chat_id=self._config.chat_id, title=title, body_lines=body_lines,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._audit.log_dispatch_send_confirmation_failed(
+                task_id=task_id, error=str(exc),
+            )
+
+    async def send_dispatch_error(
+        self, *, reason: str, valid_teams: list[str] | None = None,
+    ) -> None:
+        """Top-level post reporting a rejected DISPATCH. Best-effort."""
+        try:
+            title = f"[OPC {self._slug}] Dispatch rejected"
+            body_lines = [f"Reason: {reason}"]
+            if valid_teams:
+                body_lines.append(f"Valid teams: {', '.join(valid_teams)}")
+            self._client.send_post_message(
+                chat_id=self._config.chat_id, title=title, body_lines=body_lines,
+            )
+        except Exception:  # noqa: BLE001
+            # Error-card send failure is itself an error — log nothing extra,
+            # the original audit row for dispatch_via_feishu_rejected already exists.
+            pass

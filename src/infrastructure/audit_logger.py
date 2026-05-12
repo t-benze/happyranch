@@ -128,6 +128,16 @@ class AuditLogger:
             payload={"failure_kind": failure_kind, "error": error},
         )
 
+    def log_dispatch_send_confirmation_failed(
+        self, *, task_id: str, error: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="daemon",
+            action="dispatch_send_confirmation_failed",
+            payload={"error": error},
+        )
+
     def log_escalation_reply_processed(
         self, task_id: str, decision: str, rationale: str,
     ) -> None:
