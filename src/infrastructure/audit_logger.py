@@ -103,6 +103,31 @@ class AuditLogger:
             payload={"error": error},
         )
 
+    def log_failure_notify_sent(
+        self, task_id: str, feishu_message_id: str,
+        failure_kind: str, expires_at: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="daemon",
+            action="failure_notify_sent",
+            payload={
+                "feishu_message_id": feishu_message_id,
+                "failure_kind": failure_kind,
+                "expires_at": expires_at,
+            },
+        )
+
+    def log_failure_notify_failed(
+        self, task_id: str, failure_kind: str, error: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="daemon",
+            action="failure_notify_failed",
+            payload={"failure_kind": failure_kind, "error": error},
+        )
+
     def log_escalation_reply_processed(
         self, task_id: str, decision: str, rationale: str,
     ) -> None:
