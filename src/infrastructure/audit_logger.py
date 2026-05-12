@@ -235,6 +235,7 @@ class AuditLogger:
         cascade: list[str],
         prior_status: str,
         founder_note: str | None,
+        actor: str = "cli",
     ) -> None:
         """Record on the NEW root that it is a revisit of `predecessor_root`.
 
@@ -242,6 +243,10 @@ class AuditLogger:
         walked from the flagged task back up to the predecessor root. The
         prompt-injection step in run_step reads this entry to build the
         first-step context header.
+
+        `actor` identifies the surface that triggered the revisit: "cli"
+        (HTTP route / opc revisit command) or "feishu-reply" (Feishu listener).
+        Defaults to "cli" for backward compatibility with existing callers.
         """
         self._db.insert_audit_log(
             task_id=task_id,
@@ -253,6 +258,7 @@ class AuditLogger:
                 "cascade": cascade,
                 "prior_status": prior_status,
                 "founder_note": founder_note,
+                "actor": actor,
             },
         )
 

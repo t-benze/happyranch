@@ -5,6 +5,7 @@ import json as _json
 import logging
 import os
 import signal
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -425,6 +426,21 @@ _REVISIT_ELIGIBLE_STATUSES = frozenset({
 })
 
 
+@dataclass(frozen=True)
+class RevisitResult:
+    """Structured return value from revisit_from_notification.
+
+    Carries all fields needed to build the HTTP response body, so the
+    route does not need a second walk_ancestors call after the helper
+    returns (eliminates the LineageTooDeep race and the double DB round-trip).
+    """
+    new_root_id: str
+    predecessor_root_id: str
+    flagged_task_id: str
+    cascade: list[str]
+    prior_status: str
+
+
 def _classify_predecessor_status(task: TaskRecord) -> str | None:
     """Return the normalized prior_status label, or None if ineligible.
 
@@ -444,21 +460,30 @@ def _classify_predecessor_status(task: TaskRecord) -> str | None:
     return None
 
 
-@router.post("/tasks/{task_id}/revisit")
-async def revisit_task(
-    task_id: str, body: RevisitBody, org: OrgDep, request: Request,
-) -> dict:
-    """Founder-initiated: spawn a fresh root that inherits the predecessor's
-    brief and references it via audit-log entries.
+async def revisit_from_notification(
+    org,
+    state,
+    *,
+    task_id: str,
+    founder_note: str | None,
+    actor: str,
+    session_timeout_seconds: int | None = None,
+) -> RevisitResult:
+    """Spawn a new root task linked to the predecessor.
 
-    The predecessor root (the ancestor we walk up to) MUST be in a terminal-ish
-    state — see `_classify_predecessor_status`. The flagged task (the id the
-    founder gave us) can be in any state; only the root's status is validated.
+    Mirrors the POST /tasks/{id}/revisit HTTP handler. Reused by the
+    Feishu listener so HTTP and Feishu surfaces cannot drift.
+
+    Args:
+        actor: "cli" (HTTP route) or "feishu-reply" (listener). Recorded
+            on the revisit_of audit row.
+        session_timeout_seconds: Override; if None, inherit from predecessor.
+
+    Returns a RevisitResult with all fields needed by the caller.
+    Raises HTTPException for 404 / 409.
     """
     from src.infrastructure.audit_logger import AuditLogger
     from src.infrastructure.database import LineageTooDeep
-
-    state: DaemonState = request.app.state.daemon
 
     flagged = org.db.get_task(task_id)
     if flagged is None:
@@ -498,8 +523,8 @@ async def revisit_task(
     cascade = [t.id for t in reversed(chain)]
 
     new_timeout = (
-        body.session_timeout_seconds
-        if body.session_timeout_seconds is not None
+        session_timeout_seconds
+        if session_timeout_seconds is not None
         else predecessor.session_timeout_seconds
     )
     async with org.db_lock:
@@ -521,7 +546,8 @@ async def revisit_task(
             flagged=task_id,
             cascade=cascade,
             prior_status=prior_status,
-            founder_note=body.founder_note,
+            founder_note=founder_note,
+            actor=actor,
         )
         audit.log_revisit_spawned(
             predecessor_task_id=predecessor.id, new_root=new_id,
@@ -529,12 +555,40 @@ async def revisit_task(
 
     enqueue_task(state, org.slug, new_id)
 
+    return RevisitResult(
+        new_root_id=new_id,
+        predecessor_root_id=predecessor.id,
+        flagged_task_id=task_id,
+        cascade=cascade,
+        prior_status=prior_status,
+    )
+
+
+@router.post("/tasks/{task_id}/revisit")
+async def revisit_task(
+    task_id: str, body: RevisitBody, org: OrgDep, request: Request,
+) -> dict:
+    """Founder-initiated: spawn a fresh root that inherits the predecessor's
+    brief and references it via audit-log entries.
+
+    The predecessor root (the ancestor we walk up to) MUST be in a terminal-ish
+    state — see `_classify_predecessor_status`. The flagged task (the id the
+    founder gave us) can be in any state; only the root's status is validated.
+    """
+    state: DaemonState = request.app.state.daemon
+    result = await revisit_from_notification(
+        org, state,
+        task_id=task_id,
+        founder_note=body.founder_note,
+        actor="cli",
+        session_timeout_seconds=body.session_timeout_seconds,
+    )
     return {
-        "new_root_task_id": new_id,
-        "predecessor_root_task_id": predecessor.id,
-        "flagged_task_id": task_id,
-        "cascade": cascade,
-        "predecessor_status": prior_status,
+        "new_root_task_id": result.new_root_id,
+        "predecessor_root_task_id": result.predecessor_root_id,
+        "flagged_task_id": result.flagged_task_id,
+        "cascade": result.cascade,
+        "predecessor_status": result.prior_status,
     }
 
 
