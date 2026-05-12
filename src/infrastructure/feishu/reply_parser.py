@@ -17,6 +17,12 @@ class ParseResult:
     rationale: str
 
 
+@dataclass(frozen=True)
+class DispatchIntent:
+    team: str | None
+    brief: str
+
+
 _NO_RATIONALE = "(no rationale provided)"
 
 
@@ -89,3 +95,38 @@ def parse_reply(text: str) -> ParseResult | None:
     if not rationale:
         rationale = _NO_RATIONALE
     return ParseResult(decision=decision, rationale=rationale)
+
+
+def _split_verb_and_body(text: str) -> tuple[str, str, str] | None:
+    """Return (verb_uppercase, verb_line_tail, body) or None if no content.
+
+    verb_line_tail is the part of the first non-empty line after the verb
+    (e.g., "engineering" for "DISPATCH engineering"). body is the remaining
+    lines stripped.
+    """
+    if text is None:
+        return None
+    lines = text.splitlines()
+    first_idx = next((i for i, line in enumerate(lines) if line.strip()), None)
+    if first_idx is None:
+        return None
+    first_line = lines[first_idx].strip()
+    parts = first_line.split(None, 1)
+    verb = parts[0].upper()
+    tail = parts[1].strip() if len(parts) > 1 else ""
+    body = "\n".join(lines[first_idx + 1:]).strip()
+    return (verb, tail, body)
+
+
+def parse_top_level_message(text: str) -> DispatchIntent | None:
+    """Verbs: DISPATCH [<team>]. Body lines become the brief."""
+    split = _split_verb_and_body(text)
+    if split is None:
+        return None
+    verb, tail, body = split
+    if verb != "DISPATCH":
+        return None
+    if not body.strip():
+        return None
+    team = tail if tail else None
+    return DispatchIntent(team=team, brief=body)
