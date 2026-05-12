@@ -70,6 +70,11 @@ def listener(tmp_path):
         slug="o", db=db, audit=AuditLogger(db),
         chat_id="oc_target",
         resolve_escalation=resolve_mock,
+        revisit_from_notification=AsyncMock(),
+        dispatch_via_feishu=AsyncMock(),
+        send_dispatch_confirmation=AsyncMock(),
+        send_dispatch_error=AsyncMock(),
+        allow_dispatch=False,
         loop=asyncio.get_event_loop(),
         app_id="cli_x", app_secret="s_x", domain="https://x",
     )

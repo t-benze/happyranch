@@ -27,9 +27,12 @@ from src.infrastructure.feishu.reply_parser import (
 logger = logging.getLogger(__name__)
 
 
-# Type for the resolve_escalation callable — either the route handler bound
-# to the org, or a test stub. Awaits a coroutine that performs the transition.
+# Type aliases for the callable dependencies injected into the listener.
 ResolveFn = Callable[..., Awaitable[None]]
+RevisitFn = Callable[..., Awaitable[object]]
+DispatchFn = Callable[..., Awaitable[tuple[str, str]]]
+SendConfirmFn = Callable[..., Awaitable[None]]
+SendErrorFn = Callable[..., Awaitable[None]]
 
 
 class FeishuEventListener:
@@ -41,6 +44,11 @@ class FeishuEventListener:
         audit: AuditLogger,
         chat_id: str,
         resolve_escalation: ResolveFn,
+        revisit_from_notification: RevisitFn,
+        dispatch_via_feishu: DispatchFn,
+        send_dispatch_confirmation: SendConfirmFn,
+        send_dispatch_error: SendErrorFn,
+        allow_dispatch: bool,
         loop: asyncio.AbstractEventLoop,
         app_id: str,
         app_secret: str,
@@ -51,6 +59,11 @@ class FeishuEventListener:
         self._audit = audit
         self._chat_id = chat_id
         self._resolve_escalation = resolve_escalation
+        self._revisit_from_notification = revisit_from_notification
+        self._dispatch_via_feishu = dispatch_via_feishu
+        self._send_dispatch_confirmation = send_dispatch_confirmation
+        self._send_dispatch_error = send_dispatch_error
+        self._allow_dispatch = allow_dispatch
         self._loop = loop
         self._app_id = app_id
         self._app_secret = app_secret
@@ -123,58 +136,16 @@ class FeishuEventListener:
                 _close("ignored", "wrong_chat")
                 return
 
-            # 3. Threading filter
+            # 3. Bifurcate: threaded reply vs. top-level dispatch
             if not msg.root_id:
-                _close("ignored", "no_root_id")
+                if not self._allow_dispatch:
+                    _close("ignored", "dispatch_disabled")
+                    return
+                await self._handle_top_level_dispatch(data, msg, event_id, _close)
                 return
 
-            # 4. Sender filter
-            if data.event.sender.sender_type != "user":
-                _close("ignored", "not_user_sender")
-                return
+            await self._handle_threaded_reply(data, msg, event_id, _close)
 
-            # 5. Notification lookup
-            row = self._db.get_escalation_notification(msg.root_id)
-            if row is None:
-                _close("ignored", "notification_not_found")
-                return
-            if row["consumed_at"] is not None:
-                _close("ignored", "notification_consumed")
-                return
-            expires_at = datetime.fromisoformat(row["expires_at"])
-            if datetime.now(timezone.utc) >= expires_at:
-                _close("ignored", "notification_expired")
-                return
-
-            # 6. Parse text
-            text = extract_text_from_content(msg.message_type, msg.content)
-            if text is None:
-                _close("rejected", "unsupported_msg_type")
-                return
-            parsed = parse_reply(text)
-            if parsed is None:
-                self._audit.log_escalation_reply_rejected(
-                    task_id=row["task_id"], reason="bad_decision",
-                )
-                _close("rejected", "bad_decision")
-                return
-
-            # 7. Apply
-            await self._resolve_escalation(
-                slug=self._slug,
-                task_id=row["task_id"],
-                decision=parsed.decision,
-                rationale=parsed.rationale,
-            )
-            self._db.consume_escalation_notification(
-                msg.root_id, consumed_by="feishu-reply",
-            )
-            self._audit.log_escalation_reply_processed(
-                task_id=row["task_id"],
-                decision=parsed.decision,
-                rationale=parsed.rationale,
-            )
-            _close("consumed", None)
         except Exception:
             logger.exception("event handler error (org=%s)", self._slug)
             try:
@@ -185,6 +156,82 @@ class FeishuEventListener:
                 )
             except Exception:
                 logger.exception("failed to record handler-exception outcome")
+
+    async def _handle_threaded_reply(self, data, msg, event_id: str, _close) -> None:
+        """Reply branch — handles founder APPROVE/REJECT replies in a Feishu thread."""
+        # 4. Sender filter
+        if data.event.sender.sender_type != "user":
+            _close("ignored", "not_user_sender")
+            return
+
+        # 5. Notification lookup
+        row = self._db.get_escalation_notification(msg.root_id)
+        if row is None:
+            _close("ignored", "notification_not_found")
+            return
+        if row["consumed_at"] is not None:
+            _close("ignored", "notification_consumed")
+            return
+        expires_at = datetime.fromisoformat(row["expires_at"])
+        if datetime.now(timezone.utc) >= expires_at:
+            _close("ignored", "notification_expired")
+            return
+
+        # 6. Parse text
+        text = extract_text_from_content(msg.message_type, msg.content)
+        if text is None:
+            _close("rejected", "unsupported_msg_type")
+            return
+        parsed = parse_reply(text)
+        if parsed is None:
+            self._audit.log_escalation_reply_rejected(
+                task_id=row["task_id"], reason="bad_decision",
+            )
+            _close("rejected", "bad_decision")
+            return
+
+        # 7. Apply
+        await self._resolve_escalation(
+            slug=self._slug,
+            task_id=row["task_id"],
+            decision=parsed.decision,
+            rationale=parsed.rationale,
+        )
+        self._db.consume_escalation_notification(
+            msg.root_id, consumed_by="feishu-reply",
+        )
+        self._audit.log_escalation_reply_processed(
+            task_id=row["task_id"],
+            decision=parsed.decision,
+            rationale=parsed.rationale,
+        )
+        _close("consumed", None)
+
+    async def _handle_top_level_dispatch(self, data, msg, event_id: str, _close) -> None:
+        """Dispatch branch — Task 12 stub. Task 14 fills in 5d–8d."""
+        # 4d. Sender filter (drop bot self-echoes)
+        if data.event.sender.sender_type == "app":
+            _close("ignored", "bot_sender")
+            return
+
+        # 5d. Parse
+        from src.infrastructure.feishu.reply_parser import (
+            parse_top_level_message,
+        )
+        text = extract_text_from_content(msg.message_type, msg.content)
+        intent = parse_top_level_message(text) if text else None
+        sender_id = getattr(data.event.sender.sender_id, "open_id", "") or ""
+
+        if intent is None:
+            self._audit.log_dispatch_via_feishu_rejected(
+                reason="parse_failed", sender_id=sender_id, feishu_event_id=event_id,
+            )
+            _close("rejected", "parse_failed")
+            return
+
+        # Task 14 fills the rest. For now, leave the intent parsed but go no further.
+        # Tests verifying the dispatch BRANCH was taken (vs. reply branch) just need
+        # to see resolve_escalation NOT called, which is already true here.
 
 
 # ---------------------------------------------------------------------------
@@ -205,8 +252,24 @@ def maybe_start_feishu_listener_for_org(org, state, loop) -> None:
     ):
         return
 
-    from src.daemon.routes.tasks import resolve_escalation_in_process
+    from src.daemon.routes.tasks import (
+        resolve_escalation_in_process,
+        revisit_from_notification,
+        dispatch_via_feishu,
+    )
     from src.infrastructure.audit_logger import AuditLogger
+    from src.orchestrator.org_config import load_org_config
+
+    # Fetch allow_dispatch from per-org config. If config load fails or
+    # feishu_notifications is unset (shouldn't happen since we got this far,
+    # but defensive), default to False.
+    allow_dispatch = False
+    try:
+        cfg = load_org_config(org.orchestrator._paths)
+        if cfg.feishu_notifications is not None:
+            allow_dispatch = cfg.feishu_notifications.allow_dispatch
+    except Exception:  # noqa: BLE001
+        allow_dispatch = False
 
     async def _resolve_for_listener(_org=org, _state=state, **kw):
         # Strip slug kwarg forwarded by the listener — already bound via _org.
@@ -219,12 +282,43 @@ def maybe_start_feishu_listener_for_org(org, state, loop) -> None:
         # silently lose the founder's reply.
         await resolve_escalation_in_process(_org, _state, **kw)
 
+    async def _revisit_for_listener(*, task_id, founder_note, actor):
+        return await revisit_from_notification(
+            org, state, task_id=task_id,
+            founder_note=founder_note, actor=actor,
+        )
+
+    async def _dispatch_for_listener(*, intent, sender_id, event_id):
+        return await dispatch_via_feishu(
+            org, state, intent=intent,
+            sender_id=sender_id, event_id=event_id,
+        )
+
+    async def _send_confirm_for_listener(*, task_id, team, brief):
+        if org.notifier is None:
+            return
+        return await org.notifier.send_dispatch_confirmation(
+            task_id=task_id, team=team, brief=brief,
+        )
+
+    async def _send_error_for_listener(*, reason, valid_teams):
+        if org.notifier is None:
+            return
+        return await org.notifier.send_dispatch_error(
+            reason=reason, valid_teams=valid_teams,
+        )
+
     listener = FeishuEventListener(
         slug=org.slug,
         db=org.db,
         audit=AuditLogger(org.db),
         chat_id=org.feishu_chat_id,
         resolve_escalation=_resolve_for_listener,
+        revisit_from_notification=_revisit_for_listener,
+        dispatch_via_feishu=_dispatch_for_listener,
+        send_dispatch_confirmation=_send_confirm_for_listener,
+        send_dispatch_error=_send_error_for_listener,
+        allow_dispatch=allow_dispatch,
         loop=loop,
         app_id=org.feishu_app_id,
         app_secret=org.feishu_app_secret,
