@@ -13,7 +13,7 @@ from typing import Literal
 
 @dataclass(frozen=True)
 class ParseResult:
-    decision: Literal["approve", "reject"]
+    decision: Literal["approve", "reject", "revisit"]
     rationale: str
 
 
@@ -77,9 +77,11 @@ def parse_reply(text: str) -> ParseResult | None:
 
     decision_word = lines[first_idx].strip().upper()
     if decision_word == "APPROVE":
-        decision: Literal["approve", "reject"] = "approve"
+        decision: Literal["approve", "reject", "revisit"] = "approve"
     elif decision_word == "REJECT":
         decision = "reject"
+    elif decision_word == "REVISIT":
+        decision = "revisit"
     else:
         return None
 
