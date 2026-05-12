@@ -147,6 +147,15 @@ def test_next_task_id(db):
     assert db.next_task_id() == "TASK-002"
 
 
+def test_next_task_id_skips_gaps(db):
+    # Reproduces the production incident: a gap in the TASK-NNN sequence
+    # (caused by transient out-of-band rows that were later deleted) must not
+    # cause next_task_id to return an id that already exists.
+    db.insert_task(TaskRecord(id="TASK-001", brief="t1"))
+    db.insert_task(TaskRecord(id="TASK-003", brief="t3"))
+    assert db.next_task_id() == "TASK-004"
+
+
 def test_get_latest_task_result_filters_by_session_id(db) -> None:
     db.insert_task_result(
         task_id="TASK-001", agent="dev_agent", session_id="sess-A",

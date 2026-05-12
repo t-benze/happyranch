@@ -16,6 +16,14 @@ def test_next_talk_id_monotonic(db: Database):
     assert db.next_talk_id() == "TALK-002"
 
 
+def test_next_talk_id_skips_gaps(db: Database):
+    # Same shape as test_next_task_id_skips_gaps — guards against a gap in
+    # the TALK-NNN sequence collapsing back onto an existing id.
+    db.insert_talk(TalkRecord(id="TALK-001", agent_name="dev_agent"))
+    db.insert_talk(TalkRecord(id="TALK-003", agent_name="dev_agent"))
+    assert db.next_talk_id() == "TALK-004"
+
+
 def test_insert_and_get_talk(db: Database):
     talk = TalkRecord(id="TALK-001", agent_name="dev_agent")
     db.insert_talk(talk)

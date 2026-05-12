@@ -680,9 +680,15 @@ class Database:
 
     @_synchronized
     def next_task_id(self) -> str:
-        cursor = self._conn.execute("SELECT COUNT(*) as cnt FROM tasks")
-        count = cursor.fetchone()["cnt"]
-        return f"TASK-{count + 1:03d}"
+        # MAX(numeric_suffix) over TASK-NNN-shaped rows. Robust to gaps and
+        # foreign-shape rows that a COUNT(*)-based allocator would mis-count
+        # and then collide with on the next insert.
+        cursor = self._conn.execute(
+            "SELECT MAX(CAST(SUBSTR(id, 6) AS INTEGER)) AS m "
+            "FROM tasks WHERE id GLOB 'TASK-[0-9]*'"
+        )
+        n = (cursor.fetchone()["m"] or 0) + 1
+        return f"TASK-{n:03d}"
 
     @_synchronized
     def get_nonterminal_task_ids(self) -> list[str]:
@@ -1174,9 +1180,12 @@ class Database:
         insert_talk() pair to avoid duplicate IDs under concurrent requests
         (same requirement as next_task_id).
         """
-        cursor = self._conn.execute("SELECT COUNT(*) as cnt FROM talks")
-        count = cursor.fetchone()["cnt"]
-        return f"TALK-{count + 1:03d}"
+        cursor = self._conn.execute(
+            "SELECT MAX(CAST(SUBSTR(id, 6) AS INTEGER)) AS m "
+            "FROM talks WHERE id GLOB 'TALK-[0-9]*'"
+        )
+        n = (cursor.fetchone()["m"] or 0) + 1
+        return f"TALK-{n:03d}"
 
     @_synchronized
     def insert_talk(self, talk: TalkRecord) -> None:
