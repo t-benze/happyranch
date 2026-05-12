@@ -427,6 +427,31 @@ WS threads are `daemon=True` so they die with the process; no graceful shutdown 
 
 Feishu credentials (`app_id`, `app_secret`) live in the per-org config file at `<runtime>/orgs/<slug>/org/config.yaml` under the `feishu_notifications` block. They are required fields when `enabled: true` — the config parser raises `OrgConfigError` if either is missing or empty. The founder is responsible for treating the config file as secret-bearing: `chmod 600` and never commit the live runtime copy to version control. There are no env-var credential paths.
 
+### Failure notifications + REVISIT replies
+
+Per-org opt-in via `notify_on_failure: true` in `org/config.yaml`. Hook fires from `_notify_failure_if_eligible(orch, task_id, ...)` in `run_step.py`, called right after every `_fail()` call site. Gates: enabled, `notify_on_failure=true`, `task.cancelled_at IS NULL`, no auto-revisit spawned.
+
+`Orchestrator.notify_failed(...)` mirrors `notify_escalated`'s loop-aware fire-and-forget pattern. `EscalationNotifier.send_failure(...)` mints an `escalation_notifications` row with `kind='failure'`.
+
+Listener routes by `(kind, decision)`:
+- `(escalation, approve|reject)` → `resolve_escalation_in_process`
+- `(failure, revisit)` → `revisit_from_notification`
+- mismatches → `escalation_reply_rejected (verb_mismatch)`, row unconsumed
+
+`revisit_from_notification(org, state, *, task_id, founder_note, actor) -> RevisitResult` is the in-process helper. `actor='cli'` consumes open `kind='failure'` rows with `consumed_by='cli-fallback'`; `actor='feishu-reply'` leaves consumption to the listener.
+
+Daemon-restart sweep (`_sweep_on_startup`) calls `notify_failed(kind='daemon_restart')` — semantic fix from v1, where it used `notify_escalated` even though the task was set to `FAILED`.
+
+### Top-level DISPATCH
+
+Per-org opt-in via `allow_dispatch: true` in `org/config.yaml`. Listener step 3 bifurcates on `msg.root_id`: present → reply branch (existing); absent + `allow_dispatch=true` → `_handle_top_level_dispatch`.
+
+`parse_top_level_message(text)` returns `DispatchIntent(team, brief)` or `None`. `dispatch_via_feishu(org, state, *, intent, sender_id, event_id)` is the in-process helper extracted from `submit_task`; raises `DispatchError(reason)` where reason ∈ `{empty_brief, unknown_team, dispatch_failed}`. On success, the listener calls `send_dispatch_confirmation`; on `DispatchError`, `send_dispatch_error` with the `valid_teams` list when applicable. Confirmation/error sends are best-effort.
+
+Trust boundary remains `chat_id`. No per-Feishu-user authorization in v1.
+
+Spec: `docs/superpowers/specs/2026-05-12-feishu-interactive-actions-design.md`. Plan: `docs/superpowers/plans/2026-05-12-feishu-interactive-actions.md`.
+
 ## Maintaining Documentation
 - **README.md** is for end users — setup, CLI commands, configuration. No developer internals.
 - **CLAUDE.md** is for developers and AI agents working on the codebase — architecture, code patterns, directory layout, implementation order.
