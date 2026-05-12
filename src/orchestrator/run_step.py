@@ -658,7 +658,7 @@ def _maybe_spawn_auto_revisit(
     failed_task_id: str,
     failed_agent: str,
     error_context: dict,
-) -> None:
+) -> bool:
     """Spawn an orchestrator-triggered revisit on an opaque agent failure.
 
     Triggered ONLY by the three opaque agent-error paths in run_step (an
@@ -678,11 +678,14 @@ def _maybe_spawn_auto_revisit(
     auto-revisits already exist in the predecessor chain, give up rather
     than burning tokens on the TASK-033..045 retry-loop pattern. Founder
     revisits do not count toward the cap (they're intentional human retries).
+
+    Returns True if a revisit row was inserted, False otherwise (no chain,
+    cap hit, or future not-eligible cases).
     """
     db = orch._db
     chain = db.walk_ancestors(failed_task_id)
     if not chain:
-        return
+        return False
     root = chain[-1]
 
     revisit_chain = db.walk_revisit_chain(root.id, truncate=True)
@@ -694,7 +697,7 @@ def _maybe_spawn_auto_revisit(
         ):
             auto_count += 1
     if auto_count >= _AUTO_REVISIT_CAP:
-        return
+        return False
 
     from src.models import TaskRecord
 
@@ -727,6 +730,7 @@ def _maybe_spawn_auto_revisit(
     queue = getattr(orch, "_queue", None)
     if queue is not None:
         queue.put_nowait(orch._slug, new_id)
+    return True
 
 
 def _session_failed_note(result, report) -> str:
