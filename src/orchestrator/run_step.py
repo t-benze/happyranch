@@ -16,6 +16,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from src.models import BlockKind, TaskStatus
+from src.orchestrator.org_config import load_org_config
 
 if TYPE_CHECKING:
     from src.orchestrator.orchestrator import Orchestrator
@@ -100,11 +101,16 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
     try:
         result, report = orch._run_agent(task_id, agent, prompt)
     except Exception as exc:
-        _fail(orch, task_id, note=f"agent invocation failed: {exc}")
+        note = f"agent invocation failed: {exc}"
+        _fail(orch, task_id, note=note)
         _enqueue_parent_if_waiting(orch, task_id)
-        _maybe_spawn_auto_revisit(
+        spawned = _maybe_spawn_auto_revisit(
             orch, task_id, agent,
             error_context={"mode": "exception", "detail": str(exc)},
+        )
+        _notify_failure_if_eligible(
+            orch, task_id, failure_kind="agent_exception",
+            failure_note=note, auto_revisit_spawned=spawned,
         )
         return
 
@@ -124,19 +130,30 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
 
     # ---- 5. Classify outcome ----
     if not result.success or report is None:
-        _fail(orch, task_id, note=_session_failed_note(result, report))
+        note = _session_failed_note(result, report)
+        _fail(orch, task_id, note=note)
         _enqueue_parent_if_waiting(orch, task_id)
-        _maybe_spawn_auto_revisit(
+        spawned = _maybe_spawn_auto_revisit(
             orch, task_id, agent,
             error_context=_executor_failure_context(result, report),
+        )
+        _notify_failure_if_eligible(
+            orch, task_id, failure_kind="session_failed",
+            failure_note=note, auto_revisit_spawned=spawned,
         )
         return
 
     orch._log_step_result(task_id, result, report)
 
     if report.status == "blocked":
-        _fail(orch, task_id, note=f"self-blocked: {report.output_summary}")
+        note = f"self-blocked: {report.output_summary}"
+        _fail(orch, task_id, note=note)
         _enqueue_parent_if_waiting(orch, task_id)
+        _notify_failure_if_eligible(
+            orch, task_id, failure_kind="self_blocked",
+            failure_note=note, auto_revisit_spawned=False,
+            last_summary=report.output_summary or "",
+        )
         return
 
     # ---- 6. Parse next step ----
@@ -184,8 +201,13 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
         # missing workspace). These are unrecoverable for this step.
         err = _validate_delegate(orch, decision)
         if err is not None:
-            _fail(orch, task_id, note=f"invalid delegate: {err}")
+            note = f"invalid delegate: {err}"
+            _fail(orch, task_id, note=note)
             _enqueue_parent_if_waiting(orch, task_id)
+            _notify_failure_if_eligible(
+                orch, task_id, failure_kind="invalid_delegate",
+                failure_note=note, auto_revisit_spawned=False,
+            )
             return
         # Cross-team delegation guard: a manager may only delegate to workers
         # on its own team. Violations feed a feedback step back (not a hard
@@ -258,8 +280,13 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
         return
 
     # ---- 8. Unknown action ----
-    _fail(orch, task_id, note=f"unknown action: {decision.action}")
+    note = f"unknown action: {decision.action}"
+    _fail(orch, task_id, note=note)
     _enqueue_parent_if_waiting(orch, task_id)
+    _notify_failure_if_eligible(
+        orch, task_id, failure_kind="unknown_action",
+        failure_note=note, auto_revisit_spawned=False,
+    )
 
 
 def _validate_delegate(orch: "Orchestrator", decision) -> str | None:
@@ -550,6 +577,47 @@ def _fail(orch: "Orchestrator", task_id: str, *, note: str) -> None:
     orch._update_task_history(task_id)
 
 
+def _notify_failure_if_eligible(
+    orch: "Orchestrator",
+    task_id: str,
+    *,
+    failure_kind: str,
+    failure_note: str,
+    auto_revisit_spawned: bool,
+    last_summary: str = "",
+) -> None:
+    """Fire notify_failed if all gates open:
+       1. feishu_notifications config exists AND notify_on_failure=true
+       2. task not founder-cancelled (cancelled_at IS NULL)
+       3. no auto-revisit spawned for this task
+
+    All exceptions are swallowed — never crash the _fail caller.
+    See docs/superpowers/specs/2026-05-12-feishu-interactive-actions-design.md §5.1.
+    """
+    if auto_revisit_spawned:
+        return
+    try:
+        org = load_org_config(orch._paths)
+        if org.feishu_notifications is None:
+            return
+        if not getattr(org.feishu_notifications, "notify_on_failure", False):
+            return
+        task = orch._db.get_task(task_id)
+        if task is None or task.cancelled_at is not None:
+            return
+        agent = task.assigned_agent or "(unknown)"
+        orch.notify_failed(
+            task_id=task_id,
+            agent=agent,
+            failure_kind=failure_kind,
+            failure_note=failure_note,
+            last_summary=last_summary,
+        )
+    except Exception:  # noqa: BLE001
+        # Gate must never crash _fail caller — _fail is on the critical path.
+        return
+
+
 def _log_verdict_if_delegated(
     orch: "Orchestrator", task_id: str, *, success: bool,
 ) -> None:
@@ -613,11 +681,13 @@ def _enqueue_parent_if_waiting(orch: "Orchestrator", task_id: str) -> None:
     failed = [s for s in siblings if s.status == TaskStatus.FAILED]
     if failed:
         first = failed[0]
-        _fail(
-            orch, parent.id,
-            note=f"delegated child {first.id} failed: {first.note or '(no note)'}",
-        )
+        note = f"delegated child {first.id} failed: {first.note or '(no note)'}"
+        _fail(orch, parent.id, note=note)
         _enqueue_parent_if_waiting(orch, parent.id)
+        _notify_failure_if_eligible(
+            orch, parent.id, failure_kind="cascade_fail",
+            failure_note=note, auto_revisit_spawned=False,
+        )
         return
 
     queue = getattr(orch, "_queue", None)
