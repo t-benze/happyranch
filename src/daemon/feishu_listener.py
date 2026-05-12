@@ -190,22 +190,73 @@ class FeishuEventListener:
             _close("rejected", "bad_decision")
             return
 
-        # 7. Apply
-        await self._resolve_escalation(
-            slug=self._slug,
-            task_id=row["task_id"],
-            decision=parsed.decision,
-            rationale=parsed.rationale,
+        # 7. Dispatch by kind × verb
+        await self._dispatch_reply_action(row, parsed, msg, event_id, _close)
+
+    async def _dispatch_reply_action(self, row, parsed, msg, event_id: str, _close) -> None:
+        """Route a parsed threaded reply by notification kind × decision verb."""
+        kind = row.get("kind") or "escalation"
+        decision = parsed.decision
+        task_id = row["task_id"]
+
+        # Branch 1: escalation + approve/reject
+        if kind == "escalation" and decision in ("approve", "reject"):
+            try:
+                await self._resolve_escalation(
+                    slug=self._slug,
+                    task_id=task_id,
+                    decision=decision,
+                    rationale=parsed.rationale,
+                )
+            except Exception:  # noqa: BLE001
+                self._audit.log_escalation_reply_rejected(
+                    task_id, "handler_exception", feishu_event_id=event_id,
+                )
+                _close("rejected", "handler_exception")
+                return
+            self._db.consume_escalation_notification(msg.root_id, consumed_by="feishu-reply")
+            self._audit.log_escalation_reply_processed(
+                task_id, decision, parsed.rationale,
+            )
+            _close("consumed", None)
+            return
+
+        # Branch 2: failure + revisit
+        if kind == "failure" and decision == "revisit":
+            try:
+                result = await self._revisit_from_notification(
+                    task_id=task_id,
+                    founder_note=parsed.rationale,
+                    actor="feishu-reply",
+                )
+            except Exception as exc:  # noqa: BLE001
+                reason = "handler_exception"
+                detail = getattr(exc, "detail", None)
+                if isinstance(detail, dict) and detail.get("code") == "cannot_revisit":
+                    reason = "cannot_revisit"
+                self._audit.log_escalation_reply_rejected(
+                    task_id, reason, feishu_event_id=event_id,
+                )
+                # Leave notification UNCONSUMED — preserves founder's intent
+                _close("rejected", reason)
+                return
+            new_root_id = result.new_root_id
+            self._db.consume_escalation_notification(msg.root_id, consumed_by="feishu-reply")
+            self._audit.log_failure_revisit_via_reply(
+                predecessor_task_id=task_id,
+                new_root=new_root_id,
+                founder_note=parsed.rationale,
+                feishu_message_id=msg.root_id,
+                feishu_event_id=event_id,
+            )
+            _close("consumed", None)
+            return
+
+        # Branch 3: verb mismatch (escalation+revisit OR failure+approve/reject)
+        self._audit.log_escalation_reply_rejected(
+            task_id, "verb_mismatch", feishu_event_id=event_id,
         )
-        self._db.consume_escalation_notification(
-            msg.root_id, consumed_by="feishu-reply",
-        )
-        self._audit.log_escalation_reply_processed(
-            task_id=row["task_id"],
-            decision=parsed.decision,
-            rationale=parsed.rationale,
-        )
-        _close("consumed", None)
+        _close("rejected", "verb_mismatch")
 
     async def _handle_top_level_dispatch(self, data, msg, event_id: str, _close) -> None:
         """Dispatch branch — Task 12 stub. Task 14 fills in 5d–8d."""
