@@ -30,18 +30,18 @@ def _mk_listener(tmp_path: Path, *, allow_dispatch: bool = True):
     ), db, loop
 
 
-def _mk_event(text: str):
+def _mk_event(text: str, *, sender_type: str = "user", event_id: str = "evt_1"):
     """Build a mock event with the lark-oapi nested envelope shape."""
     msg = SimpleNamespace(
         chat_id="oc_xyz", message_id="om_in", root_id=None,
         message_type="text", content=json.dumps({"text": text}),
     )
     sender = SimpleNamespace(
-        sender_type="user",
+        sender_type=sender_type,
         sender_id=SimpleNamespace(open_id="ou_user_1"),
     )
     return SimpleNamespace(
-        header=SimpleNamespace(event_id="evt_1"),
+        header=SimpleNamespace(event_id=event_id),
         event=SimpleNamespace(message=msg, sender=sender),
     )
 
@@ -93,3 +93,24 @@ def test_dispatch_confirmation_send_failure_swallowed(tmp_path: Path):
         _mk_event("DISPATCH engineering\nbrief")
     ))
     assert l._dispatch_via_feishu.called  # task was created
+
+
+def test_dispatch_system_sender_is_dropped(tmp_path: Path):
+    """sender_type='system' must be dropped on the dispatch branch — only
+    'user' senders are accepted (matches the reply-branch filter)."""
+    l, db, loop = _mk_listener(tmp_path)
+    loop.run_until_complete(l._handle_event_async(
+        _mk_event("DISPATCH engineering\nfix the thing",
+                  sender_type="system", event_id="evt_sys")
+    ))
+    # No task should be created and no confirmation sent
+    assert not l._dispatch_via_feishu.called
+    assert not l._send_dispatch_confirmation.called
+    # Event must be recorded as ignored (not_user_sender)
+    cur = db._conn.execute(
+        "SELECT outcome, reason FROM processed_event_ids "
+        "WHERE feishu_event_id = ?", ("evt_sys",),
+    )
+    row = cur.fetchone()
+    assert row["outcome"] == "ignored"
+    assert row["reason"] == "not_user_sender"

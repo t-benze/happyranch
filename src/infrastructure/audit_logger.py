@@ -75,6 +75,18 @@ class AuditLogger:
             payload={"reason": reason},
         )
 
+    def log_daemon_restart_failure(
+        self, task_id: str, agent: str,
+    ) -> None:
+        """Recorded by _sweep_on_startup when an IN_PROGRESS task is FAILED
+        due to a daemon restart. Distinct from log_escalation (which signals
+        a manager-initiated escalate decision)."""
+        self._db.insert_audit_log(
+            task_id=task_id, agent=agent,
+            action="daemon_restart_failure",
+            payload={"reason": "daemon restarted mid-task"},
+        )
+
     def log_escalation_resolved(
         self, task_id: str, decision: str, rationale: str
     ) -> None:

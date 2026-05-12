@@ -260,9 +260,9 @@ class FeishuEventListener:
 
     async def _handle_top_level_dispatch(self, data, msg, event_id: str, _close) -> None:
         """Dispatch branch — Task 12 stub. Task 14 fills in 5d–8d."""
-        # 4d. Sender filter (drop bot self-echoes)
-        if data.event.sender.sender_type == "app":
-            _close("ignored", "bot_sender")
+        # 4d. Sender filter — only accept human-typed messages (matches reply branch).
+        if data.event.sender.sender_type != "user":
+            _close("ignored", "not_user_sender")
             return
 
         # 5d. Parse

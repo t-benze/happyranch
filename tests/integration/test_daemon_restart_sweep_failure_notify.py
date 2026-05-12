@@ -40,6 +40,16 @@ def test_sweep_calls_notify_failed_not_escalated(tmp_path: Path):
     task = db.get_task("TASK-1")
     assert task.status == TaskStatus.FAILED
 
+    # Audit row must use the new 'daemon_restart_failure' action, not 'escalation'
+    audit_rows = db.get_audit_logs("TASK-1")
+    actions = [r["action"] for r in audit_rows]
+    assert "daemon_restart_failure" in actions, (
+        f"expected 'daemon_restart_failure' audit row; got: {actions}"
+    )
+    assert "escalation" not in actions, (
+        f"'escalation' action must not appear for a daemon-restart failure; got: {actions}"
+    )
+
 
 def test_sweep_uses_unknown_for_missing_assigned_agent(tmp_path: Path):
     """If task.assigned_agent is None, notify_failed gets agent='(unknown)'."""
