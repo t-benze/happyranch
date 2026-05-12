@@ -13,6 +13,24 @@ from src.daemon import runtimes as runtimes_mod
 from src.runtime import RuntimeDir
 
 
+@pytest.fixture(autouse=True)
+def _reset_lark_token_cache():
+    """Reset the lark-oapi token cache between tests.
+
+    The lark SDK assigns ``TokenManager.cache = LocalCache.instance()`` at
+    class-definition time — a process-wide singleton dict. Without clearing
+    it, a test that sends a Feishu message (caching a token against
+    fake-server-port-A) contaminates the next Feishu test (which uses
+    fake-server-port-B) — the second test reuses the stale cached token,
+    skips the token-fetch, and its fake server records zero token_calls even
+    though the message send succeeds.
+    """
+    from lark_oapi.core.token.manager import TokenManager
+    TokenManager.cache.cache.clear()
+    yield
+    TokenManager.cache.cache.clear()
+
+
 @pytest.fixture
 def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("OPC_DAEMON_HOME", str(tmp_path / ".opc"))

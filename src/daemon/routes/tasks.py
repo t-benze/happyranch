@@ -5,6 +5,7 @@ import json as _json
 import logging
 import os
 import signal
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from src.daemon.org_state import OrgState
 from src.daemon.routes._org_dep import OrgDep
 from src.daemon.runner import enqueue_task
 from src.daemon.state import DaemonState
+from src.infrastructure.feishu.reply_parser import DispatchIntent  # re-export
 from src.models import TaskRecord, TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -425,6 +427,82 @@ _REVISIT_ELIGIBLE_STATUSES = frozenset({
 })
 
 
+class DispatchError(Exception):
+    """Raised by dispatch_via_feishu for validation and dispatch failures.
+
+    reason is one of: empty_brief, unknown_team, dispatch_failed.
+    valid_teams is populated for unknown_team so callers can surface the list.
+    """
+
+    def __init__(self, reason: str, valid_teams: list[str] | None = None) -> None:
+        self.reason = reason
+        self.valid_teams = valid_teams or []
+        super().__init__(reason)
+
+
+async def dispatch_via_feishu(
+    org,
+    state,
+    *,
+    intent: DispatchIntent,
+    sender_id: str,
+    event_id: str,
+) -> tuple[str, str]:
+    """Create a task from a Feishu DISPATCH intent. Mirrors POST /tasks.
+
+    Returns (task_id, resolved_team).
+    Raises DispatchError(reason=...) with reason in:
+        empty_brief, unknown_team, dispatch_failed.
+    """
+    from src.infrastructure.audit_logger import AuditLogger
+
+    if not intent.brief or not intent.brief.strip():
+        raise DispatchError("empty_brief")
+
+    team = intent.team or "engineering"
+    registry = org.teams
+    valid = list(registry.teams()) if registry is not None else []
+    if registry is None or team not in valid:
+        raise DispatchError("unknown_team", valid_teams=valid)
+
+    try:
+        manager = registry.manager_for_team(team)
+        async with org.db_lock:
+            task_id = org.db.next_task_id()
+            org.db.insert_task(TaskRecord(
+                id=task_id,
+                brief=intent.brief.strip(),
+                team=team,
+                assigned_agent=manager.name,
+            ))
+            AuditLogger(org.db).log_dispatch_via_feishu_accepted(
+                task_id=task_id, team=team, sender_id=sender_id,
+                feishu_event_id=event_id,
+            )
+    except DispatchError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise DispatchError("dispatch_failed") from exc
+
+    enqueue_task(state, org.slug, task_id)
+    return task_id, team
+
+
+@dataclass(frozen=True)
+class RevisitResult:
+    """Structured return value from revisit_from_notification.
+
+    Carries all fields needed to build the HTTP response body, so the
+    route does not need a second walk_ancestors call after the helper
+    returns (eliminates the LineageTooDeep race and the double DB round-trip).
+    """
+    new_root_id: str
+    predecessor_root_id: str
+    flagged_task_id: str
+    cascade: list[str]
+    prior_status: str
+
+
 def _classify_predecessor_status(task: TaskRecord) -> str | None:
     """Return the normalized prior_status label, or None if ineligible.
 
@@ -444,21 +522,30 @@ def _classify_predecessor_status(task: TaskRecord) -> str | None:
     return None
 
 
-@router.post("/tasks/{task_id}/revisit")
-async def revisit_task(
-    task_id: str, body: RevisitBody, org: OrgDep, request: Request,
-) -> dict:
-    """Founder-initiated: spawn a fresh root that inherits the predecessor's
-    brief and references it via audit-log entries.
+async def revisit_from_notification(
+    org,
+    state,
+    *,
+    task_id: str,
+    founder_note: str | None,
+    actor: str,
+    session_timeout_seconds: int | None = None,
+) -> RevisitResult:
+    """Spawn a new root task linked to the predecessor.
 
-    The predecessor root (the ancestor we walk up to) MUST be in a terminal-ish
-    state — see `_classify_predecessor_status`. The flagged task (the id the
-    founder gave us) can be in any state; only the root's status is validated.
+    Mirrors the POST /tasks/{id}/revisit HTTP handler. Reused by the
+    Feishu listener so HTTP and Feishu surfaces cannot drift.
+
+    Args:
+        actor: "cli" (HTTP route) or "feishu-reply" (listener). Recorded
+            on the revisit_of audit row.
+        session_timeout_seconds: Override; if None, inherit from predecessor.
+
+    Returns a RevisitResult with all fields needed by the caller.
+    Raises HTTPException for 404 / 409.
     """
     from src.infrastructure.audit_logger import AuditLogger
     from src.infrastructure.database import LineageTooDeep
-
-    state: DaemonState = request.app.state.daemon
 
     flagged = org.db.get_task(task_id)
     if flagged is None:
@@ -498,8 +585,8 @@ async def revisit_task(
     cascade = [t.id for t in reversed(chain)]
 
     new_timeout = (
-        body.session_timeout_seconds
-        if body.session_timeout_seconds is not None
+        session_timeout_seconds
+        if session_timeout_seconds is not None
         else predecessor.session_timeout_seconds
     )
     async with org.db_lock:
@@ -521,20 +608,60 @@ async def revisit_task(
             flagged=task_id,
             cascade=cascade,
             prior_status=prior_status,
-            founder_note=body.founder_note,
+            founder_note=founder_note,
+            actor=actor,
         )
         audit.log_revisit_spawned(
             predecessor_task_id=predecessor.id, new_root=new_id,
         )
+        # When the founder uses the CLI to revisit, any open Feishu failure
+        # notification row for this task is implicitly resolved — consume
+        # it with cli-fallback so a later in-thread REVISIT reply silently
+        # no-ops. Mirrors resolve_escalation_in_process's behavior.
+        # Feishu-reply path: listener consumes itself at step 8r (avoid race).
+        if actor == "cli":
+            for nrow in org.db.list_open_notifications_for_task(task_id):
+                if nrow.get("kind") == "failure":
+                    org.db.consume_escalation_notification(
+                        nrow["feishu_message_id"], consumed_by="cli-fallback",
+                    )
 
     enqueue_task(state, org.slug, new_id)
 
+    return RevisitResult(
+        new_root_id=new_id,
+        predecessor_root_id=predecessor.id,
+        flagged_task_id=task_id,
+        cascade=cascade,
+        prior_status=prior_status,
+    )
+
+
+@router.post("/tasks/{task_id}/revisit")
+async def revisit_task(
+    task_id: str, body: RevisitBody, org: OrgDep, request: Request,
+) -> dict:
+    """Founder-initiated: spawn a fresh root that inherits the predecessor's
+    brief and references it via audit-log entries.
+
+    The predecessor root (the ancestor we walk up to) MUST be in a terminal-ish
+    state — see `_classify_predecessor_status`. The flagged task (the id the
+    founder gave us) can be in any state; only the root's status is validated.
+    """
+    state: DaemonState = request.app.state.daemon
+    result = await revisit_from_notification(
+        org, state,
+        task_id=task_id,
+        founder_note=body.founder_note,
+        actor="cli",
+        session_timeout_seconds=body.session_timeout_seconds,
+    )
     return {
-        "new_root_task_id": new_id,
-        "predecessor_root_task_id": predecessor.id,
-        "flagged_task_id": task_id,
-        "cascade": cascade,
-        "predecessor_status": prior_status,
+        "new_root_task_id": result.new_root_id,
+        "predecessor_root_task_id": result.predecessor_root_id,
+        "flagged_task_id": result.flagged_task_id,
+        "cascade": result.cascade,
+        "predecessor_status": result.prior_status,
     }
 
 

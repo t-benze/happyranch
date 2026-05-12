@@ -323,6 +323,8 @@ chmod 600 <runtime>/orgs/<slug>/org/config.yaml
 | `app_id` | yes when enabled | Feishu self-built app ID (starts with `cli_`). |
 | `app_secret` | yes when enabled | Feishu app secret. |
 | `reply_ttl_hours` | no | Default `72`. Range `[1, 720]`. Replies after this window are ignored. |
+| `notify_on_failure` | no | Default `false`. Send a push card when a task ends in `FAILED` (see below). |
+| `allow_dispatch` | no | Default `false`. Allow top-level `DISPATCH` messages in the chat to create new tasks (see below). |
 
 **Verification** — restart the daemon. On startup, look for:
 
@@ -333,6 +335,57 @@ INFO src.daemon.feishu_listener: started Feishu event listener for org=<slug>
 Trigger a test escalation (e.g., via `opc revisit ...` to a stuck task) and confirm the bot posts in your chat. Reply with `APPROVE\nlooks fine` and confirm the task transitions to `pending` (or `REJECT\nnot now` to fail it).
 
 The reply protocol: first non-empty line must be `APPROVE` or `REJECT` (case-insensitive); subsequent lines become the rationale. Replies must be sent **in the message thread** of the original notification — Feishu's `root_id` is the correlation key. Stray messages in the chat without a thread parent are ignored.
+
+### Failed-task notifications
+
+Set `notify_on_failure: true` in `feishu_notifications` to receive a push card whenever a task ends in `FAILED`. The notification fires only when all of the following hold:
+
+- `notify_on_failure: true` is set.
+- The task was not founder-cancelled (`cancelled_at IS NULL`).
+- No auto-revisit was spawned by the orchestrator for this failure (e.g., opaque-failure recovery).
+
+Failure cards differ from escalation cards in two ways:
+
+- The verb is `REVISIT`, not `APPROVE`/`REJECT`.
+- Replying spawns a new root task linked to the failed predecessor (same as `opc revisit`).
+
+```yaml
+feishu_notifications:
+  # ... (existing fields)
+  notify_on_failure: true
+```
+
+Reply syntax:
+
+```
+REVISIT
+<optional note that becomes the founder_note on the new root>
+```
+
+If you don't reply, the task stays failed. You can resolve via `opc revisit <task_id>` from the CLI at any time before the notification's TTL expires.
+
+### Dispatching new tasks from Feishu
+
+Set `allow_dispatch: true` to enable top-level task dispatch from the configured chat:
+
+```yaml
+feishu_notifications:
+  # ... (existing fields)
+  allow_dispatch: true
+```
+
+In the chat (NOT as a reply to an existing card — start a new top-level message), send:
+
+```
+DISPATCH [team]
+<brief over one or more lines>
+```
+
+Team is optional. If omitted, defaults to `engineering`; if `engineering` doesn't exist in your org, you'll get an error card listing valid teams.
+
+The bot replies with a confirmation card containing the new task ID and an `opc tail` command to stream progress.
+
+**Security:** the configured `chat_id` is the trust boundary — anyone with write access to that chat can dispatch tasks and trigger revisits.
 
 ## Performance Tiers
 

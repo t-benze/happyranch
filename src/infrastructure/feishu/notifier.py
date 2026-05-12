@@ -70,6 +70,48 @@ def _build_body_phase1(
     return title, lines
 
 
+def _build_failure_body(
+    *,
+    slug: str,
+    task_id: str,
+    agent: str,
+    team: str,
+    brief: str,
+    last_summary: str,
+    failure_kind: str,
+    failure_note: str,
+    failed_at: str,
+) -> tuple[str, list[str]]:
+    """Return (title, body_lines) for the failure post-format payload."""
+    title = f"[OPC {slug}] {task_id} FAILED — review needed"
+    lines = [
+        f"Agent:        {agent}",
+        f"Team:         {team}",
+        f"Task:         {task_id}",
+        f"Org:          {slug}",
+        f"Failed at:    {failed_at}",
+        f"Failure kind: {failure_kind}",
+        "",
+        "--- Brief ---",
+        brief,
+        "",
+        "--- Last manager summary ---",
+        last_summary or "(none)",
+        "",
+        "--- Failure detail ---",
+        failure_note,
+        "",
+        "--- To revisit ---",
+        "Reply in this thread with:",
+        "",
+        "  REVISIT",
+        "  <optional note that becomes founder_note on the new root>",
+        "",
+        "(Or ignore this message — the task stays failed.)",
+    ]
+    return title, lines
+
+
 class EscalationNotifier:
     def __init__(
         self,
@@ -139,3 +181,105 @@ class EscalationNotifier:
                 )
             except Exception:
                 logger.exception("audit log_escalation_notify_failed also failed")
+
+    async def send_failure(
+        self,
+        *,
+        task_id: str,
+        agent: str,
+        failure_kind: str,
+        failure_note: str,
+        last_summary: str = "",
+    ) -> None:
+        """Mirrors notify_escalated for FAILED tasks. Mint-after-send.
+        All exceptions are swallowed and audited."""
+        try:
+            task = self._db.get_task(task_id)
+            if task is None:
+                logger.warning("send_failure: task %s not found", task_id)
+                return
+            team = task.team or ""
+            brief = task.brief or ""
+
+            now = datetime.now(timezone.utc)
+            failed_at = task.completed_at or now.isoformat()
+            title, body_lines = _build_failure_body(
+                slug=self._slug,
+                task_id=task_id,
+                agent=agent,
+                team=team,
+                brief=brief,
+                last_summary=last_summary,
+                failure_kind=failure_kind,
+                failure_note=failure_note,
+                failed_at=failed_at,
+            )
+            message_id = self._client.send_post_message(
+                chat_id=self._config.chat_id,
+                title=title,
+                body_lines=body_lines,
+            )
+            expires = now + timedelta(hours=self._config.reply_ttl_hours)
+            self._db.mint_escalation_notification(
+                feishu_message_id=message_id,
+                org_slug=self._slug,
+                task_id=task_id,
+                chat_id=self._config.chat_id,
+                expires_at=expires,
+                kind="failure",
+            )
+            self._audit.log_failure_notify_sent(
+                task_id=task_id,
+                feishu_message_id=message_id,
+                failure_kind=failure_kind,
+                expires_at=expires.isoformat(),
+            )
+        except Exception as exc:
+            logger.exception("send_failure failed for task %s", task_id)
+            try:
+                self._audit.log_failure_notify_failed(
+                    task_id=task_id, failure_kind=failure_kind,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            except Exception:
+                logger.exception("audit log_failure_notify_failed also failed")
+
+    async def send_dispatch_confirmation(
+        self, *, task_id: str, team: str | None, brief: str,
+    ) -> None:
+        """Top-level post (not threaded) confirming a Feishu dispatch.
+        Best-effort; swallows + audits exceptions."""
+        try:
+            brief_trunc = brief if len(brief) <= 240 else brief[:240] + "…"
+            title = f"[OPC {self._slug}] Task {task_id} dispatched"
+            body_lines = [
+                f"Team:  {team or '(auto)'}",
+                f"Brief: {brief_trunc}",
+                "",
+                "Track with:",
+                f"  opc tail --org {self._slug} {task_id}",
+            ]
+            self._client.send_post_message(
+                chat_id=self._config.chat_id, title=title, body_lines=body_lines,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._audit.log_dispatch_send_confirmation_failed(
+                task_id=task_id, error=str(exc),
+            )
+
+    async def send_dispatch_error(
+        self, *, reason: str, valid_teams: list[str] | None = None,
+    ) -> None:
+        """Top-level post reporting a rejected DISPATCH. Best-effort."""
+        try:
+            title = f"[OPC {self._slug}] Dispatch rejected"
+            body_lines = [f"Reason: {reason}"]
+            if valid_teams:
+                body_lines.append(f"Valid teams: {', '.join(valid_teams)}")
+            self._client.send_post_message(
+                chat_id=self._config.chat_id, title=title, body_lines=body_lines,
+            )
+        except Exception:  # noqa: BLE001
+            # Error-card send failure is itself an error — log nothing extra,
+            # the original audit row for dispatch_via_feishu_rejected already exists.
+            pass

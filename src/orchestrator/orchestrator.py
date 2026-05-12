@@ -133,6 +133,30 @@ class Orchestrator:
         else:
             loop.create_task(coro_factory())
 
+    def notify_failed(
+        self, *, task_id: str, agent: str, failure_kind: str,
+        failure_note: str, last_summary: str = "",
+    ) -> None:
+        """Fire-and-forget failure notification. Same threading model as
+        notify_escalated: detect running loop, fall back to daemon thread."""
+        if self._notifier is None:
+            return
+        import asyncio
+        import threading
+        coro_factory = lambda: self._notifier.send_failure(
+            task_id=task_id, agent=agent, failure_kind=failure_kind,
+            failure_note=failure_note, last_summary=last_summary,
+        )
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            threading.Thread(
+                target=lambda: asyncio.run(coro_factory()),
+                daemon=True,
+            ).start()
+        else:
+            loop.create_task(coro_factory())
+
     def _build_session_id(self) -> str:
         return f"sess-{uuid.uuid4().hex}"
 

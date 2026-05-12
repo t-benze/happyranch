@@ -75,6 +75,18 @@ class AuditLogger:
             payload={"reason": reason},
         )
 
+    def log_daemon_restart_failure(
+        self, task_id: str, agent: str,
+    ) -> None:
+        """Recorded by _sweep_on_startup when an IN_PROGRESS task is FAILED
+        due to a daemon restart. Distinct from log_escalation (which signals
+        a manager-initiated escalate decision)."""
+        self._db.insert_audit_log(
+            task_id=task_id, agent=agent,
+            action="daemon_restart_failure",
+            payload={"reason": "daemon restarted mid-task"},
+        )
+
     def log_escalation_resolved(
         self, task_id: str, decision: str, rationale: str
     ) -> None:
@@ -103,6 +115,41 @@ class AuditLogger:
             payload={"error": error},
         )
 
+    def log_failure_notify_sent(
+        self, task_id: str, feishu_message_id: str,
+        failure_kind: str, expires_at: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="daemon",
+            action="failure_notify_sent",
+            payload={
+                "feishu_message_id": feishu_message_id,
+                "failure_kind": failure_kind,
+                "expires_at": expires_at,
+            },
+        )
+
+    def log_failure_notify_failed(
+        self, task_id: str, failure_kind: str, error: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="daemon",
+            action="failure_notify_failed",
+            payload={"failure_kind": failure_kind, "error": error},
+        )
+
+    def log_dispatch_send_confirmation_failed(
+        self, *, task_id: str, error: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="daemon",
+            action="dispatch_send_confirmation_failed",
+            payload={"error": error},
+        )
+
     def log_escalation_reply_processed(
         self, task_id: str, decision: str, rationale: str,
     ) -> None:
@@ -113,12 +160,38 @@ class AuditLogger:
             payload={"decision": decision, "rationale": rationale},
         )
 
-    def log_escalation_reply_rejected(self, task_id: str, reason: str) -> None:
+    def log_escalation_reply_rejected(
+        self, task_id: str, reason: str, *, feishu_event_id: str | None = None,
+    ) -> None:
+        payload: dict = {"reason": reason}
+        if feishu_event_id is not None:
+            payload["feishu_event_id"] = feishu_event_id
         self._db.insert_audit_log(
             task_id=task_id,
             agent="daemon",
             action="escalation_reply_rejected",
-            payload={"reason": reason},
+            payload=payload,
+        )
+
+    def log_failure_revisit_via_reply(
+        self,
+        *,
+        predecessor_task_id: str,
+        new_root: str,
+        founder_note: str | None,
+        feishu_message_id: str,
+        feishu_event_id: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=new_root,
+            agent="founder",
+            action="failure_revisit_via_reply",
+            payload={
+                "predecessor_task_id": predecessor_task_id,
+                "founder_note": founder_note,
+                "feishu_message_id": feishu_message_id,
+                "feishu_event_id": feishu_event_id,
+            },
         )
 
     def log_task_cancelled(
@@ -200,6 +273,7 @@ class AuditLogger:
         cascade: list[str],
         prior_status: str,
         founder_note: str | None,
+        actor: str = "cli",
     ) -> None:
         """Record on the NEW root that it is a revisit of `predecessor_root`.
 
@@ -207,6 +281,10 @@ class AuditLogger:
         walked from the flagged task back up to the predecessor root. The
         prompt-injection step in run_step reads this entry to build the
         first-step context header.
+
+        `actor` identifies the surface that triggered the revisit: "cli"
+        (HTTP route / opc revisit command) or "feishu-reply" (Feishu listener).
+        Defaults to "cli" for backward compatibility with existing callers.
         """
         self._db.insert_audit_log(
             task_id=task_id,
@@ -218,6 +296,7 @@ class AuditLogger:
                 "cascade": cascade,
                 "prior_status": prior_status,
                 "founder_note": founder_note,
+                "actor": actor,
             },
         )
 
@@ -336,6 +415,44 @@ class AuditLogger:
                 "action": action,
                 "name": name,
                 "source": source,
+            },
+        )
+
+    def log_dispatch_via_feishu_accepted(
+        self,
+        *,
+        task_id: str,
+        team: str,
+        sender_id: str,
+        feishu_event_id: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="founder",
+            action="dispatch_via_feishu_accepted",
+            payload={
+                "team": team,
+                "sender_id": sender_id,
+                "feishu_event_id": feishu_event_id,
+            },
+        )
+
+    def log_dispatch_via_feishu_rejected(
+        self,
+        *,
+        reason: str,
+        sender_id: str,
+        feishu_event_id: str,
+        task_id: str | None = None,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=task_id if task_id is not None else "(none)",
+            agent="daemon",
+            action="dispatch_via_feishu_rejected",
+            payload={
+                "reason": reason,
+                "sender_id": sender_id,
+                "feishu_event_id": feishu_event_id,
             },
         )
 

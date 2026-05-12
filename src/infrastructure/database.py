@@ -178,7 +178,8 @@ class Database:
                 created_at        TEXT NOT NULL,
                 expires_at        TEXT NOT NULL,
                 consumed_at       TEXT,
-                consumed_by       TEXT
+                consumed_by       TEXT,
+                kind              TEXT NOT NULL DEFAULT 'escalation'
             );
             CREATE INDEX IF NOT EXISTS idx_escalation_notifications_task
                 ON escalation_notifications (task_id);
@@ -280,6 +281,15 @@ class Database:
             "ON tasks(dispatched_from_talk_id) "
             "WHERE dispatched_from_talk_id IS NOT NULL"
         )
+        # kind column for escalation_notifications: 'escalation' (default) or
+        # 'failure'. Additive; existing rows keep the default.
+        try:
+            self._conn.execute(
+                "ALTER TABLE escalation_notifications ADD COLUMN kind "
+                "TEXT NOT NULL DEFAULT 'escalation'"
+            )
+        except sqlite3.OperationalError:
+            pass
 
         # --- Revisit link backfill ---
         # Historical revisit rows (created before revisit_of_task_id existed)
@@ -1302,16 +1312,21 @@ class Database:
         task_id: str,
         chat_id: str,
         expires_at: datetime,
+        kind: str = "escalation",
     ) -> None:
+        if kind not in ("escalation", "failure"):
+            raise ValueError(f"kind must be 'escalation' or 'failure', got {kind!r}")
+        expires_at_str = expires_at.astimezone(timezone.utc).isoformat()
         self._conn.execute(
             """INSERT INTO escalation_notifications
                (feishu_message_id, org_slug, task_id, chat_id,
-                created_at, expires_at, consumed_at, consumed_by)
-               VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)""",
+                created_at, expires_at, consumed_at, consumed_by, kind)
+               VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?)""",
             (
                 feishu_message_id, org_slug, task_id, chat_id,
                 datetime.now(timezone.utc).isoformat(),
-                expires_at.astimezone(timezone.utc).isoformat(),
+                expires_at_str,
+                kind,
             ),
         )
         self._conn.commit()
@@ -1320,7 +1335,7 @@ class Database:
     def get_escalation_notification(self, feishu_message_id: str) -> dict | None:
         cur = self._conn.execute(
             """SELECT feishu_message_id, org_slug, task_id, chat_id,
-                      created_at, expires_at, consumed_at, consumed_by
+                      created_at, expires_at, consumed_at, consumed_by, kind
                FROM escalation_notifications WHERE feishu_message_id = ?""",
             (feishu_message_id,),
         )
@@ -1393,7 +1408,7 @@ class Database:
         resolve-escalation to mark the matching Feishu row consumed."""
         cur = self._conn.execute(
             """SELECT feishu_message_id, org_slug, task_id, chat_id,
-                      created_at, expires_at, consumed_at, consumed_by
+                      created_at, expires_at, consumed_at, consumed_by, kind
                FROM escalation_notifications
                WHERE task_id = ? AND consumed_at IS NULL""",
             (task_id,),
