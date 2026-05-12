@@ -280,9 +280,39 @@ class FeishuEventListener:
             _close("rejected", "parse_failed")
             return
 
-        # Task 14 fills the rest. For now, leave the intent parsed but go no further.
-        # Tests verifying the dispatch BRANCH was taken (vs. reply branch) just need
-        # to see resolve_escalation NOT called, which is already true here.
+        # Step 6d: Dispatch via helper
+        from src.daemon.routes.tasks import DispatchError
+        try:
+            task_id, team = await self._dispatch_via_feishu(
+                intent=intent, sender_id=sender_id, event_id=event_id,
+            )
+        except DispatchError as exc:
+            # Audit rejection — the helper raises BEFORE auditing for empty_brief /
+            # unknown_team, so we are the only audit record for these reasons.
+            self._audit.log_dispatch_via_feishu_rejected(
+                reason=exc.reason, sender_id=sender_id, feishu_event_id=event_id,
+            )
+            # Step 8d (rejection path): send error card
+            reason_text = exc.reason
+            if exc.reason == "unknown_team" and intent.team:
+                reason_text = f'unknown team "{intent.team}"'
+            try:
+                await self._send_dispatch_error(
+                    reason=reason_text, valid_teams=exc.valid_teams,
+                )
+            except Exception:  # noqa: BLE001
+                pass  # error-card send failure is itself silent
+            _close("rejected", exc.reason)
+            return
+
+        # Step 7d: Confirmation card on success
+        try:
+            await self._send_dispatch_confirmation(
+                task_id=task_id, team=team, brief=intent.brief,
+            )
+        except Exception:  # noqa: BLE001
+            pass  # task already created; confirmation send failure is logged inside the notifier
+        _close("consumed", None)
 
 
 # ---------------------------------------------------------------------------
