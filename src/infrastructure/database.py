@@ -1408,7 +1408,7 @@ class Database:
         resolve-escalation to mark the matching Feishu row consumed."""
         cur = self._conn.execute(
             """SELECT feishu_message_id, org_slug, task_id, chat_id,
-                      created_at, expires_at, consumed_at, consumed_by
+                      created_at, expires_at, consumed_at, consumed_by, kind
                FROM escalation_notifications
                WHERE task_id = ? AND consumed_at IS NULL""",
             (task_id,),

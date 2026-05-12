@@ -614,6 +614,17 @@ async def revisit_from_notification(
         audit.log_revisit_spawned(
             predecessor_task_id=predecessor.id, new_root=new_id,
         )
+        # When the founder uses the CLI to revisit, any open Feishu failure
+        # notification row for this task is implicitly resolved — consume
+        # it with cli-fallback so a later in-thread REVISIT reply silently
+        # no-ops. Mirrors resolve_escalation_in_process's behavior.
+        # Feishu-reply path: listener consumes itself at step 8r (avoid race).
+        if actor == "cli":
+            for nrow in org.db.list_open_notifications_for_task(task_id):
+                if nrow.get("kind") == "failure":
+                    org.db.consume_escalation_notification(
+                        nrow["feishu_message_id"], consumed_by="cli-fallback",
+                    )
 
     enqueue_task(state, org.slug, new_id)
 
