@@ -29,6 +29,8 @@ class FeishuNotificationsConfig:
     app_id: str
     app_secret: str
     reply_ttl_hours: int = 72
+    notify_on_failure: bool = False
+    allow_dispatch: bool = False
 
 
 @dataclass(frozen=True)
@@ -93,6 +95,20 @@ def _parse_feishu_notifications(
         min_v=1, max_v=720, path=path,
     )
 
+    notify_on_failure = block.get("notify_on_failure", False)
+    if not isinstance(notify_on_failure, bool):
+        raise OrgConfigError(
+            f"{path}: feishu_notifications.notify_on_failure must be a boolean, "
+            f"got {type(notify_on_failure).__name__}"
+        )
+
+    allow_dispatch = block.get("allow_dispatch", False)
+    if not isinstance(allow_dispatch, bool):
+        raise OrgConfigError(
+            f"{path}: feishu_notifications.allow_dispatch must be a boolean, "
+            f"got {type(allow_dispatch).__name__}"
+        )
+
     return FeishuNotificationsConfig(
         provider=provider,
         region=region,
@@ -100,6 +116,8 @@ def _parse_feishu_notifications(
         app_id=app_id,
         app_secret=app_secret,
         reply_ttl_hours=ttl,
+        notify_on_failure=notify_on_failure,
+        allow_dispatch=allow_dispatch,
     )
 
 
