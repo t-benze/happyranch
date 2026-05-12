@@ -380,6 +380,44 @@ class AuditLogger:
             },
         )
 
+    def log_dispatch_via_feishu_accepted(
+        self,
+        *,
+        task_id: str,
+        team: str,
+        sender_id: str,
+        feishu_event_id: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="founder",
+            action="dispatch_via_feishu_accepted",
+            payload={
+                "team": team,
+                "sender_id": sender_id,
+                "feishu_event_id": feishu_event_id,
+            },
+        )
+
+    def log_dispatch_via_feishu_rejected(
+        self,
+        *,
+        reason: str,
+        sender_id: str,
+        feishu_event_id: str,
+        task_id: str | None = None,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=task_id if task_id is not None else "(none)",
+            agent="daemon",
+            action="dispatch_via_feishu_rejected",
+            payload={
+                "reason": reason,
+                "sender_id": sender_id,
+                "feishu_event_id": feishu_event_id,
+            },
+        )
+
     def log_agent_backfilled(
         self,
         *,

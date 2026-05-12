@@ -18,6 +18,7 @@ from src.daemon.org_state import OrgState
 from src.daemon.routes._org_dep import OrgDep
 from src.daemon.runner import enqueue_task
 from src.daemon.state import DaemonState
+from src.infrastructure.feishu.reply_parser import DispatchIntent  # re-export
 from src.models import TaskRecord, TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -424,6 +425,67 @@ class RevisitBody(BaseModel):
 _REVISIT_ELIGIBLE_STATUSES = frozenset({
     TaskStatus.FAILED, TaskStatus.COMPLETED,
 })
+
+
+class DispatchError(Exception):
+    """Raised by dispatch_via_feishu for validation and dispatch failures.
+
+    reason is one of: empty_brief, unknown_team, dispatch_failed.
+    valid_teams is populated for unknown_team so callers can surface the list.
+    """
+
+    def __init__(self, reason: str, valid_teams: list[str] | None = None) -> None:
+        self.reason = reason
+        self.valid_teams = valid_teams or []
+        super().__init__(reason)
+
+
+async def dispatch_via_feishu(
+    org,
+    state,
+    *,
+    intent: DispatchIntent,
+    sender_id: str,
+    event_id: str,
+) -> tuple[str, str]:
+    """Create a task from a Feishu DISPATCH intent. Mirrors POST /tasks.
+
+    Returns (task_id, resolved_team).
+    Raises DispatchError(reason=...) with reason in:
+        empty_brief, unknown_team, dispatch_failed.
+    """
+    from src.infrastructure.audit_logger import AuditLogger
+
+    if not intent.brief or not intent.brief.strip():
+        raise DispatchError("empty_brief")
+
+    team = intent.team or "engineering"
+    registry = org.teams
+    valid = list(registry.teams()) if registry is not None else []
+    if registry is None or team not in valid:
+        raise DispatchError("unknown_team", valid_teams=valid)
+
+    try:
+        manager = registry.manager_for_team(team)
+        async with org.db_lock:
+            task_id = org.db.next_task_id()
+            org.db.insert_task(TaskRecord(
+                id=task_id,
+                brief=intent.brief.strip(),
+                team=team,
+                assigned_agent=manager.name,
+            ))
+            AuditLogger(org.db).log_dispatch_via_feishu_accepted(
+                task_id=task_id, team=team, sender_id=sender_id,
+                feishu_event_id=event_id,
+            )
+    except DispatchError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise DispatchError("dispatch_failed") from exc
+
+    enqueue_task(state, org.slug, task_id)
+    return task_id, team
 
 
 @dataclass(frozen=True)
