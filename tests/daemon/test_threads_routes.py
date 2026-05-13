@@ -82,3 +82,51 @@ def test_compose_rejects_empty_subject(tmp_home, app, org_state, auth_headers):
         headers=auth_headers,
     )
     assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Task 20 — GET /threads, GET /threads/{id}, GET /threads/{id}/messages
+# ---------------------------------------------------------------------------
+
+
+def test_list_threads_returns_recent(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "a", "recipients": ["dev_agent"], "body_markdown": "x", "addressed_to": ["@all"]},
+        headers=auth_headers,
+    )
+    client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "b", "recipients": ["dev_agent"], "body_markdown": "x", "addressed_to": ["@all"]},
+        headers=auth_headers,
+    )
+    resp = client.get("/api/v1/orgs/alpha/threads", headers=auth_headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["threads"]) == 2
+    assert data["threads"][0]["subject"] in {"a", "b"}
+
+
+def test_get_thread_returns_messages_and_participants(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "a", "recipients": ["dev_agent"], "body_markdown": "hi", "addressed_to": ["@all"]},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    resp = client.get(f"/api/v1/orgs/alpha/threads/{tid}", headers=auth_headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["thread_id"] == tid
+    assert data["participants"] == ["dev_agent"]
+    assert data["messages"][0]["body_markdown"] == "hi"
+
+
+def test_get_thread_missing_returns_404(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    resp = client.get("/api/v1/orgs/alpha/threads/THR-999", headers=auth_headers)
+    assert resp.status_code == 404

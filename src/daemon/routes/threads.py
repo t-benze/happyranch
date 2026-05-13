@@ -150,3 +150,86 @@ async def compose_thread(
         "started_at": org.db.get_thread(thread_id).started_at.isoformat(),
         "pending_replies": addressed_agents,
     }
+
+
+# ---------------------------------------------------------------------------
+# Shared serializers
+# ---------------------------------------------------------------------------
+
+
+def _thread_row_to_dict(t: ThreadRecord) -> dict:
+    return {
+        "thread_id": t.id,
+        "subject": t.subject,
+        "status": t.status.value,
+        "started_at": t.started_at.isoformat(),
+        "archived_at": t.archived_at.isoformat() if t.archived_at else None,
+        "forwarded_from_id": t.forwarded_from_id,
+        "forwarded_from_kind": t.forwarded_from_kind,
+        "turn_cap": t.turn_cap,
+        "turns_used": t.turns_used,
+        "summary": t.summary,
+        "new_kb_slugs": t.new_kb_slugs,
+        "transcript_path": t.transcript_path,
+    }
+
+
+def _msg_to_dict(m) -> dict:
+    return {
+        "seq": m.seq,
+        "speaker": m.speaker,
+        "kind": m.kind.value,
+        "body_markdown": m.body_markdown,
+        "addressed_to": m.addressed_to,
+        "decline_reason": m.decline_reason,
+        "system_payload": m.system_payload,
+        "created_at": m.created_at.isoformat(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Task 20 — GET endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.get("/threads")
+async def list_threads_endpoint(
+    slug: str,
+    org: OrgDep,
+    status: str | None = None,
+    limit: int = 50,
+) -> dict:
+    rows = org.db.list_threads(status=status, limit=min(limit, 500))
+    return {"threads": [_thread_row_to_dict(t) for t in rows]}
+
+
+@router.get("/threads/{thread_id}")
+async def get_thread_endpoint(
+    slug: str,
+    thread_id: str,
+    org: OrgDep,
+) -> dict:
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    participants = [p.agent_name for p in org.db.list_thread_participants(thread_id)]
+    msgs = org.db.list_thread_messages(thread_id, limit=200)
+    d = _thread_row_to_dict(t)
+    d["participants"] = participants
+    d["messages"] = [_msg_to_dict(m) for m in msgs]
+    return d
+
+
+@router.get("/threads/{thread_id}/messages")
+async def list_thread_messages_endpoint(
+    slug: str,
+    thread_id: str,
+    org: OrgDep,
+    since_seq: int = 0,
+    limit: int = 200,
+) -> dict:
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    msgs = org.db.list_thread_messages(thread_id, since_seq=since_seq, limit=min(limit, 1000))
+    return {"messages": [_msg_to_dict(m) for m in msgs]}
