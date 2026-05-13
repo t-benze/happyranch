@@ -248,3 +248,49 @@ def test_reap_pending_invocations(tmp_path):
     pending = db.list_thread_invocations("THR-001", status=ThreadInvocationStatus.PENDING)
     assert len(pending) == 1
     assert pending[0].agent_name == "c"
+
+
+def test_increment_turns_used(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.increment_thread_turns_used("THR-001", by=2)
+    db.increment_thread_turns_used("THR-001", by=1)
+    t = db.get_thread("THR-001")
+    assert t.turns_used == 3
+
+
+def test_set_thread_status_archiving(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.set_thread_status(
+        "THR-001",
+        status=ThreadStatus.ARCHIVING,
+        summary="done talking",
+    )
+    t = db.get_thread("THR-001")
+    assert t.status is ThreadStatus.ARCHIVING
+    assert t.summary == "done talking"
+    assert t.archive_requested_at is not None
+
+
+def test_finalize_thread_archived(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.set_thread_status("THR-001", status=ThreadStatus.ARCHIVING, summary="s")
+    db.finalize_thread_archived(
+        "THR-001",
+        transcript_path="/tmp/THR-001.md",
+        new_kb_slugs=["refund-policy"],
+    )
+    t = db.get_thread("THR-001")
+    assert t.status is ThreadStatus.ARCHIVED
+    assert t.archived_at is not None
+    assert t.transcript_path == "/tmp/THR-001.md"
+    assert t.new_kb_slugs == ["refund-policy"]
+
+
+def test_set_thread_turn_cap(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.set_thread_turn_cap("THR-001", new_cap=1000)
+    assert db.get_thread("THR-001").turn_cap == 1000

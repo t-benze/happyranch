@@ -1666,6 +1666,88 @@ class Database:
         return cursor.rowcount
 
     @_synchronized
+    def increment_thread_turns_used(self, thread_id: str, *, by: int = 1) -> None:
+        self._conn.execute(
+            "UPDATE threads SET turns_used = turns_used + ? WHERE id = ?",
+            (by, thread_id),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def set_thread_status(
+        self,
+        thread_id: str,
+        *,
+        status: ThreadStatus,
+        summary: str | None = None,
+    ) -> None:
+        now = _now().isoformat()
+        if status is ThreadStatus.ARCHIVING:
+            self._conn.execute(
+                "UPDATE threads SET status = ?, summary = COALESCE(?, summary), "
+                "archive_requested_at = ? WHERE id = ?",
+                (status.value, summary, now, thread_id),
+            )
+        elif status is ThreadStatus.ABANDONED:
+            self._conn.execute(
+                "UPDATE threads SET status = ?, archived_at = COALESCE(archived_at, ?) "
+                "WHERE id = ?",
+                (status.value, now, thread_id),
+            )
+        else:
+            self._conn.execute(
+                "UPDATE threads SET status = ? WHERE id = ?",
+                (status.value, thread_id),
+            )
+        self._conn.commit()
+
+    @_synchronized
+    def finalize_thread_archived(
+        self,
+        thread_id: str,
+        *,
+        transcript_path: str,
+        new_kb_slugs: list[str],
+    ) -> None:
+        self._conn.execute(
+            "UPDATE threads SET status = 'archived', archived_at = ?, "
+            "transcript_path = ?, new_kb_slugs_json = ? WHERE id = ?",
+            (
+                _now().isoformat(),
+                transcript_path,
+                json.dumps(new_kb_slugs) if new_kb_slugs else None,
+                thread_id,
+            ),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def set_thread_turn_cap(self, thread_id: str, *, new_cap: int) -> None:
+        self._conn.execute(
+            "UPDATE threads SET turn_cap = ? WHERE id = ?",
+            (new_cap, thread_id),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def add_thread_kb_slug(self, thread_id: str, slug: str) -> None:
+        cursor = self._conn.execute(
+            "SELECT new_kb_slugs_json FROM threads WHERE id = ?", (thread_id,)
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return
+        slugs = json.loads(row["new_kb_slugs_json"]) if row["new_kb_slugs_json"] else []
+        if slug in slugs:
+            return
+        slugs.append(slug)
+        self._conn.execute(
+            "UPDATE threads SET new_kb_slugs_json = ? WHERE id = ?",
+            (json.dumps(slugs), thread_id),
+        )
+        self._conn.commit()
+
+    @_synchronized
     def insert_talk(self, talk: TalkRecord) -> None:
         self._conn.execute(
             """INSERT INTO talks (id, agent_name, started_at, ended_at, status,
