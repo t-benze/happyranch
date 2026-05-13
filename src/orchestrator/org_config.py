@@ -37,6 +37,21 @@ class FeishuNotificationsConfig:
 class OrgConfig:
     session_timeout_seconds: int | None = None
     feishu_notifications: FeishuNotificationsConfig | None = None
+    threads_enabled: bool = True
+    threads_default_turn_cap: int = 500
+    threads_close_out_wait_seconds: int = 300
+    threads_invocation_timeout_seconds: int | None = None
+
+    @classmethod
+    def load_from_text(cls, text: str, path: str = "<text>") -> "OrgConfig":
+        """Parse YAML text directly into OrgConfig. Used in tests and CLI helpers."""
+        try:
+            data = yaml.safe_load(text) or {}
+        except yaml.YAMLError as exc:
+            raise OrgConfigError(f"malformed YAML in {path}: {exc}") from exc
+        if not isinstance(data, dict):
+            raise OrgConfigError(f"{path}: top-level must be a mapping")
+        return _build_org_config(data, path)
 
 
 def _validate_positive_int(
@@ -121,6 +136,76 @@ def _parse_feishu_notifications(
     )
 
 
+def _parse_threads(block: dict, path: str) -> dict:
+    """Parse the threads: block and return kwargs for OrgConfig."""
+    if not isinstance(block, dict):
+        raise OrgConfigError(f"{path}: threads must be a mapping")
+
+    kwargs: dict = {}
+
+    if "enabled" in block:
+        enabled = block["enabled"]
+        if not isinstance(enabled, bool):
+            raise OrgConfigError(f"{path}: threads.enabled must be a boolean, got {enabled!r}")
+        kwargs["threads_enabled"] = enabled
+
+    if "default_turn_cap" in block:
+        cap = block["default_turn_cap"]
+        if not isinstance(cap, int) or isinstance(cap, bool) or cap <= 0:
+            raise OrgConfigError(
+                f"{path}: threads.default_turn_cap must be a positive int, got {cap!r}"
+            )
+        kwargs["threads_default_turn_cap"] = cap
+
+    if "close_out_wait_seconds" in block:
+        w = block["close_out_wait_seconds"]
+        if not isinstance(w, int) or isinstance(w, bool) or w <= 0:
+            raise OrgConfigError(
+                f"{path}: threads.close_out_wait_seconds must be a positive int, got {w!r}"
+            )
+        kwargs["threads_close_out_wait_seconds"] = w
+
+    if "invocation_timeout_seconds" in block:
+        t = block["invocation_timeout_seconds"]
+        if t is not None and (not isinstance(t, int) or isinstance(t, bool) or t <= 0):
+            raise OrgConfigError(
+                f"{path}: threads.invocation_timeout_seconds must be a positive int or null, "
+                f"got {t!r}"
+            )
+        kwargs["threads_invocation_timeout_seconds"] = t
+
+    return kwargs
+
+
+def _build_org_config(data: dict, path: str) -> OrgConfig:
+    """Build OrgConfig from a parsed YAML dict."""
+    timeout = data.get("session_timeout_seconds")
+    if timeout is not None:
+        if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0:
+            raise OrgConfigError(
+                f"{path}: session_timeout_seconds must be a positive integer, "
+                f"got {timeout!r}"
+            )
+
+    feishu_block = data.get("feishu_notifications")
+    feishu_cfg: FeishuNotificationsConfig | None = None
+    if feishu_block is not None:
+        if not isinstance(feishu_block, dict):
+            raise OrgConfigError(f"{path}: feishu_notifications must be a mapping")
+        feishu_cfg = _parse_feishu_notifications(feishu_block, path)
+
+    threads_block = data.get("threads")
+    threads_kwargs: dict = {}
+    if threads_block is not None:
+        threads_kwargs = _parse_threads(threads_block, path)
+
+    return OrgConfig(
+        session_timeout_seconds=timeout,
+        feishu_notifications=feishu_cfg,
+        **threads_kwargs,
+    )
+
+
 def load_org_config(paths: OrgPaths) -> OrgConfig:
     """Load <runtime>/org/config.yaml. Missing file -> empty OrgConfig."""
     path = paths.org_config_path
@@ -134,26 +219,6 @@ def load_org_config(paths: OrgPaths) -> OrgConfig:
     if not isinstance(data, dict):
         raise OrgConfigError(f"{path}: top-level must be a mapping")
 
-    timeout = data.get("session_timeout_seconds")
-    if timeout is not None:
-        if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0:
-            raise OrgConfigError(
-                f"{path}: session_timeout_seconds must be a positive integer, "
-                f"got {timeout!r}"
-            )
-
-    feishu_block = data.get("feishu_notifications")
-    feishu_cfg: FeishuNotificationsConfig | None = None
-    if feishu_block is not None:
-        if not isinstance(feishu_block, dict):
-            raise OrgConfigError(
-                f"{path}: feishu_notifications must be a mapping"
-            )
-        feishu_cfg = _parse_feishu_notifications(feishu_block, str(path))
-
-    return OrgConfig(
-        session_timeout_seconds=timeout,
-        feishu_notifications=feishu_cfg,
-    )
+    return _build_org_config(data, str(path))
 
 
