@@ -1537,6 +1537,124 @@ def cmd_talk_show(args: argparse.Namespace) -> None:
         print(t["transcript"])
 
 
+def cmd_threads_compose(args: argparse.Namespace) -> None:
+    import json as _json
+    client = OpcClient.from_env()
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
+    recipients = [r.strip() for r in args.recipients.split(",") if r.strip()]
+    payload: dict = {
+        "subject": args.subject,
+        "recipients": recipients,
+        "body_markdown": args.body,
+        "addressed_to": ["@all"],
+    }
+    r = client.post(f"/api/v1/orgs/{slug}/threads", json=payload)
+    if not _ok(r):
+        return
+    body = r.json()
+    print(f"{body['thread_id']}  started={_fmt_ts(body['started_at'])}  pending={body['pending_replies']}")
+
+
+def cmd_threads_list(args: argparse.Namespace) -> None:
+    client = OpcClient.from_env()
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
+    params: dict = {"limit": args.limit}
+    if args.status:
+        params["status"] = args.status
+    r = client.get(f"/api/v1/orgs/{slug}/threads", params=params)
+    if not _ok(r):
+        return
+    for t in r.json()["threads"]:
+        print(
+            f"{t['thread_id']:10s}  {t['status']:12s}  "
+            f"turns={t['turns_used']}/{t['turn_cap']}  "
+            f"{_fmt_ts(t['started_at'])}  {t['subject'][:60]}"
+        )
+
+
+def cmd_threads_reply(args: argparse.Namespace) -> None:
+    import json as _json
+    client = OpcClient.from_env()
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
+    try:
+        body = _json.loads(Path(args.from_file).read_text())
+    except (OSError, ValueError) as exc:
+        print(f"Error reading {args.from_file}: {exc}")
+        sys.exit(1)
+    thread_id = args.thread_id or body.get("thread_id", "")
+    r = client.post(f"/api/v1/orgs/{slug}/threads/{thread_id}/reply", json=body)
+    if not _ok(r):
+        return
+    resp = r.json()
+    print(f"ok: reply seq={resp['seq']} on {resp['thread_id']}")
+
+
+def cmd_threads_decline(args: argparse.Namespace) -> None:
+    import json as _json
+    client = OpcClient.from_env()
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
+    try:
+        body = _json.loads(Path(args.from_file).read_text())
+    except (OSError, ValueError) as exc:
+        print(f"Error reading {args.from_file}: {exc}")
+        sys.exit(1)
+    thread_id = args.thread_id or body.get("thread_id", "")
+    r = client.post(f"/api/v1/orgs/{slug}/threads/{thread_id}/decline", json=body)
+    if not _ok(r):
+        return
+    resp = r.json()
+    print(f"ok: decline seq={resp['seq']} on {resp['thread_id']}")
+
+
+def cmd_threads_dispatch(args: argparse.Namespace) -> None:
+    import json as _json
+    client = OpcClient.from_env()
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
+    try:
+        body = _json.loads(Path(args.from_file).read_text())
+    except (OSError, ValueError) as exc:
+        print(f"Error reading {args.from_file}: {exc}")
+        sys.exit(1)
+    thread_id = args.thread_id or body.get("thread_id", "")
+    r = client.post(f"/api/v1/orgs/{slug}/threads/{thread_id}/dispatch", json=body)
+    if not _ok(r):
+        return
+    resp = r.json()
+    print(f"ok: dispatched {resp['task_id']} from {resp['dispatched_from_thread_id']}")
+
+
+def cmd_threads_close_out(args: argparse.Namespace) -> None:
+    import json as _json
+    client = OpcClient.from_env()
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
+    try:
+        body = _json.loads(Path(args.from_file).read_text())
+    except (OSError, ValueError) as exc:
+        print(f"Error reading {args.from_file}: {exc}")
+        sys.exit(1)
+    thread_id = args.thread_id or body.get("thread_id", "")
+    r = client.post(f"/api/v1/orgs/{slug}/threads/{thread_id}/close-out", json=body)
+    if not _ok(r):
+        return
+    resp = r.json()
+    print(
+        f"ok: close-out for {resp['agent']} on {resp['thread_id']} — "
+        f"{resp['new_learnings_count']} learnings, {len(resp['new_kb_slugs'])} kb slugs"
+    )
+
+
 def cmd_resolve_escalation(args: argparse.Namespace) -> None:
     client = OpcClient.from_env()
     slug = resolve_org_slug(
@@ -2177,6 +2295,47 @@ def build_parser() -> argparse.ArgumentParser:
     p_talk_show.add_argument("talk_id")
     p_talk_show.add_argument("--json", action="store_true", help="Emit raw JSON instead of human output")
     p_talk_show.set_defaults(func=cmd_talk_show)
+
+    # opc threads — agent-facing callbacks + founder compose/list
+    p_threads = sub.add_parser("threads", help="Thread operations (compose, reply, decline, dispatch, close-out)")
+    threads_sub = p_threads.add_subparsers(dest="threads_command", required=True)
+
+    p_threads_compose = threads_sub.add_parser("compose", help="Compose a new thread (founder)")
+    p_threads_compose.add_argument("--org", default=None, help="Org slug")
+    p_threads_compose.add_argument("--subject", required=True)
+    p_threads_compose.add_argument("--recipients", required=True, help="Comma-separated agent names")
+    p_threads_compose.add_argument("--body", required=True, help="Opening message body (markdown)")
+    p_threads_compose.set_defaults(func=cmd_threads_compose)
+
+    p_threads_list = threads_sub.add_parser("list", help="List threads")
+    p_threads_list.add_argument("--org", default=None, help="Org slug")
+    p_threads_list.add_argument("--status", default=None, help="Filter by status (open|archiving|archived|abandoned)")
+    p_threads_list.add_argument("--limit", type=int, default=50)
+    p_threads_list.set_defaults(func=cmd_threads_list)
+
+    p_threads_reply = threads_sub.add_parser("reply", help="Agent callback: post a reply to a thread")
+    p_threads_reply.add_argument("--org", default=None, help="Org slug")
+    p_threads_reply.add_argument("--thread-id", dest="thread_id", default=None)
+    p_threads_reply.add_argument("--from-file", required=True)
+    p_threads_reply.set_defaults(func=cmd_threads_reply)
+
+    p_threads_decline = threads_sub.add_parser("decline", help="Agent callback: decline a thread turn")
+    p_threads_decline.add_argument("--org", default=None, help="Org slug")
+    p_threads_decline.add_argument("--thread-id", dest="thread_id", default=None)
+    p_threads_decline.add_argument("--from-file", required=True)
+    p_threads_decline.set_defaults(func=cmd_threads_decline)
+
+    p_threads_dispatch = threads_sub.add_parser("dispatch", help="Agent callback: dispatch a task from a thread")
+    p_threads_dispatch.add_argument("--org", default=None, help="Org slug")
+    p_threads_dispatch.add_argument("--thread-id", dest="thread_id", default=None)
+    p_threads_dispatch.add_argument("--from-file", required=True)
+    p_threads_dispatch.set_defaults(func=cmd_threads_dispatch)
+
+    p_threads_close_out = threads_sub.add_parser("close-out", help="Agent callback: submit thread close-out")
+    p_threads_close_out.add_argument("--org", default=None, help="Org slug")
+    p_threads_close_out.add_argument("--thread-id", dest="thread_id", default=None)
+    p_threads_close_out.add_argument("--from-file", required=True)
+    p_threads_close_out.set_defaults(func=cmd_threads_close_out)
 
     # opc resolve-escalation
     p_resolve = sub.add_parser("resolve-escalation", help="Resolve an escalated task (founder only)")
