@@ -238,3 +238,65 @@ def test_decline_records_decline_and_consumes_token(tmp_home, app, org_state, au
     assert msgs[-1].kind.value == "decline"
     assert msgs[-1].decline_reason == "nothing to add"
     assert org_state.db.get_pending_invocation(token) is None
+
+
+# ---------------------------------------------------------------------------
+# Task 23 — POST /threads/{id}/dispatch
+# ---------------------------------------------------------------------------
+
+
+def test_worker_self_dispatch_creates_task_with_thread_link(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    tid, token = _start_thread(client, org_state, auth_headers, recipient="dev_agent")
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/dispatch",
+        json={"thread_id": tid, "invocation_token": token,
+              "dispatcher": "dev_agent",
+              "brief": "Implement option B"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["dispatched_from_thread_id"] == tid
+    assert data["assigned_agent"] == "dev_agent"
+
+    # System message landed.
+    msgs = org_state.db.list_thread_messages(tid)
+    sys_msg = [m for m in msgs if m.kind.value == "system"][-1]
+    assert sys_msg.system_payload["kind_tag"] == "task_dispatched"
+
+    # Token stays pending (dispatch does NOT consume).
+    assert org_state.db.get_pending_invocation(token) is not None
+    inv = org_state.db.get_invocation_any_status(token)
+    assert inv.dispatched_task_id == data["task_id"]
+
+
+def test_worker_cannot_dispatch_to_other_agent(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+    tid, token = _start_thread(client, org_state, auth_headers, recipient="dev_agent")
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/dispatch",
+        json={"thread_id": tid, "invocation_token": token,
+              "dispatcher": "dev_agent", "target_agent": "qa_engineer",
+              "brief": "do x"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "worker_must_self_dispatch"
+
+
+def test_dispatch_twice_on_same_token_rejected(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    tid, token = _start_thread(client, org_state, auth_headers, recipient="dev_agent")
+    p = {"thread_id": tid, "invocation_token": token,
+         "dispatcher": "dev_agent", "brief": "x"}
+    assert client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/dispatch", json=p, headers=auth_headers
+    ).status_code == 200
+    again = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/dispatch", json=p, headers=auth_headers,
+    )
+    assert again.status_code == 409
+    assert again.json()["detail"]["code"] == "dispatch_already_used"
