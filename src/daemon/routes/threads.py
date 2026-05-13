@@ -517,3 +517,62 @@ async def dispatch_from_thread_endpoint(
         "dispatched_from_thread_id": thread_id,
         "system_message_seq": sys_seq,
     }
+
+
+# ---------------------------------------------------------------------------
+# Task 24 — POST /threads/{id}/send (founder follow-up)
+# ---------------------------------------------------------------------------
+
+
+class SendBody(BaseModel):
+    body_markdown: str
+    addressed_to: list[str]
+
+
+@router.post("/threads/{thread_id}/send")
+async def send_thread_endpoint(
+    slug: str, thread_id: str, body: SendBody, org: OrgDep,
+) -> dict:
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    if t.status is not ThreadStatus.OPEN:
+        raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
+    body_text = body.body_markdown.strip()
+    if not body_text:
+        raise HTTPException(status_code=422, detail={"code": "empty_body"})
+
+    participants = [p.agent_name for p in org.db.list_thread_participants(thread_id)]
+    _validate_addressed_to(body.addressed_to, participants)
+    addressed = _resolve_addressed_agents(body.addressed_to, participants)
+
+    if t.turns_used + len(addressed) > t.turn_cap:
+        raise HTTPException(
+            status_code=429,
+            detail={"code": "turn_cap_exceeded",
+                    "used": t.turns_used, "cap": t.turn_cap,
+                    "requested": len(addressed)},
+        )
+
+    tokens_to_enqueue: list[str] = []
+    async with org.db_lock:
+        seq = org.db.append_thread_message(
+            thread_id=thread_id, speaker="founder",
+            kind=ThreadMessageKind.MESSAGE,
+            body_markdown=body_text, addressed_to=body.addressed_to,
+        )
+        AuditLogger(org.db).log_thread_message_sent(
+            thread_id, seq=seq, speaker="founder",
+            addressed_to=body.addressed_to, kind="message",
+        )
+        for name in addressed:
+            inv = org.db.mint_thread_invocation(
+                thread_id=thread_id, agent_name=name,
+                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
+            )
+            tokens_to_enqueue.append(inv.invocation_token)
+
+    for token in tokens_to_enqueue:
+        await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
+
+    return {"thread_id": thread_id, "seq": seq, "pending_replies": addressed}

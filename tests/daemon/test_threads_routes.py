@@ -300,3 +300,30 @@ def test_dispatch_twice_on_same_token_rejected(tmp_home, app, org_state, auth_he
     )
     assert again.status_code == 409
     assert again.json()["detail"]["code"] == "dispatch_already_used"
+
+
+# ---------------------------------------------------------------------------
+# Task 24 — POST /threads/{id}/send (founder follow-up)
+# ---------------------------------------------------------------------------
+
+
+def test_founder_send_appends_and_enqueues(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent", "qa_engineer"],
+              "body_markdown": "hi", "addressed_to": ["dev_agent"]},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    before_invocations = len(org_state.db.list_thread_invocations(tid))
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/send",
+        json={"body_markdown": "any thoughts qa_engineer?", "addressed_to": ["qa_engineer"]},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    after_invocations = len(org_state.db.list_thread_invocations(tid))
+    assert after_invocations == before_invocations + 1
