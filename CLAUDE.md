@@ -50,7 +50,7 @@ System kernel milestones — the org-agnostic infrastructure. Building out a spe
 1. ~~**Bootstrap orchestrator + first team**~~ done — orchestrator with executor-backed agent sessions, manager-driven decision loop. Validated end-to-end against the sample org's engineering team.
 2. ~~**Audit logging**~~ done — SQLite-backed audit logger. Per-session `session_end` payloads now carry full `token_usage` dict (input/output/cache_read/cache_creation/reasoning) plus a derived back-compat scalar `token_count`.
 3. ~~**Manager-driven orchestration**~~ done — the team manager analyzes each task and decides the approach. No hardcoded task chains. `OPC_MAX_ORCHESTRATION_STEPS` (default 50) before escalation.
-4. ~~**Agent memory**~~ done — persistent workspaces with executor-specific bootstrap docs (`CLAUDE.md` or `AGENTS.md`), `learnings.md`, `task_history.md`. Context builder regenerates identity on tier changes.
+4. ~~**Agent memory**~~ done — persistent workspaces with executor-specific bootstrap docs (`CLAUDE.md` or `AGENTS.md`), per-entry `learnings/LRN-NNN-<slug>.md` files (or legacy flat `learnings.md` for pre-migration workspaces), `task_history.md`. Context builder regenerates identity on tier changes. Per-entry learnings store: `src/infrastructure/learnings_store.py`. CLI: `opc learning list|get|search|add|update|promote|reindex`. Spec: `docs/superpowers/specs/2026-05-13-per-agent-learnings-structural-upgrade-design.md`.
 5. ~~**Performance scoring**~~ done — rolling 30-day scorecards, green/yellow/red tiers, exposed to managers via capabilities prompt.
 6. ~~**Talk flow**~~ done — founder↔agent conversations with SQLite-tracked talks, transcripts under `<runtime>/orgs/<slug>/talks/`, end-of-talk learnings + KB entries.
 7. ~~**Knowledge Base**~~ done — per-org precedents + reference under `<runtime>/orgs/<slug>/kb/`.
@@ -156,7 +156,8 @@ Source code lives in the repo. Runtime data lives in a dedicated **runtime conta
         |       |-- .agents/skills/    # (Codex/opencode) shared skills tree
         |       |-- opencode.json      # (opencode only) permission file
         |       |-- repos/<name>/      # Git clones declared in agent.yaml
-        |       |-- learnings.md
+        |       |-- learnings/             # Per-entry LRN-NNN-<slug>.md (or legacy learnings.md pre-migration)
+        |       |   +-- _index.md          # Regenerated, inlined into bootstrap
         |       +-- task_history.md
         |-- kb/
         |   |-- _index.md              # Regenerated after every write
