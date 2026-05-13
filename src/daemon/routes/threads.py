@@ -336,3 +336,53 @@ async def reply_thread_endpoint(
             addressed_to=None, kind="message",
         )
     return {"thread_id": thread_id, "seq": seq, "kind": "message"}
+
+
+# ---------------------------------------------------------------------------
+# Task 22 — POST /threads/{id}/decline
+# ---------------------------------------------------------------------------
+
+
+class DeclineBody(BaseModel):
+    thread_id: str
+    invocation_token: str
+    speaker: str
+    reason: str
+    in_response_to_seq: int
+
+
+@router.post("/threads/{thread_id}/decline")
+async def decline_thread_endpoint(
+    slug: str, thread_id: str, body: DeclineBody, org: OrgDep,
+) -> dict:
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    if t.status is not ThreadStatus.OPEN:
+        raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
+    reason = body.reason.strip()
+    if not reason:
+        raise HTTPException(status_code=422, detail={"code": "empty_reason"})
+    _validate_invocation_token(
+        org, token=body.invocation_token,
+        expected_agent=body.speaker, expected_thread_id=thread_id,
+        require_purposes=[ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP],
+    )
+    if not org.db.is_thread_participant(thread_id, body.speaker):
+        raise HTTPException(status_code=403, detail={"code": "not_participant"})
+    _verify_addressed(org, thread_id=thread_id, seq=body.in_response_to_seq, speaker=body.speaker)
+
+    async with org.db_lock:
+        if org.db.get_pending_invocation(body.invocation_token) is None:
+            raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
+        seq = org.db.append_thread_message(
+            thread_id=thread_id, speaker=body.speaker,
+            kind=ThreadMessageKind.DECLINE, decline_reason=reason,
+        )
+        org.db.consume_invocation(body.invocation_token)
+        org.db.increment_thread_turns_used(thread_id, by=1)
+        AuditLogger(org.db).log_thread_message_sent(
+            thread_id, seq=seq, speaker=body.speaker,
+            addressed_to=None, kind="decline",
+        )
+    return {"thread_id": thread_id, "seq": seq, "kind": "decline"}

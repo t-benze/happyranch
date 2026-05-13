@@ -216,3 +216,25 @@ def test_reply_rejects_mismatched_speaker(tmp_home, app, org_state, auth_headers
         headers=auth_headers,
     )
     assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Task 22 — POST /threads/{id}/decline
+# ---------------------------------------------------------------------------
+
+
+def test_decline_records_decline_and_consumes_token(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    tid, token = _start_thread(client, org_state, auth_headers)
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/decline",
+        json={"thread_id": tid, "invocation_token": token,
+              "speaker": "dev_agent", "reason": "nothing to add",
+              "in_response_to_seq": 1},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    msgs = org_state.db.list_thread_messages(tid)
+    assert msgs[-1].kind.value == "decline"
+    assert msgs[-1].decline_reason == "nothing to add"
+    assert org_state.db.get_pending_invocation(token) is None
