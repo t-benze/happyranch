@@ -192,6 +192,35 @@ class Database:
                 reason            TEXT,
                 PRIMARY KEY (org_slug, feishu_event_id)
             );
+
+            CREATE TABLE IF NOT EXISTS threads (
+                id TEXT PRIMARY KEY,
+                subject TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                archived_at TEXT,
+                status TEXT NOT NULL DEFAULT 'open',
+                forwarded_from_id TEXT,
+                forwarded_from_kind TEXT,
+                turn_cap INTEGER NOT NULL DEFAULT 500,
+                turns_used INTEGER NOT NULL DEFAULT 0,
+                summary TEXT,
+                new_kb_slugs_json TEXT,
+                transcript_path TEXT,
+                archive_requested_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_threads_status ON threads(status);
+            CREATE INDEX IF NOT EXISTS idx_threads_started ON threads(started_at);
+
+            CREATE TABLE IF NOT EXISTS thread_participants (
+                thread_id TEXT NOT NULL,
+                agent_name TEXT NOT NULL,
+                added_at TEXT NOT NULL,
+                added_by TEXT NOT NULL,
+                PRIMARY KEY (thread_id, agent_name),
+                FOREIGN KEY (thread_id) REFERENCES threads(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_thread_participants_agent
+                ON thread_participants(agent_name);
         """)
         # Best-effort migration for DBs created before `status` existed. SQLite
         # has no IF NOT EXISTS for ADD COLUMN; swallow the duplicate-column
