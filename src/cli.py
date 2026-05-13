@@ -736,20 +736,101 @@ def cmd_learning(args: argparse.Namespace) -> None:
         return
 
 
+class Client:
+    """Thin context-manager wrapper around OpcClient that returns dicts from .get/.post."""
+
+    def __init__(self) -> None:
+        self._inner = OpcClient.from_env()
+
+    def __enter__(self) -> "Client":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self._inner.close()
+
+    def get(self, path: str, params: dict | None = None) -> dict:
+        r = self._inner.get(path, params=params)
+        if not _ok(r):
+            return {}
+        return r.json()
+
+    def post(self, path: str, json: dict | None = None) -> dict:
+        r = self._inner.post(path, json=json)
+        if not _ok(r):
+            return {}
+        return r.json()
+
+
 def cmd_learning_list(args: argparse.Namespace) -> None:
-    raise NotImplementedError("see Task 18")
+    org = args.org or os.environ.get("OPC_ORG_SLUG", "")
+    params: dict = {}
+    if args.topic:
+        params["topic"] = args.topic
+    if args.tag:
+        params["tag"] = args.tag
+    if args.promoted:
+        params["promoted"] = True
+    elif args.not_promoted:
+        params["promoted"] = False
+    with Client() as c:
+        resp = c.get(f"/api/v1/orgs/{org}/agents/{args.agent}/learnings/entries/", params=params)
+    entries = resp.get("entries", [])
+    if args.json:
+        import json
+        print(json.dumps(entries, indent=2))
+        return
+    if not entries:
+        print("(no learnings)")
+        return
+    for e in entries:
+        tags = ", ".join(e.get("tags", []))
+        promo = f" ↗ {e['promoted_to']}" if e.get("promoted_to") else ""
+        print(f"  {e['id']}  [{e['topic']}] {e['title']}  ({tags}){promo}")
 
 
 def cmd_learning_get(args: argparse.Namespace) -> None:
-    raise NotImplementedError("see Task 18")
+    org = args.org or os.environ.get("OPC_ORG_SLUG", "")
+    with Client() as c:
+        entry = c.get(f"/api/v1/orgs/{org}/agents/{args.agent}/learnings/entries/{args.id_or_slug}")
+    if args.json:
+        import json
+        print(json.dumps(entry, indent=2))
+        return
+    print(f"# {entry['title']}\n")
+    print(f"id: {entry['id']}  slug: {entry['slug']}  topic: {entry['topic']}")
+    if entry.get("tags"):
+        print(f"tags: {', '.join(entry['tags'])}")
+    if entry.get("promoted_to"):
+        print(f"promoted_to: {entry['promoted_to']}")
+    print()
+    print(entry["body"])
 
 
 def cmd_learning_search(args: argparse.Namespace) -> None:
-    raise NotImplementedError("see Task 18")
+    org = args.org or os.environ.get("OPC_ORG_SLUG", "")
+    with Client() as c:
+        resp = c.post(
+            f"/api/v1/orgs/{org}/agents/{args.agent}/learnings/entries/search",
+            json={"query": args.query, "limit": args.limit, "include_promoted": args.include_promoted},
+        )
+    hits = resp.get("hits", [])
+    if args.json:
+        import json
+        print(json.dumps(hits, indent=2))
+        return
+    if not hits:
+        print("(no matches)")
+        return
+    for h in hits:
+        print(f"  {h['id']}  score={h['score']}  {h['title']}")
+        print(f"      {h['snippet']}")
 
 
 def cmd_learning_reindex(args: argparse.Namespace) -> None:
-    raise NotImplementedError("see Task 18")
+    org = args.org or os.environ.get("OPC_ORG_SLUG", "")
+    with Client() as c:
+        c.post(f"/api/v1/orgs/{org}/agents/{args.agent}/learnings/entries/reindex", json={})
+    print("ok: reindexed")
 
 
 def cmd_learning_add(args: argparse.Namespace) -> None:

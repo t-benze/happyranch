@@ -26,3 +26,26 @@ def test_learning_list_help_shows_filters():
     assert "--topic" in r.stdout
     assert "--tag" in r.stdout
     assert "--promoted" in r.stdout
+
+
+def test_cmd_learning_list_calls_correct_route(monkeypatch):
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def get(self, path, params=None):
+            captured["path"] = path
+            captured["params"] = params
+            return {"entries": []}
+
+    from src import cli
+    monkeypatch.setattr(cli, "Client", FakeClient)
+    args = type("A", (), dict(
+        org="my-org", agent="dev_agent",
+        topic="workflow", tag=None, promoted=False, not_promoted=False, json=False,
+    ))()
+    cli.cmd_learning_list(args)
+    assert captured["path"] == "/api/v1/orgs/my-org/agents/dev_agent/learnings/entries/"
+    assert captured["params"]["topic"] == "workflow"
