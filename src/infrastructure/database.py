@@ -349,6 +349,17 @@ class Database:
             "ON tasks(dispatched_from_talk_id) "
             "WHERE dispatched_from_talk_id IS NOT NULL"
         )
+        try:
+            self._conn.execute(
+                "ALTER TABLE tasks ADD COLUMN dispatched_from_thread_id TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_dispatched_from_thread_id "
+            "ON tasks(dispatched_from_thread_id) "
+            "WHERE dispatched_from_thread_id IS NOT NULL"
+        )
         # kind column for escalation_notifications: 'escalation' (default) or
         # 'failure'. Additive; existing rows keep the default.
         try:
