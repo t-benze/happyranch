@@ -449,6 +449,7 @@ class Database:
             task.parent_task_id,
             task.revisit_of_task_id,
             task.dispatched_from_talk_id,
+            task.dispatched_from_thread_id,
             task.block_kind.value if task.block_kind else None,
             task.note,
             task.orchestration_step_count,
@@ -463,18 +464,20 @@ class Database:
             self._conn.execute(
                 """INSERT INTO tasks (id, type, status, assigned_agent, team, brief,
                    revision_count, created_at, updated_at, completed_at, parent_task_id,
-                   revisit_of_task_id, dispatched_from_talk_id, block_kind, note,
+                   revisit_of_task_id, dispatched_from_talk_id, dispatched_from_thread_id,
+                   block_kind, note,
                    orchestration_step_count, session_timeout_seconds)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (params[0], "general") + params[1:],
             )
         else:
             self._conn.execute(
                 """INSERT INTO tasks (id, status, assigned_agent, team, brief,
                    revision_count, created_at, updated_at, completed_at, parent_task_id,
-                   revisit_of_task_id, dispatched_from_talk_id, block_kind, note,
+                   revisit_of_task_id, dispatched_from_talk_id, dispatched_from_thread_id,
+                   block_kind, note,
                    orchestration_step_count, session_timeout_seconds)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 params,
             )
         self._conn.commit()
@@ -498,6 +501,7 @@ class Database:
             parent_task_id=row["parent_task_id"],
             revisit_of_task_id=row["revisit_of_task_id"],
             dispatched_from_talk_id=row["dispatched_from_talk_id"],
+            dispatched_from_thread_id=row["dispatched_from_thread_id"],
             block_kind=row["block_kind"],
             note=row["note"],
             orchestration_step_count=row["orchestration_step_count"] or 0,
@@ -526,6 +530,7 @@ class Database:
                 parent_task_id=row["parent_task_id"],
                 revisit_of_task_id=row["revisit_of_task_id"],
                 dispatched_from_talk_id=row["dispatched_from_talk_id"],
+                dispatched_from_thread_id=row["dispatched_from_thread_id"],
                 block_kind=row["block_kind"],
                 note=row["note"],
                 orchestration_step_count=row["orchestration_step_count"] or 0,
@@ -671,6 +676,7 @@ class Database:
                 parent_task_id=row["parent_task_id"],
                 revisit_of_task_id=row["revisit_of_task_id"],
                 dispatched_from_talk_id=row["dispatched_from_talk_id"],
+                dispatched_from_thread_id=row["dispatched_from_thread_id"],
                 block_kind=row["block_kind"],
                 note=row["note"],
                 orchestration_step_count=row["orchestration_step_count"] or 0,
