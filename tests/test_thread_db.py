@@ -174,3 +174,77 @@ def test_append_thread_system_message(tmp_path):
     )
     msgs = db.list_thread_messages("THR-001")
     assert msgs[0].system_payload["kind_tag"] == "participant_added"
+
+
+def test_mint_thread_invocation(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    assert inv.status is ThreadInvocationStatus.PENDING
+    assert len(inv.invocation_token) >= 16
+    assert inv.purpose is ThreadInvocationPurpose.REPLY
+
+
+def test_get_pending_invocation_by_token(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    found = db.get_pending_invocation(inv.invocation_token)
+    assert found is not None
+    assert found.agent_name == "alice"
+    assert db.get_pending_invocation("nonsense") is None
+
+
+def test_consume_invocation_marks_consumed(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    assert db.consume_invocation(inv.invocation_token) is True
+    assert db.consume_invocation(inv.invocation_token) is False
+    assert db.get_pending_invocation(inv.invocation_token) is None
+
+
+def test_record_dispatch_on_invocation(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    assert db.record_dispatch_on_invocation(inv.invocation_token, task_id="TASK-009") is True
+    assert db.record_dispatch_on_invocation(inv.invocation_token, task_id="TASK-010") is False
+
+
+def test_reap_pending_invocations(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="a",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="b",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.BOOTSTRAP,
+    )
+    db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="c",
+        triggering_seq=2, purpose=ThreadInvocationPurpose.CLOSE_OUT,
+    )
+    reaped = db.reap_pending_invocations(
+        "THR-001",
+        purposes=[ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP],
+        decline_reason="archive_started",
+    )
+    assert reaped == 2
+    pending = db.list_thread_invocations("THR-001", status=ThreadInvocationStatus.PENDING)
+    assert len(pending) == 1
+    assert pending[0].agent_name == "c"

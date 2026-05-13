@@ -1505,6 +1505,167 @@ class Database:
         )
 
     @_synchronized
+    def mint_thread_invocation(
+        self,
+        *,
+        thread_id: str,
+        agent_name: str,
+        triggering_seq: int,
+        purpose: ThreadInvocationPurpose,
+    ) -> ThreadInvocation:
+        import uuid as _uuid
+        token = _uuid.uuid4().hex
+        now = _now().isoformat()
+        cursor = self._conn.execute(
+            "INSERT INTO thread_invocations (thread_id, agent_name, "
+            "invocation_token, triggering_seq, purpose, status, enqueued_at) "
+            "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+            (thread_id, agent_name, token, triggering_seq, purpose.value, now),
+        )
+        self._conn.commit()
+        return ThreadInvocation(
+            id=cursor.lastrowid,
+            thread_id=thread_id,
+            agent_name=agent_name,
+            invocation_token=token,
+            triggering_seq=triggering_seq,
+            purpose=purpose,
+            status=ThreadInvocationStatus.PENDING,
+            enqueued_at=datetime.fromisoformat(now),
+        )
+
+    def _row_to_invocation(self, row) -> ThreadInvocation:
+        return ThreadInvocation(
+            id=row["id"],
+            thread_id=row["thread_id"],
+            agent_name=row["agent_name"],
+            invocation_token=row["invocation_token"],
+            triggering_seq=row["triggering_seq"],
+            purpose=ThreadInvocationPurpose(row["purpose"]),
+            status=ThreadInvocationStatus(row["status"]),
+            enqueued_at=datetime.fromisoformat(row["enqueued_at"]),
+            started_at=datetime.fromisoformat(row["started_at"]) if row["started_at"] else None,
+            consumed_at=datetime.fromisoformat(row["consumed_at"]) if row["consumed_at"] else None,
+            session_id=row["session_id"],
+            dispatched_task_id=row["dispatched_task_id"],
+            decline_reason=row["decline_reason"],
+        )
+
+    @_synchronized
+    def get_pending_invocation(self, token: str) -> ThreadInvocation | None:
+        cursor = self._conn.execute(
+            "SELECT * FROM thread_invocations "
+            "WHERE invocation_token = ? AND status = 'pending'",
+            (token,),
+        )
+        row = cursor.fetchone()
+        return self._row_to_invocation(row) if row else None
+
+    @_synchronized
+    def get_invocation_any_status(self, token: str) -> ThreadInvocation | None:
+        cursor = self._conn.execute(
+            "SELECT * FROM thread_invocations WHERE invocation_token = ?",
+            (token,),
+        )
+        row = cursor.fetchone()
+        return self._row_to_invocation(row) if row else None
+
+    @_synchronized
+    def consume_invocation(self, token: str) -> bool:
+        cursor = self._conn.execute(
+            "UPDATE thread_invocations SET status = 'consumed', "
+            "consumed_at = ? WHERE invocation_token = ? AND status = 'pending'",
+            (_now().isoformat(), token),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    @_synchronized
+    def record_dispatch_on_invocation(
+        self, token: str, *, task_id: str
+    ) -> bool:
+        cursor = self._conn.execute(
+            "UPDATE thread_invocations SET dispatched_task_id = ? "
+            "WHERE invocation_token = ? AND status = 'pending' "
+            "AND dispatched_task_id IS NULL",
+            (task_id, token),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    @_synchronized
+    def fail_invocation(
+        self, token: str, *, status: ThreadInvocationStatus, decline_reason: str
+    ) -> bool:
+        cursor = self._conn.execute(
+            "UPDATE thread_invocations SET status = ?, decline_reason = ?, "
+            "consumed_at = ? WHERE invocation_token = ? AND status = 'pending'",
+            (status.value, decline_reason, _now().isoformat(), token),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    @_synchronized
+    def stamp_invocation_started(
+        self, token: str, *, session_id: str | None
+    ) -> None:
+        self._conn.execute(
+            "UPDATE thread_invocations SET started_at = ?, session_id = ? "
+            "WHERE invocation_token = ? AND status = 'pending'",
+            (_now().isoformat(), session_id, token),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def list_thread_invocations(
+        self,
+        thread_id: str,
+        *,
+        status: ThreadInvocationStatus | None = None,
+    ) -> list[ThreadInvocation]:
+        if status is not None:
+            cursor = self._conn.execute(
+                "SELECT * FROM thread_invocations "
+                "WHERE thread_id = ? AND status = ? ORDER BY id",
+                (thread_id, status.value),
+            )
+        else:
+            cursor = self._conn.execute(
+                "SELECT * FROM thread_invocations WHERE thread_id = ? ORDER BY id",
+                (thread_id,),
+            )
+        return [self._row_to_invocation(r) for r in cursor.fetchall()]
+
+    @_synchronized
+    def reap_pending_invocations(
+        self,
+        thread_id: str,
+        *,
+        purposes: list[ThreadInvocationPurpose] | None = None,
+        decline_reason: str,
+    ) -> int:
+        now = _now().isoformat()
+        if purposes is None:
+            cursor = self._conn.execute(
+                "UPDATE thread_invocations SET status = 'failed', "
+                "decline_reason = ?, consumed_at = ? "
+                "WHERE thread_id = ? AND status = 'pending'",
+                (decline_reason, now, thread_id),
+            )
+        else:
+            placeholders = ",".join("?" * len(purposes))
+            values = [decline_reason, now, thread_id] + [p.value for p in purposes]
+            cursor = self._conn.execute(
+                f"UPDATE thread_invocations SET status = 'failed', "
+                f"decline_reason = ?, consumed_at = ? "
+                f"WHERE thread_id = ? AND status = 'pending' "
+                f"AND purpose IN ({placeholders})",
+                values,
+            )
+        self._conn.commit()
+        return cursor.rowcount
+
+    @_synchronized
     def insert_talk(self, talk: TalkRecord) -> None:
         self._conn.execute(
             """INSERT INTO talks (id, agent_name, started_at, ended_at, status,
