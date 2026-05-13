@@ -213,6 +213,8 @@ Per-org, prefix: `/api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries`:
 
 **Auth note for v1:** the daemon uses a single shared bearer token (`require_token`) with no per-agent identity binding — same model as every other agent route. Agents *cannot* be prevented at the HTTP layer from writing to another agent's learnings; the practical isolation is at the CLI permission layer (the agent's bootstrap doc directs them to call `opc learning ... --agent <self>`, and the `Bash(opc:*)` allow rule constrains the agent's shell surface but does not authenticate identity). This matches the current `append_learning` route's posture. Per-agent identity binding is tracked as a system-wide follow-up that would touch every agent route, not just learnings.
 
+**Pre-migration guard:** every new-format route checks for the `learnings/` directory before doing any work. If it does not exist, the route returns **412 Precondition Failed** with `{error: "workspace_not_migrated", migrate_first: true}`. The route does NOT auto-create the directory; doing so would silently flip the workspace to "migrated" state and brick the bootstrap inlining of any existing flat `learnings.md`. The migration task (§7.1) is the only sanctioned creator of `learnings/` for an existing workspace.
+
 The existing `POST /api/v1/orgs/{slug}/agents/{agent_name}/learnings` (single-line `{text}` append) is **deprecated** but stays mounted for backward compat:
 
 - If the workspace has a `learnings/` directory (post-migration), the legacy endpoint returns 410 Gone with `{migrate_to: "POST /agents/{name}/learnings/entries"}`.
@@ -281,16 +283,24 @@ The agent runs this in its own session and dispatches add-after-add. The orchest
 
 ### 7.2 Atomic-flip semantics
 
-Migration is "done" for a workspace the moment the `learnings/` directory exists AND `learnings.md` has been renamed to `learnings.legacy.md`. From that point:
+Migration is "done" for a workspace the moment the `learnings/` directory exists. From that point:
 - The deprecated `POST .../learnings` (single-line `text`) returns 410.
 - The new structured routes are live.
 - The bootstrap adapter inlines `learnings/_index.md` instead of `learnings.md`.
 
 Workspaces without a `learnings/` directory continue to use the old code path. There is no global flip-day.
 
-### 7.3 Default for new workspaces
+**The migration task is responsible for creating `learnings/` AND renaming `learnings.md` → `learnings.legacy.md` as the final step.** Until the rename happens, the workspace appears post-migration to the route layer (`learnings/` exists) but the agent's prior knowledge is still trapped in `learnings.md`. To prevent this window from silently bricking the agent, the migration brief (§7.1) explicitly orders: file every entry first, verify `_index.md` looks right, *then* rename the flat file. If a migration task crashes mid-flight, the founder restarts it; the agent skips already-filed IDs and finishes.
 
-`PersistentWorkspaceSetup.ensure` is updated to create `learnings/` with a starter `_index.md` for any new workspace. New agents never see the flat `learnings.md`.
+### 7.3 Default for new workspaces vs. existing ones
+
+`PersistentWorkspaceSetup.ensure` differentiates by current state:
+
+- **No `learnings.md` and no `learnings/`** → brand-new workspace. Create `learnings/` with empty `_index.md`. New agents start on the new layout from day one.
+- **`learnings.md` exists, no `learnings/`** → pre-migration legacy workspace. Leave both untouched. Existing flat-file flow continues until the founder dispatches a migration task.
+- **`learnings/` exists** → already migrated. Idempotently regenerate `_index.md` if it's missing or stale; leave `learnings.legacy.md` untouched.
+
+The critical rule is: **`ensure()` never creates `learnings/` in a workspace that already has a non-empty `learnings.md`.** That guarantee is what makes the atomic-flip safe across daemon restarts: existing agents with real content stay legacy until their migration task runs, never flipped silently.
 
 ## 8. Schema + audit changes
 
