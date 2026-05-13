@@ -234,7 +234,7 @@ def test_promote_sets_promoted_to_and_stub_body(store: LearningsStore):
     store.write_entry(_make_entry(id="LRN-001", slug="a", body="Original body\n"), agent="z")
     res = store.promote("LRN-001", kb_slug="my-precedent", agent="founder")
     assert res.promoted_to == "my-precedent"
-    assert "See KB precedent: my-precedent" in res.body
+    assert "See KB precedent: `my-precedent`" in res.body
     assert "Original body" not in res.body  # body replaced with stub
     assert res.updated_by == "founder"
 
@@ -246,9 +246,10 @@ def test_promote_404_when_missing(store: LearningsStore):
 
 def test_promote_idempotent_when_already_promoted_to_same_slug(store: LearningsStore):
     store.write_entry(_make_entry(id="LRN-001", slug="a"), agent="z")
-    store.promote("LRN-001", kb_slug="kb-a", agent="z")
-    res = store.promote("LRN-001", kb_slug="kb-a", agent="z")
-    assert res.promoted_to == "kb-a"
+    res1 = store.promote("LRN-001", kb_slug="kb-a", agent="z")
+    res2 = store.promote("LRN-001", kb_slug="kb-a", agent="z")
+    assert res2.promoted_to == "kb-a"
+    assert res2.updated_at == res1.updated_at  # no re-stamp on idempotent re-promote
 
 
 def test_promote_refuses_change_when_already_promoted_to_different_slug(store: LearningsStore):

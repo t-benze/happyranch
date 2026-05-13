@@ -357,9 +357,11 @@ class LearningsStore:
         existing = self._parse(existing_path.read_text())
         if existing.promoted_to is not None and existing.promoted_to != kb_slug:
             raise PromotedLocked(id, existing.promoted_to)
+        if existing.promoted_to == kb_slug:
+            return existing  # truly idempotent: no file write, no timestamp churn
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         stub_body = (
-            f"See KB precedent: {kb_slug}.\n\n"
+            f"See KB precedent: `{kb_slug}`.\n\n"
             f"_Promoted from local learning {id} on {now}._\n"
         )
         stamped = LearningEntry(**{**existing.__dict__})
