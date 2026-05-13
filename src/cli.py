@@ -736,6 +736,34 @@ def cmd_learning(args: argparse.Namespace) -> None:
         return
 
 
+def cmd_learning_list(args: argparse.Namespace) -> None:
+    raise NotImplementedError("see Task 18")
+
+
+def cmd_learning_get(args: argparse.Namespace) -> None:
+    raise NotImplementedError("see Task 18")
+
+
+def cmd_learning_search(args: argparse.Namespace) -> None:
+    raise NotImplementedError("see Task 18")
+
+
+def cmd_learning_reindex(args: argparse.Namespace) -> None:
+    raise NotImplementedError("see Task 18")
+
+
+def cmd_learning_add(args: argparse.Namespace) -> None:
+    raise NotImplementedError("see Task 19")
+
+
+def cmd_learning_update(args: argparse.Namespace) -> None:
+    raise NotImplementedError("see Task 19")
+
+
+def cmd_learning_promote(args: argparse.Namespace) -> None:
+    raise NotImplementedError("see Task 19")
+
+
 def cmd_progress(args: argparse.Namespace) -> None:
     """Agent callback: emit a mid-task progress note.
 
@@ -1851,13 +1879,75 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Relative path to the artifact directory under the agent workspace")
     p_rep.set_defaults(func=cmd_report_completion)
 
-    p_learn = sub.add_parser("learning", help="Agent callback: append a learning")
-    p_learn.add_argument("--org", required=True, help="Org slug (required for agent callbacks)")
-    p_learn.add_argument("--task-id", required=True)
-    p_learn.add_argument("--session-id", required=True)
-    p_learn.add_argument("--agent", required=True)
-    p_learn.add_argument("--text", required=True)
+    # ---- learning ----------------------------------------------------------
+    p_learn = sub.add_parser("learning", help="Per-agent learnings (verb-dispatched)")
+    learn_sub = p_learn.add_subparsers(dest="learn_verb")
+
+    # Legacy: `opc learning --agent X --text "..."` keeps working
+    p_learn.add_argument("--org", required=False)
+    p_learn.add_argument("--agent", required=False)
+    p_learn.add_argument("--text", required=False)
+    p_learn.add_argument("--task-id", required=False)
+    p_learn.add_argument("--session-id", required=False)
     p_learn.set_defaults(func=cmd_learning)
+
+    # list
+    pl = learn_sub.add_parser("list", help="List learnings")
+    pl.add_argument("--org", required=False)
+    pl.add_argument("--agent", required=True)
+    pl.add_argument("--topic")
+    pl.add_argument("--tag")
+    pl.add_argument("--promoted", action="store_true")
+    pl.add_argument("--not-promoted", action="store_true")
+    pl.add_argument("--json", action="store_true")
+    pl.set_defaults(func=cmd_learning_list)
+
+    # get
+    pg = learn_sub.add_parser("get", help="Get a learning by ID or slug")
+    pg.add_argument("--org", required=False)
+    pg.add_argument("--agent", required=True)
+    pg.add_argument("id_or_slug")
+    pg.add_argument("--json", action="store_true")
+    pg.set_defaults(func=cmd_learning_get)
+
+    # search
+    ps = learn_sub.add_parser("search", help="Substring search over learnings")
+    ps.add_argument("--org", required=False)
+    ps.add_argument("--agent", required=True)
+    ps.add_argument("query")
+    ps.add_argument("--limit", type=int, default=20)
+    ps.add_argument("--include-promoted", action="store_true")
+    ps.add_argument("--json", action="store_true")
+    ps.set_defaults(func=cmd_learning_search)
+
+    # add
+    pa = learn_sub.add_parser("add", help="Add a new learning (file payload)")
+    pa.add_argument("--org", required=False)
+    pa.add_argument("--agent", required=True)
+    pa.add_argument("--from-file", required=True)
+    pa.set_defaults(func=cmd_learning_add)
+
+    # update
+    pu = learn_sub.add_parser("update", help="Update an existing learning by ID")
+    pu.add_argument("--org", required=False)
+    pu.add_argument("--agent", required=True)
+    pu.add_argument("id")
+    pu.add_argument("--from-file", required=True)
+    pu.set_defaults(func=cmd_learning_update)
+
+    # promote
+    pp = learn_sub.add_parser("promote", help="Promote a learning to a KB precedent")
+    pp.add_argument("--org", required=False)
+    pp.add_argument("--agent", required=True)
+    pp.add_argument("id")
+    pp.add_argument("--kb-slug", required=True)
+    pp.set_defaults(func=cmd_learning_promote)
+
+    # reindex
+    pr = learn_sub.add_parser("reindex", help="Regenerate _index.md")
+    pr.add_argument("--org", required=False)
+    pr.add_argument("--agent", required=True)
+    pr.set_defaults(func=cmd_learning_reindex)
 
     p_prog = sub.add_parser(
         "progress", help="Agent callback: emit a mid-task progress note"
