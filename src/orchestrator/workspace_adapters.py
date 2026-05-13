@@ -81,6 +81,60 @@ def _copy_skill_file(src: Path, dst: Path, *, slug: str) -> None:
         shutil.copy2(src, dst)
 
 
+def _learnings_bootstrap_section(workspace: Path) -> list[str]:
+    """Returns the 'Persistent Files' + 'Your Learnings' block.
+
+    Branches on workspace state: flat learnings.md vs migrated learnings/.
+    """
+    flat = workspace / "learnings.md"
+    learnings_dir = workspace / "learnings"
+    index = learnings_dir / "_index.md"
+
+    if learnings_dir.exists() and index.exists():
+        index_body = index.read_text()
+        return [
+            "## Persistent Files\n",
+            "- `learnings/_index.md` -- index of your operational learnings",
+            "  (full bodies via `opc learning get`)",
+            "- `task_history.md` -- read-only, updated by orchestrator\n",
+            "## Your Learnings\n",
+            index_body,
+            "\nFetch any entry's body:",
+            "```",
+            "opc learning get --org <slug> --agent <you> <LRN-NNN-or-slug>",
+            "```",
+            "Write a new learning (file payload with slug/title/topic/tags/body):",
+            "```",
+            "opc learning add --org <slug> --agent <you> --from-file <path>",
+            "```",
+            "Update an existing learning:",
+            "```",
+            "opc learning update --org <slug> --agent <you> <LRN-NNN> --from-file <path>",
+            "```",
+            "Promote a durable cross-agent rule to a KB precedent (one-way):",
+            "```",
+            "opc learning promote --org <slug> --agent <you> <LRN-NNN> --kb-slug <slug>",
+            "```\n",
+        ]
+    if flat.exists():
+        flat_body = flat.read_text()
+        return [
+            "## Persistent Files\n",
+            "- `learnings.md` -- your accumulated operational learnings (legacy flat-file format)",
+            "- `task_history.md` -- read-only, updated by orchestrator\n",
+            "## Your Learnings\n",
+            flat_body + "\n",
+            "Append a new line via `opc learning --agent <you> --text \"...\"`.",
+            "_The structured per-entry format is available once this workspace is migrated._\n",
+        ]
+    # Brand-new workspace, ensure() should have created learnings/ already.
+    return [
+        "## Persistent Files\n",
+        "- `learnings/_index.md` -- index of your operational learnings (empty)",
+        "- `task_history.md` -- read-only, updated by orchestrator\n",
+    ]
+
+
 def _format_allow_rule(prefix: str, *, cli: bool) -> str:
     """Render a Bash prefix in one of the two equivalent permission syntaxes.
 
@@ -262,6 +316,7 @@ class ClaudeWorkspaceAdapter:
         sections = self._build_sections(
             agent_name,
             system_prompt,
+            workspace=workspace,
             include_start_task=True,
             repo_refresh_note=(
                 "repositories cloned under `repos/`. Each is kept fresh via the "
@@ -284,6 +339,7 @@ class ClaudeWorkspaceAdapter:
         agent_name: str,
         system_prompt: str,
         *,
+        workspace: Path,
         include_start_task: bool,
         repo_refresh_note: str,
         callback_note: str,
@@ -296,9 +352,7 @@ class ClaudeWorkspaceAdapter:
             "## Available Repositories\n",
             "See `agent.yaml` in this workspace for the authoritative list of",
             repo_refresh_note + "\n",
-            "## Persistent Files\n",
-            "- `learnings.md` -- your accumulated operational learnings",
-            "- `task_history.md` -- read-only, updated by orchestrator\n",
+            *_learnings_bootstrap_section(workspace),
             "## Knowledge Base (shared across agents)\n",
             "Path: `<runtime>/kb/`. Read: everyone. Write: any agent (via `--from-file`).",
             "Delete: any team manager (audited); founder via `--as-founder`. Full rules: `protocol/06-knowledge-base.md`.",
@@ -397,6 +451,7 @@ class CodexWorkspaceAdapter:
         sections = ClaudeWorkspaceAdapter(self._settings, self._paths, slug=self._slug)._build_sections(
             agent_name,
             system_prompt,
+            workspace=workspace,
             include_start_task=True,
             repo_refresh_note=(
                 "repositories cloned under `repos/`. Refresh repository state "

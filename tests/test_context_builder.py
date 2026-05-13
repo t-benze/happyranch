@@ -133,7 +133,8 @@ def test_build_claude_md_contains_persistent_file_pointers(test_settings, tmp_di
         system_prompt="You are the Dev Agent.",
     )
     content = (workspace / "CLAUDE.md").read_text()
-    assert "learnings.md" in content
+    # Brand-new workspace: no learnings state, so _index.md pointer is shown.
+    assert "learnings/_index.md" in content
     assert "scorecard.md" not in content
     assert "task_history.md" in content
     assert "recent_tasks.md" not in content
