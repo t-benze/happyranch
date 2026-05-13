@@ -30,3 +30,30 @@ def test_dispatched_from_talk_id_round_trips(tmp_path):
     fetched = db.get_task("TASK-002")
     assert fetched is not None
     assert fetched.dispatched_from_talk_id == "TALK-1"
+
+
+from src.models import (
+    ThreadInvocation, ThreadInvocationPurpose, ThreadInvocationStatus,
+    ThreadMessage, ThreadMessageKind, ThreadParticipant, ThreadRecord,
+    ThreadStatus,
+)
+
+
+def test_thread_models_roundtrip():
+    t = ThreadRecord(id="THR-001", subject="Refund policy")
+    assert t.status is ThreadStatus.OPEN
+    assert t.turn_cap == 500
+    p = ThreadParticipant(thread_id="THR-001", agent_name="dev")
+    assert p.added_by == "founder"
+    m = ThreadMessage(
+        thread_id="THR-001", seq=1, speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+        addressed_to=["@all"],
+    )
+    assert m.kind is ThreadMessageKind.MESSAGE
+    inv = ThreadInvocation(
+        thread_id="THR-001", agent_name="dev",
+        invocation_token="abc", triggering_seq=1,
+        purpose=ThreadInvocationPurpose.REPLY,
+    )
+    assert inv.status is ThreadInvocationStatus.PENDING
