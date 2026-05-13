@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from src.infrastructure.thread_store import ThreadStore
+from src.infrastructure.thread_store import ThreadStore, render_transcript_body
+from src.models import ThreadMessage, ThreadMessageKind
 
 
 def test_write_transcript_creates_file(tmp_path):
@@ -44,3 +45,40 @@ def test_write_transcript_is_atomic(tmp_path):
     )
     tmps = list((tmp_path / "threads").glob(".THR-001.*.md.tmp"))
     assert tmps == []
+
+
+def test_render_transcript_renders_message_decline_system():
+    msgs = [
+        ThreadMessage(
+            thread_id="THR-001", seq=1, speaker="founder",
+            kind=ThreadMessageKind.MESSAGE,
+            body_markdown="should we cap refunds at 30 days?",
+            addressed_to=["@all"],
+        ),
+        ThreadMessage(
+            thread_id="THR-001", seq=2, speaker="alice",
+            kind=ThreadMessageKind.MESSAGE,
+            body_markdown="Alipay 60d, Stripe 120d.",
+        ),
+        ThreadMessage(
+            thread_id="THR-001", seq=3, speaker="bob",
+            kind=ThreadMessageKind.DECLINE,
+            decline_reason="alice covered it",
+        ),
+        ThreadMessage(
+            thread_id="THR-001", seq=4, speaker="alice",
+            kind=ThreadMessageKind.SYSTEM,
+            system_payload={
+                "kind_tag": "task_dispatched",
+                "task_id": "TASK-091",
+                "target_agent": "dev",
+                "brief_preview": "Cap at 45 days",
+            },
+        ),
+    ]
+    out = render_transcript_body(msgs)
+    assert "## Message 1 — founder" in out
+    assert "To: @all" in out
+    assert "## Message 3 — bob" in out
+    assert "declined" in out and "alice covered it" in out
+    assert "system: dispatched TASK-091 to dev" in out

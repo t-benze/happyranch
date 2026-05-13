@@ -63,3 +63,48 @@ class ThreadStore:
                 os.unlink(tmp_name)
             raise
         return target
+
+
+def render_transcript_body(messages: list) -> str:
+    """Render a chronological list of ThreadMessage into markdown."""
+    lines: list[str] = ["# Transcript", ""]
+    for m in messages:
+        ts = m.created_at.isoformat() if hasattr(m.created_at, "isoformat") else str(m.created_at)
+        kind_name = m.kind.value if hasattr(m.kind, "value") else str(m.kind)
+        if kind_name == "message":
+            header = f"## Message {m.seq} — {m.speaker} · {ts}"
+            lines.append(header)
+            if m.addressed_to:
+                lines.append(f"> To: {', '.join(m.addressed_to)}")
+                lines.append("")
+            lines.append(m.body_markdown or "")
+            lines.append("")
+        elif kind_name == "decline":
+            lines.append(f"## Message {m.seq} — {m.speaker} · {ts}")
+            lines.append(f"> 👁 declined: {m.decline_reason or ''}")
+            lines.append("")
+        elif kind_name == "system":
+            payload = m.system_payload or {}
+            tag = payload.get("kind_tag", "system")
+            if tag == "participant_added":
+                rendered = f"founder added {payload.get('agent_name')} to the thread"
+            elif tag == "task_dispatched":
+                tgt = payload.get("target_agent")
+                tid = payload.get("task_id")
+                brief = payload.get("brief_preview", "")
+                rendered = f"system: dispatched {tid} to {tgt}" + (
+                    f" — {brief}" if brief else ""
+                )
+            elif tag == "turn_cap_extended":
+                rendered = (
+                    f"system: turn cap extended from {payload.get('prior_cap')} "
+                    f"to {payload.get('new_cap')}"
+                )
+            elif tag == "archived":
+                rendered = "system: thread archived"
+            else:
+                rendered = f"system: {tag}"
+            lines.append(f"## Message {m.seq} — {m.speaker} · {ts}")
+            lines.append(f"> {rendered}")
+            lines.append("")
+    return "\n".join(lines)
