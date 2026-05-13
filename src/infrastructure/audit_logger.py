@@ -542,6 +542,154 @@ class AuditLogger:
             payload={"id": id, "kb_slug": kb_slug},
         )
 
+    # NOTE: audit_log.task_id doubles as a generic scope id. Thread events store
+    # the thread id (THR-NNN) in that column, matching the talk_* pattern above.
+
+    def log_thread_started(
+        self,
+        thread_id: str,
+        *,
+        subject: str,
+        initial_recipients: list[str],
+        forwarded_from_id: str | None,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=thread_id,
+            agent="founder",
+            action="thread_started",
+            payload={
+                "subject": subject,
+                "initial_recipients": initial_recipients,
+                "forwarded_from_id": forwarded_from_id,
+            },
+        )
+
+    def log_thread_message_sent(
+        self,
+        thread_id: str,
+        *,
+        seq: int,
+        speaker: str,
+        addressed_to: list[str] | None,
+        kind: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=thread_id,
+            agent=speaker,
+            action="thread_message_sent",
+            payload={"seq": seq, "addressed_to": addressed_to, "kind": kind},
+        )
+
+    def log_thread_participant_added(
+        self,
+        thread_id: str,
+        *,
+        agent_name: str,
+        added_by: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=thread_id,
+            agent=added_by,
+            action="thread_participant_added",
+            payload={"agent_name": agent_name, "added_by": added_by},
+        )
+
+    def log_thread_dispatch(
+        self,
+        thread_id: str,
+        *,
+        task_id: str,
+        dispatcher: str,
+        target_agent: str,
+        team: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=thread_id,
+            agent=dispatcher,
+            action="thread_dispatch",
+            payload={
+                "task_id": task_id,
+                "dispatcher": dispatcher,
+                "target_agent": target_agent,
+                "team": team,
+            },
+        )
+
+    def log_thread_archive_requested(
+        self,
+        thread_id: str,
+        *,
+        close_out_count: int,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=thread_id,
+            agent="founder",
+            action="thread_archive_requested",
+            payload={"close_out_count": close_out_count},
+        )
+
+    def log_thread_archived(
+        self,
+        thread_id: str,
+        *,
+        new_learnings_total: int,
+        new_kb_slugs: list[str],
+        turns_used: int,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=thread_id,
+            agent="founder",
+            action="thread_archived",
+            payload={
+                "new_learnings_total": new_learnings_total,
+                "new_kb_slugs": new_kb_slugs,
+                "turns_used": turns_used,
+            },
+        )
+
+    def log_thread_abandoned(self, thread_id: str, *, reason: str) -> None:
+        self._db.insert_audit_log(
+            task_id=thread_id,
+            agent="founder",
+            action="thread_abandoned",
+            payload={"reason": reason},
+        )
+
+    def log_thread_close_out_received(
+        self,
+        thread_id: str,
+        *,
+        agent: str,
+        new_learnings_count: int,
+        new_kb_slugs: list[str],
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=thread_id,
+            agent=agent,
+            action="thread_close_out_received",
+            payload={
+                "new_learnings_count": new_learnings_count,
+                "new_kb_slugs": new_kb_slugs,
+            },
+        )
+
+    def log_thread_invocation_failed(
+        self,
+        thread_id: str,
+        *,
+        agent: str,
+        token: str,
+        purpose: str,
+        reason: str,
+        kind: str = "thread_invocation_failed",
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=thread_id,
+            agent=agent,
+            action=kind,
+            payload={"invocation_token": token[:8] + "…", "purpose": purpose, "reason": reason},
+        )
+
     def log_agent_backfilled(
         self,
         *,
