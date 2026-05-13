@@ -17,10 +17,12 @@ import lark_oapi as lark
 from src.config import Settings
 from src.daemon.event_bus import EventBus
 from src.daemon.sessions import SessionTracker
+from src.daemon.thread_queue import ThreadQueue
 from src.infrastructure.audit_logger import AuditLogger
 from src.infrastructure.database import Database
 from src.infrastructure.feishu.client import FeishuClient
 from src.infrastructure.feishu.notifier import EscalationNotifier
+from src.infrastructure.thread_store import ThreadStore
 from src.models import BlockKind, TaskStatus
 from src.orchestrator._paths import OrgPaths
 from src.orchestrator.orchestrator import Orchestrator
@@ -58,7 +60,9 @@ class OrgState:
     db_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     kb_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     teams_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    thread_queue: ThreadQueue = field(default_factory=ThreadQueue)
     event_bus: EventBus = field(init=False)
+    thread_store: ThreadStore = field(init=False)
 
     _TERMINAL_STATUS_TO_EVENT = {
         TaskStatus.COMPLETED: "task_complete",
@@ -77,6 +81,7 @@ class OrgState:
                 history.append(terminal)
             return history
         self.event_bus = EventBus(history_loader=loader)
+        self.thread_store = ThreadStore(self.root / "threads")
 
     def _synthesize_terminal_event(self, task) -> dict | None:
         if task.status in self._TERMINAL_STATUS_TO_EVENT:
