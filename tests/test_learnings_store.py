@@ -124,3 +124,36 @@ def test_write_entry_rejects_duplicate_id(store: LearningsStore):
     store.write_entry(_make_entry(id="LRN-001", slug="a"), agent="x")
     with pytest.raises(LearningIdExists):
         store.write_entry(_make_entry(id="LRN-001", slug="b"), agent="x")
+
+
+def test_list_entries_returns_summaries(store: LearningsStore):
+    store.write_entry(_make_entry(id="LRN-001", slug="a", topic="workflow", tags=["x"]), agent="z")
+    store.write_entry(_make_entry(id="LRN-002", slug="b", topic="env-trap", tags=["y"]), agent="z")
+    summaries = store.list_entries()
+    ids = sorted(s.id for s in summaries)
+    assert ids == ["LRN-001", "LRN-002"]
+
+
+def test_list_entries_filters_by_topic(store: LearningsStore):
+    store.write_entry(_make_entry(id="LRN-001", slug="a", topic="workflow"), agent="z")
+    store.write_entry(_make_entry(id="LRN-002", slug="b", topic="env-trap"), agent="z")
+    summaries = store.list_entries(topic="workflow")
+    assert [s.id for s in summaries] == ["LRN-001"]
+
+
+def test_list_entries_filters_by_tag(store: LearningsStore):
+    store.write_entry(_make_entry(id="LRN-001", slug="a", tags=["payment"]), agent="z")
+    store.write_entry(_make_entry(id="LRN-002", slug="b", tags=["dispatch"]), agent="z")
+    summaries = store.list_entries(tag="payment")
+    assert [s.id for s in summaries] == ["LRN-001"]
+
+
+def test_list_entries_filters_by_promoted(store: LearningsStore):
+    e1 = _make_entry(id="LRN-001", slug="a")
+    e2 = _make_entry(id="LRN-002", slug="b", promoted_to="some-kb-slug")
+    store.write_entry(e1, agent="z")
+    store.write_entry(e2, agent="z")
+    promoted = store.list_entries(promoted=True)
+    not_promoted = store.list_entries(promoted=False)
+    assert [s.id for s in promoted] == ["LRN-002"]
+    assert [s.id for s in not_promoted] == ["LRN-001"]

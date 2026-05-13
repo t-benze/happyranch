@@ -50,6 +50,17 @@ class PromotedLocked(ValueError):
 
 
 @dataclass
+class LearningSummary:
+    id: str
+    slug: str
+    title: str
+    topic: str
+    tags: list[str]
+    promoted_to: Optional[str]
+    updated_at: Optional[str]
+
+
+@dataclass
 class LearningEntry:
     id: str
     slug: str
@@ -200,6 +211,37 @@ class LearningsStore:
             updated_at=fm.get("updated_at"),
             body=body,
         )
+
+    def list_entries(
+        self,
+        topic: Optional[str] = None,
+        tag: Optional[str] = None,
+        promoted: Optional[bool] = None,
+    ) -> list[LearningSummary]:
+        out: list[LearningSummary] = []
+        for path in sorted(self._root.glob("LRN-*.md")):
+            try:
+                entry = self._parse(path.read_text())
+            except InvalidLearningEntry:
+                continue
+            if topic is not None and entry.topic != topic:
+                continue
+            if tag is not None and tag not in entry.tags:
+                continue
+            if promoted is True and entry.promoted_to is None:
+                continue
+            if promoted is False and entry.promoted_to is not None:
+                continue
+            out.append(LearningSummary(
+                id=entry.id,
+                slug=entry.slug,
+                title=entry.title,
+                topic=entry.topic,
+                tags=entry.tags,
+                promoted_to=entry.promoted_to,
+                updated_at=entry.updated_at,
+            ))
+        return out
 
     def _atomic_write(self, target: Path, content: str) -> None:
         fd, tmp_path = tempfile.mkstemp(
