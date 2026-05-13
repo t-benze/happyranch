@@ -88,6 +88,25 @@ class LearningsStore:
 
     _ID_FILE_RE = re.compile(r"^LRN-(\d{3,})-")
 
+    def _validate_entry_structure(self, entry: LearningEntry) -> None:
+        # Required fields (excluding id, which is server-allocated on add)
+        for required in ("slug", "title", "topic"):
+            val = getattr(entry, required, None)
+            if not val or not isinstance(val, str):
+                raise InvalidLearningEntry(
+                    "missing_frontmatter", f"missing field: {required}"
+                )
+        # Slug shape
+        if not SLUG_RE.match(entry.slug):
+            raise InvalidLearningEntry(
+                "invalid_slug", f"slug {entry.slug!r} fails regex"
+            )
+        # Body size
+        if len(entry.body.encode("utf-8")) > MAX_BODY_BYTES:
+            raise InvalidLearningEntry(
+                "entry_too_large", f"body exceeds {MAX_BODY_BYTES}B"
+            )
+
     def next_id(self) -> str:
         max_n = 0
         for path in self._root.glob("LRN-*.md"):

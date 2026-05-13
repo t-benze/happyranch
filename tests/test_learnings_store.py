@@ -50,3 +50,35 @@ def test_next_id_ignores_index_and_non_lrn_files(store: LearningsStore):
     (store.root / "README.md").write_text("not a learning")
     (store.root / "LRN-002-foo.md").write_text("---\nid: LRN-002\nslug: foo\ntitle: x\ntopic: t\n---\n")
     assert store.next_id() == "LRN-003"
+
+
+def _make_entry(**overrides) -> LearningEntry:
+    base = dict(
+        id="LRN-001",
+        slug="ok-slug",
+        title="Title",
+        topic="workflow",
+        body="body\n",
+    )
+    base.update(overrides)
+    return LearningEntry(**base)
+
+
+def test_validate_entry_requires_title_topic_slug(store: LearningsStore):
+    for missing in ("title", "topic", "slug"):
+        with pytest.raises(InvalidLearningEntry) as exc:
+            store._validate_entry_structure(_make_entry(**{missing: ""}))
+        assert exc.value.code == "missing_frontmatter"
+
+
+def test_validate_entry_rejects_oversized_body(store: LearningsStore):
+    big = "x" * (32 * 1024 + 1)
+    with pytest.raises(InvalidLearningEntry) as exc:
+        store._validate_entry_structure(_make_entry(body=big))
+    assert exc.value.code == "entry_too_large"
+
+
+def test_validate_entry_rejects_bad_slug(store: LearningsStore):
+    with pytest.raises(InvalidLearningEntry) as exc:
+        store._validate_entry_structure(_make_entry(slug="Bad Slug"))
+    assert exc.value.code == "invalid_slug"
