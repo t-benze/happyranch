@@ -7,11 +7,29 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from src.models import BlockKind, TalkRecord, TaskRecord, TaskStatus, TokenUsage
+from src.models import (
+    BlockKind,
+    TalkRecord,
+    TaskRecord,
+    TaskStatus,
+    ThreadInvocation,
+    ThreadInvocationPurpose,
+    ThreadInvocationStatus,
+    ThreadMessage,
+    ThreadMessageKind,
+    ThreadParticipant,
+    ThreadRecord,
+    ThreadStatus,
+    TokenUsage,
+)
 
 
 class LineageTooDeep(Exception):
     """Ancestor walk exceeded the safety bound; indicates data corruption."""
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _synchronized(method):
@@ -1286,6 +1304,72 @@ class Database:
         )
         n = (cursor.fetchone()["m"] or 0) + 1
         return f"THR-{n:03d}"
+
+    @_synchronized
+    def insert_thread(self, t: ThreadRecord) -> None:
+        self._conn.execute(
+            """INSERT INTO threads (
+                id, subject, started_at, archived_at, status,
+                forwarded_from_id, forwarded_from_kind,
+                turn_cap, turns_used, summary, new_kb_slugs_json,
+                transcript_path, archive_requested_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                t.id,
+                t.subject,
+                t.started_at.isoformat(),
+                t.archived_at.isoformat() if t.archived_at else None,
+                t.status.value,
+                t.forwarded_from_id,
+                t.forwarded_from_kind,
+                t.turn_cap,
+                t.turns_used,
+                t.summary,
+                json.dumps(t.new_kb_slugs) if t.new_kb_slugs else None,
+                t.transcript_path,
+                t.archive_requested_at.isoformat() if t.archive_requested_at else None,
+            ),
+        )
+        self._conn.commit()
+
+    def _row_to_thread(self, row) -> ThreadRecord:
+        return ThreadRecord(
+            id=row["id"],
+            subject=row["subject"],
+            status=ThreadStatus(row["status"]),
+            started_at=datetime.fromisoformat(row["started_at"]),
+            archived_at=datetime.fromisoformat(row["archived_at"]) if row["archived_at"] else None,
+            forwarded_from_id=row["forwarded_from_id"],
+            forwarded_from_kind=row["forwarded_from_kind"],
+            turn_cap=row["turn_cap"],
+            turns_used=row["turns_used"],
+            summary=row["summary"],
+            new_kb_slugs=json.loads(row["new_kb_slugs_json"]) if row["new_kb_slugs_json"] else [],
+            transcript_path=row["transcript_path"],
+            archive_requested_at=datetime.fromisoformat(row["archive_requested_at"]) if row["archive_requested_at"] else None,
+        )
+
+    @_synchronized
+    def get_thread(self, thread_id: str) -> ThreadRecord | None:
+        cursor = self._conn.execute(
+            "SELECT * FROM threads WHERE id = ?", (thread_id,)
+        )
+        row = cursor.fetchone()
+        return self._row_to_thread(row) if row else None
+
+    @_synchronized
+    def list_threads(self, *, status: str | None = None, limit: int = 50) -> list[ThreadRecord]:
+        if status:
+            cursor = self._conn.execute(
+                "SELECT * FROM threads WHERE status = ? ORDER BY started_at DESC LIMIT ?",
+                (status, limit),
+            )
+        else:
+            cursor = self._conn.execute(
+                "SELECT * FROM threads ORDER BY started_at DESC LIMIT ?",
+                (limit,),
+            )
+        return [self._row_to_thread(r) for r in cursor.fetchall()]
 
     @_synchronized
     def insert_talk(self, talk: TalkRecord) -> None:

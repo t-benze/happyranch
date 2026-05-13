@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from datetime import datetime, timezone
 
 from src.infrastructure.database import Database
 from src.models import TaskRecord
@@ -76,3 +77,30 @@ def test_next_thread_id_uses_max_suffix(tmp_path):
     )
     db._conn.commit()
     assert db.next_thread_id() == "THR-006"
+
+
+def test_insert_and_get_thread(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    t = ThreadRecord(id="THR-001", subject="Refund policy")
+    db.insert_thread(t)
+    got = db.get_thread("THR-001")
+    assert got is not None
+    assert got.id == "THR-001"
+    assert got.subject == "Refund policy"
+    assert got.status is ThreadStatus.OPEN
+    assert got.turn_cap == 500
+
+
+def test_get_thread_missing_returns_none(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    assert db.get_thread("THR-404") is None
+
+
+def test_list_threads_orders_by_started_desc(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    a = ThreadRecord(id="THR-001", subject="a", started_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    b = ThreadRecord(id="THR-002", subject="b", started_at=datetime(2026, 1, 5, tzinfo=timezone.utc))
+    db.insert_thread(a)
+    db.insert_thread(b)
+    rows = db.list_threads(limit=10)
+    assert [r.id for r in rows] == ["THR-002", "THR-001"]
