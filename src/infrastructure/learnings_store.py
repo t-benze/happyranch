@@ -329,6 +329,30 @@ class LearningsStore:
         end = min(len(body), idx + width // 2)
         return body[start:end].replace("\n", " ")
 
+    def promote(self, id: str, kb_slug: str, agent: str) -> LearningEntry:
+        self.validate_id(id)
+        if not kb_slug:
+            raise InvalidLearningEntry("kb_slug_missing", "kb_slug required")
+        existing_path = self._find_by_id(id)
+        if existing_path is None:
+            raise LearningNotFound(id)
+        existing = self._parse(existing_path.read_text())
+        if existing.promoted_to is not None and existing.promoted_to != kb_slug:
+            raise PromotedLocked(id, existing.promoted_to)
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        stub_body = (
+            f"See KB precedent: {kb_slug}.\n\n"
+            f"_Promoted from local learning {id} on {now}._\n"
+        )
+        stamped = LearningEntry(**{**existing.__dict__})
+        stamped.promoted_to = kb_slug
+        stamped.body = stub_body
+        stamped.updated_by = agent
+        stamped.updated_at = now
+        target = self.path_for(stamped.id, stamped.slug)
+        self._atomic_write(target, self._serialize(stamped))
+        return stamped
+
     def _atomic_write(self, target: Path, content: str) -> None:
         fd, tmp_path = tempfile.mkstemp(
             prefix=target.stem + ".", suffix=".tmp", dir=str(target.parent)

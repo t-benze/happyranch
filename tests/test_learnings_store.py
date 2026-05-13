@@ -214,3 +214,31 @@ def test_update_entry_rejects_promoted(store: LearningsStore):
 def test_update_entry_404_when_missing(store: LearningsStore):
     with pytest.raises(LearningNotFound):
         store.update_entry("LRN-999", _make_entry(id="LRN-999", slug="x"), agent="z")
+
+
+def test_promote_sets_promoted_to_and_stub_body(store: LearningsStore):
+    store.write_entry(_make_entry(id="LRN-001", slug="a", body="Original body\n"), agent="z")
+    res = store.promote("LRN-001", kb_slug="my-precedent", agent="founder")
+    assert res.promoted_to == "my-precedent"
+    assert "See KB precedent: my-precedent" in res.body
+    assert "Original body" not in res.body  # body replaced with stub
+    assert res.updated_by == "founder"
+
+
+def test_promote_404_when_missing(store: LearningsStore):
+    with pytest.raises(LearningNotFound):
+        store.promote("LRN-999", kb_slug="x", agent="z")
+
+
+def test_promote_idempotent_when_already_promoted_to_same_slug(store: LearningsStore):
+    store.write_entry(_make_entry(id="LRN-001", slug="a"), agent="z")
+    store.promote("LRN-001", kb_slug="kb-a", agent="z")
+    res = store.promote("LRN-001", kb_slug="kb-a", agent="z")
+    assert res.promoted_to == "kb-a"
+
+
+def test_promote_refuses_change_when_already_promoted_to_different_slug(store: LearningsStore):
+    store.write_entry(_make_entry(id="LRN-001", slug="a"), agent="z")
+    store.promote("LRN-001", kb_slug="kb-a", agent="z")
+    with pytest.raises(PromotedLocked):
+        store.promote("LRN-001", kb_slug="kb-b", agent="z")
