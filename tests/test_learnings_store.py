@@ -305,3 +305,19 @@ def test_regenerate_index_shows_promoted_marker(store: LearningsStore):
     store.regenerate_index()
     idx = (store.root / "_index.md").read_text()
     assert "↗ promoted: kb-precedent" in idx
+
+
+def test_update_entry_rejects_self_reference_in_related_to(store: LearningsStore):
+    store.write_entry(_make_entry(id="LRN-001", slug="a"), agent="z")
+    updated = _make_entry(id="LRN-001", slug="a", related_to=["LRN-001"])
+    with pytest.raises(InvalidLearningEntry) as exc:
+        store.update_entry("LRN-001", updated, agent="z")
+    assert exc.value.code == "self_reference"
+
+
+def test_update_entry_rejects_self_reference_in_supersedes(store: LearningsStore):
+    store.write_entry(_make_entry(id="LRN-001", slug="a"), agent="z")
+    updated = _make_entry(id="LRN-001", slug="a", supersedes="LRN-001")
+    with pytest.raises(InvalidLearningEntry) as exc:
+        store.update_entry("LRN-001", updated, agent="z")
+    assert exc.value.code == "self_reference"

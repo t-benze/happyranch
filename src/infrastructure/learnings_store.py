@@ -158,11 +158,19 @@ class LearningsStore:
 
     def _validate_cross_refs(self, entry: LearningEntry) -> None:
         for ref in entry.related_to:
+            if ref == entry.id:
+                raise InvalidLearningEntry(
+                    "self_reference", f"related_to cannot reference self: {ref!r}",
+                )
             if not ID_RE.match(ref) or self._find_by_id(ref) is None:
                 raise InvalidLearningEntry(
                     "unknown_related_id", f"related_to references unknown id: {ref!r}",
                 )
         if entry.supersedes is not None:
+            if entry.supersedes == entry.id:
+                raise InvalidLearningEntry(
+                    "self_reference", f"supersedes cannot reference self: {entry.supersedes!r}",
+                )
             if not ID_RE.match(entry.supersedes) or self._find_by_id(entry.supersedes) is None:
                 raise InvalidLearningEntry(
                     "unknown_supersedes", f"supersedes references unknown id: {entry.supersedes!r}",
