@@ -28,6 +28,7 @@ from src.daemon.auth import require_token
 from src.daemon.org_state import OrgState
 from src.daemon.routes._org_dep import OrgDep
 from src.infrastructure.audit_logger import AuditLogger
+from src.infrastructure.kb_store import KBStore
 from src.infrastructure.learnings_store import (
     InvalidLearningEntry,
     InvalidLearningId,
@@ -843,5 +844,43 @@ async def update_learning(
             raise _invalid_entry_to_http(e)
         except LearningSlugExists as e:
             raise HTTPException(status_code=409, detail={"error": "slug_exists", "slug": e.slug})
+        store.regenerate_index()
+    return _entry_to_dict(written)
+
+
+class LearningPromoteBody(BaseModel):
+    kb_slug: str
+
+
+@router.post("/agents/{agent_name}/learnings/entries/reindex")
+async def reindex_learnings(slug: str, agent_name: str, org: OrgDep) -> dict:
+    store = _workspace_learnings_store(org, agent_name)
+    async with org.db_lock:
+        store.regenerate_index()
+    return {"ok": True}
+
+
+@router.post("/agents/{agent_name}/learnings/entries/{id}/promote")
+async def promote_learning(
+    slug: str, agent_name: str, id: str, body: LearningPromoteBody, org: OrgDep,
+) -> dict:
+    if not body.kb_slug:
+        raise HTTPException(status_code=400, detail={"error": "kb_slug_missing"})
+    kb_store = KBStore(org.root / "kb")
+    if not kb_store.path_for(body.kb_slug).exists():
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "kb_slug_not_found", "kb_slug": body.kb_slug},
+        )
+    store = _workspace_learnings_store(org, agent_name)
+    async with org.db_lock:
+        try:
+            written = store.promote(id, kb_slug=body.kb_slug, agent=agent_name)
+        except LearningNotFound:
+            raise HTTPException(status_code=404, detail={"error": "id_not_found", "id": id})
+        except PromotedLocked as e:
+            raise HTTPException(status_code=409, detail={"error": "promoted_locked", "id": e.id, "kb_slug": e.kb_slug})
+        except InvalidLearningEntry as e:
+            raise _invalid_entry_to_http(e)
         store.regenerate_index()
     return _entry_to_dict(written)

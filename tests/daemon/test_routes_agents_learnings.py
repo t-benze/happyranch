@@ -113,3 +113,72 @@ def test_add_rejects_unknown_related_to(client_with_migrated_workspace):
     )
     assert r.status_code == 400
     assert r.json()["detail"]["error"] == "unknown_related_id"
+
+
+def test_promote_requires_existing_kb_slug(client_with_migrated_workspace):
+    client, token, slug, agent, _ = client_with_migrated_workspace
+    # Seed a learning
+    client.post(
+        f"/api/v1/orgs/{slug}/agents/{agent}/learnings/entries/",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"slug": "a", "title": "x", "topic": "w", "body": "b\n"},
+    )
+    # Promote with nonexistent KB slug should 404
+    r = client.post(
+        f"/api/v1/orgs/{slug}/agents/{agent}/learnings/entries/LRN-001/promote",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"kb_slug": "does-not-exist"},
+    )
+    assert r.status_code == 404
+    assert r.json()["detail"]["error"] == "kb_slug_not_found"
+
+
+def test_promote_with_existing_kb_slug_stamps_and_stubs(client_with_migrated_workspace, monkeypatch):
+    client, token, slug, agent, _ = client_with_migrated_workspace
+    # Seed a KB precedent so promote can resolve it
+    client.post(
+        f"/api/v1/orgs/{slug}/kb/",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "slug": "real-precedent",
+            "title": "Real precedent",
+            "type": "precedent",
+            "topic": "engineering",
+            "body": "details\n",
+            "agent": agent,
+        },
+    )
+    # Seed a learning
+    client.post(
+        f"/api/v1/orgs/{slug}/agents/{agent}/learnings/entries/",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"slug": "a", "title": "x", "topic": "w", "body": "original\n"},
+    )
+    r = client.post(
+        f"/api/v1/orgs/{slug}/agents/{agent}/learnings/entries/LRN-001/promote",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"kb_slug": "real-precedent"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["promoted_to"] == "real-precedent"
+    assert "original" not in body["body"]
+    assert "real-precedent" in body["body"]
+
+
+def test_reindex_regenerates_file(client_with_migrated_workspace):
+    client, token, slug, agent, ws = client_with_migrated_workspace
+    # Seed a learning
+    client.post(
+        f"/api/v1/orgs/{slug}/agents/{agent}/learnings/entries/",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"slug": "a", "title": "x", "topic": "w", "body": "b\n"},
+    )
+    # Delete _index.md manually
+    (ws / "learnings" / "_index.md").unlink()
+    r = client.post(
+        f"/api/v1/orgs/{slug}/agents/{agent}/learnings/entries/reindex",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    assert (ws / "learnings" / "_index.md").exists()
