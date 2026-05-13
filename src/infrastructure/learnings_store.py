@@ -373,6 +373,33 @@ class LearningsStore:
         self._atomic_write(target, self._serialize(stamped))
         return stamped
 
+    def regenerate_index(self) -> None:
+        summaries = self.list_entries()
+        groups: dict[str, list[LearningSummary]] = {}
+        for s in summaries:
+            groups.setdefault(s.topic, []).append(s)
+        for topic in groups:
+            groups[topic].sort(key=lambda s: s.id, reverse=True)  # newest first
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        total = sum(len(v) for v in groups.values())
+        lines = [
+            f"# Learnings Index",
+            "",
+            f"_Generated {now} — {total} entries_",
+            "",
+        ]
+        for topic in sorted(groups.keys()):
+            count = len(groups[topic])
+            lines.append(f"## {topic} ({count})")
+            lines.append("")
+            for s in groups[topic]:
+                tags_part = f"  [tags: {', '.join(s.tags)}]" if s.tags else ""
+                promo_part = f" ↗ promoted: {s.promoted_to}" if s.promoted_to else ""
+                lines.append(f"- `{s.id}` — {s.title}{tags_part}{promo_part}")
+            lines.append("")
+        index_path = self._root / "_index.md"
+        self._atomic_write(index_path, "\n".join(lines).rstrip() + "\n")
+
     def _atomic_write(self, target: Path, content: str) -> None:
         fd, tmp_path = tempfile.mkstemp(
             prefix=target.stem + ".", suffix=".tmp", dir=str(target.parent)

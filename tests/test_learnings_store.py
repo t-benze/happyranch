@@ -285,3 +285,23 @@ def test_write_entry_rejects_malformed_related_id(store: LearningsStore):
     with pytest.raises(InvalidLearningEntry) as exc:
         store.write_entry(e, agent="z")
     assert exc.value.code == "unknown_related_id"
+
+
+def test_regenerate_index_groups_by_topic_newest_first(store: LearningsStore):
+    store.write_entry(_make_entry(id="LRN-001", slug="a", title="Older workflow", topic="workflow"), agent="z")
+    store.write_entry(_make_entry(id="LRN-002", slug="b", title="Newer workflow", topic="workflow"), agent="z")
+    store.write_entry(_make_entry(id="LRN-003", slug="c", title="Env trap rule", topic="env-trap"), agent="z")
+    store.regenerate_index()
+    idx = (store.root / "_index.md").read_text()
+    # env-trap alphabetically first
+    assert idx.index("env-trap") < idx.index("workflow")
+    # Newer (LRN-002) listed before older (LRN-001) inside workflow block
+    assert idx.index("LRN-002") < idx.index("LRN-001")
+
+
+def test_regenerate_index_shows_promoted_marker(store: LearningsStore):
+    store.write_entry(_make_entry(id="LRN-001", slug="a", title="promoted thing", topic="w"), agent="z")
+    store.promote("LRN-001", kb_slug="kb-precedent", agent="z")
+    store.regenerate_index()
+    idx = (store.root / "_index.md").read_text()
+    assert "↗ promoted: kb-precedent" in idx
