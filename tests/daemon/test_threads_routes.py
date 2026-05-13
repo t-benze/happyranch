@@ -419,3 +419,33 @@ def test_extend_rejects_non_increase(tmp_home, app, org_state, auth_headers):
         headers=auth_headers,
     )
     assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Task 27 — POST /threads/{id}/abandon
+# ---------------------------------------------------------------------------
+
+
+def test_abandon_reaps_pending_and_writes_no_transcript(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"],
+              "body_markdown": "hi", "addressed_to": ["@all"]},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    assert len(org_state.db.list_thread_invocations(tid)) == 1
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/abandon",
+        json={"reason": "nothing useful"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    t = org_state.db.get_thread(tid)
+    assert t.status.value == "abandoned"
+    assert t.transcript_path is None
+    from src.models import ThreadInvocationStatus
+    pending = org_state.db.list_thread_invocations(tid, status=ThreadInvocationStatus.PENDING)
+    assert pending == []

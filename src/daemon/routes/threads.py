@@ -671,3 +671,31 @@ async def extend_thread_endpoint(
                             "prior_cap": prior_cap, "new_cap": body.new_cap},
         )
     return {"thread_id": thread_id, "turn_cap": body.new_cap}
+
+
+# ---------------------------------------------------------------------------
+# Task 27 — POST /threads/{id}/abandon
+# ---------------------------------------------------------------------------
+
+
+class AbandonBody(BaseModel):
+    reason: str
+
+
+@router.post("/threads/{thread_id}/abandon")
+async def abandon_thread_endpoint(
+    slug: str, thread_id: str, body: AbandonBody, org: OrgDep,
+) -> dict:
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    if t.status in {ThreadStatus.ARCHIVED, ThreadStatus.ABANDONED}:
+        return {"thread_id": thread_id, "status": t.status.value, "idempotent": True}
+    reason = body.reason.strip() or "abandoned"
+    async with org.db_lock:
+        org.db.set_thread_status(thread_id, status=ThreadStatus.ABANDONED)
+        org.db.reap_pending_invocations(
+            thread_id, purposes=None, decline_reason="thread_abandoned",
+        )
+        AuditLogger(org.db).log_thread_abandoned(thread_id, reason=reason)
+    return {"thread_id": thread_id, "status": "abandoned"}
