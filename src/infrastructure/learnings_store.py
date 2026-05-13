@@ -173,6 +173,33 @@ class LearningsStore:
         self._atomic_write(target, self._serialize(stamped))
         return stamped
 
+    def update_entry(
+        self, id: str, entry: LearningEntry, agent: str,
+    ) -> LearningEntry:
+        self.validate_id(id)
+        existing_path = self._find_by_id(id)
+        if existing_path is None:
+            raise LearningNotFound(id)
+        existing = self._parse(existing_path.read_text())
+        if existing.promoted_to is not None:
+            raise PromotedLocked(id, existing.promoted_to)
+        # Force id consistency (positional arg wins)
+        entry.id = id
+        entry.promoted_to = existing.promoted_to  # always None at this point
+        self._validate_entry_structure(entry)
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        stamped = LearningEntry(**{**entry.__dict__})
+        stamped.authored_by = existing.authored_by
+        stamped.authored_at = existing.authored_at
+        stamped.updated_by = agent
+        stamped.updated_at = now
+        target = self.path_for(stamped.id, stamped.slug)
+        self._atomic_write(target, self._serialize(stamped))
+        # Remove the old file if slug changed
+        if existing_path != target and existing_path.exists():
+            existing_path.unlink()
+        return stamped
+
     def read_entry(self, id_or_slug: str) -> LearningEntry:
         path = (
             self._find_by_id(id_or_slug) if ID_RE.match(id_or_slug)

@@ -181,3 +181,36 @@ def test_search_excludes_promoted_by_default(store: LearningsStore):
     assert [h.id for h in hits] == ["LRN-001"]
     hits_inc = store.search("kept", include_promoted=True)
     assert sorted(h.id for h in hits_inc) == ["LRN-001", "LRN-002"]
+
+
+def test_update_entry_preserves_authored_restamps_updated(store: LearningsStore):
+    e = _make_entry(id="LRN-001", slug="a", title="v1")
+    written = store.write_entry(e, agent="dev_agent")
+    original_authored_at = written.authored_at
+    # Simulate later update by different agent
+    updated = _make_entry(id="LRN-001", slug="a", title="v2")
+    res = store.update_entry("LRN-001", updated, agent="engineering_head")
+    assert res.title == "v2"
+    assert res.authored_by == "dev_agent"
+    assert res.authored_at == original_authored_at
+    assert res.updated_by == "engineering_head"
+
+
+def test_update_entry_renames_file_on_slug_change(store: LearningsStore):
+    store.write_entry(_make_entry(id="LRN-001", slug="old-slug"), agent="z")
+    new = _make_entry(id="LRN-001", slug="new-slug")
+    store.update_entry("LRN-001", new, agent="z")
+    assert not (store.root / "LRN-001-old-slug.md").exists()
+    assert (store.root / "LRN-001-new-slug.md").exists()
+
+
+def test_update_entry_rejects_promoted(store: LearningsStore):
+    e = _make_entry(id="LRN-001", slug="a", promoted_to="some-kb-slug")
+    store.write_entry(e, agent="z")
+    with pytest.raises(PromotedLocked):
+        store.update_entry("LRN-001", _make_entry(id="LRN-001", slug="a", title="changed"), agent="z")
+
+
+def test_update_entry_404_when_missing(store: LearningsStore):
+    with pytest.raises(LearningNotFound):
+        store.update_entry("LRN-999", _make_entry(id="LRN-999", slug="x"), agent="z")
