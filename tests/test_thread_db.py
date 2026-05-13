@@ -57,3 +57,22 @@ def test_thread_models_roundtrip():
         purpose=ThreadInvocationPurpose.REPLY,
     )
     assert inv.status is ThreadInvocationStatus.PENDING
+
+
+def test_next_thread_id_starts_at_one(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    assert db.next_thread_id() == "THR-001"
+
+
+def test_next_thread_id_uses_max_suffix(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    db._conn.execute(
+        "INSERT INTO threads (id, subject, started_at, status) "
+        "VALUES ('THR-001', 's', '2026-01-01T00:00:00+00:00', 'archived')"
+    )
+    db._conn.execute(
+        "INSERT INTO threads (id, subject, started_at, status) "
+        "VALUES ('THR-005', 's', '2026-01-02T00:00:00+00:00', 'open')"
+    )
+    db._conn.commit()
+    assert db.next_thread_id() == "THR-006"

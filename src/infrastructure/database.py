@@ -1273,6 +1273,21 @@ class Database:
         return f"TALK-{n:03d}"
 
     @_synchronized
+    def next_thread_id(self) -> str:
+        """Return the next available THR-NNN id.
+
+        Callers must hold DaemonState.db_lock across the next_thread_id() +
+        insert_thread() pair to avoid duplicate IDs under concurrent requests
+        (same requirement as next_task_id / next_talk_id).
+        """
+        cursor = self._conn.execute(
+            "SELECT MAX(CAST(SUBSTR(id, 5) AS INTEGER)) AS m "
+            "FROM threads WHERE id GLOB 'THR-[0-9]*'"
+        )
+        n = (cursor.fetchone()["m"] or 0) + 1
+        return f"THR-{n:03d}"
+
+    @_synchronized
     def insert_talk(self, talk: TalkRecord) -> None:
         self._conn.execute(
             """INSERT INTO talks (id, agent_name, started_at, ended_at, status,
