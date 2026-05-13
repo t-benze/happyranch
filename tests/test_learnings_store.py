@@ -164,3 +164,20 @@ def test_list_entries_filters_by_promoted(store: LearningsStore):
     not_promoted = store.list_entries(promoted=False)
     assert [s.id for s in promoted] == ["LRN-002"]
     assert [s.id for s in not_promoted] == ["LRN-001"]
+
+
+def test_search_scores_title_highest(store: LearningsStore):
+    store.write_entry(_make_entry(id="LRN-001", slug="a", title="Cross-team dispatch", topic="w"), agent="z")
+    store.write_entry(_make_entry(id="LRN-002", slug="b", title="Other rule", topic="w", body="cross-team mentioned in body\n"), agent="z")
+    hits = store.search("cross-team")
+    assert hits[0].id == "LRN-001"
+    assert hits[0].score > hits[1].score
+
+
+def test_search_excludes_promoted_by_default(store: LearningsStore):
+    store.write_entry(_make_entry(id="LRN-001", slug="a", title="kept", topic="w"), agent="z")
+    store.write_entry(_make_entry(id="LRN-002", slug="b", title="promoted-kept", topic="w", promoted_to="kb-slug"), agent="z")
+    hits = store.search("kept")
+    assert [h.id for h in hits] == ["LRN-001"]
+    hits_inc = store.search("kept", include_promoted=True)
+    assert sorted(h.id for h in hits_inc) == ["LRN-001", "LRN-002"]

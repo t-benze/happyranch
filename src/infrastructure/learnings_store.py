@@ -67,6 +67,15 @@ class LearningSummary:
 
 
 @dataclass
+class LearningSearchHit:
+    id: str
+    slug: str
+    title: str
+    snippet: str
+    score: int
+
+
+@dataclass
 class LearningEntry:
     id: str
     slug: str
@@ -250,6 +259,48 @@ class LearningsStore:
                 updated_at=entry.updated_at,
             ))
         return out
+
+    def search(
+        self, query: str, limit: int = 20, include_promoted: bool = False,
+    ) -> list[LearningSearchHit]:
+        q = query.lower().strip()
+        if not q:
+            return []
+        hits: list[LearningSearchHit] = []
+        for path in sorted(self._root.glob("LRN-*.md")):
+            try:
+                entry = self._parse(path.read_text())
+            except InvalidLearningEntry:
+                continue
+            if entry.promoted_to is not None and not include_promoted:
+                continue
+            score = 0
+            snippet = ""
+            if q in entry.title.lower():
+                score = 10
+                snippet = entry.title
+            elif q in entry.body.lower():
+                score = 5
+                snippet = self._snippet(entry.body, q)
+            elif any(q in t.lower() for t in entry.tags) or q in entry.topic.lower():
+                score = 2
+                snippet = f"topic={entry.topic} tags={entry.tags}"
+            if score > 0:
+                hits.append(LearningSearchHit(
+                    id=entry.id, slug=entry.slug, title=entry.title,
+                    snippet=snippet, score=score,
+                ))
+        hits.sort(key=lambda h: h.score, reverse=True)
+        return hits[:limit]
+
+    @staticmethod
+    def _snippet(body: str, q: str, width: int = 80) -> str:
+        idx = body.lower().find(q)
+        if idx < 0:
+            return body[:width]
+        start = max(0, idx - width // 2)
+        end = min(len(body), idx + width // 2)
+        return body[start:end].replace("\n", " ")
 
     def _atomic_write(self, target: Path, content: str) -> None:
         fd, tmp_path = tempfile.mkstemp(
