@@ -208,6 +208,40 @@ opc talk list    --org <slug> [--agent <name>] [--limit N]
 opc talk show    --org <slug> TALK-001
 ```
 
+### Threads
+
+Email-style multi-agent workchannels. Use threads when you need to involve
+multiple agents in a single asynchronous conversation, or when you want to
+loop new agents into an existing discussion. Each thread has a subject, a
+participants list, and a chronological message log.
+
+Founder commands:
+
+```bash
+opc threads compose --org <slug> --subject "..." --recipients alice,bob --body "..."
+opc threads list --org <slug>
+opc threads show --org <slug> THR-001
+opc threads send --org <slug> --thread-id THR-001 --from-file /tmp/send.json
+opc threads invite --org <slug> --thread-id THR-001 --agent qa
+opc threads forward --org <slug> --source TALK-008 --recipients alice,bob
+opc threads archive --org <slug> --thread-id THR-001 --from-file /tmp/arch.json
+opc threads abandon --org <slug> --thread-id THR-001 --reason "..."
+opc threads extend --org <slug> --thread-id THR-001 --new-cap 1000
+```
+
+Configure per-org:
+
+```yaml
+# <runtime>/orgs/<slug>/org/config.yaml
+threads:
+  enabled: true
+  default_turn_cap: 500
+  close_out_wait_seconds: 300
+```
+
+A Textual TUI (`opc threads` with no subcommand) is planned for a follow-up
+release.
+
 ### Managing repos
 
 Agents can request repo changes through the `manage-repo` skill, or the founder can manage them directly:
