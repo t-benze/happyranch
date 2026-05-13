@@ -163,11 +163,41 @@ async def end_talk(slug: str, talk_id: str, body: EndTalkBody, org: OrgDep) -> d
             summary=body.summary,
             transcript_markdown=body.transcript_markdown,
         )
-        # Append learnings to the agent's learnings.md — same helper the
-        # /agents/{name}/learnings route uses, minus the session guard.
-        learnings_path = org.root / "workspaces" / talk.agent_name / "learnings.md"
-        for entry in body.learnings:
-            _append_to_learnings_file(learnings_path, talk.agent_name, entry.text)
+        # Append learnings to the agent's workspace.
+        # Migrated workspaces have a learnings/ directory; pre-migration ones
+        # use the flat learnings.md file.
+        workspace = org.root / "workspaces" / talk.agent_name
+        learnings_dir = workspace / "learnings"
+        flat_path = workspace / "learnings.md"
+        if learnings_dir.exists():
+            # Migrated workspace: write structured entries to the new store.
+            from src.infrastructure.learnings_store import LearningsStore, LearningEntry
+            store = LearningsStore(learnings_dir)
+            for idx, entry in enumerate(body.learnings):
+                lid = store.next_id()
+                # Title must be single-line — derive from first non-empty line
+                # so multiline learnings don't break frontmatter/index rendering.
+                first_line = next(
+                    (ln.strip() for ln in entry.text.splitlines() if ln.strip()),
+                    "",
+                )
+                title = first_line[:80] or f"Talk {talk_id} learning #{idx + 1}"
+                slug = f"talk-{talk_id.lower()}-{idx + 1}"
+                le = LearningEntry(
+                    id=lid,
+                    slug=slug,
+                    title=title,
+                    topic="talk-residue",
+                    body=entry.text if entry.text.endswith("\n") else entry.text + "\n",
+                    source_task=talk_id,
+                )
+                store.write_entry(le, agent=talk.agent_name)
+            if body.learnings:
+                store.regenerate_index()
+        else:
+            # Pre-migration: keep legacy flat-file behavior.
+            for entry in body.learnings:
+                _append_to_learnings_file(flat_path, talk.agent_name, entry.text)
         org.db.update_talk(
             talk_id,
             status=TalkStatus.CLOSED,

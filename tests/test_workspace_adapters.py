@@ -35,7 +35,9 @@ def test_claude_adapter_bootstrap_creates_claude_files_and_skills(test_settings,
     assert (workspace / "CLAUDE.md").exists()
     assert (workspace / ".claude" / "settings.json").exists()
     assert (workspace / ".claude" / "skills" / "start-task" / "SKILL.md").exists()
-    assert (workspace / "learnings.md").exists()
+    assert (workspace / "learnings").is_dir()
+    assert (workspace / "learnings" / "_index.md").exists()
+    assert not (workspace / "learnings.md").exists()
     assert not (workspace / "scorecard.md").exists()
     assert (workspace / "task_history.md").exists()
 
@@ -76,7 +78,10 @@ def test_codex_adapter_bootstrap_creates_agents_md_and_skills_tree(test_settings
     assert not (workspace / ".claude" / "skills" / "start-task").exists()
     assert (workspace / ".agents" / "skills" / "start-task" / "SKILL.md").exists()
     assert (workspace / ".agents" / "skills" / "talk" / "SKILL.md").exists()
-    assert (workspace / "learnings.md").exists()
+    # Fresh workspace: migrated layout (learnings/ dir, no flat learnings.md).
+    assert (workspace / "learnings").is_dir()
+    assert (workspace / "learnings" / "_index.md").exists()
+    assert not (workspace / "learnings.md").exists()
     assert not (workspace / "scorecard.md").exists()
     assert (workspace / "task_history.md").exists()
     assert not (workspace / "recent_tasks.md").exists()
@@ -150,7 +155,10 @@ def test_opencode_adapter_bootstrap_creates_agents_md_skills_and_opencode_json(
     # Skills under .agents/skills/ — same layout as Codex.
     assert (workspace / ".agents" / "skills" / "start-task" / "SKILL.md").exists()
     assert not (workspace / ".claude" / "skills" / "start-task").exists()
-    assert (workspace / "learnings.md").exists()
+    # Fresh workspace: migrated layout.
+    assert (workspace / "learnings").is_dir()
+    assert (workspace / "learnings" / "_index.md").exists()
+    assert not (workspace / "learnings.md").exists()
     assert (workspace / "task_history.md").exists()
     # opencode-specific permission file.
     assert (workspace / "opencode.json").exists()

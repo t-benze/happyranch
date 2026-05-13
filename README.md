@@ -178,6 +178,22 @@ opc kb precedent --org <slug> --task-id <id> --decision approve|reject --rationa
 
 Any agent reads/writes; team managers delete (audited); the founder overrides delete via `--as-founder` and is the only role that can record precedents.
 
+### Per-agent learnings
+
+Each agent has its own private learnings under `<runtime>/orgs/<slug>/workspaces/<agent>/learnings/`, one markdown file per entry with YAML frontmatter (`id`, `slug`, `title`, `topic`, `tags`, `related_to`, `supersedes`, `promoted_to`). The bootstrap doc inlines the regenerated `_index.md` so agents see their accumulated rules at session start.
+
+```bash
+opc learning list     --org <slug> --agent <you> [--topic T --tag T --promoted|--not-promoted --json]
+opc learning get      --org <slug> --agent <you> <LRN-NNN-or-slug> [--json]
+opc learning search   --org <slug> --agent <you> "<query>" [--limit N --include-promoted --json]
+opc learning add      --org <slug> --agent <you> --from-file /tmp/lrn-<slug>.yaml
+opc learning update   --org <slug> --agent <you> <LRN-NNN> --from-file /tmp/lrn-<slug>.yaml
+opc learning promote  --org <slug> --agent <you> <LRN-NNN> --kb-slug <kb-precedent>
+opc learning reindex  --org <slug> --agent <you>
+```
+
+`add`/`update` take a YAML payload with `slug`, `title`, `topic`, `body`, and optional `tags`/`source_task`/`related_to`/`supersedes`. Promotion is one-way: the body becomes a 2-line pointer stub and the entry locks against further edits — use `supersedes:` on a new entry to evolve a rule that has already been promoted. Workspaces that predate this layout still use a flat `learnings.md` (legacy `opc learning --agent X --text "..."` form); the founder dispatches a one-shot migration task per agent when ready.
+
 ### Talks
 
 Founder<->agent conversations:
@@ -409,7 +425,7 @@ Each agent runs in its own persistent workspace inside the org directory. After 
 - `.agents/skills/` (Codex/opencode) — shared skills tree
 - `opencode.json` (opencode only) — `permission.bash` map
 - `repos/` — git clones of repositories from `agent.yaml` (auto-pulled before each task)
-- `learnings.md` — agent-written insights from past tasks (appended via `opc learning`)
+- `learnings/` — agent-written insights from past tasks, one file per entry (`LRN-NNN-<slug>.md`) with YAML frontmatter. A regenerated `_index.md` is inlined into the bootstrap doc. Write via `opc learning add --from-file <path>`; read via `opc learning list|get|search`; promote durable cross-agent rules to KB precedents via `opc learning promote <LRN-NNN> --kb-slug <slug>`. Workspaces created before this layout existed continue to use a flat `learnings.md`; the founder runs a one-shot migration task to switch a workspace over.
 - `task_history.md` — rolling per-agent task history
 
 ## Roadmap

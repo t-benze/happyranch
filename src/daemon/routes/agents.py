@@ -28,6 +28,17 @@ from src.daemon.auth import require_token
 from src.daemon.org_state import OrgState
 from src.daemon.routes._org_dep import OrgDep
 from src.infrastructure.audit_logger import AuditLogger
+from src.infrastructure.kb_store import KBStore, InvalidSlug
+from src.infrastructure.learnings_store import (
+    InvalidLearningEntry,
+    InvalidLearningId,
+    LearningEntry,
+    LearningIdExists,
+    LearningNotFound,
+    LearningSlugExists,
+    LearningsStore,
+    PromotedLocked,
+)
 from src.models import PerformanceTier, TalkStatus
 from src.orchestrator import prompt_loader
 from src.orchestrator._paths import OrgPaths
@@ -615,6 +626,15 @@ def backfill_enrollments(slug: str, org: OrgDep) -> dict:
 async def append_learning(
     slug: str, agent_name: str, body: LearningBody, org: OrgDep,
 ) -> dict:
+    workspace = org.root / "workspaces" / agent_name
+    if (workspace / "learnings").exists():
+        raise HTTPException(
+            status_code=410,
+            detail={
+                "error": "endpoint_deprecated_for_migrated_workspace",
+                "migrate_to": f"POST /api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries",
+            },
+        )
     expected = org.sessions.get_active(body.task_id, agent_name)
     if expected is None:
         raise HTTPException(
@@ -627,7 +647,6 @@ async def append_learning(
             detail={"code": "session_mismatch", "active": expected, "got": body.session_id},
         )
 
-    workspace = org.root / "workspaces" / agent_name
     learnings_path = workspace / "learnings.md"
 
     # Hold the lock across exists/init/append so two concurrent posts can't both
@@ -635,3 +654,271 @@ async def append_learning(
     async with org.db_lock:
         _append_to_learnings_file(learnings_path, agent_name, body.text)
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Learnings read routes + 412 pre-migration guard
+# ---------------------------------------------------------------------------
+
+
+def _workspace_learnings_store(org: OrgState, agent_name: str) -> LearningsStore:
+    """Return the per-agent LearningsStore.
+
+    Raises 404 if the agent workspace doesn't exist, 412 if it exists but
+    hasn't been migrated to the new per-entry layout.
+    """
+    workspace = org.root / "workspaces" / agent_name
+    if not workspace.exists():
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "agent_not_found", "agent": agent_name},
+        )
+    learnings_dir = workspace / "learnings"
+    if not learnings_dir.exists():
+        raise HTTPException(
+            status_code=412,
+            detail={"error": "workspace_not_migrated", "migrate_first": True},
+        )
+    return LearningsStore(learnings_dir)
+
+
+def _entry_to_dict(entry: LearningEntry) -> dict:
+    return {
+        "id": entry.id,
+        "slug": entry.slug,
+        "title": entry.title,
+        "topic": entry.topic,
+        "tags": entry.tags,
+        "body": entry.body,
+        "source_task": entry.source_task,
+        "related_to": entry.related_to,
+        "supersedes": entry.supersedes,
+        "promoted_to": entry.promoted_to,
+        "authored_by": entry.authored_by,
+        "authored_at": entry.authored_at,
+        "updated_by": entry.updated_by,
+        "updated_at": entry.updated_at,
+    }
+
+
+@router.get("/agents/{agent_name}/learnings/entries/")
+async def list_learnings(
+    slug: str,
+    agent_name: str,
+    org: OrgDep,
+    topic: str | None = None,
+    tag: str | None = None,
+    promoted: bool | None = None,
+) -> dict:
+    store = _workspace_learnings_store(org, agent_name)
+    summaries = store.list_entries(topic=topic, tag=tag, promoted=promoted)
+    return {
+        "entries": [
+            {
+                "id": s.id,
+                "slug": s.slug,
+                "title": s.title,
+                "topic": s.topic,
+                "tags": s.tags,
+                "promoted_to": s.promoted_to,
+                "updated_at": s.updated_at,
+            }
+            for s in summaries
+        ],
+    }
+
+
+@router.get("/agents/{agent_name}/learnings/entries/{id_or_slug}")
+async def get_learning(slug: str, agent_name: str, id_or_slug: str, org: OrgDep) -> dict:
+    store = _workspace_learnings_store(org, agent_name)
+    try:
+        entry = store.read_entry(id_or_slug)
+    except LearningNotFound:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "id_not_found", "id_or_slug": id_or_slug},
+        )
+    return _entry_to_dict(entry)
+
+
+class LearningSearchBody(BaseModel):
+    query: str
+    limit: int = 20
+    include_promoted: bool = False
+
+
+@router.post("/agents/{agent_name}/learnings/entries/search")
+async def search_learnings(
+    slug: str, agent_name: str, body: LearningSearchBody, org: OrgDep,
+) -> dict:
+    store = _workspace_learnings_store(org, agent_name)
+    hits = store.search(body.query, limit=body.limit, include_promoted=body.include_promoted)
+    return {
+        "hits": [
+            {"id": h.id, "slug": h.slug, "title": h.title, "snippet": h.snippet, "score": h.score}
+            for h in hits
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Learnings write routes — POST add + PUT update
+# ---------------------------------------------------------------------------
+
+
+class LearningAddBody(BaseModel):
+    slug: str
+    title: str
+    topic: str
+    body: str
+    tags: list[str] = []
+    source_task: str | None = None
+    related_to: list[str] = []
+    supersedes: str | None = None
+
+
+class LearningUpdateBody(BaseModel):
+    slug: str
+    title: str
+    topic: str
+    body: str
+    tags: list[str] = []
+    source_task: str | None = None
+    related_to: list[str] = []
+    supersedes: str | None = None
+
+
+def _invalid_entry_to_http(err: InvalidLearningEntry) -> HTTPException:
+    return HTTPException(status_code=400, detail={"error": err.code, "message": str(err)})
+
+
+@router.post("/agents/{agent_name}/learnings/entries/", status_code=201)
+async def add_learning(
+    slug: str, agent_name: str, body: LearningAddBody, org: OrgDep,
+) -> dict:
+    store = _workspace_learnings_store(org, agent_name)
+    async with org.db_lock:
+        new_id = store.next_id()
+        entry = LearningEntry(
+            id=new_id,
+            slug=body.slug,
+            title=body.title,
+            topic=body.topic,
+            body=body.body,
+            tags=list(body.tags),
+            source_task=body.source_task,
+            related_to=list(body.related_to),
+            supersedes=body.supersedes,
+        )
+        try:
+            written = store.write_entry(entry, agent=agent_name)
+        except InvalidLearningEntry as e:
+            raise _invalid_entry_to_http(e)
+        except LearningIdExists as e:
+            raise HTTPException(status_code=409, detail={"error": "id_exists", "id": e.id})
+        except LearningSlugExists as e:
+            raise HTTPException(status_code=409, detail={"error": "slug_exists", "slug": e.slug})
+        store.regenerate_index()
+        AuditLogger(org.db).log_learning_added(
+            agent=agent_name,
+            id=written.id,
+            slug=written.slug,
+            topic=written.topic,
+            tags=written.tags,
+            source_task=written.source_task,
+        )
+    rel_path = f"learnings/{written.id}-{written.slug}.md"
+    return {"id": written.id, "path": rel_path, "authored_at": written.authored_at}
+
+
+@router.put("/agents/{agent_name}/learnings/entries/{id}")
+async def update_learning(
+    slug: str, agent_name: str, id: str, body: LearningUpdateBody, org: OrgDep,
+) -> dict:
+    store = _workspace_learnings_store(org, agent_name)
+    entry = LearningEntry(
+        id=id,
+        slug=body.slug,
+        title=body.title,
+        topic=body.topic,
+        body=body.body,
+        tags=list(body.tags),
+        source_task=body.source_task,
+        related_to=list(body.related_to),
+        supersedes=body.supersedes,
+    )
+    async with org.db_lock:
+        try:
+            prior_slug = store.read_entry(id).slug
+        except LearningNotFound:
+            prior_slug = None  # store.update_entry will raise its own LearningNotFound
+        try:
+            written = store.update_entry(id, entry, agent=agent_name)
+        except LearningNotFound:
+            raise HTTPException(status_code=404, detail={"error": "id_not_found", "id": id})
+        except PromotedLocked as e:
+            raise HTTPException(status_code=409, detail={"error": "promoted_locked", "id": e.id, "kb_slug": e.kb_slug})
+        except InvalidLearningId:
+            raise HTTPException(status_code=400, detail={"error": "invalid_id", "id": id})
+        except InvalidLearningEntry as e:
+            raise _invalid_entry_to_http(e)
+        except LearningSlugExists as e:
+            raise HTTPException(status_code=409, detail={"error": "slug_exists", "slug": e.slug})
+        store.regenerate_index()
+        AuditLogger(org.db).log_learning_updated(
+            agent=agent_name,
+            id=written.id,
+            slug_changed=prior_slug is not None and prior_slug != written.slug,
+        )
+    return _entry_to_dict(written)
+
+
+class LearningPromoteBody(BaseModel):
+    kb_slug: str
+
+
+@router.post("/agents/{agent_name}/learnings/entries/reindex")
+async def reindex_learnings(slug: str, agent_name: str, org: OrgDep) -> dict:
+    store = _workspace_learnings_store(org, agent_name)
+    async with org.db_lock:
+        store.regenerate_index()
+    return {"ok": True}
+
+
+@router.post("/agents/{agent_name}/learnings/entries/{id}/promote")
+async def promote_learning(
+    slug: str, agent_name: str, id: str, body: LearningPromoteBody, org: OrgDep,
+) -> dict:
+    if not body.kb_slug:
+        raise HTTPException(status_code=400, detail={"error": "kb_slug_missing"})
+    kb_store = KBStore(org.root / "kb")
+    try:
+        kb_store.validate_slug(body.kb_slug)
+    except InvalidSlug:
+        raise HTTPException(
+            status_code=400, detail={"error": "invalid_kb_slug", "kb_slug": body.kb_slug},
+        )
+    if not kb_store.path_for(body.kb_slug).exists():
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "kb_slug_not_found", "kb_slug": body.kb_slug},
+        )
+    store = _workspace_learnings_store(org, agent_name)
+    async with org.db_lock:
+        try:
+            written = store.promote(id, kb_slug=body.kb_slug, agent=agent_name)
+        except InvalidLearningId:
+            raise HTTPException(status_code=400, detail={"error": "invalid_id", "id": id})
+        except LearningNotFound:
+            raise HTTPException(status_code=404, detail={"error": "id_not_found", "id": id})
+        except PromotedLocked as e:
+            raise HTTPException(status_code=409, detail={"error": "promoted_locked", "id": e.id, "kb_slug": e.kb_slug})
+        except InvalidLearningEntry as e:
+            raise _invalid_entry_to_http(e)
+        store.regenerate_index()
+        AuditLogger(org.db).log_learning_promoted(
+            agent=agent_name,
+            id=written.id,
+            kb_slug=body.kb_slug,
+        )
+    return _entry_to_dict(written)
