@@ -61,12 +61,20 @@ def _start_feishu_listeners(state: DaemonState, loop) -> None:
 async def _lifespan(app: FastAPI):
     import asyncio
 
+    from src.daemon.thread_queue import thread_worker_loop
+
     state: DaemonState = app.state.daemon
     ensure_workers_started(state)
     _start_feishu_listeners(state, asyncio.get_running_loop())
+    thread_worker_tasks = [
+        asyncio.create_task(thread_worker_loop(state, state.settings))
+        for _ in range(4)
+    ]
     try:
         yield
     finally:
+        for t in thread_worker_tasks:
+            t.cancel()
         await state.queue.stop()
         await state.close_all()
 
