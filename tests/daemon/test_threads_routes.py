@@ -327,3 +327,54 @@ def test_founder_send_appends_and_enqueues(tmp_home, app, org_state, auth_header
     assert resp.status_code == 200
     after_invocations = len(org_state.db.list_thread_invocations(tid))
     assert after_invocations == before_invocations + 1
+
+
+# ---------------------------------------------------------------------------
+# Task 25 — POST /threads/{id}/invite
+# ---------------------------------------------------------------------------
+
+
+def test_invite_adds_participant_and_bootstrap_invocation(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"],
+              "body_markdown": "hi", "addressed_to": ["@all"]},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/invite",
+        json={"agent_name": "qa_engineer"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    parts = [p.agent_name for p in org_state.db.list_thread_participants(tid)]
+    assert "qa_engineer" in parts
+    msgs = org_state.db.list_thread_messages(tid)
+    sys_msgs = [m for m in msgs if m.kind.value == "system"]
+    assert sys_msgs[-1].system_payload["kind_tag"] == "participant_added"
+    pending = org_state.db.list_thread_invocations(tid)
+    assert any(
+        inv.agent_name == "qa_engineer" and inv.purpose.value == "bootstrap"
+        for inv in pending
+    )
+
+
+def test_invite_already_participant_409(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"],
+              "body_markdown": "hi", "addressed_to": ["@all"]},
+        headers=auth_headers,
+    ).json()
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{r['thread_id']}/invite",
+        json={"agent_name": "dev_agent"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 409

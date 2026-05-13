@@ -576,3 +576,62 @@ async def send_thread_endpoint(
         await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
 
     return {"thread_id": thread_id, "seq": seq, "pending_replies": addressed}
+
+
+# ---------------------------------------------------------------------------
+# Task 25 — POST /threads/{id}/invite
+# ---------------------------------------------------------------------------
+
+
+class InviteBody(BaseModel):
+    agent_name: str
+
+
+@router.post("/threads/{thread_id}/invite")
+async def invite_thread_endpoint(
+    slug: str, thread_id: str, body: InviteBody, org: OrgDep,
+) -> dict:
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    if t.status is not ThreadStatus.OPEN:
+        raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
+
+    org_paths = OrgPaths(root=org.root)
+    agent_def = prompt_loader.load_agent(org_paths, body.agent_name)
+    workspace_exists = (org.root / "workspaces" / body.agent_name).exists()
+    if agent_def is None or not workspace_exists:
+        raise HTTPException(status_code=404, detail={"code": "unknown_agent"})
+
+    if t.turns_used + 1 > t.turn_cap:
+        raise HTTPException(
+            status_code=429,
+            detail={"code": "turn_cap_exceeded",
+                    "used": t.turns_used, "cap": t.turn_cap, "requested": 1},
+        )
+
+    token_to_enqueue: str | None = None
+    async with org.db_lock:
+        inserted = org.db.add_thread_participant(thread_id, body.agent_name, added_by="founder")
+        if not inserted:
+            raise HTTPException(status_code=409, detail={"code": "already_participant"})
+        sys_seq = org.db.append_thread_message(
+            thread_id=thread_id, speaker="founder",
+            kind=ThreadMessageKind.SYSTEM,
+            system_payload={
+                "kind_tag": "participant_added",
+                "agent_name": body.agent_name,
+                "added_by": "founder",
+            },
+        )
+        AuditLogger(org.db).log_thread_participant_added(
+            thread_id, agent_name=body.agent_name, added_by="founder",
+        )
+        inv = org.db.mint_thread_invocation(
+            thread_id=thread_id, agent_name=body.agent_name,
+            triggering_seq=sys_seq, purpose=ThreadInvocationPurpose.BOOTSTRAP,
+        )
+        token_to_enqueue = inv.invocation_token
+
+    await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token_to_enqueue))
+    return {"thread_id": thread_id, "agent_name": body.agent_name, "system_message_seq": sys_seq}
