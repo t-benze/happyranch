@@ -497,6 +497,52 @@ class AuditLogger:
             },
         )
 
+    def log_learning_added(
+        self,
+        *,
+        agent: str,
+        id: str,
+        slug: str,
+        topic: str,
+        tags: list[str],
+        source_task: str | None,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=source_task if source_task is not None else f"AGENT-{agent}",
+            agent=agent,
+            action="learning_added",
+            payload={"id": id, "slug": slug, "topic": topic, "tags": tags, "source_task": source_task},
+        )
+
+    def log_learning_updated(
+        self,
+        *,
+        agent: str,
+        id: str,
+        slug_changed: bool,
+        fields_changed: list[str],
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=f"AGENT-{agent}",
+            agent=agent,
+            action="learning_updated",
+            payload={"id": id, "slug_changed": slug_changed, "fields_changed": fields_changed},
+        )
+
+    def log_learning_promoted(
+        self,
+        *,
+        agent: str,
+        id: str,
+        kb_slug: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=f"AGENT-{agent}",
+            agent=agent,
+            action="learning_promoted",
+            payload={"id": id, "kb_slug": kb_slug},
+        )
+
     def log_agent_backfilled(
         self,
         *,

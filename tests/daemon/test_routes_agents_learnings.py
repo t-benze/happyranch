@@ -255,3 +255,75 @@ def test_promote_rejects_malformed_learning_id(client_with_migrated_workspace):
     )
     assert r.status_code == 400
     assert r.json()["detail"]["error"] == "invalid_id"
+
+
+def test_add_writes_learning_added_audit_row(client_with_migrated_workspace):
+    client, token, slug, agent, _ = client_with_migrated_workspace
+    client.post(
+        f"/api/v1/orgs/{slug}/agents/{agent}/learnings/entries/",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"slug": "x", "title": "t", "topic": "w", "body": "b\n"},
+    )
+    audit = client.get(
+        f"/api/v1/orgs/{slug}/audit?action=learning_added",
+        headers={"Authorization": f"Bearer {token}"},
+    ).json()
+    rows = audit.get("entries", [])
+    assert any(r["action"] == "learning_added" for r in rows)
+
+
+def test_update_writes_learning_updated_audit_row(client_with_migrated_workspace):
+    client, token, slug, agent, _ = client_with_migrated_workspace
+    # Seed
+    client.post(
+        f"/api/v1/orgs/{slug}/agents/{agent}/learnings/entries/",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"slug": "y", "title": "orig", "topic": "w", "body": "b\n"},
+    )
+    # Update
+    client.put(
+        f"/api/v1/orgs/{slug}/agents/{agent}/learnings/entries/LRN-001",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"slug": "y", "title": "updated", "topic": "w", "body": "b2\n"},
+    )
+    audit = client.get(
+        f"/api/v1/orgs/{slug}/audit?action=learning_updated",
+        headers={"Authorization": f"Bearer {token}"},
+    ).json()
+    rows = audit.get("entries", [])
+    assert any(r["action"] == "learning_updated" for r in rows)
+
+
+def test_promote_writes_learning_promoted_audit_row(client_with_migrated_workspace):
+    client, token, slug, agent, _ = client_with_migrated_workspace
+    # Seed a KB entry
+    client.post(
+        f"/api/v1/orgs/{slug}/kb/",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "slug": "audit-kb-entry",
+            "title": "Audit KB Entry",
+            "type": "precedent",
+            "topic": "engineering",
+            "body": "details\n",
+            "agent": agent,
+        },
+    )
+    # Seed a learning
+    client.post(
+        f"/api/v1/orgs/{slug}/agents/{agent}/learnings/entries/",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"slug": "z", "title": "z", "topic": "w", "body": "b\n"},
+    )
+    # Promote
+    client.post(
+        f"/api/v1/orgs/{slug}/agents/{agent}/learnings/entries/LRN-001/promote",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"kb_slug": "audit-kb-entry"},
+    )
+    audit = client.get(
+        f"/api/v1/orgs/{slug}/audit?action=learning_promoted",
+        headers={"Authorization": f"Bearer {token}"},
+    ).json()
+    rows = audit.get("entries", [])
+    assert any(r["action"] == "learning_promoted" for r in rows)

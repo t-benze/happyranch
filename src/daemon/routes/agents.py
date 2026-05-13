@@ -819,6 +819,14 @@ async def add_learning(
         except LearningSlugExists as e:
             raise HTTPException(status_code=409, detail={"error": "slug_exists", "slug": e.slug})
         store.regenerate_index()
+        AuditLogger(org.db).log_learning_added(
+            agent=agent_name,
+            id=written.id,
+            slug=written.slug,
+            topic=written.topic,
+            tags=written.tags,
+            source_task=written.source_task,
+        )
     rel_path = f"learnings/{written.id}-{written.slug}.md"
     return {"id": written.id, "path": rel_path, "authored_at": written.authored_at}
 
@@ -828,6 +836,11 @@ async def update_learning(
     slug: str, agent_name: str, id: str, body: LearningUpdateBody, org: OrgDep,
 ) -> dict:
     store = _workspace_learnings_store(org, agent_name)
+    try:
+        existing_entry = store.read_entry(id)
+        prior_slug = existing_entry.slug
+    except LearningNotFound:
+        prior_slug = None
     entry = LearningEntry(
         id=id,
         slug=body.slug,
@@ -853,6 +866,12 @@ async def update_learning(
         except LearningSlugExists as e:
             raise HTTPException(status_code=409, detail={"error": "slug_exists", "slug": e.slug})
         store.regenerate_index()
+        AuditLogger(org.db).log_learning_updated(
+            agent=agent_name,
+            id=written.id,
+            slug_changed=prior_slug is not None and prior_slug != written.slug,
+            fields_changed=[],
+        )
     return _entry_to_dict(written)
 
 
@@ -899,4 +918,9 @@ async def promote_learning(
         except InvalidLearningEntry as e:
             raise _invalid_entry_to_http(e)
         store.regenerate_index()
+        AuditLogger(org.db).log_learning_promoted(
+            agent=agent_name,
+            id=written.id,
+            kb_slug=body.kb_slug,
+        )
     return _entry_to_dict(written)
