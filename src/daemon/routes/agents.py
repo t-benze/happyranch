@@ -28,6 +28,11 @@ from src.daemon.auth import require_token
 from src.daemon.org_state import OrgState
 from src.daemon.routes._org_dep import OrgDep
 from src.infrastructure.audit_logger import AuditLogger
+from src.infrastructure.learnings_store import (
+    LearningEntry,
+    LearningNotFound,
+    LearningsStore,
+)
 from src.models import PerformanceTier, TalkStatus
 from src.orchestrator import prompt_loader
 from src.orchestrator._paths import OrgPaths
@@ -635,3 +640,99 @@ async def append_learning(
     async with org.db_lock:
         _append_to_learnings_file(learnings_path, agent_name, body.text)
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Learnings read routes + 412 pre-migration guard
+# ---------------------------------------------------------------------------
+
+
+def _workspace_learnings_store(org: OrgState, agent_name: str) -> LearningsStore:
+    """Return the per-agent LearningsStore, raising 412 if pre-migration."""
+    workspace = org.root / "workspaces" / agent_name
+    learnings_dir = workspace / "learnings"
+    if not learnings_dir.exists():
+        raise HTTPException(
+            status_code=412,
+            detail={"error": "workspace_not_migrated", "migrate_first": True},
+        )
+    return LearningsStore(learnings_dir)
+
+
+def _entry_to_dict(entry: LearningEntry) -> dict:
+    return {
+        "id": entry.id,
+        "slug": entry.slug,
+        "title": entry.title,
+        "topic": entry.topic,
+        "tags": entry.tags,
+        "body": entry.body,
+        "source_task": entry.source_task,
+        "related_to": entry.related_to,
+        "supersedes": entry.supersedes,
+        "promoted_to": entry.promoted_to,
+        "authored_by": entry.authored_by,
+        "authored_at": entry.authored_at,
+        "updated_by": entry.updated_by,
+        "updated_at": entry.updated_at,
+    }
+
+
+@router.get("/agents/{agent_name}/learnings/entries/")
+async def list_learnings(
+    slug: str,
+    agent_name: str,
+    org: OrgDep,
+    topic: str | None = None,
+    tag: str | None = None,
+    promoted: bool | None = None,
+) -> dict:
+    store = _workspace_learnings_store(org, agent_name)
+    summaries = store.list_entries(topic=topic, tag=tag, promoted=promoted)
+    return {
+        "entries": [
+            {
+                "id": s.id,
+                "slug": s.slug,
+                "title": s.title,
+                "topic": s.topic,
+                "tags": s.tags,
+                "promoted_to": s.promoted_to,
+                "updated_at": s.updated_at,
+            }
+            for s in summaries
+        ],
+    }
+
+
+@router.get("/agents/{agent_name}/learnings/entries/{id_or_slug}")
+async def get_learning(slug: str, agent_name: str, id_or_slug: str, org: OrgDep) -> dict:
+    store = _workspace_learnings_store(org, agent_name)
+    try:
+        entry = store.read_entry(id_or_slug)
+    except LearningNotFound:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "id_not_found", "id_or_slug": id_or_slug},
+        )
+    return _entry_to_dict(entry)
+
+
+class LearningSearchBody(BaseModel):
+    query: str
+    limit: int = 20
+    include_promoted: bool = False
+
+
+@router.post("/agents/{agent_name}/learnings/entries/search")
+async def search_learnings(
+    slug: str, agent_name: str, body: LearningSearchBody, org: OrgDep,
+) -> dict:
+    store = _workspace_learnings_store(org, agent_name)
+    hits = store.search(body.query, limit=body.limit, include_promoted=body.include_promoted)
+    return {
+        "hits": [
+            {"id": h.id, "slug": h.slug, "title": h.title, "snippet": h.snippet, "score": h.score}
+            for h in hits
+        ],
+    }
