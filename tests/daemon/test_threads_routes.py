@@ -130,3 +130,89 @@ def test_get_thread_missing_returns_404(tmp_home, app, org_state, auth_headers):
     client = TestClient(app)
     resp = client.get("/api/v1/orgs/alpha/threads/THR-999", headers=auth_headers)
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Task 21 — POST /threads/{id}/reply with token validation
+# ---------------------------------------------------------------------------
+
+
+def _start_thread(client, org_state, auth_headers, *, recipient="dev_agent", addressed=None):
+    """Helper: seeds the agent and creates a thread, returning (thread_id, invocation_token)."""
+    _seed_agent(org_state, recipient)
+    addressed = addressed or ["@all"]
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": [recipient], "body_markdown": "hi", "addressed_to": addressed},
+        headers=auth_headers,
+    ).json()
+    inv = org_state.db.list_thread_invocations(r["thread_id"])[0]
+    return r["thread_id"], inv.invocation_token
+
+
+def test_reply_appends_message_and_consumes_token(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    tid, token = _start_thread(client, org_state, auth_headers)
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/reply",
+        json={
+            "thread_id": tid, "invocation_token": token,
+            "speaker": "dev_agent", "body_markdown": "hello back",
+            "in_response_to_seq": 1,
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    msgs = org_state.db.list_thread_messages(tid)
+    assert msgs[-1].body_markdown == "hello back"
+    assert org_state.db.get_thread(tid).turns_used == 1
+    assert org_state.db.get_pending_invocation(token) is None
+
+
+def test_reply_rejects_missing_token(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    tid, _token = _start_thread(client, org_state, auth_headers)
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/reply",
+        json={"thread_id": tid, "invocation_token": "bogus",
+              "speaker": "dev_agent", "body_markdown": "x", "in_response_to_seq": 1},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 401
+    assert resp.json()["detail"]["code"] == "invocation_token_invalid"
+
+
+def test_reply_rejects_consumed_token(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    tid, token = _start_thread(client, org_state, auth_headers)
+    p = {"thread_id": tid, "invocation_token": token,
+         "speaker": "dev_agent", "body_markdown": "hi", "in_response_to_seq": 1}
+    assert client.post(f"/api/v1/orgs/alpha/threads/{tid}/reply", json=p, headers=auth_headers).status_code == 200
+    second = client.post(f"/api/v1/orgs/alpha/threads/{tid}/reply", json=p, headers=auth_headers)
+    assert second.status_code == 409
+    assert second.json()["detail"]["code"] == "invocation_token_consumed"
+
+
+def test_reply_rejects_mismatched_speaker(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent", "qa_engineer"],
+              "body_markdown": "hi", "addressed_to": ["@all"]},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    dev_token = next(
+        inv.invocation_token
+        for inv in org_state.db.list_thread_invocations(tid)
+        if inv.agent_name == "dev_agent"
+    )
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/reply",
+        json={"thread_id": tid, "invocation_token": dev_token,
+              "speaker": "qa_engineer", "body_markdown": "x", "in_response_to_seq": 1},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 401

@@ -233,3 +233,106 @@ async def list_thread_messages_endpoint(
         raise HTTPException(status_code=404, detail={"code": "not_found"})
     msgs = org.db.list_thread_messages(thread_id, since_seq=since_seq, limit=min(limit, 1000))
     return {"messages": [_msg_to_dict(m) for m in msgs]}
+
+
+# ---------------------------------------------------------------------------
+# Task 21 — POST /threads/{id}/reply
+# ---------------------------------------------------------------------------
+
+
+class ReplyBody(BaseModel):
+    thread_id: str
+    invocation_token: str
+    speaker: str
+    body_markdown: str
+    in_response_to_seq: int
+
+
+def _validate_invocation_token(
+    org,
+    *,
+    token: str,
+    expected_agent: str,
+    expected_thread_id: str,
+    require_purposes: list[ThreadInvocationPurpose],
+):
+    inv = org.db.get_pending_invocation(token)
+    if inv is None:
+        any_inv = org.db.get_invocation_any_status(token)
+        if any_inv is None:
+            raise HTTPException(
+                status_code=401,
+                detail={"code": "invocation_token_invalid"},
+            )
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "invocation_token_consumed", "status": any_inv.status.value},
+        )
+    if inv.thread_id != expected_thread_id or inv.agent_name != expected_agent:
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "invocation_token_invalid", "reason": "mismatch"},
+        )
+    if inv.purpose not in require_purposes:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "wrong_invocation_purpose",
+                "actual": inv.purpose.value,
+                "required": [p.value for p in require_purposes],
+            },
+        )
+    return inv
+
+
+def _verify_addressed(org, *, thread_id: str, seq: int, speaker: str) -> None:
+    m = org.db.get_thread_message_by_seq(thread_id, seq)
+    if m is None:
+        raise HTTPException(status_code=400, detail={"code": "not_addressed", "reason": "seq missing"})
+    addr = m.addressed_to or []
+    if addr == ["@all"]:
+        return
+    if speaker not in addr:
+        if m.kind.value == "system" and (m.system_payload or {}).get("agent_name") == speaker:
+            return
+        raise HTTPException(status_code=400, detail={"code": "not_addressed"})
+
+
+@router.post("/threads/{thread_id}/reply")
+async def reply_thread_endpoint(
+    slug: str, thread_id: str, body: ReplyBody, org: OrgDep,
+) -> dict:
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    if t.status is not ThreadStatus.OPEN:
+        raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
+
+    body_text = body.body_markdown.strip()
+    if not body_text:
+        raise HTTPException(status_code=422, detail={"code": "empty_body"})
+
+    _validate_invocation_token(
+        org, token=body.invocation_token,
+        expected_agent=body.speaker, expected_thread_id=thread_id,
+        require_purposes=[ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP],
+    )
+    if not org.db.is_thread_participant(thread_id, body.speaker):
+        raise HTTPException(status_code=403, detail={"code": "not_participant"})
+    _verify_addressed(org, thread_id=thread_id, seq=body.in_response_to_seq, speaker=body.speaker)
+
+    async with org.db_lock:
+        inv = org.db.get_pending_invocation(body.invocation_token)
+        if inv is None:
+            raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
+        seq = org.db.append_thread_message(
+            thread_id=thread_id, speaker=body.speaker,
+            kind=ThreadMessageKind.MESSAGE, body_markdown=body_text,
+        )
+        org.db.consume_invocation(body.invocation_token)
+        org.db.increment_thread_turns_used(thread_id, by=1)
+        AuditLogger(org.db).log_thread_message_sent(
+            thread_id, seq=seq, speaker=body.speaker,
+            addressed_to=None, kind="message",
+        )
+    return {"thread_id": thread_id, "seq": seq, "kind": "message"}
