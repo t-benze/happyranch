@@ -93,6 +93,14 @@ class LearningEntry:
     updated_at: Optional[str] = None
 
 
+def _lrn_numeric_suffix(s: "LearningSummary") -> int:
+    """Extract the integer suffix of an LRN-NNN id for numeric ordering.
+
+    String sort breaks at LRN-1000+ ('LRN-999' > 'LRN-1000' lexicographically).
+    """
+    return int(s.id.split("-", 1)[1])
+
+
 class LearningsStore:
     def __init__(self, root: Path) -> None:
         self._root = root
@@ -387,7 +395,7 @@ class LearningsStore:
         for s in summaries:
             groups.setdefault(s.topic, []).append(s)
         for topic in groups:
-            groups[topic].sort(key=lambda s: s.id, reverse=True)  # newest first
+            groups[topic].sort(key=_lrn_numeric_suffix, reverse=True)  # newest first
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         total = sum(len(v) for v in groups.values())
         lines = [

@@ -175,7 +175,13 @@ async def end_talk(slug: str, talk_id: str, body: EndTalkBody, org: OrgDep) -> d
             store = LearningsStore(learnings_dir)
             for idx, entry in enumerate(body.learnings):
                 lid = store.next_id()
-                title = (entry.text[:80]).rstrip() or f"Talk {talk_id} learning #{idx + 1}"
+                # Title must be single-line — derive from first non-empty line
+                # so multiline learnings don't break frontmatter/index rendering.
+                first_line = next(
+                    (ln.strip() for ln in entry.text.splitlines() if ln.strip()),
+                    "",
+                )
+                title = first_line[:80] or f"Talk {talk_id} learning #{idx + 1}"
                 slug = f"talk-{talk_id.lower()}-{idx + 1}"
                 le = LearningEntry(
                     id=lid,

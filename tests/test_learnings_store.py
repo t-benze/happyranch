@@ -299,6 +299,18 @@ def test_regenerate_index_groups_by_topic_newest_first(store: LearningsStore):
     assert idx.index("LRN-002") < idx.index("LRN-001")
 
 
+def test_regenerate_index_orders_numerically_past_999(store: LearningsStore):
+    """String sort breaks at LRN-1000+ (LRN-999 sorts after LRN-1000
+    lexicographically). Index must order by numeric suffix, newest first."""
+    store.write_entry(_make_entry(id="LRN-998", slug="a", title="prior", topic="w"), agent="z")
+    store.write_entry(_make_entry(id="LRN-999", slug="b", title="older 3-digit", topic="w"), agent="z")
+    store.write_entry(_make_entry(id="LRN-1000", slug="c", title="newer 4-digit", topic="w"), agent="z")
+    store.regenerate_index()
+    idx = (store.root / "_index.md").read_text()
+    # LRN-1000 is newest and must appear first inside the topic block.
+    assert idx.index("LRN-1000") < idx.index("LRN-999") < idx.index("LRN-998")
+
+
 def test_regenerate_index_shows_promoted_marker(store: LearningsStore):
     store.write_entry(_make_entry(id="LRN-001", slug="a", title="promoted thing", topic="w"), agent="z")
     store.promote("LRN-001", kb_slug="kb-precedent", agent="z")

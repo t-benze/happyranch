@@ -180,6 +180,33 @@ def test_end_talk_writes_to_learnings_store_on_migrated_workspace(tmp_home, app,
     assert "Always tag releases" in content
 
 
+def test_end_talk_multiline_learning_title_is_single_line(tmp_home, app, org_state, auth_headers):
+    """Multiline talk learnings must not produce a multiline frontmatter title."""
+    from fastapi.testclient import TestClient
+    import yaml
+    client = TestClient(app)
+    tid = client.post("/api/v1/orgs/alpha/talks", json={"agent_name": "dev_agent"}, headers=auth_headers).json()["talk_id"]
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True, exist_ok=True)
+    learnings_dir = workspace / "learnings"
+    learnings_dir.mkdir()
+    body = {
+        "summary": "s", "topic_list": [], "transcript_markdown": "t",
+        "learnings": [
+            {"text": "\n\nFirst meaningful line of insight.\nSecond paragraph with detail.\nThird wrap."},
+        ],
+        "kb_slugs": [],
+    }
+    r = client.post(f"/api/v1/orgs/alpha/talks/{tid}/end", json=body, headers=auth_headers)
+    assert r.status_code == 200, r.text
+    lrn_files = list(learnings_dir.glob("LRN-*.md"))
+    assert len(lrn_files) == 1
+    raw = lrn_files[0].read_text()
+    fm = yaml.safe_load(raw.split("---", 2)[1])
+    assert "\n" not in fm["title"]
+    assert fm["title"] == "First meaningful line of insight."
+
+
 def test_end_talk_flat_learnings_when_not_migrated(tmp_home, app, org_state, auth_headers):
     """When learnings/ does NOT exist (pre-migration), fall back to flat learnings.md."""
     from fastapi.testclient import TestClient
