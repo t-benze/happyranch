@@ -38,6 +38,12 @@ class LearningIdExists(ValueError):
         super().__init__(f"id_exists: {id}")
 
 
+class LearningSlugExists(ValueError):
+    def __init__(self, slug: str) -> None:
+        self.slug = slug
+        super().__init__(f"slug_exists: {slug}")
+
+
 class LearningNotFound(LookupError):
     pass
 
@@ -146,6 +152,8 @@ class LearningsStore:
         self._validate_entry_structure(entry)
         if self._find_by_id(entry.id) is not None:
             raise LearningIdExists(entry.id)
+        if self._find_by_slug(entry.slug) is not None:
+            raise LearningSlugExists(entry.slug)
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         stamped = LearningEntry(**{**entry.__dict__})
         stamped.authored_by = agent

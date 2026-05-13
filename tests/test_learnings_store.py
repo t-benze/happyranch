@@ -10,6 +10,7 @@ from src.infrastructure.learnings_store import (
     InvalidLearningId,
     InvalidLearningEntry,
     LearningIdExists,
+    LearningSlugExists,
     LearningNotFound,
     PromotedLocked,
 )
@@ -124,6 +125,12 @@ def test_write_entry_rejects_duplicate_id(store: LearningsStore):
     store.write_entry(_make_entry(id="LRN-001", slug="a"), agent="x")
     with pytest.raises(LearningIdExists):
         store.write_entry(_make_entry(id="LRN-001", slug="b"), agent="x")
+
+
+def test_write_entry_rejects_duplicate_slug(store: LearningsStore):
+    store.write_entry(_make_entry(id="LRN-001", slug="same-slug"), agent="z")
+    with pytest.raises(LearningSlugExists):
+        store.write_entry(_make_entry(id="LRN-002", slug="same-slug"), agent="z")
 
 
 def test_list_entries_returns_summaries(store: LearningsStore):
