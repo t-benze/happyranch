@@ -31,17 +31,20 @@ def test_learning_list_help_shows_filters():
 def test_cmd_learning_list_calls_correct_route(monkeypatch):
     captured = {}
 
+    class FakeResponse:
+        status_code = 200
+        def json(self): return {"entries": []}
+
     class FakeClient:
-        def __init__(self, *a, **k): pass
-        def __enter__(self): return self
-        def __exit__(self, *a): pass
         def get(self, path, params=None):
             captured["path"] = path
             captured["params"] = params
-            return {"entries": []}
+            return FakeResponse()
+        def close(self): pass
 
     from src import cli
-    monkeypatch.setattr(cli, "Client", FakeClient)
+    monkeypatch.setattr(cli.OpcClient, "from_env", classmethod(lambda c: FakeClient()))
+    monkeypatch.setattr(cli, "_fetch_available_orgs", lambda c: ["my-org"])
     args = type("A", (), dict(
         org="my-org", agent="dev_agent",
         topic="workflow", tag=None, promoted=False, not_promoted=False, json=False,
@@ -54,17 +57,20 @@ def test_cmd_learning_list_calls_correct_route(monkeypatch):
 def test_cmd_learning_add_reads_yaml_and_posts(monkeypatch, tmp_path):
     captured = {}
 
+    class FakeResponse:
+        status_code = 200
+        def json(self): return {"id": "LRN-001", "path": "learnings/LRN-001-x.md"}
+
     class FakeClient:
-        def __init__(self, *a, **k): pass
-        def __enter__(self): return self
-        def __exit__(self, *a): pass
         def post(self, path, json=None):
             captured["path"] = path
             captured["json"] = json
-            return {"id": "LRN-001", "path": "learnings/LRN-001-x.md"}
+            return FakeResponse()
+        def close(self): pass
 
     from src import cli
-    monkeypatch.setattr(cli, "Client", FakeClient)
+    monkeypatch.setattr(cli.OpcClient, "from_env", classmethod(lambda c: FakeClient()))
+    monkeypatch.setattr(cli, "_fetch_available_orgs", lambda c: ["o"])
     payload_path = tmp_path / "p.yaml"
     payload_path.write_text(
         "slug: x\n"
@@ -88,17 +94,20 @@ def test_cmd_learning_add_reads_yaml_and_posts(monkeypatch, tmp_path):
 def test_cmd_learning_promote_posts_correct_path(monkeypatch):
     captured = {}
 
+    class FakeResponse:
+        status_code = 200
+        def json(self): return {"id": "LRN-001", "promoted_to": "kb-x", "body": "..."}
+
     class FakeClient:
-        def __init__(self, *a, **k): pass
-        def __enter__(self): return self
-        def __exit__(self, *a): pass
         def post(self, path, json=None):
             captured["path"] = path
             captured["json"] = json
-            return {"id": "LRN-001", "promoted_to": "kb-x", "body": "..."}
+            return FakeResponse()
+        def close(self): pass
 
     from src import cli
-    monkeypatch.setattr(cli, "Client", FakeClient)
+    monkeypatch.setattr(cli.OpcClient, "from_env", classmethod(lambda c: FakeClient()))
+    monkeypatch.setattr(cli, "_fetch_available_orgs", lambda c: ["o"])
     args = type("A", (), dict(
         org="o", agent="dev_agent", id="LRN-001", kb_slug="kb-x",
     ))()

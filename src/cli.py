@@ -736,39 +736,24 @@ def cmd_learning(args: argparse.Namespace) -> None:
         return
 
 
-class Client:
-    """Thin context-manager wrapper around OpcClient that returns dicts from .get/.post."""
+def _read_yaml_payload(path: str) -> dict:
+    import yaml
+    with open(path) as f:
+        return yaml.safe_load(f) or {}
 
-    def __init__(self) -> None:
-        self._inner = OpcClient.from_env()
 
-    def __enter__(self) -> "Client":
-        return self
-
-    def __exit__(self, *args: object) -> None:
-        self._inner.close()
-
-    def get(self, path: str, params: dict | None = None) -> dict:
-        r = self._inner.get(path, params=params)
-        if not _ok(r):
-            return {}
-        return r.json()
-
-    def post(self, path: str, json: dict | None = None) -> dict:
-        r = self._inner.post(path, json=json)
-        if not _ok(r):
-            return {}
-        return r.json()
-
-    def put(self, path: str, json: dict | None = None) -> dict:
-        r = self._inner.request("PUT", path, json=json)
-        if not _ok(r):
-            return {}
-        return r.json()
+def _learning_client() -> OpcClient:
+    """Return an OpcClient, exiting with a friendly message if the daemon is down."""
+    try:
+        return OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
 
 
 def cmd_learning_list(args: argparse.Namespace) -> None:
-    org = args.org or os.environ.get("OPC_ORG_SLUG", "")
+    client = _learning_client()
+    org = resolve_org_slug(args_org=args.org, available=_fetch_available_orgs(client))
     params: dict = {}
     if args.topic:
         params["topic"] = args.topic
@@ -778,9 +763,10 @@ def cmd_learning_list(args: argparse.Namespace) -> None:
         params["promoted"] = True
     elif args.not_promoted:
         params["promoted"] = False
-    with Client() as c:
-        resp = c.get(f"/api/v1/orgs/{org}/agents/{args.agent}/learnings/entries/", params=params)
-    entries = resp.get("entries", [])
+    r = client.get(f"/api/v1/orgs/{org}/agents/{args.agent}/learnings/entries/", params=params)
+    if not _ok(r):
+        return
+    entries = r.json().get("entries", [])
     if args.json:
         import json
         print(json.dumps(entries, indent=2))
@@ -795,9 +781,12 @@ def cmd_learning_list(args: argparse.Namespace) -> None:
 
 
 def cmd_learning_get(args: argparse.Namespace) -> None:
-    org = args.org or os.environ.get("OPC_ORG_SLUG", "")
-    with Client() as c:
-        entry = c.get(f"/api/v1/orgs/{org}/agents/{args.agent}/learnings/entries/{args.id_or_slug}")
+    client = _learning_client()
+    org = resolve_org_slug(args_org=args.org, available=_fetch_available_orgs(client))
+    r = client.get(f"/api/v1/orgs/{org}/agents/{args.agent}/learnings/entries/{args.id_or_slug}")
+    if not _ok(r):
+        return
+    entry = r.json()
     if args.json:
         import json
         print(json.dumps(entry, indent=2))
@@ -813,13 +802,15 @@ def cmd_learning_get(args: argparse.Namespace) -> None:
 
 
 def cmd_learning_search(args: argparse.Namespace) -> None:
-    org = args.org or os.environ.get("OPC_ORG_SLUG", "")
-    with Client() as c:
-        resp = c.post(
-            f"/api/v1/orgs/{org}/agents/{args.agent}/learnings/entries/search",
-            json={"query": args.query, "limit": args.limit, "include_promoted": args.include_promoted},
-        )
-    hits = resp.get("hits", [])
+    client = _learning_client()
+    org = resolve_org_slug(args_org=args.org, available=_fetch_available_orgs(client))
+    r = client.post(
+        f"/api/v1/orgs/{org}/agents/{args.agent}/learnings/entries/search",
+        json={"query": args.query, "limit": args.limit, "include_promoted": args.include_promoted},
+    )
+    if not _ok(r):
+        return
+    hits = r.json().get("hits", [])
     if args.json:
         import json
         print(json.dumps(hits, indent=2))
@@ -833,47 +824,49 @@ def cmd_learning_search(args: argparse.Namespace) -> None:
 
 
 def cmd_learning_reindex(args: argparse.Namespace) -> None:
-    org = args.org or os.environ.get("OPC_ORG_SLUG", "")
-    with Client() as c:
-        c.post(f"/api/v1/orgs/{org}/agents/{args.agent}/learnings/entries/reindex", json={})
+    client = _learning_client()
+    org = resolve_org_slug(args_org=args.org, available=_fetch_available_orgs(client))
+    r = client.post(f"/api/v1/orgs/{org}/agents/{args.agent}/learnings/entries/reindex", json={})
+    if not _ok(r):
+        return
     print("ok: reindexed")
 
 
-def _read_yaml_payload(path: str) -> dict:
-    import yaml
-    with open(path) as f:
-        return yaml.safe_load(f) or {}
-
-
 def cmd_learning_add(args: argparse.Namespace) -> None:
-    org = args.org or os.environ.get("OPC_ORG_SLUG", "")
+    client = _learning_client()
+    org = resolve_org_slug(args_org=args.org, available=_fetch_available_orgs(client))
     payload = _read_yaml_payload(args.from_file)
-    with Client() as c:
-        resp = c.post(
-            f"/api/v1/orgs/{org}/agents/{args.agent}/learnings/entries/",
-            json=payload,
-        )
+    r = client.post(
+        f"/api/v1/orgs/{org}/agents/{args.agent}/learnings/entries/",
+        json=payload,
+    )
+    if not _ok(r):
+        return
+    resp = r.json()
     print(f"ok: {resp['id']} -> {resp['path']}")
 
 
 def cmd_learning_update(args: argparse.Namespace) -> None:
-    org = args.org or os.environ.get("OPC_ORG_SLUG", "")
+    client = _learning_client()
+    org = resolve_org_slug(args_org=args.org, available=_fetch_available_orgs(client))
     payload = _read_yaml_payload(args.from_file)
-    with Client() as c:
-        resp = c.put(
-            f"/api/v1/orgs/{org}/agents/{args.agent}/learnings/entries/{args.id}",
-            json=payload,
-        )
+    r = client.request("PUT", f"/api/v1/orgs/{org}/agents/{args.agent}/learnings/entries/{args.id}", json=payload)
+    if not _ok(r):
+        return
+    resp = r.json()
     print(f"ok: updated {resp['id']}")
 
 
 def cmd_learning_promote(args: argparse.Namespace) -> None:
-    org = args.org or os.environ.get("OPC_ORG_SLUG", "")
-    with Client() as c:
-        resp = c.post(
-            f"/api/v1/orgs/{org}/agents/{args.agent}/learnings/entries/{args.id}/promote",
-            json={"kb_slug": args.kb_slug},
-        )
+    client = _learning_client()
+    org = resolve_org_slug(args_org=args.org, available=_fetch_available_orgs(client))
+    r = client.post(
+        f"/api/v1/orgs/{org}/agents/{args.agent}/learnings/entries/{args.id}/promote",
+        json={"kb_slug": args.kb_slug},
+    )
+    if not _ok(r):
+        return
+    resp = r.json()
     print(f"ok: {resp['id']} promoted to KB precedent `{resp['promoted_to']}`")
 
 
@@ -1996,8 +1989,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_learn = sub.add_parser("learning", help="Per-agent learnings (verb-dispatched)")
     learn_sub = p_learn.add_subparsers(dest="learn_verb")
 
-    # Legacy: `opc learning --agent X --text "..."` keeps working
-    p_learn.add_argument("--org", required=False)
+    # Agent callback: `opc learning --org <slug> --agent X --text "..."`
+    p_learn.add_argument("--org", required=True)
     p_learn.add_argument("--agent", required=False)
     p_learn.add_argument("--text", required=False)
     p_learn.add_argument("--task-id", required=False)
