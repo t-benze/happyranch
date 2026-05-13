@@ -460,6 +460,53 @@ def test_archive_phase_a_transitions_to_archiving(tmp_home, app, org_state, auth
     assert len(pending) == 2
 
 
+# ---------------------------------------------------------------------------
+# Task 30 — POST /threads/{id}/close-out
+# ---------------------------------------------------------------------------
+
+
+def test_close_out_writes_learnings_and_kb_slugs(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"],
+              "body_markdown": "hi", "addressed_to": ["@all"]},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/archive",
+        json={"summary": "done", "request_close_outs": True},
+        headers=auth_headers,
+    )
+    inv = next(
+        i for i in org_state.db.list_thread_invocations(tid)
+        if i.purpose.value == "close_out" and i.agent_name == "dev_agent"
+    )
+    # Seed a KB entry that the close-out can reference.
+    from src.infrastructure.kb_store import KBStore, KBEntry
+    kb_entry = KBEntry(
+        slug="thread-learning",
+        title="Thread learning",
+        type="reference",
+        topic="threads",
+        body="refunds beyond 30d are fine.",
+    )
+    KBStore(org_state.root / "kb").write_entry(kb_entry, agent="dev_agent")
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/close-out",
+        json={"thread_id": tid, "invocation_token": inv.invocation_token,
+              "agent": "dev_agent",
+              "learnings": [{"text": "refunds beyond 30d are fine."}],
+              "kb_slugs": ["thread-learning"]},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert "thread-learning" in org_state.db.get_thread(tid).new_kb_slugs
+    assert org_state.db.get_pending_invocation(inv.invocation_token) is None
+
+
 def test_abandon_reaps_pending_and_writes_no_transcript(tmp_home, app, org_state, auth_headers):
     client = TestClient(app)
     _seed_agent(org_state, "dev_agent")

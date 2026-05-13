@@ -674,11 +674,6 @@ async def extend_thread_endpoint(
 
 
 # ---------------------------------------------------------------------------
-# Task 27 — POST /threads/{id}/abandon
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
 # Task 28 — POST /threads/{id}/archive (Phase A) + Task 29 Phase B finalizer
 # ---------------------------------------------------------------------------
 
@@ -758,6 +753,76 @@ async def archive_thread_endpoint(
 # ---------------------------------------------------------------------------
 # Task 27 — POST /threads/{id}/abandon
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Task 30 — POST /threads/{id}/close-out
+# ---------------------------------------------------------------------------
+
+
+class CloseOutLearning(BaseModel):
+    text: str
+
+
+class CloseOutBody(BaseModel):
+    thread_id: str
+    invocation_token: str
+    agent: str
+    learnings: list[CloseOutLearning] = []
+    kb_slugs: list[str] = []
+
+
+@router.post("/threads/{thread_id}/close-out")
+async def close_out_thread_endpoint(
+    slug: str, thread_id: str, body: CloseOutBody, org: OrgDep,
+) -> dict:
+    from src.infrastructure.kb_store import KBStore, NotFound as KBNotFound
+    from src.daemon.routes.agents import _append_to_learnings_file
+
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    if t.status not in {ThreadStatus.OPEN, ThreadStatus.ARCHIVING}:
+        raise HTTPException(status_code=400, detail={"code": "thread_already_finalized"})
+    _validate_invocation_token(
+        org, token=body.invocation_token,
+        expected_agent=body.agent, expected_thread_id=thread_id,
+        require_purposes=[ThreadInvocationPurpose.CLOSE_OUT],
+    )
+    if not org.db.is_thread_participant(thread_id, body.agent):
+        raise HTTPException(status_code=403, detail={"code": "not_participant"})
+
+    kb = KBStore(org.root / "kb")
+    for kb_slug in body.kb_slugs:
+        try:
+            kb.read_entry(kb_slug)
+        except KBNotFound:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "kb_slug_not_found", "slug": kb_slug},
+            )
+
+    workspace = org.root / "workspaces" / body.agent
+    learnings_path = workspace / "learnings.md"
+    for entry in body.learnings:
+        _append_to_learnings_file(learnings_path, body.agent, entry.text)
+
+    async with org.db_lock:
+        if org.db.get_pending_invocation(body.invocation_token) is None:
+            raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
+        org.db.consume_invocation(body.invocation_token)
+        for kb_slug in body.kb_slugs:
+            org.db.add_thread_kb_slug(thread_id, kb_slug)
+        AuditLogger(org.db).log_thread_close_out_received(
+            thread_id, agent=body.agent,
+            new_learnings_count=len(body.learnings),
+            new_kb_slugs=body.kb_slugs,
+        )
+    return {
+        "thread_id": thread_id, "agent": body.agent,
+        "new_learnings_count": len(body.learnings),
+        "new_kb_slugs": body.kb_slugs,
+    }
 
 
 class AbandonBody(BaseModel):
