@@ -1,7 +1,10 @@
 """Thread endpoints — email-style multi-agent workchannel."""
 from __future__ import annotations
 
+import json as _json
+
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from src.daemon.auth import require_token
@@ -22,6 +25,34 @@ from src.orchestrator._paths import OrgPaths
 from src.orchestrator.org_config import load_org_config
 
 router = APIRouter(dependencies=[require_token()])
+
+
+async def _publish_thread_event(
+    org,
+    slug: str,
+    *,
+    thread_id: str,
+    seq: int | None,
+    speaker: str,
+    kind: str,
+    preview: str = "",
+    status: str = "open",
+) -> None:
+    from src.daemon.event_bus import thread_topic, thread_inbox_topic
+    await org.event_bus.publish(
+        thread_topic(thread_id),
+        {
+            "thread_id": thread_id,
+            "seq": seq,
+            "speaker": speaker,
+            "kind": kind,
+            "preview": (preview or "")[:160],
+        },
+    )
+    await org.event_bus.publish(
+        thread_inbox_topic(slug),
+        {"thread_id": thread_id, "event_kind": kind, "status": status},
+    )
 
 
 class ComposeBody(BaseModel):
@@ -147,6 +178,12 @@ async def compose_thread(
     for token in tokens_to_enqueue:
         await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
 
+    await _publish_thread_event(
+        org, slug,
+        thread_id=thread_id, seq=seq, speaker="founder",
+        kind="message", preview=body_text, status="open",
+    )
+
     return {
         "thread_id": thread_id,
         "started_at": org.db.get_thread(thread_id).started_at.isoformat(),
@@ -203,6 +240,51 @@ async def list_threads_endpoint(
 ) -> dict:
     rows = org.db.list_threads(status=status, limit=min(limit, 500))
     return {"threads": [_thread_row_to_dict(t) for t in rows]}
+
+
+# ---------------------------------------------------------------------------
+# Task 31 — SSE endpoints (/threads/events + /threads/{id}/tail)
+# NOTE: /threads/events must be registered BEFORE /threads/{thread_id} so
+# FastAPI does not match the literal "events" as a thread_id path param.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/threads/events")
+async def threads_inbox_events_endpoint(
+    slug: str,
+    org: OrgDep,
+    request: Request,
+) -> StreamingResponse:
+    async def gen():
+        from src.daemon.event_bus import thread_inbox_topic
+        async for event in org.event_bus.subscribe(thread_inbox_topic(slug)):
+            yield f"data: {_json.dumps(event)}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@router.get("/threads/{thread_id}/tail")
+async def tail_thread_endpoint(
+    slug: str,
+    thread_id: str,
+    org: OrgDep,
+    request: Request,
+    since_seq: int = 0,
+) -> StreamingResponse:
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+
+    async def gen():
+        # Replay missed messages first (not via the bus — directly from DB).
+        for m in org.db.list_thread_messages(thread_id, since_seq=since_seq, limit=1000):
+            yield f"data: {_json.dumps(_msg_to_dict(m))}\n\n"
+        # Live updates via the event bus.
+        from src.daemon.event_bus import thread_topic
+        async for event in org.event_bus.subscribe(thread_topic(thread_id)):
+            yield f"data: {_json.dumps(event)}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 @router.get("/threads/{thread_id}")
@@ -337,6 +419,12 @@ async def reply_thread_endpoint(
             thread_id, seq=seq, speaker=body.speaker,
             addressed_to=None, kind="message",
         )
+    await _publish_thread_event(
+        org, slug,
+        thread_id=thread_id, seq=seq, speaker=body.speaker,
+        kind="message", preview=body_text, status="open",
+    )
+
     return {"thread_id": thread_id, "seq": seq, "kind": "message"}
 
 
@@ -387,6 +475,12 @@ async def decline_thread_endpoint(
             thread_id, seq=seq, speaker=body.speaker,
             addressed_to=None, kind="decline",
         )
+    await _publish_thread_event(
+        org, slug,
+        thread_id=thread_id, seq=seq, speaker=body.speaker,
+        kind="decline", preview=reason, status="open",
+    )
+
     return {"thread_id": thread_id, "seq": seq, "kind": "decline"}
 
 
@@ -510,6 +604,12 @@ async def dispatch_from_thread_endpoint(
 
     enqueue_task(state, slug, task_id)
 
+    await _publish_thread_event(
+        org, slug,
+        thread_id=thread_id, seq=sys_seq, speaker=dispatcher,
+        kind="system", preview=brief[:160], status="open",
+    )
+
     return {
         "task_id": task_id,
         "team": effective_team,
@@ -575,6 +675,12 @@ async def send_thread_endpoint(
     for token in tokens_to_enqueue:
         await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
 
+    await _publish_thread_event(
+        org, slug,
+        thread_id=thread_id, seq=seq, speaker="founder",
+        kind="message", preview=body_text, status="open",
+    )
+
     return {"thread_id": thread_id, "seq": seq, "pending_replies": addressed}
 
 
@@ -634,6 +740,13 @@ async def invite_thread_endpoint(
         token_to_enqueue = inv.invocation_token
 
     await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token_to_enqueue))
+
+    await _publish_thread_event(
+        org, slug,
+        thread_id=thread_id, seq=sys_seq, speaker="founder",
+        kind="system", preview=f"added {body.agent_name}", status="open",
+    )
+
     return {"thread_id": thread_id, "agent_name": body.agent_name, "system_message_seq": sys_seq}
 
 
@@ -664,12 +777,19 @@ async def extend_thread_endpoint(
     async with org.db_lock:
         prior_cap = t.turn_cap
         org.db.set_thread_turn_cap(thread_id, new_cap=body.new_cap)
-        org.db.append_thread_message(
+        sys_seq = org.db.append_thread_message(
             thread_id=thread_id, speaker="founder",
             kind=ThreadMessageKind.SYSTEM,
             system_payload={"kind_tag": "turn_cap_extended",
                             "prior_cap": prior_cap, "new_cap": body.new_cap},
         )
+
+    await _publish_thread_event(
+        org, slug,
+        thread_id=thread_id, seq=sys_seq, speaker="founder",
+        kind="system", preview="turn cap extended", status="open",
+    )
+
     return {"thread_id": thread_id, "turn_cap": body.new_cap}
 
 
@@ -740,6 +860,12 @@ async def archive_thread_endpoint(
         slug, thread_id,
         org_state=org,
         close_out_wait_seconds=cfg.threads_close_out_wait_seconds,
+    )
+
+    await _publish_thread_event(
+        org, slug,
+        thread_id=thread_id, seq=sys_seq, speaker="founder",
+        kind="system", preview="archiving", status="archiving",
     )
 
     return {
@@ -818,6 +944,13 @@ async def close_out_thread_endpoint(
             new_learnings_count=len(body.learnings),
             new_kb_slugs=body.kb_slugs,
         )
+
+    await _publish_thread_event(
+        org, slug,
+        thread_id=thread_id, seq=None, speaker=body.agent,
+        kind="system", preview="close-out received", status=t.status.value,
+    )
+
     return {
         "thread_id": thread_id, "agent": body.agent,
         "new_learnings_count": len(body.learnings),
@@ -845,4 +978,11 @@ async def abandon_thread_endpoint(
             thread_id, purposes=None, decline_reason="thread_abandoned",
         )
         AuditLogger(org.db).log_thread_abandoned(thread_id, reason=reason)
+
+    await _publish_thread_event(
+        org, slug,
+        thread_id=thread_id, seq=None, speaker="founder",
+        kind="system", preview="abandoned", status="abandoned",
+    )
+
     return {"thread_id": thread_id, "status": "abandoned"}
