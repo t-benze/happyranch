@@ -221,6 +221,45 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_thread_participants_agent
                 ON thread_participants(agent_name);
+
+            CREATE TABLE IF NOT EXISTS thread_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                thread_id TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                speaker TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                body_markdown TEXT,
+                addressed_to_json TEXT,
+                decline_reason TEXT,
+                system_payload_json TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (thread_id) REFERENCES threads(id)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_thread_messages_thread_seq
+                ON thread_messages(thread_id, seq);
+
+            CREATE TABLE IF NOT EXISTS thread_invocations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                thread_id TEXT NOT NULL,
+                agent_name TEXT NOT NULL,
+                invocation_token TEXT NOT NULL UNIQUE,
+                triggering_seq INTEGER NOT NULL,
+                purpose TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                enqueued_at TEXT NOT NULL,
+                started_at TEXT,
+                consumed_at TEXT,
+                session_id TEXT,
+                dispatched_task_id TEXT,
+                decline_reason TEXT,
+                FOREIGN KEY (thread_id) REFERENCES threads(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_thread_invocations_token
+                ON thread_invocations(invocation_token);
+            CREATE INDEX IF NOT EXISTS idx_thread_invocations_thread
+                ON thread_invocations(thread_id);
+            CREATE INDEX IF NOT EXISTS idx_thread_invocations_pending
+                ON thread_invocations(status) WHERE status = 'pending';
         """)
         # Best-effort migration for DBs created before `status` existed. SQLite
         # has no IF NOT EXISTS for ADD COLUMN; swallow the duplicate-column
