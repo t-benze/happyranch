@@ -626,6 +626,15 @@ def backfill_enrollments(slug: str, org: OrgDep) -> dict:
 async def append_learning(
     slug: str, agent_name: str, body: LearningBody, org: OrgDep,
 ) -> dict:
+    workspace = org.root / "workspaces" / agent_name
+    if (workspace / "learnings").exists():
+        raise HTTPException(
+            status_code=410,
+            detail={
+                "error": "endpoint_deprecated_for_migrated_workspace",
+                "migrate_to": f"POST /api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries",
+            },
+        )
     expected = org.sessions.get_active(body.task_id, agent_name)
     if expected is None:
         raise HTTPException(
@@ -638,7 +647,6 @@ async def append_learning(
             detail={"code": "session_mismatch", "active": expected, "got": body.session_id},
         )
 
-    workspace = org.root / "workspaces" / agent_name
     learnings_path = workspace / "learnings.md"
 
     # Hold the lock across exists/init/append so two concurrent posts can't both
