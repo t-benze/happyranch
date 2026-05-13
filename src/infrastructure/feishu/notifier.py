@@ -61,45 +61,24 @@ def _build_body_phase1(
     *,
     slug: str,
     task_id: str,
-    agent: str,
-    team: str,
     brief: str,
-    last_summary: str,
     reason: str,
-    escalated_at: datetime,
 ) -> tuple[str, list[str]]:
     """Return (title, body_lines) for the post-format payload."""
     title = f"[OPC {slug}] {task_id} escalated — action required"
     lines = [
-        f"Agent:        {agent}",
-        f"Team:         {team}",
-        f"Task:         {task_id}",
-        f"Org:          {slug}",
-        f"Escalated at: {escalated_at:%Y-%m-%d %H:%M:%S} UTC",
-        "",
-        "--- Brief ---",
+        "Brief:",
         brief,
         "",
-        "--- Last manager summary ---",
-        last_summary or "(none)",
-        "",
-        "--- Escalation reason ---",
+        "Result:",
         reason,
         "",
-        "--- To resolve ---",
-        "Reply in this thread with one of:",
-        "",
+        "Action — reply in this thread:",
         "  APPROVE",
         "  <your rationale>",
-        "",
-        "  —or—",
-        "",
+        "or",
         "  REJECT",
         "  <your rationale>",
-        "",
-        "You can also resolve via CLI:",
-        f"  opc resolve-escalation --org {slug} --task-id {task_id} \\",
-        "    --decision approve|reject --rationale \"...\"",
     ]
     return title, lines
 
@@ -108,40 +87,23 @@ def _build_failure_body(
     *,
     slug: str,
     task_id: str,
-    agent: str,
-    team: str,
     brief: str,
-    last_summary: str,
     failure_kind: str,
     failure_note: str,
-    failed_at: str,
 ) -> tuple[str, list[str]]:
     """Return (title, body_lines) for the failure post-format payload."""
     title = f"[OPC {slug}] {task_id} FAILED — review needed"
     lines = [
-        f"Agent:        {agent}",
-        f"Team:         {team}",
-        f"Task:         {task_id}",
-        f"Org:          {slug}",
-        f"Failed at:    {failed_at}",
-        f"Failure kind: {failure_kind}",
-        "",
-        "--- Brief ---",
+        "Brief:",
         brief,
         "",
-        "--- Last manager summary ---",
-        last_summary or "(none)",
+        "Result:",
+        f"{failure_kind}: {failure_note}",
         "",
-        "--- Failure detail ---",
-        failure_note,
-        "",
-        "--- To revisit ---",
-        "Reply in this thread with:",
-        "",
+        "Action — reply in this thread to retry:",
         "  REVISIT",
-        "  <optional note that becomes founder_note on the new root>",
-        "",
-        "(Or ignore this message — the task stays failed.)",
+        "  <optional note>",
+        "(Or ignore to leave it failed.)",
     ]
     return title, lines
 
@@ -177,19 +139,14 @@ class EscalationNotifier:
             if task is None:
                 logger.warning("notify_escalated: task %s not found", task_id)
                 return
-            team = task.team or ""
             brief = task.brief or ""
 
             now = datetime.now(timezone.utc)
             title, body_lines = _build_body_phase1(
                 slug=self._slug,
                 task_id=task_id,
-                agent=agent,
-                team=team,
                 brief=brief,
-                last_summary=last_summary,
                 reason=reason,
-                escalated_at=now,
             )
             message_id = self._client.send_post_message(
                 chat_id=self._config.chat_id,
@@ -232,21 +189,15 @@ class EscalationNotifier:
             if task is None:
                 logger.warning("send_failure: task %s not found", task_id)
                 return
-            team = task.team or ""
             brief = task.brief or ""
 
             now = datetime.now(timezone.utc)
-            failed_at = task.completed_at or now.isoformat()
             title, body_lines = _build_failure_body(
                 slug=self._slug,
                 task_id=task_id,
-                agent=agent,
-                team=team,
                 brief=brief,
-                last_summary=last_summary,
                 failure_kind=failure_kind,
                 failure_note=failure_note,
-                failed_at=failed_at,
             )
             message_id = self._client.send_post_message(
                 chat_id=self._config.chat_id,

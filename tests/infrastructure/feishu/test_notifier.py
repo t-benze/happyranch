@@ -65,13 +65,10 @@ async def test_notify_escalated_sends_and_audits(tmp_path):
     assert "TASK-1" in sent["title"]
     assert "hk-macau-tourism" in sent["title"]
     body_text = "\n".join(sent["body_lines"])
-    assert "engineering_head" in body_text
     assert "Add Alipay support" in body_text
-    assert "Two delegation rounds failed" in body_text
     assert "Manager requested founder authority" in body_text
     assert "APPROVE" in body_text
     assert "REJECT" in body_text
-    assert "opc resolve-escalation" in body_text
 
     row = db.get_escalation_notification("om_42")
     assert row is not None
