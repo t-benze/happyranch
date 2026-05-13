@@ -77,6 +77,26 @@ CREATE TABLE thread_messages (
     FOREIGN KEY (thread_id) REFERENCES threads(id)
 );
 CREATE UNIQUE INDEX idx_thread_messages_thread_seq ON thread_messages(thread_id, seq);
+
+CREATE TABLE thread_invocations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id TEXT NOT NULL,
+    agent_name TEXT NOT NULL,
+    invocation_token TEXT NOT NULL UNIQUE,     -- opaque, daemon-minted at enqueue time
+    triggering_seq INTEGER NOT NULL,           -- the message that caused this invocation
+    purpose TEXT NOT NULL,                     -- 'reply' | 'bootstrap' | 'close_out'
+    status TEXT NOT NULL DEFAULT 'pending',    -- pending | consumed | timeout | failed
+    enqueued_at TEXT NOT NULL,
+    started_at TEXT,                           -- set when runner launches subprocess
+    consumed_at TEXT,                          -- set on terminal status transition
+    session_id TEXT,                           -- executor's session_id, recorded for audit
+    dispatched_task_id TEXT,                   -- non-null iff a dispatch was issued on this token
+    decline_reason TEXT,                       -- runner-recorded reason on timeout/failure
+    FOREIGN KEY (thread_id) REFERENCES threads(id)
+);
+CREATE INDEX idx_thread_invocations_token ON thread_invocations(invocation_token);
+CREATE INDEX idx_thread_invocations_thread ON thread_invocations(thread_id);
+CREATE INDEX idx_thread_invocations_pending ON thread_invocations(status) WHERE status = 'pending';
 ```
 
 ### 3.2 ID format and sequencing
@@ -86,11 +106,11 @@ CREATE UNIQUE INDEX idx_thread_messages_thread_seq ON thread_messages(thread_id,
 ### 3.3 Status transitions
 
 ```
-(nothing) --compose--> open --archive--> archived  (founder closes; transcript written)
-                       open --abandon--> abandoned (founder drops; no transcript)
+(nothing) --compose--> open --archive-request--> archiving --close-outs-done--> archived
+                       open --abandon---------------------------------------> abandoned
 ```
 
-`archived` and `abandoned` are terminal. A thread may stay `open` indefinitely; there is no auto-archive timer.
+Four states: `open`, `archiving`, `archived`, `abandoned`. `archived` and `abandoned` are terminal. `archiving` is a transitional state entered when the founder hits `/archive`; close-out callbacks (§5.12) accept this state; conversational callbacks (reply/decline/dispatch) do not. The daemon transitions `archiving → archived` once close-outs complete (or the wait times out) and the transcript file is written. A thread may stay `open` indefinitely; there is no auto-archive timer.
 
 ### 3.4 System message kinds
 
@@ -119,6 +139,27 @@ Idempotent ALTER on startup (mirrors `dispatched_from_talk_id`). Sibling to the 
 ### 3.6 TaskRecord change
 
 Add `dispatched_from_thread_id: str | None = None` to `src/models.py:TaskRecord`. Both `dispatched_from_*` fields surface in `GET /tasks/{id}` and in `opc details`.
+
+### 3.6.1 Invocation tokens
+
+Every agent-side callback (`reply`, `decline`, `dispatch`, `close-out`) MUST present a valid `invocation_token` minted by the daemon when the corresponding invocation was enqueued. This is the second authentication layer on top of the bearer token: the bearer proves the caller can talk to the daemon at all; the invocation token proves the call is part of a live, daemon-triggered turn — closing the loophole where an agent could call `opc threads reply` out-of-band from their workspace at any time.
+
+Token lifecycle:
+
+1. Daemon enqueues a `ThreadInvocation` → inserts a `thread_invocations` row with a fresh random token (UUID4) and `status='pending'`.
+2. Invocation runner injects the token into the agent's prompt (see §6.2).
+3. Agent reads the token from the prompt and includes it in every callback payload.
+4. Each callback validates: `invocation_token` exists, `status='pending'`, `(thread_id, agent_name)` match the row, thread is in a permitted state.
+5. **Reply / decline / close-out** transition the row to `status='consumed'` (terminal — token cannot be reused).
+6. **Dispatch** records `dispatched_task_id` but does NOT consume the token — the agent must still issue a reply or decline to terminate the turn cleanly.
+7. On subprocess exit without a terminal callback: runner marks `status='failed'` (or `'timeout'`) and inserts an auto-decline (§6.3).
+
+A pending row is invalidated by one of:
+- Callback consumption (reply/decline/close-out) → `status='consumed'`.
+- Runner timeout (`session_timeout_seconds` elapsed) → `status='timeout'`.
+- Runner failure (subprocess exit without terminal callback) → `status='failed'`.
+- The thread transitioning to `archiving` (Phase A of archive) → conversational invocations reaped to `status='failed'` with `decline_reason='archive_started'`. Close-out invocations are minted AFTER this reap, so they're unaffected.
+- The thread transitioning to `abandoned` → ALL still-pending invocations reaped to `status='failed'` with `decline_reason='thread_abandoned'`.
 
 ### 3.7 Audit-log actions (additions)
 
@@ -195,13 +236,14 @@ The founder has unconditional authority over the thread: compose, send any messa
 
 ### 4.2 Agent authority
 
-An agent's authority on a thread is **co-presence with the founder**, scoped to their own invocation turn. While running a subprocess for thread `THR-NNN`, an agent may:
+An agent's authority on a thread is **co-presence with the founder**, scoped to their own invocation turn. While running a subprocess for thread `THR-NNN` with a pending `thread_invocations` row, an agent may:
 
 - Post a reply (`opc threads reply ...`).
 - Decline to reply (`opc threads decline ...`).
 - Dispatch a task (`opc threads dispatch ...`) — see §7.
+- Submit a close-out (`opc threads close-out ...`) — only when `purpose='close_out'`.
 
-Outside an invocation turn, an agent has no thread authority. The skill body lives in their workspace; the agent only acts when the daemon explicitly invokes them with a thread context.
+Authority is enforced via the invocation token (§3.6.1). Each token is single-use for reply/decline/close-out (terminal) and at-most-once for dispatch (the dispatch leg consumes only the dispatch slot on the row). Without a valid pending token, every callback returns 401 `invocation_token_invalid` or 409 `invocation_token_consumed`. This guarantees: one daemon-triggered invocation → at most one terminal callback + at most one dispatch from that agent on that thread at that seq.
 
 ### 4.3 Addressing semantics
 
@@ -248,10 +290,11 @@ All routes use the existing bearer-token dependency. Per-org path prefix is `/ap
 | GET | `/threads/{id}/tail` | SSE stream of new messages | founder (TUI) |
 | POST | `/threads/{id}/send` | Founder posts a message to existing thread | founder |
 | POST | `/threads/{id}/invite` | Add a participant | founder |
-| POST | `/threads/{id}/reply` | Agent posts a reply | agent (callback) |
-| POST | `/threads/{id}/decline` | Agent declines to reply | agent (callback) |
-| POST | `/threads/{id}/dispatch` | Agent dispatches a task from thread | agent (callback) |
-| POST | `/threads/{id}/archive` | Founder archives + close-out | founder |
+| POST | `/threads/{id}/reply` | Agent posts a reply (consumes token) | agent (callback) |
+| POST | `/threads/{id}/decline` | Agent declines to reply (consumes token) | agent (callback) |
+| POST | `/threads/{id}/dispatch` | Agent dispatches a task from thread (doesn't consume token) | agent (callback) |
+| POST | `/threads/{id}/close-out` | Agent close-out at archive (consumes token) | agent (callback) |
+| POST | `/threads/{id}/archive` | Founder archives → enters `archiving` | founder |
 | POST | `/threads/{id}/abandon` | Founder abandons | founder |
 | POST | `/threads/{id}/extend` | Bump `turn_cap` | founder |
 
@@ -306,19 +349,22 @@ Request (matches the JSON the skill writes to `/tmp/thread-reply-<id>-<seq>.json
 ```json
 {
   "thread_id": "THR-014",
+  "invocation_token": "8b3f...e91a",
   "speaker": "engineering_head",
   "body_markdown": "I'd lean toward 45 days as a compromise...",
   "in_response_to_seq": 1
 }
 ```
 
-Validation:
+Validation (in order; each step gates the next):
 1. Thread is `open`. Else 400 `thread_not_open`.
-2. `speaker` is a current participant. Else 403 `not_participant`.
-3. `in_response_to_seq` corresponds to a real message in the thread that the speaker was addressed in (specific or `@all`). Else 400 `not_addressed`.
-4. `body_markdown` non-empty after strip.
+2. `invocation_token` exists, `status='pending'`, and `(thread_id, agent_name=speaker)` matches the row. Else 401 `invocation_token_invalid` (missing/mismatched) or 409 `invocation_token_consumed` (terminal).
+3. Invocation `purpose ∈ {'reply', 'bootstrap'}` (close_out tokens can't be used here). Else 400 `wrong_invocation_purpose`.
+4. `speaker` is a current participant. Else 403 `not_participant`.
+5. `in_response_to_seq` references a real message that addressed `speaker` (specific or `@all`); bootstrap invocations satisfy this via the `participant_added` system message that triggered them. Else 400 `not_addressed`.
+6. `body_markdown` non-empty after strip. Else 422.
 
-Effect: insert message at next `seq` with `kind="message"`, `addressed_to_json=null`. Increment `threads.turns_used`. Audit `thread_message_sent`.
+Effect (one transaction under `state.db_lock`): insert message at next `seq` with `kind="message"`, `addressed_to_json=null`; mark invocation `status='consumed'`, `consumed_at=now()`; increment `threads.turns_used`. Audit `thread_message_sent`.
 
 ### 5.4 Agent decline — `POST /threads/{id}/decline`
 
@@ -326,13 +372,16 @@ Request:
 ```json
 {
   "thread_id": "THR-014",
+  "invocation_token": "8b3f...e91a",
   "speaker": "engineering_head",
   "reason": "payment_agt covered the constraint",
   "in_response_to_seq": 1
 }
 ```
 
-Effect: insert `kind="decline"` message with `body_markdown=null`, `decline_reason=<reason>`. Counts against `turns_used`. Audit `thread_message_sent` with `kind=decline`.
+Validation: same as §5.3 steps 1–5; step 6 requires `reason` non-empty.
+
+Effect: insert `kind="decline"` message with `body_markdown=null`, `decline_reason=<reason>`; consume the invocation; counts against `turns_used`. Audit `thread_message_sent` with `kind=decline`.
 
 ### 5.5 Agent dispatch — `POST /threads/{id}/dispatch`
 
@@ -340,6 +389,7 @@ Request:
 ```json
 {
   "thread_id": "THR-014",
+  "invocation_token": "8b3f...e91a",
   "dispatcher": "engineering_head",
   "brief": "Implement 45-day refund window with grace period audit",
   "target_agent": "dev_agent",
@@ -347,12 +397,15 @@ Request:
 }
 ```
 
-Validation mirrors `POST /talks/{id}/dispatch` (see §7).
+Token validation: same as §5.3 steps 1–2 (with `agent_name=dispatcher`), plus `dispatched_task_id IS NULL` on the row (at most one dispatch per token). Else 409 `dispatch_already_used`. Invocation purpose may be `'reply'` or `'bootstrap'` (workers in a bootstrap turn can still dispatch). Close-out tokens may NOT dispatch (close-outs are about wrapping up, not creating new work) — purpose `'close_out'` returns 400 `wrong_invocation_purpose`.
+
+After token validation, role/team validation mirrors `POST /talks/{id}/dispatch` (see §7).
 
 Effect:
 - Allocate `task_id`.
 - Insert `tasks` row with `dispatched_from_thread_id=<thread_id>`, `assigned_agent=effective_target`, `team=effective_team`.
 - Insert a `kind='system', kind_tag='task_dispatched'` message at next `seq` in the thread.
+- Set `thread_invocations.dispatched_task_id = task_id` (token stays `status='pending'` — the agent must still reply or decline).
 - Audit `task_dispatched` (scoped to the new task, payload includes `thread_id`) and `thread_dispatch` (scoped to the thread).
 - Outside the lock, `enqueue_task(state, task_id)`.
 
@@ -369,7 +422,7 @@ Response:
 
 ### 5.6 Invite — `POST /threads/{id}/invite`
 
-Request: `{"agent_name": "qa_engineer"}`. Validation: thread is `open`; agent is approved-and-registered in this org; agent is not already a participant. Effect: insert participant row, insert `kind='system', kind_tag='participant_added'` message, enqueue a bootstrap invocation for the new agent.
+Request: `{"agent_name": "qa_engineer"}`. Validation: thread is `open` (not `archiving`); agent is approved-and-registered in this org; agent is not already a participant. Effect: insert participant row, insert `kind='system', kind_tag='participant_added'` message, enqueue a bootstrap invocation for the new agent (mints a pending `thread_invocations` row with `purpose='bootstrap'`).
 
 ### 5.7 Archive — `POST /threads/{id}/archive`
 
@@ -381,21 +434,42 @@ Request (founder writes from CLI/TUI):
 }
 ```
 
-Effect:
-1. Mark `threads.status='archived'`, `archived_at=now()`.
-2. If `request_close_outs=true`, for each participant enqueue a "close-out invocation" with the full thread + the prompt "this thread is being archived; record any learnings and propose KB slugs." Each agent responds via `POST /threads/{id}/close-out` (a callback variant) which writes learnings to that agent's `learnings.md` and accumulates KB slugs in `threads.new_kb_slugs_json`.
-3. Wait for close-outs (configurable timeout, default 5 min) OR proceed immediately if `request_close_outs=false`.
-4. Insert a `kind='system', kind_tag='archived'` message.
-5. Write `threads/THR-NNN.md` atomically (TalkStore-style pattern).
-6. Audit `thread_archived`.
+Effect (split into two phases so close-outs can land before terminal state):
 
-Idempotent on retry — archived threads return 200 with the existing transcript path.
+**Phase A — transition to `archiving` (synchronous, returns 202 immediately):**
+1. Validate: thread is `open` (or already `archiving` and the caller is retrying with the same summary — idempotent). Else 400 `thread_not_open` (if `archived`/`abandoned`).
+2. Reap any still-`pending` conversational invocations (reply/bootstrap) → mark `status='failed'`, `decline_reason='archive_started'`. No auto-decline messages inserted; they'd just clutter the transcript.
+3. Mark `threads.status='archiving'`, store `summary`, set `archive_requested_at=now()`.
+4. If `request_close_outs=true`, for each current participant enqueue a `purpose='close_out'` invocation (mints a fresh pending token).
+5. Audit `thread_archive_requested`.
 
-The close-out wait is async at the daemon level; the founder's TUI shows a progress widget while close-outs land, and the founder can `Esc` to skip waiting (close-outs that arrive later are dropped — see §10 error handling).
+Response: 202 `{thread_id, status: "archiving", close_out_count, transcript_path: null}`.
+
+**Phase B — finalize to `archived` (background, daemon-driven):**
+1. Wait up to `close_out_wait_seconds` (default 300, configurable per-org §11) for all close-out invocations to terminate (`consumed` | `timeout` | `failed`).
+2. Mark `threads.status='archived'`, `archived_at=now()`.
+3. Insert a `kind='system', kind_tag='archived'` message with the rollup payload.
+4. Write `threads/THR-NNN.md` atomically (TalkStore-style pattern).
+5. Audit `thread_archived`.
+
+The founder's TUI subscribes to the SSE stream and shows close-out progress live; the founder may `Esc` (no daemon call) to walk away without changing the daemon's behavior — finalization proceeds either way. Late close-outs (after `archived` state) return 409 `thread_already_archived`; their learnings are NOT applied (idempotency would require deduping, and the value of catching a stray late callback isn't worth the complexity — close-outs are best-effort).
+
+While in `archiving`:
+- `reply`/`decline`/`dispatch` callbacks return 400 `thread_not_open` (the `open`-state check rejects `archiving`).
+- `close-out` callbacks are accepted.
+- `send`/`invite`/`extend` return 400 `thread_not_open`.
+
+Retrying `POST /archive` while `archiving` returns 409 `archive_in_progress` with `{archive_requested_at, pending_close_outs}`. Retrying after `archived` returns 200 with the existing `transcript_path` (idempotent).
 
 ### 5.8 Abandon — `POST /threads/{id}/abandon`
 
-Request: `{"reason": "..."}`. Marks `status='abandoned'`, no transcript written, no close-outs requested. Audit `thread_abandoned`.
+Request: `{"reason": "..."}`. Effect:
+1. Mark `status='abandoned'`, `archived_at=now()` (reused column).
+2. Reap any still-`pending` invocations (all purposes) → `status='failed'`, `decline_reason='thread_abandoned'`.
+3. No transcript written, no close-outs requested.
+4. Audit `thread_abandoned` with the reason.
+
+Valid from any non-terminal state (`open` or `archiving`). From `archiving` it forces termination — pending close-outs are reaped without finalization. Already-`archived` / already-`abandoned` returns 200 idempotent.
 
 ### 5.9 Extend — `POST /threads/{id}/extend`
 
@@ -412,6 +486,33 @@ Two SSE endpoints drive the TUI:
 
 The org-wide endpoint fires on thread lifecycle events (created, archived, abandoned, new-reply-while-inbox-collapsed). The per-thread endpoint fires on every `thread_messages` insert. Both support `?since_seq=N` (per-thread) / `?since_ts=ISO` (org-wide) for catch-up replay. Same SSE pattern as task event streams today.
 
+### 5.10.1 Close-out — `POST /threads/{id}/close-out`
+
+Agent callback invoked during the `archiving` phase. Request (matches `/tmp/thread-closeout-<id>-<self>.json`):
+```json
+{
+  "thread_id": "THR-014",
+  "invocation_token": "f12c...a04b",
+  "agent": "engineering_head",
+  "learnings": [{"text": "Refunds beyond 30d hit Alipay's 60d window cleanly; Stripe's 120d is fine."}],
+  "kb_slugs": ["refund-window-policy"]
+}
+```
+
+Validation:
+1. Thread is in `open` OR `archiving`. (We accept `open` defensively in case a race lets a close-out land before the state flip is observable — extremely unlikely but harmless.) Else 400 `thread_already_finalized`.
+2. `invocation_token` exists, `status='pending'`, `(thread_id, agent_name=agent)` match, `purpose='close_out'`. Else 401/409 as in §5.3.
+3. `agent` is a current participant. Else 403 `not_participant`.
+4. Each `kb_slugs` entry references an existing KB row (the agent must call `opc kb add` before close-out — same rule as `opc talk end`). Else 400 `kb_slug_not_found`.
+
+Effect:
+- Append each `learnings[].text` to `<workspace>/<agent>/learnings.md` via the existing helper (same as talk-end).
+- Add `kb_slugs` to `threads.new_kb_slugs_json` (set-union; idempotent on duplicates).
+- Mark invocation `status='consumed'`, `consumed_at=now()`.
+- Audit `thread_close_out_received` with `{agent, new_learnings_count, new_kb_slugs}`.
+
+This callback does NOT count toward `turns_used` — close-outs are bookkeeping, not conversational turns, and the founder has already opted to archive at this point so the cap is moot.
+
 ### 5.11 Turn-cap enforcement
 
 Before each fan-out (compose, send, invite-bootstrap), compute pending invocations: `addressed_count`. If `threads.turns_used + addressed_count > threads.turn_cap`, return HTTP 429 `turn_cap_exceeded` with `{used, cap, requested}` body. Founder bumps via `/extend`.
@@ -424,11 +525,17 @@ A thread invocation is a one-shot headless executor call, similar to `run_step` 
 
 ### 6.1 Invocation queue
 
-A new `ThreadQueue` (mirrors the existing `TaskQueue` in `src/daemon/queue.py`) holds pending invocations. Each invocation carries:
+A new `ThreadQueue` (mirrors the existing `TaskQueue` in `src/daemon/queue.py`) holds pending invocations. Enqueuing an invocation is a two-step transaction:
+
+1. Insert a `thread_invocations` row with a fresh `invocation_token` (UUID4 hex), `status='pending'`, `enqueued_at=now()`.
+2. Push the row's primary key onto the `ThreadQueue` for a worker to pick up.
+
+Each invocation queued by the daemon carries:
 - `thread_id`
 - `agent_name` (whom to invoke)
-- `triggering_seq` (the message that addressed them)
-- `purpose` — one of: `reply` | `bootstrap` (new participant) | `close_out`
+- `triggering_seq` (the message that addressed them; for `bootstrap`, the `participant_added` system message seq; for `close_out`, the `archive_requested` system event's logical seq, recorded on the row)
+- `purpose` — one of: `reply` | `bootstrap` | `close_out`
+- `invocation_token` — passed into the subprocess prompt; required on the agent's callback
 
 The queue's worker pool processes invocations concurrently across agents but serially per-agent (one invocation at a time per agent workspace — there's no need for parallel concurrent thread turns on the same agent).
 
@@ -459,6 +566,11 @@ The executor receives a system prompt containing:
                           "The founder has added you to this thread" |
                           "This thread is being archived; provide a close-out"}
 
+   Your invocation_token for this turn is: {invocation_token}
+   Include this token in every callback payload (reply, decline, dispatch,
+   close-out). It authorizes this single turn and is single-use for the
+   terminal callback (reply/decline/close-out).
+
    Consult `protocol/skills/thread/SKILL.md` and respond.
    ```
 
@@ -466,15 +578,18 @@ For large threads, the full history is sent verbatim — no condensation in v1. 
 
 ### 6.3 Invocation execution
 
-`ThreadInvocationRunner` (new — sibling of orchestrator step runners) calls the executor subprocess with the prompt above, sets `--allowedTools Bash(opc *)`, captures the session_id from the executor's first event, waits up to `session_timeout_seconds` (resolved per agent — same layered resolution as today's task runner), and:
+`ThreadInvocationRunner` (new — sibling of orchestrator step runners) marks the row `started_at=now()`, calls the executor subprocess with the prompt above (containing the `invocation_token`), sets `--allowedTools Bash(opc *)`, captures the executor session_id and stores it on the row, waits up to `session_timeout_seconds` (resolved per agent — same layered resolution as today's task runner), and observes outcomes through the database state of the invocation row:
 
-- On `reply` callback received: success.
-- On `decline` callback received: success.
-- On `dispatch` callback received: success (continues running until the agent also issues a reply or decline or exits cleanly — dispatch alone is not a terminal action).
-- On timeout: record `kind='decline'` with `reason="invocation_timeout"`, audit `thread_invocation_timeout`.
-- On non-zero exit without callback: record `kind='decline'` with `reason="invocation_failed: <exit code>"`, audit `thread_invocation_failed`.
+- **`reply` callback consumed the token** → success. Subprocess can exit any time.
+- **`decline` callback consumed the token** → success. Same.
+- **`close_out` callback consumed the token** (only valid when `purpose='close_out'`) → success.
+- **`dispatch` recorded `dispatched_task_id`** → not a terminal callback. Runner continues waiting for reply/decline. The subprocess is expected to make one of those before exit.
+- **Subprocess exits before any terminal callback** (regardless of exit code) → runner marks token `status='failed'`, `decline_reason="no_callback: exit <code>"`. For `purpose ∈ {reply, bootstrap}`, also inserts an auto-decline message at the next thread `seq` with `kind='decline'` and that reason (so the founder sees the absence). For `purpose='close_out'`, no message is inserted — close-outs are silent. Audit `thread_invocation_failed`.
+- **`session_timeout_seconds` elapsed without terminal callback** → runner sends SIGTERM, marks token `status='timeout'`, `decline_reason="invocation_timeout"`. Insert/audit handling same as the no-callback case above.
 
-The runner does NOT enforce the agent's reply vs decline choice — the skill makes that call. The runner only enforces that *some* callback fires.
+The runner does NOT enforce the agent's reply vs decline choice — the skill makes that call. The runner only enforces that *some* terminal callback fires within the timeout window, and turns absence into a recorded decline (or, for close-outs, a silent failure).
+
+**Concurrency note**: token status transitions on the daemon side (consume/timeout/fail) run under `state.db_lock` to avoid double-consumption (e.g., a slow reply callback racing with the runner's timeout-handler).
 
 ### 6.4 Session tracking
 
@@ -660,7 +775,20 @@ description: Use this skill when the orchestrator invokes you for thread partici
 
 You've been invoked because something happened on a thread (THR-NNN). The full
 prior history is in your prompt, along with a note explaining WHY you were
-invoked. Read the history end-to-end, then decide one outcome.
+invoked AND an `invocation_token` that authorizes this single turn. Read the
+history end-to-end, then decide one outcome.
+
+## Your invocation_token
+
+Look for this line in your prompt:
+
+    Your invocation_token for this turn is: <opaque-string>
+
+You MUST include this token in every callback payload (reply, decline,
+dispatch, close-out). It proves the callback is part of this live turn. Without
+it, the daemon will reject the call with 401 invocation_token_invalid. The
+token is single-use for the terminal callback (reply/decline/close-out) — a
+second terminal callback with the same token returns 409.
 
 ## Identify the trigger
 
@@ -676,12 +804,15 @@ The "You have been invoked because" line tells you which case applies:
 
 ## Reply, decline, or dispatch
 
-For everything except close-out, pick exactly one outcome:
+For everything except close-out, pick exactly one terminal outcome (reply OR
+decline). You MAY additionally dispatch a task before the terminal callback;
+dispatch alone does not end the turn.
 
 ### Reply
 
 Write `/tmp/thread-reply-<thread_id>-<seq>.json`:
-{"thread_id": "<id>", "speaker": "<your name>", "body_markdown": "...", "in_response_to_seq": <N>}
+{"thread_id": "<id>", "invocation_token": "<token>",
+ "speaker": "<your name>", "body_markdown": "...", "in_response_to_seq": <N>}
 
 Then single-line:
 opc threads reply --org <slug> --thread-id <id> --from-file /tmp/thread-reply-<id>-<seq>.json
@@ -694,7 +825,8 @@ Reply when:
 ### Decline
 
 Write `/tmp/thread-decline-<thread_id>-<seq>.json`:
-{"thread_id": "<id>", "speaker": "<your name>", "reason": "...", "in_response_to_seq": <N>}
+{"thread_id": "<id>", "invocation_token": "<token>",
+ "speaker": "<your name>", "reason": "...", "in_response_to_seq": <N>}
 
 Then:
 opc threads decline --org <slug> --thread-id <id> --from-file /tmp/thread-decline-<id>-<seq>.json
@@ -707,7 +839,7 @@ Decline when:
 Keep the reason short and substantive ("payment_agt covered the constraint",
 not "I have nothing to add").
 
-### Dispatch a task
+### Dispatch a task (optional, before reply/decline)
 
 If the thread has converged on a concrete action that fits your authority
 (workers self-dispatch only; managers can dispatch to anyone on their team),
@@ -716,7 +848,8 @@ forbidden — if the action belongs to another team, surface it in your reply
 and let the founder loop their manager in.
 
 Write `/tmp/thread-dispatch-<thread_id>.json`:
-{"thread_id": "<id>", "dispatcher": "<your name>", "brief": "...",
+{"thread_id": "<id>", "invocation_token": "<token>",
+ "dispatcher": "<your name>", "brief": "...",
  "target_agent": "<name>" /* optional, defaults to yourself */,
  "team": "<team>" /* optional, defaults to your team */}
 
@@ -725,35 +858,43 @@ opc threads dispatch --org <slug> --thread-id <id> --from-file /tmp/thread-dispa
 
 Each dispatch posts a system message into the thread for transparency.
 
-Dispatching does NOT replace replying — if you dispatch, you should still issue
-a brief reply explaining the action you took.
+Dispatching does NOT end the turn — you MUST still issue a reply or decline
+afterwards to release the invocation token. If you exit without either, the
+daemon will auto-decline on your behalf with reason="no_callback".
 
 ## Close-out (archive)
 
 When invoked with "This thread is being archived":
 
 1. Review what was discussed.
-2. Identify durable learnings for yourself — write them to
+2. Identify KB-worthy material (apply rules from protocol/06-knowledge-base.md
+   §2). Write those with `opc kb add` BEFORE the close-out callback.
+3. Identify durable learnings for yourself — write them to
    /tmp/thread-closeout-<thread_id>-<your_name>.json:
-   {"thread_id": "<id>", "agent": "<your name>",
+   {"thread_id": "<id>", "invocation_token": "<token>",
+    "agent": "<your name>",
     "learnings": [{"text": "..."}],
-    "kb_slugs": ["already-written-slugs-if-any"]}
-3. Identify KB-worthy material (apply rules from protocol/06-knowledge-base.md
-   §2). Write those with `opc kb add` BEFORE the close-out callback, then list
-   the slugs in `kb_slugs`.
+    "kb_slugs": ["the-slugs-you-just-added"]}
 4. Run:
    opc threads close-out --org <slug> --thread-id <id> --from-file /tmp/thread-closeout-<id>-<your_name>.json
 
 Other participants will produce their own close-outs in parallel. Each
 contributes to their own learnings.md; KB slugs are unioned.
 
+Close-out tokens may NOT dispatch tasks. If something actionable surfaces in
+the close-out, mention it in the learnings text instead.
+
 ## What NOT to do
 
 - Do NOT spawn arbitrary side-effects (run repos, hit APIs) inside a thread
   invocation. Threads are conversation. Side-effects flow through tasks.
-- Do NOT issue multiple replies in one invocation. One outcome per turn.
+- Do NOT issue multiple terminal callbacks (reply AND decline) in one
+  invocation. One terminal outcome per turn. Dispatch is the only non-terminal
+  extra.
 - Do NOT parse `@text` in message bodies as routing. The `addressed_to` list
   in the message is authoritative.
+- Do NOT share or persist your `invocation_token` outside the current
+  subprocess — it's single-use and turn-scoped.
 ```
 
 ### 10.3 Permissions
@@ -782,15 +923,23 @@ No new top-level `OPC_` env vars in v1. Org-level config is the customization su
 |---|---|
 | Compose with unknown recipient | 404 `unknown_agent`, no thread row created. |
 | Compose with `addressed_to` containing a name not in `recipients` | 422 `addressed_to_not_subset`. |
-| Founder send when thread is `archived`/`abandoned` | 400 `thread_not_open`. |
-| Agent reply when thread is `archived`/`abandoned` | 400 `thread_not_open`. |
+| Founder send when thread is not `open` (i.e., `archiving`/`archived`/`abandoned`) | 400 `thread_not_open`. |
+| Agent reply/decline/dispatch when thread is not `open` | 400 `thread_not_open`. |
+| Agent callback missing `invocation_token` or token doesn't exist / mismatched `(thread_id, agent_name)` | 401 `invocation_token_invalid`. |
+| Agent callback presenting an already-consumed token | 409 `invocation_token_consumed`. |
+| Agent callback presenting a token whose purpose is wrong for the call (e.g., close_out token used for reply, or reply token used for close-out) | 400 `wrong_invocation_purpose`. |
+| Agent dispatch when the token already has `dispatched_task_id` set | 409 `dispatch_already_used`. |
 | Agent reply when not a participant | 403 `not_participant`. |
 | Agent reply with `in_response_to_seq` referencing a message that didn't address them | 400 `not_addressed`. |
 | `addressed_to` contains an agent who is not a current participant | 422 `addressee_not_participant`. |
 | `turns_used + addressed_count > turn_cap` | 429 `turn_cap_exceeded` with `{used, cap, requested}`. |
-| Invocation subprocess exits without callback within `invocation_timeout_seconds` | Daemon records `decline` with `reason="invocation_timeout"`; audit `thread_invocation_timeout`. |
-| Close-out callback arrives after archive finalized | 409 `thread_already_archived`; agent's learnings.md write is still applied (idempotent append); KB slugs added to a new audit row but not the archived transcript. |
+| Invocation subprocess exits without terminal callback within `session_timeout_seconds` | Daemon marks token `status='timeout'`; auto-decline inserted for `reply`/`bootstrap` purposes; close-out failures are silent. Audit `thread_invocation_timeout` / `thread_invocation_failed`. |
+| `POST /archive` while thread is `archiving` (re-entry) | 409 `archive_in_progress` with `{archive_requested_at, pending_close_outs}`. |
+| `POST /archive` while thread is `archived` | 200 idempotent with existing `transcript_path`. |
+| `POST /close-out` while thread is `archived` (late callback) | 409 `thread_already_finalized`; learnings/KB are dropped. |
+| `POST /close-out` while thread is `open` | 400 `thread_not_archiving`. |
 | Invite an agent already a participant | 409 `already_participant`. |
+| Invite while thread is `archiving` / `archived` / `abandoned` | 400 `thread_not_open`. |
 | Forward source not found | 404 `forwarded_source_not_found`. |
 | Two-column violation (both `dispatched_from_talk_id` and `dispatched_from_thread_id` non-NULL) | 500 — should be unreachable; daemon enforces mutual exclusion at insert. |
 
@@ -812,11 +961,13 @@ Talks remain unchanged. Their existing data model and lifecycle continue to work
 - `next_thread_id` allocation via `MAX(suffix)` (mirrors `next_talk_id`).
 - Compose validation: recipients existence, `addressed_to` subset, non-empty body/subject.
 - Reply / decline validation: thread-open, participant-check, not-addressed.
+- **Invocation-token validation**: missing → 401; wrong agent → 401; consumed → 409; wrong purpose → 400; reply-with-close_out token rejected; close-out-with-reply token rejected; dispatch twice on same token → 409.
 - Dispatch authority gates: worker self-only, manager team-only, cross-team forbidden.
-- Turn-cap accounting: replies, declines, system messages all count; cap-exceeded returns 429.
+- Turn-cap accounting: replies and declines count; system messages and close-outs do NOT count; cap-exceeded returns 429.
 - System-message renderers: `participant_added`, `task_dispatched`, `turn_cap_extended`, `archived`.
 - Forward source resolution: thread and talk both produce valid quoted bodies.
 - Mutual exclusion of `dispatched_from_*` columns on tasks.
+- **State-machine guards**: reply/decline/dispatch/send/invite/extend reject when `status='archiving'`; close-out accepted when `status='archiving'`, rejected when `status='archived'`/`'open'`/`'abandoned'`.
 
 ### 14.2 Integration
 
@@ -826,8 +977,11 @@ Talks remain unchanged. Their existing data model and lifecycle continue to work
 - `compose → agent dispatches a task → system message appears in thread → task lands on assignee → original thread still open`.
 - `forward (talk → thread) → new thread carries quoted body → forwarded_from_id resolves`.
 - `turn_cap exhaustion → 429 → extend → next send succeeds`.
-- `archive with request_close_outs=true → all participants invoked → close-outs land → transcript written with rollup`.
-- `abandon → no close-out invocations → no transcript file`.
+- `archive with request_close_outs=true → status='archiving' immediately → all participants invoked → close-outs land while archiving → status flips to 'archived' → transcript written with rollup`.
+- `archive → during 'archiving', reply/decline/dispatch from any agent return 400 thread_not_open; close-out from a non-participant is rejected; late close-out after 'archived' returns 409`.
+- `abandon → no close-out invocations → no transcript file → still-pending invocation rows reaped to status='failed'`.
+- `out-of-band callback attempt: agent runs opc threads reply WITHOUT an invocation_token (or with a fabricated one) → 401`.
+- `replay-attack: agent saves their token, replies, then attempts a second reply with the same token → 409 invocation_token_consumed`.
 - TUI smoke test: launches against a live daemon, lists threads, opens one, sends a reply, observes SSE update. (Textual has snapshot-test support; one snapshot per major pane.)
 
 ### 14.3 Token / cost tracking
