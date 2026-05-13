@@ -181,13 +181,30 @@ class PersistentWorkspaceSetup:
         if legacy.exists() and not renamed.exists():
             legacy.rename(renamed)
 
-        for filename, default_content in [
-            ("learnings.md", f"# Learnings: {agent_name}\n\n"),
-            ("task_history.md", f"# Task History: {agent_name}\n\n"),
-        ]:
-            path = workspace / filename
-            if not path.exists():
-                path.write_text(default_content)
+        # task_history.md: always ensure
+        history_path = workspace / "task_history.md"
+        if not history_path.exists():
+            history_path.write_text(f"# Task History: {agent_name}\n\n")
+
+        # learnings: state-aware migration safety
+        flat_path = workspace / "learnings.md"
+        learnings_dir = workspace / "learnings"
+        if learnings_dir.exists():
+            # Post-migration: idempotently ensure _index.md exists.
+            # Lazy import to avoid a hard infra dep at module top.
+            from src.infrastructure.learnings_store import LearningsStore
+            store = LearningsStore(learnings_dir)
+            if not (learnings_dir / "_index.md").exists():
+                store.regenerate_index()
+        elif flat_path.exists():
+            # Pre-migration legacy workspace: leave both untouched.
+            pass
+        else:
+            # Brand-new workspace: create learnings/ on the new layout.
+            from src.infrastructure.learnings_store import LearningsStore
+            learnings_dir.mkdir(parents=True, exist_ok=True)
+            store = LearningsStore(learnings_dir)
+            store.regenerate_index()
 
         return self.detect_repo_names(workspace)
 

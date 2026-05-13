@@ -147,7 +147,9 @@ def test_ensure_workspace_ready_creates_persistent_files(test_settings, tmp_dir,
         agent_name="dev_agent",
         system_prompt="You are the Dev Agent.",
     )
-    assert (workspace / "learnings.md").exists()
+    assert (workspace / "learnings").is_dir()
+    assert (workspace / "learnings" / "_index.md").exists()
+    assert not (workspace / "learnings.md").exists()
     assert not (workspace / "scorecard.md").exists()
     assert (workspace / "task_history.md").exists()
     assert not (workspace / "recent_tasks.md").exists()
