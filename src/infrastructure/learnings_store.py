@@ -156,9 +156,22 @@ class LearningsStore:
             return path
         return None
 
+    def _validate_cross_refs(self, entry: LearningEntry) -> None:
+        for ref in entry.related_to:
+            if not ID_RE.match(ref) or self._find_by_id(ref) is None:
+                raise InvalidLearningEntry(
+                    "unknown_related_id", f"related_to references unknown id: {ref!r}",
+                )
+        if entry.supersedes is not None:
+            if not ID_RE.match(entry.supersedes) or self._find_by_id(entry.supersedes) is None:
+                raise InvalidLearningEntry(
+                    "unknown_supersedes", f"supersedes references unknown id: {entry.supersedes!r}",
+                )
+
     def write_entry(self, entry: LearningEntry, agent: str) -> LearningEntry:
         self.validate_id(entry.id)
         self._validate_entry_structure(entry)
+        self._validate_cross_refs(entry)
         if self._find_by_id(entry.id) is not None:
             raise LearningIdExists(entry.id)
         if self._find_by_slug(entry.slug) is not None:
@@ -187,6 +200,7 @@ class LearningsStore:
         entry.id = id
         entry.promoted_to = existing.promoted_to  # always None at this point
         self._validate_entry_structure(entry)
+        self._validate_cross_refs(entry)
         # Reject slug collision with a DIFFERENT entry
         if entry.slug != existing.slug:
             if self._find_by_slug(entry.slug) is not None:

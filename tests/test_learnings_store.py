@@ -256,3 +256,31 @@ def test_promote_refuses_change_when_already_promoted_to_different_slug(store: L
     store.promote("LRN-001", kb_slug="kb-a", agent="z")
     with pytest.raises(PromotedLocked):
         store.promote("LRN-001", kb_slug="kb-b", agent="z")
+
+
+def test_write_entry_rejects_unknown_related_to(store: LearningsStore):
+    e = _make_entry(id="LRN-001", slug="a", related_to=["LRN-999"])
+    with pytest.raises(InvalidLearningEntry) as exc:
+        store.write_entry(e, agent="z")
+    assert exc.value.code == "unknown_related_id"
+
+
+def test_write_entry_accepts_known_related_to(store: LearningsStore):
+    store.write_entry(_make_entry(id="LRN-001", slug="a"), agent="z")
+    e = _make_entry(id="LRN-002", slug="b", related_to=["LRN-001"])
+    res = store.write_entry(e, agent="z")
+    assert res.related_to == ["LRN-001"]
+
+
+def test_write_entry_rejects_unknown_supersedes(store: LearningsStore):
+    e = _make_entry(id="LRN-001", slug="a", supersedes="LRN-999")
+    with pytest.raises(InvalidLearningEntry) as exc:
+        store.write_entry(e, agent="z")
+    assert exc.value.code == "unknown_supersedes"
+
+
+def test_write_entry_rejects_malformed_related_id(store: LearningsStore):
+    e = _make_entry(id="LRN-001", slug="a", related_to=["not-an-id"])
+    with pytest.raises(InvalidLearningEntry) as exc:
+        store.write_entry(e, agent="z")
+    assert exc.value.code == "unknown_related_id"
