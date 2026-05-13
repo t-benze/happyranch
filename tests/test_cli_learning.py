@@ -49,3 +49,59 @@ def test_cmd_learning_list_calls_correct_route(monkeypatch):
     cli.cmd_learning_list(args)
     assert captured["path"] == "/api/v1/orgs/my-org/agents/dev_agent/learnings/entries/"
     assert captured["params"]["topic"] == "workflow"
+
+
+def test_cmd_learning_add_reads_yaml_and_posts(monkeypatch, tmp_path):
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def post(self, path, json=None):
+            captured["path"] = path
+            captured["json"] = json
+            return {"id": "LRN-001", "path": "learnings/LRN-001-x.md"}
+
+    from src import cli
+    monkeypatch.setattr(cli, "Client", FakeClient)
+    payload_path = tmp_path / "p.yaml"
+    payload_path.write_text(
+        "slug: x\n"
+        "title: T\n"
+        "topic: w\n"
+        "tags: [a, b]\n"
+        "body: |\n"
+        "  body line 1\n"
+        "  body line 2\n"
+    )
+    args = type("A", (), dict(
+        org="o", agent="dev_agent", from_file=str(payload_path),
+    ))()
+    cli.cmd_learning_add(args)
+    assert captured["path"] == "/api/v1/orgs/o/agents/dev_agent/learnings/entries/"
+    assert captured["json"]["slug"] == "x"
+    assert captured["json"]["tags"] == ["a", "b"]
+    assert "body line 2" in captured["json"]["body"]
+
+
+def test_cmd_learning_promote_posts_correct_path(monkeypatch):
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def post(self, path, json=None):
+            captured["path"] = path
+            captured["json"] = json
+            return {"id": "LRN-001", "promoted_to": "kb-x", "body": "..."}
+
+    from src import cli
+    monkeypatch.setattr(cli, "Client", FakeClient)
+    args = type("A", (), dict(
+        org="o", agent="dev_agent", id="LRN-001", kb_slug="kb-x",
+    ))()
+    cli.cmd_learning_promote(args)
+    assert captured["path"] == "/api/v1/orgs/o/agents/dev_agent/learnings/entries/LRN-001/promote"
+    assert captured["json"] == {"kb_slug": "kb-x"}

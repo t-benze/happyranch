@@ -760,6 +760,12 @@ class Client:
             return {}
         return r.json()
 
+    def put(self, path: str, json: dict | None = None) -> dict:
+        r = self._inner.request("PUT", path, json=json)
+        if not _ok(r):
+            return {}
+        return r.json()
+
 
 def cmd_learning_list(args: argparse.Namespace) -> None:
     org = args.org or os.environ.get("OPC_ORG_SLUG", "")
@@ -833,16 +839,42 @@ def cmd_learning_reindex(args: argparse.Namespace) -> None:
     print("ok: reindexed")
 
 
+def _read_yaml_payload(path: str) -> dict:
+    import yaml
+    with open(path) as f:
+        return yaml.safe_load(f) or {}
+
+
 def cmd_learning_add(args: argparse.Namespace) -> None:
-    raise NotImplementedError("see Task 19")
+    org = args.org or os.environ.get("OPC_ORG_SLUG", "")
+    payload = _read_yaml_payload(args.from_file)
+    with Client() as c:
+        resp = c.post(
+            f"/api/v1/orgs/{org}/agents/{args.agent}/learnings/entries/",
+            json=payload,
+        )
+    print(f"ok: {resp['id']} -> {resp['path']}")
 
 
 def cmd_learning_update(args: argparse.Namespace) -> None:
-    raise NotImplementedError("see Task 19")
+    org = args.org or os.environ.get("OPC_ORG_SLUG", "")
+    payload = _read_yaml_payload(args.from_file)
+    with Client() as c:
+        resp = c.put(
+            f"/api/v1/orgs/{org}/agents/{args.agent}/learnings/entries/{args.id}",
+            json=payload,
+        )
+    print(f"ok: updated {resp['id']}")
 
 
 def cmd_learning_promote(args: argparse.Namespace) -> None:
-    raise NotImplementedError("see Task 19")
+    org = args.org or os.environ.get("OPC_ORG_SLUG", "")
+    with Client() as c:
+        resp = c.post(
+            f"/api/v1/orgs/{org}/agents/{args.agent}/learnings/entries/{args.id}/promote",
+            json={"kb_slug": args.kb_slug},
+        )
+    print(f"ok: {resp['id']} promoted to KB precedent `{resp['promoted_to']}`")
 
 
 def cmd_progress(args: argparse.Namespace) -> None:
