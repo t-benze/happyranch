@@ -187,6 +187,10 @@ class LearningsStore:
         entry.id = id
         entry.promoted_to = existing.promoted_to  # always None at this point
         self._validate_entry_structure(entry)
+        # Reject slug collision with a DIFFERENT entry
+        if entry.slug != existing.slug:
+            if self._find_by_slug(entry.slug) is not None:
+                raise LearningSlugExists(entry.slug)
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         stamped = LearningEntry(**{**entry.__dict__})
         stamped.authored_by = existing.authored_by

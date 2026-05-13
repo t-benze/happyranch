@@ -216,6 +216,20 @@ def test_update_entry_404_when_missing(store: LearningsStore):
         store.update_entry("LRN-999", _make_entry(id="LRN-999", slug="x"), agent="z")
 
 
+def test_update_entry_rejects_slug_collision_with_different_entry(store: LearningsStore):
+    store.write_entry(_make_entry(id="LRN-001", slug="a"), agent="z")
+    store.write_entry(_make_entry(id="LRN-002", slug="b"), agent="z")
+    with pytest.raises(LearningSlugExists):
+        store.update_entry("LRN-001", _make_entry(id="LRN-001", slug="b"), agent="z")
+
+
+def test_update_entry_allows_same_slug_no_rename(store: LearningsStore):
+    """Idempotent update keeping the same slug must not trip slug-collision."""
+    store.write_entry(_make_entry(id="LRN-001", slug="a", title="v1"), agent="z")
+    res = store.update_entry("LRN-001", _make_entry(id="LRN-001", slug="a", title="v2"), agent="z")
+    assert res.title == "v2"
+
+
 def test_promote_sets_promoted_to_and_stub_body(store: LearningsStore):
     store.write_entry(_make_entry(id="LRN-001", slug="a", body="Original body\n"), agent="z")
     res = store.promote("LRN-001", kb_slug="my-precedent", agent="founder")
