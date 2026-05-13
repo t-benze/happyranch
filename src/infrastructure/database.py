@@ -1372,6 +1372,47 @@ class Database:
         return [self._row_to_thread(r) for r in cursor.fetchall()]
 
     @_synchronized
+    def add_thread_participant(
+        self, thread_id: str, agent_name: str, *, added_by: str
+    ) -> bool:
+        """Insert a participant. Returns True if inserted, False if duplicate."""
+        try:
+            self._conn.execute(
+                "INSERT INTO thread_participants (thread_id, agent_name, added_at, added_by) "
+                "VALUES (?, ?, ?, ?)",
+                (thread_id, agent_name, _now().isoformat(), added_by),
+            )
+            self._conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    @_synchronized
+    def is_thread_participant(self, thread_id: str, agent_name: str) -> bool:
+        cursor = self._conn.execute(
+            "SELECT 1 FROM thread_participants WHERE thread_id = ? AND agent_name = ?",
+            (thread_id, agent_name),
+        )
+        return cursor.fetchone() is not None
+
+    @_synchronized
+    def list_thread_participants(self, thread_id: str) -> list[ThreadParticipant]:
+        cursor = self._conn.execute(
+            "SELECT thread_id, agent_name, added_at, added_by "
+            "FROM thread_participants WHERE thread_id = ? ORDER BY added_at",
+            (thread_id,),
+        )
+        return [
+            ThreadParticipant(
+                thread_id=r["thread_id"],
+                agent_name=r["agent_name"],
+                added_at=datetime.fromisoformat(r["added_at"]),
+                added_by=r["added_by"],
+            )
+            for r in cursor.fetchall()
+        ]
+
+    @_synchronized
     def insert_talk(self, talk: TalkRecord) -> None:
         self._conn.execute(
             """INSERT INTO talks (id, agent_name, started_at, ended_at, status,

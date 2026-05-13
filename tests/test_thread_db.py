@@ -104,3 +104,27 @@ def test_list_threads_orders_by_started_desc(tmp_path):
     db.insert_thread(b)
     rows = db.list_threads(limit=10)
     assert [r.id for r in rows] == ["THR-002", "THR-001"]
+
+
+def test_add_and_list_participants(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.add_thread_participant("THR-001", "bob", added_by="founder")
+    names = [p.agent_name for p in db.list_thread_participants("THR-001")]
+    assert sorted(names) == ["alice", "bob"]
+
+
+def test_add_thread_participant_idempotent(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    assert db.add_thread_participant("THR-001", "alice", added_by="founder") is False
+
+
+def test_is_thread_participant(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    assert db.is_thread_participant("THR-001", "alice")
+    assert not db.is_thread_participant("THR-001", "bob")
