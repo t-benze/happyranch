@@ -212,3 +212,46 @@ def test_reindex_regenerates_file(client_with_migrated_workspace):
     )
     assert r.status_code == 200
     assert (ws / "learnings" / "_index.md").exists()
+
+
+def test_promote_rejects_invalid_kb_slug(client_with_migrated_workspace):
+    """Traversal / malformed kb_slug returns 400 invalid_kb_slug before touching filesystem."""
+    client, token, slug, agent, _ = client_with_migrated_workspace
+    # Seed a learning so the route doesn't fail for a different reason
+    client.post(
+        f"/api/v1/orgs/{slug}/agents/{agent}/learnings/entries/",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"slug": "a", "title": "x", "topic": "w", "body": "b\n"},
+    )
+    r = client.post(
+        f"/api/v1/orgs/{slug}/agents/{agent}/learnings/entries/LRN-001/promote",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"kb_slug": "../../../etc/passwd"},
+    )
+    assert r.status_code == 400
+    assert r.json()["detail"]["error"] == "invalid_kb_slug"
+
+
+def test_promote_rejects_malformed_learning_id(client_with_migrated_workspace):
+    """Malformed learning id returns 400 invalid_id (not 500) when kb_slug is valid."""
+    client, token, slug, agent, _ = client_with_migrated_workspace
+    # Seed a KB precedent so kb_slug validation passes and .exists() returns True
+    client.post(
+        f"/api/v1/orgs/{slug}/kb/",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "slug": "kb-precedent",
+            "title": "KB Precedent",
+            "type": "precedent",
+            "topic": "engineering",
+            "body": "details\n",
+            "agent": agent,
+        },
+    )
+    r = client.post(
+        f"/api/v1/orgs/{slug}/agents/{agent}/learnings/entries/garbage-id/promote",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"kb_slug": "kb-precedent"},
+    )
+    assert r.status_code == 400
+    assert r.json()["detail"]["error"] == "invalid_id"

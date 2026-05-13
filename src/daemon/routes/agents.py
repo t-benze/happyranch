@@ -28,7 +28,7 @@ from src.daemon.auth import require_token
 from src.daemon.org_state import OrgState
 from src.daemon.routes._org_dep import OrgDep
 from src.infrastructure.audit_logger import AuditLogger
-from src.infrastructure.kb_store import KBStore
+from src.infrastructure.kb_store import KBStore, InvalidSlug
 from src.infrastructure.learnings_store import (
     InvalidLearningEntry,
     InvalidLearningId,
@@ -875,6 +875,12 @@ async def promote_learning(
     if not body.kb_slug:
         raise HTTPException(status_code=400, detail={"error": "kb_slug_missing"})
     kb_store = KBStore(org.root / "kb")
+    try:
+        kb_store.validate_slug(body.kb_slug)
+    except InvalidSlug:
+        raise HTTPException(
+            status_code=400, detail={"error": "invalid_kb_slug", "kb_slug": body.kb_slug},
+        )
     if not kb_store.path_for(body.kb_slug).exists():
         raise HTTPException(
             status_code=404,
@@ -884,6 +890,8 @@ async def promote_learning(
     async with org.db_lock:
         try:
             written = store.promote(id, kb_slug=body.kb_slug, agent=agent_name)
+        except InvalidLearningId:
+            raise HTTPException(status_code=400, detail={"error": "invalid_id", "id": id})
         except LearningNotFound:
             raise HTTPException(status_code=404, detail={"error": "id_not_found", "id": id})
         except PromotedLocked as e:
