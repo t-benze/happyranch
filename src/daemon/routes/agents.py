@@ -836,11 +836,6 @@ async def update_learning(
     slug: str, agent_name: str, id: str, body: LearningUpdateBody, org: OrgDep,
 ) -> dict:
     store = _workspace_learnings_store(org, agent_name)
-    try:
-        existing_entry = store.read_entry(id)
-        prior_slug = existing_entry.slug
-    except LearningNotFound:
-        prior_slug = None
     entry = LearningEntry(
         id=id,
         slug=body.slug,
@@ -853,6 +848,10 @@ async def update_learning(
         supersedes=body.supersedes,
     )
     async with org.db_lock:
+        try:
+            prior_slug = store.read_entry(id).slug
+        except LearningNotFound:
+            prior_slug = None  # store.update_entry will raise its own LearningNotFound
         try:
             written = store.update_entry(id, entry, agent=agent_name)
         except LearningNotFound:
@@ -870,7 +869,6 @@ async def update_learning(
             agent=agent_name,
             id=written.id,
             slug_changed=prior_slug is not None and prior_slug != written.slug,
-            fields_changed=[],
         )
     return _entry_to_dict(written)
 

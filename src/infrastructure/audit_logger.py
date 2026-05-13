@@ -520,13 +520,12 @@ class AuditLogger:
         agent: str,
         id: str,
         slug_changed: bool,
-        fields_changed: list[str],
     ) -> None:
         self._db.insert_audit_log(
             task_id=f"AGENT-{agent}",
             agent=agent,
             action="learning_updated",
-            payload={"id": id, "slug_changed": slug_changed, "fields_changed": fields_changed},
+            payload={"id": id, "slug_changed": slug_changed},
         )
 
     def log_learning_promoted(
