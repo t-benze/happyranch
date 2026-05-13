@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def _run(args: list[str], cwd: Path = None) -> subprocess.CompletedProcess:
     return subprocess.run(
@@ -114,3 +116,21 @@ def test_cmd_learning_promote_posts_correct_path(monkeypatch):
     cli.cmd_learning_promote(args)
     assert captured["path"] == "/api/v1/orgs/o/agents/dev_agent/learnings/entries/LRN-001/promote"
     assert captured["json"] == {"kb_slug": "kb-x"}
+
+
+def test_read_yaml_payload_rejects_non_dict(tmp_path, capsys):
+    from src import cli
+    bad = tmp_path / "list.yaml"
+    bad.write_text("- one\n- two\n")
+    with pytest.raises(SystemExit) as exc:
+        cli._read_yaml_payload(str(bad))
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "must be a YAML mapping" in err
+
+
+def test_read_yaml_payload_empty_file_returns_empty_dict(tmp_path):
+    from src import cli
+    empty = tmp_path / "empty.yaml"
+    empty.write_text("")
+    assert cli._read_yaml_payload(str(empty)) == {}

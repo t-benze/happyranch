@@ -739,7 +739,16 @@ def cmd_learning(args: argparse.Namespace) -> None:
 def _read_yaml_payload(path: str) -> dict:
     import yaml
     with open(path) as f:
-        return yaml.safe_load(f) or {}
+        data = yaml.safe_load(f)
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        print(
+            f"error: payload file must be a YAML mapping, got {type(data).__name__}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return data
 
 
 def _learning_client() -> OpcClient:
