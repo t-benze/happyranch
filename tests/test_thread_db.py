@@ -128,3 +128,49 @@ def test_is_thread_participant(tmp_path):
     db.add_thread_participant("THR-001", "alice", added_by="founder")
     assert db.is_thread_participant("THR-001", "alice")
     assert not db.is_thread_participant("THR-001", "bob")
+
+
+def test_append_thread_message_allocates_monotonic_seq(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    seq_a = db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE,
+        body_markdown="hello", addressed_to=["@all"],
+    )
+    seq_b = db.append_thread_message(
+        thread_id="THR-001", speaker="alice",
+        kind=ThreadMessageKind.MESSAGE,
+        body_markdown="hi back",
+    )
+    assert seq_a == 1
+    assert seq_b == 2
+    msgs = db.list_thread_messages("THR-001")
+    assert [m.seq for m in msgs] == [1, 2]
+    assert msgs[0].addressed_to == ["@all"]
+    assert msgs[1].addressed_to is None
+
+
+def test_append_thread_decline_message(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.append_thread_message(
+        thread_id="THR-001", speaker="alice",
+        kind=ThreadMessageKind.DECLINE,
+        decline_reason="bob covered it",
+    )
+    msgs = db.list_thread_messages("THR-001")
+    assert msgs[0].kind is ThreadMessageKind.DECLINE
+    assert msgs[0].decline_reason == "bob covered it"
+
+
+def test_append_thread_system_message(tmp_path):
+    db = Database(tmp_path / "opc.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.SYSTEM,
+        system_payload={"kind_tag": "participant_added", "agent_name": "alice"},
+    )
+    msgs = db.list_thread_messages("THR-001")
+    assert msgs[0].system_payload["kind_tag"] == "participant_added"

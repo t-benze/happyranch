@@ -1413,6 +1413,98 @@ class Database:
         ]
 
     @_synchronized
+    def append_thread_message(
+        self,
+        *,
+        thread_id: str,
+        speaker: str,
+        kind: ThreadMessageKind,
+        body_markdown: str | None = None,
+        addressed_to: list[str] | None = None,
+        decline_reason: str | None = None,
+        system_payload: dict | None = None,
+    ) -> int:
+        """Append a message and return its allocated seq.
+
+        Atomic against concurrent appends — both the seq allocation and the
+        insert happen under the connection's transaction, and the unique
+        index on (thread_id, seq) guards against any race.
+        """
+        cursor = self._conn.execute(
+            "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq "
+            "FROM thread_messages WHERE thread_id = ?",
+            (thread_id,),
+        )
+        next_seq = cursor.fetchone()["next_seq"]
+        self._conn.execute(
+            "INSERT INTO thread_messages (thread_id, seq, speaker, kind, "
+            "body_markdown, addressed_to_json, decline_reason, system_payload_json, "
+            "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                thread_id,
+                next_seq,
+                speaker,
+                kind.value,
+                body_markdown,
+                json.dumps(addressed_to) if addressed_to else None,
+                decline_reason,
+                json.dumps(system_payload) if system_payload else None,
+                _now().isoformat(),
+            ),
+        )
+        self._conn.commit()
+        return next_seq
+
+    @_synchronized
+    def list_thread_messages(
+        self, thread_id: str, *, since_seq: int = 0, limit: int = 1000
+    ) -> list[ThreadMessage]:
+        cursor = self._conn.execute(
+            "SELECT * FROM thread_messages "
+            "WHERE thread_id = ? AND seq > ? ORDER BY seq LIMIT ?",
+            (thread_id, since_seq, limit),
+        )
+        return [
+            ThreadMessage(
+                id=r["id"],
+                thread_id=r["thread_id"],
+                seq=r["seq"],
+                speaker=r["speaker"],
+                kind=ThreadMessageKind(r["kind"]),
+                body_markdown=r["body_markdown"],
+                addressed_to=json.loads(r["addressed_to_json"]) if r["addressed_to_json"] else None,
+                decline_reason=r["decline_reason"],
+                system_payload=json.loads(r["system_payload_json"]) if r["system_payload_json"] else None,
+                created_at=datetime.fromisoformat(r["created_at"]),
+            )
+            for r in cursor.fetchall()
+        ]
+
+    @_synchronized
+    def get_thread_message_by_seq(
+        self, thread_id: str, seq: int
+    ) -> ThreadMessage | None:
+        cursor = self._conn.execute(
+            "SELECT * FROM thread_messages WHERE thread_id = ? AND seq = ?",
+            (thread_id, seq),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return ThreadMessage(
+            id=row["id"],
+            thread_id=row["thread_id"],
+            seq=row["seq"],
+            speaker=row["speaker"],
+            kind=ThreadMessageKind(row["kind"]),
+            body_markdown=row["body_markdown"],
+            addressed_to=json.loads(row["addressed_to_json"]) if row["addressed_to_json"] else None,
+            decline_reason=row["decline_reason"],
+            system_payload=json.loads(row["system_payload_json"]) if row["system_payload_json"] else None,
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+    @_synchronized
     def insert_talk(self, talk: TalkRecord) -> None:
         self._conn.execute(
             """INSERT INTO talks (id, agent_name, started_at, ended_at, status,
