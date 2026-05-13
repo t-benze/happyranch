@@ -85,3 +85,15 @@ class LearningsStore:
     def validate_slug(slug: str) -> None:
         if not SLUG_RE.match(slug):
             raise InvalidLearningEntry("invalid_slug", f"slug {slug!r} fails regex")
+
+    _ID_FILE_RE = re.compile(r"^LRN-(\d{3,})-")
+
+    def next_id(self) -> str:
+        max_n = 0
+        for path in self._root.glob("LRN-*.md"):
+            m = self._ID_FILE_RE.match(path.name)
+            if m:
+                n = int(m.group(1))
+                if n > max_n:
+                    max_n = n
+        return f"LRN-{max_n + 1:03d}"
