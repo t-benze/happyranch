@@ -378,3 +378,44 @@ def test_invite_already_participant_409(tmp_home, app, org_state, auth_headers):
         headers=auth_headers,
     )
     assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Task 26 — POST /threads/{id}/extend
+# ---------------------------------------------------------------------------
+
+
+def test_extend_increases_turn_cap(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"],
+              "body_markdown": "hi", "addressed_to": ["@all"]},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/extend",
+        json={"new_cap": 1000},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    assert org_state.db.get_thread(tid).turn_cap == 1000
+
+
+def test_extend_rejects_non_increase(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"],
+              "body_markdown": "hi", "addressed_to": ["@all"]},
+        headers=auth_headers,
+    ).json()
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{r['thread_id']}/extend",
+        json={"new_cap": 50},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422

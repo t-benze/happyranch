@@ -635,3 +635,39 @@ async def invite_thread_endpoint(
 
     await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token_to_enqueue))
     return {"thread_id": thread_id, "agent_name": body.agent_name, "system_message_seq": sys_seq}
+
+
+# ---------------------------------------------------------------------------
+# Task 26 — POST /threads/{id}/extend
+# ---------------------------------------------------------------------------
+
+
+class ExtendBody(BaseModel):
+    new_cap: int
+
+
+@router.post("/threads/{thread_id}/extend")
+async def extend_thread_endpoint(
+    slug: str, thread_id: str, body: ExtendBody, org: OrgDep,
+) -> dict:
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    if t.status is not ThreadStatus.OPEN:
+        raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
+    if body.new_cap <= t.turn_cap:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "new_cap_must_be_greater",
+                    "current": t.turn_cap, "requested": body.new_cap},
+        )
+    async with org.db_lock:
+        prior_cap = t.turn_cap
+        org.db.set_thread_turn_cap(thread_id, new_cap=body.new_cap)
+        org.db.append_thread_message(
+            thread_id=thread_id, speaker="founder",
+            kind=ThreadMessageKind.SYSTEM,
+            system_payload={"kind_tag": "turn_cap_extended",
+                            "prior_cap": prior_cap, "new_cap": body.new_cap},
+        )
+    return {"thread_id": thread_id, "turn_cap": body.new_cap}
