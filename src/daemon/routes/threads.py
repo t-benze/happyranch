@@ -678,6 +678,88 @@ async def extend_thread_endpoint(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Task 28 — POST /threads/{id}/archive (Phase A) + Task 29 Phase B finalizer
+# ---------------------------------------------------------------------------
+
+
+class ArchiveBody(BaseModel):
+    summary: str
+    request_close_outs: bool = True
+
+
+@router.post("/threads/{thread_id}/archive", status_code=202)
+async def archive_thread_endpoint(
+    slug: str, thread_id: str, body: ArchiveBody, org: OrgDep, request: Request,
+) -> dict:
+    state: DaemonState = request.app.state.daemon
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    if t.status is ThreadStatus.ARCHIVED:
+        return {"thread_id": thread_id, "status": "archived",
+                "transcript_path": t.transcript_path, "idempotent": True}
+    if t.status is ThreadStatus.ABANDONED:
+        raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
+    if t.status is ThreadStatus.ARCHIVING:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "archive_in_progress",
+                    "archive_requested_at": t.archive_requested_at.isoformat() if t.archive_requested_at else None},
+        )
+    summary = body.summary.strip()
+
+    close_out_tokens: list[str] = []
+    async with org.db_lock:
+        org.db.reap_pending_invocations(
+            thread_id,
+            purposes=[ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP],
+            decline_reason="archive_started",
+        )
+        org.db.set_thread_status(
+            thread_id, status=ThreadStatus.ARCHIVING, summary=summary,
+        )
+        participants = [p.agent_name for p in org.db.list_thread_participants(thread_id)]
+        sys_seq = org.db.append_thread_message(
+            thread_id=thread_id, speaker="founder",
+            kind=ThreadMessageKind.SYSTEM,
+            system_payload={"kind_tag": "archive_requested", "summary": summary},
+        )
+        AuditLogger(org.db).log_thread_archive_requested(
+            thread_id, close_out_count=len(participants) if body.request_close_outs else 0,
+        )
+        if body.request_close_outs:
+            for name in participants:
+                inv = org.db.mint_thread_invocation(
+                    thread_id=thread_id, agent_name=name,
+                    triggering_seq=sys_seq, purpose=ThreadInvocationPurpose.CLOSE_OUT,
+                )
+                close_out_tokens.append(inv.invocation_token)
+
+    for token in close_out_tokens:
+        await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
+
+    # Phase B: spawn the background finalizer (wired in Task 29).
+    cfg = load_org_config(OrgPaths(root=org.root))
+    state.thread_finalizers.spawn_finalizer(
+        slug, thread_id,
+        org_state=org,
+        close_out_wait_seconds=cfg.threads_close_out_wait_seconds,
+    )
+
+    return {
+        "thread_id": thread_id,
+        "status": "archiving",
+        "close_out_count": len(close_out_tokens),
+        "transcript_path": None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Task 27 — POST /threads/{id}/abandon
+# ---------------------------------------------------------------------------
+
+
 class AbandonBody(BaseModel):
     reason: str
 

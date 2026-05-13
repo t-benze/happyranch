@@ -426,6 +426,40 @@ def test_extend_rejects_non_increase(tmp_home, app, org_state, auth_headers):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Task 28 — POST /threads/{id}/archive (Phase A)
+# ---------------------------------------------------------------------------
+
+
+def test_archive_phase_a_transitions_to_archiving(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent", "qa_engineer"],
+              "body_markdown": "hi", "addressed_to": ["@all"]},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/archive",
+        json={"summary": "wrapped up", "request_close_outs": True},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 202
+    data = resp.json()
+    assert data["status"] == "archiving"
+    assert data["close_out_count"] == 2
+    from src.models import ThreadInvocationPurpose, ThreadInvocationStatus
+    invs = org_state.db.list_thread_invocations(tid)
+    close_outs = [inv for inv in invs if inv.purpose is ThreadInvocationPurpose.CLOSE_OUT]
+    assert len(close_outs) == 2
+    # The 2 original REPLY invocations got reaped; the 2 close-outs remain pending.
+    pending = [inv for inv in invs if inv.status is ThreadInvocationStatus.PENDING]
+    assert len(pending) == 2
+
+
 def test_abandon_reaps_pending_and_writes_no_transcript(tmp_home, app, org_state, auth_headers):
     client = TestClient(app)
     _seed_agent(org_state, "dev_agent")
