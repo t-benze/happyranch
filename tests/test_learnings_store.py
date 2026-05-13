@@ -82,3 +82,45 @@ def test_validate_entry_rejects_bad_slug(store: LearningsStore):
     with pytest.raises(InvalidLearningEntry) as exc:
         store._validate_entry_structure(_make_entry(slug="Bad Slug"))
     assert exc.value.code == "invalid_slug"
+
+
+def test_write_entry_round_trips_frontmatter_and_body(store: LearningsStore):
+    entry = _make_entry(
+        id="LRN-001",
+        slug="cross-team-dispatch",
+        title="Cross-team dispatch forbidden",
+        topic="workflow-guardrail",
+        tags=["cross-team", "dispatch"],
+        body="**Why:** ...\n**How to apply:** ...\n",
+        source_task="TASK-235",
+    )
+    written = store.write_entry(entry, agent="engineering_head")
+    assert written.authored_by == "engineering_head"
+    assert written.updated_by == "engineering_head"
+    assert written.authored_at is not None
+
+    loaded = store.read_entry("LRN-001")
+    assert loaded.title == entry.title
+    assert loaded.topic == "workflow-guardrail"
+    assert loaded.tags == ["cross-team", "dispatch"]
+    assert loaded.source_task == "TASK-235"
+    assert "How to apply" in loaded.body
+
+
+def test_write_entry_writes_id_prefixed_filename(store: LearningsStore):
+    entry = _make_entry(id="LRN-042", slug="x", title="t", topic="w")
+    store.write_entry(entry, agent="dev_agent")
+    assert (store.root / "LRN-042-x.md").exists()
+
+
+def test_read_entry_by_id_or_slug(store: LearningsStore):
+    store.write_entry(_make_entry(id="LRN-001", slug="foo"), agent="x")
+    by_id = store.read_entry("LRN-001")
+    by_slug = store.read_entry("foo")
+    assert by_id.title == by_slug.title
+
+
+def test_write_entry_rejects_duplicate_id(store: LearningsStore):
+    store.write_entry(_make_entry(id="LRN-001", slug="a"), agent="x")
+    with pytest.raises(LearningIdExists):
+        store.write_entry(_make_entry(id="LRN-001", slug="b"), agent="x")

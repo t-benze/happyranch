@@ -116,3 +116,102 @@ class LearningsStore:
                 if n > max_n:
                     max_n = n
         return f"LRN-{max_n + 1:03d}"
+
+    def path_for(self, id: str, slug: str) -> Path:
+        return self._root / f"{id}-{slug}.md"
+
+    def _find_by_id(self, id: str) -> Optional[Path]:
+        for path in self._root.glob(f"{id}-*.md"):
+            return path
+        return None
+
+    def _find_by_slug(self, slug: str) -> Optional[Path]:
+        for path in self._root.glob(f"LRN-*-{slug}.md"):
+            return path
+        return None
+
+    def write_entry(self, entry: LearningEntry, agent: str) -> LearningEntry:
+        self.validate_id(entry.id)
+        self._validate_entry_structure(entry)
+        if self._find_by_id(entry.id) is not None:
+            raise LearningIdExists(entry.id)
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        stamped = LearningEntry(**{**entry.__dict__})
+        stamped.authored_by = agent
+        stamped.authored_at = now
+        stamped.updated_by = agent
+        stamped.updated_at = now
+        target = self.path_for(stamped.id, stamped.slug)
+        self._atomic_write(target, self._serialize(stamped))
+        return stamped
+
+    def read_entry(self, id_or_slug: str) -> LearningEntry:
+        path = (
+            self._find_by_id(id_or_slug) if ID_RE.match(id_or_slug)
+            else self._find_by_slug(id_or_slug)
+        )
+        if path is None:
+            raise LearningNotFound(id_or_slug)
+        return self._parse(path.read_text())
+
+    def _serialize(self, entry: LearningEntry) -> str:
+        fm: dict = {
+            "id": entry.id,
+            "slug": entry.slug,
+            "title": entry.title,
+            "topic": entry.topic,
+        }
+        if entry.tags:
+            fm["tags"] = entry.tags
+        for key in (
+            "authored_by", "authored_at", "updated_by", "updated_at",
+            "source_task", "supersedes", "promoted_to",
+        ):
+            val = getattr(entry, key)
+            if val is not None:
+                fm[key] = val
+        if entry.related_to:
+            fm["related_to"] = entry.related_to
+        fm_text = yaml.safe_dump(fm, sort_keys=False).strip()
+        body = entry.body if entry.body.endswith("\n") else entry.body + "\n"
+        return f"---\n{fm_text}\n---\n\n{body}"
+
+    def _parse(self, text: str) -> LearningEntry:
+        if not text.startswith("---"):
+            raise InvalidLearningEntry("missing_frontmatter", "no leading frontmatter")
+        parts = text.split("---", 2)
+        if len(parts) < 3:
+            raise InvalidLearningEntry("missing_frontmatter", "malformed frontmatter")
+        fm = yaml.safe_load(parts[1]) or {}
+        body = parts[2].lstrip("\n")
+        return LearningEntry(
+            id=fm.get("id", ""),
+            slug=fm.get("slug", ""),
+            title=fm.get("title", ""),
+            topic=fm.get("topic", ""),
+            tags=list(fm.get("tags") or []),
+            source_task=fm.get("source_task"),
+            related_to=list(fm.get("related_to") or []),
+            supersedes=fm.get("supersedes"),
+            promoted_to=fm.get("promoted_to"),
+            authored_by=fm.get("authored_by"),
+            authored_at=fm.get("authored_at"),
+            updated_by=fm.get("updated_by"),
+            updated_at=fm.get("updated_at"),
+            body=body,
+        )
+
+    def _atomic_write(self, target: Path, content: str) -> None:
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=target.stem + ".", suffix=".tmp", dir=str(target.parent)
+        )
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(content)
+            os.replace(tmp_path, target)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
+            raise
