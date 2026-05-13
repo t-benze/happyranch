@@ -94,6 +94,16 @@ def test_update_preserves_authored_at(client_with_migrated_workspace):
     assert r.json()["title"] == "v2"
 
 
+def test_list_returns_404_for_unknown_agent(client_with_migrated_workspace):
+    client, token, slug, agent, _ = client_with_migrated_workspace
+    r = client.get(
+        f"/api/v1/orgs/{slug}/agents/nonexistent_agent/learnings/entries/",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 404
+    assert r.json()["detail"]["error"] == "agent_not_found"
+
+
 def test_add_rejects_unknown_related_to(client_with_migrated_workspace):
     client, token, slug, agent, _ = client_with_migrated_workspace
     r = client.post(

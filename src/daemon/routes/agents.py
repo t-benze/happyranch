@@ -653,8 +653,17 @@ async def append_learning(
 
 
 def _workspace_learnings_store(org: OrgState, agent_name: str) -> LearningsStore:
-    """Return the per-agent LearningsStore, raising 412 if pre-migration."""
+    """Return the per-agent LearningsStore.
+
+    Raises 404 if the agent workspace doesn't exist, 412 if it exists but
+    hasn't been migrated to the new per-entry layout.
+    """
     workspace = org.root / "workspaces" / agent_name
+    if not workspace.exists():
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "agent_not_found", "agent": agent_name},
+        )
     learnings_dir = workspace / "learnings"
     if not learnings_dir.exists():
         raise HTTPException(
