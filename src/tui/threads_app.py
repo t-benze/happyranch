@@ -136,6 +136,7 @@ class ThreadsApp(App):
         Binding("i", "invite", "Invite"),
         Binding("a", "archive", "Archive"),
         Binding("x", "abandon", "Abandon"),
+        Binding("f", "forward", "Forward"),
         Binding("r", "focus_compose", "Reply"),
         Binding("ctrl+enter", "send_reply", "Send", priority=False),
         Binding("escape", "cancel_compose", "Cancel"),
@@ -367,6 +368,42 @@ class ThreadsApp(App):
 
     def action_new_thread(self) -> None:
         self.push_screen(NewThreadScreen(), self._submit_new_thread)
+
+    async def action_forward(self) -> None:
+        if self._current_thread_id is None:
+            self.notify("select a thread first", severity="warning")
+            return
+        try:
+            detail = await self._get_thread_impl(
+                slug=self._slug, thread_id=self._current_thread_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.notify(f"forward failed to fetch source: {exc}", severity="error")
+            return
+        from src.daemon.thread_forward import build_forward_body_from_thread
+        from src.models import ThreadMessage, ThreadMessageKind
+        from datetime import datetime
+        msgs = [
+            ThreadMessage(
+                thread_id=detail["thread_id"], seq=m["seq"], speaker=m["speaker"],
+                kind=ThreadMessageKind(m["kind"]),
+                body_markdown=m.get("body_markdown"),
+                decline_reason=m.get("decline_reason"),
+                system_payload=m.get("system_payload"),
+                created_at=datetime.fromisoformat(m["created_at"]),
+            )
+            for m in detail.get("messages", [])
+        ]
+        quoted_body = build_forward_body_from_thread(
+            source_id=detail["thread_id"], messages=msgs, subject=detail["subject"],
+        )
+        prefill = {
+            "subject": f"Fwd: {detail['subject']}",
+            "body": quoted_body,
+            "forwarded_from_id": detail["thread_id"],
+            "forwarded_from_kind": "thread",
+        }
+        self.push_screen(NewThreadScreen(prefill=prefill), self._submit_new_thread)
 
     async def _invite_impl(self, *, slug, thread_id, agent_name):
         from src.tui.api_client import AsyncOpcClient

@@ -425,3 +425,64 @@ async def test_abandon_modal_invokes_abandon(monkeypatch):
         await pilot.press("ctrl+enter")
         await pilot.pause()
     assert abandoned == [{"thread_id": "THR-001", "reason": "not relevant anymore"}]
+
+
+async def test_forward_prefills_compose(monkeypatch):
+    app = ThreadsApp(slug="alpha", base_url="http://test", token="tok")
+
+    async def fake_get_thread(*, slug, thread_id):
+        return {
+            "thread_id": thread_id, "subject": "refund policy", "status": "open",
+            "participants": ["dev_agent"],
+            "messages": [
+                {"seq": 1, "speaker": "founder", "kind": "message",
+                 "body_markdown": "should we cap?", "addressed_to": ["@all"],
+                 "decline_reason": None, "system_payload": None,
+                 "created_at": "2026-05-14T00:00:00+00:00"},
+            ],
+        }
+
+    composed: list[dict] = []
+
+    async def fake_compose(**kwargs):
+        composed.append(kwargs)
+        return {"thread_id": "THR-NEW", "started_at": "now", "pending_replies": []}
+
+    async def fake_list(*, slug, **kwargs): return []
+    async def fake_inbox_events():
+        if False: yield
+    async def fake_tail(thread_id):
+        if False: yield
+
+    monkeypatch.setattr(app, "_get_thread_impl", fake_get_thread)
+    monkeypatch.setattr(app, "_compose_thread_impl", fake_compose)
+    monkeypatch.setattr(app, "_list_threads_impl", fake_list)
+    monkeypatch.setattr(app, "_iter_inbox_events_impl", fake_inbox_events)
+    monkeypatch.setattr(app, "_iter_thread_tail_impl", fake_tail)
+
+    async with app.run_test() as pilot:
+        app.set_threads([
+            {"thread_id": "THR-001", "subject": "refund policy", "status": "open",
+             "turns_used": 0, "turn_cap": 500, "transcript_path": None,
+             "started_at": "2026-05-14T00:00:00+00:00", "archived_at": None,
+             "forwarded_from_id": None, "forwarded_from_kind": None,
+             "summary": None, "new_kb_slugs": []},
+        ])
+        list_view = app.query_one("#inbox-list")
+        list_view.focus()
+        list_view.index = 0
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        from textual.widgets import Input, TextArea
+        body = app.query_one("#new-body", TextArea).text
+        assert "should we cap?" in body
+        assert "Forwarded from THR-001" in body
+        subject = app.query_one("#new-subject", Input)
+        assert subject.value == "Fwd: refund policy"
+        app.query_one("#new-recipients", Input).value = "qa_engineer"
+        await pilot.press("ctrl+enter")
+        await pilot.pause()
+    assert composed[0]["forwarded_from_id"] == "THR-001"
+    assert composed[0]["forwarded_from_kind"] == "thread"
