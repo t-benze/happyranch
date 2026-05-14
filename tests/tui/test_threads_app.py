@@ -330,3 +330,52 @@ async def test_invite_modal_invokes_invite(monkeypatch):
         await pilot.press("ctrl+enter")
         await pilot.pause()
     assert invited == [{"thread_id": "THR-001", "agent_name": "qa_engineer"}]
+
+
+async def test_archive_modal_invokes_archive(monkeypatch):
+    app = ThreadsApp(slug="alpha", base_url="http://test", token="tok")
+    archived: list[dict] = []
+
+    async def fake_archive(*, slug, thread_id, summary, request_close_outs):
+        archived.append({"thread_id": thread_id, "summary": summary,
+                         "request_close_outs": request_close_outs})
+        return {"thread_id": thread_id, "status": "archiving",
+                "close_out_count": 0, "transcript_path": None}
+
+    async def fake_get_thread(*, slug, thread_id):
+        return {"thread_id": thread_id, "subject": "x", "status": "open",
+                "participants": [], "messages": []}
+
+    async def fake_list(*, slug, **kwargs): return []
+    async def fake_inbox_events():
+        if False: yield
+    async def fake_tail(thread_id):
+        if False: yield
+
+    monkeypatch.setattr(app, "_archive_impl", fake_archive)
+    monkeypatch.setattr(app, "_get_thread_impl", fake_get_thread)
+    monkeypatch.setattr(app, "_list_threads_impl", fake_list)
+    monkeypatch.setattr(app, "_iter_inbox_events_impl", fake_inbox_events)
+    monkeypatch.setattr(app, "_iter_thread_tail_impl", fake_tail)
+
+    async with app.run_test() as pilot:
+        app.set_threads([
+            {"thread_id": "THR-001", "subject": "x", "status": "open",
+             "turns_used": 0, "turn_cap": 500, "transcript_path": None,
+             "started_at": "2026-05-14T00:00:00+00:00", "archived_at": None,
+             "forwarded_from_id": None, "forwarded_from_kind": None,
+             "summary": None, "new_kb_slugs": []},
+        ])
+        list_view = app.query_one("#inbox-list")
+        list_view.focus()
+        list_view.index = 0
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        from textual.widgets import TextArea
+        app.query_one("#archive-summary", TextArea).text = "wrapped"
+        await pilot.press("ctrl+enter")
+        await pilot.pause()
+    assert archived == [{"thread_id": "THR-001", "summary": "wrapped",
+                         "request_close_outs": True}]

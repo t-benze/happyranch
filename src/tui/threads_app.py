@@ -11,7 +11,7 @@ from textual.app import App
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Footer, Header, Input, ListItem, ListView, Label, RichLog, Static, TextArea
+from textual.widgets import Button, Checkbox, Footer, Header, Input, ListItem, ListView, Label, RichLog, Static, TextArea
 
 
 CSS_PATH = Path(__file__).parent / "threads_app.tcss"
@@ -79,6 +79,29 @@ class InviteScreen(ModalScreen):
         self.dismiss(name)
 
 
+class ArchiveScreen(ModalScreen[dict | None]):
+    BINDINGS = [
+        Binding("escape", "dismiss(None)", "Cancel"),
+        Binding("ctrl+enter", "submit", "Archive", priority=True),
+    ]
+
+    def compose(self):
+        with Vertical(id="archive-modal"):
+            yield Static("Archive thread — Ctrl+Enter to archive, Esc to cancel",
+                         id="archive-label")
+            yield TextArea(id="archive-summary")
+            yield Checkbox("Request close-outs from each participant",
+                           value=True, id="archive-closeouts")
+
+    def action_submit(self) -> None:
+        summary = self.query_one("#archive-summary", TextArea).text.strip()
+        if not summary:
+            self.app.notify("summary required", severity="warning")
+            return
+        close_outs = self.query_one("#archive-closeouts", Checkbox).value
+        self.dismiss({"summary": summary, "request_close_outs": close_outs})
+
+
 class ThreadsApp(App):
     """Three-pane email-style TUI: inbox, thread view, compose."""
 
@@ -91,6 +114,7 @@ class ThreadsApp(App):
         Binding("tab", "focus_next", "Cycle panes"),
         Binding("n", "new_thread", "New"),
         Binding("i", "invite", "Invite"),
+        Binding("a", "archive", "Archive"),
         Binding("r", "focus_compose", "Reply"),
         Binding("ctrl+enter", "send_reply", "Send", priority=False),
         Binding("escape", "cancel_compose", "Cancel"),
@@ -351,6 +375,41 @@ class ThreadsApp(App):
             self.notify("select a thread first", severity="warning")
             return
         self.push_screen(InviteScreen(), self._handle_invite)
+
+    async def _archive_impl(self, *, slug, thread_id, summary, request_close_outs):
+        from src.tui.api_client import AsyncOpcClient
+        if self._client is None:
+            self._client = AsyncOpcClient(base_url=self._base_url, token=self._token)
+        return await self._client.archive(
+            slug=slug, thread_id=thread_id,
+            summary=summary, request_close_outs=request_close_outs,
+        )
+
+    def action_archive(self) -> None:
+        if self._current_thread_id is None:
+            self.notify("select a thread first", severity="warning")
+            return
+        self.push_screen(ArchiveScreen(), self._handle_archive)
+
+    async def _handle_archive(self, result: dict | None) -> None:
+        if result is None:
+            return
+        try:
+            await self._archive_impl(
+                slug=self._slug, thread_id=self._current_thread_id,
+                summary=result["summary"],
+                request_close_outs=result["request_close_outs"],
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.notify(f"archive failed: {exc}", severity="error")
+            return
+        self.notify("archiving — close-outs in flight")
+        await self._refresh_inbox()
+        if self._current_thread_id is not None:
+            detail = await self._get_thread_impl(
+                slug=self._slug, thread_id=self._current_thread_id,
+            )
+            self.set_thread_detail(detail)
 
     async def on_list_view_selected(self, event) -> None:
         """ListView fires this when Enter is pressed on a row."""

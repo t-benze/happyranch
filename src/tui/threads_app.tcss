@@ -87,3 +87,21 @@ Screen {
     color: $text-muted;
     margin-bottom: 1;
 }
+
+#archive-modal {
+    width: 80;
+    height: 16;
+    background: $surface;
+    border: round $accent;
+    padding: 1 2;
+}
+
+#archive-label {
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+#archive-summary {
+    height: 6;
+    margin-bottom: 1;
+}
