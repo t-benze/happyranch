@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -53,3 +54,28 @@ async def test_finalize_waits_for_close_outs_or_times_out(tmp_path):
     elapsed = asyncio.get_event_loop().time() - start
     assert 0.9 <= elapsed <= 2.5
     assert db.get_thread("THR-001").status is ThreadStatus.ARCHIVED
+
+
+async def test_finalize_thread_records_aggregate_learnings_total(tmp_path):
+    """Close-out callbacks increment new_learnings_total; finalizer must
+    surface that aggregate in both the transcript and the archived audit."""
+    db = Database(tmp_path / "opc.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.add_thread_participant("THR-001", "bob", added_by="founder")
+    db.set_thread_status("THR-001", status=ThreadStatus.ARCHIVING, summary="done")
+
+    # Simulate two close-outs landing.
+    db.add_thread_learnings_count("THR-001", count=3)  # alice
+    db.add_thread_learnings_count("THR-001", count=2)  # bob
+
+    store = ThreadStore(tmp_path / "threads")
+    await finalize_thread(
+        db=db, store=store, thread_id="THR-001",
+        close_out_wait_seconds=1,
+    )
+    t = db.get_thread("THR-001")
+    assert t.status is ThreadStatus.ARCHIVED
+    assert t.new_learnings_total == 5
+    transcript_text = Path(t.transcript_path).read_text(encoding="utf-8")
+    assert "new_learnings_total: 5" in transcript_text

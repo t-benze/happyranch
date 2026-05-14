@@ -54,7 +54,7 @@ async def finalize_thread(
         archived_at=archived_at,
         participants=participants,
         turns_used=thread.turns_used,
-        new_learnings_total=0,
+        new_learnings_total=thread.new_learnings_total,
         new_kb_slugs=thread.new_kb_slugs,
         forwarded_from_id=thread.forwarded_from_id,
         summary=summary,
@@ -74,7 +74,7 @@ async def finalize_thread(
     )
     AuditLogger(db).log_thread_archived(
         thread_id,
-        new_learnings_total=0,
+        new_learnings_total=thread.new_learnings_total,
         new_kb_slugs=thread.new_kb_slugs,
         turns_used=thread.turns_used,
     )
