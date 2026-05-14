@@ -1,6 +1,6 @@
 ---
 name: opc
-description: Manage the OPC AI tourism organization via the `opc` CLI — submit tasks, stream events, check agent performance tiers, inspect audit logs, approve agent enrollments, operate the shared knowledge base, and record founder-resolved precedents. Use when the user asks about OPC tasks, agents, the daemon/runtime, the knowledge base, or the one-person-company system.
+description: Manage the OPC AI tourism organization via the `opc` CLI — submit tasks, stream events, check agent performance tiers, inspect audit logs, approve agent enrollments, operate the shared knowledge base, manage threads (compose/send/invite/archive), and record founder-resolved precedents. Use when the user asks about OPC tasks, agents, threads, the daemon/runtime, the knowledge base, or the one-person-company system.
 metadata:
   {
     "openclaw":
@@ -131,6 +131,54 @@ scripts/opc kb precedent --task-id TASK-N --decision approve|reject \
 ```
 
 The two-command flow is mandatory — `kb precedent` will reject writes that aren't backed by a resolved escalation audit entry.
+
+## Threads
+
+Email-style multi-agent workchannels (THR-NNN). The founder composes, agents reply/decline/dispatch into them, and the founder eventually archives with close-outs. The TUI at `scripts/opc threads` (no subcommand) is optional — the CLI below covers every founder operation.
+
+```bash
+# Browse
+scripts/opc threads list                                          # default 50, all statuses
+scripts/opc threads list --status open                            # status ∈ open|archiving|archived|abandoned
+scripts/opc threads list --limit 100
+scripts/opc threads show THR-001                                  # metadata + full transcript
+scripts/opc threads show THR-001 --json                           # raw JSON for piping
+
+# Compose a new thread (founder only)
+scripts/opc threads compose \
+    --subject "Refund-policy review for high-season packages" \
+    --recipients "engineering_head,payment_agent,legal_agent" \
+    --body "Reviewing whether our cancellation grace period needs to flex during peak season. See KB:refund-policy-baseline."
+
+# Follow-up message in an existing thread — body comes from a JSON file
+# /tmp/thread-send-THR-001.json:
+#   {"body_markdown": "Updated context: …", "addressed_to": ["engineering_head"]}
+# addressed_to MUST be a subset of current participants, or ["@all"].
+scripts/opc threads send --thread-id THR-001 --from-file /tmp/thread-send-THR-001.json
+
+# Invite a new participant mid-thread (founder only; system message is posted)
+scripts/opc threads invite --thread-id THR-001 --agent qa_engineer
+
+# Raise the turn cap when a thread is hitting the limit
+scripts/opc threads extend --thread-id THR-001 --new-cap 50
+
+# Abandon (no close-outs, frozen with reason)
+scripts/opc threads abandon --thread-id THR-001 --reason "superseded by THR-007"
+
+# Archive (Phase A → Phase B). Requests close-outs from every participant.
+# /tmp/thread-archive-THR-001.json:
+#   {"summary": "Decision: extend grace to 14 days in peak…", "request_close_outs": true}
+scripts/opc threads archive --thread-id THR-001 --from-file /tmp/thread-archive-THR-001.json
+
+# Forward a finished talk or thread into a NEW thread (decision continuity)
+scripts/opc threads forward --source TALK-042 --recipients "engineering_head,product_manager" \
+    [--subject "Follow-up: pricing API contract"] [--note-file /tmp/note.md]
+scripts/opc threads forward --source THR-001 --recipients "qa_engineer"
+```
+
+Valid recipient names = active agents in `<runtime>/orgs/<slug>/org/agents/*.md` that ALSO have a workspace under `<runtime>/orgs/<slug>/workspaces/`. The daemon returns `404 {"code": "unknown_agent", "agent": "<name>"}` for any mismatch (typo, terminated agent, pending-approval agent without an `.md`). The TUI surfaces this detail since commit `70758ea`; the CLI prints the same JSON.
+
+`opc threads reply | decline | dispatch | close-out` are **agent-side** callbacks driven by the `thread` skill inside an invocation — the founder does not run them directly.
 
 ## Audit Log
 
