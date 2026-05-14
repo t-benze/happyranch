@@ -33,3 +33,37 @@ async def test_inbox_renders_threads_when_set():
         from textual.widgets import ListView
         list_view = app.query_one("#inbox-list", ListView)
         assert len(list_view.children) == 2
+
+
+async def test_thread_view_renders_selected_thread():
+    app = ThreadsApp(slug="alpha", base_url="http://test", token="tok")
+    async with app.run_test() as pilot:
+        app.set_threads([
+            {"thread_id": "THR-001", "subject": "smoke", "status": "open",
+             "turns_used": 1, "turn_cap": 500, "transcript_path": None,
+             "started_at": "2026-05-14T00:00:00+00:00", "archived_at": None,
+             "forwarded_from_id": None, "forwarded_from_kind": None,
+             "summary": None, "new_kb_slugs": []},
+        ])
+        app.set_thread_detail({
+            "thread_id": "THR-001", "subject": "smoke", "status": "open",
+            "participants": ["dev_agent"],
+            "messages": [
+                {"seq": 1, "speaker": "founder", "kind": "message",
+                 "body_markdown": "hi", "addressed_to": ["@all"],
+                 "decline_reason": None, "system_payload": None,
+                 "created_at": "2026-05-14T00:00:00+00:00"},
+                {"seq": 2, "speaker": "dev_agent", "kind": "message",
+                 "body_markdown": "hello back", "addressed_to": None,
+                 "decline_reason": None, "system_payload": None,
+                 "created_at": "2026-05-14T00:01:00+00:00"},
+            ],
+        })
+        await pilot.pause()
+        from textual.widgets import RichLog
+        view = app.query_one("#thread-view", RichLog)
+        # RichLog stores written lines; concat them for substring checks.
+        rendered = "\n".join(str(line) for line in view.lines)
+        assert "dev_agent" in rendered
+        assert "hello back" in rendered
+        assert "smoke" in rendered
