@@ -498,3 +498,18 @@ async def test_help_modal_lists_keybindings():
         text = str(body.render()) if hasattr(body, "render") else str(body)
         for token in ("New", "Reply", "Forward", "Invite", "Archive", "Abandon"):
             assert token in text, f"{token!r} missing from help text"
+
+
+async def test_async_client_is_closed_on_unmount():
+    app = ThreadsApp(slug="alpha", base_url="http://test", token="tok")
+    closed = False
+
+    class FakeClient:
+        async def aclose(self):
+            nonlocal closed
+            closed = True
+
+    async with app.run_test() as pilot:
+        app._client = FakeClient()
+        await app.action_quit()
+    assert closed is True

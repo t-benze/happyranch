@@ -224,6 +224,14 @@ class ThreadsApp(App):
         except Exception as exc:  # noqa: BLE001
             self.notify(f"SSE inbox stream closed: {exc}", severity="warning")
 
+    async def on_unmount(self) -> None:
+        if self._client is not None:
+            try:
+                await self._client.aclose()
+            except Exception:  # noqa: BLE001
+                pass
+            self._client = None
+
     async def on_mount(self) -> None:
         await self._refresh_inbox()
         self._inbox_event_task = self.run_worker(
