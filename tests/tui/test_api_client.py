@@ -65,3 +65,27 @@ async def test_unknown_thread_raises(mock_transport):
             await client.get_thread(slug="alpha", thread_id="THR-404")
     finally:
         await client.aclose()
+
+
+async def test_iter_sse_yields_data_events():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = (
+            "data: {\"thread_id\": \"THR-001\", \"seq\": 1, \"speaker\": \"founder\", \"kind\": \"message\"}\n\n"
+            "data: {\"thread_id\": \"THR-001\", \"seq\": 2, \"speaker\": \"alice\", \"kind\": \"message\"}\n\n"
+        )
+        return httpx.Response(200, content=body.encode(), headers={"content-type": "text/event-stream"})
+
+    transport = httpx.MockTransport(handler)
+    client = AsyncOpcClient(base_url="http://test", token="tok", transport=transport)
+    try:
+        seen: list[dict] = []
+        async for event in client.iter_sse(
+            f"/api/v1/orgs/alpha/threads/THR-001/tail"
+        ):
+            seen.append(event)
+            if len(seen) >= 2:
+                break
+    finally:
+        await client.aclose()
+    assert seen[0]["seq"] == 1
+    assert seen[1]["speaker"] == "alice"
