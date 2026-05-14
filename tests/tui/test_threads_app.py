@@ -379,3 +379,49 @@ async def test_archive_modal_invokes_archive(monkeypatch):
         await pilot.pause()
     assert archived == [{"thread_id": "THR-001", "summary": "wrapped",
                          "request_close_outs": True}]
+
+
+async def test_abandon_modal_invokes_abandon(monkeypatch):
+    app = ThreadsApp(slug="alpha", base_url="http://test", token="tok")
+    abandoned: list[dict] = []
+
+    async def fake_abandon(*, slug, thread_id, reason):
+        abandoned.append({"thread_id": thread_id, "reason": reason})
+        return {"thread_id": thread_id, "status": "abandoned"}
+
+    async def fake_get_thread(*, slug, thread_id):
+        return {"thread_id": thread_id, "subject": "x", "status": "open",
+                "participants": [], "messages": []}
+
+    async def fake_list(*, slug, **kwargs): return []
+    async def fake_inbox_events():
+        if False: yield
+    async def fake_tail(thread_id):
+        if False: yield
+
+    monkeypatch.setattr(app, "_abandon_impl", fake_abandon)
+    monkeypatch.setattr(app, "_get_thread_impl", fake_get_thread)
+    monkeypatch.setattr(app, "_list_threads_impl", fake_list)
+    monkeypatch.setattr(app, "_iter_inbox_events_impl", fake_inbox_events)
+    monkeypatch.setattr(app, "_iter_thread_tail_impl", fake_tail)
+
+    async with app.run_test() as pilot:
+        app.set_threads([
+            {"thread_id": "THR-001", "subject": "x", "status": "open",
+             "turns_used": 0, "turn_cap": 500, "transcript_path": None,
+             "started_at": "2026-05-14T00:00:00+00:00", "archived_at": None,
+             "forwarded_from_id": None, "forwarded_from_kind": None,
+             "summary": None, "new_kb_slugs": []},
+        ])
+        list_view = app.query_one("#inbox-list")
+        list_view.focus()
+        list_view.index = 0
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("x")
+        await pilot.pause()
+        from textual.widgets import Input
+        app.query_one("#abandon-reason", Input).value = "not relevant anymore"
+        await pilot.press("ctrl+enter")
+        await pilot.pause()
+    assert abandoned == [{"thread_id": "THR-001", "reason": "not relevant anymore"}]

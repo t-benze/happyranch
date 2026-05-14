@@ -79,6 +79,26 @@ class InviteScreen(ModalScreen):
         self.dismiss(name)
 
 
+class AbandonScreen(ModalScreen[str | None]):
+    BINDINGS = [
+        Binding("escape", "dismiss(None)", "Cancel"),
+        Binding("ctrl+enter", "submit", "Abandon", priority=True),
+    ]
+
+    def compose(self):
+        with Vertical(id="abandon-modal"):
+            yield Static("Abandon thread — Ctrl+Enter to abandon, Esc to cancel",
+                         id="abandon-label")
+            yield Input(placeholder="reason", id="abandon-reason")
+
+    def action_submit(self) -> None:
+        reason = self.query_one("#abandon-reason", Input).value.strip()
+        if not reason:
+            self.app.notify("reason required", severity="warning")
+            return
+        self.dismiss(reason)
+
+
 class ArchiveScreen(ModalScreen[dict | None]):
     BINDINGS = [
         Binding("escape", "dismiss(None)", "Cancel"),
@@ -115,6 +135,7 @@ class ThreadsApp(App):
         Binding("n", "new_thread", "New"),
         Binding("i", "invite", "Invite"),
         Binding("a", "archive", "Archive"),
+        Binding("x", "abandon", "Abandon"),
         Binding("r", "focus_compose", "Reply"),
         Binding("ctrl+enter", "send_reply", "Send", priority=False),
         Binding("escape", "cancel_compose", "Cancel"),
@@ -404,6 +425,36 @@ class ThreadsApp(App):
             self.notify(f"archive failed: {exc}", severity="error")
             return
         self.notify("archiving — close-outs in flight")
+        await self._refresh_inbox()
+        if self._current_thread_id is not None:
+            detail = await self._get_thread_impl(
+                slug=self._slug, thread_id=self._current_thread_id,
+            )
+            self.set_thread_detail(detail)
+
+    async def _abandon_impl(self, *, slug, thread_id, reason):
+        from src.tui.api_client import AsyncOpcClient
+        if self._client is None:
+            self._client = AsyncOpcClient(base_url=self._base_url, token=self._token)
+        return await self._client.abandon(slug=slug, thread_id=thread_id, reason=reason)
+
+    def action_abandon(self) -> None:
+        if self._current_thread_id is None:
+            self.notify("select a thread first", severity="warning")
+            return
+        self.push_screen(AbandonScreen(), self._handle_abandon)
+
+    async def _handle_abandon(self, reason: str | None) -> None:
+        if reason is None:
+            return
+        try:
+            await self._abandon_impl(
+                slug=self._slug, thread_id=self._current_thread_id, reason=reason,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.notify(f"abandon failed: {exc}", severity="error")
+            return
+        self.notify("abandoned")
         await self._refresh_inbox()
         if self._current_thread_id is not None:
             detail = await self._get_thread_impl(

@@ -105,3 +105,16 @@ Screen {
     height: 6;
     margin-bottom: 1;
 }
+
+#abandon-modal {
+    width: 60;
+    height: 8;
+    background: $surface;
+    border: round $accent;
+    padding: 1 2;
+}
+
+#abandon-label {
+    color: $text-muted;
+    margin-bottom: 1;
+}
