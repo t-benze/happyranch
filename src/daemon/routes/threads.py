@@ -142,6 +142,14 @@ async def compose_thread(
 
     addressed_agents = _resolve_addressed_agents(body.addressed_to, body.recipients)
 
+    if len(addressed_agents) > turn_cap:
+        raise HTTPException(
+            status_code=429,
+            detail={"code": "turn_cap_exceeded",
+                    "used": 0, "cap": turn_cap,
+                    "requested": len(addressed_agents)},
+        )
+
     async with org.db_lock:
         thread_id = org.db.next_thread_id()
         org.db.insert_thread(ThreadRecord(

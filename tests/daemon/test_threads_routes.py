@@ -586,3 +586,42 @@ def test_tail_sse_replays_existing_messages(tmp_home, app, org_state, auth_heade
     ]
     assert len(replay_lines) == 1
     assert '"hi"' in replay_lines[0]
+
+
+# ---------------------------------------------------------------------------
+# F1 — compose rejects when first fan-out exceeds turn_cap (codex P2)
+# ---------------------------------------------------------------------------
+
+
+def test_compose_rejects_initial_fanout_over_cap(tmp_home, app, org_state, auth_headers, monkeypatch):
+    """If turn_cap < number of initial addressees, compose returns 429 instead
+    of creating an instantly-over-budget thread."""
+    from dataclasses import replace
+    from src.orchestrator import org_config as _cfg
+    import src.daemon.routes.threads as routes_mod
+
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+
+    real_load = _cfg.load_org_config
+
+    def small_cap_load(paths):
+        cfg = real_load(paths)
+        return replace(cfg, threads_default_turn_cap=1)
+
+    monkeypatch.setattr(_cfg, "load_org_config", small_cap_load)
+    monkeypatch.setattr(routes_mod, "load_org_config", small_cap_load)
+
+    resp = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={
+            "subject": "x", "recipients": ["dev_agent", "qa_engineer"],
+            "body_markdown": "hi", "addressed_to": ["@all"],
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 429, resp.text
+    assert resp.json()["detail"]["code"] == "turn_cap_exceeded"
+    assert resp.json()["detail"]["cap"] == 1
+    assert resp.json()["detail"]["requested"] == 2
