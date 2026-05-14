@@ -246,8 +246,16 @@ threads:
   # invocation_timeout_seconds: null  # optional override of session_timeout for thread turns
 ```
 
-A Textual TUI (`opc threads` with no subcommand) is planned for a follow-up
-release.
+A Textual TUI launches when you run `opc threads` with no subcommand:
+
+```bash
+opc threads --org <slug>
+```
+
+Keybindings: `N` new, `R` reply, `F` forward, `I` invite, `A` archive,
+`X` abandon, `Enter` open selected, `Ctrl+R` refresh, `?` help, `Ctrl+C` quit.
+The TUI subscribes to per-org SSE events so the inbox and the selected
+thread stay live without polling.
 
 ### Managing repos
 

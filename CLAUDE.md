@@ -58,7 +58,7 @@ System kernel milestones — the org-agnostic infrastructure. Building out a spe
 9. ~~**Org-per-runtime layout**~~ done — file-backed `org/{charter.md,escalation-rules.md,teams.yaml,config.yaml,agents/}`, with `opc migrate-to-org-runtime` for legacy DB-backed agents.
 10. ~~**Multi-org container**~~ done — one runtime hosts multiple orgs under `<runtime>/orgs/<slug>/`. Per-org DB, workspaces, KB, talks. `opc migrate-to-multi-org` for in-place v1 → v2 migration.
 11. ~~**Feishu notifications**~~ done — push escalation notifications to a configured Feishu chat; founder replies in-thread with `APPROVE` or `REJECT` plus a rationale and the listener calls the same in-process resolve-escalation route the CLI uses. Per-org opt-in via `feishu_notifications` in `org/config.yaml`. Spec: `docs/superpowers/specs/2026-05-08-feishu-notification-design.md`.
-12. ~~**Threads (foundation)**~~ done — email-style multi-agent workchannels with daemon-minted invocation tokens. CLI surface, end-to-end integration coverage via `fake_claude.sh` thread-prompt routing. Textual TUI is a follow-up. Spec: `docs/superpowers/specs/2026-05-13-threads-design.md`. Plan: `docs/superpowers/plans/2026-05-13-threads-foundation.md`.
+12. ~~**Threads (foundation)**~~ done — email-style multi-agent workchannels with daemon-minted invocation tokens. CLI surface, end-to-end integration coverage via `fake_claude.sh` thread-prompt routing, plus a Textual TUI (`opc threads` no subcommand). Spec: `docs/superpowers/specs/2026-05-13-threads-design.md`. Plans: `docs/superpowers/plans/2026-05-13-threads-foundation.md`, `docs/superpowers/plans/2026-05-13-threads-tui.md`.
 13. **Inter-team communication** — orchestrator routes tasks between teams (e.g., engineering manager hands a payment-change review to a compliance team manager). Currently `--team <name>` works because most runtimes have a single team; cross-team handoff is not yet implemented.
 14. **Founder dashboard** — aggregate audit logs, escalation summaries, scorecards into a weekly view. Design doc: `protocol/05e-dashboard.md`.
 15. **Persistent agents** — long-running agent loops for runtime patterns that don't fit single-task batch execution (e.g., a real-time customer-chat worker). Currently every agent session is one task → one subprocess.
@@ -119,15 +119,20 @@ Source code lives in the repo. Runtime data lives in a dedicated **runtime conta
 |   |   |-- teams.py                   # TeamsRegistry — seeded from teams.yaml
 |   |   |-- org_config.py              # OrgConfig — loads optional org/config.yaml
 |   |   +-- migration.py               # opc migrate-to-org-runtime — v0 (DB) → v1 (file-based)
-|   +-- infrastructure/
-|       |-- database.py                # SQLite (WAL), typed CRUD, task_results, parent_task_id, revisit_of_task_id, escalation_notifications, processed_event_ids, etc.
-|       |-- audit_logger.py            # Semantic logging
-|       |-- kb_store.py                # Knowledge base store
-|       |-- talk_store.py              # Transcript file writer
-|       +-- feishu/
-|           |-- client.py              # FeishuClient — lark-oapi wrapper for im.v1.message.create
-|           |-- notifier.py            # EscalationNotifier — builds post body, sends, mints escalation_notifications row
-|           +-- reply_parser.py        # Pure functions: extract text from msg envelopes, parse APPROVE/REJECT + rationale
+|   |-- infrastructure/
+|   |   |-- database.py                # SQLite (WAL), typed CRUD, task_results, parent_task_id, revisit_of_task_id, escalation_notifications, processed_event_ids, etc.
+|   |   |-- audit_logger.py            # Semantic logging
+|   |   |-- kb_store.py                # Knowledge base store
+|   |   |-- talk_store.py              # Transcript file writer
+|   |   +-- feishu/
+|   |       |-- client.py              # FeishuClient — lark-oapi wrapper for im.v1.message.create
+|   |       |-- notifier.py            # EscalationNotifier — builds post body, sends, mints escalation_notifications row
+|   |       +-- reply_parser.py        # Pure functions: extract text from msg envelopes, parse APPROVE/REJECT + rationale
+|   +-- tui/
+|       |-- __init__.py
+|       |-- api_client.py
+|       |-- threads_app.py
+|       +-- threads_app.tcss
 |-- tests/                             # Unit + integration (with fake CLIs)
 +-- examples/orgs/                     # Canonical sample org trees
     +-- hk-macau-tourism/
