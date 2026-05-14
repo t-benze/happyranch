@@ -31,152 +31,75 @@ In the `protocol/` folder:
 ## Tech Stack
 - **Language**: Python 3.11+ (currently running 3.13)
 - **Package manager**: `uv`
-- **Agent executor**: Per-agent. Claude Code (`claude -p ... --permission-mode auto`), Codex (`codex exec --json -`), and opencode (`opencode run`) are supported — no third-party agent framework dependency
+- **Agent executor**: Per-agent. Claude Code (`claude -p ... --permission-mode auto`), Codex (`codex exec --json -`), and opencode (`opencode run`) are supported — no third-party agent framework dependency.
 - **Daemon**: FastAPI HTTP service (`src/daemon/`) — serves orchestrator work, SSE task events, agent callbacks
 - **CLI**: Thin HTTP client (`src/client/`) that talks to the daemon over localhost
-- **Agent workflow**: Shared workspace skills (`protocol/skills/`) — `start-task`, `make-worktree`, `manage-repo`, `manage-agent`. The orchestrator prompt references the same SOPs across all executors
-- **Orchestrator**: Custom Python application. `run_step` is the only primitive — each invocation advances one task by one subprocess call; an async `TaskQueue` + worker pool (`src/daemon/queue.py`) drives re-enqueues across steps. The team manager drives decisions; performance scoring derives from implicit review verdicts on delegated work
+- **Agent workflow**: Shared workspace skills (`protocol/skills/`) — `start-task`, `make-worktree`, `manage-repo`, `manage-agent`. The orchestrator prompt references the same SOPs across all executors.
+- **Orchestrator**: Custom Python application. `run_step` is the only primitive — each invocation advances one task by one subprocess call; an async `TaskQueue` + worker pool (`src/daemon/queue.py`) drives re-enqueues across steps. The team manager drives decisions; performance scoring derives from implicit review verdicts on delegated work.
 - **Data models**: Pydantic v2 + pydantic-settings
-- **Database**: SQLite with WAL mode (audit logs, scorecards, task state) — per-org under `<runtime>/orgs/<slug>/opc.db`. Per-session token usage rows live in `session_token_usage`; see `docs/superpowers/specs/2026-05-05-token-usage-tracking-design.md`. Per-escalation Feishu correlation rows live in `escalation_notifications` and inbound-event dedup rows in `processed_event_ids`; see `docs/superpowers/specs/2026-05-08-feishu-notification-design.md`. Threads (`threads`, `thread_participants`, `thread_messages`, `thread_invocation_tokens`) follow the same per-org SQLite + async TaskQueue patterns; see `docs/superpowers/specs/2026-05-13-threads-design.md`.
-- **Feishu integration**: `lark-oapi>=1.6,<2` (official ByteDance SDK) — used by `src/infrastructure/feishu/` (outbound `im.v1.message.create`) and `src/daemon/feishu_listener.py` (inbound WebSocket subscription to `im.message.receive_v1`).
-- **Knowledge base**: File-backed markdown under `<runtime>/orgs/<slug>/kb/` with atomic writes, substring/tag search, `_index.md` regeneration. No vector store yet
+- **Database**: SQLite with WAL mode, per-org under `<runtime>/orgs/<slug>/opc.db`. Schema covers audit logs, scorecards, task state, plus per-feature tables (token usage, Feishu correlation, threads) documented in the corresponding specs under `docs/superpowers/specs/`.
+- **Feishu integration**: `lark-oapi>=1.6,<2` (official ByteDance SDK) — outbound `im.v1.message.create` via `src/infrastructure/feishu/`; inbound WS subscription to `im.message.receive_v1` via `src/daemon/feishu_listener.py`.
+- **Knowledge base**: File-backed markdown under `<runtime>/orgs/<slug>/kb/` with atomic writes, substring/tag search, `_index.md` regeneration. No vector store yet.
 - **LLM**: Provider depends on the selected executor
 - **Hosting**: Local Mac Mini
 
 ## Implementation Order (system features)
 
-System kernel milestones — the org-agnostic infrastructure. Building out a specific org's agent roster is *org content work*, not system work, and lives in `<runtime>/orgs/<slug>/org/`.
+System kernel milestones — org-agnostic infrastructure. Org content (agent rosters, charters) is not on this list.
 
-1. ~~**Bootstrap orchestrator + first team**~~ done — orchestrator with executor-backed agent sessions, manager-driven decision loop. Validated end-to-end against the sample org's engineering team.
-2. ~~**Audit logging**~~ done — SQLite-backed audit logger. Per-session `session_end` payloads now carry full `token_usage` dict (input/output/cache_read/cache_creation/reasoning) plus a derived back-compat scalar `token_count`.
-3. ~~**Manager-driven orchestration**~~ done — the team manager analyzes each task and decides the approach. No hardcoded task chains. `OPC_MAX_ORCHESTRATION_STEPS` (default 50) before escalation.
-4. ~~**Agent memory**~~ done — persistent workspaces with executor-specific bootstrap docs (`CLAUDE.md` or `AGENTS.md`), per-entry `learnings/LRN-NNN-<slug>.md` files (or legacy flat `learnings.md` for pre-migration workspaces), `task_history.md`. Context builder regenerates identity on tier changes. Per-entry learnings store: `src/infrastructure/learnings_store.py`. CLI: `opc learning list|get|search|add|update|promote|reindex`. Spec: `docs/superpowers/specs/2026-05-13-per-agent-learnings-structural-upgrade-design.md`.
-5. ~~**Performance scoring**~~ done — rolling 30-day scorecards, green/yellow/red tiers, exposed to managers via capabilities prompt.
-6. ~~**Talk flow**~~ done — founder↔agent conversations with SQLite-tracked talks, transcripts under `<runtime>/orgs/<slug>/talks/`, end-of-talk learnings + KB entries.
-7. ~~**Knowledge Base**~~ done — per-org KB under `<runtime>/orgs/<slug>/kb/`. Single entry shape; `type` is a freeform label. Founder rulings flow through plain `opc kb add` (no special route).
-8. ~~**Revisit primitive**~~ done — founder spawns a new root task that inherits a terminal predecessor's brief while leaving the old lineage frozen.
-9. ~~**Org-per-runtime layout**~~ done — file-backed `org/{charter.md,escalation-rules.md,teams.yaml,config.yaml,agents/}`, with `opc migrate-to-org-runtime` for legacy DB-backed agents.
-10. ~~**Multi-org container**~~ done — one runtime hosts multiple orgs under `<runtime>/orgs/<slug>/`. Per-org DB, workspaces, KB, talks. `opc migrate-to-multi-org` for in-place v1 → v2 migration.
-11. ~~**Feishu notifications**~~ done — push escalation notifications to a configured Feishu chat; founder replies in-thread with `APPROVE` or `REJECT` plus a rationale and the listener calls the same in-process resolve-escalation route the CLI uses. Per-org opt-in via `feishu_notifications` in `org/config.yaml`. Spec: `docs/superpowers/specs/2026-05-08-feishu-notification-design.md`.
-12. ~~**Threads (foundation)**~~ done — email-style multi-agent workchannels with daemon-minted invocation tokens. CLI surface, end-to-end integration coverage via `fake_claude.sh` thread-prompt routing, plus a Textual TUI (`opc threads` no subcommand). Spec: `docs/superpowers/specs/2026-05-13-threads-design.md`. Plans: `docs/superpowers/plans/2026-05-13-threads-foundation.md`, `docs/superpowers/plans/2026-05-13-threads-tui.md`.
-13. **Inter-team communication** — orchestrator routes tasks between teams (e.g., engineering manager hands a payment-change review to a compliance team manager). Currently `--team <name>` works because most runtimes have a single team; cross-team handoff is not yet implemented.
-14. **Founder dashboard** — aggregate audit logs, escalation summaries, scorecards into a weekly view. Design doc: `protocol/05e-dashboard.md`.
-15. **Persistent agents** — long-running agent loops for runtime patterns that don't fit single-task batch execution (e.g., a real-time customer-chat worker). Currently every agent session is one task → one subprocess.
+**Done (in order shipped):**
+
+1. Orchestrator + first team — manager-driven decision loop, executor-backed agent sessions.
+2. Audit logging — SQLite-backed semantic events; `session_end` payloads carry full `token_usage` dict.
+3. Manager-driven orchestration — `OPC_MAX_ORCHESTRATION_STEPS` (default 50) before escalation.
+4. Agent memory — persistent workspaces, per-entry `learnings/LRN-NNN-<slug>.md`, `task_history.md`. Spec: `2026-05-13-per-agent-learnings-structural-upgrade-design.md`.
+5. Performance scoring — 30-day rolling, green/yellow/red tiers.
+6. Talk flow — founder↔agent conversations with transcripts and end-of-talk learnings.
+7. Knowledge Base — per-org KB with freeform `type`; founder rulings via `opc kb add`.
+8. Revisit primitive — spec: `2026-04-21-opc-revisit-design.md`.
+9. Org-per-runtime layout — file-backed `org/{charter.md,escalation-rules.md,teams.yaml,config.yaml,agents/}`.
+10. Multi-org container — per-org DB/workspaces/KB/talks; `opc migrate-to-multi-org` for v1 → v2.
+11. Feishu notifications — outbound push + reply-to-unblock; specs: `2026-05-08-feishu-notification-design.md`, `2026-05-12-feishu-interactive-actions-design.md`.
+12. Threads foundation — email-style multi-agent workchannels with daemon-minted invocation tokens, CLI + Textual TUI; spec: `2026-05-13-threads-design.md`.
+
+**Open:**
+
+13. **Inter-team communication** — orchestrator routes tasks between teams (e.g., engineering manager hands a payment-change review to a compliance team manager). `--team <name>` works for single-team runtimes; cross-team handoff not yet implemented.
+14. **Founder dashboard** — aggregate audit logs, escalation summaries, scorecards into a weekly view. Design: `protocol/05e-dashboard.md`.
+15. **Persistent agents** — long-running loops for runtime patterns that don't fit single-task batch execution (e.g., real-time customer-chat worker). Currently every agent session is one task → one subprocess.
 
 ## Directory Layout
 
-Source code lives in the repo. Runtime data lives in a dedicated **runtime container** created with `opc init`.
-
 ```
-~/projects/my-opc/                     # Source code (this repo)
-|-- CLAUDE.md
-|-- pyproject.toml
-|-- protocol/                          # System kernel: completion contract, runtime blueprint, KB rules, skills
-|   |-- 00-completion-contract.md
-|   |-- 05-runtime-blueprint.md
-|   |-- 05b-agent-runtime.md
-|   |-- 05c-orchestrator.md
-|   |-- 05e-dashboard.md
-|   |-- 06-knowledge-base.md
-|   +-- skills/                        # Shared skills copied into every agent workspace
-|       |-- start-task/                # Parses injected params, runs role, reports via CLI callback
-|       |-- make-worktree/             # Creates an isolated git worktree
-|       |-- manage-repo/               # Agent-driven repo add/remove/update via opc manage-repo
-|       +-- manage-agent/              # Manager-driven agent enroll/update/terminate via opc manage-agent
-|-- scripts/
-|   +-- daemon.sh                      # Starts the FastAPI daemon (uv run python -m src.daemon)
+~/projects/my-opc/                     # Source repo
+|-- protocol/                          # System kernel docs (00, 05*, 06) + shared agent skills
+|-- scripts/daemon.sh                  # Launch the FastAPI daemon
 |-- src/
-|   |-- cli.py                         # Unified CLI entry point (`opc` command) — HTTP client
-|   |-- config.py                      # Settings (OPC_ env prefix, operational thresholds)
-|   |-- runtime.py                     # RuntimeDir — self-describing runtime folder (opc.yaml marker)
-|   |-- models.py                      # Pydantic models + StrEnums
-|   |-- client/client.py               # httpx-based client for the daemon (+ SSE streaming)
-|   |-- daemon/                        # FastAPI HTTP daemon
-|   |   |-- __main__.py                # Uvicorn entry (python -m src.daemon)
-|   |   |-- app.py                     # FastAPI app factory, lifespan, DaemonState wiring
-|   |   |-- state.py                   # DaemonState (db, runtime, settings, sessions, event bus)
-|   |   |-- auth.py                    # Bearer-token dependency (~/.opc/auth_token)
-|   |   |-- paths.py                   # ~/.opc/ home paths (auth token, runtimes.yaml)
-|   |   |-- runtimes.py                # Runtime registry (runtimes.yaml, set/get active)
-|   |   |-- runner.py                  # enqueue_task() — pushes a task_id onto state.queue
-|   |   |-- queue.py                   # Async TaskQueue + worker pool
-|   |   |-- sessions.py                # Active-session tracker (task_id, agent) -> session_id
-|   |   |-- event_bus.py               # Per-task event pub/sub with DB replay + synthesized terminals
-|   |   |-- agent_config.py            # Read/write workspaces/<agent>/agent.yaml
-|   |   |-- migration_multi_org.py     # opc migrate-to-multi-org — v1 → v2
-|   |   |-- feishu_listener.py         # Per-org WebSocket listener (lark-oapi); routes APPROVE/REJECT replies into resolve_escalation_in_process
-|   |   +-- routes/                    # health, runtimes, tasks, agents, audit, kb, talks
-|   |-- orchestrator/
-|   |   |-- orchestrator.py            # Orchestrator facade: holds deps, exposes run_step
-|   |   |-- run_step.py                # Single-step primitive
-|   |   |-- capabilities.py            # Builds capabilities prompt for manager decision sessions
-|   |   |-- executors.py               # Provider-specific executor subprocess launchers
-|   |   |-- performance_tracker.py     # 30-day rolling scorecards, tier calculation
-|   |   |-- context_builder.py         # Delegates workspace bootstrap to provider-specific adapters
-|   |   |-- workspace_adapters.py      # Generates CLAUDE.md or AGENTS.md, settings, copies skills
-|   |   |-- agent_def.py               # AgentDef dataclass + frontmatter parser/renderer
-|   |   |-- prompt_loader.py           # File-based agent loader (active + _pending under org/agents/)
-|   |   |-- teams.py                   # TeamsRegistry — seeded from teams.yaml
-|   |   |-- org_config.py              # OrgConfig — loads optional org/config.yaml
-|   |   +-- migration.py               # opc migrate-to-org-runtime — v0 (DB) → v1 (file-based)
-|   |-- infrastructure/
-|   |   |-- database.py                # SQLite (WAL), typed CRUD, task_results, parent_task_id, revisit_of_task_id, escalation_notifications, processed_event_ids, etc.
-|   |   |-- audit_logger.py            # Semantic logging
-|   |   |-- kb_store.py                # Knowledge base store
-|   |   |-- talk_store.py              # Transcript file writer
-|   |   +-- feishu/
-|   |       |-- client.py              # FeishuClient — lark-oapi wrapper for im.v1.message.create
-|   |       |-- notifier.py            # EscalationNotifier — builds post body, sends, mints escalation_notifications row
-|   |       +-- reply_parser.py        # Pure functions: extract text from msg envelopes, parse APPROVE/REJECT + rationale
-|   +-- tui/
-|       |-- __init__.py
-|       |-- api_client.py
-|       |-- threads_app.py
-|       +-- threads_app.tcss
+|   |-- cli.py                         # `opc` command — HTTP client
+|   |-- client/                        # httpx-based client + SSE streaming
+|   |-- daemon/                        # FastAPI app, routes, queue, sessions, Feishu listener
+|   |-- orchestrator/                  # run_step, executors, capabilities, performance, prompt_loader
+|   |-- infrastructure/                # database, audit_logger, kb_store, talk_store, learnings_store, feishu/
+|   `-- tui/                           # Textual threads TUI
 |-- tests/                             # Unit + integration (with fake CLIs)
-+-- examples/orgs/                     # Canonical sample org trees
-    +-- hk-macau-tourism/
+`-- examples/orgs/hk-macau-tourism/    # Canonical sample org tree
 
-~/.opc/                                # Daemon home (per-user)
-|-- auth_token                         # Bearer token shared by daemon + CLI
-+-- runtimes.yaml                      # Registered runtime dirs + which one is active
+~/.opc/                                # Daemon home — auth_token, runtimes.yaml, daemon.pid, daemon.port
 
-<runtime-dir>/                         # Created by `opc init <path>` (slugless container)
-|-- opc.yaml                           # container marker (schema_version: 2, type: multi-org-runtime)
-+-- orgs/
-    +-- <slug>/                        # Created by `opc orgs init <slug> [--from <example-tree>]`
-        |-- opc.db                     # per-org SQLite
-        |-- org/                       # editable org content
-        |   |-- charter.md             # reference doc
-        |   |-- escalation-rules.md    # reference doc
-        |   |-- teams.yaml             # team layout
-        |   |-- config.yaml            # optional org overrides (e.g. session_timeout_seconds)
-        |   +-- agents/
-        |       |-- <name>.md          # active agents
-        |       +-- _pending/<name>.md # awaiting founder approval
-        |-- workspaces/
-        |   +-- <agent_name>/          # One per agent (created by init-agent or approve-agent)
-        |       |-- agent.yaml         # Per-agent config (executor, repos, ...)
-        |       |-- CLAUDE.md          # or AGENTS.md, depending on executor
-        |       |-- .claude/           # (Claude only) settings.json + skills/
-        |       |-- .agents/skills/    # (Codex/opencode) shared skills tree
-        |       |-- opencode.json      # (opencode only) permission file
-        |       |-- repos/<name>/      # Git clones declared in agent.yaml
-        |       |-- learnings/             # Per-entry LRN-NNN-<slug>.md (or legacy learnings.md pre-migration)
-        |       |   +-- _index.md          # Regenerated, inlined into bootstrap
-        |       +-- task_history.md
-        |-- kb/
-        |   |-- _index.md              # Regenerated after every write
-        |   +-- <slug>.md              # Flat; filename = slug
-        |-- talks/
-        |   +-- TALK-NNN.md
-        +-- threads/
-            +-- THR-NNN.md
+<runtime-dir>/                         # Slugless multi-org container (created by `opc init <path>`)
+|-- opc.yaml                           # marker — schema_version: 2, type: multi-org-runtime
+`-- orgs/<slug>/                       # Created by `opc orgs init <slug> [--from <example>]`
+    |-- opc.db                         # per-org SQLite
+    |-- org/                           # editable org content
+    |   |-- charter.md, escalation-rules.md, teams.yaml, config.yaml
+    |   `-- agents/                    # active `<name>.md` + `_pending/<name>.md`
+    |-- workspaces/<agent>/            # agent.yaml, CLAUDE.md|AGENTS.md, .claude/|.agents/, repos/, learnings/, task_history.md
+    |-- kb/                            # per-org KB (auto-regenerated `_index.md`)
+    |-- talks/                         # TALK-NNN.md
+    `-- threads/                       # THR-NNN.md
 ```
 
-A single daemon serves every org in the container concurrently. Per-org HTTP routes live under `/api/v1/orgs/<slug>/...`; container-level routes under `/api/v1/runtime` and `/api/v1/orgs`.
-
-Legacy v1 runtimes (single-org, flat `<runtime>/{org,workspaces,kb,talks}/`) migrate in place via `opc migrate-to-multi-org <path> --i-have-a-backup --apply` — TTY-gated, refuses if active tasks or open talks exist. Even older v0 (DB-backed agent enrollments) migrates first via `opc migrate-to-org-runtime`.
+HTTP routes: per-org under `/api/v1/orgs/<slug>/...`; container-level under `/api/v1/runtime` and `/api/v1/orgs`. Legacy v1 (single-org flat layout) migrates in place via `opc migrate-to-multi-org` — TTY-gated, refuses with active tasks or open talks. Even older v0 (DB-backed agent enrollments) migrates first via `opc migrate-to-org-runtime`.
 
 ## Configuration
 
@@ -199,19 +122,15 @@ Operational settings use the `OPC_` env prefix. Runtime paths are derived from t
 
 `Orchestrator._resolve_session_timeout(agent_name, task_id=...)` walks three layers, highest precedence first:
 
-1. **Task override** — optional `tasks.session_timeout_seconds` column, set by the founder via `opc revisit ... --session-timeout-seconds <int>` and inherited by every child the orchestrator spawns from that task (delegate children, auto-revisits, founder-revisits when the flag is omitted).
-2. **Org override** — optional `session_timeout_seconds: <int>` in `<runtime>/orgs/<slug>/org/config.yaml`. Loaded via `src/orchestrator/org_config.py`. Unknown keys ignored for forward compat.
-3. **Code default** — `Settings.session_timeout_seconds` (1800s), itself overridable via `OPC_SESSION_TIMEOUT_SECONDS`.
+1. **Task override** — `tasks.session_timeout_seconds` column, set via `opc revisit ... --session-timeout-seconds N` and inherited by every child spawned from that task.
+2. **Org override** — `session_timeout_seconds:` in `<runtime>/orgs/<slug>/org/config.yaml` (loaded by `src/orchestrator/org_config.py`).
+3. **Code default** — `Settings.session_timeout_seconds` (1800s; overridable via `OPC_SESSION_TIMEOUT_SECONDS`).
 
-Each layer accepts `null`/missing as "inherit from next." Values must be positive integers; non-int or `<= 0` raises at parse time.
-
-The `agent_name` argument is accepted for symmetry with older call sites but is unused — there is no per-agent layer. Legacy `session_timeout_seconds` in agent frontmatter is silently ignored.
+Positive integers only; `<= 0` or non-int raises at parse time. The `agent_name` argument is unused (kept for call-site symmetry); legacy `session_timeout_seconds` in agent frontmatter is silently ignored.
 
 ### Agent executors
 
-Each workspace declares an `executor` in `agent.yaml`: `claude`, `codex`, or `opencode`. Missing values default to `claude`.
-
-All three share the same `protocol/skills/` tree. Workspace differences:
+Each workspace declares an `executor` in `agent.yaml`: `claude`, `codex`, or `opencode`. Missing values default to `claude`. All three share the same `protocol/skills/` tree. Workspace differences:
 
 | | bootstrap doc | skills dir | permission surface |
 |--|--|--|--|
@@ -297,199 +216,72 @@ Two env vars / two fixtures (`fake_claude_plan_env` and `fake_claude_thread_plan
 
 The CLI is an HTTP client. Start the daemon once, then run CLI commands.
 
-In a multi-org container, every per-org command takes `--org <slug>`. Slug resolution: explicit `--org` flag > `OPC_ORG_SLUG` env > auto-infer (only if exactly one org exists) > error. Shell `export OPC_ORG_SLUG=<slug>` is the usual ergonomic shortcut. Container-level commands (`opc init`, `opc use`, `opc orgs ...`, `opc migrate-to-multi-org`) take no `--org`.
-
 ```bash
-scripts/daemon.sh start                                         # start daemon in background
-scripts/daemon.sh status                                        # or stop
-
-# Container-level
-opc init /path/to/runtime                                       # create + register + activate a container (slugless)
-opc use /path/to/other-runtime                                  # switch the active container
-opc orgs                                                        # list orgs in active container
-opc orgs init <slug> [--from <example-tree>]                    # materialize a new org
-opc orgs unload <slug>                                          # detach an org from the daemon (does not delete files)
-opc migrate-to-multi-org <path> --i-have-a-backup --apply       # v1 -> v2 in place (TTY-gated)
-
-# Per-org (every command takes --org <slug> or honors OPC_ORG_SLUG)
-opc run --org <slug> --brief "Explore the payment module"
-opc run --org <slug> --team engineering --brief "Add Alipay support"
-opc run --org <slug> --team engineering --brief-file /tmp/manager-brief.md
-opc tail --org <slug> TASK-001                              # stream live SSE events for a task
-opc tasks --org <slug>                                      # list recent tasks
-opc details --org <slug> TASK-001 [--full]                  # task details (--full skips 80-char truncation)
-opc agents --org <slug> [--detail]                          # show performance tiers
-opc audit --org <slug> TASK-007 [--agent X --action Y --since T --limit N --json]
-opc tokens --org <slug> [--task-id X --agent Y --since DATE --limit N --json]   # per-session token usage
-opc tokens --org <slug> --by-agent | --by-task                                  # rollup view
-opc init-agent --org <slug> [<agent>]                       # initialize all (or one) agent workspaces
-opc recall --org <slug> TASK-001 [--tree] [--fetch-artifact <relpath>]
-
-# Knowledge base (read: any; write: any via --from-file; delete: team manager (audited) or founder via --as-founder)
-opc kb list --org <slug> [--topic <t>] [--type <label>]
-opc kb get --org <slug> <slug>
-opc kb search --org <slug> <query> [--limit N]
-opc kb add --org <slug> --agent <you> --from-file /tmp/kb-<slug>.md
-opc kb update --org <slug> <slug> --agent <you> --from-file /tmp/kb-<slug>.md
-opc kb delete --org <slug> <slug> --agent <you> --confirm [--as-founder]
-opc kb reindex --org <slug>
-
-# Founder primitives
-opc resolve-escalation --org <slug> --task-id TASK-001 --decision approve|reject --rationale "..."
-opc revisit --org <slug> TASK-052 [--note "..." | --note-file PATH] [--session-timeout-seconds N]   # TTY-gated
-
-# Talks (founder<->agent conversations; per-org)
-opc talk start  --org <slug> --agent <name>
-opc talk resume --org <slug> --talk-id TALK-001
-opc talk abandon --org <slug> --talk-id TALK-001 [--reason <why>]
-opc talk end    --org <slug> --talk-id TALK-001 --from-file /tmp/talk-end-TALK-001.json
-opc talk status --org <slug> [--agent <name>]
-opc talk list   --org <slug> [--agent <name>] [--limit N]
-opc talk show   --org <slug> TALK-001
-
-# Agent-side callbacks (invoked by skills; --org is mandatory, never auto-inferred)
-opc report-completion --org <slug> --task-id TASK-001 --session-id <sid> --status completed ...
-opc manage-repo       --org <slug> add --agent dev_agent --repo-name docs --url https://...
-opc manage-agent      --org <slug> --from-file /tmp/manage-agent-enroll.json
-opc dispatch          --org <slug> --from-file /tmp/dispatch-<talk_id>.json
-
-# Per-agent learnings (verb-dispatched on migrated workspaces; --org follows the same resolver as other per-org commands)
-opc learning list     --org <slug> --agent <you> [--topic T --tag T --promoted|--not-promoted --json]
-opc learning get      --org <slug> --agent <you> <LRN-NNN-or-slug> [--json]
-opc learning search   --org <slug> --agent <you> "<query>" [--limit N --include-promoted --json]
-opc learning add      --org <slug> --agent <you> --from-file /tmp/lrn-<slug>.yaml
-opc learning update   --org <slug> --agent <you> <LRN-NNN> --from-file /tmp/lrn-<slug>.yaml
-opc learning promote  --org <slug> --agent <you> <LRN-NNN> --kb-slug <kb-slug>
-opc learning reindex  --org <slug> --agent <you>
-# Legacy single-line append (pre-migration workspaces only; returns 410 once migrated)
-opc learning          --org <slug> --agent dev_agent --session-id <sid> --task-id TASK-001 --text "..."
-
-# Founder-side enrollment management
-opc enrollments         --org <slug> [--status pending]
-opc approve-agent       --org <slug> <name>
-opc reject-agent        --org <slug> <name>
-opc backfill-enrollments --org <slug>                       # founder recovery; TTY-gated
-opc migrate-to-org-runtime <path> --slug <slug> --i-have-a-backup --apply   # legacy v0 -> v1
+scripts/daemon.sh start    # background; pid/port under ~/.opc/
+scripts/daemon.sh status   # or stop
 ```
+
+Slug resolution for per-org commands: explicit `--org <slug>` > `OPC_ORG_SLUG` env > auto-infer (only when the container has exactly one org) > error. Container-level commands (`opc init`, `opc use`, `opc orgs ...`, `opc migrate-to-multi-org`) take no `--org`.
+
+**Full founder-facing CLI** — tasks, agents, KB, threads, talks, audit, runtime, migrations — is documented in `skills/opc/SKILL.md` (symlinked at `~/.claude/skills/opc`).
+
+**Agent-side callbacks** (invoked by skills inside agent sessions; do NOT invoke by hand — they falsify audit data and corrupt scorecards):
+
+- `opc report-completion` — terminal callback from the `start-task` skill
+- `opc progress` — long-running mid-task heartbeat
+- `opc learning {add,update,promote,reindex}` on migrated workspaces; legacy `opc learning --text` on pre-migration
+- `opc manage-agent`, `opc manage-repo`, `opc dispatch`
+- `opc threads {reply,decline,dispatch,close-out}`
+
+Every agent callback uses `--from-file <path>` because Claude's permission matcher splits multi-line bash into separate commands; see "Agent permission model" above.
 
 ## Knowledge Base
 
-Per-org under `<runtime>/orgs/<slug>/kb/` (orgs do not share a KB). Any agent reads/writes; team managers delete (audited); founder overrides via `--as-founder`. Full rules: `protocol/06-knowledge-base.md`.
-
-There is one entry shape — no separate precedent/reference taxonomy at the schema level. `KBEntry.type` is a freeform string (any non-empty label); the route validation only enforces `slug`, `title`, `type`, `topic` are non-empty. `VALID_TYPES` and the dedicated `POST /kb/precedent` endpoint were removed; founder rulings flow through plain `opc kb add` with `source_task: <task-id>` in frontmatter to keep the link back to the escalation.
-
-The context builder injects a "Knowledge Base" section into every agent's bootstrap document. The `start-task` skill has explicit **Consult KB** and **Contribute to KB** steps.
-
-Implementation: `src/infrastructure/kb_store.py` + `src/daemon/routes/kb.py` — file-backed entries, atomic writes, `kb_lock` in daemon state to serialize writes, substring/tag search, `_index.md` regeneration.
+Per-org under `<runtime>/orgs/<slug>/kb/` (orgs do not share a KB). One entry shape — `KBEntry.type` is freeform; route validation only enforces non-empty `slug/title/type/topic`. The dedicated `kb precedent` route was removed; founder rulings flow through plain `opc kb add` with `source_task: <task-id>` in frontmatter. Implementation: `src/infrastructure/kb_store.py` + `src/daemon/routes/kb.py` (atomic writes, `kb_lock`, substring/tag search, `_index.md` regen). Full rules: `protocol/06-knowledge-base.md`. The context builder injects a "Knowledge Base" section into every agent's bootstrap doc; `start-task` has explicit consult + contribute steps.
 
 ## Per-Agent Learnings
 
-Per-agent under `<runtime>/orgs/<slug>/workspaces/<agent>/learnings/`. Each entry is its own markdown file `LRN-NNN-<slug>.md` with YAML frontmatter (`id`, `slug`, `title`, `topic`, `tags`, `related_to`, `supersedes`, `promoted_to`, `authored_*`, `updated_*`). The agent owns its own learnings; HTTP auth is bearer-token only (no per-agent identity binding in v1). Full design: `docs/superpowers/specs/2026-05-13-per-agent-learnings-structural-upgrade-design.md`.
+Per-agent under `<runtime>/orgs/<slug>/workspaces/<agent>/learnings/`, one `LRN-NNN-<slug>.md` per entry. Full spec: `docs/superpowers/specs/2026-05-13-per-agent-learnings-structural-upgrade-design.md`. Implementation: `src/infrastructure/learnings_store.py` + the `/agents/{name}/learnings/entries/...` block in `src/daemon/routes/agents.py`. CLI: `opc learning list|get|search|add|update|promote|reindex`.
 
-**Migration is per-workspace, founder-dispatched, agent-driven.** `PersistentWorkspaceSetup.ensure()` is state-aware: it never creates `learnings/` when a non-empty flat `learnings.md` exists, so existing agents keep their pre-migration shape until the founder dispatches a migration task to that agent. Brand-new workspaces start on the new layout from day one. The bootstrap doc inlines `learnings/_index.md` once migrated, the flat file before. The legacy `POST /agents/{name}/learnings` (single-line `--text`) returns **410 Gone** once `learnings/` exists; the legacy `opc learning --agent X --text "..."` form continues to work on pre-migration workspaces only.
+**Non-obvious invariants:**
 
-**Cross-reference rules:** `related_to` and `supersedes` are validated against existing IDs at write time (unknown ID = 400). Self-references are rejected. `supersedes` is the canonical primitive for evolving a rule while preserving the older wording.
-
-**Promotion to KB:** `opc learning promote <LRN-NNN> --kb-slug <existing-kb-slug>` is a one-way operation. The body is replaced with a 2-line pointer stub; the entry is then locked against further updates (use supersedes if the KB entry moves on). KB-slug existence is validated route-side via the per-org `KBStore`.
-
-**End-of-talk learnings:** `end_talk` routes talk-end learning text into the new store on migrated workspaces (synthesized slug `talk-<talk_id>-<idx>`, topic `talk-residue`, title from the first non-empty line of the text). Pre-migration workspaces continue to receive a flat-file append.
-
-Implementation: `src/infrastructure/learnings_store.py` + the `/agents/{name}/learnings/entries/...` route block in `src/daemon/routes/agents.py` — file-backed entries, atomic writes, `db_lock` to serialize writes, substring/tag search with promoted-stub exclusion, `_index.md` regeneration (entries sorted by numeric ID suffix, newest first), 412 pre-migration guard. CLI: `opc learning list|get|search|add|update|promote|reindex` (verb-dispatched). Audit verbs: `learning_added`, `learning_updated`, `learning_promoted`.
+- **Per-workspace migration is state-aware** — `PersistentWorkspaceSetup.ensure()` never creates `learnings/` when a non-empty flat `learnings.md` exists. Existing agents stay on the legacy shape until a founder-dispatched migration moves them; new workspaces start on the new layout.
+- **Legacy 410** — `opc learning --agent X --text "..."` returns `410 Gone` once `learnings/` exists.
+- **Cross-refs** — `related_to` and `supersedes` validated against existing IDs at write time (unknown → 400); self-refs rejected. `supersedes` is the canonical evolve-a-rule primitive.
+- **Promotion** — `opc learning promote <LRN-NNN> --kb-slug <slug>` is one-way; body becomes a 2-line pointer stub and entry locks.
+- **End-of-talk** — `end_talk` writes into the new store on migrated workspaces (synthesized slug `talk-<talk_id>-<idx>`, topic `talk-residue`); pre-migration → flat-file append.
 
 ## Revisit (founder recovery)
 
-`opc revisit <task-id>` spawns a **new root task** inheriting the brief + team of a terminal predecessor. The existing lineage stays frozen — nothing in the old tree is mutated. Design doc: `docs/superpowers/specs/2026-04-21-opc-revisit-design.md`.
+`opc revisit <task-id>` spawns a NEW root task inheriting brief + team from a terminal predecessor; old lineage is frozen. TTY-gated; no `--yes` bypass. Spec: `docs/superpowers/specs/2026-04-21-opc-revisit-design.md`.
 
-Eligibility — predecessor root must be one of:
-- `failed` (orchestrator gave up)
-- `failed` + `cancelled_at != NULL` (founder-cancelled; normalized as `failed-cancelled` on the wire)
-- `blocked(escalated)` (waiting on founder forever)
-- `completed` (re-run an already-finished task, e.g. to retry against new code)
+Eligible predecessor states: `failed`, `failed-cancelled` (founder-cancelled, normalized on the wire), `blocked(escalated)`, or `completed`. Anything else → `409 cannot_revisit`.
 
-Anything else returns **409 `cannot_revisit`** with the predecessor's current status.
+**Non-obvious invariants:**
 
-The predecessor <-> new-root link lives in two places: a nullable `tasks.revisit_of_task_id` column (queryable, indexed) AND an `audit_log` entry carrying the richer payload (`flagged`, `cascade`, `founder_note`, `prior_status`). The column is a sideways reference — `walk_ancestors` MUST NOT follow it, or cascade-fail will re-poison revisits via `_enqueue_parent_if_waiting`. Helpers: `Database.walk_revisit_chain(task_id)` (backward) and `Database.get_direct_revisits(task_id)` (forward).
-
-On the new root's first orchestration step, `_revisit_header_if_applicable(orch, task_id)` prepends a 5-6 line context header pointing the manager at `opc details` / `opc audit` / `opc recall` for the frozen predecessor.
-
-`opc revisit` is **TTY-gated** — no `--yes` bypass. The CLI hard-requires `sys.stdin.isatty() and sys.stdout.isatty()` then prompts `Continue? [y/N]`. Agent sessions run headless, so the only way a revisit lands in the audit log is if a human typed it.
-
-`run_step` also auto-revisits on opaque-failure recovery; the task-row `session_timeout_seconds` is copied onto every spawned revisit root (founder or auto).
+- The predecessor-link lives in TWO places: `tasks.revisit_of_task_id` column (indexed, queryable) AND a richer `audit_log` entry (`flagged`, `cascade`, `founder_note`, `prior_status`). The column is a **sideways** reference — `walk_ancestors` MUST NOT follow it, or cascade-fail will re-poison revisits via `_enqueue_parent_if_waiting`. Helpers: `Database.walk_revisit_chain` (backward) and `Database.get_direct_revisits` (forward).
+- On the new root's first orchestration step, `_revisit_header_if_applicable(orch, task_id)` prepends a 5-6 line context header pointing the manager at `opc details` / `opc audit` / `opc recall` for the frozen predecessor.
+- `run_step` also auto-revisits on opaque-failure recovery; task-row `session_timeout_seconds` is copied onto every spawned revisit root.
 
 ## Feishu notifications (founder push + reply-to-unblock)
 
-Per-org opt-in via `feishu_notifications` in `<runtime>/orgs/<slug>/org/config.yaml`. Spec: `docs/superpowers/specs/2026-05-08-feishu-notification-design.md`. Setup runbook: `docs/setup/feishu-notifications.md`. Founder-facing config docs are in `README.md`.
+Per-org opt-in via `feishu_notifications` in `<runtime>/orgs/<slug>/org/config.yaml`. Credentials (`app_id`, `app_secret`) are required when `enabled: true` and live in the same file — treat it as secret-bearing (`chmod 600`, never commit). Specs: `docs/superpowers/specs/2026-05-08-feishu-notification-design.md`, `docs/superpowers/specs/2026-05-12-feishu-interactive-actions-design.md`. Setup runbook: `docs/setup/feishu-notifications.md`.
 
-### Outbound (Phase 1)
+**Entry points:**
 
-`run_step.py` and `_sweep_on_startup` (daemon recovery) call `Orchestrator.notify_escalated(...)` immediately after each `audit.log_escalation(...)`. The orchestrator method is **fire-and-forget** and never blocks the orchestration loop:
-- If a running asyncio loop is detected → `loop.create_task(coro)`.
-- If not (typical: thread-pool worker driven by `run_step`) → spawn a daemon thread that calls `asyncio.run(coro)`.
+- Outbound: `Orchestrator.notify_escalated` / `notify_failed` — loop-aware fire-and-forget (creates an asyncio task when a loop is running, else spawns a daemon thread). `EscalationNotifier` in `src/infrastructure/feishu/notifier.py` mints `escalation_notifications` rows keyed by Feishu `message_id`. Send failures audit `escalation_notify_failed` and are swallowed; no row is minted on send failure.
+- Inbound: `FeishuEventListener` (`src/daemon/feishu_listener.py`) starts one WebSocket connection per org with full Feishu config. WS thread runs `lark.ws.Client.start()` (blocking) and bridges to the asyncio loop via `asyncio.run_coroutine_threadsafe`. Listener helpers live in `feishu_listener.py` (not `app.py`) to avoid a circular import with `state.py`. Wired from FastAPI lifespan and `DaemonState.add_org`. WS threads are `daemon=True`.
 
-The notifier (`src/infrastructure/feishu/notifier.py`) builds a `msg_type=post` body, sends via `FeishuClient.send_post_message`, mints a row in `escalation_notifications` keyed by the Feishu-returned `message_id`, and audits `escalation_notify_sent`. Send failures audit `escalation_notify_failed` and are swallowed; **no notification row is minted on failure** (mint follows send).
+**Reply routing** (8-step pipeline in `_handle_event_async`, updating `processed_event_ids.outcome` on every branch): dedup → chat-id filter → require `root_id` (reply branch) OR `allow_dispatch=true` (top-level dispatch) → drop bot-self → resolve via `resolve_escalation_in_process` / `revisit_from_notification` / `dispatch_via_feishu` → consume row + audit. Trust boundary is `chat_id` only — no per-Feishu-user authorization in v1.
 
-### Inbound (Phase 2)
+**Critical invariant:** the lifespan wrapper `_resolve_for_listener` in `app.py` MUST NOT swallow exceptions from the in-process resolvers. If resolution fails (e.g., `409 task_not_escalated` because the founder used the CLI first), the outer `try/except` records `outcome="rejected", reason="handler_exception"` and leaves the row unconsumed — the founder's reply is preserved instead of silently lost.
 
-`FeishuEventListener` (`src/daemon/feishu_listener.py`) starts one WebSocket connection per org with full Feishu config:
-- WS thread runs `lark.ws.Client.start()` (blocking SDK call).
-- Inbound events bridge to the asyncio loop via `asyncio.run_coroutine_threadsafe(self._handle_event_async(data), self._loop)`.
+**Optional features:**
 
-`_handle_event_async` is an 8-step pipeline that updates `processed_event_ids.outcome` on every branch (`consumed | rejected | ignored`):
-1. Dedup — `record_processed_event(slug, event_id, "pending")`. Duplicate → return.
-2. Chat filter — drop unless `msg.chat_id == configured chat_id`.
-3. Threading filter — require `msg.root_id` (Feishu's thread-root key).
-4. Sender filter — drop `sender_type=app` (the bot itself).
-5. Notification lookup — `get_escalation_notification(root_id)`; drop if missing/consumed/expired.
-6. Parse — `extract_text_from_content` + `parse_reply`. None → audit `escalation_reply_rejected`.
-7. Resolve — `await resolve_escalation_in_process(...)` — same code path as the HTTP route.
-8. Consume + audit — `consume_escalation_notification(root_id, "feishu-reply")` + `escalation_reply_processed`.
+- `notify_on_failure: true` — failure replies; hook in `run_step.py:_notify_failure_if_eligible` gates on enabled + not cancelled + no auto-revisit spawned. Listener routes `(kind=failure, decision=revisit)` to `revisit_from_notification`.
+- `allow_dispatch: true` — top-level DISPATCH messages parsed by `parse_top_level_message(text)`; `dispatch_via_feishu` extracts the in-process helper from `submit_task` and raises `DispatchError(reason ∈ {empty_brief, unknown_team, dispatch_failed})`.
 
-**Critical contract**: the lifespan wrapper `_resolve_for_listener` in `app.py` MUST NOT swallow exceptions from `resolve_escalation_in_process`. If resolution fails (e.g., 409 task_not_escalated because the task already transitioned via CLI), the outer `try/except` in `_handle_event_async` records `outcome="rejected", reason="handler_exception"` and leaves the notification row unconsumed — the founder's reply is preserved instead of silently lost.
-
-### Listener lifecycle
-
-Listener helpers live in `feishu_listener.py` (not `app.py`) to avoid a circular import with `state.py`:
-- `maybe_start_feishu_listener_for_org(org, state, loop)` — idempotent per-org constructor.
-- `start_feishu_listeners_for_state(state, loop)` — iterates all orgs.
-
-Both call sites:
-- FastAPI lifespan (`app._lifespan`) on daemon startup.
-- `DaemonState.add_org` for orgs created at runtime via `POST /api/v1/orgs`.
-
-WS threads are `daemon=True` so they die with the process; no graceful shutdown is wired (deferred — process restart is clean enough on the local Mac Mini).
-
-### CLI/Feishu interaction
-
-`opc resolve-escalation` (CLI fallback) calls the same `resolve_escalation_in_process` and additionally consumes any open notification row for the task with `consumed_by="cli-fallback"`. So if the founder resolves via CLI first and then replies in Feishu later, the Feishu listener finds the notification already consumed and silently no-ops.
-
-### Per-org credentials
-
-Feishu credentials (`app_id`, `app_secret`) live in the per-org config file at `<runtime>/orgs/<slug>/org/config.yaml` under the `feishu_notifications` block. They are required fields when `enabled: true` — the config parser raises `OrgConfigError` if either is missing or empty. The founder is responsible for treating the config file as secret-bearing: `chmod 600` and never commit the live runtime copy to version control. There are no env-var credential paths.
-
-### Failure notifications + REVISIT replies
-
-Per-org opt-in via `notify_on_failure: true` in `org/config.yaml`. Hook fires from `_notify_failure_if_eligible(orch, task_id, ...)` in `run_step.py`, called right after every `_fail()` call site. Gates: enabled, `notify_on_failure=true`, `task.cancelled_at IS NULL`, no auto-revisit spawned.
-
-`Orchestrator.notify_failed(...)` mirrors `notify_escalated`'s loop-aware fire-and-forget pattern. `EscalationNotifier.send_failure(...)` mints an `escalation_notifications` row with `kind='failure'`.
-
-Listener routes by `(kind, decision)`:
-- `(escalation, approve|reject)` → `resolve_escalation_in_process`
-- `(failure, revisit)` → `revisit_from_notification`
-- mismatches → `escalation_reply_rejected (verb_mismatch)`, row unconsumed
-
-`revisit_from_notification(org, state, *, task_id, founder_note, actor) -> RevisitResult` is the in-process helper. `actor='cli'` consumes open `kind='failure'` rows with `consumed_by='cli-fallback'`; `actor='feishu-reply'` leaves consumption to the listener.
-
-Daemon-restart sweep (`_sweep_on_startup`) calls `notify_failed(kind='daemon_restart')` — semantic fix from v1, where it used `notify_escalated` even though the task was set to `FAILED`.
-
-### Top-level DISPATCH
-
-Per-org opt-in via `allow_dispatch: true` in `org/config.yaml`. Listener step 3 bifurcates on `msg.root_id`: present → reply branch (existing); absent + `allow_dispatch=true` → `_handle_top_level_dispatch`.
-
-`parse_top_level_message(text)` returns `DispatchIntent(team, brief)` or `None`. `dispatch_via_feishu(org, state, *, intent, sender_id, event_id)` is the in-process helper extracted from `submit_task`; raises `DispatchError(reason)` where reason ∈ `{empty_brief, unknown_team, dispatch_failed}`. On success, the listener calls `send_dispatch_confirmation`; on `DispatchError`, `send_dispatch_error` with the `valid_teams` list when applicable. Confirmation/error sends are best-effort.
-
-Trust boundary remains `chat_id`. No per-Feishu-user authorization in v1.
-
-Spec: `docs/superpowers/specs/2026-05-12-feishu-interactive-actions-design.md`. Plan: `docs/superpowers/plans/2026-05-12-feishu-interactive-actions.md`.
+CLI fallbacks (`opc resolve-escalation`, `opc revisit`) consume any open notification row for the task with `consumed_by="cli-fallback"`, so a CLI-first resolution silently no-ops the later Feishu reply.
 
 ## Maintaining Documentation
 - **README.md** is for end users — setup, CLI commands, configuration. No developer internals.
