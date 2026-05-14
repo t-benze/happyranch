@@ -67,3 +67,41 @@ async def test_thread_view_renders_selected_thread():
         assert "dev_agent" in rendered
         assert "hello back" in rendered
         assert "smoke" in rendered
+
+
+async def test_selecting_inbox_row_fetches_and_renders(monkeypatch):
+    app = ThreadsApp(slug="alpha", base_url="http://test", token="tok")
+    fetched: list[str] = []
+
+    async def fake_get_thread(*, slug, thread_id):
+        fetched.append(thread_id)
+        return {
+            "thread_id": thread_id, "subject": "x", "status": "open",
+            "participants": ["dev_agent"],
+            "messages": [{
+                "seq": 1, "speaker": "founder", "kind": "message",
+                "body_markdown": "fetched body", "addressed_to": ["@all"],
+                "decline_reason": None, "system_payload": None,
+                "created_at": "2026-05-14T00:00:00+00:00",
+            }],
+        }
+
+    async with app.run_test() as pilot:
+        monkeypatch.setattr(app, "_get_thread_impl", fake_get_thread)
+        app.set_threads([
+            {"thread_id": "THR-001", "subject": "x", "status": "open",
+             "turns_used": 0, "turn_cap": 500, "transcript_path": None,
+             "started_at": "2026-05-14T00:00:00+00:00", "archived_at": None,
+             "forwarded_from_id": None, "forwarded_from_kind": None,
+             "summary": None, "new_kb_slugs": []},
+        ])
+        list_view = app.query_one("#inbox-list")
+        list_view.focus()
+        list_view.index = 0
+        await pilot.press("enter")
+        await pilot.pause()
+        assert fetched == ["THR-001"]
+        from textual.widgets import RichLog
+        view = app.query_one("#thread-view", RichLog)
+        rendered = "\n".join(str(line) for line in view.lines)
+        assert "fetched body" in rendered

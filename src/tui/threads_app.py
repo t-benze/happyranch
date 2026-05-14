@@ -36,6 +36,7 @@ class ThreadsApp(App):
         self.sub_title = f"org: {slug}"
         self._inbox_rows: dict[str, dict] = {}
         self._current_thread_id: str | None = None
+        self._client = None  # lazy AsyncOpcClient; created on first HTTP call
 
     def compose(self):
         yield Header(show_clock=False)
@@ -110,6 +111,26 @@ class ThreadsApp(App):
                     view.write(f"─── system · {tag} ───")
                 view.write("")
         self._current_thread_id = thread["thread_id"]
+
+    async def _get_thread_impl(self, *, slug: str, thread_id: str) -> dict:
+        """Real HTTP call. Overridable in tests."""
+        from src.tui.api_client import AsyncOpcClient
+        if self._client is None:
+            self._client = AsyncOpcClient(base_url=self._base_url, token=self._token)
+        return await self._client.get_thread(slug=slug, thread_id=thread_id)
+
+    async def on_list_view_selected(self, event) -> None:
+        """ListView fires this when Enter is pressed on a row."""
+        item_id = event.item.id  # "row-THR-NNN"
+        if not item_id or not item_id.startswith("row-"):
+            return
+        thread_id = item_id[len("row-"):]
+        try:
+            detail = await self._get_thread_impl(slug=self._slug, thread_id=thread_id)
+        except Exception as exc:  # noqa: BLE001
+            self.notify(f"failed to load {thread_id}: {exc}", severity="error")
+            return
+        self.set_thread_detail(detail)
 
 
 def run(*, slug: str, base_url: str, token: str) -> int:
