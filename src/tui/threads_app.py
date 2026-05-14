@@ -233,10 +233,17 @@ class ThreadsApp(App):
             self._client = None
 
     async def on_mount(self) -> None:
-        await self._refresh_inbox()
+        # Subscribe to inbox events BEFORE the initial fetch. The /threads/events
+        # endpoint has no replay mechanism, so any event landing between the
+        # fetch and the SSE connection would be lost permanently (until the
+        # next unrelated event or a manual Ctrl+R). Starting the worker first
+        # makes the HTTP connection happen in the background while we fetch;
+        # the worker's first incoming event re-runs the refresh and catches
+        # anything that arrived during connection setup.
         self._inbox_event_task = self.run_worker(
             self._inbox_event_loop(), exclusive=True, name="inbox_events",
         )
+        await self._refresh_inbox()
 
     async def _refresh_inbox(self) -> None:
         try:
