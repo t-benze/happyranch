@@ -19,7 +19,6 @@ import yaml
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 MAX_BODY_BYTES = 32 * 1024
-VALID_TYPES = {"reference", "precedent"}
 
 
 class InvalidSlug(ValueError):
@@ -29,8 +28,8 @@ class InvalidSlug(ValueError):
 class InvalidEntry(ValueError):
     """Raised for any structural validation failure other than slug.
 
-    ``code`` encodes which §6 table row triggered: ``invalid_type``,
-    ``missing_frontmatter``, ``entry_too_large``, ``invalid_supersedes``.
+    ``code`` encodes which §6 table row triggered: ``missing_frontmatter``,
+    ``entry_too_large``, ``invalid_supersedes``.
     """
 
     def __init__(self, code: str, message: str) -> None:
@@ -63,9 +62,6 @@ class KBEntry:
     authored_at: Optional[str] = None
     updated_by: Optional[str] = None
     updated_at: Optional[str] = None
-    escalation_reason: Optional[str] = None
-    founder_decision: Optional[str] = None
-    founder_rationale: Optional[str] = None
 
 
 @dataclass
@@ -114,8 +110,6 @@ class KBStore:
             val = getattr(entry, required, None)
             if not val or not isinstance(val, str):
                 raise InvalidEntry("missing_frontmatter", f"missing field: {required}")
-        if entry.type not in VALID_TYPES:
-            raise InvalidEntry("invalid_type", f"type must be one of {VALID_TYPES}")
         if len(entry.body.encode("utf-8")) > MAX_BODY_BYTES:
             raise InvalidEntry("entry_too_large", f"body exceeds {MAX_BODY_BYTES}B")
         if entry.supersedes is not None:
@@ -281,9 +275,6 @@ class KBStore:
             "updated_at",
             "source_task",
             "supersedes",
-            "escalation_reason",
-            "founder_decision",
-            "founder_rationale",
         ):
             val = getattr(entry, key)
             if val is not None:
@@ -312,9 +303,6 @@ class KBStore:
             authored_at=fm.get("authored_at"),
             updated_by=fm.get("updated_by"),
             updated_at=fm.get("updated_at"),
-            escalation_reason=fm.get("escalation_reason"),
-            founder_decision=fm.get("founder_decision"),
-            founder_rationale=fm.get("founder_rationale"),
             body=body,
         )
 

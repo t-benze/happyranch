@@ -70,16 +70,31 @@ def test_write_entry_rejects_slug_mismatch(store: KBStore):
         store.write_entry(entry, agent="dev_agent")
 
 
-def test_write_entry_rejects_invalid_type(store: KBStore):
+def test_write_entry_accepts_arbitrary_type(store: KBStore):
+    # `type` is a freeform tag-like label — any non-empty string is allowed.
     entry = KBEntry(
-        slug="bad-type",
+        slug="custom-type",
         title="t",
-        type="guide",  # not in {reference, precedent}
+        type="guide",
         topic="payment",
         body="# x\n",
     )
-    with pytest.raises(InvalidEntry):
+    written = store.write_entry(entry, agent="dev_agent")
+    assert written.type == "guide"
+    assert store.read_entry("custom-type").type == "guide"
+
+
+def test_write_entry_rejects_empty_type(store: KBStore):
+    entry = KBEntry(
+        slug="empty-type",
+        title="t",
+        type="",
+        topic="payment",
+        body="# x\n",
+    )
+    with pytest.raises(InvalidEntry) as exc:
         store.write_entry(entry, agent="dev_agent")
+    assert "missing_frontmatter" in str(exc.value)
 
 
 def test_write_entry_rejects_oversized_body(store: KBStore):

@@ -322,7 +322,7 @@ The dashboard backend exposes a REST API that the frontend consumes. This same A
 
 ### Dashboard is read-only
 
-The dashboard is read-only. All founder actions (approvals, directives, goal-setting, rejections) happen through CLI commands (`opc resolve-escalation`, `opc kb precedent --as-founder`, `opc revisit`) or `opc talk` conversations. "Pending Your Action" items link to the command you'd run; the dashboard never mutates state itself.
+The dashboard is read-only. All founder actions (approvals, directives, goal-setting, rejections) happen through CLI commands (`opc resolve-escalation`, `opc kb add`, `opc revisit`) or `opc talk` conversations. "Pending Your Action" items link to the command you'd run; the dashboard never mutates state itself.
 
 ---
 

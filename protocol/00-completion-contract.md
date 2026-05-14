@@ -101,7 +101,7 @@ Durable lessons go through:
 opc learning --agent <you> --session-id <sid> --task-id <task_id> --text "..."
 ```
 
-Cross-agent reference / precedent material belongs in the Knowledge Base (`opc kb add --from-file ...`), not in `learnings.md`.
+Cross-agent reference material — SOPs, partner-API quirks, founder rulings — belongs in the Knowledge Base (`opc kb add --from-file ...`), not in `learnings.md`.
 
 ## Other agent-side callbacks
 

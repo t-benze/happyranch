@@ -166,7 +166,7 @@ There are four types of permission blocks, each handled differently:
 **Response**: Agent calls `escalate(category="novel", severity="medium", summary="...")` with its best assessment and a recommendation.
 **Task state**: Moves to `waiting_for_guidance`.
 **Orchestrator action**: Routes to founder. The agent's recommendation is included so the founder can often just approve/deny rather than research from scratch.
-**Resolution**: Founder's decision is logged as precedent and added to the knowledge base so future occurrences are handled automatically.
+**Resolution**: Founder runs `opc resolve-escalation` to clear the task and — when the ruling should bind future occurrences — writes a KB entry via `opc kb add` (with `source_task: <task-id>` in frontmatter) so the next agent finds the answer without re-escalating.
 
 ### Task state machine
 

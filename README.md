@@ -166,17 +166,16 @@ The CLI does not take a runtime path — every command operates on whichever con
 ### Knowledge base
 
 ```bash
-opc kb list      --org <slug> [--topic <t>] [--type reference|precedent]
+opc kb list      --org <slug> [--topic <t>] [--type <label>]
 opc kb get       --org <slug> <slug>
 opc kb search    --org <slug> "<query>"
 opc kb add       --org <slug> --agent <you> --from-file /tmp/kb-<slug>.md
 opc kb update    --org <slug> <slug> --agent <you> --from-file /tmp/kb-<slug>.md
 opc kb delete    --org <slug> <slug> --agent <you> --confirm [--as-founder]
 opc kb reindex   --org <slug>
-opc kb precedent --org <slug> --task-id <id> --decision approve|reject --rationale "..." --as-founder
 ```
 
-Any agent reads/writes; team managers delete (audited); the founder overrides delete via `--as-founder` and is the only role that can record precedents.
+Any agent reads/writes; team managers delete (audited); the founder overrides delete via `--as-founder`. Founder rulings on escalated tasks are written through plain `opc kb add` — set `source_task: TASK-XXX` in the frontmatter to keep the link to the escalation.
 
 ### Per-agent learnings
 
@@ -188,7 +187,7 @@ opc learning get      --org <slug> --agent <you> <LRN-NNN-or-slug> [--json]
 opc learning search   --org <slug> --agent <you> "<query>" [--limit N --include-promoted --json]
 opc learning add      --org <slug> --agent <you> --from-file /tmp/lrn-<slug>.yaml
 opc learning update   --org <slug> --agent <you> <LRN-NNN> --from-file /tmp/lrn-<slug>.yaml
-opc learning promote  --org <slug> --agent <you> <LRN-NNN> --kb-slug <kb-precedent>
+opc learning promote  --org <slug> --agent <you> <LRN-NNN> --kb-slug <kb-slug>
 opc learning reindex  --org <slug> --agent <you>
 ```
 
@@ -466,7 +465,7 @@ Each agent runs in its own persistent workspace inside the org directory. After 
 - `.agents/skills/` (Codex/opencode) — shared skills tree
 - `opencode.json` (opencode only) — `permission.bash` map
 - `repos/` — git clones of repositories from `agent.yaml` (auto-pulled before each task)
-- `learnings/` — agent-written insights from past tasks, one file per entry (`LRN-NNN-<slug>.md`) with YAML frontmatter. A regenerated `_index.md` is inlined into the bootstrap doc. Write via `opc learning add --from-file <path>`; read via `opc learning list|get|search`; promote durable cross-agent rules to KB precedents via `opc learning promote <LRN-NNN> --kb-slug <slug>`. Workspaces created before this layout existed continue to use a flat `learnings.md`; the founder runs a one-shot migration task to switch a workspace over.
+- `learnings/` — agent-written insights from past tasks, one file per entry (`LRN-NNN-<slug>.md`) with YAML frontmatter. A regenerated `_index.md` is inlined into the bootstrap doc. Write via `opc learning add --from-file <path>`; read via `opc learning list|get|search`; promote durable cross-agent rules to the shared KB via `opc learning promote <LRN-NNN> --kb-slug <slug>`. Workspaces created before this layout existed continue to use a flat `learnings.md`; the founder runs a one-shot migration task to switch a workspace over.
 - `task_history.md` — rolling per-agent task history
 
 ## Roadmap
