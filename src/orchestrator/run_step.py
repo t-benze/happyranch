@@ -374,8 +374,27 @@ def _list_candidate_agents(orch: "Orchestrator", calling_manager: str):
     return names, tiers
 
 
+# Shared discipline tail appended to both revisit headers. Addresses the
+# brief-vs-reality divergence failure mode (TALK-028, tourism-org): on a
+# revisit-spawned session the literal brief is often stale, and the manager
+# tends either to (a) execute the brief verbatim and stall against current
+# state, or (b) improvise "the next obvious step" and get blocked by
+# classifiers/workflow gates. The discipline frames the binary choice
+# (execute-with-divergence-note OR escalate-with-diagnosis) and explicitly
+# bans improvisation. Generic enough for any manager role.
+_REVISIT_DISCIPLINE_LINES = [
+    "Status-assess before acting on the brief below — it was authored before this "
+    "revisit and may be stale. Inspect the predecessor (commands above) and verify "
+    "ground truth for the work the brief describes. Then either: execute the real "
+    "next step, noting any divergence from the brief in your output_summary; or "
+    "escalate with a precise diagnosis (what the brief asked, what reality is, why "
+    "the gap is unbridgeable). Do NOT improvise — half-completed work blocks the "
+    "workstream.",
+]
+
+
 def _revisit_header_if_applicable(orch: "Orchestrator", task_id: str) -> str | None:
-    """Return a 5-6 line revisit context header, or None.
+    """Return a revisit context header, or None.
 
     Trigger: the task has a `revisit_of` OR `auto_revisit_of` audit entry
     AND no `orchestration_step` audit entry. The latter is how we detect
@@ -421,6 +440,7 @@ def _revisit_header_if_applicable(orch: "Orchestrator", task_id: str) -> str | N
         "You may reuse successful sub-tasks' artifacts (referenced by path in "
         "new child briefs); old child task rows stay frozen."
     )
+    lines.extend(_REVISIT_DISCIPLINE_LINES)
     return "\n".join(lines) + "\n\n"
 
 
@@ -474,6 +494,7 @@ def _auto_revisit_header(payload: dict) -> str:
         "the same plan with a fresh subprocess) or structural (a different "
         "decomposition is needed). Decide accordingly.",
     ]
+    lines.extend(_REVISIT_DISCIPLINE_LINES)
     return "\n".join(lines) + "\n\n"
 
 

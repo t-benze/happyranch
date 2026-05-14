@@ -705,6 +705,10 @@ def test_run_step_auto_revisit_header_injected_on_first_step(
     assert "dev_agent" in prompt
     assert "no completion callback" in prompt
     assert "wrote files" in prompt
+    # Shared discipline tail (TALK-028): manager must status-assess and choose
+    # execute-with-divergence-note vs escalate, not improvise.
+    assert "Status-assess before acting" in prompt
+    assert "Do NOT improvise" in prompt
 
 
 def test_run_step_worker_self_blocked_fails_task(runtime, db, monkeypatch):
@@ -965,6 +969,9 @@ def test_run_step_revisit_header_injected_on_first_step(
     assert "TASK-052 -> TASK-053 -> TASK-058" in prompt or \
            "TASK-052 → TASK-053 → TASK-058" in prompt
     assert "PR #103 already merged" in prompt
+    # Shared discipline tail (TALK-028).
+    assert "Status-assess before acting" in prompt
+    assert "Do NOT improvise" in prompt
 
 
 def test_run_step_revisit_header_absent_on_second_step(
