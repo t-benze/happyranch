@@ -1,0 +1,6 @@
+/* Layout for the threads TUI. Three panes — see Task 5 for the real grid. */
+
+#placeholder {
+    padding: 1 2;
+    color: $text-muted;
+}
