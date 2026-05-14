@@ -252,3 +252,35 @@ async def test_reply_posts_send_request(monkeypatch):
     assert sent == [{"thread_id": "THR-001",
                      "body_markdown": "follow-up",
                      "addressed_to": ["@all"]}]
+
+
+async def test_new_thread_submits_via_modal(monkeypatch):
+    app = ThreadsApp(slug="alpha", base_url="http://test", token="tok")
+    composed: list[dict] = []
+
+    async def fake_compose(**kwargs):
+        composed.append(kwargs)
+        return {"thread_id": "THR-NEW", "started_at": "now", "pending_replies": []}
+
+    async def fake_list(*, slug, **kwargs): return []
+    async def fake_inbox_events():
+        if False: yield
+
+    monkeypatch.setattr(app, "_compose_thread_impl", fake_compose)
+    monkeypatch.setattr(app, "_list_threads_impl", fake_list)
+    monkeypatch.setattr(app, "_iter_inbox_events_impl", fake_inbox_events)
+
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        from textual.widgets import Input, TextArea
+        app.query_one("#new-subject", Input).value = "smoke"
+        app.query_one("#new-recipients", Input).value = "dev_agent,qa_engineer"
+        app.query_one("#new-body", TextArea).text = "say hi to both of you"
+        await pilot.press("ctrl+enter")
+        await pilot.pause()
+    assert len(composed) == 1
+    assert composed[0]["subject"] == "smoke"
+    assert composed[0]["recipients"] == ["dev_agent", "qa_engineer"]
+    assert composed[0]["body_markdown"] == "say hi to both of you"
+    assert composed[0]["addressed_to"] == ["@all"]

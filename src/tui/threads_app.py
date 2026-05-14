@@ -10,10 +10,53 @@ from pathlib import Path
 from textual.app import App
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Footer, Header, ListItem, ListView, Label, RichLog, Static, TextArea
+from textual.screen import ModalScreen
+from textual.widgets import Button, Footer, Header, Input, ListItem, ListView, Label, RichLog, Static, TextArea
 
 
 CSS_PATH = Path(__file__).parent / "threads_app.tcss"
+
+
+class NewThreadScreen(ModalScreen):
+    """Modal that collects subject/recipients/body for a new thread."""
+
+    BINDINGS = [
+        Binding("escape", "dismiss(None)", "Cancel"),
+        Binding("ctrl+enter", "submit", "Send", priority=True),
+    ]
+
+    def __init__(self, prefill: dict | None = None) -> None:
+        super().__init__()
+        self._prefill = prefill or {}
+
+    def compose(self):
+        with Vertical(id="new-thread-modal"):
+            yield Static("New thread — Ctrl+Enter to send, Esc to cancel", id="new-label")
+            yield Input(placeholder="Subject", value=self._prefill.get("subject", ""),
+                        id="new-subject")
+            yield Input(placeholder="Recipients (comma-separated)", id="new-recipients")
+            body = self._prefill.get("body", "")
+            yield TextArea(body, id="new-body")
+            yield Button("Send", id="new-submit", variant="primary")
+
+    def action_submit(self) -> None:
+        subject = self.query_one("#new-subject", Input).value.strip()
+        recipients_raw = self.query_one("#new-recipients", Input).value.strip()
+        body = self.query_one("#new-body", TextArea).text.strip()
+        recipients = [r.strip() for r in recipients_raw.split(",") if r.strip()]
+        if not subject or not recipients or not body:
+            self.app.notify("subject, recipients, and body are all required",
+                            severity="warning")
+            return
+        payload = {"subject": subject, "recipients": recipients, "body_markdown": body}
+        if self._prefill.get("forwarded_from_id"):
+            payload["forwarded_from_id"] = self._prefill["forwarded_from_id"]
+            payload["forwarded_from_kind"] = self._prefill["forwarded_from_kind"]
+        self.dismiss(payload)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "new-submit":
+            self.action_submit()
 
 
 class ThreadsApp(App):
@@ -26,8 +69,9 @@ class ThreadsApp(App):
         Binding("ctrl+c", "quit", "Quit"),
         Binding("ctrl+r", "refresh", "Refresh"),
         Binding("tab", "focus_next", "Cycle panes"),
+        Binding("n", "new_thread", "New"),
         Binding("r", "focus_compose", "Reply"),
-        Binding("ctrl+enter", "send_reply", "Send", priority=True),
+        Binding("ctrl+enter", "send_reply", "Send", priority=False),
         Binding("escape", "cancel_compose", "Cancel"),
     ]
 
@@ -228,6 +272,35 @@ class ThreadsApp(App):
             return
         textarea.text = ""
         self.notify("reply sent")
+
+    async def _compose_thread_impl(self, **kwargs) -> dict:
+        from src.tui.api_client import AsyncOpcClient
+        if self._client is None:
+            self._client = AsyncOpcClient(base_url=self._base_url, token=self._token)
+        return await self._client.compose_thread(slug=self._slug, **kwargs)
+
+    async def _submit_new_thread(self, result: dict | None) -> None:
+        if result is None:
+            return
+        try:
+            payload = {
+                "subject": result["subject"],
+                "recipients": result["recipients"],
+                "body_markdown": result["body_markdown"],
+                "addressed_to": ["@all"],
+            }
+            if result.get("forwarded_from_id"):
+                payload["forwarded_from_id"] = result["forwarded_from_id"]
+                payload["forwarded_from_kind"] = result["forwarded_from_kind"]
+            await self._compose_thread_impl(**payload)
+        except Exception as exc:  # noqa: BLE001
+            self.notify(f"compose failed: {exc}", severity="error")
+            return
+        self.notify("thread created")
+        await self._refresh_inbox()
+
+    def action_new_thread(self) -> None:
+        self.push_screen(NewThreadScreen(), self._submit_new_thread)
 
     async def on_list_view_selected(self, event) -> None:
         """ListView fires this when Enter is pressed on a row."""

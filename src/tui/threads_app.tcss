@@ -52,3 +52,25 @@ Screen {
 #compose-body {
     height: 1fr;
 }
+
+#new-thread-modal {
+    width: 80;
+    height: 24;
+    background: $surface;
+    border: round $accent;
+    padding: 1 2;
+}
+
+#new-label {
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+#new-subject, #new-recipients {
+    margin-bottom: 1;
+}
+
+#new-body {
+    height: 10;
+    margin-bottom: 1;
+}
