@@ -7,6 +7,14 @@ from typing import AsyncIterator, Callable
 _TERMINAL_TYPES = {"task_complete", "task_failed", "task_blocked"}
 
 
+def thread_topic(thread_id: str) -> str:
+    return f"thread:{thread_id}"
+
+
+def thread_inbox_topic(org_slug: str) -> str:
+    return f"thread_inbox:{org_slug}"
+
+
 class EventBus:
     def __init__(self, history_loader: Callable[[str], list[dict]]) -> None:
         self._history_loader = history_loader

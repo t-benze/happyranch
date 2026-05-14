@@ -15,6 +15,7 @@ from src.daemon.routes import (
     runtime,
     talks,
     tasks,
+    threads,
     tokens,
 )
 from src.daemon.state import DaemonState
@@ -60,12 +61,20 @@ def _start_feishu_listeners(state: DaemonState, loop) -> None:
 async def _lifespan(app: FastAPI):
     import asyncio
 
+    from src.daemon.thread_queue import thread_worker_loop
+
     state: DaemonState = app.state.daemon
     ensure_workers_started(state)
     _start_feishu_listeners(state, asyncio.get_running_loop())
+    thread_worker_tasks = [
+        asyncio.create_task(thread_worker_loop(state, state.settings))
+        for _ in range(4)
+    ]
     try:
         yield
     finally:
+        for t in thread_worker_tasks:
+            t.cancel()
         await state.queue.stop()
         await state.close_all()
 
@@ -82,4 +91,5 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(tokens.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(kb.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(talks.router, prefix="/api/v1/orgs/{slug}")
+    app.include_router(threads.router, prefix="/api/v1/orgs/{slug}", tags=["threads"])
     return app

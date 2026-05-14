@@ -46,6 +46,7 @@ class TaskRecord(BaseModel):
     parent_task_id: str | None = None
     revisit_of_task_id: str | None = None
     dispatched_from_talk_id: str | None = None
+    dispatched_from_thread_id: str | None = None
     block_kind: BlockKind | None = None
     note: str | None = None
     final_artifact_dir: str | None = None
@@ -141,3 +142,82 @@ class TalkRecord(BaseModel):
     new_learnings_count: int = 0
     new_kb_slugs: list[str] = Field(default_factory=list)
     transcript_path: str | None = None
+
+
+class ThreadStatus(StrEnum):
+    OPEN = "open"
+    ARCHIVING = "archiving"
+    ARCHIVED = "archived"
+    ABANDONED = "abandoned"
+
+
+class ThreadMessageKind(StrEnum):
+    MESSAGE = "message"
+    DECLINE = "decline"
+    SYSTEM = "system"
+
+
+class ThreadInvocationStatus(StrEnum):
+    PENDING = "pending"
+    CONSUMED = "consumed"
+    TIMEOUT = "timeout"
+    FAILED = "failed"
+
+
+class ThreadInvocationPurpose(StrEnum):
+    REPLY = "reply"
+    BOOTSTRAP = "bootstrap"
+    CLOSE_OUT = "close_out"
+
+
+class ThreadRecord(BaseModel):
+    id: str
+    subject: str
+    status: ThreadStatus = ThreadStatus.OPEN
+    started_at: datetime = Field(default_factory=_now)
+    archived_at: datetime | None = None
+    forwarded_from_id: str | None = None
+    forwarded_from_kind: str | None = None  # 'thread' | 'talk'
+    turn_cap: int = 500
+    turns_used: int = 0
+    summary: str | None = None
+    new_kb_slugs: list[str] = Field(default_factory=list)
+    new_learnings_total: int = 0
+    transcript_path: str | None = None
+    archive_requested_at: datetime | None = None
+
+
+class ThreadParticipant(BaseModel):
+    thread_id: str
+    agent_name: str
+    added_at: datetime = Field(default_factory=_now)
+    added_by: str = "founder"
+
+
+class ThreadMessage(BaseModel):
+    id: int | None = None
+    thread_id: str
+    seq: int
+    speaker: str
+    kind: ThreadMessageKind
+    body_markdown: str | None = None
+    addressed_to: list[str] | None = None
+    decline_reason: str | None = None
+    system_payload: dict | None = None
+    created_at: datetime = Field(default_factory=_now)
+
+
+class ThreadInvocation(BaseModel):
+    id: int | None = None
+    thread_id: str
+    agent_name: str
+    invocation_token: str
+    triggering_seq: int
+    purpose: ThreadInvocationPurpose
+    status: ThreadInvocationStatus = ThreadInvocationStatus.PENDING
+    enqueued_at: datetime = Field(default_factory=_now)
+    started_at: datetime | None = None
+    consumed_at: datetime | None = None
+    session_id: str | None = None
+    dispatched_task_id: str | None = None
+    decline_reason: str | None = None

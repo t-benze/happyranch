@@ -17,3 +17,10 @@
 #   app_id: cli_xxxxxxxxxxxxxxxx         # Feishu self-built app ID
 #   app_secret: yyyyyyyyyyyyyyyyyyyyyyyy # Feishu app secret
 #   reply_ttl_hours: 72
+
+# Threads — email-style multi-agent workchannels.
+threads:
+  enabled: true
+  default_turn_cap: 500
+  close_out_wait_seconds: 300
+  # invocation_timeout_seconds: null  # falls through to session_timeout_seconds

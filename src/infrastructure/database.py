@@ -7,11 +7,29 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from src.models import BlockKind, TalkRecord, TaskRecord, TaskStatus, TokenUsage
+from src.models import (
+    BlockKind,
+    TalkRecord,
+    TaskRecord,
+    TaskStatus,
+    ThreadInvocation,
+    ThreadInvocationPurpose,
+    ThreadInvocationStatus,
+    ThreadMessage,
+    ThreadMessageKind,
+    ThreadParticipant,
+    ThreadRecord,
+    ThreadStatus,
+    TokenUsage,
+)
 
 
 class LineageTooDeep(Exception):
     """Ancestor walk exceeded the safety bound; indicates data corruption."""
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _synchronized(method):
@@ -192,6 +210,74 @@ class Database:
                 reason            TEXT,
                 PRIMARY KEY (org_slug, feishu_event_id)
             );
+
+            CREATE TABLE IF NOT EXISTS threads (
+                id TEXT PRIMARY KEY,
+                subject TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                archived_at TEXT,
+                status TEXT NOT NULL DEFAULT 'open',
+                forwarded_from_id TEXT,
+                forwarded_from_kind TEXT,
+                turn_cap INTEGER NOT NULL DEFAULT 500,
+                turns_used INTEGER NOT NULL DEFAULT 0,
+                summary TEXT,
+                new_kb_slugs_json TEXT,
+                transcript_path TEXT,
+                archive_requested_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_threads_status ON threads(status);
+            CREATE INDEX IF NOT EXISTS idx_threads_started ON threads(started_at);
+
+            CREATE TABLE IF NOT EXISTS thread_participants (
+                thread_id TEXT NOT NULL,
+                agent_name TEXT NOT NULL,
+                added_at TEXT NOT NULL,
+                added_by TEXT NOT NULL,
+                PRIMARY KEY (thread_id, agent_name),
+                FOREIGN KEY (thread_id) REFERENCES threads(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_thread_participants_agent
+                ON thread_participants(agent_name);
+
+            CREATE TABLE IF NOT EXISTS thread_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                thread_id TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                speaker TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                body_markdown TEXT,
+                addressed_to_json TEXT,
+                decline_reason TEXT,
+                system_payload_json TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (thread_id) REFERENCES threads(id)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_thread_messages_thread_seq
+                ON thread_messages(thread_id, seq);
+
+            CREATE TABLE IF NOT EXISTS thread_invocations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                thread_id TEXT NOT NULL,
+                agent_name TEXT NOT NULL,
+                invocation_token TEXT NOT NULL UNIQUE,
+                triggering_seq INTEGER NOT NULL,
+                purpose TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                enqueued_at TEXT NOT NULL,
+                started_at TEXT,
+                consumed_at TEXT,
+                session_id TEXT,
+                dispatched_task_id TEXT,
+                decline_reason TEXT,
+                FOREIGN KEY (thread_id) REFERENCES threads(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_thread_invocations_token
+                ON thread_invocations(invocation_token);
+            CREATE INDEX IF NOT EXISTS idx_thread_invocations_thread
+                ON thread_invocations(thread_id);
+            CREATE INDEX IF NOT EXISTS idx_thread_invocations_pending
+                ON thread_invocations(status) WHERE status = 'pending';
         """)
         # Best-effort migration for DBs created before `status` existed. SQLite
         # has no IF NOT EXISTS for ADD COLUMN; swallow the duplicate-column
@@ -280,6 +366,23 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_tasks_dispatched_from_talk_id "
             "ON tasks(dispatched_from_talk_id) "
             "WHERE dispatched_from_talk_id IS NOT NULL"
+        )
+        try:
+            self._conn.execute(
+                "ALTER TABLE tasks ADD COLUMN dispatched_from_thread_id TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass
+        try:
+            self._conn.execute(
+                "ALTER TABLE threads ADD COLUMN new_learnings_total INTEGER NOT NULL DEFAULT 0"
+            )
+        except sqlite3.OperationalError:
+            pass
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_dispatched_from_thread_id "
+            "ON tasks(dispatched_from_thread_id) "
+            "WHERE dispatched_from_thread_id IS NOT NULL"
         )
         # kind column for escalation_notifications: 'escalation' (default) or
         # 'failure'. Additive; existing rows keep the default.
@@ -370,6 +473,7 @@ class Database:
             task.parent_task_id,
             task.revisit_of_task_id,
             task.dispatched_from_talk_id,
+            task.dispatched_from_thread_id,
             task.block_kind.value if task.block_kind else None,
             task.note,
             task.orchestration_step_count,
@@ -384,18 +488,20 @@ class Database:
             self._conn.execute(
                 """INSERT INTO tasks (id, type, status, assigned_agent, team, brief,
                    revision_count, created_at, updated_at, completed_at, parent_task_id,
-                   revisit_of_task_id, dispatched_from_talk_id, block_kind, note,
+                   revisit_of_task_id, dispatched_from_talk_id, dispatched_from_thread_id,
+                   block_kind, note,
                    orchestration_step_count, session_timeout_seconds)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (params[0], "general") + params[1:],
             )
         else:
             self._conn.execute(
                 """INSERT INTO tasks (id, status, assigned_agent, team, brief,
                    revision_count, created_at, updated_at, completed_at, parent_task_id,
-                   revisit_of_task_id, dispatched_from_talk_id, block_kind, note,
+                   revisit_of_task_id, dispatched_from_talk_id, dispatched_from_thread_id,
+                   block_kind, note,
                    orchestration_step_count, session_timeout_seconds)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 params,
             )
         self._conn.commit()
@@ -419,6 +525,7 @@ class Database:
             parent_task_id=row["parent_task_id"],
             revisit_of_task_id=row["revisit_of_task_id"],
             dispatched_from_talk_id=row["dispatched_from_talk_id"],
+            dispatched_from_thread_id=row["dispatched_from_thread_id"],
             block_kind=row["block_kind"],
             note=row["note"],
             orchestration_step_count=row["orchestration_step_count"] or 0,
@@ -447,6 +554,7 @@ class Database:
                 parent_task_id=row["parent_task_id"],
                 revisit_of_task_id=row["revisit_of_task_id"],
                 dispatched_from_talk_id=row["dispatched_from_talk_id"],
+                dispatched_from_thread_id=row["dispatched_from_thread_id"],
                 block_kind=row["block_kind"],
                 note=row["note"],
                 orchestration_step_count=row["orchestration_step_count"] or 0,
@@ -592,6 +700,7 @@ class Database:
                 parent_task_id=row["parent_task_id"],
                 revisit_of_task_id=row["revisit_of_task_id"],
                 dispatched_from_talk_id=row["dispatched_from_talk_id"],
+                dispatched_from_thread_id=row["dispatched_from_thread_id"],
                 block_kind=row["block_kind"],
                 note=row["note"],
                 orchestration_step_count=row["orchestration_step_count"] or 0,
@@ -1186,6 +1295,476 @@ class Database:
         )
         n = (cursor.fetchone()["m"] or 0) + 1
         return f"TALK-{n:03d}"
+
+    @_synchronized
+    def next_thread_id(self) -> str:
+        """Return the next available THR-NNN id.
+
+        Callers must hold DaemonState.db_lock across the next_thread_id() +
+        insert_thread() pair to avoid duplicate IDs under concurrent requests
+        (same requirement as next_task_id / next_talk_id).
+        """
+        cursor = self._conn.execute(
+            "SELECT MAX(CAST(SUBSTR(id, 5) AS INTEGER)) AS m "
+            "FROM threads WHERE id GLOB 'THR-[0-9]*'"
+        )
+        n = (cursor.fetchone()["m"] or 0) + 1
+        return f"THR-{n:03d}"
+
+    @_synchronized
+    def insert_thread(self, t: ThreadRecord) -> None:
+        self._conn.execute(
+            """INSERT INTO threads (
+                id, subject, started_at, archived_at, status,
+                forwarded_from_id, forwarded_from_kind,
+                turn_cap, turns_used, summary, new_kb_slugs_json,
+                transcript_path, archive_requested_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                t.id,
+                t.subject,
+                t.started_at.isoformat(),
+                t.archived_at.isoformat() if t.archived_at else None,
+                t.status.value,
+                t.forwarded_from_id,
+                t.forwarded_from_kind,
+                t.turn_cap,
+                t.turns_used,
+                t.summary,
+                json.dumps(t.new_kb_slugs) if t.new_kb_slugs else None,
+                t.transcript_path,
+                t.archive_requested_at.isoformat() if t.archive_requested_at else None,
+            ),
+        )
+        self._conn.commit()
+
+    def _row_to_thread(self, row) -> ThreadRecord:
+        return ThreadRecord(
+            id=row["id"],
+            subject=row["subject"],
+            status=ThreadStatus(row["status"]),
+            started_at=datetime.fromisoformat(row["started_at"]),
+            archived_at=datetime.fromisoformat(row["archived_at"]) if row["archived_at"] else None,
+            forwarded_from_id=row["forwarded_from_id"],
+            forwarded_from_kind=row["forwarded_from_kind"],
+            turn_cap=row["turn_cap"],
+            turns_used=row["turns_used"],
+            summary=row["summary"],
+            new_kb_slugs=json.loads(row["new_kb_slugs_json"]) if row["new_kb_slugs_json"] else [],
+            new_learnings_total=row["new_learnings_total"] if "new_learnings_total" in row.keys() else 0,
+            transcript_path=row["transcript_path"],
+            archive_requested_at=datetime.fromisoformat(row["archive_requested_at"]) if row["archive_requested_at"] else None,
+        )
+
+    @_synchronized
+    def get_thread(self, thread_id: str) -> ThreadRecord | None:
+        cursor = self._conn.execute(
+            "SELECT * FROM threads WHERE id = ?", (thread_id,)
+        )
+        row = cursor.fetchone()
+        return self._row_to_thread(row) if row else None
+
+    @_synchronized
+    def list_threads(self, *, status: str | None = None, limit: int = 50) -> list[ThreadRecord]:
+        if status:
+            cursor = self._conn.execute(
+                "SELECT * FROM threads WHERE status = ? ORDER BY started_at DESC LIMIT ?",
+                (status, limit),
+            )
+        else:
+            cursor = self._conn.execute(
+                "SELECT * FROM threads ORDER BY started_at DESC LIMIT ?",
+                (limit,),
+            )
+        return [self._row_to_thread(r) for r in cursor.fetchall()]
+
+    @_synchronized
+    def add_thread_participant(
+        self, thread_id: str, agent_name: str, *, added_by: str
+    ) -> bool:
+        """Insert a participant. Returns True if inserted, False if duplicate."""
+        try:
+            self._conn.execute(
+                "INSERT INTO thread_participants (thread_id, agent_name, added_at, added_by) "
+                "VALUES (?, ?, ?, ?)",
+                (thread_id, agent_name, _now().isoformat(), added_by),
+            )
+            self._conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    @_synchronized
+    def is_thread_participant(self, thread_id: str, agent_name: str) -> bool:
+        cursor = self._conn.execute(
+            "SELECT 1 FROM thread_participants WHERE thread_id = ? AND agent_name = ?",
+            (thread_id, agent_name),
+        )
+        return cursor.fetchone() is not None
+
+    @_synchronized
+    def list_thread_participants(self, thread_id: str) -> list[ThreadParticipant]:
+        cursor = self._conn.execute(
+            "SELECT thread_id, agent_name, added_at, added_by "
+            "FROM thread_participants WHERE thread_id = ? ORDER BY added_at",
+            (thread_id,),
+        )
+        return [
+            ThreadParticipant(
+                thread_id=r["thread_id"],
+                agent_name=r["agent_name"],
+                added_at=datetime.fromisoformat(r["added_at"]),
+                added_by=r["added_by"],
+            )
+            for r in cursor.fetchall()
+        ]
+
+    @_synchronized
+    def append_thread_message(
+        self,
+        *,
+        thread_id: str,
+        speaker: str,
+        kind: ThreadMessageKind,
+        body_markdown: str | None = None,
+        addressed_to: list[str] | None = None,
+        decline_reason: str | None = None,
+        system_payload: dict | None = None,
+    ) -> int:
+        """Append a message and return its allocated seq.
+
+        Atomic against concurrent appends — both the seq allocation and the
+        insert happen under the connection's transaction, and the unique
+        index on (thread_id, seq) guards against any race.
+        """
+        cursor = self._conn.execute(
+            "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq "
+            "FROM thread_messages WHERE thread_id = ?",
+            (thread_id,),
+        )
+        next_seq = cursor.fetchone()["next_seq"]
+        self._conn.execute(
+            "INSERT INTO thread_messages (thread_id, seq, speaker, kind, "
+            "body_markdown, addressed_to_json, decline_reason, system_payload_json, "
+            "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                thread_id,
+                next_seq,
+                speaker,
+                kind.value,
+                body_markdown,
+                json.dumps(addressed_to) if addressed_to else None,
+                decline_reason,
+                json.dumps(system_payload) if system_payload else None,
+                _now().isoformat(),
+            ),
+        )
+        self._conn.commit()
+        return next_seq
+
+    @_synchronized
+    def list_thread_messages(
+        self, thread_id: str, *, since_seq: int = 0, limit: int = 1000
+    ) -> list[ThreadMessage]:
+        cursor = self._conn.execute(
+            "SELECT * FROM thread_messages "
+            "WHERE thread_id = ? AND seq > ? ORDER BY seq LIMIT ?",
+            (thread_id, since_seq, limit),
+        )
+        return [
+            ThreadMessage(
+                id=r["id"],
+                thread_id=r["thread_id"],
+                seq=r["seq"],
+                speaker=r["speaker"],
+                kind=ThreadMessageKind(r["kind"]),
+                body_markdown=r["body_markdown"],
+                addressed_to=json.loads(r["addressed_to_json"]) if r["addressed_to_json"] else None,
+                decline_reason=r["decline_reason"],
+                system_payload=json.loads(r["system_payload_json"]) if r["system_payload_json"] else None,
+                created_at=datetime.fromisoformat(r["created_at"]),
+            )
+            for r in cursor.fetchall()
+        ]
+
+    @_synchronized
+    def get_thread_message_by_seq(
+        self, thread_id: str, seq: int
+    ) -> ThreadMessage | None:
+        cursor = self._conn.execute(
+            "SELECT * FROM thread_messages WHERE thread_id = ? AND seq = ?",
+            (thread_id, seq),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return ThreadMessage(
+            id=row["id"],
+            thread_id=row["thread_id"],
+            seq=row["seq"],
+            speaker=row["speaker"],
+            kind=ThreadMessageKind(row["kind"]),
+            body_markdown=row["body_markdown"],
+            addressed_to=json.loads(row["addressed_to_json"]) if row["addressed_to_json"] else None,
+            decline_reason=row["decline_reason"],
+            system_payload=json.loads(row["system_payload_json"]) if row["system_payload_json"] else None,
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+    @_synchronized
+    def mint_thread_invocation(
+        self,
+        *,
+        thread_id: str,
+        agent_name: str,
+        triggering_seq: int,
+        purpose: ThreadInvocationPurpose,
+    ) -> ThreadInvocation:
+        import uuid as _uuid
+        token = _uuid.uuid4().hex
+        now = _now().isoformat()
+        cursor = self._conn.execute(
+            "INSERT INTO thread_invocations (thread_id, agent_name, "
+            "invocation_token, triggering_seq, purpose, status, enqueued_at) "
+            "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+            (thread_id, agent_name, token, triggering_seq, purpose.value, now),
+        )
+        self._conn.commit()
+        return ThreadInvocation(
+            id=cursor.lastrowid,
+            thread_id=thread_id,
+            agent_name=agent_name,
+            invocation_token=token,
+            triggering_seq=triggering_seq,
+            purpose=purpose,
+            status=ThreadInvocationStatus.PENDING,
+            enqueued_at=datetime.fromisoformat(now),
+        )
+
+    def _row_to_invocation(self, row) -> ThreadInvocation:
+        return ThreadInvocation(
+            id=row["id"],
+            thread_id=row["thread_id"],
+            agent_name=row["agent_name"],
+            invocation_token=row["invocation_token"],
+            triggering_seq=row["triggering_seq"],
+            purpose=ThreadInvocationPurpose(row["purpose"]),
+            status=ThreadInvocationStatus(row["status"]),
+            enqueued_at=datetime.fromisoformat(row["enqueued_at"]),
+            started_at=datetime.fromisoformat(row["started_at"]) if row["started_at"] else None,
+            consumed_at=datetime.fromisoformat(row["consumed_at"]) if row["consumed_at"] else None,
+            session_id=row["session_id"],
+            dispatched_task_id=row["dispatched_task_id"],
+            decline_reason=row["decline_reason"],
+        )
+
+    @_synchronized
+    def get_pending_invocation(self, token: str) -> ThreadInvocation | None:
+        cursor = self._conn.execute(
+            "SELECT * FROM thread_invocations "
+            "WHERE invocation_token = ? AND status = 'pending'",
+            (token,),
+        )
+        row = cursor.fetchone()
+        return self._row_to_invocation(row) if row else None
+
+    @_synchronized
+    def get_invocation_any_status(self, token: str) -> ThreadInvocation | None:
+        cursor = self._conn.execute(
+            "SELECT * FROM thread_invocations WHERE invocation_token = ?",
+            (token,),
+        )
+        row = cursor.fetchone()
+        return self._row_to_invocation(row) if row else None
+
+    @_synchronized
+    def consume_invocation(self, token: str) -> bool:
+        cursor = self._conn.execute(
+            "UPDATE thread_invocations SET status = 'consumed', "
+            "consumed_at = ? WHERE invocation_token = ? AND status = 'pending'",
+            (_now().isoformat(), token),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    @_synchronized
+    def record_dispatch_on_invocation(
+        self, token: str, *, task_id: str
+    ) -> bool:
+        cursor = self._conn.execute(
+            "UPDATE thread_invocations SET dispatched_task_id = ? "
+            "WHERE invocation_token = ? AND status = 'pending' "
+            "AND dispatched_task_id IS NULL",
+            (task_id, token),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    @_synchronized
+    def fail_invocation(
+        self, token: str, *, status: ThreadInvocationStatus, decline_reason: str
+    ) -> bool:
+        cursor = self._conn.execute(
+            "UPDATE thread_invocations SET status = ?, decline_reason = ?, "
+            "consumed_at = ? WHERE invocation_token = ? AND status = 'pending'",
+            (status.value, decline_reason, _now().isoformat(), token),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    @_synchronized
+    def stamp_invocation_started(
+        self, token: str, *, session_id: str | None
+    ) -> None:
+        self._conn.execute(
+            "UPDATE thread_invocations SET started_at = ?, session_id = ? "
+            "WHERE invocation_token = ? AND status = 'pending'",
+            (_now().isoformat(), session_id, token),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def list_thread_invocations(
+        self,
+        thread_id: str,
+        *,
+        status: ThreadInvocationStatus | None = None,
+    ) -> list[ThreadInvocation]:
+        if status is not None:
+            cursor = self._conn.execute(
+                "SELECT * FROM thread_invocations "
+                "WHERE thread_id = ? AND status = ? ORDER BY id",
+                (thread_id, status.value),
+            )
+        else:
+            cursor = self._conn.execute(
+                "SELECT * FROM thread_invocations WHERE thread_id = ? ORDER BY id",
+                (thread_id,),
+            )
+        return [self._row_to_invocation(r) for r in cursor.fetchall()]
+
+    @_synchronized
+    def reap_pending_invocations(
+        self,
+        thread_id: str,
+        *,
+        purposes: list[ThreadInvocationPurpose] | None = None,
+        decline_reason: str,
+    ) -> int:
+        now = _now().isoformat()
+        if purposes is None:
+            cursor = self._conn.execute(
+                "UPDATE thread_invocations SET status = 'failed', "
+                "decline_reason = ?, consumed_at = ? "
+                "WHERE thread_id = ? AND status = 'pending'",
+                (decline_reason, now, thread_id),
+            )
+        else:
+            placeholders = ",".join("?" * len(purposes))
+            values = [decline_reason, now, thread_id] + [p.value for p in purposes]
+            cursor = self._conn.execute(
+                f"UPDATE thread_invocations SET status = 'failed', "
+                f"decline_reason = ?, consumed_at = ? "
+                f"WHERE thread_id = ? AND status = 'pending' "
+                f"AND purpose IN ({placeholders})",
+                values,
+            )
+        self._conn.commit()
+        return cursor.rowcount
+
+    @_synchronized
+    def increment_thread_turns_used(self, thread_id: str, *, by: int = 1) -> None:
+        self._conn.execute(
+            "UPDATE threads SET turns_used = turns_used + ? WHERE id = ?",
+            (by, thread_id),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def set_thread_status(
+        self,
+        thread_id: str,
+        *,
+        status: ThreadStatus,
+        summary: str | None = None,
+    ) -> None:
+        now = _now().isoformat()
+        if status is ThreadStatus.ARCHIVING:
+            self._conn.execute(
+                "UPDATE threads SET status = ?, summary = COALESCE(?, summary), "
+                "archive_requested_at = ? WHERE id = ?",
+                (status.value, summary, now, thread_id),
+            )
+        elif status is ThreadStatus.ABANDONED:
+            self._conn.execute(
+                "UPDATE threads SET status = ?, archived_at = COALESCE(archived_at, ?) "
+                "WHERE id = ?",
+                (status.value, now, thread_id),
+            )
+        else:
+            self._conn.execute(
+                "UPDATE threads SET status = ? WHERE id = ?",
+                (status.value, thread_id),
+            )
+        self._conn.commit()
+
+    @_synchronized
+    def finalize_thread_archived(
+        self,
+        thread_id: str,
+        *,
+        transcript_path: str,
+        new_kb_slugs: list[str],
+    ) -> None:
+        self._conn.execute(
+            "UPDATE threads SET status = 'archived', archived_at = ?, "
+            "transcript_path = ?, new_kb_slugs_json = ? WHERE id = ?",
+            (
+                _now().isoformat(),
+                transcript_path,
+                json.dumps(new_kb_slugs) if new_kb_slugs else None,
+                thread_id,
+            ),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def set_thread_turn_cap(self, thread_id: str, *, new_cap: int) -> None:
+        self._conn.execute(
+            "UPDATE threads SET turn_cap = ? WHERE id = ?",
+            (new_cap, thread_id),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def add_thread_kb_slug(self, thread_id: str, slug: str) -> None:
+        cursor = self._conn.execute(
+            "SELECT new_kb_slugs_json FROM threads WHERE id = ?", (thread_id,)
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return
+        slugs = json.loads(row["new_kb_slugs_json"]) if row["new_kb_slugs_json"] else []
+        if slug in slugs:
+            return
+        slugs.append(slug)
+        self._conn.execute(
+            "UPDATE threads SET new_kb_slugs_json = ? WHERE id = ?",
+            (json.dumps(slugs), thread_id),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def add_thread_learnings_count(self, thread_id: str, *, count: int) -> None:
+        """Increment new_learnings_total on a thread. Called from close-out callback."""
+        if count <= 0:
+            return
+        self._conn.execute(
+            "UPDATE threads SET new_learnings_total = new_learnings_total + ? "
+            "WHERE id = ?",
+            (count, thread_id),
+        )
+        self._conn.commit()
 
     @_synchronized
     def insert_talk(self, talk: TalkRecord) -> None:

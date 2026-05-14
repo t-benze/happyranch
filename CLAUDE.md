@@ -37,7 +37,7 @@ In the `protocol/` folder:
 - **Agent workflow**: Shared workspace skills (`protocol/skills/`) — `start-task`, `make-worktree`, `manage-repo`, `manage-agent`. The orchestrator prompt references the same SOPs across all executors
 - **Orchestrator**: Custom Python application. `run_step` is the only primitive — each invocation advances one task by one subprocess call; an async `TaskQueue` + worker pool (`src/daemon/queue.py`) drives re-enqueues across steps. The team manager drives decisions; performance scoring derives from implicit review verdicts on delegated work
 - **Data models**: Pydantic v2 + pydantic-settings
-- **Database**: SQLite with WAL mode (audit logs, scorecards, task state) — per-org under `<runtime>/orgs/<slug>/opc.db`. Per-session token usage rows live in `session_token_usage`; see `docs/superpowers/specs/2026-05-05-token-usage-tracking-design.md`. Per-escalation Feishu correlation rows live in `escalation_notifications` and inbound-event dedup rows in `processed_event_ids`; see `docs/superpowers/specs/2026-05-08-feishu-notification-design.md`.
+- **Database**: SQLite with WAL mode (audit logs, scorecards, task state) — per-org under `<runtime>/orgs/<slug>/opc.db`. Per-session token usage rows live in `session_token_usage`; see `docs/superpowers/specs/2026-05-05-token-usage-tracking-design.md`. Per-escalation Feishu correlation rows live in `escalation_notifications` and inbound-event dedup rows in `processed_event_ids`; see `docs/superpowers/specs/2026-05-08-feishu-notification-design.md`. Threads (`threads`, `thread_participants`, `thread_messages`, `thread_invocation_tokens`) follow the same per-org SQLite + async TaskQueue patterns; see `docs/superpowers/specs/2026-05-13-threads-design.md`.
 - **Feishu integration**: `lark-oapi>=1.6,<2` (official ByteDance SDK) — used by `src/infrastructure/feishu/` (outbound `im.v1.message.create`) and `src/daemon/feishu_listener.py` (inbound WebSocket subscription to `im.message.receive_v1`).
 - **Knowledge base**: File-backed markdown under `<runtime>/orgs/<slug>/kb/` with atomic writes, substring/tag search, `_index.md` regeneration. No vector store yet
 - **LLM**: Provider depends on the selected executor
@@ -58,9 +58,10 @@ System kernel milestones — the org-agnostic infrastructure. Building out a spe
 9. ~~**Org-per-runtime layout**~~ done — file-backed `org/{charter.md,escalation-rules.md,teams.yaml,config.yaml,agents/}`, with `opc migrate-to-org-runtime` for legacy DB-backed agents.
 10. ~~**Multi-org container**~~ done — one runtime hosts multiple orgs under `<runtime>/orgs/<slug>/`. Per-org DB, workspaces, KB, talks. `opc migrate-to-multi-org` for in-place v1 → v2 migration.
 11. ~~**Feishu notifications**~~ done — push escalation notifications to a configured Feishu chat; founder replies in-thread with `APPROVE` or `REJECT` plus a rationale and the listener calls the same in-process resolve-escalation route the CLI uses. Per-org opt-in via `feishu_notifications` in `org/config.yaml`. Spec: `docs/superpowers/specs/2026-05-08-feishu-notification-design.md`.
-12. **Inter-team communication** — orchestrator routes tasks between teams (e.g., engineering manager hands a payment-change review to a compliance team manager). Currently `--team <name>` works because most runtimes have a single team; cross-team handoff is not yet implemented.
-13. **Founder dashboard** — aggregate audit logs, escalation summaries, scorecards into a weekly view. Design doc: `protocol/05e-dashboard.md`.
-14. **Persistent agents** — long-running agent loops for runtime patterns that don't fit single-task batch execution (e.g., a real-time customer-chat worker). Currently every agent session is one task → one subprocess.
+12. ~~**Threads (foundation)**~~ done — email-style multi-agent workchannels with daemon-minted invocation tokens. CLI surface, end-to-end integration coverage via `fake_claude.sh` thread-prompt routing. Textual TUI is a follow-up. Spec: `docs/superpowers/specs/2026-05-13-threads-design.md`. Plan: `docs/superpowers/plans/2026-05-13-threads-foundation.md`.
+13. **Inter-team communication** — orchestrator routes tasks between teams (e.g., engineering manager hands a payment-change review to a compliance team manager). Currently `--team <name>` works because most runtimes have a single team; cross-team handoff is not yet implemented.
+14. **Founder dashboard** — aggregate audit logs, escalation summaries, scorecards into a weekly view. Design doc: `protocol/05e-dashboard.md`.
+15. **Persistent agents** — long-running agent loops for runtime patterns that don't fit single-task batch execution (e.g., a real-time customer-chat worker). Currently every agent session is one task → one subprocess.
 
 ## Directory Layout
 
@@ -162,8 +163,10 @@ Source code lives in the repo. Runtime data lives in a dedicated **runtime conta
         |-- kb/
         |   |-- _index.md              # Regenerated after every write
         |   +-- <slug>.md              # Flat; filename = slug
-        +-- talks/
-            +-- TALK-NNN.md
+        |-- talks/
+        |   +-- TALK-NNN.md
+        +-- threads/
+            +-- THR-NNN.md
 ```
 
 A single daemon serves every org in the container concurrently. Per-org HTTP routes live under `/api/v1/orgs/<slug>/...`; container-level routes under `/api/v1/runtime` and `/api/v1/orgs`.
@@ -277,6 +280,13 @@ uv run pytest tests/ -v -m ""            # both
 ```
 
 Integration tests are excluded by default because they spawn a real daemon and fake CLIs. They are isolated from `~/.opc/` via `OPC_DAEMON_HOME`. **Run them locally before any change touching the daemon lifespan, SessionTracker, or callback routes** — that's the surface area where unit tests have historically missed regressions. CI runs them on every PR.
+
+`tests/integration/fake_claude.sh` recognizes two prompt shapes and routes to two plan-env vars:
+
+- **Task invocations** — extracts `task_id` / `session_id` from the start-task SKILL's `Parameters:` block and sources `$FAKE_CLAUDE_PLAN` with `(task_id, session_id, agent, org_slug)`.
+- **Thread invocations** — detects the `Your invocation_token for this turn is: …` line, extracts `THR-NNN` + token + purpose (reply / bootstrap / close_out), and sources `$FAKE_CLAUDE_THREAD_PLAN` with `(thread_id, token, agent, org_slug, purpose)`. Agent name comes from `${PWD##*/}` because the thread prompt's first line is "You are participating in thread …" rather than "You are <agent>." — keep that derivation if you touch the script.
+
+Two env vars / two fixtures (`fake_claude_plan_env` and `fake_claude_thread_plan_env`) keep the two flows independent. A test that exercises BOTH a thread invocation AND a dispatched task (e.g., `tests/integration/test_threads_e2e.py::test_agent_dispatch_from_thread_creates_task`) sets both plans.
 
 ## Running the Daemon + CLI
 
