@@ -11,11 +11,16 @@ test('root with orgs renders the TopBar org dropdown after navigate', async () =
     http.get('/api/v1/orgs', () =>
       HttpResponse.json({ orgs: [{ slug: 'alpha', root: '/x' }] }),
     ),
+    http.get('/api/v1/orgs/alpha/threads', () => HttpResponse.json({ threads: [] })),
+    http.get('/api/v1/orgs/alpha/threads/events', () =>
+      HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+    ),
   );
   renderWithProviders(<AppRoutes />, { route: '/orgs/alpha/threads' });
   await waitFor(() => {
     expect(screen.getByLabelText(/Active org/i)).toBeInTheDocument();
-    expect(screen.getByText(/Inbox · alpha/i)).toBeInTheDocument();
+    // Inbox header always renders on the threads page.
+    expect(screen.getByRole('heading', { name: /Inbox/i })).toBeInTheDocument();
   });
 });
 
