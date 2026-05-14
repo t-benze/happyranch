@@ -37,6 +37,7 @@ class ThreadsApp(App):
         self._inbox_rows: dict[str, dict] = {}
         self._current_thread_id: str | None = None
         self._client = None  # lazy AsyncOpcClient; created on first HTTP call
+        self._inbox_event_task = None
 
     def compose(self):
         yield Header(show_clock=False)
@@ -58,8 +59,28 @@ class ThreadsApp(App):
             self._client = AsyncOpcClient(base_url=self._base_url, token=self._token)
         return await self._client.list_threads(slug=slug)
 
+    async def _iter_inbox_events_impl(self):
+        """Yield inbox events from /threads/events SSE. Overridable in tests."""
+        from src.tui.api_client import AsyncOpcClient
+        if self._client is None:
+            self._client = AsyncOpcClient(base_url=self._base_url, token=self._token)
+        async for event in self._client.iter_sse(
+            f"/api/v1/orgs/{self._slug}/threads/events"
+        ):
+            yield event
+
+    async def _inbox_event_loop(self) -> None:
+        try:
+            async for _ in self._iter_inbox_events_impl():
+                await self._refresh_inbox()
+        except Exception as exc:  # noqa: BLE001
+            self.notify(f"SSE inbox stream closed: {exc}", severity="warning")
+
     async def on_mount(self) -> None:
         await self._refresh_inbox()
+        self._inbox_event_task = self.run_worker(
+            self._inbox_event_loop(), exclusive=True, name="inbox_events",
+        )
 
     async def _refresh_inbox(self) -> None:
         try:

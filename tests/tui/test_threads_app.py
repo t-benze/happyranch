@@ -129,3 +129,29 @@ async def test_initial_load_populates_inbox(monkeypatch):
         from textual.widgets import ListView
         list_view = app.query_one("#inbox-list", ListView)
         assert len(list_view.children) == 1
+
+
+async def test_inbox_sse_event_triggers_refresh(monkeypatch):
+    app = ThreadsApp(slug="alpha", base_url="http://test", token="tok")
+    refresh_count = 0
+
+    async def fake_list_threads(*, slug, **kwargs):
+        nonlocal refresh_count
+        refresh_count += 1
+        return []
+
+    async def fake_iter_events():
+        yield {"thread_id": "THR-001", "event_kind": "message"}
+        yield {"thread_id": "THR-002", "event_kind": "system"}
+
+    monkeypatch.setattr(app, "_list_threads_impl", fake_list_threads)
+    monkeypatch.setattr(app, "_iter_inbox_events_impl", fake_iter_events)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Two SSE events → two extra refresh calls (plus 1 from on_mount).
+        for _ in range(40):
+            if refresh_count >= 3:
+                break
+            await pilot.pause()
+    assert refresh_count >= 3
