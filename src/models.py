@@ -182,6 +182,7 @@ class ThreadRecord(BaseModel):
     turns_used: int = 0
     summary: str | None = None
     new_kb_slugs: list[str] = Field(default_factory=list)
+    new_learnings_total: int = 0
     transcript_path: str | None = None
     archive_requested_at: datetime | None = None
 

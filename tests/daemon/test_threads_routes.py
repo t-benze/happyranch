@@ -507,6 +507,53 @@ def test_close_out_writes_learnings_and_kb_slugs(tmp_home, app, org_state, auth_
     assert org_state.db.get_pending_invocation(inv.invocation_token) is None
 
 
+def test_close_out_does_not_append_learnings_when_consume_loses(tmp_home, app, org_state, auth_headers, monkeypatch):
+    """If consume_invocation returns False (race lost), the request must
+    return 409 WITHOUT appending to learnings.md.
+
+    We simulate the race by patching consume_invocation to return False.
+    Before the fix, _append_to_learnings_file would have already run; after
+    the fix, it must not.
+    """
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"],
+              "body_markdown": "hi", "addressed_to": ["@all"]},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/archive",
+        json={"summary": "done", "request_close_outs": True},
+        headers=auth_headers,
+    )
+    inv = next(
+        i for i in org_state.db.list_thread_invocations(tid)
+        if i.purpose.value == "close_out" and i.agent_name == "dev_agent"
+    )
+
+    # Patch consume_invocation to lose the race.
+    monkeypatch.setattr(org_state.db, "consume_invocation", lambda token: False)
+
+    learnings_file = org_state.root / "workspaces" / "dev_agent" / "learnings.md"
+    before = learnings_file.read_text(encoding="utf-8") if learnings_file.exists() else ""
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/close-out",
+        json={"thread_id": tid, "invocation_token": inv.invocation_token,
+              "agent": "dev_agent",
+              "learnings": [{"text": "would-be lost on race"}],
+              "kb_slugs": []},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 409
+    after = learnings_file.read_text(encoding="utf-8") if learnings_file.exists() else ""
+    assert after == before, "learnings.md should be unchanged when consume loses"
+    assert "would-be lost on race" not in after
+
+
 def test_abandon_reaps_pending_and_writes_no_transcript(tmp_home, app, org_state, auth_headers):
     client = TestClient(app)
     _seed_agent(org_state, "dev_agent")

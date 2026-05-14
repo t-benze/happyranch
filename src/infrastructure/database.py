@@ -373,6 +373,12 @@ class Database:
             )
         except sqlite3.OperationalError:
             pass
+        try:
+            self._conn.execute(
+                "ALTER TABLE threads ADD COLUMN new_learnings_total INTEGER NOT NULL DEFAULT 0"
+            )
+        except sqlite3.OperationalError:
+            pass
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tasks_dispatched_from_thread_id "
             "ON tasks(dispatched_from_thread_id) "
@@ -1345,6 +1351,7 @@ class Database:
             turns_used=row["turns_used"],
             summary=row["summary"],
             new_kb_slugs=json.loads(row["new_kb_slugs_json"]) if row["new_kb_slugs_json"] else [],
+            new_learnings_total=row["new_learnings_total"] if "new_learnings_total" in row.keys() else 0,
             transcript_path=row["transcript_path"],
             archive_requested_at=datetime.fromisoformat(row["archive_requested_at"]) if row["archive_requested_at"] else None,
         )
@@ -1744,6 +1751,18 @@ class Database:
         self._conn.execute(
             "UPDATE threads SET new_kb_slugs_json = ? WHERE id = ?",
             (json.dumps(slugs), thread_id),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def add_thread_learnings_count(self, thread_id: str, *, count: int) -> None:
+        """Increment new_learnings_total on a thread. Called from close-out callback."""
+        if count <= 0:
+            return
+        self._conn.execute(
+            "UPDATE threads SET new_learnings_total = new_learnings_total + ? "
+            "WHERE id = ?",
+            (count, thread_id),
         )
         self._conn.commit()
 

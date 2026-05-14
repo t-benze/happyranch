@@ -946,6 +946,7 @@ async def close_out_thread_endpoint(
     if not org.db.is_thread_participant(thread_id, body.agent):
         raise HTTPException(status_code=403, detail={"code": "not_participant"})
 
+    # Validate KB slugs exist (read-only, before acquiring any lock).
     kb = KBStore(org.root / "kb")
     for kb_slug in body.kb_slugs:
         try:
@@ -956,22 +957,28 @@ async def close_out_thread_endpoint(
                 detail={"code": "kb_slug_not_found", "slug": kb_slug},
             )
 
-    workspace = org.root / "workspaces" / body.agent
-    learnings_path = workspace / "learnings.md"
-    for entry in body.learnings:
-        _append_to_learnings_file(learnings_path, body.agent, entry.text)
-
+    # Atomic token consume + DB updates under the lock. File writes happen
+    # AFTER the lock to keep the critical section short, but ONLY if consume
+    # succeeded — which guarantees this request is the unique winner for
+    # this token.
     async with org.db_lock:
-        if org.db.get_pending_invocation(body.invocation_token) is None:
+        if not org.db.consume_invocation(body.invocation_token):
             raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
-        org.db.consume_invocation(body.invocation_token)
         for kb_slug in body.kb_slugs:
             org.db.add_thread_kb_slug(thread_id, kb_slug)
+        org.db.add_thread_learnings_count(thread_id, count=len(body.learnings))
         AuditLogger(org.db).log_thread_close_out_received(
             thread_id, agent=body.agent,
             new_learnings_count=len(body.learnings),
             new_kb_slugs=body.kb_slugs,
         )
+
+    # Now safe: token is consumed, no other request can reach this point with
+    # the same token.
+    workspace = org.root / "workspaces" / body.agent
+    learnings_path = workspace / "learnings.md"
+    for entry in body.learnings:
+        _append_to_learnings_file(learnings_path, body.agent, entry.text)
 
     await _publish_thread_event(
         org, slug,
