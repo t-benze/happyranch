@@ -34,6 +34,7 @@ In the `protocol/` folder:
 - **Agent executor**: Per-agent. Claude Code (`claude -p ... --permission-mode auto`), Codex (`codex exec --json -`), and opencode (`opencode run`) are supported — no third-party agent framework dependency
 - **Daemon**: FastAPI HTTP service (`src/daemon/`) — serves orchestrator work, SSE task events, agent callbacks
 - **CLI**: Thin HTTP client (`src/client/`) that talks to the daemon over localhost
+- **Web UI**: Localhost SPA bundled into the daemon (`web/` → built to `web/dist/` → served at `/`). React 18 + TypeScript strict + Tailwind 3 + TanStack Query v5 + React Router v6. Auth via the same bearer token at `~/.opc/daemon.token`, fetched once via `GET /api/v1/auth/bootstrap` (localhost-gated). Spec: `docs/superpowers/specs/2026-05-14-web-ui-design.md`. Launch with `opc web`
 - **Agent workflow**: Shared workspace skills (`protocol/skills/`) — `start-task`, `make-worktree`, `manage-repo`, `manage-agent`. The orchestrator prompt references the same SOPs across all executors
 - **Orchestrator**: Custom Python application. `run_step` is the only primitive — each invocation advances one task by one subprocess call; an async `TaskQueue` + worker pool (`src/daemon/queue.py`) drives re-enqueues across steps. The team manager drives decisions; performance scoring derives from implicit review verdicts on delegated work
 - **Data models**: Pydantic v2 + pydantic-settings
@@ -59,6 +60,7 @@ System kernel milestones — the org-agnostic infrastructure. Building out a spe
 10. ~~**Multi-org container**~~ done — one runtime hosts multiple orgs under `<runtime>/orgs/<slug>/`. Per-org DB, workspaces, KB, talks. `opc migrate-to-multi-org` for in-place v1 → v2 migration.
 11. ~~**Feishu notifications**~~ done — push escalation notifications to a configured Feishu chat; founder replies in-thread with `APPROVE` or `REJECT` plus a rationale and the listener calls the same in-process resolve-escalation route the CLI uses. Per-org opt-in via `feishu_notifications` in `org/config.yaml`. Spec: `docs/superpowers/specs/2026-05-08-feishu-notification-design.md`.
 12. ~~**Threads (foundation)**~~ done — email-style multi-agent workchannels with daemon-minted invocation tokens. CLI surface, end-to-end integration coverage via `fake_claude.sh` thread-prompt routing, plus a Textual TUI (`opc threads` no subcommand). Spec: `docs/superpowers/specs/2026-05-13-threads-design.md`. Plans: `docs/superpowers/plans/2026-05-13-threads-foundation.md`, `docs/superpowers/plans/2026-05-13-threads-tui.md`.
+12a. ~~**Threads web UI**~~ done — localhost React+Tailwind SPA bundled into the FastAPI daemon, replaces the TUI as the primary founder surface. Three-layer architecture (`lib/api/` 1:1 daemon mirror → `features/<domain>/` → generic `components/`) designed to absorb future CLI domains (tasks/KB/audit/agents/talks/tokens) via a copy-paste recipe. OpenAPI snapshot + TS coverage test pin the contract. Spec: `docs/superpowers/specs/2026-05-14-web-ui-design.md`. Plan: `docs/superpowers/plans/2026-05-14-web-ui.md`. **The TUI still works**; it will be deleted in a follow-up commit once the founder signs off on web-UI parity.
 13. **Inter-team communication** — orchestrator routes tasks between teams (e.g., engineering manager hands a payment-change review to a compliance team manager). Currently `--team <name>` works because most runtimes have a single team; cross-team handoff is not yet implemented.
 14. **Founder dashboard** — aggregate audit logs, escalation summaries, scorecards into a weekly view. Design doc: `protocol/05e-dashboard.md`.
 15. **Persistent agents** — long-running agent loops for runtime patterns that don't fit single-task batch execution (e.g., a real-time customer-chat worker). Currently every agent session is one task → one subprocess.
@@ -293,6 +295,47 @@ Integration tests are excluded by default because they spawn a real daemon and f
 
 Two env vars / two fixtures (`fake_claude_plan_env` and `fake_claude_thread_plan_env`) keep the two flows independent. A test that exercises BOTH a thread invocation AND a dispatched task (e.g., `tests/integration/test_threads_e2e.py::test_agent_dispatch_from_thread_creates_task`) sets both plans.
 
+## Web UI
+
+Localhost SPA at `web/`. Three layers (strict, codified in `web/ARCHITECTURE.md`):
+
+1. **`web/src/lib/api/<X>.ts`** — one TS module per `src/daemon/routes/<X>.py`,
+   exposing one pure function per `@router.*` decorator. Agent-callback
+   endpoints are deliberately omitted (`/report-completion`, `/tasks/{id}/
+   completion|progress`, `/agents/manage|repos`, `/agents/{a}/learnings*`
+   writes, thread `/reply|/decline|/dispatch|/close-out`).
+2. **`web/src/features/<domain>/`** — React feature folders. Threads is the
+   only one populated. May import only from `lib/` and `components/`. No
+   cross-feature imports.
+3. **`web/src/components/`** — generic primitives (Button, Modal). Promoted
+   from a feature on third use.
+
+Contract pinning:
+
+- **Python side** — `tests/contract/test_openapi_snapshot.py` pins paths +
+  methods + params + responses to `tests/contract/openapi.json`. Regenerate
+  intentional changes via `OPC_REGEN_OPENAPI=1 uv run pytest
+  tests/contract/test_openapi_snapshot.py`.
+- **TS side** — `web/src/test/openapi-coverage.test.ts` reads the same
+  snapshot and asserts every documented path is in exactly one of
+  `INCLUDED_PATHS` or `EXCLUDED_PATHS`. Adding a new daemon route fails
+  this test until the engineer either writes a TS mirror (and lists the
+  path under INCLUDED) or justifies the exclusion (EXCLUDED with a reason).
+
+Build + dev:
+
+```bash
+scripts/build_web.sh        # production build → web/dist/, served by daemon at /
+cd web && npm run dev       # Vite dev server, /api/* proxied to the daemon
+opc web                     # open the built bundle in the default browser
+```
+
+Auth model: the SPA fetches the daemon's existing bearer token once via
+`GET /api/v1/auth/bootstrap` (localhost-gated; rejects any peer that isn't
+`127.0.0.1`/`::1`/`localhost`), caches it in `sessionStorage`, and attaches
+it to every subsequent HTTP+SSE call. The CLI bearer-token model is
+unchanged.
+
 ## Running the Daemon + CLI
 
 The CLI is an HTTP client. Start the daemon once, then run CLI commands.
@@ -302,6 +345,8 @@ In a multi-org container, every per-org command takes `--org <slug>`. Slug resol
 ```bash
 scripts/daemon.sh start                                         # start daemon in background
 scripts/daemon.sh status                                        # or stop
+scripts/build_web.sh                                            # build web/dist/ (npm ci + vite build)
+opc web [--no-open]                                             # open the SPA in the default browser
 
 # Container-level
 opc init /path/to/runtime                                       # create + register + activate a container (slugless)
