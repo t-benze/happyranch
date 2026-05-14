@@ -105,3 +105,27 @@ async def test_selecting_inbox_row_fetches_and_renders(monkeypatch):
         view = app.query_one("#thread-view", RichLog)
         rendered = "\n".join(str(line) for line in view.lines)
         assert "fetched body" in rendered
+
+
+async def test_initial_load_populates_inbox(monkeypatch):
+    app = ThreadsApp(slug="alpha", base_url="http://test", token="tok")
+    listed = False
+
+    async def fake_list_threads(*, slug, **kwargs):
+        nonlocal listed
+        listed = True
+        return [
+            {"thread_id": "THR-001", "subject": "first", "status": "open",
+             "turns_used": 0, "turn_cap": 500, "transcript_path": None,
+             "started_at": "2026-05-14T00:00:00+00:00", "archived_at": None,
+             "forwarded_from_id": None, "forwarded_from_kind": None,
+             "summary": None, "new_kb_slugs": []},
+        ]
+
+    monkeypatch.setattr(app, "_list_threads_impl", fake_list_threads)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert listed is True
+        from textual.widgets import ListView
+        list_view = app.query_one("#inbox-list", ListView)
+        assert len(list_view.children) == 1

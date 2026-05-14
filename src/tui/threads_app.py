@@ -51,9 +51,27 @@ class ThreadsApp(App):
                 yield Static("Reply: press R", id="compose-pane")
         yield Footer()
 
-    def action_refresh(self) -> None:
-        """Placeholder — refresh wiring lands in Task 9."""
-        self.notify("Refresh: not wired yet")
+    async def _list_threads_impl(self, *, slug: str) -> list[dict]:
+        """Real HTTP call. Overridable in tests."""
+        from src.tui.api_client import AsyncOpcClient
+        if self._client is None:
+            self._client = AsyncOpcClient(base_url=self._base_url, token=self._token)
+        return await self._client.list_threads(slug=slug)
+
+    async def on_mount(self) -> None:
+        await self._refresh_inbox()
+
+    async def _refresh_inbox(self) -> None:
+        try:
+            rows = await self._list_threads_impl(slug=self._slug)
+        except Exception as exc:  # noqa: BLE001
+            self.notify(f"failed to load inbox: {exc}", severity="error")
+            return
+        self.set_threads(rows)
+
+    async def action_refresh(self) -> None:
+        await self._refresh_inbox()
+        self.notify("Inbox refreshed")
 
     def set_threads(self, rows: list[dict]) -> None:
         """Replace the inbox contents with the given thread rows."""
