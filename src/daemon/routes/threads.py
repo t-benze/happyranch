@@ -377,6 +377,21 @@ def _validate_invocation_token(
     return inv
 
 
+def _pending_reply_load(org, thread_id: str) -> int:
+    """Count pending REPLY and BOOTSTRAP invocations on a thread.
+
+    These obligations will increment turns_used when they land (or auto-
+    decline). CLOSE_OUT invocations are excluded — they don't count toward
+    turns_used per spec §5.10.1.
+    """
+    from src.models import ThreadInvocationStatus as _TIS
+    pending = org.db.list_thread_invocations(thread_id, status=_TIS.PENDING)
+    return sum(
+        1 for inv in pending
+        if inv.purpose in {ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP}
+    )
+
+
 def _verify_addressed(org, *, thread_id: str, seq: int, speaker: str) -> None:
     m = org.db.get_thread_message_by_seq(thread_id, seq)
     if m is None:
@@ -654,12 +669,14 @@ async def send_thread_endpoint(
     _validate_addressed_to(body.addressed_to, participants)
     addressed = _resolve_addressed_agents(body.addressed_to, participants)
 
-    if t.turns_used + len(addressed) > t.turn_cap:
+    pending_load = _pending_reply_load(org, thread_id)
+    projected = t.turns_used + pending_load + len(addressed)
+    if projected > t.turn_cap:
         raise HTTPException(
             status_code=429,
             detail={"code": "turn_cap_exceeded",
-                    "used": t.turns_used, "cap": t.turn_cap,
-                    "requested": len(addressed)},
+                    "used": t.turns_used, "pending": pending_load,
+                    "cap": t.turn_cap, "requested": len(addressed)},
         )
 
     tokens_to_enqueue: list[str] = []
@@ -717,11 +734,14 @@ async def invite_thread_endpoint(
     if agent_def is None or not workspace_exists:
         raise HTTPException(status_code=404, detail={"code": "unknown_agent"})
 
-    if t.turns_used + 1 > t.turn_cap:
+    pending_load = _pending_reply_load(org, thread_id)
+    projected = t.turns_used + pending_load + 1
+    if projected > t.turn_cap:
         raise HTTPException(
             status_code=429,
             detail={"code": "turn_cap_exceeded",
-                    "used": t.turns_used, "cap": t.turn_cap, "requested": 1},
+                    "used": t.turns_used, "pending": pending_load,
+                    "cap": t.turn_cap, "requested": 1},
         )
 
     token_to_enqueue: str | None = None

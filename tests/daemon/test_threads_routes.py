@@ -625,3 +625,77 @@ def test_compose_rejects_initial_fanout_over_cap(tmp_home, app, org_state, auth_
     assert resp.json()["detail"]["code"] == "turn_cap_exceeded"
     assert resp.json()["detail"]["cap"] == 1
     assert resp.json()["detail"]["requested"] == 2
+
+
+# ---------------------------------------------------------------------------
+# F2 — count pending invocations against turn_cap on /send and /invite
+# ---------------------------------------------------------------------------
+
+
+def test_send_rejects_when_pending_plus_new_exceeds_cap(tmp_home, app, org_state, auth_headers, monkeypatch):
+    """Pending invocations count against turn_cap. With cap=2 and 2 pending
+    invocations from compose, a second /send to @all must 429."""
+    from dataclasses import replace
+    from src.orchestrator import org_config as _cfg
+    import src.daemon.routes.threads as routes_mod
+
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+
+    real_load = _cfg.load_org_config
+    cap2_load = lambda p: replace(real_load(p), threads_default_turn_cap=2)  # noqa: E731
+    monkeypatch.setattr(_cfg, "load_org_config", cap2_load)
+    monkeypatch.setattr(routes_mod, "load_org_config", cap2_load)
+
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent", "qa_engineer"],
+              "body_markdown": "hi", "addressed_to": ["@all"]},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    tid = r.json()["thread_id"]
+
+    # cap=2, turns_used=0, but 2 pending — second send should be rejected.
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/send",
+        json={"body_markdown": "follow-up", "addressed_to": ["@all"]},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 429, resp.text
+    assert resp.json()["detail"]["code"] == "turn_cap_exceeded"
+    assert resp.json()["detail"]["pending"] == 2
+
+
+def test_invite_rejects_when_pending_plus_one_exceeds_cap(tmp_home, app, org_state, auth_headers, monkeypatch):
+    """Invite mints a bootstrap invocation — must count against cap too."""
+    from dataclasses import replace
+    from src.orchestrator import org_config as _cfg
+    import src.daemon.routes.threads as routes_mod
+
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+
+    real_load = _cfg.load_org_config
+    cap1_load = lambda p: replace(real_load(p), threads_default_turn_cap=1)  # noqa: E731
+    monkeypatch.setattr(_cfg, "load_org_config", cap1_load)
+    monkeypatch.setattr(routes_mod, "load_org_config", cap1_load)
+
+    # cap=1, 1 pending from compose. Invite of another agent would push to 2.
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"],
+              "body_markdown": "hi", "addressed_to": ["@all"]},
+        headers=auth_headers,
+    ).json()
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{r['thread_id']}/invite",
+        json={"agent_name": "qa_engineer"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 429
+    assert resp.json()["detail"]["code"] == "turn_cap_exceeded"
+    assert resp.json()["detail"]["pending"] == 1
