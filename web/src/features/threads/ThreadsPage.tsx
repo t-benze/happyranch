@@ -14,11 +14,12 @@ import { AbandonDialog } from './AbandonDialog';
 import { ArchiveDialog } from './ArchiveDialog';
 import { Composer } from './Composer';
 import { ExtendDialog } from './ExtendDialog';
+import { HelpDrawer } from './HelpDrawer';
 import { InboxList } from './InboxList';
 import { InviteDialog } from './InviteDialog';
 import { NewThreadDialog } from './NewThreadDialog';
 import { ThreadDetailPane } from './ThreadDetailPane';
-import { useThread, useThreadsInboxSSE } from './hooks';
+import { useThread, useThreadMessages, useThreadsInboxSSE } from './hooks';
 
 export function ThreadsPage(): JSX.Element {
   const slug = useOrgSlug();
@@ -29,13 +30,45 @@ export function ThreadsPage(): JSX.Element {
   useThreadsInboxSSE(slug);
 
   const [showNew, setShowNew] = useState(false);
+  const [newPrefill, setNewPrefill] = useState<
+    | { subject?: string; recipients?: string[]; body?: string; forwarded_from_id?: string; forwarded_from_kind?: 'thread' | 'talk' }
+    | undefined
+  >(undefined);
   const [showInvite, setShowInvite] = useState(false);
   const [showArchive, setShowArchive] = useState(false);
   const [showAbandon, setShowAbandon] = useState(false);
   const [showExtend, setShowExtend] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
 
   // Fetch the active thread so dialog handlers know the turn_cap etc.
   const activeThread = useThread(slug, threadId);
+  const activeMessages = useThreadMessages(slug, threadId);
+
+  const openNew = () => {
+    setNewPrefill(undefined);
+    setShowNew(true);
+  };
+
+  const openForward = () => {
+    if (!threadId || !activeThread.data) return;
+    const lastFounderMsg = (activeMessages.data?.messages ?? activeThread.data.messages)
+      .filter((m) => m.kind === 'message' && m.body_markdown)
+      .at(-1);
+    const quoted = lastFounderMsg
+      ? `> from ${threadId} by ${lastFounderMsg.speaker}\n>\n` +
+        lastFounderMsg.body_markdown!
+          .split('\n')
+          .map((l) => `> ${l}`)
+          .join('\n')
+      : `> from ${threadId}`;
+    setNewPrefill({
+      subject: `Fwd: ${activeThread.data.subject}`,
+      body: `${quoted}\n\n`,
+      forwarded_from_id: threadId,
+      forwarded_from_kind: 'thread',
+    });
+    setShowNew(true);
+  };
 
   // Keyboard shortcuts: N / I / A / X / R / ?. Limited to when no input is focused.
   useEffect(() => {
@@ -43,22 +76,25 @@ export function ThreadsPage(): JSX.Element {
       const target = e.target as HTMLElement | null;
       const tag = target?.tagName?.toLowerCase();
       if (tag === 'input' || tag === 'textarea' || target?.isContentEditable) return;
-      if (e.key === 'n' || e.key === 'N') { e.preventDefault(); setShowNew(true); }
+      if (e.key === 'n' || e.key === 'N') { e.preventDefault(); openNew(); }
       else if (threadId && (e.key === 'i' || e.key === 'I')) { e.preventDefault(); setShowInvite(true); }
       else if (threadId && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); setShowArchive(true); }
       else if (threadId && (e.key === 'x' || e.key === 'X')) { e.preventDefault(); setShowAbandon(true); }
+      else if (threadId && (e.key === 'f' || e.key === 'F')) { e.preventDefault(); openForward(); }
       else if (threadId && (e.key === 'r' || e.key === 'R')) {
         e.preventDefault();
         composerFocusRef.current?.();
       }
+      else if (e.key === '?') { e.preventDefault(); setShowHelp(true); }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [threadId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threadId, activeThread.data, activeMessages.data]);
 
   return (
     <div className="grid h-full grid-cols-[320px_1fr]">
-      <InboxList onCompose={() => setShowNew(true)} />
+      <InboxList onCompose={openNew} />
       {threadId ? (
         <ThreadDetailPane
           threadId={threadId}
@@ -83,8 +119,10 @@ export function ThreadsPage(): JSX.Element {
       <NewThreadDialog
         open={showNew}
         onClose={() => setShowNew(false)}
+        prefill={newPrefill}
         onCreated={(newId) => navigate(`/orgs/${slug}/threads/${newId}`)}
       />
+      <HelpDrawer open={showHelp} onClose={() => setShowHelp(false)} />
       {threadId && (
         <>
           <InviteDialog
