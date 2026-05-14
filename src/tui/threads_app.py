@@ -10,7 +10,7 @@ from pathlib import Path
 from textual.app import App
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Footer, Header, ListItem, ListView, Label, RichLog, Static
+from textual.widgets import Footer, Header, ListItem, ListView, Label, RichLog, Static, TextArea
 
 
 CSS_PATH = Path(__file__).parent / "threads_app.tcss"
@@ -26,6 +26,9 @@ class ThreadsApp(App):
         Binding("ctrl+c", "quit", "Quit"),
         Binding("ctrl+r", "refresh", "Refresh"),
         Binding("tab", "focus_next", "Cycle panes"),
+        Binding("r", "focus_compose", "Reply"),
+        Binding("ctrl+enter", "send_reply", "Send", priority=True),
+        Binding("escape", "cancel_compose", "Cancel"),
     ]
 
     def __init__(self, *, slug: str, base_url: str, token: str) -> None:
@@ -50,7 +53,10 @@ class ThreadsApp(App):
                              id="inbox-footer")
             with Vertical(id="right-pane"):
                 yield RichLog(id="thread-view", wrap=True, highlight=False, markup=False)
-                yield Static("Reply: press R", id="compose-pane")
+                with Vertical(id="compose-pane"):
+                    yield Static("Reply (To: @all) — Ctrl+Enter to send, Esc to cancel",
+                                 id="compose-label")
+                    yield TextArea(id="compose-body")
         yield Footer()
 
     async def _list_threads_impl(self, *, slug: str) -> list[dict]:
@@ -182,6 +188,46 @@ class ThreadsApp(App):
                     self.set_thread_detail(detail)
         except Exception as exc:  # noqa: BLE001
             self.notify(f"SSE tail closed: {exc}", severity="warning")
+
+    def action_focus_compose(self) -> None:
+        if self._current_thread_id is None:
+            self.notify("select a thread first", severity="warning")
+            return
+        self.query_one("#compose-body").focus()
+
+    def action_cancel_compose(self) -> None:
+        textarea = self.query_one("#compose-body", TextArea)
+        textarea.text = ""
+        self.query_one("#inbox-list").focus()
+
+    async def _send_thread_impl(self, *, slug, thread_id, body_markdown, addressed_to):
+        from src.tui.api_client import AsyncOpcClient
+        if self._client is None:
+            self._client = AsyncOpcClient(base_url=self._base_url, token=self._token)
+        return await self._client.send_thread(
+            slug=slug, thread_id=thread_id,
+            body_markdown=body_markdown, addressed_to=addressed_to,
+        )
+
+    async def action_send_reply(self) -> None:
+        if self._current_thread_id is None:
+            self.notify("no thread selected", severity="warning")
+            return
+        textarea = self.query_one("#compose-body", TextArea)
+        body = textarea.text.strip()
+        if not body:
+            self.notify("body is empty", severity="warning")
+            return
+        try:
+            await self._send_thread_impl(
+                slug=self._slug, thread_id=self._current_thread_id,
+                body_markdown=body, addressed_to=["@all"],
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.notify(f"send failed: {exc}", severity="error")
+            return
+        textarea.text = ""
+        self.notify("reply sent")
 
     async def on_list_view_selected(self, event) -> None:
         """ListView fires this when Enter is pressed on a row."""

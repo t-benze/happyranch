@@ -39,8 +39,16 @@ Screen {
 
 #compose-pane {
     dock: bottom;
-    height: 5;
+    height: 8;
     border-top: solid $accent;
     padding: 0 1;
+}
+
+#compose-label {
     color: $text-muted;
+    height: 1;
+}
+
+#compose-body {
+    height: 1fr;
 }

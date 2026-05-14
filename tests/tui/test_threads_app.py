@@ -199,3 +199,56 @@ async def test_selecting_thread_subscribes_to_tail(monkeypatch):
                 break
             await pilot.pause()
         assert tail_started_for == ["THR-001"]
+
+
+async def test_reply_posts_send_request(monkeypatch):
+    app = ThreadsApp(slug="alpha", base_url="http://test", token="tok")
+    sent: list[dict] = []
+
+    async def fake_send_thread(*, slug, thread_id, body_markdown, addressed_to):
+        sent.append({"thread_id": thread_id, "body_markdown": body_markdown,
+                     "addressed_to": addressed_to})
+        return {"thread_id": thread_id, "seq": 5, "pending_replies": []}
+
+    async def fake_get_thread(*, slug, thread_id):
+        return {
+            "thread_id": thread_id, "subject": "x", "status": "open",
+            "participants": ["dev_agent"], "messages": [],
+        }
+
+    async def fake_list(*, slug, **kwargs): return []
+    async def fake_inbox_events():
+        if False: yield
+
+    monkeypatch.setattr(app, "_send_thread_impl", fake_send_thread)
+    monkeypatch.setattr(app, "_get_thread_impl", fake_get_thread)
+    monkeypatch.setattr(app, "_list_threads_impl", fake_list)
+    monkeypatch.setattr(app, "_iter_inbox_events_impl", fake_inbox_events)
+    async def fake_tail(thread_id):
+        if False: yield
+    monkeypatch.setattr(app, "_iter_thread_tail_impl", fake_tail)
+
+    async with app.run_test() as pilot:
+        app.set_threads([
+            {"thread_id": "THR-001", "subject": "x", "status": "open",
+             "turns_used": 0, "turn_cap": 500, "transcript_path": None,
+             "started_at": "2026-05-14T00:00:00+00:00", "archived_at": None,
+             "forwarded_from_id": None, "forwarded_from_kind": None,
+             "summary": None, "new_kb_slugs": []},
+        ])
+        list_view = app.query_one("#inbox-list")
+        list_view.focus()
+        list_view.index = 0
+        await pilot.press("enter")
+        await pilot.pause()
+        # Focus compose via R.
+        await pilot.press("r")
+        from textual.widgets import TextArea
+        textarea = app.query_one("#compose-body", TextArea)
+        textarea.text = "follow-up"
+        # Send.
+        await pilot.press("ctrl+enter")
+        await pilot.pause()
+    assert sent == [{"thread_id": "THR-001",
+                     "body_markdown": "follow-up",
+                     "addressed_to": ["@all"]}]
