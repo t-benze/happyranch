@@ -94,4 +94,6 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(kb.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(talks.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(threads.router, prefix="/api/v1/orgs/{slug}", tags=["threads"])
+    from src.daemon.routes import web_static
+    web_static.register(app)
     return app
