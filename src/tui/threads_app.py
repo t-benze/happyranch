@@ -24,6 +24,8 @@ class ThreadsApp(App):
 
     BINDINGS = [
         Binding("ctrl+c", "quit", "Quit"),
+        Binding("ctrl+r", "refresh", "Refresh"),
+        Binding("tab", "focus_next", "Cycle panes"),
     ]
 
     def __init__(self, *, slug: str, base_url: str, token: str) -> None:
@@ -31,11 +33,24 @@ class ThreadsApp(App):
         self._slug = slug
         self._base_url = base_url
         self._token = token
+        self.sub_title = f"org: {slug}"
 
     def compose(self):
         yield Header(show_clock=False)
-        yield Static(f"opc threads · org: {self._slug}  (skeleton — Task 2)", id="placeholder")
+        with Horizontal(id="main"):
+            with Vertical(id="inbox-pane"):
+                yield Static("Threads", id="inbox-title")
+                yield Static("(no threads loaded yet)", id="inbox-list")
+                yield Static("[N]ew  [F]orward  [I]nvite  [A]rchive  [X]bandon",
+                             id="inbox-footer")
+            with Vertical(id="right-pane"):
+                yield Static("(select a thread)", id="thread-view")
+                yield Static("Reply: press R", id="compose-pane")
         yield Footer()
+
+    def action_refresh(self) -> None:
+        """Placeholder — refresh wiring lands in Task 9."""
+        self.notify("Refresh: not wired yet")
 
 
 def run(*, slug: str, base_url: str, token: str) -> int:

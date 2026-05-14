@@ -1,6 +1,46 @@
-/* Layout for the threads TUI. Three panes — see Task 5 for the real grid. */
+Screen {
+    layout: vertical;
+}
 
-#placeholder {
-    padding: 1 2;
+#main {
+    height: 1fr;
+}
+
+#inbox-pane {
+    width: 40;
+    border: round $accent;
+    padding: 0 1;
+}
+
+#inbox-title {
+    text-style: bold;
+    padding: 0 0 1 0;
+}
+
+#inbox-list {
+    height: 1fr;
+}
+
+#inbox-footer {
+    dock: bottom;
+    color: $text-muted;
+}
+
+#right-pane {
+    width: 1fr;
+    border: round $accent;
+    padding: 0 1;
+}
+
+#thread-view {
+    height: 1fr;
+    overflow-y: auto;
+}
+
+#compose-pane {
+    dock: bottom;
+    height: 5;
+    border-top: solid $accent;
+    padding: 0 1;
     color: $text-muted;
 }
