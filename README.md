@@ -229,14 +229,21 @@ opc threads abandon --org <slug> --thread-id THR-001 --reason "..."
 opc threads extend --org <slug> --thread-id THR-001 --new-cap 1000
 ```
 
+When the founder archives a thread with `request_close_outs: true`, the daemon
+invokes every participant once more for a close-out turn — each agent submits
+any new `learnings` and `kb_slugs` for that thread. The transcript frontmatter
+records the per-thread totals, and per-agent learnings land in their
+`learnings.md` (or `learnings/` directory for migrated workspaces).
+
 Configure per-org:
 
 ```yaml
 # <runtime>/orgs/<slug>/org/config.yaml
 threads:
-  enabled: true
-  default_turn_cap: 500
-  close_out_wait_seconds: 300
+  enabled: true                       # default true
+  default_turn_cap: 500               # total agent-turns budgeted per thread
+  close_out_wait_seconds: 300         # how long /archive Phase B waits for close-outs
+  # invocation_timeout_seconds: null  # optional override of session_timeout for thread turns
 ```
 
 A Textual TUI (`opc threads` with no subcommand) is planned for a follow-up
