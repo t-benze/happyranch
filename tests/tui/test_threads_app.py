@@ -155,3 +155,47 @@ async def test_inbox_sse_event_triggers_refresh(monkeypatch):
                 break
             await pilot.pause()
     assert refresh_count >= 3
+
+
+async def test_selecting_thread_subscribes_to_tail(monkeypatch):
+    app = ThreadsApp(slug="alpha", base_url="http://test", token="tok")
+    tail_started_for: list[str] = []
+
+    async def fake_get_thread(*, slug, thread_id):
+        return {
+            "thread_id": thread_id, "subject": "x", "status": "open",
+            "participants": ["dev_agent"], "messages": [],
+        }
+
+    async def fake_tail(thread_id: str):
+        tail_started_for.append(thread_id)
+        yield {"thread_id": thread_id, "seq": 99, "speaker": "dev_agent",
+               "kind": "message", "preview": "live message"}
+
+    monkeypatch.setattr(app, "_get_thread_impl", fake_get_thread)
+    monkeypatch.setattr(app, "_iter_thread_tail_impl", fake_tail)
+    # Stub the inbox sources so on_mount doesn't try to hit a real server.
+    async def fake_list(*, slug, **kwargs): return []
+    async def fake_inbox_events():
+        if False: yield  # never-yielding generator
+    monkeypatch.setattr(app, "_list_threads_impl", fake_list)
+    monkeypatch.setattr(app, "_iter_inbox_events_impl", fake_inbox_events)
+
+    async with app.run_test() as pilot:
+        app.set_threads([
+            {"thread_id": "THR-001", "subject": "x", "status": "open",
+             "turns_used": 0, "turn_cap": 500, "transcript_path": None,
+             "started_at": "2026-05-14T00:00:00+00:00", "archived_at": None,
+             "forwarded_from_id": None, "forwarded_from_kind": None,
+             "summary": None, "new_kb_slugs": []},
+        ])
+        list_view = app.query_one("#inbox-list")
+        list_view.focus()
+        list_view.index = 0
+        await pilot.press("enter")
+        await pilot.pause()
+        for _ in range(40):
+            if "THR-001" in tail_started_for:
+                break
+            await pilot.pause()
+        assert tail_started_for == ["THR-001"]

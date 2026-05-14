@@ -38,6 +38,7 @@ class ThreadsApp(App):
         self._current_thread_id: str | None = None
         self._client = None  # lazy AsyncOpcClient; created on first HTTP call
         self._inbox_event_task = None
+        self._tail_task = None
 
     def compose(self):
         yield Header(show_clock=False)
@@ -158,6 +159,30 @@ class ThreadsApp(App):
             self._client = AsyncOpcClient(base_url=self._base_url, token=self._token)
         return await self._client.get_thread(slug=slug, thread_id=thread_id)
 
+    async def _iter_thread_tail_impl(self, thread_id: str):
+        from src.tui.api_client import AsyncOpcClient
+        if self._client is None:
+            self._client = AsyncOpcClient(base_url=self._base_url, token=self._token)
+        async for event in self._client.iter_sse(
+            f"/api/v1/orgs/{self._slug}/threads/{thread_id}/tail"
+        ):
+            yield event
+
+    async def _tail_loop(self, thread_id: str) -> None:
+        try:
+            async for _event in self._iter_thread_tail_impl(thread_id):
+                if self._current_thread_id == thread_id:
+                    try:
+                        detail = await self._get_thread_impl(
+                            slug=self._slug, thread_id=thread_id,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        self.notify(f"tail refresh failed: {exc}", severity="warning")
+                        continue
+                    self.set_thread_detail(detail)
+        except Exception as exc:  # noqa: BLE001
+            self.notify(f"SSE tail closed: {exc}", severity="warning")
+
     async def on_list_view_selected(self, event) -> None:
         """ListView fires this when Enter is pressed on a row."""
         item_id = event.item.id  # "row-THR-NNN"
@@ -170,6 +195,12 @@ class ThreadsApp(App):
             self.notify(f"failed to load {thread_id}: {exc}", severity="error")
             return
         self.set_thread_detail(detail)
+        # Cancel any previous tail worker; start a new one for this thread.
+        if self._tail_task is not None:
+            self._tail_task.cancel()
+        self._tail_task = self.run_worker(
+            self._tail_loop(thread_id), exclusive=True, name="thread_tail",
+        )
 
 
 def run(*, slug: str, base_url: str, token: str) -> int:
