@@ -2,5 +2,11 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer components {
+  .input {
+    @apply rounded border border-border bg-bg-raised px-2 py-1.5 text-sm text-fg placeholder:text-fg-subtle focus:border-accent focus:outline-none disabled:opacity-50;
+  }
+}
+
 html, body, #root { height: 100%; }
 body { margin: 0; }
