@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import httpx
 from textual.app import App
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -15,6 +16,19 @@ from textual.widgets import Button, Checkbox, Footer, Header, Input, ListItem, L
 
 
 CSS_PATH = Path(__file__).parent / "threads_app.tcss"
+
+
+def _fmt_exc(exc: BaseException) -> str:
+    """Render an exception for the TUI notify line, preserving the daemon's
+    JSON `detail` payload when the cause is an HTTP error. httpx's default
+    str() only shows the URL — useless for diagnosing 4xx/5xx failures."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        try:
+            payload = exc.response.json()
+        except ValueError:
+            payload = exc.response.text
+        return f"HTTP {exc.response.status_code}: {payload}"
+    return str(exc)
 
 
 class NewThreadScreen(ModalScreen):
@@ -249,7 +263,7 @@ class ThreadsApp(App):
         try:
             rows = await self._list_threads_impl(slug=self._slug)
         except Exception as exc:  # noqa: BLE001
-            self.notify(f"failed to load inbox: {exc}", severity="error")
+            self.notify(f"failed to load inbox: {_fmt_exc(exc)}", severity="error")
             return
         self.set_threads(rows)
 
@@ -339,7 +353,7 @@ class ThreadsApp(App):
                             slug=self._slug, thread_id=thread_id,
                         )
                     except Exception as exc:  # noqa: BLE001
-                        self.notify(f"tail refresh failed: {exc}", severity="warning")
+                        self.notify(f"tail refresh failed: {_fmt_exc(exc)}", severity="warning")
                         continue
                     self.set_thread_detail(detail)
         except Exception as exc:  # noqa: BLE001
@@ -380,7 +394,7 @@ class ThreadsApp(App):
                 body_markdown=body, addressed_to=["@all"],
             )
         except Exception as exc:  # noqa: BLE001
-            self.notify(f"send failed: {exc}", severity="error")
+            self.notify(f"send failed: {_fmt_exc(exc)}", severity="error")
             return
         textarea.text = ""
         self.notify("reply sent")
@@ -406,7 +420,7 @@ class ThreadsApp(App):
                 payload["forwarded_from_kind"] = result["forwarded_from_kind"]
             await self._compose_thread_impl(**payload)
         except Exception as exc:  # noqa: BLE001
-            self.notify(f"compose failed: {exc}", severity="error")
+            self.notify(f"compose failed: {_fmt_exc(exc)}", severity="error")
             return
         self.notify("thread created")
         await self._refresh_inbox()
@@ -426,7 +440,7 @@ class ThreadsApp(App):
                 slug=self._slug, thread_id=self._current_thread_id,
             )
         except Exception as exc:  # noqa: BLE001
-            self.notify(f"forward failed to fetch source: {exc}", severity="error")
+            self.notify(f"forward failed to fetch source: {_fmt_exc(exc)}", severity="error")
             return
         from src.daemon.thread_forward import build_forward_body_from_thread
         from src.models import ThreadMessage, ThreadMessageKind
@@ -468,7 +482,7 @@ class ThreadsApp(App):
                 agent_name=name,
             )
         except Exception as exc:  # noqa: BLE001
-            self.notify(f"invite failed: {exc}", severity="error")
+            self.notify(f"invite failed: {_fmt_exc(exc)}", severity="error")
             return
         self.notify(f"invited {name}")
         detail = await self._get_thread_impl(
@@ -507,7 +521,7 @@ class ThreadsApp(App):
                 request_close_outs=result["request_close_outs"],
             )
         except Exception as exc:  # noqa: BLE001
-            self.notify(f"archive failed: {exc}", severity="error")
+            self.notify(f"archive failed: {_fmt_exc(exc)}", severity="error")
             return
         self.notify("archiving — close-outs in flight")
         await self._refresh_inbox()
@@ -537,7 +551,7 @@ class ThreadsApp(App):
                 slug=self._slug, thread_id=self._current_thread_id, reason=reason,
             )
         except Exception as exc:  # noqa: BLE001
-            self.notify(f"abandon failed: {exc}", severity="error")
+            self.notify(f"abandon failed: {_fmt_exc(exc)}", severity="error")
             return
         self.notify("abandoned")
         await self._refresh_inbox()
@@ -556,7 +570,7 @@ class ThreadsApp(App):
         try:
             detail = await self._get_thread_impl(slug=self._slug, thread_id=thread_id)
         except Exception as exc:  # noqa: BLE001
-            self.notify(f"failed to load {thread_id}: {exc}", severity="error")
+            self.notify(f"failed to load {thread_id}: {_fmt_exc(exc)}", severity="error")
             return
         self.set_thread_detail(detail)
         # Pass since_seq so the daemon's /tail replay doesn't re-emit every
