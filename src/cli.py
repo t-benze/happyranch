@@ -1517,6 +1517,17 @@ def cmd_talk_show(args: argparse.Namespace) -> None:
         print(t["transcript"])
 
 
+def cmd_threads_tui(args: argparse.Namespace) -> None:
+    """Launch the Textual TUI for the threads inbox."""
+    client = OpcClient.from_env()
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
+    from src.tui.threads_app import run as run_tui
+    token = client.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    sys.exit(run_tui(slug=slug, base_url=client.base_url, token=token))
+
+
 def cmd_threads_compose(args: argparse.Namespace) -> None:
     import json as _json
     client = OpcClient.from_env()
@@ -2448,7 +2459,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     # opc threads — agent-facing callbacks + founder compose/list
     p_threads = sub.add_parser("threads", help="Thread operations (compose, reply, decline, dispatch, close-out)")
-    threads_sub = p_threads.add_subparsers(dest="threads_command", required=True)
+    p_threads.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_threads.set_defaults(func=cmd_threads_tui)
+    threads_sub = p_threads.add_subparsers(dest="threads_command", required=False)
 
     p_threads_compose = threads_sub.add_parser("compose", help="Compose a new thread (founder)")
     p_threads_compose.add_argument("--org", default=None, help="Org slug")
