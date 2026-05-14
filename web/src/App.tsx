@@ -1,10 +1,27 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { useState } from 'react';
+import { BrowserRouter } from 'react-router-dom';
+import { AppRoutes } from './routes';
+
+export function makeQueryClient(): QueryClient {
+  return new QueryClient({
+    defaultOptions: {
+      queries: {
+        staleTime: 30_000,
+        refetchOnWindowFocus: false,
+        retry: false,
+      },
+    },
+  });
+}
+
 export function App(): JSX.Element {
+  const [client] = useState(makeQueryClient);
   return (
-    <div className="flex h-full items-center justify-center text-fg-muted">
-      <div className="text-center">
-        <h1 className="text-2xl font-semibold text-fg">OPC</h1>
-        <p className="mt-2 text-sm">Web UI scaffolded. Threads feature coming next.</p>
-      </div>
-    </div>
+    <QueryClientProvider client={client}>
+      <BrowserRouter>
+        <AppRoutes />
+      </BrowserRouter>
+    </QueryClientProvider>
   );
 }
