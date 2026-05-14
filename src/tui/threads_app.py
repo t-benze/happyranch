@@ -321,18 +321,18 @@ class ThreadsApp(App):
             self._client = AsyncOpcClient(base_url=self._base_url, token=self._token)
         return await self._client.get_thread(slug=slug, thread_id=thread_id)
 
-    async def _iter_thread_tail_impl(self, thread_id: str):
+    async def _iter_thread_tail_impl(self, thread_id: str, *, since_seq: int = 0):
         from src.tui.api_client import AsyncOpcClient
         if self._client is None:
             self._client = AsyncOpcClient(base_url=self._base_url, token=self._token)
         async for event in self._client.iter_sse(
-            f"/api/v1/orgs/{self._slug}/threads/{thread_id}/tail"
+            f"/api/v1/orgs/{self._slug}/threads/{thread_id}/tail?since_seq={since_seq}"
         ):
             yield event
 
-    async def _tail_loop(self, thread_id: str) -> None:
+    async def _tail_loop(self, thread_id: str, *, since_seq: int = 0) -> None:
         try:
-            async for _event in self._iter_thread_tail_impl(thread_id):
+            async for _event in self._iter_thread_tail_impl(thread_id, since_seq=since_seq):
                 if self._current_thread_id == thread_id:
                     try:
                         detail = await self._get_thread_impl(
@@ -559,11 +559,19 @@ class ThreadsApp(App):
             self.notify(f"failed to load {thread_id}: {exc}", severity="error")
             return
         self.set_thread_detail(detail)
-        # Cancel any previous tail worker; start a new one for this thread.
+        # Pass since_seq so the daemon's /tail replay doesn't re-emit every
+        # historical message (we already have them via _get_thread_impl above).
+        # Without this, _tail_loop would refetch the full detail once per
+        # historical message before any live event arrives.
+        max_seq = max(
+            (m["seq"] for m in detail.get("messages", [])),
+            default=0,
+        )
         if self._tail_task is not None:
             self._tail_task.cancel()
         self._tail_task = self.run_worker(
-            self._tail_loop(thread_id), exclusive=True, name="thread_tail",
+            self._tail_loop(thread_id, since_seq=max_seq),
+            exclusive=True, name="thread_tail",
         )
 
 

@@ -167,7 +167,7 @@ async def test_selecting_thread_subscribes_to_tail(monkeypatch):
             "participants": ["dev_agent"], "messages": [],
         }
 
-    async def fake_tail(thread_id: str):
+    async def fake_tail(thread_id: str, *, since_seq: int = 0):
         tail_started_for.append(thread_id)
         yield {"thread_id": thread_id, "seq": 99, "speaker": "dev_agent",
                "kind": "message", "preview": "live message"}
@@ -224,7 +224,7 @@ async def test_reply_posts_send_request(monkeypatch):
     monkeypatch.setattr(app, "_get_thread_impl", fake_get_thread)
     monkeypatch.setattr(app, "_list_threads_impl", fake_list)
     monkeypatch.setattr(app, "_iter_inbox_events_impl", fake_inbox_events)
-    async def fake_tail(thread_id):
+    async def fake_tail(thread_id, *, since_seq: int = 0):
         if False: yield
     monkeypatch.setattr(app, "_iter_thread_tail_impl", fake_tail)
 
@@ -301,7 +301,7 @@ async def test_invite_modal_invokes_invite(monkeypatch):
     async def fake_list(*, slug, **kwargs): return []
     async def fake_inbox_events():
         if False: yield
-    async def fake_tail(thread_id):
+    async def fake_tail(thread_id, *, since_seq: int = 0):
         if False: yield
 
     monkeypatch.setattr(app, "_invite_impl", fake_invite)
@@ -349,7 +349,7 @@ async def test_archive_modal_invokes_archive(monkeypatch):
     async def fake_list(*, slug, **kwargs): return []
     async def fake_inbox_events():
         if False: yield
-    async def fake_tail(thread_id):
+    async def fake_tail(thread_id, *, since_seq: int = 0):
         if False: yield
 
     monkeypatch.setattr(app, "_archive_impl", fake_archive)
@@ -396,7 +396,7 @@ async def test_abandon_modal_invokes_abandon(monkeypatch):
     async def fake_list(*, slug, **kwargs): return []
     async def fake_inbox_events():
         if False: yield
-    async def fake_tail(thread_id):
+    async def fake_tail(thread_id, *, since_seq: int = 0):
         if False: yield
 
     monkeypatch.setattr(app, "_abandon_impl", fake_abandon)
@@ -451,7 +451,7 @@ async def test_forward_prefills_compose(monkeypatch):
     async def fake_list(*, slug, **kwargs): return []
     async def fake_inbox_events():
         if False: yield
-    async def fake_tail(thread_id):
+    async def fake_tail(thread_id, *, since_seq: int = 0):
         if False: yield
 
     monkeypatch.setattr(app, "_get_thread_impl", fake_get_thread)
@@ -513,3 +513,67 @@ async def test_async_client_is_closed_on_unmount():
         app._client = FakeClient()
         await app.action_quit()
     assert closed is True
+
+
+async def test_tail_subscription_uses_max_seq_of_existing_messages(monkeypatch):
+    """Opening a thread with N historical messages should subscribe to the
+    tail starting at since_seq=N, not 0 — otherwise the daemon replays every
+    persisted message and the TUI does N redundant full-detail fetches."""
+    app = ThreadsApp(slug="alpha", base_url="http://test", token="tok")
+    captured_since_seq: list[int] = []
+
+    async def fake_get_thread(*, slug, thread_id):
+        return {
+            "thread_id": thread_id, "subject": "x", "status": "open",
+            "participants": ["dev_agent"],
+            "messages": [
+                {"seq": 1, "speaker": "founder", "kind": "message",
+                 "body_markdown": "a", "addressed_to": ["@all"],
+                 "decline_reason": None, "system_payload": None,
+                 "created_at": "2026-05-14T00:00:00+00:00"},
+                {"seq": 2, "speaker": "dev_agent", "kind": "message",
+                 "body_markdown": "b", "addressed_to": None,
+                 "decline_reason": None, "system_payload": None,
+                 "created_at": "2026-05-14T00:00:01+00:00"},
+                {"seq": 5, "speaker": "dev_agent", "kind": "message",
+                 "body_markdown": "c", "addressed_to": None,
+                 "decline_reason": None, "system_payload": None,
+                 "created_at": "2026-05-14T00:00:05+00:00"},
+            ],
+        }
+
+    async def fake_tail(thread_id, *, since_seq: int = 0):
+        captured_since_seq.append(since_seq)
+        if False:
+            yield
+
+    async def fake_list(*, slug, **kwargs): return []
+    async def fake_inbox_events():
+        if False: yield
+
+    monkeypatch.setattr(app, "_get_thread_impl", fake_get_thread)
+    monkeypatch.setattr(app, "_iter_thread_tail_impl", fake_tail)
+    monkeypatch.setattr(app, "_list_threads_impl", fake_list)
+    monkeypatch.setattr(app, "_iter_inbox_events_impl", fake_inbox_events)
+
+    async with app.run_test() as pilot:
+        app.set_threads([
+            {"thread_id": "THR-001", "subject": "x", "status": "open",
+             "turns_used": 3, "turn_cap": 500, "transcript_path": None,
+             "started_at": "2026-05-14T00:00:00+00:00", "archived_at": None,
+             "forwarded_from_id": None, "forwarded_from_kind": None,
+             "summary": None, "new_kb_slugs": []},
+        ])
+        list_view = app.query_one("#inbox-list")
+        list_view.focus()
+        list_view.index = 0
+        await pilot.press("enter")
+        # Give the worker a chance to start.
+        for _ in range(20):
+            if captured_since_seq:
+                break
+            await pilot.pause()
+    assert captured_since_seq == [5], (
+        "tail subscription should start at the max seq (5), not 0 — "
+        f"got {captured_since_seq}"
+    )
