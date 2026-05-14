@@ -74,3 +74,16 @@ Screen {
     height: 10;
     margin-bottom: 1;
 }
+
+#invite-modal {
+    width: 60;
+    height: 8;
+    background: $surface;
+    border: round $accent;
+    padding: 1 2;
+}
+
+#invite-label {
+    color: $text-muted;
+    margin-bottom: 1;
+}

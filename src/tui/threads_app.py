@@ -59,6 +59,26 @@ class NewThreadScreen(ModalScreen):
             self.action_submit()
 
 
+class InviteScreen(ModalScreen):
+    BINDINGS = [
+        Binding("escape", "dismiss(None)", "Cancel"),
+        Binding("ctrl+enter", "submit", "Invite", priority=True),
+    ]
+
+    def compose(self):
+        with Vertical(id="invite-modal"):
+            yield Static("Invite agent — Ctrl+Enter to invite, Esc to cancel",
+                         id="invite-label")
+            yield Input(placeholder="agent name", id="invite-agent")
+
+    def action_submit(self) -> None:
+        name = self.query_one("#invite-agent", Input).value.strip()
+        if not name:
+            self.app.notify("agent name required", severity="warning")
+            return
+        self.dismiss(name)
+
+
 class ThreadsApp(App):
     """Three-pane email-style TUI: inbox, thread view, compose."""
 
@@ -70,6 +90,7 @@ class ThreadsApp(App):
         Binding("ctrl+r", "refresh", "Refresh"),
         Binding("tab", "focus_next", "Cycle panes"),
         Binding("n", "new_thread", "New"),
+        Binding("i", "invite", "Invite"),
         Binding("r", "focus_compose", "Reply"),
         Binding("ctrl+enter", "send_reply", "Send", priority=False),
         Binding("escape", "cancel_compose", "Cancel"),
@@ -301,6 +322,35 @@ class ThreadsApp(App):
 
     def action_new_thread(self) -> None:
         self.push_screen(NewThreadScreen(), self._submit_new_thread)
+
+    async def _invite_impl(self, *, slug, thread_id, agent_name):
+        from src.tui.api_client import AsyncOpcClient
+        if self._client is None:
+            self._client = AsyncOpcClient(base_url=self._base_url, token=self._token)
+        return await self._client.invite(slug=slug, thread_id=thread_id, agent_name=agent_name)
+
+    async def _handle_invite(self, name: str | None) -> None:
+        if name is None:
+            return
+        try:
+            await self._invite_impl(
+                slug=self._slug, thread_id=self._current_thread_id,
+                agent_name=name,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.notify(f"invite failed: {exc}", severity="error")
+            return
+        self.notify(f"invited {name}")
+        detail = await self._get_thread_impl(
+            slug=self._slug, thread_id=self._current_thread_id,
+        )
+        self.set_thread_detail(detail)
+
+    def action_invite(self) -> None:
+        if self._current_thread_id is None:
+            self.notify("select a thread first", severity="warning")
+            return
+        self.push_screen(InviteScreen(), self._handle_invite)
 
     async def on_list_view_selected(self, event) -> None:
         """ListView fires this when Enter is pressed on a row."""
