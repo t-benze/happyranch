@@ -130,6 +130,18 @@ def fake_codex_plan_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
 
 
 @pytest.fixture
+def fake_claude_thread_plan_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Pre-declare FAKE_CLAUDE_THREAD_PLAN so the daemon inherits it.
+
+    Same shape as fake_claude_plan_env but routes to a separate script when
+    the prompt is a thread invocation (detected by `Your invocation_token:`).
+    """
+    plan_path = tmp_path / "thread_plan.sh"
+    monkeypatch.setenv("FAKE_CLAUDE_THREAD_PLAN", str(plan_path))
+    return plan_path
+
+
+@pytest.fixture
 def fake_plan_env(fake_claude_plan_env: Path) -> Path:
     """Backward-compatible alias for the Claude plan env fixture."""
     return fake_claude_plan_env
@@ -144,6 +156,7 @@ def live_daemon(
     fake_codex,
     fake_claude_plan_env,
     fake_codex_plan_env,
+    fake_claude_thread_plan_env,
     monkeypatch,
 ):
     """Start the daemon via scripts/daemon.sh and stop it after the test."""
