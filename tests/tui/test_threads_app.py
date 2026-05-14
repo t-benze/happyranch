@@ -486,3 +486,15 @@ async def test_forward_prefills_compose(monkeypatch):
         await pilot.pause()
     assert composed[0]["forwarded_from_id"] == "THR-001"
     assert composed[0]["forwarded_from_kind"] == "thread"
+
+
+async def test_help_modal_lists_keybindings():
+    app = ThreadsApp(slug="alpha", base_url="http://test", token="tok")
+    async with app.run_test() as pilot:
+        await pilot.press("question_mark")
+        await pilot.pause()
+        body = app.query_one("#help-body")
+        # Static's render() returns a Rich renderable; convert to plain text.
+        text = str(body.render()) if hasattr(body, "render") else str(body)
+        for token in ("New", "Reply", "Forward", "Invite", "Archive", "Abandon"):
+            assert token in text, f"{token!r} missing from help text"

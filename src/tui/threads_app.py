@@ -122,6 +122,35 @@ class ArchiveScreen(ModalScreen[dict | None]):
         self.dismiss({"summary": summary, "request_close_outs": close_outs})
 
 
+class HelpScreen(ModalScreen[None]):
+    BINDINGS = [
+        Binding("escape", "dismiss(None)", "Close"),
+        Binding("question_mark", "dismiss(None)", "Close"),
+    ]
+
+    HELP_TEXT = (
+        "Keybindings\n"
+        "\n"
+        "  N         New thread\n"
+        "  R         Reply to current thread\n"
+        "  F         Forward current thread\n"
+        "  I         Invite a participant\n"
+        "  A         Archive (modal: summary + close-outs checkbox)\n"
+        "  X         Abandon (modal: reason)\n"
+        "  Enter     Open selected thread\n"
+        "  Tab       Cycle panes\n"
+        "  Ctrl+R    Refresh inbox\n"
+        "  Ctrl+Enter Send compose / submit modal\n"
+        "  Esc       Cancel compose / dismiss modal\n"
+        "  ?         This help\n"
+        "  Ctrl+C    Quit\n"
+    )
+
+    def compose(self):
+        with Vertical(id="help-modal"):
+            yield Static(self.HELP_TEXT, id="help-body")
+
+
 class ThreadsApp(App):
     """Three-pane email-style TUI: inbox, thread view, compose."""
 
@@ -137,6 +166,7 @@ class ThreadsApp(App):
         Binding("a", "archive", "Archive"),
         Binding("x", "abandon", "Abandon"),
         Binding("f", "forward", "Forward"),
+        Binding("question_mark", "help", "Help"),
         Binding("r", "focus_compose", "Reply"),
         Binding("ctrl+enter", "send_reply", "Send", priority=False),
         Binding("escape", "cancel_compose", "Cancel"),
@@ -368,6 +398,9 @@ class ThreadsApp(App):
 
     def action_new_thread(self) -> None:
         self.push_screen(NewThreadScreen(), self._submit_new_thread)
+
+    def action_help(self) -> None:
+        self.push_screen(HelpScreen())
 
     async def action_forward(self) -> None:
         if self._current_thread_id is None:
