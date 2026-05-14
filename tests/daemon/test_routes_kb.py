@@ -128,13 +128,16 @@ def test_kb_add_rejects_invalid_slug(tmp_home, app, auth_headers):
     assert r.json()["detail"]["code"] == "invalid_slug"
 
 
-def test_kb_add_rejects_invalid_type(tmp_home, app, auth_headers):
+def test_kb_add_accepts_arbitrary_type(tmp_home, app, auth_headers):
+    """`type` is freeform — any non-empty string round-trips."""
     client = TestClient(app)
     r = client.post(
-        "/api/v1/orgs/alpha/kb", json=_add_body(type="guide"), headers=auth_headers,
+        "/api/v1/orgs/alpha/kb", json=_add_body(type="guide", slug="guide-entry"),
+        headers=auth_headers,
     )
-    assert r.status_code == 400
-    assert r.json()["detail"]["code"] == "invalid_type"
+    assert r.status_code == 200, r.text
+    got = client.get("/api/v1/orgs/alpha/kb/guide-entry", headers=auth_headers).json()
+    assert got["type"] == "guide"
 
 
 def test_kb_add_rejects_oversized_body(tmp_home, app, auth_headers):
@@ -297,126 +300,41 @@ def test_kb_reindex_rebuilds_index(tmp_home, app, org_state, auth_headers):
     assert index_path.exists()
 
 
-def _seed_escalated_task(
-    org_state, task_id: str = "TASK-037", brief: str = "Large refund for custom itinerary",
-    reason: str = "Amount exceeds CX cap",
-) -> None:
-    from src.models import BlockKind, TaskRecord, TaskStatus
-    org_state.db.insert_task(TaskRecord(
-        id=task_id, brief=brief,
-    ))
-    org_state.db.update_task(
-        task_id, status=TaskStatus.BLOCKED, block_kind=BlockKind.ESCALATED,
-    )
-    org_state.db.insert_audit_log(
-        task_id=task_id, agent="cx_manager", action="escalation",
-        payload={"reason": reason},
-    )
-
-
-def test_kb_precedent_writes_entry_from_audit_row(tmp_home, app, org_state, auth_headers):
-    _seed_escalated_task(org_state)
+def test_kb_precedent_route_removed(tmp_home, app, auth_headers):
+    """The dedicated `/kb/precedent` route is gone — that path is now just
+    the slug 'precedent' under the standard GET/POST endpoints."""
     client = TestClient(app)
+    # GET behaves as a normal entry lookup (no such slug → 404).
+    r = client.get("/api/v1/orgs/alpha/kb/precedent", headers=auth_headers)
+    assert r.status_code == 404
+    # POSTing the legacy precedent body shape no longer validates.
     r = client.post(
         "/api/v1/orgs/alpha/kb/precedent",
+        json={"task_id": "TASK-001", "decision": "approve", "rationale": "r"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 422
+
+
+def test_kb_accepts_arbitrary_type(tmp_home, app, org_state, auth_headers):
+    """Founders or agents can write a 'precedent'-typed entry through the
+    plain add route — no special route, no --as-founder gate."""
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/kb",
         json={
-            "task_id": "TASK-037",
-            "decision": "approve",
-            "rationale": "Vendor error per partner-log, <$250 risk",
-            "as_founder": True,
+            "agent": "founder",
+            "slug": "ruling-task-099",
+            "title": "Refund cap raised to $500",
+            "type": "precedent",
+            "topic": "payment",
+            "tags": ["refund", "policy"],
+            "body": "# Ruling\n\nFounder decision after TASK-099.\n",
+            "source_task": "TASK-099",
         },
         headers=auth_headers,
     )
     assert r.status_code == 200, r.text
-    slug = r.json()["slug"]
-    assert slug.startswith("precedent-task-037")
-    got = client.get(f"/api/v1/orgs/alpha/kb/{slug}", headers=auth_headers).json()
+    got = client.get("/api/v1/orgs/alpha/kb/ruling-task-099", headers=auth_headers).json()
     assert got["type"] == "precedent"
-    assert got["source_task"] == "TASK-037"
-    assert "Amount exceeds CX cap" in got["body"]
-    assert "Vendor error" in got["body"]
-
-
-def test_kb_precedent_does_not_transition_task_status(tmp_home, app, org_state, auth_headers):
-    from src.models import TaskStatus
-    _seed_escalated_task(org_state, task_id="TASK-038")
-    client = TestClient(app)
-    r = client.post(
-        "/api/v1/orgs/alpha/kb/precedent",
-        json={"task_id": "TASK-038", "decision": "approve", "rationale": "r", "as_founder": True},
-        headers=auth_headers,
-    )
-    assert r.status_code == 200, r.text
-    got = org_state.db.get_task("TASK-038")
-    assert got.status == TaskStatus.BLOCKED
-    from src.models import BlockKind
-    assert got.block_kind == BlockKind.ESCALATED
-
-
-def test_kb_precedent_post_hoc_on_resolved_task(tmp_home, app, org_state, auth_headers):
-    """Founder can write a precedent for an already-resolved task."""
-    from src.models import TaskRecord, TaskStatus
-    org_state.db.insert_task(TaskRecord(
-        id="TASK-039", brief="Partner change",
-        status=TaskStatus.COMPLETED,
-    ))
-    org_state.db.insert_audit_log(
-        task_id="TASK-039", agent="ops_manager", action="escalation",
-        payload={"reason": "Partner contract change outside authority"},
-    )
-    client = TestClient(app)
-    r = client.post(
-        "/api/v1/orgs/alpha/kb/precedent",
-        json={"task_id": "TASK-039", "decision": "approve", "rationale": "Auth granted.", "as_founder": True},
-        headers=auth_headers,
-    )
-    assert r.status_code == 200
-
-
-def test_kb_precedent_rejects_task_without_escalation(tmp_home, app, org_state, auth_headers):
-    from src.models import TaskRecord, TaskStatus
-    org_state.db.insert_task(TaskRecord(
-        id="TASK-040", brief="x", status=TaskStatus.COMPLETED,
-    ))
-    # No escalation audit row
-    client = TestClient(app)
-    r = client.post(
-        "/api/v1/orgs/alpha/kb/precedent",
-        json={"task_id": "TASK-040", "decision": "approve", "rationale": "r", "as_founder": True},
-        headers=auth_headers,
-    )
-    assert r.status_code == 400
-    assert r.json()["detail"]["code"] == "no_escalation_record"
-
-
-def test_kb_precedent_honors_slug_override(tmp_home, app, org_state, auth_headers):
-    _seed_escalated_task(org_state, task_id="TASK-041")
-    client = TestClient(app)
-    r = client.post(
-        "/api/v1/orgs/alpha/kb/precedent",
-        json={
-            "task_id": "TASK-041",
-            "decision": "approve",
-            "rationale": "r",
-            "slug": "precedent-large-refund-policy",
-            "as_founder": True,
-        },
-        headers=auth_headers,
-    )
-    assert r.status_code == 200
-    assert r.json()["slug"] == "precedent-large-refund-policy"
-
-
-def test_kb_precedent_requires_as_founder_flag(tmp_home, app, org_state, auth_headers):
-    """Per spec §4.6, `opc kb precedent` requires --as-founder. The flag is
-    intent, not identity — real auth awaits the Feishu integration — but the
-    gate must exist so founder-only writes can't happen by accident."""
-    _seed_escalated_task(org_state, task_id="TASK-042")
-    client = TestClient(app)
-    r = client.post(
-        "/api/v1/orgs/alpha/kb/precedent",
-        json={"task_id": "TASK-042", "decision": "approve", "rationale": "r"},
-        headers=auth_headers,
-    )
-    assert r.status_code == 403
-    assert r.json()["detail"]["code"] == "as_founder_required"
+    assert got["source_task"] == "TASK-099"

@@ -51,7 +51,7 @@ Parameters:
    - regulatory / compliance rules that bind your org;
    - partner / vendor APIs, integration quirks, rate limits;
    - payment, refund, or other money-flow policies;
-   - any topic where a past escalation likely set precedent.
+   - any topic where a past escalation likely produced a binding ruling.
 
    If nothing matches, proceed. If something matches, treat it as authoritative unless the brief explicitly contradicts it — in which case escalate rather than silently override.
 

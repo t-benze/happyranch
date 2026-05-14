@@ -1143,8 +1143,9 @@ def test_cli_has_kb_subcommands():
     assert "kb" in sub.choices
     kb = sub.choices["kb"]
     kb_sub = next(a for a in kb._actions if a.__class__.__name__ == "_SubParsersAction")
-    for name in ("list", "get", "search", "add", "update", "delete", "reindex", "precedent"):
+    for name in ("list", "get", "search", "add", "update", "delete", "reindex"):
         assert name in kb_sub.choices, f"missing kb subcommand: {name}"
+    assert "precedent" not in kb_sub.choices, "kb precedent removed; founder rulings now flow through plain `kb add`"
 
 
 def test_cli_has_resolve_escalation():
@@ -1177,7 +1178,7 @@ def test_kb_delete_parses_confirm_and_as_founder():
 
 
 def test_kb_write_parsers_require_org():
-    """KB write commands (add/update/delete/precedent) must require --org —
+    """KB write commands (add/update/delete) must require --org —
     they're agent callbacks from skill files where the slug is baked in
     literally."""
     from src.cli import build_parser
@@ -1186,8 +1187,6 @@ def test_kb_write_parsers_require_org():
         ["kb", "add", "--agent", "dev_agent", "--from-file", "/tmp/e.md"],
         ["kb", "update", "alipay", "--agent", "dev_agent", "--from-file", "/tmp/e.md"],
         ["kb", "delete", "alipay", "--agent", "engineering_head", "--confirm"],
-        ["kb", "precedent", "--task-id", "TASK-1",
-         "--decision", "approve", "--rationale", "x"],
     ):
         with pytest.raises(SystemExit):
             parser.parse_args(argv)

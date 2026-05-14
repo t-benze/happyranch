@@ -53,7 +53,7 @@ System kernel milestones — the org-agnostic infrastructure. Building out a spe
 4. ~~**Agent memory**~~ done — persistent workspaces with executor-specific bootstrap docs (`CLAUDE.md` or `AGENTS.md`), per-entry `learnings/LRN-NNN-<slug>.md` files (or legacy flat `learnings.md` for pre-migration workspaces), `task_history.md`. Context builder regenerates identity on tier changes. Per-entry learnings store: `src/infrastructure/learnings_store.py`. CLI: `opc learning list|get|search|add|update|promote|reindex`. Spec: `docs/superpowers/specs/2026-05-13-per-agent-learnings-structural-upgrade-design.md`.
 5. ~~**Performance scoring**~~ done — rolling 30-day scorecards, green/yellow/red tiers, exposed to managers via capabilities prompt.
 6. ~~**Talk flow**~~ done — founder↔agent conversations with SQLite-tracked talks, transcripts under `<runtime>/orgs/<slug>/talks/`, end-of-talk learnings + KB entries.
-7. ~~**Knowledge Base**~~ done — per-org precedents + reference under `<runtime>/orgs/<slug>/kb/`.
+7. ~~**Knowledge Base**~~ done — per-org KB under `<runtime>/orgs/<slug>/kb/`. Single entry shape; `type` is a freeform label. Founder rulings flow through plain `opc kb add` (no special route).
 8. ~~**Revisit primitive**~~ done — founder spawns a new root task that inherits a terminal predecessor's brief while leaving the old lineage frozen.
 9. ~~**Org-per-runtime layout**~~ done — file-backed `org/{charter.md,escalation-rules.md,teams.yaml,config.yaml,agents/}`, with `opc migrate-to-org-runtime` for legacy DB-backed agents.
 10. ~~**Multi-org container**~~ done — one runtime hosts multiple orgs under `<runtime>/orgs/<slug>/`. Per-org DB, workspaces, KB, talks. `opc migrate-to-multi-org` for in-place v1 → v2 migration.
@@ -321,14 +321,13 @@ opc init-agent --org <slug> [<agent>]                       # initialize all (or
 opc recall --org <slug> TASK-001 [--tree] [--fetch-artifact <relpath>]
 
 # Knowledge base (read: any; write: any via --from-file; delete: team manager (audited) or founder via --as-founder)
-opc kb list --org <slug> [--topic <t>] [--type reference|precedent]
+opc kb list --org <slug> [--topic <t>] [--type <label>]
 opc kb get --org <slug> <slug>
 opc kb search --org <slug> <query> [--limit N]
 opc kb add --org <slug> --agent <you> --from-file /tmp/kb-<slug>.md
 opc kb update --org <slug> <slug> --agent <you> --from-file /tmp/kb-<slug>.md
 opc kb delete --org <slug> <slug> --agent <you> --confirm [--as-founder]
 opc kb reindex --org <slug>
-opc kb precedent --org <slug> --task-id TASK-001 --decision approve|reject --rationale "..." [--slug <s>] --as-founder
 
 # Founder primitives
 opc resolve-escalation --org <slug> --task-id TASK-001 --decision approve|reject --rationale "..."
@@ -355,7 +354,7 @@ opc learning get      --org <slug> --agent <you> <LRN-NNN-or-slug> [--json]
 opc learning search   --org <slug> --agent <you> "<query>" [--limit N --include-promoted --json]
 opc learning add      --org <slug> --agent <you> --from-file /tmp/lrn-<slug>.yaml
 opc learning update   --org <slug> --agent <you> <LRN-NNN> --from-file /tmp/lrn-<slug>.yaml
-opc learning promote  --org <slug> --agent <you> <LRN-NNN> --kb-slug <kb-precedent>
+opc learning promote  --org <slug> --agent <you> <LRN-NNN> --kb-slug <kb-slug>
 opc learning reindex  --org <slug> --agent <you>
 # Legacy single-line append (pre-migration workspaces only; returns 410 once migrated)
 opc learning          --org <slug> --agent dev_agent --session-id <sid> --task-id TASK-001 --text "..."
@@ -372,7 +371,7 @@ opc migrate-to-org-runtime <path> --slug <slug> --i-have-a-backup --apply   # le
 
 Per-org under `<runtime>/orgs/<slug>/kb/` (orgs do not share a KB). Any agent reads/writes; team managers delete (audited); founder overrides via `--as-founder`. Full rules: `protocol/06-knowledge-base.md`.
 
-The founder records precedents via the two-command flow: `opc resolve-escalation ...` (state transition) followed by `opc kb precedent --as-founder ...` (KB write, founder-only).
+There is one entry shape — no separate precedent/reference taxonomy at the schema level. `KBEntry.type` is a freeform string (any non-empty label); the route validation only enforces `slug`, `title`, `type`, `topic` are non-empty. `VALID_TYPES` and the dedicated `POST /kb/precedent` endpoint were removed; founder rulings flow through plain `opc kb add` with `source_task: <task-id>` in frontmatter to keep the link back to the escalation.
 
 The context builder injects a "Knowledge Base" section into every agent's bootstrap document. The `start-task` skill has explicit **Consult KB** and **Contribute to KB** steps.
 
@@ -386,7 +385,7 @@ Per-agent under `<runtime>/orgs/<slug>/workspaces/<agent>/learnings/`. Each entr
 
 **Cross-reference rules:** `related_to` and `supersedes` are validated against existing IDs at write time (unknown ID = 400). Self-references are rejected. `supersedes` is the canonical primitive for evolving a rule while preserving the older wording.
 
-**Promotion to KB:** `opc learning promote <LRN-NNN> --kb-slug <existing-kb-precedent>` is a one-way operation. The body is replaced with a 2-line pointer stub; the entry is then locked against further updates (use supersedes if the KB precedent moves on). KB-slug existence is validated route-side via the per-org `KBStore`.
+**Promotion to KB:** `opc learning promote <LRN-NNN> --kb-slug <existing-kb-slug>` is a one-way operation. The body is replaced with a 2-line pointer stub; the entry is then locked against further updates (use supersedes if the KB entry moves on). KB-slug existence is validated route-side via the per-org `KBStore`.
 
 **End-of-talk learnings:** `end_talk` routes talk-end learning text into the new store on migrated workspaces (synthesized slug `talk-<talk_id>-<idx>`, topic `talk-residue`, title from the first non-empty line of the text). Pre-migration workspaces continue to receive a flat-file append.
 

@@ -1384,26 +1384,6 @@ def cmd_kb_reindex(args: argparse.Namespace) -> None:
     print("ok: reindexed")
 
 
-def cmd_kb_precedent(args: argparse.Namespace) -> None:
-    if not args.org:
-        print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
-        sys.exit(1)
-    client = OpcClient.from_env()
-    org_slug = args.org
-    body = {
-        "task_id": args.task_id,
-        "decision": args.decision,
-        "rationale": args.rationale,
-        "as_founder": args.as_founder,
-    }
-    if args.slug:
-        body["slug"] = args.slug
-    r = client.post(f"/api/v1/orgs/{org_slug}/kb/precedent", json=body)
-    if not _ok(r):
-        return
-    print(f"ok: wrote precedent {r.json()['slug']}")
-
-
 def cmd_talk_start(args: argparse.Namespace) -> None:
     client = OpcClient.from_env()
     slug = resolve_org_slug(
@@ -2382,7 +2362,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_kb_list = kb_sub.add_parser("list", help="List KB entries")
     p_kb_list.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_kb_list.add_argument("--topic")
-    p_kb_list.add_argument("--type", choices=["reference", "precedent"])
+    p_kb_list.add_argument("--type", help="Filter by type label (freeform)")
     p_kb_list.set_defaults(func=cmd_kb_list)
 
     p_kb_get = kb_sub.add_parser("get", help="Read a KB entry")
@@ -2422,15 +2402,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_kb_reindex = kb_sub.add_parser("reindex", help="Regenerate _index.md")
     p_kb_reindex.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
     p_kb_reindex.set_defaults(func=cmd_kb_reindex)
-
-    p_kb_prec = kb_sub.add_parser("precedent", help="Record a precedent from an escalated task")
-    p_kb_prec.add_argument("--org", required=True, help="Org slug (required for agent callbacks)")
-    p_kb_prec.add_argument("--task-id", required=True)
-    p_kb_prec.add_argument("--decision", required=True, choices=["approve", "reject"])
-    p_kb_prec.add_argument("--rationale", required=True)
-    p_kb_prec.add_argument("--slug")
-    p_kb_prec.add_argument("--as-founder", action="store_true")
-    p_kb_prec.set_defaults(func=cmd_kb_precedent)
 
     # opc talk ...
     p_talk = sub.add_parser("talk", help="Founder↔agent conversation flow")

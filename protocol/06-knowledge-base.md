@@ -6,11 +6,18 @@ Rules here are org policy — they apply equally to every agent.
 
 ## What belongs
 
-Two content types, both with a 12+ month expected useful lifespan:
+Durable, cross-agent knowledge with a 12+ month expected useful lifespan.
+Examples:
 
-- **Precedents.** Resolved escalations, founder decisions, incident post-mortems.
-- **Domain reference.** SOPs, regulatory rules, partner-API quirks, visa
-  requirements, payment-flow details, refund policy details.
+- SOPs, regulatory rules, partner-API quirks, visa requirements, payment-flow
+  details, refund policy details.
+- Resolved escalations, founder rulings, incident post-mortems — anything a
+  future agent should be able to look up so the same question doesn't have to
+  be escalated twice.
+
+There is no schema-level distinction between "reference" knowledge and
+"precedent" knowledge — both are just KB entries. Use the `type` field as a
+freeform label for grouping (`reference`, `ruling`, `sop`, `case-study`, …).
 
 Contribute when any is true:
 
@@ -19,10 +26,13 @@ Contribute when any is true:
 - You consulted the KB and an entry was wrong or outdated — update it.
 - You made a non-trivial procedural decision worth preserving as a mini-SOP
   (not a one-off workaround).
+- The founder resolved an escalation and a future agent should follow the
+  same ruling without re-escalating. Write it via plain `opc kb add` with
+  `source_task: TASK-XXX` in the frontmatter so the link survives.
 
 ## What does not belong
 
-- **Agent-private operational learnings** → `learnings.md` in your workspace.
+- **Agent-private operational learnings** → `learnings/` in your workspace.
 - **Task progress notes or drafts** → `artifacts/<task_id>/`.
 - **Mirrors of `protocol/` docs.** The authoritative copy is in `protocol/`;
   the KB complements, never duplicates.
@@ -38,9 +48,13 @@ YAML frontmatter + markdown body. Required fields: `slug`, `title`, `type`,
 `slug` is kebab-case ASCII (`^[a-z0-9][a-z0-9-]{0,63}$`). Filename is
 `<slug>.md`; the slug and filename are the canonical identity.
 
-`type` is exactly one of `reference` or `precedent`. `topic` is a single
-kebab-case token (e.g. `visa`, `payment`, `partner-api`, `engineering`) —
-free-form, used for grouping in `_index.md`.
+`type` is any non-empty string — used for grouping in `_index.md` and the
+`--type` filter on `opc kb list`. Common conventions: `reference` for
+durable factual material, `ruling` for founder decisions, `sop` for
+procedures. Use whatever vocabulary your org settles on.
+
+`topic` is a single kebab-case token (e.g. `visa`, `payment`, `partner-api`,
+`engineering`) — also free-form.
 
 Body is markdown, ≤32 KiB.
 
