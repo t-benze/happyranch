@@ -34,3 +34,7 @@ logs/
 .claude/worktrees
 .claude/settings.local.json
 .worktrees
+
+# Tool scratch dirs
+.claire/
+.playwright-cli/
