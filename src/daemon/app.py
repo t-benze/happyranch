@@ -9,6 +9,7 @@ from src.daemon.dispatcher import Dispatcher
 from src.daemon.routes import (
     agents,
     audit,
+    auth,
     health,
     kb,
     orgs,
@@ -83,6 +84,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app = FastAPI(title="OPC Daemon", version="0.2.0", lifespan=_lifespan)
     app.state.daemon = state
     app.include_router(health.router, prefix="/api/v1")
+    app.include_router(auth.router, prefix="/api/v1")
     app.include_router(runtime.router, prefix="/api/v1")
     app.include_router(orgs.router, prefix="/api/v1")
     app.include_router(tasks.router, prefix="/api/v1/orgs/{slug}")
@@ -92,4 +94,6 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(kb.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(talks.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(threads.router, prefix="/api/v1/orgs/{slug}", tags=["threads"])
+    from src.daemon.routes import web_static
+    web_static.register(app)
     return app

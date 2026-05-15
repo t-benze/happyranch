@@ -1518,14 +1518,36 @@ def cmd_talk_show(args: argparse.Namespace) -> None:
 
 
 def cmd_threads_tui(args: argparse.Namespace) -> None:
-    """Launch the Textual TUI for the threads inbox."""
+    """Stub left in place for `opc threads` (no subcommand).
+
+    The Textual TUI was removed in favor of the web UI. This handler now
+    prints a one-liner pointing the founder at `opc web` and exits 0 so
+    muscle memory typing `opc threads` doesn't error.
+    """
+    del args  # unused
+    print("opc threads — the TUI was removed. Use `opc web` for the threads inbox.")
+    print("CLI subcommands (compose, list, show, send, …) still work — see `opc threads --help`.")
+
+
+def cmd_web(args: argparse.Namespace) -> None:
+    """Open the OPC web UI in the default browser."""
+    import webbrowser
+
     client = OpcClient.from_env()
-    slug = resolve_org_slug(
-        args_org=args.org, available=_fetch_available_orgs(client),
-    )
-    from src.tui.threads_app import run as run_tui
-    token = client.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-    sys.exit(run_tui(slug=slug, base_url=client.base_url, token=token))
+    # Health check — fail loud if the daemon isn't running.
+    try:
+        r = client.get("/api/v1/health", timeout=5.0)
+    except Exception as exc:
+        print(f"error: daemon unreachable at {client.base_url} ({exc})", file=sys.stderr)
+        print("hint: start the daemon with scripts/daemon.sh start", file=sys.stderr)
+        sys.exit(2)
+    if not _ok(r):
+        print(f"error: daemon /health returned {r.status_code}", file=sys.stderr)
+        sys.exit(2)
+    url = client.base_url.rstrip("/") + "/"
+    print(f"opc web → {url}")
+    if not args.no_open:
+        webbrowser.open(url)
 
 
 def cmd_threads_compose(args: argparse.Namespace) -> None:
@@ -2456,6 +2478,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_talk_show.add_argument("talk_id")
     p_talk_show.add_argument("--json", action="store_true", help="Emit raw JSON instead of human output")
     p_talk_show.set_defaults(func=cmd_talk_show)
+
+    # opc web — open the browser console
+    p_web = sub.add_parser("web", help="Open the OPC web UI in the default browser")
+    p_web.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Print the URL but don't open the browser",
+    )
+    p_web.set_defaults(func=cmd_web)
 
     # opc threads — agent-facing callbacks + founder compose/list
     p_threads = sub.add_parser("threads", help="Thread operations (compose, reply, decline, dispatch, close-out)")

@@ -214,7 +214,26 @@ multiple agents in a single asynchronous conversation, or when you want to
 loop new agents into an existing discussion. Each thread has a subject, a
 participants list, and a chronological message log.
 
-Founder commands:
+**Web UI (primary surface).** Build the bundle once, then launch:
+
+```bash
+scripts/build_web.sh        # builds web/dist/ — npm ci + npm run build
+opc web                     # opens http://127.0.0.1:<port>/ in your browser
+opc web --no-open           # print the URL only
+```
+
+The localhost SPA renders the full threads inbox (compose / reply / invite /
+archive / abandon / extend / forward / SSE-driven live updates) and is the
+single interactive interface for founders. Keyboard shortcuts: `N` new,
+`I` invite, `A` archive, `X` abandon, `F` forward, `R` focus composer,
+`Ctrl+Enter` send, `?` help. The dev server (`cd web && npm run dev`)
+proxies to the daemon for hot-reload development.
+
+(The previous Textual TUI under `src/tui/` was removed in favor of the
+web UI; `opc threads` with no subcommand now points you at `opc web`.)
+
+**Founder CLI commands** (unchanged — scripts and automations depend on
+them):
 
 ```bash
 opc threads compose --org <slug> --subject "..." --recipients alice,bob --body "..."
