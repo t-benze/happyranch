@@ -27,7 +27,7 @@ export function Composer({ threadId, disabled, registerFocus }: Props): JSX.Elem
     if (!body.trim() || disabled) return;
     setErrorMsg(null);
     try {
-      await send.mutateAsync({ body_markdown: body });
+      await send.mutateAsync({ body_markdown: body, addressed_to: ['@all'] });
       setBody('');
     } catch (err) {
       if (err instanceof ApiError) {
