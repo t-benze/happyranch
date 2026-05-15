@@ -1546,7 +1546,15 @@ def cmd_web(args: argparse.Namespace) -> None:
         sys.exit(2)
     url = client.base_url.rstrip("/") + "/"
     print(f"opc web → {url}")
-    if not args.no_open:
+    if args.no_open:
+        from urllib.parse import urlparse
+        import socket
+        port = urlparse(client.base_url).port
+        if port is not None:
+            host = socket.gethostname()
+            print(f"remote access: ssh -L {port}:127.0.0.1:{port} {host}")
+            print(f"               then open http://127.0.0.1:{port}/ locally")
+    else:
         webbrowser.open(url)
 
 
