@@ -93,7 +93,7 @@ export function ThreadsPage(): JSX.Element {
   }, [threadId, activeThread.data, activeMessages.data]);
 
   return (
-    <div className="grid h-full grid-cols-[320px_1fr]">
+    <div className="grid h-full grid-cols-[320px_1fr] grid-rows-[minmax(0,1fr)]">
       <InboxList onCompose={openNew} />
       {threadId ? (
         <ThreadDetailPane
