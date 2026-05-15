@@ -1,27 +1,15 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { useState } from 'react';
 import { BrowserRouter } from 'react-router-dom';
+import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvider';
 import { AppRoutes } from './routes';
 
-export function makeQueryClient(): QueryClient {
-  return new QueryClient({
-    defaultOptions: {
-      queries: {
-        staleTime: 30_000,
-        refetchOnWindowFocus: false,
-        retry: false,
-      },
-    },
-  });
-}
+export { makeQueryClient };
 
 export function App(): JSX.Element {
-  const [client] = useState(makeQueryClient);
   return (
-    <QueryClientProvider client={client}>
-      <BrowserRouter>
+    <BrowserRouter>
+      <AppProvider>
         <AppRoutes />
-      </BrowserRouter>
-    </QueryClientProvider>
+      </AppProvider>
+    </BrowserRouter>
   );
 }

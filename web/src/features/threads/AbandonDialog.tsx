@@ -10,8 +10,7 @@ import {
 import { Button } from '@/design-system/primitives/Button';
 import { FormField } from '@/design-system/patterns/FormField';
 import { ApiError } from '@/lib/api';
-import { useOrgSlug } from '@/lib/orgSlug';
-import { useAbandonThread } from './hooks';
+import { useAbandonThread } from '@/hooks/threads';
 import { describeError } from './strings';
 
 interface Props {
@@ -21,7 +20,7 @@ interface Props {
 }
 
 export function AbandonDialog({ threadId, open, onClose }: Props): JSX.Element {
-  const abandon = useAbandonThread(useOrgSlug(), threadId);
+  const abandon = useAbandonThread(threadId);
   const [reason, setReason] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const reasonId = useId();

@@ -18,7 +18,15 @@ import { MessageBubble, type MessageVariant } from '@/design-system/patterns/Mes
 import { ThreadHeader } from '@/design-system/patterns/ThreadHeader';
 import { ApiError } from '@/lib/api';
 import type { ThreadMessage } from '@/lib/api/types';
-import { useOrgSlug } from '@/lib/orgSlug';
+import {
+  useSendFollowUp,
+  useThread,
+  useThreadMessages,
+  useThreadRoutes,
+  useThreadTailSSE,
+  useThreadsInboxSSE,
+  useThreadsList,
+} from '@/hooks/threads';
 import { AbandonDialog } from './AbandonDialog';
 import { ArchiveDialog } from './ArchiveDialog';
 import { ExtendDialog } from './ExtendDialog';
@@ -26,20 +34,12 @@ import { InviteDialog } from './InviteDialog';
 import { NewThreadDialog } from './NewThreadDialog';
 import { describeError } from './strings';
 import { THREADS_SHORTCUTS, THREADS_SHORTCUTS_FOOTNOTE } from './threads-shortcuts';
-import {
-  useSendFollowUp,
-  useThread,
-  useThreadMessages,
-  useThreadTailSSE,
-  useThreadsInboxSSE,
-  useThreadsList,
-} from './hooks';
 
 const STATUS_TABS = ['open', 'archived', 'abandoned'] as const;
 type StatusTab = (typeof STATUS_TABS)[number];
 
 export function ThreadsPage(): JSX.Element {
-  const slug = useOrgSlug();
+  const routes = useThreadRoutes();
   const navigate = useNavigate();
   const { thread_id: threadId } = useParams<{ thread_id: string }>();
   const composerFocusRef = useRef<(() => void) | null>(null);
@@ -47,8 +47,8 @@ export function ThreadsPage(): JSX.Element {
   // Inbox state
   const [status, setStatus] = useState<StatusTab>('open');
   const [filter, setFilter] = useState('');
-  useThreadsInboxSSE(slug);
-  const threadsQuery = useThreadsList(slug, { status });
+  useThreadsInboxSSE();
+  const threadsQuery = useThreadsList({ status });
   const threads = useMemo(() => {
     const all = threadsQuery.data?.threads ?? [];
     if (!filter.trim()) return all;
@@ -61,16 +61,16 @@ export function ThreadsPage(): JSX.Element {
   }, [threadsQuery.data, filter]);
 
   // Active-thread data
-  const activeThread = useThread(slug, threadId);
-  const activeMessagesQuery = useThreadMessages(slug, threadId);
-  useThreadTailSSE(slug, threadId);
+  const activeThread = useThread(threadId);
+  const activeMessagesQuery = useThreadMessages(threadId);
+  useThreadTailSSE(threadId);
   const messages: ThreadMessage[] = useMemo(() => {
     if (activeMessagesQuery.data) return activeMessagesQuery.data.messages;
     return activeThread.data?.messages ?? [];
   }, [activeMessagesQuery.data, activeThread.data]);
 
   // Send mutation lives at the page level so the Composer pattern is pure.
-  const sendFollowUp = useSendFollowUp(slug, threadId ?? '');
+  const sendFollowUp = useSendFollowUp(threadId ?? '');
   const [composerError, setComposerError] = useState<string | null>(null);
 
   // Dialog state
@@ -208,7 +208,7 @@ export function ThreadsPage(): JSX.Element {
           )}
           <div className="flex flex-col gap-1">
             {threads.map((t) => {
-              const path = `/orgs/${slug}/threads/${t.thread_id}`;
+              const path = routes.detail(t.thread_id);
               return (
                 <InboxRow
                   key={t.thread_id}
@@ -267,7 +267,7 @@ export function ThreadsPage(): JSX.Element {
         open={showNew}
         onClose={() => setShowNew(false)}
         prefill={newPrefill}
-        onCreated={(newId) => navigate(`/orgs/${slug}/threads/${newId}`)}
+        onCreated={(newId) => navigate(routes.detail(newId))}
       />
       <HelpSheet
         open={showHelp}

@@ -1,0 +1,19 @@
+/**
+ * Mock route builders — paths under `/__prototypes/threads-v2/...`.
+ *
+ * Mounted by `PrototypeProvider` so compositions navigate within the
+ * sandbox subtree instead of jumping to the daemon-backed routes.
+ */
+import type { ThreadRoutes } from './DataContext';
+
+const PROTOTYPE_BASE = '/__prototypes/threads-v2';
+
+export function useMockThreadRoutes(): ThreadRoutes {
+  return {
+    detail: (threadId: string) => `${PROTOTYPE_BASE}/${threadId}`,
+    inbox: () => PROTOTYPE_BASE,
+    // Sandbox has one mock org; switching is a no-op that keeps the URL in
+    // the prototype subtree instead of jumping to /orgs/<slug>/threads.
+    inboxForOrg: () => PROTOTYPE_BASE,
+  };
+}

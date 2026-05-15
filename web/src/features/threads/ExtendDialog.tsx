@@ -10,8 +10,7 @@ import {
 import { Button } from '@/design-system/primitives/Button';
 import { FormField } from '@/design-system/patterns/FormField';
 import { ApiError } from '@/lib/api';
-import { useOrgSlug } from '@/lib/orgSlug';
-import { useExtendCap } from './hooks';
+import { useExtendCap } from '@/hooks/threads';
 import { describeError } from './strings';
 
 interface Props {
@@ -27,7 +26,7 @@ export function ExtendDialog({
   open,
   onClose,
 }: Props): JSX.Element {
-  const extend = useExtendCap(useOrgSlug(), threadId);
+  const extend = useExtendCap(threadId);
   const [cap, setCap] = useState(currentCap + 100);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const capId = useId();

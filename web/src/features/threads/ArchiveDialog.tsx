@@ -10,8 +10,7 @@ import {
 import { Button } from '@/design-system/primitives/Button';
 import { FormField } from '@/design-system/patterns/FormField';
 import { ApiError } from '@/lib/api';
-import { useOrgSlug } from '@/lib/orgSlug';
-import { useArchiveThread } from './hooks';
+import { useArchiveThread } from '@/hooks/threads';
 import { describeError } from './strings';
 
 interface Props {
@@ -21,7 +20,7 @@ interface Props {
 }
 
 export function ArchiveDialog({ threadId, open, onClose }: Props): JSX.Element {
-  const archive = useArchiveThread(useOrgSlug(), threadId);
+  const archive = useArchiveThread(threadId);
   const [summary, setSummary] = useState('');
   const [requestCloseOuts, setRequestCloseOuts] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);

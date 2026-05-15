@@ -10,8 +10,7 @@ import {
 import { Button } from '@/design-system/primitives/Button';
 import { FormField } from '@/design-system/patterns/FormField';
 import { ApiError } from '@/lib/api';
-import { useOrgSlug } from '@/lib/orgSlug';
-import { useComposeThread } from './hooks';
+import { useComposeThread } from '@/hooks/threads';
 import { describeError } from './strings';
 
 interface Prefill {
@@ -31,8 +30,7 @@ interface Props {
 }
 
 export function NewThreadDialog({ open, onClose, prefill, onCreated }: Props): JSX.Element {
-  const slug = useOrgSlug();
-  const compose = useComposeThread(slug);
+  const compose = useComposeThread();
   const [subject, setSubject] = useState('');
   const [recipientsRaw, setRecipientsRaw] = useState('');
   const [body, setBody] = useState('');

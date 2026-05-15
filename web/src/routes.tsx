@@ -1,4 +1,3 @@
-import { useQuery } from '@tanstack/react-query';
 import {
   Navigate,
   Outlet,
@@ -7,12 +6,13 @@ import {
   useParams,
 } from 'react-router-dom';
 import { TopBar } from '@/design-system/layouts/AppShell/TopBar';
-import { orgs as orgsApi } from '@/lib/api';
+import { useOrgsList } from '@/hooks/orgs';
 import { OrgProvider } from '@/lib/orgSlug';
 import { ThreadsPage } from '@/features/threads/ThreadsPage';
+import { PROTOTYPES_DISABLED, prototypeRoutes } from '@/prototypes';
 
 function RootRedirect(): JSX.Element {
-  const orgsQuery = useQuery({ queryKey: ['orgs'], queryFn: orgsApi.listOrgs });
+  const orgsQuery = useOrgsList();
   if (orgsQuery.isLoading) {
     return <div className="p-6 text-fg-muted">Loading…</div>;
   }
@@ -49,6 +49,11 @@ function AppShell(): JSX.Element {
 export function AppRoutes(): JSX.Element {
   return (
     <Routes>
+      {/* Prototype routes mount OUTSIDE AppShell so the TopBar + nav inside
+          `PrototypesLayout` run under `<PrototypeProvider>`'s QueryClient
+          and OrgSlugContext — keeping mock-only behaviour fully isolated
+          from the daemon-backed routes. */}
+      {!PROTOTYPES_DISABLED && prototypeRoutes()}
       <Route element={<AppShell />}>
         <Route index element={<RootRedirect />} />
         <Route path="/orgs/:slug" element={<OrgLayout />}>

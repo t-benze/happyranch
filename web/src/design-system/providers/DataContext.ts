@@ -1,0 +1,148 @@
+/**
+ * Provider-agnostic data layer for compositions.
+ *
+ * Compositions never call TanStack Query or `lib/api` directly. They call
+ * provider-aware hooks from `@/hooks/`, which forward to whatever
+ * `ThreadsApi` (and future feature APIs) the surrounding provider installs.
+ *
+ * Two implementations exist:
+ *
+ * - `<AppProvider>` (production) — wires the real TanStack Query bodies in
+ *   `_real-threads.ts` against the daemon.
+ * - `<PrototypeProvider>` (designer sandbox) — wires the canned fixtures in
+ *   `_mock-threads.ts` from `@/mocks/`.
+ *
+ * The hook signatures intentionally drop the `slug` argument so the same
+ * composition file can render against either provider. The active slug is a
+ * concern of the provider, not the consumer.
+ *
+ * See `web/DESIGN_SYSTEM.md` §8.
+ */
+import { createContext, useContext } from 'react';
+import type {
+  OrgsListResponse,
+  ThreadDetailResponse,
+  ThreadMessage,
+  ThreadRecord,
+} from '@/lib/api/types';
+import type { threads as threadsApi } from '@/lib/api';
+
+// ---------------------------------------------------------------------------
+// Hook-shape primitives
+// ---------------------------------------------------------------------------
+
+export interface QueryLike<T> {
+  data: T | undefined;
+  isLoading: boolean;
+  isError: boolean;
+  error: Error | null;
+}
+
+export interface MutationLike<TArgs, TResult> {
+  mutateAsync: (args: TArgs) => Promise<TResult>;
+  isPending: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// ThreadsApi — covers every hook ThreadsPage + its dialogs consume.
+// ---------------------------------------------------------------------------
+
+export type ComposeArgs = Parameters<typeof threadsApi.composeThread>[1];
+export type ComposeResult = Awaited<ReturnType<typeof threadsApi.composeThread>>;
+
+export type SendFollowUpArgs = Parameters<typeof threadsApi.sendThreadFollowUp>[2];
+export type SendFollowUpResult = Awaited<ReturnType<typeof threadsApi.sendThreadFollowUp>>;
+
+export type InviteArgs = Parameters<typeof threadsApi.inviteToThread>[2];
+export type InviteResult = Awaited<ReturnType<typeof threadsApi.inviteToThread>>;
+
+export type ArchiveArgs = Parameters<typeof threadsApi.archiveThread>[2];
+export type ArchiveResult = Awaited<ReturnType<typeof threadsApi.archiveThread>>;
+
+export type AbandonArgs = Parameters<typeof threadsApi.abandonThread>[2];
+export type AbandonResult = Awaited<ReturnType<typeof threadsApi.abandonThread>>;
+
+export type ExtendArgs = Parameters<typeof threadsApi.extendThreadCap>[2];
+export type ExtendResult = Awaited<ReturnType<typeof threadsApi.extendThreadCap>>;
+
+export interface ThreadsApi {
+  // Reads
+  useThreadsList: (
+    params?: { status?: string; limit?: number },
+  ) => QueryLike<{ threads: ThreadRecord[] }>;
+  useThread: (threadId: string | undefined) => QueryLike<ThreadDetailResponse>;
+  useThreadMessages: (
+    threadId: string | undefined,
+  ) => QueryLike<{ messages: ThreadMessage[] }>;
+
+  // SSE (no-op under mocks)
+  useThreadsInboxSSE: () => void;
+  useThreadTailSSE: (threadId: string | undefined) => void;
+
+  // Mutations — `threadId` is a per-hook argument so the call shape mirrors
+  // the existing TanStack Query hooks, just with `slug` stripped.
+  useComposeThread: () => MutationLike<ComposeArgs, ComposeResult>;
+  useSendFollowUp: (threadId: string) => MutationLike<SendFollowUpArgs, SendFollowUpResult>;
+  useInviteAgent: (threadId: string) => MutationLike<InviteArgs, InviteResult>;
+  useArchiveThread: (threadId: string) => MutationLike<ArchiveArgs, ArchiveResult>;
+  useAbandonThread: (threadId: string) => MutationLike<AbandonArgs, AbandonResult>;
+  useExtendCap: (threadId: string) => MutationLike<ExtendArgs, ExtendResult>;
+}
+
+// ---------------------------------------------------------------------------
+// Context shape — one bag per feature domain. Future PRs add `tasks`, `kb`…
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// OrgsApi — minimal read-only surface so the TopBar org dropdown works
+// under both providers without TopBar reaching into `@/lib/api` itself.
+// ---------------------------------------------------------------------------
+
+export interface OrgsApi {
+  useOrgsList: () => QueryLike<OrgsListResponse>;
+}
+
+/**
+ * Per-feature URL builders. Compositions consume these via the
+ * provider-aware `useThreadRoutes()` hook in `@/hooks/threads` instead of
+ * hardcoding `/orgs/${slug}/...` — so the same JSX renders under
+ * `/orgs/:slug/threads/...` (production) AND
+ * `/__prototypes/threads-v2/...` (sandbox) without forking.
+ */
+export interface ThreadRoutes {
+  /** Detail-pane URL for a given thread_id. */
+  detail: (threadId: string) => string;
+  /** Inbox URL for the active context. */
+  inbox: () => string;
+  /**
+   * Inbox URL when switching to a specific org. Used by the TopBar org
+   * dropdown so the user lands in the right place regardless of which
+   * provider is mounted. Under the real provider this is
+   * `/orgs/<slug>/threads`; under the prototype it stays inside the
+   * sandbox subtree, ignoring the slug.
+   */
+  inboxForOrg: (slug: string) => string;
+}
+
+export interface DataContextValue {
+  orgs: OrgsApi;
+  threads: ThreadsApi;
+  /**
+   * Provider-supplied React hook that returns the active feature's route
+   * builders. A hook (not a plain object) so the implementation can read
+   * the current URL via `useParams` / `useLocation`.
+   */
+  useThreadRoutes: () => ThreadRoutes;
+}
+
+export const DataContext = createContext<DataContextValue | null>(null);
+
+export function useData(): DataContextValue {
+  const ctx = useContext(DataContext);
+  if (!ctx) {
+    throw new Error(
+      'useData must be inside <AppProvider> or <PrototypeProvider>.',
+    );
+  }
+  return ctx;
+}

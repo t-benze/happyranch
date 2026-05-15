@@ -1,38 +1,59 @@
 /**
- * TanStack Query hooks for the threads feature.
+ * Real (daemon-backed) implementation of `ThreadsApi`.
  *
- * Query-key convention:
- *   ["threads", slug]                         — inbox list
- *   ["thread", slug, threadId]                — single thread metadata + initial msgs
- *   ["thread-messages", slug, threadId]       — message list (advances from tail SSE)
+ * Private to the providers folder — compositions never import this file.
+ * They go through `@/hooks/threads.ts`, which reads `useData()`.
  *
- * SSE hooks subscribe in useEffect and invalidate / append on each event.
+ * The bodies here are the same TanStack Query hooks that previously lived in
+ * `src/features/threads/hooks.ts`. The only change is that the `slug` is read
+ * from `useRealOrgSlug()` (URL via react-router) instead of being passed as
+ * an argument — that's how the public hook surface stays provider-agnostic.
  */
 import {
   useMutation,
   useQuery,
   useQueryClient,
-  type UseMutationResult,
-  type UseQueryResult,
 } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
+import { useParams } from 'react-router-dom';
 import { subscribeSSE, threads as threadsApi } from '@/lib/api';
 import type {
-  ThreadDetailResponse,
   ThreadInboxEvent,
   ThreadMessage,
-  ThreadRecord,
   ThreadTailEvent,
 } from '@/lib/api/types';
+import type {
+  AbandonArgs,
+  ArchiveArgs,
+  ComposeArgs,
+  ExtendArgs,
+  InviteArgs,
+  MutationLike,
+  QueryLike,
+  SendFollowUpArgs,
+  ThreadsApi,
+} from './DataContext';
+
+/**
+ * Read the active org slug from the URL.
+ *
+ * AppProvider mounts inside `<BrowserRouter>` so `useParams` resolves the
+ * `:slug` segment from `/orgs/:slug/...`. Callers that hit a non-org route
+ * get an empty string, which gates the dependent queries via `enabled`.
+ */
+function useRealOrgSlug(): string {
+  const { slug } = useParams<{ slug: string }>();
+  return slug ?? '';
+}
 
 // ---------------------------------------------------------------------------
 // Reads
 // ---------------------------------------------------------------------------
 
-export function useThreadsList(
-  slug: string,
+function useThreadsList(
   params?: { status?: string; limit?: number },
-): UseQueryResult<{ threads: ThreadRecord[] }> {
+): QueryLike<Awaited<ReturnType<typeof threadsApi.listThreads>>> {
+  const slug = useRealOrgSlug();
   return useQuery({
     queryKey: ['threads', slug, params],
     queryFn: () => threadsApi.listThreads(slug, params),
@@ -40,10 +61,8 @@ export function useThreadsList(
   });
 }
 
-export function useThread(
-  slug: string,
-  threadId: string | undefined,
-): UseQueryResult<ThreadDetailResponse> {
+function useThread(threadId: string | undefined) {
+  const slug = useRealOrgSlug();
   return useQuery({
     queryKey: ['thread', slug, threadId],
     queryFn: () => threadsApi.getThread(slug, threadId as string),
@@ -51,10 +70,8 @@ export function useThread(
   });
 }
 
-export function useThreadMessages(
-  slug: string,
-  threadId: string | undefined,
-): UseQueryResult<{ messages: ThreadMessage[] }> {
+function useThreadMessages(threadId: string | undefined) {
+  const slug = useRealOrgSlug();
   return useQuery({
     queryKey: ['thread-messages', slug, threadId],
     queryFn: () => threadsApi.listThreadMessages(slug, threadId as string),
@@ -66,7 +83,8 @@ export function useThreadMessages(
 // SSE
 // ---------------------------------------------------------------------------
 
-export function useThreadsInboxSSE(slug: string): void {
+function useThreadsInboxSSE(): void {
+  const slug = useRealOrgSlug();
   const qc = useQueryClient();
   useEffect(() => {
     if (!slug) return;
@@ -83,10 +101,8 @@ export function useThreadsInboxSSE(slug: string): void {
   }, [slug, qc]);
 }
 
-export function useThreadTailSSE(
-  slug: string,
-  threadId: string | undefined,
-): void {
+function useThreadTailSSE(threadId: string | undefined): void {
+  const slug = useRealOrgSlug();
   const qc = useQueryClient();
   const sinceSeqRef = useRef(0);
 
@@ -136,34 +152,32 @@ export function useThreadTailSSE(
 }
 
 // ---------------------------------------------------------------------------
-// Mutations (write-path, used in Phase 9 features)
+// Mutations
 // ---------------------------------------------------------------------------
 
-export function useComposeThread(slug: string): UseMutationResult<
-  Awaited<ReturnType<typeof threadsApi.composeThread>>,
-  Error,
-  Parameters<typeof threadsApi.composeThread>[1]
+function useComposeThread(): MutationLike<
+  ComposeArgs,
+  Awaited<ReturnType<typeof threadsApi.composeThread>>
 > {
+  const slug = useRealOrgSlug();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body) => threadsApi.composeThread(slug, body),
+    mutationFn: (body: ComposeArgs) => threadsApi.composeThread(slug, body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['threads', slug] });
     },
   });
 }
 
-export function useSendFollowUp(
-  slug: string,
-  threadId: string,
-): UseMutationResult<
-  Awaited<ReturnType<typeof threadsApi.sendThreadFollowUp>>,
-  Error,
-  Parameters<typeof threadsApi.sendThreadFollowUp>[2]
+function useSendFollowUp(threadId: string): MutationLike<
+  SendFollowUpArgs,
+  Awaited<ReturnType<typeof threadsApi.sendThreadFollowUp>>
 > {
+  const slug = useRealOrgSlug();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body) => threadsApi.sendThreadFollowUp(slug, threadId, body),
+    mutationFn: (body: SendFollowUpArgs) =>
+      threadsApi.sendThreadFollowUp(slug, threadId, body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['thread-messages', slug, threadId] });
       qc.invalidateQueries({ queryKey: ['threads', slug] });
@@ -171,10 +185,14 @@ export function useSendFollowUp(
   });
 }
 
-export function useInviteAgent(slug: string, threadId: string) {
+function useInviteAgent(threadId: string): MutationLike<
+  InviteArgs,
+  Awaited<ReturnType<typeof threadsApi.inviteToThread>>
+> {
+  const slug = useRealOrgSlug();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: Parameters<typeof threadsApi.inviteToThread>[2]) =>
+    mutationFn: (body: InviteArgs) =>
       threadsApi.inviteToThread(slug, threadId, body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
@@ -182,10 +200,14 @@ export function useInviteAgent(slug: string, threadId: string) {
   });
 }
 
-export function useArchiveThread(slug: string, threadId: string) {
+function useArchiveThread(threadId: string): MutationLike<
+  ArchiveArgs,
+  Awaited<ReturnType<typeof threadsApi.archiveThread>>
+> {
+  const slug = useRealOrgSlug();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: Parameters<typeof threadsApi.archiveThread>[2]) =>
+    mutationFn: (body: ArchiveArgs) =>
       threadsApi.archiveThread(slug, threadId, body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
@@ -194,10 +216,14 @@ export function useArchiveThread(slug: string, threadId: string) {
   });
 }
 
-export function useAbandonThread(slug: string, threadId: string) {
+function useAbandonThread(threadId: string): MutationLike<
+  AbandonArgs,
+  Awaited<ReturnType<typeof threadsApi.abandonThread>>
+> {
+  const slug = useRealOrgSlug();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: Parameters<typeof threadsApi.abandonThread>[2]) =>
+    mutationFn: (body: AbandonArgs) =>
       threadsApi.abandonThread(slug, threadId, body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
@@ -206,13 +232,35 @@ export function useAbandonThread(slug: string, threadId: string) {
   });
 }
 
-export function useExtendCap(slug: string, threadId: string) {
+function useExtendCap(threadId: string): MutationLike<
+  ExtendArgs,
+  Awaited<ReturnType<typeof threadsApi.extendThreadCap>>
+> {
+  const slug = useRealOrgSlug();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: Parameters<typeof threadsApi.extendThreadCap>[2]) =>
+    mutationFn: (body: ExtendArgs) =>
       threadsApi.extendThreadCap(slug, threadId, body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
     },
   });
 }
+
+// ---------------------------------------------------------------------------
+// Exposed surface
+// ---------------------------------------------------------------------------
+
+export const realThreadsApi: ThreadsApi = {
+  useThreadsList,
+  useThread,
+  useThreadMessages,
+  useThreadsInboxSSE,
+  useThreadTailSSE,
+  useComposeThread,
+  useSendFollowUp,
+  useInviteAgent,
+  useArchiveThread,
+  useAbandonThread,
+  useExtendCap,
+};

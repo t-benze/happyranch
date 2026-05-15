@@ -10,8 +10,7 @@ import {
 import { Button } from '@/design-system/primitives/Button';
 import { FormField } from '@/design-system/patterns/FormField';
 import { ApiError } from '@/lib/api';
-import { useOrgSlug } from '@/lib/orgSlug';
-import { useInviteAgent } from './hooks';
+import { useInviteAgent } from '@/hooks/threads';
 import { describeError } from './strings';
 
 interface Props {
@@ -21,7 +20,7 @@ interface Props {
 }
 
 export function InviteDialog({ threadId, open, onClose }: Props): JSX.Element {
-  const invite = useInviteAgent(useOrgSlug(), threadId);
+  const invite = useInviteAgent(threadId);
   const [name, setName] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const nameId = useId();

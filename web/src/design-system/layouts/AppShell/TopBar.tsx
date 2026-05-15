@@ -1,26 +1,38 @@
-import { useQuery } from '@tanstack/react-query';
 import { NavLink, useNavigate, useParams } from 'react-router-dom';
-import { orgs as orgsApi } from '@/lib/api';
+import { useOrgsList } from '@/hooks/orgs';
+import { useThreadRoutes } from '@/hooks/threads';
+import { useOrgSlugOptional } from '@/lib/orgSlug';
 
 export function TopBar(): JSX.Element {
-  const { slug } = useParams<{ slug: string }>();
+  // The TopBar mounts in two different shells: production AppShell (above
+  // OrgProvider, so the slug is only in the URL params) and the prototype
+  // sandbox layout (inside StaticOrgProvider, so the slug is in context but
+  // not in the URL). Reading both and preferring whichever is present makes
+  // the same component work in both trees.
+  const { slug: urlSlug } = useParams<{ slug: string }>();
+  const contextSlug = useOrgSlugOptional();
+  const activeSlug = urlSlug ?? contextSlug ?? null;
   const navigate = useNavigate();
-  const orgsQuery = useQuery({
-    queryKey: ['orgs'],
-    queryFn: () => orgsApi.listOrgs(),
-  });
+  const orgsQuery = useOrgsList();
+  const routes = useThreadRoutes();
+  const threadsHref = activeSlug ? routes.inboxForOrg(activeSlug) : '#';
+  const switchEnabled = !orgsQuery.isLoading && (orgsQuery.data?.orgs.length ?? 0) > 0;
 
   return (
     <header className="flex h-12 shrink-0 items-center gap-4 border-b border-border bg-bg-subtle px-4">
       <div className="font-semibold text-fg">OPC</div>
       <select
-        value={slug ?? ''}
-        onChange={(e) => navigate(`/orgs/${e.target.value}/threads`)}
+        value={activeSlug ?? ''}
+        onChange={(e) => {
+          const target = e.target.value;
+          if (!target || target === activeSlug) return;
+          navigate(routes.inboxForOrg(target));
+        }}
         className="rounded border border-border bg-bg-raised px-2 py-1 text-sm text-fg"
         aria-label="Active org"
-        disabled={orgsQuery.isLoading || (orgsQuery.data?.orgs.length ?? 0) === 0}
+        disabled={!switchEnabled}
       >
-        {!slug && <option value="">Select org…</option>}
+        {!activeSlug && <option value="">Select org…</option>}
         {orgsQuery.data?.orgs.map((o) => (
           <option key={o.slug} value={o.slug}>
             {o.slug}
@@ -28,7 +40,7 @@ export function TopBar(): JSX.Element {
         ))}
       </select>
       <nav className="flex items-center gap-1 text-sm">
-        <NavTab to={slug ? `/orgs/${slug}/threads` : '#'} enabled={!!slug}>
+        <NavTab to={threadsHref} enabled={!!activeSlug && threadsHref !== '#'}>
           Threads
         </NavTab>
         <NavTab to="#" enabled={false} title="Coming soon">
