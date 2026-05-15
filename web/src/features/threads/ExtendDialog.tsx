@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react';
-import { Modal } from '@/components/Modal';
-import { Button } from '@/components/Button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/design-system/primitives/Dialog';
+import { Button } from '@/design-system/primitives/Button';
 import { ApiError } from '@/lib/api';
 import { useOrgSlug } from '@/lib/orgSlug';
 import { useExtendCap } from './hooks';
@@ -46,30 +53,38 @@ export function ExtendDialog({
   };
 
   return (
-    <Modal title="Extend turn cap" open={open} onClose={onClose}>
-      <div className="flex flex-col gap-3">
-        <p className="text-xs text-fg-muted">
-          Current cap: <strong className="text-fg">{currentCap}</strong>
-        </p>
-        <label className="flex flex-col gap-1 text-xs">
-          <span className="text-fg-muted">New cap</span>
-          <input
-            type="number"
-            value={cap}
-            min={currentCap + 1}
-            onChange={(e) => setCap(parseInt(e.target.value, 10) || 0)}
-            autoFocus
-            className="input"
-          />
-        </label>
-        {errorMsg && <p className="text-xs text-tier-red">{errorMsg}</p>}
-        <div className="flex justify-end gap-2">
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Extend turn cap</DialogTitle>
+          <DialogDescription className="sr-only">
+            Raise the maximum number of turns allowed on this thread.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col gap-3">
+          <p className="text-xs text-fg-muted">
+            Current cap: <strong className="text-fg">{currentCap}</strong>
+          </p>
+          <label className="flex flex-col gap-1 text-xs">
+            <span className="text-fg-muted">New cap</span>
+            <input
+              type="number"
+              value={cap}
+              min={currentCap + 1}
+              onChange={(e) => setCap(parseInt(e.target.value, 10) || 0)}
+              autoFocus
+              className="input"
+            />
+          </label>
+          {errorMsg && <p className="text-xs text-tier-red">{errorMsg}</p>}
+        </div>
+        <DialogFooter>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
           <Button onClick={submit} disabled={extend.isPending}>
             {extend.isPending ? 'Saving…' : 'Save'}
           </Button>
-        </div>
-      </div>
-    </Modal>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

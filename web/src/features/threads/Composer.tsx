@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button } from '@/components/Button';
+import { Button } from '@/design-system/primitives/Button';
 import { ApiError } from '@/lib/api';
 import { useOrgSlug } from '@/lib/orgSlug';
 import { useSendFollowUp } from './hooks';

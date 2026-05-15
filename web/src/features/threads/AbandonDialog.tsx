@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react';
-import { Modal } from '@/components/Modal';
-import { Button } from '@/components/Button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/design-system/primitives/Dialog';
+import { Button } from '@/design-system/primitives/Button';
 import { ApiError } from '@/lib/api';
 import { useOrgSlug } from '@/lib/orgSlug';
 import { useAbandonThread } from './hooks';
@@ -40,35 +47,43 @@ export function AbandonDialog({ threadId, open, onClose }: Props): JSX.Element {
   };
 
   return (
-    <Modal title="Abandon thread" open={open} onClose={onClose}>
-      <div className="flex flex-col gap-3">
-        <p className="text-xs text-fg-muted">
-          Abandons the thread without close-outs. Use this when the thread is no longer useful.
-        </p>
-        <label className="flex flex-col gap-1 text-xs">
-          <span className="text-fg-muted">Reason</span>
-          <input
-            type="text"
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-            autoFocus
-            className="input"
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                submit();
-              }
-            }}
-          />
-        </label>
-        {errorMsg && <p className="text-xs text-tier-red">{errorMsg}</p>}
-        <div className="flex justify-end gap-2">
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Abandon thread</DialogTitle>
+          <DialogDescription className="sr-only">
+            Permanently abandon this thread. No close-outs requested.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col gap-3">
+          <p className="text-xs text-fg-muted">
+            Abandons the thread without close-outs. Use this when the thread is no longer useful.
+          </p>
+          <label className="flex flex-col gap-1 text-xs">
+            <span className="text-fg-muted">Reason</span>
+            <input
+              type="text"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              autoFocus
+              className="input"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  submit();
+                }
+              }}
+            />
+          </label>
+          {errorMsg && <p className="text-xs text-tier-red">{errorMsg}</p>}
+        </div>
+        <DialogFooter>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button variant="danger" onClick={submit} disabled={abandon.isPending}>
+          <Button variant="destructive" onClick={submit} disabled={abandon.isPending}>
             {abandon.isPending ? 'Abandoning…' : 'Abandon'}
           </Button>
-        </div>
-      </div>
-    </Modal>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

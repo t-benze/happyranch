@@ -6,7 +6,7 @@ import {
   Routes,
   useParams,
 } from 'react-router-dom';
-import { TopBar } from '@/components/TopBar';
+import { TopBar } from '@/design-system/layouts/AppShell/TopBar';
 import { orgs as orgsApi } from '@/lib/api';
 import { OrgProvider } from '@/lib/orgSlug';
 import { ThreadsPage } from '@/features/threads/ThreadsPage';

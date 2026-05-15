@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react';
-import { Modal } from '@/components/Modal';
-import { Button } from '@/components/Button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/design-system/primitives/Dialog';
+import { Button } from '@/design-system/primitives/Button';
 import { ApiError } from '@/lib/api';
 import { useInviteAgent } from './hooks';
 import { describeError } from './strings';
@@ -39,33 +46,41 @@ export function InviteDialog({ threadId, open, onClose }: Props): JSX.Element {
   };
 
   return (
-    <Modal title="Invite participant" open={open} onClose={onClose}>
-      <div className="flex flex-col gap-3">
-        <label className="flex flex-col gap-1 text-xs">
-          <span className="text-fg-muted">Agent name</span>
-          <input
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            autoFocus
-            className="input"
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                submit();
-              }
-            }}
-          />
-        </label>
-        {errorMsg && <p className="text-xs text-tier-red">{errorMsg}</p>}
-        <div className="flex justify-end gap-2">
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Invite participant</DialogTitle>
+          <DialogDescription className="sr-only">
+            Invite an additional agent or founder to this thread.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col gap-3">
+          <label className="flex flex-col gap-1 text-xs">
+            <span className="text-fg-muted">Agent name</span>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              autoFocus
+              className="input"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  submit();
+                }
+              }}
+            />
+          </label>
+          {errorMsg && <p className="text-xs text-tier-red">{errorMsg}</p>}
+        </div>
+        <DialogFooter>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
           <Button onClick={submit} disabled={invite.isPending}>
             {invite.isPending ? 'Inviting…' : 'Invite'}
           </Button>
-        </div>
-      </div>
-    </Modal>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react';
-import { Modal } from '@/components/Modal';
-import { Button } from '@/components/Button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/design-system/primitives/Dialog';
+import { Button } from '@/design-system/primitives/Button';
 import { ApiError } from '@/lib/api';
 import { useOrgSlug } from '@/lib/orgSlug';
 import { useComposeThread } from './hooks';
@@ -70,49 +77,57 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated }: Props): J
   };
 
   return (
-    <Modal title={prefill?.forwarded_from_id ? 'Forward thread' : 'New thread'} open={open} onClose={onClose}>
-      <div className="flex flex-col gap-3">
-        <Field label="Subject">
-          <input
-            type="text"
-            value={subject}
-            onChange={(e) => setSubject(e.target.value)}
-            className="input"
-            autoFocus
-          />
-        </Field>
-        <Field label="Recipients (comma-separated agent names)">
-          <input
-            type="text"
-            value={recipientsRaw}
-            onChange={(e) => setRecipientsRaw(e.target.value)}
-            placeholder="agent_a, agent_b"
-            className="input"
-          />
-        </Field>
-        <Field label="Body (Markdown)">
-          <textarea
-            value={body}
-            onChange={(e) => setBody(e.target.value)}
-            rows={6}
-            className="input resize-y"
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-                e.preventDefault();
-                submit();
-              }
-            }}
-          />
-        </Field>
-        {errorMsg && <p className="text-xs text-tier-red">{errorMsg}</p>}
-        <div className="flex justify-end gap-2">
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{prefill?.forwarded_from_id ? 'Forward thread' : 'New thread'}</DialogTitle>
+          <DialogDescription className="sr-only">
+            Compose a new thread with subject, recipients, and body.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col gap-3">
+          <Field label="Subject">
+            <input
+              type="text"
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+              className="input"
+              autoFocus
+            />
+          </Field>
+          <Field label="Recipients (comma-separated agent names)">
+            <input
+              type="text"
+              value={recipientsRaw}
+              onChange={(e) => setRecipientsRaw(e.target.value)}
+              placeholder="agent_a, agent_b"
+              className="input"
+            />
+          </Field>
+          <Field label="Body (Markdown)">
+            <textarea
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              rows={6}
+              className="input resize-y"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                  e.preventDefault();
+                  submit();
+                }
+              }}
+            />
+          </Field>
+          {errorMsg && <p className="text-xs text-tier-red">{errorMsg}</p>}
+        </div>
+        <DialogFooter>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
           <Button onClick={submit} disabled={compose.isPending}>
             {compose.isPending ? 'Sending…' : 'Send'}
           </Button>
-        </div>
-      </div>
-    </Modal>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

@@ -1,0 +1,222 @@
+/* src/design-system/tokens/tokens.css
+ *
+ * Single source of truth for design values. Tailwind v4 reads the @theme block
+ * below to derive utilities; nobody references hex codes outside this file.
+ *
+ * PR 1 contract:
+ *   - Define the full DESIGN.md `semantic.dark` token set as --color-*
+ *     under the non-conflicting names (surface-*, text-*, agent-*, status-*,
+ *     id-*, feedback-*, accent-default/hover/muted/ring).
+ *   - Keep v3 backwards-compat aliases (--color-bg*, --color-fg*, --color-border,
+ *     --color-border-subtle, --color-accent, --color-accent-hover,
+ *     --color-tier-green/yellow/red) AT THE V3 HEX VALUES so existing .tsx
+ *     files render pixel-identically. PR 2 renames callsites to the
+ *     DESIGN.md semantic names; these aliases retire then. Where a name
+ *     collides between DESIGN.md and v3 (tier-*, border-subtle), v3 hex wins
+ *     in PR 1 — PR 2 flips them.
+ *   - Alias shadcn's generic vars (--background, --primary, ...) to our
+ *     semantic tokens so shadcn primitives inherit our palette.
+ *
+ * Light-mode overrides are out of scope for PR 1; the toggle ships later.
+ */
+
+@import "tailwindcss";
+
+@theme {
+  /* ====================================================================== */
+  /* DESIGN.md `semantic.dark` — names that do NOT collide with v3 aliases. */
+  /* ====================================================================== */
+
+  /* ---- Surface ---- */
+  --color-surface-canvas:  #0c0d0f;   /* palette.ink_950 */
+  --color-surface-sunken:  #121317;   /* palette.ink_900 */
+  --color-surface-raised:  #171920;   /* palette.ink_850 */
+  --color-surface-overlay: #1d1f27;   /* palette.ink_800 */
+  --color-surface-scrim:   rgba(0, 0, 0, 0.55);
+
+  /* ---- Text ---- */
+  --color-text-primary:    #e7e8ec;   /* palette.ink_100 */
+  --color-text-secondary:  #9aa0ac;   /* palette.ink_300 */
+  --color-text-muted:      #6d7280;   /* palette.ink_400 */
+  --color-text-inverse:    #121317;   /* palette.ink_900 */
+
+  /* ---- Border (DESIGN.md adds `default` and `strong`; `subtle` collides
+   *      with v3 below, so PR 1 keeps v3's hex for `subtle`). */
+  --color-border-default:  #262932;   /* palette.ink_700 */
+  --color-border-strong:   #363a45;   /* palette.ink_600 */
+
+  /* ---- Accent (DESIGN.md adds `-default`/`-muted`/`-ring`; bare `accent`
+   *      and `accent-hover` collide with v3 below). */
+  --color-accent-default:  #1894d3;   /* palette.signal_500 */
+  --color-accent-muted:    rgba(24, 148, 211, 0.12);
+  --color-accent-ring:     rgba(24, 148, 211, 0.45);
+
+  /* ---- Agent identity ---- */
+  --color-agent-manager:   #8265c8;   /* palette.violet_500 */
+  --color-agent-worker:    #2a9a93;   /* palette.teal_500   */
+  --color-agent-founder:   #3aabe3;   /* palette.signal_400 */
+
+  /* ---- Status ---- */
+  --color-status-open:       #2ea36a;
+  --color-status-archiving:  #caa72a;
+  --color-status-archived:   #6d7280;
+  --color-status-abandoned:  #d04a3a;
+  --color-status-blocked:    #caa72a;
+  --color-status-escalated:  #d04a3a;
+
+  /* ---- ID badges ---- */
+  --color-id-thread:       #6dc1ec;
+  --color-id-task:         #b6a3e1;
+
+  /* ---- Feedback ---- */
+  --color-feedback-success:#2ea36a;
+  --color-feedback-warning:#caa72a;
+  --color-feedback-danger: #d04a3a;
+  --color-feedback-info:   #3aabe3;
+
+  /* ====================================================================== */
+  /* v3 backwards-compat aliases — every Tailwind class today's .tsx files  */
+  /* use, AT THE V3 HEX VALUES (per tailwind.config.ts before deletion).    */
+  /* These keep PR 1 a pure foundation flip with zero pixel diff. PR 2     */
+  /* renames callsites to DESIGN.md semantic names and retires this block.  */
+  /* ====================================================================== */
+
+  /* v3 `bg.{DEFAULT,subtle,raised}` */
+  --color-bg:              #0b0d10;
+  --color-bg-subtle:       #11141a;
+  --color-bg-raised:       #1a1d22;
+
+  /* v3 `border.{DEFAULT,subtle}` */
+  --color-border:          #262a31;
+  --color-border-subtle:   #1f2229;
+
+  /* v3 `fg.{DEFAULT,muted,subtle}` */
+  --color-fg:              #e6e6e6;
+  --color-fg-muted:        #9ba1ab;
+  --color-fg-subtle:       #6b7280;
+
+  /* v3 `accent.{DEFAULT,hover}` */
+  --color-accent:          #3b82f6;
+  --color-accent-hover:    #2563eb;
+
+  /* v3 `tier.{green,yellow,red}` */
+  --color-tier-green:      #22c55e;
+  --color-tier-yellow:     #eab308;
+  --color-tier-red:        #ef4444;
+
+  /* ====================================================================== */
+  /* Typography                                                             */
+  /* ====================================================================== */
+
+  --font-sans: "Public Sans", "Public Sans Local", -apple-system,
+               BlinkMacSystemFont, "Segoe UI", Helvetica, sans-serif;
+  --font-mono: "JetBrains Mono", "JetBrains Mono Local", ui-monospace,
+               "SF Mono", Menlo, Consolas, monospace;
+
+  /* DESIGN.md `typography.scale.*` — size + line-height + weight via the
+   * v4 `--text-{step}--line-height` convention. */
+  --text-display:              1.875rem;
+  --text-display--line-height: 2.25rem;
+  --text-display--font-weight: 600;
+
+  --text-h1:                   1.375rem;
+  --text-h1--line-height:      1.75rem;
+  --text-h1--font-weight:      600;
+
+  --text-h2:                   1.125rem;
+  --text-h2--line-height:      1.5rem;
+  --text-h2--font-weight:      600;
+
+  --text-h3:                   1rem;
+  --text-h3--line-height:      1.5rem;
+  --text-h3--font-weight:      600;
+
+  --text-body-lg:              0.9375rem;
+  --text-body-lg--line-height: 1.5rem;
+  --text-body-lg--font-weight: 400;
+
+  --text-body:                 0.875rem;
+  --text-body--line-height:    1.375rem;
+  --text-body--font-weight:    400;
+
+  --text-body-sm:              0.8125rem;
+  --text-body-sm--line-height: 1.25rem;
+  --text-body-sm--font-weight: 400;
+
+  --text-label:                0.75rem;
+  --text-label--line-height:   1rem;
+  --text-label--font-weight:   500;
+
+  --text-overline:             0.6875rem;
+  --text-overline--line-height:1rem;
+  --text-overline--font-weight:600;
+
+  --text-caption:              0.75rem;
+  --text-caption--line-height: 1rem;
+  --text-caption--font-weight: 400;
+
+  --text-mono-md:              0.8125rem;
+  --text-mono-md--line-height: 1.25rem;
+  --text-mono-md--font-weight: 500;
+
+  --text-mono-sm:              0.6875rem;
+  --text-mono-sm--line-height: 1rem;
+  --text-mono-sm--font-weight: 500;
+
+  /* ====================================================================== */
+  /* shadcn generic semantic names — aliased to our DESIGN.md tokens so the */
+  /* upstream shadcn primitive sources (`bg-primary`, `bg-card`, ...) just  */
+  /* work without us forking templates. These live IN @theme so Tailwind v4 */
+  /* generates the matching utility classes.                                */
+  /* ====================================================================== */
+
+  --color-background:             var(--color-surface-canvas);
+  --color-foreground:             var(--color-text-primary);
+  --color-card:                   var(--color-surface-raised);
+  --color-card-foreground:        var(--color-text-primary);
+  --color-popover:                var(--color-surface-overlay);
+  --color-popover-foreground:     var(--color-text-primary);
+  --color-primary:                var(--color-accent-default);
+  --color-primary-foreground:     var(--color-text-inverse);
+  --color-secondary:              var(--color-surface-raised);
+  --color-secondary-foreground:   var(--color-text-primary);
+  --color-muted:                  var(--color-surface-sunken);
+  --color-muted-foreground:       var(--color-text-muted);
+  --color-destructive:            var(--color-tier-red);
+  --color-destructive-foreground: var(--color-text-inverse);
+  --color-input:                  var(--color-border-default);
+  --color-ring:                   var(--color-accent-ring);
+
+  /* ====================================================================== */
+  /* Spacing — 8pt grid + 4pt hairline (DESIGN.md `layout.spacing`)         */
+  /* ====================================================================== */
+
+  --spacing-0: 0;
+  --spacing-1: 0.25rem;
+  --spacing-2: 0.5rem;
+  --spacing-3: 0.75rem;
+  --spacing-4: 1rem;
+  --spacing-5: 1.5rem;
+  --spacing-6: 2rem;
+  --spacing-7: 3rem;
+  --spacing-8: 4rem;
+
+  /* ====================================================================== */
+  /* Radius (DESIGN.md `layout.radius`)                                     */
+  /* ====================================================================== */
+
+  --radius-none: 0;
+  --radius-sm:   0.1875rem;
+  --radius-md:   0.3125rem;
+  --radius-lg:   0.5rem;
+  --radius-pill: 999px;
+}
+
+/* ========================================================================== */
+/* CSS variables that shadcn templates reference directly (not as Tailwind   */
+/* utilities). Mostly `--radius` for `rounded-[var(--radius)]` patterns.    */
+/* ========================================================================== */
+
+:root {
+  --radius: var(--radius-md);
+}
