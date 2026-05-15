@@ -224,13 +224,13 @@ opc web --no-open           # print the URL only
 
 The localhost SPA renders the full threads inbox (compose / reply / invite /
 archive / abandon / extend / forward / SSE-driven live updates) and is the
-recommended interface for founders. Keyboard shortcuts mirror the legacy TUI:
-`N` new, `I` invite, `A` archive, `X` abandon, `F` forward, `R` focus composer,
-`Ctrl+Enter` send, `?` help. The dev server (`cd web && npm run dev`) proxies
-to the daemon for hot-reload development.
+single interactive interface for founders. Keyboard shortcuts: `N` new,
+`I` invite, `A` archive, `X` abandon, `F` forward, `R` focus composer,
+`Ctrl+Enter` send, `?` help. The dev server (`cd web && npm run dev`)
+proxies to the daemon for hot-reload development.
 
-The Textual TUI (`opc threads` with no subcommand) still launches for now;
-it will be removed once the web UI has been used in anger and signed off on.
+(The previous Textual TUI under `src/tui/` was removed in favor of the
+web UI; `opc threads` with no subcommand now points you at `opc web`.)
 
 **Founder CLI commands** (unchanged — scripts and automations depend on
 them):

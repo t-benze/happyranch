@@ -1518,14 +1518,15 @@ def cmd_talk_show(args: argparse.Namespace) -> None:
 
 
 def cmd_threads_tui(args: argparse.Namespace) -> None:
-    """Launch the Textual TUI for the threads inbox."""
-    client = OpcClient.from_env()
-    slug = resolve_org_slug(
-        args_org=args.org, available=_fetch_available_orgs(client),
-    )
-    from src.tui.threads_app import run as run_tui
-    token = client.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-    sys.exit(run_tui(slug=slug, base_url=client.base_url, token=token))
+    """Stub left in place for `opc threads` (no subcommand).
+
+    The Textual TUI was removed in favor of the web UI. This handler now
+    prints a one-liner pointing the founder at `opc web` and exits 0 so
+    muscle memory typing `opc threads` doesn't error.
+    """
+    del args  # unused
+    print("opc threads — the TUI was removed. Use `opc web` for the threads inbox.")
+    print("CLI subcommands (compose, list, show, send, …) still work — see `opc threads --help`.")
 
 
 def cmd_web(args: argparse.Namespace) -> None:
