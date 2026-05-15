@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -8,6 +8,7 @@ import {
   DialogTitle,
 } from '@/design-system/primitives/Dialog';
 import { Button } from '@/design-system/primitives/Button';
+import { FormField } from '@/design-system/patterns/FormField';
 import { ApiError } from '@/lib/api';
 import { useOrgSlug } from '@/lib/orgSlug';
 import { useAbandonThread } from './hooks';
@@ -23,6 +24,7 @@ export function AbandonDialog({ threadId, open, onClose }: Props): JSX.Element {
   const abandon = useAbandonThread(useOrgSlug(), threadId);
   const [reason, setReason] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const reasonId = useId();
 
   useEffect(() => {
     if (!open) return;
@@ -56,12 +58,12 @@ export function AbandonDialog({ threadId, open, onClose }: Props): JSX.Element {
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-3">
-          <p className="text-xs text-fg-muted">
+          <p className="text-xs text-text-muted">
             Abandons the thread without close-outs. Use this when the thread is no longer useful.
           </p>
-          <label className="flex flex-col gap-1 text-xs">
-            <span className="text-fg-muted">Reason</span>
+          <FormField label="Reason" htmlFor={reasonId} error={errorMsg ?? undefined}>
             <input
+              id={reasonId}
               type="text"
               value={reason}
               onChange={(e) => setReason(e.target.value)}
@@ -74,8 +76,7 @@ export function AbandonDialog({ threadId, open, onClose }: Props): JSX.Element {
                 }
               }}
             />
-          </label>
-          {errorMsg && <p className="text-xs text-tier-red">{errorMsg}</p>}
+          </FormField>
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>

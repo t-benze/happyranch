@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -8,6 +8,7 @@ import {
   DialogTitle,
 } from '@/design-system/primitives/Dialog';
 import { Button } from '@/design-system/primitives/Button';
+import { FormField } from '@/design-system/patterns/FormField';
 import { ApiError } from '@/lib/api';
 import { useOrgSlug } from '@/lib/orgSlug';
 import { useComposeThread } from './hooks';
@@ -36,6 +37,11 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated }: Props): J
   const [recipientsRaw, setRecipientsRaw] = useState('');
   const [body, setBody] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const idBase = useId();
+  const subjectId = `${idBase}-subject`;
+  const recipientsId = `${idBase}-recipients`;
+  const bodyId = `${idBase}-body`;
 
   useEffect(() => {
     if (!open) return;
@@ -86,26 +92,32 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated }: Props): J
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-3">
-          <Field label="Subject">
+          <FormField label="Subject" htmlFor={subjectId}>
             <input
+              id={subjectId}
               type="text"
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
               className="input"
               autoFocus
             />
-          </Field>
-          <Field label="Recipients (comma-separated agent names)">
+          </FormField>
+          <FormField
+            label="Recipients (comma-separated agent names)"
+            htmlFor={recipientsId}
+          >
             <input
+              id={recipientsId}
               type="text"
               value={recipientsRaw}
               onChange={(e) => setRecipientsRaw(e.target.value)}
               placeholder="agent_a, agent_b"
               className="input"
             />
-          </Field>
-          <Field label="Body (Markdown)">
+          </FormField>
+          <FormField label="Body (Markdown)" htmlFor={bodyId}>
             <textarea
+              id={bodyId}
               value={body}
               onChange={(e) => setBody(e.target.value)}
               rows={6}
@@ -117,8 +129,8 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated }: Props): J
                 }
               }}
             />
-          </Field>
-          {errorMsg && <p className="text-xs text-tier-red">{errorMsg}</p>}
+          </FormField>
+          {errorMsg && <p className="text-xs text-feedback-danger">{errorMsg}</p>}
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
@@ -128,14 +140,5 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated }: Props): J
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  );
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="flex flex-col gap-1 text-xs">
-      <span className="text-fg-muted">{label}</span>
-      {children}
-    </label>
   );
 }

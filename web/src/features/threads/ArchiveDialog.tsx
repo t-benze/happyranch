@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -8,6 +8,7 @@ import {
   DialogTitle,
 } from '@/design-system/primitives/Dialog';
 import { Button } from '@/design-system/primitives/Button';
+import { FormField } from '@/design-system/patterns/FormField';
 import { ApiError } from '@/lib/api';
 import { useOrgSlug } from '@/lib/orgSlug';
 import { useArchiveThread } from './hooks';
@@ -24,6 +25,8 @@ export function ArchiveDialog({ threadId, open, onClose }: Props): JSX.Element {
   const [summary, setSummary] = useState('');
   const [requestCloseOuts, setRequestCloseOuts] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const summaryId = useId();
+  const closeOutsId = useId();
 
   useEffect(() => {
     if (!open) return;
@@ -61,25 +64,32 @@ export function ArchiveDialog({ threadId, open, onClose }: Props): JSX.Element {
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-3">
-          <label className="flex flex-col gap-1 text-xs">
-            <span className="text-fg-muted">Founder summary (will be saved to transcript)</span>
+          <FormField
+            label="Founder summary (will be saved to transcript)"
+            htmlFor={summaryId}
+            error={errorMsg ?? undefined}
+          >
             <textarea
+              id={summaryId}
               value={summary}
               onChange={(e) => setSummary(e.target.value)}
               rows={5}
               autoFocus
               className="input resize-y"
             />
-          </label>
-          <label className="flex items-center gap-2 text-xs text-fg">
+          </FormField>
+          <label
+            htmlFor={closeOutsId}
+            className="flex items-center gap-2 text-xs text-text-primary"
+          >
             <input
+              id={closeOutsId}
               type="checkbox"
               checked={requestCloseOuts}
               onChange={(e) => setRequestCloseOuts(e.target.checked)}
             />
             Request close-outs from each participant
           </label>
-          {errorMsg && <p className="text-xs text-tier-red">{errorMsg}</p>}
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>

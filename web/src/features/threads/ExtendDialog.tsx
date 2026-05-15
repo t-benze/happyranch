@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -8,6 +8,7 @@ import {
   DialogTitle,
 } from '@/design-system/primitives/Dialog';
 import { Button } from '@/design-system/primitives/Button';
+import { FormField } from '@/design-system/patterns/FormField';
 import { ApiError } from '@/lib/api';
 import { useOrgSlug } from '@/lib/orgSlug';
 import { useExtendCap } from './hooks';
@@ -29,6 +30,7 @@ export function ExtendDialog({
   const extend = useExtendCap(useOrgSlug(), threadId);
   const [cap, setCap] = useState(currentCap + 100);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const capId = useId();
 
   useEffect(() => {
     if (!open) return;
@@ -62,12 +64,12 @@ export function ExtendDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-3">
-          <p className="text-xs text-fg-muted">
-            Current cap: <strong className="text-fg">{currentCap}</strong>
+          <p className="text-xs text-text-muted">
+            Current cap: <strong className="text-text-primary">{currentCap}</strong>
           </p>
-          <label className="flex flex-col gap-1 text-xs">
-            <span className="text-fg-muted">New cap</span>
+          <FormField label="New cap" htmlFor={capId} error={errorMsg ?? undefined}>
             <input
+              id={capId}
               type="number"
               value={cap}
               min={currentCap + 1}
@@ -75,8 +77,7 @@ export function ExtendDialog({
               autoFocus
               className="input"
             />
-          </label>
-          {errorMsg && <p className="text-xs text-tier-red">{errorMsg}</p>}
+          </FormField>
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>

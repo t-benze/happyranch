@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -8,7 +8,9 @@ import {
   DialogTitle,
 } from '@/design-system/primitives/Dialog';
 import { Button } from '@/design-system/primitives/Button';
+import { FormField } from '@/design-system/patterns/FormField';
 import { ApiError } from '@/lib/api';
+import { useOrgSlug } from '@/lib/orgSlug';
 import { useInviteAgent } from './hooks';
 import { describeError } from './strings';
 
@@ -19,9 +21,10 @@ interface Props {
 }
 
 export function InviteDialog({ threadId, open, onClose }: Props): JSX.Element {
-  const invite = useInviteAgent(useSlugFromHook(), threadId);
+  const invite = useInviteAgent(useOrgSlug(), threadId);
   const [name, setName] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const nameId = useId();
 
   useEffect(() => {
     if (!open) return;
@@ -55,9 +58,9 @@ export function InviteDialog({ threadId, open, onClose }: Props): JSX.Element {
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-3">
-          <label className="flex flex-col gap-1 text-xs">
-            <span className="text-fg-muted">Agent name</span>
+          <FormField label="Agent name" htmlFor={nameId} error={errorMsg ?? undefined}>
             <input
+              id={nameId}
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -70,8 +73,7 @@ export function InviteDialog({ threadId, open, onClose }: Props): JSX.Element {
                 }
               }}
             />
-          </label>
-          {errorMsg && <p className="text-xs text-tier-red">{errorMsg}</p>}
+          </FormField>
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
@@ -82,9 +84,4 @@ export function InviteDialog({ threadId, open, onClose }: Props): JSX.Element {
       </DialogContent>
     </Dialog>
   );
-}
-
-import { useOrgSlug } from '@/lib/orgSlug';
-function useSlugFromHook() {
-  return useOrgSlug();
 }
