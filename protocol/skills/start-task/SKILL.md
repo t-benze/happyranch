@@ -23,14 +23,15 @@ Parameters:
 2. **Consult memory.** Before planning:
 
    1. Read `task_history.md` in your workspace root. It lists your recent tasks with briefs, outcomes, and (when present) artifact paths.
-   2. If the current brief references prior work — phrases like "follow up on", "continue", "the report from last week", a specific date, or an explicit `TASK-xxx` — identify the matching entry and fetch the details:
+   2. **Consult per-agent learnings.** If `learnings/_index.md` exists in your workspace, scan it for entries relevant to the current brief and fetch full bodies with `opc learning get --org {ORG_SLUG} --agent <your_agent_name> <LRN-NNN-or-slug>`. Pre-migration workspaces have a flat `learnings.md` inlined into your bootstrap doc instead.
+   3. If the current brief references prior work — phrases like "follow up on", "continue", "the report from last week", a specific date, or an explicit `TASK-xxx` — identify the matching entry and fetch the details:
 
       ```bash
-      opc recall --org {ORG_SLUG} <task_id> --fetch-artifact
+      opc recall --org {ORG_SLUG} <task_id>                       # brief + final summary
+      opc recall --org {ORG_SLUG} <task_id> --tree                # include the full subtree of child tasks
+      opc recall --org {ORG_SLUG} <task_id> --fetch-artifact      # inline artifact bodies (capped at 200KB)
       ```
-
-      Add `--tree` if you need the child tasks too.
-   3. If the brief does not reference prior work, skip this step. Do not pull history speculatively.
+   4. If the brief does not reference prior work, skip step 3. Do not pull history speculatively.
 
 3. **Consult the knowledge base.** Before planning, check for durable knowledge relevant to this task.
 
@@ -74,7 +75,15 @@ Parameters:
    When NOT to emit: every file edit, every grep, anything you'd consider
    trivial mid-step bookkeeping. Treat it like a status line, not a log.
 
-6. **Report mid-task learnings (optional).** Whenever you discover something reusable for future tasks:
+6. **Report mid-task learnings (optional).** Whenever you discover something reusable for future tasks.
+
+   **Migrated workspaces (per-entry learnings, `learnings/` dir exists):** write a YAML payload to `/tmp/lrn-<slug>.yaml` (`slug`, `title`, `topic`, optional `tags`, `related_to`, `body`) and call:
+
+   ```bash
+   opc learning add --org {ORG_SLUG} --agent <your_agent_name> --from-file /tmp/lrn-<slug>.yaml
+   ```
+
+   **Pre-migration workspaces (legacy flat `learnings.md`):** the single-line `--text` form still appends to the flat file. The daemon returns `410 Gone` for this form on migrated workspaces; switch to the verb-dispatched form above if you see that error.
 
    ```bash
    opc learning --org {ORG_SLUG} --task-id <task_id> --session-id <session_id> --agent <your_agent_name> --text "..."

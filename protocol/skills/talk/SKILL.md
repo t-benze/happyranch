@@ -50,7 +50,7 @@ Read your agent name from `agent.yaml` in the workspace root if you don't alread
 4. **Gather inputs:**
 
    - `task_history.md` (in the workspace root).
-   - `learnings.md` (entries added in the window).
+   - Per-agent learnings — `learnings/_index.md` on migrated workspaces (drill into individual `LRN-NNN-<slug>.md` entries dated within the window), or the legacy flat `learnings.md` on pre-migration workspaces.
    - `scorecard.md`.
    - `opc audit --org {ORG_SLUG} --agent <your_name> --since <window_start>`.
 
