@@ -1,0 +1,231 @@
+{
+  "version": 1,
+  "components": [
+    {
+      "name": "AgentChip",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/AgentChip",
+      "variants": {
+        "role": [
+          "manager",
+          "worker",
+          "founder"
+        ]
+      },
+      "consumes": [
+        "components.agent_chip"
+      ],
+      "example": "<AgentChip name='engineering_head' role='manager' />"
+    },
+    {
+      "name": "Button",
+      "layer": "primitive",
+      "import": "@/design-system/primitives/Button",
+      "variants": {
+        "variant": [
+          "default",
+          "destructive",
+          "outline",
+          "secondary",
+          "ghost",
+          "link"
+        ],
+        "size": [
+          "default",
+          "sm",
+          "lg",
+          "icon"
+        ]
+      },
+      "consumes": [
+        "components.button"
+      ],
+      "example": "<Button variant='default' size='default'>Send</Button>"
+    },
+    {
+      "name": "Composer",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/Composer",
+      "variants": {},
+      "consumes": [
+        "components.textarea",
+        "components.button"
+      ],
+      "example": "<Composer onSend={(md) => {}} helper='Ctrl+Enter to send' />"
+    },
+    {
+      "name": "Dialog",
+      "layer": "primitive",
+      "import": "@/design-system/primitives/Dialog",
+      "variants": {},
+      "consumes": [
+        "components.dialog"
+      ],
+      "example": "<Dialog open={false}><DialogContent><DialogHeader><DialogTitle>Confirm</DialogTitle></DialogHeader></DialogContent></Dialog>"
+    },
+    {
+      "name": "EmptyState",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/EmptyState",
+      "variants": {},
+      "consumes": [
+        "components.empty_state"
+      ],
+      "example": "<EmptyState title='No threads' body='Start one with opc threads compose.' />"
+    },
+    {
+      "name": "FormField",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/FormField",
+      "variants": {},
+      "consumes": [
+        "components.input",
+        "typography.scale.label"
+      ],
+      "example": "<FormField label='Subject' htmlFor='subject'><input id='subject' /></FormField>"
+    },
+    {
+      "name": "HelpSheet",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/HelpSheet",
+      "variants": {},
+      "consumes": [
+        "components.dialog",
+        "components.kbd_chip"
+      ],
+      "example": "<HelpSheet open={false} onClose={() => {}} shortcuts={[{ keys: ['?'], description: 'Help' }]} />"
+    },
+    {
+      "name": "IdBadge",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/IdBadge",
+      "variants": {
+        "kind": [
+          "thread",
+          "task"
+        ]
+      },
+      "consumes": [
+        "components.badge"
+      ],
+      "example": "<IdBadge id='THR-042' kind='thread' />"
+    },
+    {
+      "name": "InboxRow",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/InboxRow",
+      "variants": {
+        "status": [
+          "open",
+          "archiving",
+          "archived",
+          "abandoned"
+        ]
+      },
+      "consumes": [
+        "components.inbox_row"
+      ],
+      "example": "<InboxRow threadId='THR-042' subject='Refund policy' status='open' needsYou={true} active={false} href='/orgs/demo/threads/THR-042' />"
+    },
+    {
+      "name": "KbdChip",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/KbdChip",
+      "variants": {},
+      "consumes": [
+        "components.kbd_chip"
+      ],
+      "example": "<KbdChip keys={['Ctrl', 'Enter']} />"
+    },
+    {
+      "name": "MessageBubble",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/MessageBubble",
+      "variants": {
+        "variant": [
+          "founder",
+          "worker",
+          "manager",
+          "decline",
+          "system"
+        ]
+      },
+      "consumes": [
+        "components.message_bubble"
+      ],
+      "example": "<MessageBubble variant='worker' seq={1} speaker='content_writer' speakerRole='worker' timestamp='2026-05-15T10:00:00Z' body='Drafted the post.' />"
+    },
+    {
+      "name": "PageHeader",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/PageHeader",
+      "variants": {},
+      "consumes": [
+        "typography.scale.h2",
+        "typography.scale.caption"
+      ],
+      "example": "<PageHeader title='Threads' meta='12 open' />"
+    },
+    {
+      "name": "StatusBadge",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/StatusBadge",
+      "variants": {
+        "status": [
+          "open",
+          "archiving",
+          "archived",
+          "abandoned"
+        ]
+      },
+      "consumes": [
+        "components.badge"
+      ],
+      "example": "<StatusBadge status='open' />"
+    },
+    {
+      "name": "ThreadHeader",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/ThreadHeader",
+      "variants": {
+        "status": [
+          "open",
+          "archiving",
+          "archived",
+          "abandoned"
+        ]
+      },
+      "consumes": [
+        "layout.grid.threads_page"
+      ],
+      "example": "<ThreadHeader threadId='THR-042' subject='Refund policy' status='open' participants={['founder', 'compliance_head']} turnsUsed={3} turnCap={20} />"
+    },
+    {
+      "name": "TierBadge",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/TierBadge",
+      "variants": {
+        "tier": [
+          "green",
+          "yellow",
+          "red"
+        ]
+      },
+      "consumes": [
+        "components.badge"
+      ],
+      "example": "<TierBadge tier='green' />"
+    },
+    {
+      "name": "TopBar",
+      "layer": "layout",
+      "import": "@/design-system/layouts/AppShell/TopBar",
+      "variants": {},
+      "consumes": [
+        "components.topbar",
+        "layout.grid.app_shell"
+      ],
+      "example": "<TopBar />"
+    }
+  ]
+}

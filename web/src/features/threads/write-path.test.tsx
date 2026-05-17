@@ -121,7 +121,7 @@ describe('ThreadsPage — write path', () => {
     await user.type(await screen.findByLabelText(/Compose follow-up/i), 'Quick update');
     await user.click(screen.getByRole('button', { name: /^Send$/i }));
     await waitFor(() => {
-      expect(body).toEqual({ body_markdown: 'Quick update' });
+      expect(body).toEqual({ body_markdown: 'Quick update', addressed_to: ['@all'] });
     });
   });
 });

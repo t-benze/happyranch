@@ -10,6 +10,7 @@ import { useOrgsList } from '@/hooks/orgs';
 import { OrgProvider } from '@/lib/orgSlug';
 import { ThreadsPage } from '@/features/threads/ThreadsPage';
 import { PROTOTYPES_DISABLED, prototypeRoutes } from '@/prototypes';
+import { DESIGN_ROUTE_DISABLED, designRoutes } from '@/design-system/__design__';
 
 function RootRedirect(): JSX.Element {
   const orgsQuery = useOrgsList();
@@ -54,6 +55,7 @@ export function AppRoutes(): JSX.Element {
           and OrgSlugContext — keeping mock-only behaviour fully isolated
           from the daemon-backed routes. */}
       {!PROTOTYPES_DISABLED && prototypeRoutes()}
+      {!DESIGN_ROUTE_DISABLED && designRoutes()}
       <Route element={<AppShell />}>
         <Route index element={<RootRedirect />} />
         <Route path="/orgs/:slug" element={<OrgLayout />}>

@@ -96,3 +96,12 @@ export function MessageBubble(props: MessageBubbleProps): JSX.Element {
     </article>
   );
 }
+
+export const meta = {
+  name: "MessageBubble",
+  layer: "pattern",
+  import: "@/design-system/patterns/MessageBubble",
+  variants: { variant: ["founder", "worker", "manager", "decline", "system"] },
+  consumes: ["components.message_bubble"],
+  example: "<MessageBubble variant='worker' seq={1} speaker='content_writer' speakerRole='worker' timestamp='2026-05-15T10:00:00Z' body='Drafted the post.' />",
+} as const;

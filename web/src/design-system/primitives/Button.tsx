@@ -68,3 +68,15 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
 Button.displayName = 'Button';
 
 export { buttonVariants };
+
+export const meta = {
+  name: "Button",
+  layer: "primitive",
+  import: "@/design-system/primitives/Button",
+  variants: {
+    variant: ["default", "destructive", "outline", "secondary", "ghost", "link"],
+    size: ["default", "sm", "lg", "icon"],
+  },
+  consumes: ["components.button"],
+  example: "<Button variant='default' size='default'>Send</Button>",
+} as const;

@@ -28,3 +28,12 @@ export function AgentChip({ name, role }: AgentChipProps): JSX.Element {
     </span>
   );
 }
+
+export const meta = {
+  name: "AgentChip",
+  layer: "pattern",
+  import: "@/design-system/patterns/AgentChip",
+  variants: { role: ["manager", "worker", "founder"] },
+  consumes: ["components.agent_chip"],
+  example: "<AgentChip name='engineering_head' role='manager' />",
+} as const;

@@ -686,8 +686,8 @@ guard — kept lazy, kept cheap.
 ### Recommendation: handwritten manifest + cheap generator
 
 `react-docgen-typescript` works but is heavy (drags in the TS compiler at build
-time, slow on a localhost SPA we rebuild often). Given we already ship a Zod
-manifest at `web/UI_SPEC.components.ts` (§13 of UI_SPEC.md), the right answer is:
+time, slow on a localhost SPA we rebuild often). Per-component metadata that
+the file owns alongside its implementation is cheaper and harder to drift:
 
 > Generate `registry.json` from filesystem + a small per-component `meta` export,
 > not from TS AST introspection.
@@ -705,6 +705,13 @@ export const meta = {
   example: "<AgentChip name='content_writer' role='worker' />",
 } as const;
 ```
+
+A `consumes` entry may reference any path inside DESIGN.md — typically
+`components.*`, but `typography.*` and `layout.*` are also legitimate for
+patterns built directly on those primitives (e.g., `PageHeader` and
+`FormField` consume typography tokens, not a dedicated component block).
+The registry-coverage test and any future lint rule accept any DESIGN.md
+path; they do not require the `components.` prefix.
 
 ### Generator script
 

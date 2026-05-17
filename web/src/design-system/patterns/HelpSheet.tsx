@@ -62,3 +62,12 @@ export function HelpSheet({
     </Dialog>
   );
 }
+
+export const meta = {
+  name: "HelpSheet",
+  layer: "pattern",
+  import: "@/design-system/patterns/HelpSheet",
+  variants: {},
+  consumes: ["components.dialog", "components.kbd_chip"],
+  example: "<HelpSheet open={false} onClose={() => {}} shortcuts={[{ keys: ['?'], description: 'Help' }]} />",
+} as const;

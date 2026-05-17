@@ -20,3 +20,12 @@ export function IdBadge({ id, kind }: IdBadgeProps): JSX.Element {
     <span className={`font-mono text-xs ${TEXT_COLOR[kind]}`}>{id}</span>
   );
 }
+
+export const meta = {
+  name: "IdBadge",
+  layer: "pattern",
+  import: "@/design-system/patterns/IdBadge",
+  variants: { kind: ["thread", "task"] },
+  consumes: ["components.badge"],
+  example: "<IdBadge id='THR-042' kind='thread' />",
+} as const;

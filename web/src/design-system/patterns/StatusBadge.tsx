@@ -26,3 +26,12 @@ export function StatusBadge({ status }: StatusBadgeProps): JSX.Element {
     </span>
   );
 }
+
+export const meta = {
+  name: "StatusBadge",
+  layer: "pattern",
+  import: "@/design-system/patterns/StatusBadge",
+  variants: { status: ["open", "archiving", "archived", "abandoned"] },
+  consumes: ["components.badge"],
+  example: "<StatusBadge status='open' />",
+} as const;

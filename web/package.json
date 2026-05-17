@@ -10,7 +10,10 @@
     "preview": "vite preview",
     "lint": "eslint src --ext .ts,.tsx",
     "typecheck": "tsc -b --noEmit",
-    "test": "vitest"
+    "test": "vitest",
+    "build:registry": "tsx scripts/build-registry.ts",
+    "prebuild": "npm run build:registry",
+    "predev": "npm run build:registry"
   },
   "dependencies": {
     "@microsoft/fetch-event-source": "^2.0.1",
@@ -45,6 +48,7 @@
     "msw": "^2.4.9",
     "tailwindcss": "^4.0.0",
     "tailwindcss-animate": "^1.0.7",
+    "tsx": "^4.22.0",
     "typescript": "^5.6.2",
     "vite": "^5.4.8",
     "vitest": "^2.1.1"

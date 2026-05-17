@@ -32,3 +32,12 @@ export function FormField({ label, htmlFor, error, children }: FormFieldProps): 
     </div>
   );
 }
+
+export const meta = {
+  name: "FormField",
+  layer: "pattern",
+  import: "@/design-system/patterns/FormField",
+  variants: {},
+  consumes: ["components.input", "typography.scale.label"],
+  example: "<FormField label='Subject' htmlFor='subject'><input id='subject' /></FormField>",
+} as const;

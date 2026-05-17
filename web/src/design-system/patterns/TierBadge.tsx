@@ -23,3 +23,12 @@ export function TierBadge({ tier }: TierBadgeProps): JSX.Element {
     </span>
   );
 }
+
+export const meta = {
+  name: "TierBadge",
+  layer: "pattern",
+  import: "@/design-system/patterns/TierBadge",
+  variants: { tier: ["green", "yellow", "red"] },
+  consumes: ["components.badge"],
+  example: "<TierBadge tier='green' />",
+} as const;

@@ -99,3 +99,12 @@ export function InboxRow({
     </a>
   );
 }
+
+export const meta = {
+  name: "InboxRow",
+  layer: "pattern",
+  import: "@/design-system/patterns/InboxRow",
+  variants: { status: ["open", "archiving", "archived", "abandoned"] },
+  consumes: ["components.inbox_row"],
+  example: "<InboxRow threadId='THR-042' subject='Refund policy' status='open' needsYou={true} active={false} href='/orgs/demo/threads/THR-042' />",
+} as const;

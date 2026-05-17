@@ -127,3 +127,12 @@ export {
   DialogTitle,
   DialogDescription,
 };
+
+export const meta = {
+  name: "Dialog",
+  layer: "primitive",
+  import: "@/design-system/primitives/Dialog",
+  variants: {},
+  consumes: ["components.dialog"],
+  example: "<Dialog open={false}><DialogContent><DialogHeader><DialogTitle>Confirm</DialogTitle></DialogHeader></DialogContent></Dialog>",
+} as const;

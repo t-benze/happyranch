@@ -25,3 +25,12 @@ export function PageHeader({ title, meta, actions }: PageHeaderProps): JSX.Eleme
     </div>
   );
 }
+
+export const meta = {
+  name: "PageHeader",
+  layer: "pattern",
+  import: "@/design-system/patterns/PageHeader",
+  variants: {},
+  consumes: ["typography.scale.h2", "typography.scale.caption"],
+  example: "<PageHeader title='Threads' meta='12 open' />",
+} as const;

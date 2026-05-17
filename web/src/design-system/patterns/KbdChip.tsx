@@ -24,3 +24,12 @@ export function KbdChip({ keys }: KbdChipProps): JSX.Element {
     </span>
   );
 }
+
+export const meta = {
+  name: "KbdChip",
+  layer: "pattern",
+  import: "@/design-system/patterns/KbdChip",
+  variants: {},
+  consumes: ["components.kbd_chip"],
+  example: "<KbdChip keys={['Ctrl', 'Enter']} />",
+} as const;
