@@ -57,7 +57,7 @@ export function AbandonDialog({ threadId, open, onClose }: Props): JSX.Element {
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-3">
-          <p className="text-xs text-text-muted">
+          <p className="text-text-muted text-xs">
             Abandons the thread without close-outs. Use this when the thread is no longer useful.
           </p>
           <FormField label="Reason" htmlFor={reasonId} error={errorMsg ?? undefined}>

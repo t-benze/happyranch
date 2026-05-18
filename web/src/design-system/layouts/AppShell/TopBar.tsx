@@ -1,4 +1,16 @@
 import { NavLink, useNavigate, useParams } from 'react-router-dom';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/design-system/primitives/Select';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/design-system/primitives/Tooltip';
 import { useOrgsList } from '@/hooks/orgs';
 import { useThreadRoutes } from '@/hooks/threads';
 import { useOrgSlugOptional } from '@/lib/orgSlug';
@@ -19,40 +31,41 @@ export function TopBar(): JSX.Element {
   const switchEnabled = !orgsQuery.isLoading && (orgsQuery.data?.orgs.length ?? 0) > 0;
 
   return (
-    <header className="flex h-12 shrink-0 items-center gap-4 border-b border-border bg-bg-subtle px-4">
-      <div className="font-semibold text-fg">OPC</div>
-      <select
-        value={activeSlug ?? ''}
-        onChange={(e) => {
-          const target = e.target.value;
+    <header className="border-border bg-bg-subtle flex h-12 shrink-0 items-center gap-4 border-b px-4">
+      <div className="text-fg font-semibold">OPC</div>
+      <Select
+        value={activeSlug ?? undefined}
+        onValueChange={(target) => {
           if (!target || target === activeSlug) return;
           navigate(routes.inboxForOrg(target));
         }}
-        className="rounded border border-border bg-bg-raised px-2 py-1 text-sm text-fg"
-        aria-label="Active org"
         disabled={!switchEnabled}
       >
-        {!activeSlug && <option value="">Select org…</option>}
-        {orgsQuery.data?.orgs.map((o) => (
-          <option key={o.slug} value={o.slug}>
-            {o.slug}
-          </option>
-        ))}
-      </select>
+        <SelectTrigger aria-label="Active org" className="w-[180px]">
+          <SelectValue placeholder="Select org…" />
+        </SelectTrigger>
+        <SelectContent>
+          {orgsQuery.data?.orgs.map((o) => (
+            <SelectItem key={o.slug} value={o.slug}>
+              {o.slug}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
       <nav className="flex items-center gap-1 text-sm">
         <NavTab to={threadsHref} enabled={!!activeSlug && threadsHref !== '#'}>
           Threads
         </NavTab>
-        <NavTab to="#" enabled={false} title="Coming soon">
+        <NavTab to="#" enabled={false} tooltip="Coming soon">
           Tasks
         </NavTab>
-        <NavTab to="#" enabled={false} title="Coming soon">
+        <NavTab to="#" enabled={false} tooltip="Coming soon">
           KB
         </NavTab>
-        <NavTab to="#" enabled={false} title="Coming soon">
+        <NavTab to="#" enabled={false} tooltip="Coming soon">
           Audit
         </NavTab>
-        <NavTab to="#" enabled={false} title="Coming soon">
+        <NavTab to="#" enabled={false} tooltip="Coming soon">
           Agents
         </NavTab>
       </nav>
@@ -73,22 +86,28 @@ function NavTab({
   to,
   enabled,
   children,
-  title,
+  tooltip,
 }: {
   to: string;
   enabled: boolean;
   children: React.ReactNode;
-  title?: string;
+  tooltip?: string;
 }): JSX.Element {
   if (!enabled) {
-    return (
+    const span = (
       <span
-        className="cursor-not-allowed rounded px-2 py-1 text-fg-subtle"
-        title={title}
+        className="text-fg-subtle cursor-not-allowed rounded px-2 py-1"
         aria-disabled="true"
       >
         {children}
       </span>
+    );
+    if (!tooltip) return span;
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>{span}</TooltipTrigger>
+        <TooltipContent>{tooltip}</TooltipContent>
+      </Tooltip>
     );
   }
   return (

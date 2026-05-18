@@ -63,7 +63,7 @@ export function ExtendDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-3">
-          <p className="text-xs text-text-muted">
+          <p className="text-text-muted text-xs">
             Current cap: <strong className="text-text-primary">{currentCap}</strong>
           </p>
           <FormField label="New cap" htmlFor={capId} error={errorMsg ?? undefined}>

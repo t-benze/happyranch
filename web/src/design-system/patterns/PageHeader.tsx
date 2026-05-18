@@ -14,9 +14,9 @@ export function PageHeader({ title, meta, actions }: PageHeaderProps): JSX.Eleme
   return (
     <div className="flex items-start justify-between gap-3">
       <div className="min-w-0 flex-1">
-        <h2 className="truncate text-h2 text-text-primary">{title}</h2>
+        <h2 className="text-h2 text-text-primary truncate">{title}</h2>
         {meta && (
-          <div className="mt-1 text-caption text-text-muted">{meta}</div>
+          <div className="text-caption text-text-muted mt-1">{meta}</div>
         )}
       </div>
       {actions && (

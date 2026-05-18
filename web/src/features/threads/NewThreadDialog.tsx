@@ -128,7 +128,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated }: Props): J
               }}
             />
           </FormField>
-          {errorMsg && <p className="text-xs text-feedback-danger">{errorMsg}</p>}
+          {errorMsg && <p className="text-feedback-danger text-xs">{errorMsg}</p>}
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>

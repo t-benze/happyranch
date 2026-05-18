@@ -67,7 +67,7 @@ export function InboxRow({
       {active && (
         <span
           aria-hidden="true"
-          className="absolute inset-y-1 left-0 w-0.5 rounded-full bg-accent-default"
+          className="bg-accent-default absolute inset-y-1 left-0 w-0.5 rounded-full"
         />
       )}
       <div className="flex items-center justify-between gap-2">
@@ -75,16 +75,16 @@ export function InboxRow({
           {needsYou && (
             <span
               aria-label="needs you"
-              className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-accent-default"
+              className="bg-accent-default inline-block h-1.5 w-1.5 shrink-0 rounded-full"
             />
           )}
-          <span className="truncate text-body-sm font-medium text-text-primary">
+          <span className="text-body-sm text-text-primary truncate font-medium">
             {subject}
           </span>
         </div>
         <StatusBadge status={status} />
       </div>
-      <div className="mt-1 flex items-center justify-between gap-2 text-caption text-text-muted">
+      <div className="text-caption text-text-muted mt-1 flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           <IdBadge id={threadId} kind="thread" />
           {lastSpeaker && (

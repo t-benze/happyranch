@@ -19,7 +19,7 @@ const DOT_BG: Record<AgentChipProps['role'], string> = {
 
 export function AgentChip({ name, role }: AgentChipProps): JSX.Element {
   return (
-    <span className="inline-flex items-center gap-2 text-sm text-fg">
+    <span className="text-fg inline-flex items-center gap-2 text-sm">
       <span
         aria-hidden="true"
         className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${DOT_BG[role]}`}

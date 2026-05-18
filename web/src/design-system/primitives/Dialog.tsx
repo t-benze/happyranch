@@ -59,7 +59,7 @@ const DialogContent = React.forwardRef<
     >
       {children}
       <DialogPrimitive.Close
-        className="absolute right-3 top-3 rounded text-fg-muted opacity-70 ring-offset-background transition-opacity hover:opacity-100 hover:text-fg focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none"
+        className="text-fg-muted ring-offset-background hover:text-fg focus:ring-ring absolute top-3 right-3 rounded opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-none disabled:pointer-events-none"
         aria-label="Close"
       >
         <X className="h-4 w-4" />

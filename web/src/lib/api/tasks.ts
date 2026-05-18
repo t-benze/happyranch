@@ -6,7 +6,7 @@
 import { request } from './client';
 import type { TaskRecord } from './types';
 
-export interface TaskListItem extends TaskRecord {}
+export type TaskListItem = TaskRecord;
 
 export const submitTask = (
   slug: string,

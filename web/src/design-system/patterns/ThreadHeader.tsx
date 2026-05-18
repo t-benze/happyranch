@@ -32,7 +32,7 @@ export function ThreadHeader({
   actions,
 }: ThreadHeaderProps): JSX.Element {
   return (
-    <header className="border-b border-border-default bg-surface-sunken px-4 py-3">
+    <header className="border-border-default bg-surface-sunken border-b px-4 py-3">
       <PageHeader
         title={
           <span className="inline-flex items-center gap-2">
@@ -54,7 +54,7 @@ export function ThreadHeader({
         actions={actions}
       />
       {archiveSummary && (
-        <p className="mt-2 rounded-md border border-border-default bg-surface-raised p-2 text-caption text-text-muted">
+        <p className="border-border-default bg-surface-raised text-caption text-text-muted mt-2 rounded-md border p-2">
           <strong className="text-text-primary">Archive summary:</strong>{' '}
           {archiveSummary}
         </p>

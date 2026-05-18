@@ -54,7 +54,7 @@ export function MessageBubble(props: MessageBubbleProps): JSX.Element {
   if (props.variant === 'system') {
     return (
       <div
-        className="mx-auto my-2 inline-flex max-w-fit items-center gap-2 self-center rounded-full border border-dashed border-border-subtle bg-transparent px-3 py-1 text-caption text-text-muted"
+        className="border-border-subtle text-caption text-text-muted mx-auto my-2 inline-flex max-w-fit items-center gap-2 self-center rounded-full border border-dashed bg-transparent px-3 py-1"
         aria-label="system event"
       >
         <span className="font-mono">[{props.seq}]</span>
@@ -68,7 +68,7 @@ export function MessageBubble(props: MessageBubbleProps): JSX.Element {
 
   return (
     <article className={VARIANT_CONTAINER[variant]}>
-      <header className="mb-1 flex items-baseline gap-2 text-caption">
+      <header className="text-caption mb-1 flex items-baseline gap-2">
         {speaker && (
           <AgentChip
             name={speaker}
@@ -78,7 +78,7 @@ export function MessageBubble(props: MessageBubbleProps): JSX.Element {
         {addressedTo && addressedTo.length > 0 && (
           <span className="text-text-muted">→ {addressedTo.join(', ')}</span>
         )}
-        <span className="ml-auto font-mono text-text-muted">
+        <span className="text-text-muted ml-auto font-mono">
           #{seq} · {fmtTs(timestamp)}
         </span>
       </header>
@@ -87,7 +87,7 @@ export function MessageBubble(props: MessageBubbleProps): JSX.Element {
           <strong>Declined:</strong> {declineReason}
         </p>
       ) : (
-        <div className="prose prose-invert prose-sm max-w-none text-text-primary">
+        <div className="prose prose-invert prose-sm text-text-primary max-w-none">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>
             {body ?? ''}
           </ReactMarkdown>

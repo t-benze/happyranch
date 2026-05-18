@@ -15,12 +15,12 @@ import { DESIGN_ROUTE_DISABLED, designRoutes } from '@/design-system/__design__'
 function RootRedirect(): JSX.Element {
   const orgsQuery = useOrgsList();
   if (orgsQuery.isLoading) {
-    return <div className="p-6 text-fg-muted">Loading…</div>;
+    return <div className="text-fg-muted p-6">Loading…</div>;
   }
   const first = orgsQuery.data?.orgs[0]?.slug;
   if (!first) {
     return (
-      <div className="p-6 text-fg-muted">
+      <div className="text-fg-muted p-6">
         No orgs loaded. Run <code className="text-fg">opc orgs init &lt;slug&gt;</code> from the CLI.
       </div>
     );
@@ -76,7 +76,7 @@ function NavigateToThreads(): JSX.Element {
 
 function NotFound(): JSX.Element {
   return (
-    <div className="p-6 text-fg-muted">
+    <div className="text-fg-muted p-6">
       Not found. <a href="/" className="text-accent hover:underline">Go home</a>.
     </div>
   );

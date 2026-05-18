@@ -46,7 +46,7 @@ export function HelpSheet({
           {shortcuts.map((s) => (
             <li
               key={s.keys.join('+')}
-              className="flex items-center gap-3 text-body"
+              className="text-body flex items-center gap-3"
             >
               <span className="min-w-[5rem]">
                 <KbdChip keys={s.keys} />
@@ -56,7 +56,7 @@ export function HelpSheet({
           ))}
         </ul>
         {footnote && (
-          <p className="mt-3 text-caption text-text-muted">{footnote}</p>
+          <p className="text-caption text-text-muted mt-3">{footnote}</p>
         )}
       </DialogContent>
     </Dialog>

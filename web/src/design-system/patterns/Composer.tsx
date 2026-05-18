@@ -73,7 +73,7 @@ export function Composer({
         disabled={disabled || pending}
         rows={4}
         aria-label="Compose follow-up"
-        className="w-full resize-none rounded-md border border-border-default bg-surface-raised px-3 py-2 text-body-lg text-text-primary placeholder:text-text-muted focus:border-accent-default focus:outline-none disabled:opacity-50"
+        className="border-border-default bg-surface-raised text-body-lg text-text-primary placeholder:text-text-muted focus:border-accent-default w-full resize-none rounded-md border px-3 py-2 focus:outline-none disabled:opacity-50"
       />
       <div className="flex items-center justify-between gap-2">
         {errorMessage ? (

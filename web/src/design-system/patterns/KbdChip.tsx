@@ -16,7 +16,7 @@ export function KbdChip({ keys }: KbdChipProps): JSX.Element {
       {keys.map((k) => (
         <kbd
           key={k}
-          className="inline-flex min-w-[1.5rem] items-center justify-center rounded-sm border border-border-default bg-surface-raised px-2 py-px font-mono text-mono-sm text-text-primary shadow-[inset_0_-1px_0_rgba(0,0,0,0.4)]"
+          className="border-border-default bg-surface-raised text-mono-sm text-text-primary inline-flex min-w-[1.5rem] items-center justify-center rounded-sm border px-2 py-px font-mono shadow-[inset_0_-1px_0_rgba(0,0,0,0.4)]"
         >
           {k}
         </kbd>

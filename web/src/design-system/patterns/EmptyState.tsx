@@ -18,12 +18,12 @@ export function EmptyState({ icon, title, body, cta }: EmptyStateProps): JSX.Ele
   return (
     <div className="mx-auto flex h-full max-w-[28rem] flex-col items-center justify-center px-4 py-12 text-center">
       {icon && (
-        <div aria-hidden="true" className="mb-3 text-text-muted">
+        <div aria-hidden="true" className="text-text-muted mb-3">
           {icon}
         </div>
       )}
       <h3 className="text-h3 text-text-secondary">{title}</h3>
-      <div className="mt-2 text-body text-text-muted">{body}</div>
+      <div className="text-body text-text-muted mt-2">{body}</div>
       {cta && (
         <div className="mt-5">
           <Button onClick={cta.onClick}>{cta.label}</Button>

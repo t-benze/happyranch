@@ -43,7 +43,7 @@ export function prototypeRoutes(): JSX.Element {
       <Route
         path="threads-v2"
         element={
-          <Suspense fallback={<div className="p-6 text-text-muted">Loading prototype…</div>}>
+          <Suspense fallback={<div className="text-text-muted p-6">Loading prototype…</div>}>
             <ThreadsV2Screen />
           </Suspense>
         }
@@ -51,7 +51,7 @@ export function prototypeRoutes(): JSX.Element {
       <Route
         path="threads-v2/:thread_id"
         element={
-          <Suspense fallback={<div className="p-6 text-text-muted">Loading prototype…</div>}>
+          <Suspense fallback={<div className="text-text-muted p-6">Loading prototype…</div>}>
             <ThreadsV2Screen />
           </Suspense>
         }
@@ -76,8 +76,8 @@ function PrototypesLayout(): JSX.Element {
 
 function PrototypeBanner(): JSX.Element {
   return (
-    <div className="flex shrink-0 items-center gap-3 border-b border-border-default bg-accent-muted px-4 py-1 text-caption text-text-secondary">
-      <span className="font-semibold text-text-primary">Prototype sandbox</span>
+    <div className="border-border-default bg-accent-muted text-caption text-text-secondary flex shrink-0 items-center gap-3 border-b px-4 py-1">
+      <span className="text-text-primary font-semibold">Prototype sandbox</span>
       <span>—</span>
       <span>Mock data, no daemon.</span>
       <span className="ml-auto">
@@ -91,9 +91,9 @@ function PrototypeBanner(): JSX.Element {
 
 function PrototypesIndex(): JSX.Element {
   return (
-    <div className="p-6 text-text-primary">
-      <h1 className="mb-3 text-h2">Prototypes</h1>
-      <p className="mb-4 text-body text-text-secondary">
+    <div className="text-text-primary p-6">
+      <h1 className="text-h2 mb-3">Prototypes</h1>
+      <p className="text-body text-text-secondary mb-4">
         Designer-agent sandbox. Each entry is a real composition rendered against mock data.
       </p>
       <ul className="flex flex-col gap-2">
@@ -101,7 +101,7 @@ function PrototypesIndex(): JSX.Element {
           <Link to="threads-v2" className="text-accent-default hover:underline">
             /__prototypes/threads-v2
           </Link>
-          <span className="ml-2 text-caption text-text-muted">
+          <span className="text-caption text-text-muted ml-2">
             ThreadsPage under PrototypeProvider
           </span>
         </li>

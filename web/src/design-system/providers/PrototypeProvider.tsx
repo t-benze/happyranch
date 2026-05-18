@@ -12,6 +12,7 @@
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useState, type ReactNode } from 'react';
+import { TooltipProvider } from '@/design-system/primitives/Tooltip';
 import { StaticOrgProvider } from '@/lib/orgSlug';
 import { MOCK_ORG_SLUG } from '@/mocks';
 import { DataContext } from './DataContext';
@@ -43,7 +44,9 @@ export function PrototypeProvider({ children }: { children: ReactNode }): JSX.El
           useThreadRoutes: useMockThreadRoutes,
         }}
       >
-        <StaticOrgProvider slug={MOCK_ORG_SLUG}>{children}</StaticOrgProvider>
+        <TooltipProvider delayDuration={300}>
+          <StaticOrgProvider slug={MOCK_ORG_SLUG}>{children}</StaticOrgProvider>
+        </TooltipProvider>
       </DataContext.Provider>
     </QueryClientProvider>
   );

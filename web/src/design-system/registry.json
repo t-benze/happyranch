@@ -64,6 +64,16 @@
       "example": "<Dialog open={false}><DialogContent><DialogHeader><DialogTitle>Confirm</DialogTitle></DialogHeader></DialogContent></Dialog>"
     },
     {
+      "name": "DropdownMenu",
+      "layer": "primitive",
+      "import": "@/design-system/primitives/DropdownMenu",
+      "variants": {},
+      "consumes": [
+        "components.dropdown_menu"
+      ],
+      "example": "<DropdownMenu><DropdownMenuTrigger>Open</DropdownMenuTrigger><DropdownMenuContent><DropdownMenuItem>Action</DropdownMenuItem></DropdownMenuContent></DropdownMenu>"
+    },
+    {
       "name": "EmptyState",
       "layer": "pattern",
       "import": "@/design-system/patterns/EmptyState",
@@ -128,6 +138,16 @@
       "example": "<InboxRow threadId='THR-042' subject='Refund policy' status='open' needsYou={true} active={false} href='/orgs/demo/threads/THR-042' />"
     },
     {
+      "name": "Input",
+      "layer": "primitive",
+      "import": "@/design-system/primitives/Input",
+      "variants": {},
+      "consumes": [
+        "components.input"
+      ],
+      "example": "<Input type='text' placeholder='Subject' />"
+    },
+    {
       "name": "KbdChip",
       "layer": "pattern",
       "import": "@/design-system/patterns/KbdChip",
@@ -136,6 +156,16 @@
         "components.kbd_chip"
       ],
       "example": "<KbdChip keys={['Ctrl', 'Enter']} />"
+    },
+    {
+      "name": "Label",
+      "layer": "primitive",
+      "import": "@/design-system/primitives/Label",
+      "variants": {},
+      "consumes": [
+        "components.label"
+      ],
+      "example": "<Label htmlFor='subject'>Subject</Label>"
     },
     {
       "name": "MessageBubble",
@@ -167,6 +197,16 @@
       "example": "<PageHeader title='Threads' meta='12 open' />"
     },
     {
+      "name": "Select",
+      "layer": "primitive",
+      "import": "@/design-system/primitives/Select",
+      "variants": {},
+      "consumes": [
+        "components.select"
+      ],
+      "example": "<Select value='a'><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value='a'>A</SelectItem></SelectContent></Select>"
+    },
+    {
       "name": "StatusBadge",
       "layer": "pattern",
       "import": "@/design-system/patterns/StatusBadge",
@@ -182,6 +222,31 @@
         "components.badge"
       ],
       "example": "<StatusBadge status='open' />"
+    },
+    {
+      "name": "Tabs",
+      "layer": "primitive",
+      "import": "@/design-system/primitives/Tabs",
+      "variants": {
+        "variant": [
+          "pills",
+          "underline"
+        ]
+      },
+      "consumes": [
+        "components.tabs"
+      ],
+      "example": "<Tabs value='open'><TabsList><TabsTrigger value='open'>open</TabsTrigger></TabsList></Tabs>"
+    },
+    {
+      "name": "Textarea",
+      "layer": "primitive",
+      "import": "@/design-system/primitives/Textarea",
+      "variants": {},
+      "consumes": [
+        "components.textarea"
+      ],
+      "example": "<Textarea placeholder='Compose…' />"
     },
     {
       "name": "ThreadHeader",
@@ -201,6 +266,16 @@
       "example": "<ThreadHeader threadId='THR-042' subject='Refund policy' status='open' participants={['founder', 'compliance_head']} turnsUsed={3} turnCap={20} />"
     },
     {
+      "name": "ThreadsLayout",
+      "layer": "layout",
+      "import": "@/design-system/layouts/ThreadsLayout",
+      "variants": {},
+      "consumes": [
+        "layout.grid.threads_page"
+      ],
+      "example": "<ThreadsLayout inbox={<aside />} detail={<section />} />"
+    },
+    {
       "name": "TierBadge",
       "layer": "pattern",
       "import": "@/design-system/patterns/TierBadge",
@@ -215,6 +290,16 @@
         "components.badge"
       ],
       "example": "<TierBadge tier='green' />"
+    },
+    {
+      "name": "Tooltip",
+      "layer": "primitive",
+      "import": "@/design-system/primitives/Tooltip",
+      "variants": {},
+      "consumes": [
+        "components.tooltip"
+      ],
+      "example": "<Tooltip><TooltipTrigger>Hover</TooltipTrigger><TooltipContent>Hint</TooltipContent></Tooltip>"
     },
     {
       "name": "TopBar",

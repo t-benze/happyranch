@@ -20,7 +20,7 @@ const STATUS_CLASS: Record<StatusBadgeProps['status'], string> = {
 export function StatusBadge({ status }: StatusBadgeProps): JSX.Element {
   return (
     <span
-      className={`inline-flex items-center rounded-sm px-2 py-px font-mono text-mono-sm font-semibold ${STATUS_CLASS[status]}`}
+      className={`text-mono-sm inline-flex items-center rounded-sm px-2 py-px font-mono font-semibold ${STATUS_CLASS[status]}`}
     >
       {status}
     </span>

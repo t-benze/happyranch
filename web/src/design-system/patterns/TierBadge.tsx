@@ -17,7 +17,7 @@ const TIER_CLASS: Record<TierBadgeProps['tier'], string> = {
 export function TierBadge({ tier }: TierBadgeProps): JSX.Element {
   return (
     <span
-      className={`inline-flex items-center rounded-sm border px-2 py-px font-mono text-mono-sm font-semibold ${TIER_CLASS[tier]}`}
+      className={`text-mono-sm inline-flex items-center rounded-sm border px-2 py-px font-mono font-semibold ${TIER_CLASS[tier]}`}
     >
       {tier}
     </span>

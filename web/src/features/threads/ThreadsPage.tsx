@@ -9,6 +9,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/design-system/primitives/Button';
+import { Tabs, TabsList, TabsTrigger } from '@/design-system/primitives/Tabs';
+import { ThreadsLayout } from '@/design-system/layouts/ThreadsLayout';
 import { Composer } from '@/design-system/patterns/Composer';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { HelpSheet } from '@/design-system/patterns/HelpSheet';
@@ -150,8 +152,9 @@ export function ThreadsPage(): JSX.Element {
   }, [threadId, activeThread.data, activeMessagesQuery.data]);
 
   return (
-    <div className="grid h-full grid-cols-[320px_1fr] grid-rows-[minmax(0,1fr)]">
-      {/* Inbox column */}
+    <>
+      <ThreadsLayout
+        inbox={(
       <aside className="flex h-full flex-col border-r border-border-default bg-surface-sunken">
         <header className="border-b border-border-default px-3 py-2">
           <div className="flex items-center justify-between gap-2">
@@ -173,22 +176,20 @@ export function ThreadsPage(): JSX.Element {
             className="mt-2 w-full rounded-md border border-border-default bg-surface-raised px-2 py-1 text-caption text-text-primary placeholder:text-text-muted focus:border-accent-default focus:outline-none"
             aria-label="Filter threads"
           />
-          <div className="mt-2 flex gap-1">
-            {STATUS_TABS.map((s) => (
-              <button
-                key={s}
-                type="button"
-                onClick={() => setStatus(s)}
-                className={`rounded-md px-2 py-0.5 text-caption transition-colors ${
-                  status === s
-                    ? 'bg-surface-raised text-text-primary'
-                    : 'text-text-muted hover:text-text-primary'
-                }`}
-              >
-                {s}
-              </button>
-            ))}
-          </div>
+          <Tabs
+            className="mt-2"
+            value={status}
+            onValueChange={(v) => setStatus(v as StatusTab)}
+            aria-label="Status filter"
+          >
+            <TabsList>
+              {STATUS_TABS.map((s) => (
+                <TabsTrigger key={s} value={s}>
+                  {s}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
         </header>
         <div className="flex-1 overflow-auto p-2">
           {threadsQuery.isLoading && (
@@ -226,9 +227,8 @@ export function ThreadsPage(): JSX.Element {
           </div>
         </div>
       </aside>
-
-      {/* Detail column */}
-      {threadId ? (
+        )}
+        detail={threadId ? (
         <DetailColumn
           loading={activeThread.isLoading}
           errored={activeThread.isError || !activeThread.data}
@@ -262,6 +262,7 @@ export function ThreadsPage(): JSX.Element {
           }
         />
       )}
+      />
 
       <NewThreadDialog
         open={showNew}
@@ -300,7 +301,7 @@ export function ThreadsPage(): JSX.Element {
           />
         </>
       )}
-    </div>
+    </>
   );
 }
 

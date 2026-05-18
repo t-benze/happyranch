@@ -81,7 +81,7 @@ const componentMap: Record<string, ReactNode> = {
   StatusBadge: <StatusBadge status="open" />,
   TierBadge: <TierBadge tier="green" />,
   EmptyState: (
-    <div className="h-40 w-full max-w-md border border-border-default">
+    <div className="border-border-default h-40 w-full max-w-md border">
       <EmptyState
         title="No threads"
         body="Start one with opc threads compose."
@@ -95,7 +95,7 @@ const componentMap: Record<string, ReactNode> = {
         <input
           id="design-subject"
           placeholder="Refund policy"
-          className="rounded-md border border-border-default bg-surface-raised px-2 py-1 text-body text-text-primary placeholder:text-text-muted"
+          className="border-border-default bg-surface-raised text-body text-text-primary placeholder:text-text-muted rounded-md border px-2 py-1"
         />
       </FormField>
     </div>
@@ -179,8 +179,8 @@ function DesignLayout(): JSX.Element {
 
 function DesignBanner(): JSX.Element {
   return (
-    <div className="flex shrink-0 items-center gap-3 border-b border-border-default bg-accent-muted px-4 py-1 text-caption text-text-secondary">
-      <span className="font-semibold text-text-primary">Design system</span>
+    <div className="border-border-default bg-accent-muted text-caption text-text-secondary flex shrink-0 items-center gap-3 border-b px-4 py-1">
+      <span className="text-text-primary font-semibold">Design system</span>
       <span>—</span>
       <span>Live registry render. Read-only.</span>
       <span className="ml-auto">
@@ -200,12 +200,12 @@ function DesignIndex(): JSX.Element {
   ];
 
   return (
-    <div className="mx-auto max-w-5xl p-8 text-text-primary">
+    <div className="text-text-primary mx-auto max-w-5xl p-8">
       <header className="mb-6">
         <h1 className="text-h1">Design system</h1>
-        <p className="mt-2 text-body text-text-secondary">
+        <p className="text-body text-text-secondary mt-2">
           {ENTRIES.length} components from{' '}
-          <code className="font-mono text-text-primary">registry.json</code>.
+          <code className="text-text-primary font-mono">registry.json</code>.
           Live-rendered. Source of truth for the AI designer agent.
         </p>
       </header>
@@ -215,9 +215,9 @@ function DesignIndex(): JSX.Element {
         if (items.length === 0) return null;
         return (
           <section key={group.layer} className="mb-10">
-            <h2 className="mb-4 text-h2">
+            <h2 className="text-h2 mb-4">
               {group.heading}
-              <span className="ml-2 text-caption text-text-muted">
+              <span className="text-caption text-text-muted ml-2">
                 ({items.length})
               </span>
             </h2>
@@ -236,17 +236,17 @@ function DesignIndex(): JSX.Element {
 function EntryCard({ entry }: { entry: RegistryEntry }): JSX.Element {
   const live = componentMap[entry.name];
   return (
-    <article className="rounded-lg border border-border-default bg-surface-raised p-4">
+    <article className="border-border-default bg-surface-raised rounded-lg border p-4">
       <header className="mb-3 flex flex-wrap items-baseline gap-3">
         <h3 className="text-h3 text-text-primary">{entry.name}</h3>
-        <code className="font-mono text-caption text-text-muted">
+        <code className="text-caption text-text-muted font-mono">
           {entry.import}
         </code>
         <div className="ml-auto flex flex-wrap items-center gap-1">
           {entry.consumes.map((token) => (
             <span
               key={token}
-              className="rounded-sm border border-border-subtle bg-surface-sunken px-2 py-px font-mono text-mono-sm text-id-task"
+              className="border-border-subtle bg-surface-sunken text-mono-sm text-id-task rounded-sm border px-2 py-px font-mono"
             >
               {token}
             </span>
@@ -255,11 +255,11 @@ function EntryCard({ entry }: { entry: RegistryEntry }): JSX.Element {
       </header>
 
       {Object.keys(entry.variants).length > 0 && (
-        <div className="mb-3 flex flex-wrap items-center gap-3 text-caption text-text-muted">
-          <span className="font-semibold text-text-secondary">variants</span>
+        <div className="text-caption text-text-muted mb-3 flex flex-wrap items-center gap-3">
+          <span className="text-text-secondary font-semibold">variants</span>
           {Object.entries(entry.variants).map(([prop, values]) => (
             <span key={prop} className="inline-flex items-center gap-1">
-              <code className="font-mono text-text-primary">{prop}</code>
+              <code className="text-text-primary font-mono">{prop}</code>
               <span>=</span>
               <code className="font-mono">[{values.join(', ')}]</code>
             </span>
@@ -268,10 +268,10 @@ function EntryCard({ entry }: { entry: RegistryEntry }): JSX.Element {
       )}
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <pre className="overflow-x-auto rounded-md border border-border-subtle bg-surface-sunken p-3 font-mono text-mono-sm text-text-secondary">
+        <pre className="border-border-subtle bg-surface-sunken text-mono-sm text-text-secondary overflow-x-auto rounded-md border p-3 font-mono">
           {entry.example}
         </pre>
-        <div className="flex items-center justify-center rounded-md border border-dashed border-border-subtle bg-surface-sunken p-3">
+        <div className="border-border-subtle bg-surface-sunken flex items-center justify-center rounded-md border border-dashed p-3">
           {live ?? (
             <span className="text-caption text-feedback-danger">
               No live render registered for {entry.name}

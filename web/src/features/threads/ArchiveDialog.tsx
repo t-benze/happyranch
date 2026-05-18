@@ -79,7 +79,7 @@ export function ArchiveDialog({ threadId, open, onClose }: Props): JSX.Element {
           </FormField>
           <label
             htmlFor={closeOutsId}
-            className="flex items-center gap-2 text-xs text-text-primary"
+            className="text-text-primary flex items-center gap-2 text-xs"
           >
             <input
               id={closeOutsId}
