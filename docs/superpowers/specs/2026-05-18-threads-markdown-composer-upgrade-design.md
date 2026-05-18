@@ -55,7 +55,7 @@ Beyond the bug, the founder also wants markdown to **actually render** (code blo
 |---|---|---|
 | `web/src/design-system/patterns/Markdown.tsx` | pattern | Pure component `<Markdown body={string} />`. Owns the react-markdown plugin chain, syntax highlighting, and Mermaid dispatch. |
 | `web/src/design-system/patterns/Mermaid.tsx` | pattern | Tiny wrapper around `mermaid.render`. Imported only via dynamic `import()` from `Markdown.tsx` (so the library is lazy). See §4.3. |
-| `web/src/design-system/patterns/MentionAutocomplete.tsx` | pattern | Pure floating popup `<MentionAutocomplete anchor={Rect} query={string} agents={Agent[]} onSelect onDismiss />`. No fetching — caller supplies the agents. |
+| `web/src/design-system/patterns/MentionAutocomplete.tsx` | pattern | Pure floating popup `<MentionAutocomplete anchor={Rect} query={string} agents={AgentSummary[]} onSelect onDismiss />`. No fetching — caller supplies the agents. |
 | `web/src/design-system/patterns/MarkdownTokens.css` | pattern (style) | All `.gl-prose` typography rules. Imported once from `web/src/styles.css`. |
 
 One thin hook also added:
@@ -69,7 +69,7 @@ Patterns rather than feature-local files because Markdown rendering will be reus
 | Path | Change |
 |---|---|
 | `web/src/design-system/patterns/MessageBubble.tsx` | Replace the inert `<div className="prose prose-invert prose-sm">` with `<Markdown body={body ?? ''} />`. Article shell, variant border, header line — all unchanged. |
-| `web/src/design-system/patterns/Composer.tsx` | Add Cmd/Ctrl+Enter send, autogrow, mention trigger, draft persistence. New required props: `agents: Agent[]`, `threadId: string`. `onSend` signature gains `addressedTo: string[]`. |
+| `web/src/design-system/patterns/Composer.tsx` | Add autogrow, mention trigger, draft persistence. Existing Cmd/Ctrl+Enter handler is preserved (current code already sends on `Enter` with `ctrlKey \|\| metaKey`). New required props: `agents: AgentSummary[]`, `threadId: string`. `onSend` signature gains `addressedTo: string[]`. |
 | `web/src/design-system/layouts/ThreadsLayout.tsx` (line 26) | `grid-cols-[320px_1fr]` → `grid-cols-[320px_minmax(0,1fr)]`. Independent fix that prevents the detail column from growing past `viewport − 320` regardless of body content. |
 
 ### 3.3 Layer compliance (per `web/ARCHITECTURE.md`)
@@ -209,9 +209,9 @@ The single new highlight.js theme CSS is imported once from `web/src/styles.css`
 
 1. After each keystroke, scan from `selectionStart` backward for `@` until whitespace. If matched, `query` = chars after `@`.
 2. Open `<MentionAutocomplete>` anchored to the textarea's caret rect (via `getBoundingClientRect()` + a hidden mirror div for caret positioning — well-known trick).
-3. Agents come from `useAgentsList(orgSlug)` — TanStack Query hook over the existing `GET /api/v1/orgs/<slug>/agents` route. `staleTime: 5 * 60 * 1000` (5 min).
+3. Agents are passed in via the `agents` prop. `ThreadsPage` (which knows `orgSlug` from URL params) calls `useAgentsList(orgSlug)` and forwards the result. Composer never reads org context itself, keeping the pattern reusable. Query staleTime: `5 * 60 * 1000` (5 min).
 4. Selecting an agent replaces the `@<query>` token with `@<agent.name> ` (trailing space).
-5. On send: regex-scan the final body for `@([\w-]+)` tokens. For each token, resolve against the agents list (exact match by `name`). Special token: a literal `@all` always resolves to `'@all'` regardless of agent presence. The resulting deduped set becomes `addressed_to`. If the set is empty (no mentions in the body), `addressed_to = ['@all']` — preserves the current default.
+5. On send: regex-scan the final body for `@([\w-]+)` tokens (case-sensitive). For each token, resolve against the agents list (exact match by `name`). Special token: a literal lowercase `@all` always resolves to `'@all'` regardless of agent presence (matches the existing CLI convention). The resulting deduped set becomes `addressed_to`. If the set is empty (no mentions in the body), `addressed_to = ['@all']` — preserves the current default.
 
 ### 5.3 Autogrow
 
