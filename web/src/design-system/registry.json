@@ -168,6 +168,27 @@
       "example": "<Label htmlFor='subject'>Subject</Label>"
     },
     {
+      "name": "Markdown",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/Markdown",
+      "variants": {},
+      "consumes": [
+        "typography.body",
+        "components.code_block"
+      ],
+      "example": "<Markdown body=\"**hello**\" />"
+    },
+    {
+      "name": "Mermaid",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/Mermaid",
+      "variants": {},
+      "consumes": [
+        "components.code_block"
+      ],
+      "example": "<Mermaid source=\"flowchart LR; A-->B\" />"
+    },
+    {
       "name": "MessageBubble",
       "layer": "pattern",
       "import": "@/design-system/patterns/MessageBubble",

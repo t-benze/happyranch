@@ -45,7 +45,12 @@ function walkTsx(dir: string): string[] {
     const path = join(dir, entry.name);
     if (entry.isDirectory()) {
       out.push(...walkTsx(path));
-    } else if (entry.isFile() && entry.name.endsWith('.tsx') && !SKIP.has(path)) {
+    } else if (
+      entry.isFile() &&
+      entry.name.endsWith('.tsx') &&
+      !entry.name.endsWith('.test.tsx') &&
+      !SKIP.has(path)
+    ) {
       out.push(path);
     }
   }
