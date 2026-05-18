@@ -64,6 +64,16 @@
       "example": "<Dialog open={false}><DialogContent><DialogHeader><DialogTitle>Confirm</DialogTitle></DialogHeader></DialogContent></Dialog>"
     },
     {
+      "name": "Drawer",
+      "layer": "primitive",
+      "import": "@/design-system/primitives/Drawer",
+      "variants": {},
+      "consumes": [
+        "components.drawer"
+      ],
+      "example": "<Drawer open={false} onOpenChange={() => {}}><DrawerContent><DrawerTitle>Detail</DrawerTitle></DrawerContent></Drawer>"
+    },
+    {
       "name": "DropdownMenu",
       "layer": "primitive",
       "import": "@/design-system/primitives/DropdownMenu",

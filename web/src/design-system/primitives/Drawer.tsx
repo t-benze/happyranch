@@ -43,3 +43,13 @@ export const DrawerContent = React.forwardRef<
   </DialogPrimitive.Portal>
 ));
 DrawerContent.displayName = 'DrawerContent';
+
+export const meta = {
+  name: 'Drawer',
+  layer: 'primitive',
+  import: '@/design-system/primitives/Drawer',
+  variants: {},
+  consumes: ['components.drawer'],
+  example:
+    "<Drawer open={false} onOpenChange={() => {}}><DrawerContent><DrawerTitle>Detail</DrawerTitle></DrawerContent></Drawer>",
+} as const;
