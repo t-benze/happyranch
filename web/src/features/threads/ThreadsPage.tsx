@@ -21,6 +21,7 @@ import { MessageBubble, type MessageVariant } from '@/design-system/patterns/Mes
 import { ThreadHeader } from '@/design-system/patterns/ThreadHeader';
 import { ApiError } from '@/lib/api';
 import type { ThreadMessage } from '@/lib/api/types';
+import { useAgentsList } from '@/hooks/agents';
 import {
   useSendFollowUp,
   useThread,
@@ -51,6 +52,8 @@ export function ThreadsPage(): JSX.Element {
   const [status, setStatus] = useState<StatusTab>('open');
   const [filter, setFilter] = useState('');
   useThreadsInboxSSE();
+  const agentsQuery = useAgentsList();
+  const agents = useMemo(() => agentsQuery.data?.agents ?? [], [agentsQuery.data]);
   const threadsQuery = useThreadsList({ status });
   const threads = useMemo(() => {
     const all = threadsQuery.data?.threads ?? [];
@@ -114,18 +117,17 @@ export function ThreadsPage(): JSX.Element {
     setShowNew(true);
   };
 
-  const onSendFollowUp = async (markdown: string) => {
+  const onSendFollowUp = async (markdown: string, addressedTo: string[]) => {
     if (!threadId) return;
     setComposerError(null);
     try {
-      await sendFollowUp.mutateAsync({ body_markdown: markdown, addressed_to: ['@all'] });
+      await sendFollowUp.mutateAsync({ body_markdown: markdown, addressed_to: addressedTo });
     } catch (err) {
       if (err instanceof ApiError) {
         setComposerError(describeError(err.code, `HTTP ${err.status}`));
       } else {
         setComposerError(String(err));
       }
-      // Re-throw so the Composer pattern keeps the draft for retry.
       throw err;
     }
   };
@@ -242,10 +244,12 @@ export function ThreadsPage(): JSX.Element {
           onExtend={() => setShowExtend(true)}
           composer={
             <Composer
+              agents={agents}
+              threadId={threadId ?? ''}
               disabled={activeThread.data?.status !== 'open'}
               pending={sendFollowUp.isPending}
               errorMessage={composerError}
-              helper="Sends as founder; @all by default."
+              helper="Sends as founder; @all by default — type @ to mention an agent."
               onSend={onSendFollowUp}
               registerFocus={(focus) => { composerFocusRef.current = focus; }}
             />
