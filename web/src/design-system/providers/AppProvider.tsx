@@ -21,6 +21,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useState, type ReactNode } from 'react';
 import { TooltipProvider } from '@/design-system/primitives/Tooltip';
 import { DataContext } from './DataContext';
+import { realAgentsApi } from './_real-agents';
 import { realOrgsApi } from './_real-orgs';
 import { useRealThreadRoutes } from './_real-routes';
 import { realThreadsApi } from './_real-threads';
@@ -51,6 +52,7 @@ export function AppProvider({ children, client }: AppProviderProps): JSX.Element
       <DataContext.Provider
         value={{
           orgs: realOrgsApi,
+          agents: realAgentsApi,
           threads: realThreadsApi,
           useThreadRoutes: useRealThreadRoutes,
         }}

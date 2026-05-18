@@ -102,6 +102,16 @@ export interface OrgsApi {
   useOrgsList: () => QueryLike<OrgsListResponse>;
 }
 
+// ---------------------------------------------------------------------------
+// AgentsApi — minimal read-only roster used by the Composer for
+// @-mention autocomplete. Lives on DataContext so prototypes can swap
+// in canned fixtures.
+// ---------------------------------------------------------------------------
+
+export interface AgentsApi {
+  useAgentsList: () => QueryLike<{ agents: import('@/lib/api/agents').AgentSummary[] }>;
+}
+
 /**
  * Per-feature URL builders. Compositions consume these via the
  * provider-aware `useThreadRoutes()` hook in `@/hooks/threads` instead of
@@ -126,6 +136,7 @@ export interface ThreadRoutes {
 
 export interface DataContextValue {
   orgs: OrgsApi;
+  agents: AgentsApi;
   threads: ThreadsApi;
   /**
    * Provider-supplied React hook that returns the active feature's route

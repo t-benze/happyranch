@@ -16,6 +16,7 @@ import { TooltipProvider } from '@/design-system/primitives/Tooltip';
 import { StaticOrgProvider } from '@/lib/orgSlug';
 import { MOCK_ORG_SLUG } from '@/mocks';
 import { DataContext } from './DataContext';
+import { mockAgentsApi } from './_mock-agents';
 import { mockOrgsApi } from './_mock-orgs';
 import { useMockThreadRoutes } from './_mock-routes';
 import { mockThreadsApi } from './_mock-threads';
@@ -40,6 +41,7 @@ export function PrototypeProvider({ children }: { children: ReactNode }): JSX.El
       <DataContext.Provider
         value={{
           orgs: mockOrgsApi,
+          agents: mockAgentsApi,
           threads: mockThreadsApi,
           useThreadRoutes: useMockThreadRoutes,
         }}
