@@ -1,4 +1,4 @@
-import { NavLink, useNavigate, useParams } from 'react-router-dom';
+import { NavLink, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   Select,
   SelectContent,
@@ -25,10 +25,20 @@ export function TopBar(): JSX.Element {
   const contextSlug = useOrgSlugOptional();
   const activeSlug = urlSlug ?? contextSlug ?? null;
   const navigate = useNavigate();
+  const location = useLocation();
+  const isPrototype = location.pathname.startsWith('/__prototypes');
   const orgsQuery = useOrgsList();
   const routes = useThreadRoutes();
   const threadsHref = activeSlug ? routes.inboxForOrg(activeSlug) : '#';
   const switchEnabled = !orgsQuery.isLoading && (orgsQuery.data?.orgs.length ?? 0) > 0;
+  // The four placeholder tabs (Tasks/KB/Audit/Agents) live only on the
+  // production routes — the prototype sandbox is threads-only. Disable
+  // them inside `/__prototypes/*` so a click can't escape the sandbox.
+  const placeholderTab = (path: string) => ({
+    to: activeSlug && !isPrototype ? `/orgs/${activeSlug}/${path}` : '#',
+    enabled: !!activeSlug && !isPrototype,
+    tooltip: isPrototype ? 'Not in sandbox' : undefined,
+  });
 
   return (
     <header className="border-border bg-bg-subtle flex h-12 shrink-0 items-center gap-4 border-b px-4">
@@ -56,18 +66,10 @@ export function TopBar(): JSX.Element {
         <NavTab to={threadsHref} enabled={!!activeSlug && threadsHref !== '#'}>
           Threads
         </NavTab>
-        <NavTab to="#" enabled={false} tooltip="Coming soon">
-          Tasks
-        </NavTab>
-        <NavTab to="#" enabled={false} tooltip="Coming soon">
-          KB
-        </NavTab>
-        <NavTab to="#" enabled={false} tooltip="Coming soon">
-          Audit
-        </NavTab>
-        <NavTab to="#" enabled={false} tooltip="Coming soon">
-          Agents
-        </NavTab>
+        <NavTab {...placeholderTab('tasks')}>Tasks</NavTab>
+        <NavTab {...placeholderTab('kb')}>KB</NavTab>
+        <NavTab {...placeholderTab('audit')}>Audit</NavTab>
+        <NavTab {...placeholderTab('agents')}>Agents</NavTab>
       </nav>
     </header>
   );

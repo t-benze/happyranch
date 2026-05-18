@@ -8,6 +8,10 @@ import {
 import { TopBar } from '@/design-system/layouts/AppShell/TopBar';
 import { useOrgsList } from '@/hooks/orgs';
 import { OrgProvider } from '@/lib/orgSlug';
+import { AgentsPage } from '@/features/agents/AgentsPage';
+import { AuditPage } from '@/features/audit/AuditPage';
+import { KbPage } from '@/features/kb/KbPage';
+import { TasksPage } from '@/features/tasks/TasksPage';
 import { ThreadsPage } from '@/features/threads/ThreadsPage';
 import { PROTOTYPES_DISABLED, prototypeRoutes } from '@/prototypes';
 import { DESIGN_ROUTE_DISABLED, designRoutes } from '@/design-system/__design__';
@@ -62,6 +66,10 @@ export function AppRoutes(): JSX.Element {
           <Route index element={<NavigateToThreads />} />
           <Route path="threads" element={<ThreadsPage />} />
           <Route path="threads/:thread_id" element={<ThreadsPage />} />
+          <Route path="tasks" element={<TasksPage />} />
+          <Route path="kb" element={<KbPage />} />
+          <Route path="audit" element={<AuditPage />} />
+          <Route path="agents" element={<AgentsPage />} />
         </Route>
         <Route path="*" element={<NotFound />} />
       </Route>
