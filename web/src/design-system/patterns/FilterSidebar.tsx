@@ -22,7 +22,7 @@ export function FilterSidebar({ groups, value, onChange }: FilterSidebarProps): 
     <aside className="border-border-subtle bg-surface-sunken w-60 shrink-0 overflow-y-auto border-r p-3">
       {groups.map((g) => (
         <section key={g.key} className="mb-4">
-          <h3 className="text-fg-muted mb-2 text-xs font-medium uppercase tracking-wider">
+          <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
             {g.label}
           </h3>
           <ul className="space-y-0.5">

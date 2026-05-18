@@ -26,7 +26,7 @@ export const DrawerContent = React.forwardRef<
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
 >(({ className, children, ...props }, ref) => (
   <DialogPrimitive.Portal>
-    <DialogPrimitive.Overlay className="fixed inset-0 z-40 bg-bg/40" />
+    <DialogPrimitive.Overlay className="bg-bg/40 fixed inset-0 z-40" />
     <DialogPrimitive.Content
       ref={ref}
       className={cn(

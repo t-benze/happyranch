@@ -53,7 +53,7 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
             </div>
           </header>
           <section className="flex-1 overflow-y-auto p-4">
-            <h3 className="text-fg-muted mb-2 text-xs font-medium uppercase tracking-wider">
+            <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
               Recall tree
             </h3>
             {recall.data ? (
@@ -61,7 +61,7 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
             ) : (
               <p className="text-fg-muted text-xs">Loading recall…</p>
             )}
-            <h3 className="text-fg-muted mb-2 mt-6 text-xs font-medium uppercase tracking-wider">
+            <h3 className="text-fg-muted mt-6 mb-2 text-xs font-medium tracking-wider uppercase">
               Live events
             </h3>
             <TaskEventsLog taskId={taskId} />
