@@ -13,14 +13,13 @@ const AGENTS: AgentSummary[] = [
 const ANCHOR = { x: 100, y: 100, width: 200, height: 24 };
 
 describe('MentionAutocomplete', () => {
-  it('renders matching agents filtered by query prefix', () => {
+  it('renders the provided matches', () => {
     const onSelect = vi.fn();
     const onDismiss = vi.fn();
     render(
       <MentionAutocomplete
         anchor={ANCHOR}
-        query="eng"
-        agents={AGENTS}
+        matches={[AGENTS[0]]}
         onSelect={onSelect}
         onDismiss={onDismiss}
       />,
@@ -35,8 +34,7 @@ describe('MentionAutocomplete', () => {
     render(
       <MentionAutocomplete
         anchor={ANCHOR}
-        query=""
-        agents={AGENTS}
+        matches={AGENTS}
         onSelect={vi.fn()}
         onDismiss={onDismiss}
       />,
@@ -51,8 +49,7 @@ describe('MentionAutocomplete', () => {
     render(
       <MentionAutocomplete
         anchor={ANCHOR}
-        query=""
-        agents={AGENTS}
+        matches={AGENTS}
         onSelect={onSelect}
         onDismiss={vi.fn()}
       />,
@@ -67,8 +64,7 @@ describe('MentionAutocomplete', () => {
     render(
       <MentionAutocomplete
         anchor={ANCHOR}
-        query=""
-        agents={AGENTS}
+        matches={AGENTS}
         onSelect={onSelect}
         onDismiss={vi.fn()}
       />,

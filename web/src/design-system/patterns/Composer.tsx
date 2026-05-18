@@ -240,8 +240,7 @@ export function Composer({
       {mention && (
         <MentionAutocomplete
           anchor={mention.anchor}
-          query={mention.query}
-          agents={agents}
+          matches={mentionMatches}
           onSelect={acceptMention}
           onDismiss={() => setMention(null)}
         />

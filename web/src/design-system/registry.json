@@ -51,7 +51,7 @@
         "components.textarea",
         "components.button"
       ],
-      "example": "<Composer onSend={(md) => {}} helper='Ctrl+Enter to send' />"
+      "example": "<Composer onSend={(md, to) => {}} helper='Cmd/Ctrl+Enter to send' agents={[]} threadId='THR-001' />"
     },
     {
       "name": "Dialog",
@@ -184,7 +184,7 @@
       "import": "@/design-system/patterns/MentionAutocomplete",
       "variants": {},
       "consumes": [],
-      "example": "<MentionAutocomplete anchor={{x:0,y:0,width:0,height:0}} query='' agents={[]} onSelect={() => {}} onDismiss={() => {}} />"
+      "example": "<MentionAutocomplete anchor={{x:0,y:0,width:0,height:0}} matches={[]} onSelect={() => {}} onDismiss={() => {}} />"
     },
     {
       "name": "Mermaid",

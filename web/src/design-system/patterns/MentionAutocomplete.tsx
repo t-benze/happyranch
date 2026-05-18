@@ -2,40 +2,34 @@
  * MentionAutocomplete — floating popup of matching agents, anchored
  * below a caret rect.
  *
- * Pure props in / events out. No fetching — the caller passes the full
- * agent list and the current query string. Keyboard handling is global
+ * Pure props in / events out. No fetching — the caller passes the
+ * pre-filtered list of matching agents. Keyboard handling is global
  * (document-level keydown) because the popup is rendered outside the
  * focused textarea and we need ArrowUp/Down/Enter/Esc to interact with
  * it without stealing focus.
  *
- * Filtering: prefix-match on agent.name (case-insensitive).
+ * Filtering: done by the caller (Composer.mentionMatches). This component
+ * is a pure renderer of a pre-filtered list.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { AgentSummary } from '@/lib/api/agents';
 
 export interface MentionAutocompleteProps {
   anchor: { x: number; y: number; width: number; height: number };
-  query: string;
-  agents: AgentSummary[];
+  matches: AgentSummary[];
   onSelect: (agent: AgentSummary) => void;
   onDismiss: () => void;
 }
 
 export function MentionAutocomplete({
   anchor,
-  query,
-  agents,
+  matches,
   onSelect,
   onDismiss,
 }: MentionAutocompleteProps): JSX.Element | null {
-  const matches = useMemo(() => {
-    const q = query.toLowerCase();
-    return agents.filter((a) => a.name.toLowerCase().startsWith(q)).slice(0, 8);
-  }, [query, agents]);
-
   const [active, setActive] = useState(0);
-  // Reset active index when the query (and therefore matches) changes.
-  useEffect(() => { setActive(0); }, [query, agents.length]);
+  // Reset active index when the matches list changes.
+  useEffect(() => { setActive(0); }, [matches.length]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -96,5 +90,5 @@ export const meta = {
   import: '@/design-system/patterns/MentionAutocomplete',
   variants: {},
   consumes: [],
-  example: "<MentionAutocomplete anchor={{x:0,y:0,width:0,height:0}} query='' agents={[]} onSelect={() => {}} onDismiss={() => {}} />",
+  example: "<MentionAutocomplete anchor={{x:0,y:0,width:0,height:0}} matches={[]} onSelect={() => {}} onDismiss={() => {}} />",
 } as const;
