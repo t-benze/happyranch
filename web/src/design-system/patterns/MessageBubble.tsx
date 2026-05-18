@@ -10,9 +10,8 @@
  *
  * Pure prop-driven. Markdown rendering is delegated to react-markdown.
  */
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { AgentChip } from './AgentChip';
+import { Markdown } from './Markdown';
 
 export type MessageVariant = 'founder' | 'worker' | 'manager' | 'decline' | 'system';
 
@@ -87,11 +86,7 @@ export function MessageBubble(props: MessageBubbleProps): JSX.Element {
           <strong>Declined:</strong> {declineReason}
         </p>
       ) : (
-        <div className="prose prose-invert prose-sm text-text-primary max-w-none">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-            {body ?? ''}
-          </ReactMarkdown>
-        </div>
+        <Markdown body={body ?? ''} />
       )}
     </article>
   );
