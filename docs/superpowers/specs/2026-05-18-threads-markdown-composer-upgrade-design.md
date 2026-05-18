@@ -58,9 +58,13 @@ Beyond the bug, the founder also wants markdown to **actually render** (code blo
 | `web/src/design-system/patterns/MentionAutocomplete.tsx` | pattern | Pure floating popup `<MentionAutocomplete anchor={Rect} query={string} agents={AgentSummary[]} onSelect onDismiss />`. No fetching — caller supplies the agents. |
 | `web/src/design-system/patterns/MarkdownTokens.css` | pattern (style) | All `.gl-prose` typography rules. Imported once from `web/src/styles.css`. |
 
-One thin hook also added:
+Provider plumbing for the new `agents` domain (extends the existing `DataContext`):
 
-- `web/src/hooks/agents.ts` (new) — exports `useAgentsList(orgSlug: string)`, a TanStack Query hook over the existing `listAgents(orgSlug)` function in `web/src/lib/api/agents.ts`. `staleTime: 5 * 60 * 1000`. Returns `AgentSummary[]`.
+- `web/src/design-system/providers/DataContext.ts` (edit) — add an `AgentsApi` interface + an `agents: AgentsApi` field on `DataContextValue`.
+- `web/src/design-system/providers/_real-agents.ts` (new) — real `AgentsApi` over `listAgents(slug)` from `lib/api/agents.ts`; `staleTime: 5 * 60 * 1000`. The active slug comes from the provider context, not from the caller.
+- `web/src/design-system/providers/_mock-agents.ts` (new) — mock `AgentsApi` returning a canned list so prototypes / unit tests don't hit the network.
+- `web/src/design-system/providers/AppProvider.tsx` (edit) and `PrototypeProvider.tsx` (edit) — install the real / mock implementations respectively.
+- `web/src/hooks/agents.ts` (new) — public, provider-aware: `export const useAgentsList = () => useData().agents.useAgentsList()`. Compositions call this; they never reach into the provider directly.
 
 Patterns rather than feature-local files because Markdown rendering will be reused later by Talks / KB / Audit. MentionAutocomplete is similarly reusable.
 
@@ -209,7 +213,7 @@ The single new highlight.js theme CSS is imported once from `web/src/styles.css`
 
 1. After each keystroke, scan from `selectionStart` backward for `@` until whitespace. If matched, `query` = chars after `@`.
 2. Open `<MentionAutocomplete>` anchored to the textarea's caret rect (via `getBoundingClientRect()` + a hidden mirror div for caret positioning — well-known trick).
-3. Agents are passed in via the `agents` prop. `ThreadsPage` (which knows `orgSlug` from URL params) calls `useAgentsList(orgSlug)` and forwards the result. Composer never reads org context itself, keeping the pattern reusable. Query staleTime: `5 * 60 * 1000` (5 min).
+3. Agents are passed in via the `agents` prop. `ThreadsPage` calls the provider-aware `useAgentsList()` (which reads the active slug from `DataContext`) and forwards the result. Composer never reads org context itself, keeping the pattern reusable. Query staleTime: `5 * 60 * 1000` (5 min).
 4. Selecting an agent replaces the `@<query>` token with `@<agent.name> ` (trailing space).
 5. On send: regex-scan the final body for `@([\w-]+)` tokens (case-sensitive). For each token, resolve against the agents list (exact match by `name`). Special token: a literal lowercase `@all` always resolves to `'@all'` regardless of agent presence (matches the existing CLI convention). The resulting deduped set becomes `addressed_to`. If the set is empty (no mentions in the body), `addressed_to = ['@all']` — preserves the current default.
 
