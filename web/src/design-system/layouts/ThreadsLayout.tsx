@@ -23,7 +23,7 @@ interface ThreadsLayoutProps {
 
 export function ThreadsLayout({ inbox, detail }: ThreadsLayoutProps): JSX.Element {
   return (
-    <div className="grid h-full grid-cols-[320px_1fr] grid-rows-[minmax(0,1fr)]">
+    <div className="grid h-full grid-cols-[320px_minmax(0,1fr)] grid-rows-[minmax(0,1fr)]">
       {inbox}
       {detail}
     </div>
