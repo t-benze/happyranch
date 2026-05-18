@@ -179,6 +179,16 @@
       "example": "<Markdown body=\"**hello**\" />"
     },
     {
+      "name": "MentionAutocomplete",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/MentionAutocomplete",
+      "variants": {},
+      "consumes": [
+        "components.popover"
+      ],
+      "example": "<MentionAutocomplete anchor={{x:0,y:0,width:0,height:0}} query='' agents={[]} onSelect={() => {}} onDismiss={() => {}} />"
+    },
+    {
       "name": "Mermaid",
       "layer": "pattern",
       "import": "@/design-system/patterns/Mermaid",
