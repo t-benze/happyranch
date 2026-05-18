@@ -38,3 +38,6 @@ logs/
 # Tool scratch dirs
 .claire/
 .playwright-cli/
+
+
+.superpowers
