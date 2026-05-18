@@ -46,6 +46,56 @@ def test_returns_false_when_no_chain(tmp_path: Path):
     assert spawned is False
 
 
+def test_returns_false_when_task_cancelled(tmp_path: Path):
+    """Founder cancellation must not auto-revisit. /cancel stamps
+    cancelled_at + flips status to FAILED, then SIGTERMs the subprocess;
+    run_step's post-Popen classifier re-enters the opaque-failure path
+    (rc=-15, success=False) and calls _maybe_spawn_auto_revisit. The
+    docstring explicitly excludes founder cancellations — implementation
+    must honour it, else every cancel respawns a new root immediately."""
+    from datetime import datetime, timezone
+
+    from src.infrastructure.database import Database
+    from src.infrastructure.audit_logger import AuditLogger
+    from src.models import TaskRecord, TaskStatus
+    from src.orchestrator.run_step import _maybe_spawn_auto_revisit
+
+    db = Database(tmp_path / "grassland.db")
+    db.insert_task(TaskRecord(
+        id="TASK-1", brief="x", team="engineering",
+        assigned_agent="manager", status=TaskStatus.FAILED,
+    ))
+    # Simulate /cancel's phase-1 write: status=FAILED + cancelled_at.
+    now = datetime.now(timezone.utc).isoformat()
+    db.update_task(
+        "TASK-1",
+        status=TaskStatus.FAILED,
+        block_kind=None,
+        note="cancelled by founder: enough",
+        cancelled_at=now,
+        completed_at=now,
+    )
+
+    orch = MagicMock()
+    orch._db = db
+    orch._audit = AuditLogger(db)
+    orch._queue = MagicMock()
+    orch._slug = "acme"
+
+    spawned = _maybe_spawn_auto_revisit(
+        orch, "TASK-1", "manager",
+        error_context={"mode": "session_failure", "rc": -15},
+    )
+    assert spawned is False
+    # No new root row inserted.
+    assert db.get_task("TASK-2") is None
+    # No auto_revisit_of audit entry written.
+    rows = db.get_audit_logs("TASK-1")
+    assert not any(r["action"] == "auto_revisit_of" for r in rows)
+    # Queue never received an enqueue.
+    orch._queue.put_nowait.assert_not_called()
+
+
 def test_returns_false_when_cap_hit(tmp_path: Path, monkeypatch):
     from src.orchestrator import run_step
     from src.orchestrator.run_step import _maybe_spawn_auto_revisit, _AUTO_REVISIT_CAP

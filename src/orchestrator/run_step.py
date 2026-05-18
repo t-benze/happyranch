@@ -777,6 +777,14 @@ def _maybe_spawn_auto_revisit(
     chain = db.walk_ancestors(failed_task_id)
     if not chain:
         return False
+    # Founder cancellation gate: /cancel stamps cancelled_at + flips status to
+    # FAILED, then SIGTERMs the running subprocess. The dying subprocess returns
+    # rc=-15, which run_step's classifier reads as session_failed and routes
+    # here. Without this check the cancel would silently respawn a new root via
+    # revisit_of_task_id and re-enqueue it — exactly the "respawn on cancel"
+    # bug. Mirrors the docstring's explicit exclusion of founder cancellations.
+    if chain[0].cancelled_at is not None:
+        return False
     root = chain[-1]
 
     revisit_chain = db.walk_revisit_chain(root.id, truncate=True)
