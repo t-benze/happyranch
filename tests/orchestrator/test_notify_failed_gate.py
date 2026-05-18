@@ -12,7 +12,7 @@ def _build_orch(tmp_path: Path, *, cancelled: bool = False):
     from src.models import TaskRecord, TaskStatus
     from datetime import datetime, timezone
 
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     task = TaskRecord(
         id="TASK-1", brief="x", team="engineering",
         assigned_agent="dev_agent", status=TaskStatus.IN_PROGRESS,

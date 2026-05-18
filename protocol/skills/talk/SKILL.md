@@ -16,14 +16,14 @@ If you're not sure whether the founder wants to start a talk, ask once before in
 
 ## Identity
 
-Read your agent name from `agent.yaml` in the workspace root if you don't already know it. Every `opc talk ...` call takes `--agent <your_name>` where required.
+Read your agent name from `agent.yaml` in the workspace root if you don't already know it. Every `grassland talk ...` call takes `--agent <your_name>` where required.
 
 ## /talk start — procedure
 
 1. **Check for an existing open talk.**
 
    ```bash
-   opc talk status --org {ORG_SLUG} --agent <your_name>
+   grassland talk status --org {ORG_SLUG} --agent <your_name>
    ```
 
    If it prints `no open talks`, continue to step 2.
@@ -32,27 +32,27 @@ Read your agent name from `agent.yaml` in the workspace root if you don't alread
 
    > "There's an open talk TALK-NNN from <started_at>. Do you want to **resume** it or **abandon** it and start fresh?"
 
-   - On **resume** → run `opc talk resume --org {ORG_SLUG} --talk-id TALK-NNN` and skip the opening report. Prior context is in the founder's head; just pick up where you left off.
-   - On **abandon** → run `opc talk abandon --org {ORG_SLUG} --talk-id TALK-NNN --reason orphan_at_new_start`, then continue to step 2.
+   - On **resume** → run `grassland talk resume --org {ORG_SLUG} --talk-id TALK-NNN` and skip the opening report. Prior context is in the founder's head; just pick up where you left off.
+   - On **abandon** → run `grassland talk abandon --org {ORG_SLUG} --talk-id TALK-NNN --reason orphan_at_new_start`, then continue to step 2.
 
 2. **Start a new talk.**
 
    ```bash
-   opc talk start --org {ORG_SLUG} --agent <your_name>
+   grassland talk start --org {ORG_SLUG} --agent <your_name>
    ```
 
    Capture the `TALK-NNN` that comes back.
 
 3. **Find the window for the report.**
 
-   Run `opc talk list --org {ORG_SLUG} --agent <your_name> --limit 5` and find the most recent talk with `status=closed`. Its `ended_at` is the window start. If no prior closed talk exists, use "all-time, capped at 30 days."
+   Run `grassland talk list --org {ORG_SLUG} --agent <your_name> --limit 5` and find the most recent talk with `status=closed`. Its `ended_at` is the window start. If no prior closed talk exists, use "all-time, capped at 30 days."
 
 4. **Gather inputs:**
 
    - `task_history.md` (in the workspace root).
    - Per-agent learnings — `learnings/_index.md` on migrated workspaces (drill into individual `LRN-NNN-<slug>.md` entries dated within the window), or the legacy flat `learnings.md` on pre-migration workspaces.
    - `scorecard.md`.
-   - `opc audit --org {ORG_SLUG} --agent <your_name> --since <window_start>`.
+   - `grassland audit --org {ORG_SLUG} --agent <your_name> --since <window_start>`.
 
 5. **Emit the opening report.** Use exactly these section headings, in this order:
 
@@ -86,8 +86,8 @@ Read your agent name from `agent.yaml` in the workspace root if you don't alread
 
    ```bash
    # Write a markdown file with the frontmatter that the KB add route expects.
-   # See .claude/skills/manage-repo or the existing opc kb add docs for the shape.
-   opc kb add --org {ORG_SLUG} --agent <your_name> --from-file /tmp/kb-<slug>.md
+   # See .claude/skills/manage-repo or the existing grassland kb add docs for the shape.
+   grassland kb add --org {ORG_SLUG} --agent <your_name> --from-file /tmp/kb-<slug>.md
    ```
 
    Collect each slug you wrote.
@@ -110,20 +110,20 @@ Read your agent name from `agent.yaml` in the workspace root if you don't alread
 5. **Single-line call** (write the JSON to the temp path first, then run the CLI once):
 
    ```bash
-   opc talk end --org {ORG_SLUG} --talk-id TALK-NNN --from-file /tmp/talk-end-TALK-NNN.json
+   grassland talk end --org {ORG_SLUG} --talk-id TALK-NNN --from-file /tmp/talk-end-TALK-NNN.json
    ```
 
 6. **Confirm to the founder:** the transcript path, the number of new learnings, and any KB slugs written.
 
 ## Why single-line call + temp file
 
-The `--from-file` pattern matches `opc report-completion`, `opc manage-agent`, and `opc kb add`. Claude's headless-mode permission matcher treats multi-line bash as multiple separate commands, which breaks the allowlist. Staging the payload in a temp file and invoking `opc` once keeps the callback inside the `Bash(opc *)` allow rule. Codex has no such constraint, but using the same pattern everywhere keeps the skill portable.
+The `--from-file` pattern matches `grassland report-completion`, `grassland manage-agent`, and `grassland kb add`. Claude's headless-mode permission matcher treats multi-line bash as multiple separate commands, which breaks the allowlist. Staging the payload in a temp file and invoking `grassland` once keeps the callback inside the `Bash(grassland *)` allow rule. Codex has no such constraint, but using the same pattern everywhere keeps the skill portable.
 
 ## What NOT to do
 
-- Don't start tasks (`opc run ...`) from inside a talk — that's out of scope for v1. If something actionable comes up, tell the founder explicitly and let them submit.
-- **Exception:** `opc manage-agent` (enroll / update / terminate) is allowed during a talk via the talk-path payload (pass `talk_id` instead of `task_id`+`session_id`). See the `manage-agent` skill. Record any such call in your `transcript_markdown` so the founder has a human-readable record at talk-end.
-- **Exception:** `opc dispatch` (create a new task from inside the talk) is allowed via the talk-path payload — see the `dispatch` skill. Workers can only dispatch to themselves; team managers can dispatch to any agent in their team. Cross-team dispatch is forbidden. Record any such call in your `transcript_markdown` so the founder has a human-readable record at talk-end.
-- Don't call `opc talk end` without a summary + transcript. An empty payload is useless on recall.
+- Don't start tasks (`grassland run ...`) from inside a talk — that's out of scope for v1. If something actionable comes up, tell the founder explicitly and let them submit.
+- **Exception:** `grassland manage-agent` (enroll / update / terminate) is allowed during a talk via the talk-path payload (pass `talk_id` instead of `task_id`+`session_id`). See the `manage-agent` skill. Record any such call in your `transcript_markdown` so the founder has a human-readable record at talk-end.
+- **Exception:** `grassland dispatch` (create a new task from inside the talk) is allowed via the talk-path payload — see the `dispatch` skill. Workers can only dispatch to themselves; team managers can dispatch to any agent in their team. Cross-team dispatch is forbidden. Record any such call in your `transcript_markdown` so the founder has a human-readable record at talk-end.
+- Don't call `grassland talk end` without a summary + transcript. An empty payload is useless on recall.
 - Don't write learnings you've already written — the daemon appends verbatim, so duplicates will clutter `learnings.md`.
 - Don't treat KB entries as a catch-all for in-talk notes. KB is for durable, cross-agent-relevant knowledge. Everything else is a per-agent learning.

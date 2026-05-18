@@ -15,7 +15,7 @@ class RuntimeDir:
     """A multi-org runtime container.
 
     The container itself has no slug — orgs live under ``orgs/<slug>/`` and
-    each org's slug is its directory name. The container's ``opc.yaml``
+    each org's slug is its directory name. The container's ``grassland.yaml``
     marker only carries ``schema_version: 2`` and ``type: multi-org-runtime``.
     """
 
@@ -28,7 +28,7 @@ class RuntimeDir:
 
     @property
     def marker_file(self) -> Path:
-        return self._path / "opc.yaml"
+        return self._path / "grassland.yaml"
 
     @property
     def orgs_dir(self) -> Path:
@@ -42,7 +42,7 @@ class RuntimeDir:
 
         Reserved names (``_pending``, ``_archive``) are skipped. A directory
         without ``org/teams.yaml`` is treated as not-yet-initialized and
-        skipped silently — this is what lets ``opc orgs init`` materialize
+        skipped silently — this is what lets ``grassland orgs init`` materialize
         the skeleton lazily.
         """
         if not self.orgs_dir.is_dir():
@@ -78,7 +78,7 @@ class RuntimeDir:
         instance = cls(path)
         if not instance.is_valid():
             raise ValueError(
-                f"{path} is not a valid OPC runtime directory "
+                f"{path} is not a valid Grassland runtime directory "
                 f"(missing {instance.marker_file})"
             )
         data = yaml.safe_load(instance.marker_file.read_text()) or {}
@@ -86,7 +86,7 @@ class RuntimeDir:
         if version != 2:
             raise ValueError(
                 f"runtime at {path} is schema_version {version!r} (single-org). "
-                f"run `opc migrate-to-multi-org {path} "
+                f"run `grassland migrate-to-multi-org {path} "
                 f"--i-have-a-backup --apply` to migrate."
             )
         return instance

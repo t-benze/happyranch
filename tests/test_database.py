@@ -434,7 +434,7 @@ def test_update_task_writes_block_kind_and_note(tmp_path):
     from src.infrastructure.database import Database
     from src.models import TaskRecord, TaskStatus, BlockKind
 
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.insert_task(TaskRecord(id="TASK-001", brief="x"))
     db.update_task(
         "TASK-001",
@@ -456,7 +456,7 @@ def test_update_task_can_clear_block_kind_to_none(tmp_path):
     from src.infrastructure.database import Database
     from src.models import TaskRecord, TaskStatus, BlockKind
 
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.insert_task(TaskRecord(id="TASK-001", brief="x"))
     db.update_task("TASK-001", status=TaskStatus.BLOCKED,
                    block_kind=BlockKind.DELEGATED, note="x")
@@ -471,7 +471,7 @@ def test_get_nonterminal_task_ids_includes_blocked(tmp_path):
     from src.infrastructure.database import Database
     from src.models import TaskRecord, TaskStatus, BlockKind
 
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     for tid, status, bk in [
         ("T-PEN", TaskStatus.PENDING, None),
         ("T-INP", TaskStatus.IN_PROGRESS, None),
@@ -491,7 +491,7 @@ def test_list_blocked_with_kind(tmp_path):
     from src.infrastructure.database import Database
     from src.models import TaskRecord, TaskStatus, BlockKind
 
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.insert_task(TaskRecord(id="T-1", brief="x"))
     db.insert_task(TaskRecord(id="T-2", brief="y"))
     db.update_task("T-1", status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED)
@@ -567,7 +567,7 @@ def test_concurrent_access_from_multiple_threads_is_safe(db):
     same connection concurrently. The daemon exposes this shape — route
     handlers run on the event loop while `run_step` runs in a threadpool
     worker, and both touch the single shared `Database`. Without internal
-    serialization, a concurrent `opc revisit` + SSE tail hits
+    serialization, a concurrent `grassland revisit` + SSE tail hits
     `sqlite3.InterfaceError: bad parameter or other API misuse` on
     `GET /tasks/{id}/events` (observed on TASK-061, daemon.log 688-746).
     """
@@ -963,7 +963,7 @@ def test_task_round_trips_dispatched_from_talk_id(tmp_path):
     from src.infrastructure.database import Database
     from src.models import TaskRecord
 
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     task = TaskRecord(
         id="TASK-001",
         brief="dispatched task",
@@ -981,7 +981,7 @@ def test_task_round_trips_dispatched_from_talk_id_when_null(tmp_path):
     from src.infrastructure.database import Database
     from src.models import TaskRecord
 
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     task = TaskRecord(id="TASK-001", brief="normal task", team="engineering")
     db.insert_task(task)
     fetched = db.get_task("TASK-001")
@@ -992,7 +992,7 @@ def test_task_round_trips_dispatched_from_talk_id_when_null(tmp_path):
 def test_idempotent_dispatched_from_talk_id_migration(tmp_path):
     from src.infrastructure.database import Database
 
-    db_path = tmp_path / "opc.db"
+    db_path = tmp_path / "grassland.db"
     Database(db_path)            # first init creates the column
     Database(db_path)            # second init must NOT raise
 
@@ -1001,7 +1001,7 @@ def test_dispatched_from_talk_id_index_queryable(tmp_path):
     from src.infrastructure.database import Database
     from src.models import TaskRecord
 
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.insert_task(TaskRecord(
         id="TASK-001", brief="a", team="engineering",
         assigned_agent="dev_agent", dispatched_from_talk_id="TALK-007",
@@ -1018,7 +1018,7 @@ def test_dispatched_from_talk_id_index_queryable(tmp_path):
 
 
 def test_escalation_notifications_table_exists(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     cur = db._conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='escalation_notifications'"
     )
@@ -1026,7 +1026,7 @@ def test_escalation_notifications_table_exists(tmp_path):
 
 
 def test_escalation_notifications_index_exists(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     cur = db._conn.execute(
         "SELECT name FROM sqlite_master WHERE type='index' "
         "AND tbl_name='escalation_notifications'"
@@ -1036,7 +1036,7 @@ def test_escalation_notifications_index_exists(tmp_path):
 
 
 def test_processed_event_ids_table_exists(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     cur = db._conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='processed_event_ids'"
     )
@@ -1047,7 +1047,7 @@ from datetime import datetime, timedelta, timezone
 
 
 def test_mint_escalation_notification_writes_row(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     expires = datetime.now(timezone.utc) + timedelta(hours=72)
     db.mint_escalation_notification(
         feishu_message_id="om_xyz",
@@ -1065,12 +1065,12 @@ def test_mint_escalation_notification_writes_row(tmp_path):
 
 
 def test_get_escalation_notification_missing_returns_none(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     assert db.get_escalation_notification("om_missing") is None
 
 
 def test_consume_escalation_notification_marks_consumed(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     expires = datetime.now(timezone.utc) + timedelta(hours=72)
     db.mint_escalation_notification(
         feishu_message_id="om_1", org_slug="o", task_id="T1",
@@ -1083,7 +1083,7 @@ def test_consume_escalation_notification_marks_consumed(tmp_path):
 
 
 def test_consume_escalation_notification_twice_returns_false(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     expires = datetime.now(timezone.utc) + timedelta(hours=72)
     db.mint_escalation_notification(
         feishu_message_id="om_1", org_slug="o", task_id="T1",
@@ -1094,7 +1094,7 @@ def test_consume_escalation_notification_twice_returns_false(tmp_path):
 
 
 def test_record_processed_event_first_call_returns_true(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     assert db.record_processed_event(
         org_slug="o", feishu_event_id="evt_1",
         outcome="consumed", reason=None,
@@ -1102,7 +1102,7 @@ def test_record_processed_event_first_call_returns_true(tmp_path):
 
 
 def test_record_processed_event_duplicate_returns_false(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.record_processed_event(
         org_slug="o", feishu_event_id="evt_1",
         outcome="consumed", reason=None,
@@ -1114,7 +1114,7 @@ def test_record_processed_event_duplicate_returns_false(tmp_path):
 
 
 def test_update_processed_event_outcome(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.record_processed_event(
         org_slug="o", feishu_event_id="evt_1",
         outcome="pending", reason=None,
@@ -1134,7 +1134,7 @@ def test_update_processed_event_outcome(tmp_path):
 
 
 def test_list_open_notifications_for_task(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     expires = datetime.now(timezone.utc) + timedelta(hours=72)
     db.mint_escalation_notification(
         feishu_message_id="om_1", org_slug="o", task_id="T1",

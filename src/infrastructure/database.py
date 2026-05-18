@@ -341,16 +341,16 @@ class Database:
             "ALTER TABLE tasks ADD COLUMN revisit_of_task_id TEXT",
             # Talk-dispatch link: tasks dispatched from an open agent talk
             # session record the originating TALK id here. NULL for tasks
-            # created via `opc run` or revisit. Most tasks have no talk
+            # created via `grassland run` or revisit. Most tasks have no talk
             # provenance, so the index below is partial.
             "ALTER TABLE tasks ADD COLUMN dispatched_from_talk_id TEXT",
             # Liveness heartbeat: queue worker stamps this while a subprocess
-            # is alive so `opc details` can show progress on long-running
+            # is alive so `grassland details` can show progress on long-running
             # tasks. Distinct from updated_at (which advances on any write).
             "ALTER TABLE tasks ADD COLUMN last_heartbeat TEXT",
             # Per-task subprocess timeout override. NULL → resolver falls
             # through to org/config.yaml then Settings default. Founder sets
-            # via `opc revisit --session-timeout-seconds`; inherited from
+            # via `grassland revisit --session-timeout-seconds`; inherited from
             # parent on delegate and from predecessor root on revisit.
             "ALTER TABLE tasks ADD COLUMN session_timeout_seconds INTEGER",
         ):

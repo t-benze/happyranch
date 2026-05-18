@@ -12,10 +12,10 @@ from src.daemon.auth import require_token
 
 @pytest.fixture
 def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setenv("OPC_DAEMON_HOME", str(tmp_path / ".opc"))
+    monkeypatch.setenv("GRASSLAND_DAEMON_HOME", str(tmp_path / ".grassland"))
     paths_mod.ensure_daemon_home()
     paths_mod.ensure_token()
-    return tmp_path / ".opc"
+    return tmp_path / ".grassland"
 
 
 @pytest.fixture

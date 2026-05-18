@@ -193,7 +193,7 @@ class CompletionBody(BaseModel):
 async def task_events(task_id: str, org: OrgDep):
     # Reject unknown task IDs up front — otherwise EventBus.subscribe() replays
     # no history for a fabricated id and then blocks forever, which makes
-    # `opc tail <bad-id>` hang instead of surfacing a 404.
+    # `grassland tail <bad-id>` hang instead of surfacing a 404.
     if org.db.get_task(task_id) is None:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
 
@@ -264,7 +264,7 @@ async def submit_progress(task_id: str, body: ProgressBody, org: OrgDep) -> dict
 
     Same auth shape as /completion (active session must match), but does NOT
     clear the tracker — the agent keeps working after a progress beat. Audit-
-    logged as `action=progress` and broadcast on SSE so `opc tail` shows live
+    logged as `action=progress` and broadcast on SSE so `grassland tail` shows live
     movement on long-running tasks.
     """
     from src.infrastructure.audit_logger import AuditLogger

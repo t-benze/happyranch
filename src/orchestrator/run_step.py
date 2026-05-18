@@ -433,8 +433,8 @@ def _revisit_header_if_applicable(orch: "Orchestrator", task_id: str) -> str | N
     if note:
         lines.append(f"Founder note: {note}")
     lines.append(
-        f"Inspect via: `opc details {predecessor}`, "
-        f"`opc audit {predecessor}`, `opc recall {predecessor}`."
+        f"Inspect via: `grassland details {predecessor}`, "
+        f"`grassland audit {predecessor}`, `grassland recall {predecessor}`."
     )
     lines.append(
         "You may reuse successful sub-tasks' artifacts (referenced by path in "
@@ -488,8 +488,8 @@ def _auto_revisit_header(payload: dict) -> str:
         f"Failure: {err_summary}",
         "Cascade chain (predecessor root -> failed task): "
         + " -> ".join(cascade),
-        f"Inspect via: `opc details {predecessor}`, "
-        f"`opc audit {predecessor}`, `opc recall {predecessor}`.",
+        f"Inspect via: `grassland details {predecessor}`, "
+        f"`grassland audit {predecessor}`, `grassland recall {predecessor}`.",
         "Re-evaluate the approach — the failure may be transient (worth "
         "the same plan with a fresh subprocess) or structural (a different "
         "decomposition is needed). Decide accordingly.",
@@ -828,7 +828,7 @@ def _session_failed_note(result, report) -> str:
     """Build an enriched `agent session failed` note.
 
     The pre-TASK-045 version wrote a bare constant string, so when the
-    Claude subprocess finished without calling `opc report-completion`
+    Claude subprocess finished without calling `grassland report-completion`
     there was no trace of WHY — rc, stderr, and stdout were all dropped
     on the floor. Now we surface rc and the tail of stderr (or stdout,
     if stderr is empty) so the next class-of-TASK-045 failure is

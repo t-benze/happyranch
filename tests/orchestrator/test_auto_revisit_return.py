@@ -13,7 +13,7 @@ def _build_orch_with_task(tmp_path: Path, predecessor_root_status: str):
     from src.infrastructure.audit_logger import AuditLogger
     from src.models import TaskRecord, TaskStatus
 
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.insert_task(TaskRecord(
         id="TASK-1", brief="x", team="engineering",
         assigned_agent="manager", status=TaskStatus(predecessor_root_status),

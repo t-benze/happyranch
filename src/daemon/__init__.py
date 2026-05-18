@@ -1,1 +1,1 @@
-"""OPC orchestrator daemon: FastAPI app, runner, event bus."""
+"""Grassland orchestrator daemon: FastAPI app, runner, event bus."""

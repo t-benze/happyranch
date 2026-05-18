@@ -20,7 +20,7 @@ function RootRedirect(): JSX.Element {
   if (!first) {
     return (
       <div className="p-6 text-fg-muted">
-        No orgs loaded. Run <code className="text-fg">opc orgs init &lt;slug&gt;</code> from the CLI.
+        No orgs loaded. Run <code className="text-fg">grassland orgs init &lt;slug&gt;</code> from the CLI.
       </div>
     );
   }

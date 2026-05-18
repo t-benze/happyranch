@@ -6,7 +6,7 @@
  * ``sessionStorage``. Subsequent requests read from cache.
  */
 
-const STORAGE_KEY = 'opc.token';
+const STORAGE_KEY = 'grassland.token';
 const BOOTSTRAP_URL = '/api/v1/auth/bootstrap';
 
 let inflight: Promise<string> | null = null;

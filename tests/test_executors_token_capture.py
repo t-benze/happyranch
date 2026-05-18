@@ -30,7 +30,7 @@ def test_claude_executor_attaches_token_usage_on_success(tmp_path: Path, monkeyp
     with patch("src.orchestrator.executors.subprocess.Popen", return_value=fake_proc):
         # allow_rules_for_agent reads from <runtime>/org/agents/<name>.md;
         # short-circuit it for this isolated unit test.
-        with patch("src.orchestrator.workspace_adapters.allow_rules_for_agent", return_value=["Bash(opc *)"]):
+        with patch("src.orchestrator.workspace_adapters.allow_rules_for_agent", return_value=["Bash(grassland *)"]):
             ex = ClaudeExecutor(
                 claude_cli_path="claude",
                 permission_mode="auto",

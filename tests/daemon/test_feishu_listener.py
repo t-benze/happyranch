@@ -64,7 +64,7 @@ def _seed_notification(
 
 @pytest.fixture
 def listener(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     resolve_mock = AsyncMock()
     listener = FeishuEventListener(
         slug="o", db=db, audit=AuditLogger(db),
@@ -83,7 +83,7 @@ def listener(tmp_path):
 
 @pytest.fixture
 def listener_with_hint(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     resolve_mock = AsyncMock()
     hint_mock = AsyncMock()
     listener = FeishuEventListener(

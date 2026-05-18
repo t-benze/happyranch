@@ -135,7 +135,7 @@ def test_run_agent_registers_active_session_when_tracker_attached(
     """Regression for the 8581f26 bug: when the daemon's SessionTracker is
     attached, `_run_agent` must call `set_active(task_id, agent, session_id)`
     BEFORE the subprocess starts. Without this, the agent's
-    `opc report-completion` callback hits 409 unknown_session and the task
+    `grassland report-completion` callback hits 409 unknown_session and the task
     silently fails with note='agent session failed'."""
     from src.daemon.sessions import SessionTracker
 
@@ -197,7 +197,7 @@ def test_run_agent_fails_fast_when_workspace_missing_skill(orchestrator, test_ru
 
     msg = str(exc_info.value)
     assert "engineering_head" in msg
-    assert "opc init-agent engineering_head" in msg
+    assert "grassland init-agent engineering_head" in msg
     # The executor must never have been invoked against a broken workspace.
     assert not (eh_workspace / ".claude" / "skills" / "start-task" / "SKILL.md").exists()
 
@@ -516,7 +516,7 @@ def test_orchestrator_notifier_default_none(tmp_path, test_settings):
 
     root = tmp_path / "orgs" / "x"
     root.mkdir(parents=True)
-    db = Database(root / "opc.db")
+    db = Database(root / "grassland.db")
     orch = Orchestrator(
         db=db, settings=test_settings,
         paths=OrgPaths(root=root), slug="x",
@@ -533,7 +533,7 @@ def test_orchestrator_notify_escalated_no_op_when_unset(tmp_path, test_settings)
 
     root = tmp_path / "orgs" / "x"
     root.mkdir(parents=True)
-    db = Database(root / "opc.db")
+    db = Database(root / "grassland.db")
     orch = Orchestrator(
         db=db, settings=test_settings,
         paths=OrgPaths(root=root), slug="x",
@@ -555,7 +555,7 @@ def test_orchestrator_notify_does_not_block_synchronous_caller(tmp_path, test_se
 
     root = tmp_path / "orgs" / "x"
     root.mkdir(parents=True)
-    db = Database(root / "opc.db")
+    db = Database(root / "grassland.db")
     orch = Orchestrator(
         db=db, settings=test_settings,
         paths=OrgPaths(root=root), slug="x",

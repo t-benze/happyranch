@@ -12,7 +12,7 @@ export function TopBar(): JSX.Element {
 
   return (
     <header className="flex h-12 shrink-0 items-center gap-4 border-b border-border bg-bg-subtle px-4">
-      <div className="font-semibold text-fg">OPC</div>
+      <div className="font-semibold text-fg">Grassland</div>
       <select
         value={slug ?? ''}
         onChange={(e) => navigate(`/orgs/${e.target.value}/threads`)}

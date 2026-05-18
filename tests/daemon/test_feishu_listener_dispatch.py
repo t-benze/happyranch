@@ -15,7 +15,7 @@ from src.daemon.routes.tasks import DispatchError
 
 
 def _mk_listener(tmp_path: Path, *, allow_dispatch: bool = True):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     audit = AuditLogger(db)
     loop = asyncio.new_event_loop()
     return FeishuEventListener(

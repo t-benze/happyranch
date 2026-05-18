@@ -1,6 +1,6 @@
-"""OPC daemon entry point.
+"""Grassland daemon entry point.
 
-Bootstraps from ~/.opc/runtimes.yaml, binds an ephemeral local port,
+Bootstraps from ~/.grassland/runtimes.yaml, binds an ephemeral local port,
 writes pid/port files, and runs the FastAPI app under uvicorn.
 """
 from __future__ import annotations
@@ -25,7 +25,7 @@ from src.models import BlockKind, TaskStatus
 from src.orchestrator.orchestrator import Orchestrator
 from src.runtime import RuntimeDir
 
-logger = logging.getLogger("opc.daemon")
+logger = logging.getLogger("grassland.daemon")
 
 
 def _sweep_on_startup(
@@ -138,7 +138,7 @@ def main() -> None:
     paths.pid_file().write_text(str(os.getpid()))
     _install_signal_handlers(state)
 
-    logger.info("OPC daemon listening on %s:%d", settings.daemon_bind_host, port)
+    logger.info("Grassland daemon listening on %s:%d", settings.daemon_bind_host, port)
     config = uvicorn.Config(app, log_level="info", lifespan="on")
     server = uvicorn.Server(config)
     # Hand the bound socket to uvicorn so we don't race the port number.

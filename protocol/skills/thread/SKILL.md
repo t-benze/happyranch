@@ -47,7 +47,7 @@ Write `/tmp/thread-reply-<thread_id>-<seq>.json`:
  "speaker": "<your name>", "body_markdown": "...", "in_response_to_seq": <N>}
 
 Then single-line:
-opc threads reply --org <slug> --thread-id <id> --from-file /tmp/thread-reply-<id>-<seq>.json
+grassland threads reply --org <slug> --thread-id <id> --from-file /tmp/thread-reply-<id>-<seq>.json
 
 Reply when:
 - You were addressed individually (default behavior).
@@ -61,7 +61,7 @@ Write `/tmp/thread-decline-<thread_id>-<seq>.json`:
  "speaker": "<your name>", "reason": "...", "in_response_to_seq": <N>}
 
 Then:
-opc threads decline --org <slug> --thread-id <id> --from-file /tmp/thread-decline-<id>-<seq>.json
+grassland threads decline --org <slug> --thread-id <id> --from-file /tmp/thread-decline-<id>-<seq>.json
 
 Decline when:
 - You were addressed via @all AND another participant has already covered what
@@ -86,7 +86,7 @@ Write `/tmp/thread-dispatch-<thread_id>.json`:
  "team": "<team>" /* optional, defaults to your team */}
 
 Then:
-opc threads dispatch --org <slug> --thread-id <id> --from-file /tmp/thread-dispatch-<id>.json
+grassland threads dispatch --org <slug> --thread-id <id> --from-file /tmp/thread-dispatch-<id>.json
 
 Each dispatch posts a system message into the thread for transparency.
 
@@ -100,7 +100,7 @@ When invoked with "This thread is being archived":
 
 1. Review what was discussed.
 2. Identify KB-worthy material (apply rules from protocol/06-knowledge-base.md
-   §2). Write those with `opc kb add` BEFORE the close-out callback.
+   §2). Write those with `grassland kb add` BEFORE the close-out callback.
 3. Identify durable learnings for yourself — write them to
    /tmp/thread-closeout-<thread_id>-<your_name>.json:
    {"thread_id": "<id>", "invocation_token": "<token>",
@@ -108,7 +108,7 @@ When invoked with "This thread is being archived":
     "learnings": [{"text": "..."}],
     "kb_slugs": ["the-slugs-you-just-added"]}
 4. Run:
-   opc threads close-out --org <slug> --thread-id <id> --from-file /tmp/thread-closeout-<id>-<your_name>.json
+   grassland threads close-out --org <slug> --thread-id <id> --from-file /tmp/thread-closeout-<id>-<your_name>.json
 
 Other participants will produce their own close-outs in parallel. Each
 contributes to their own learnings.md; KB slugs are unioned.

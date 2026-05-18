@@ -215,7 +215,7 @@ async def test_init_agents_uses_enrollment_executor_for_workspace_bootstrap(
     settings = Settings(project_root=Path("/Users/tangbz/projects/my-opc/.worktrees/codex-executor"))
 
     daemon_home = tmp_path / "home"
-    monkeypatch.setenv("OPC_DAEMON_HOME", str(daemon_home))
+    monkeypatch.setenv("GRASSLAND_DAEMON_HOME", str(daemon_home))
     token = ensure_token()
     runtimes_mod.register(rt.root)
 
@@ -267,7 +267,7 @@ async def test_approve_agent_uses_provider_specific_workspace_bootstrap(
     settings = Settings(project_root=Path("/Users/tangbz/projects/my-opc/.worktrees/codex-executor"))
 
     daemon_home = tmp_path / "home"
-    monkeypatch.setenv("OPC_DAEMON_HOME", str(daemon_home))
+    monkeypatch.setenv("GRASSLAND_DAEMON_HOME", str(daemon_home))
     token = ensure_token()
     runtimes_mod.register(rt.root)
 

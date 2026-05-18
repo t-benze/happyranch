@@ -13,7 +13,7 @@ Inside an OPEN talk, you can submit a new root task to the orchestrator without 
 - The new task fits within your role's authority (workers: yourself; managers: anyone on your team).
 - You can describe the work in a single, concrete brief.
 
-If any of those is missing, do not dispatch — keep talking, or recommend the founder run `opc run` themselves later.
+If any of those is missing, do not dispatch — keep talking, or recommend the founder run `grassland run` themselves later.
 
 ## Authentication
 
@@ -45,10 +45,10 @@ Authority comes from the OPEN talk itself: pass the `talk_id` of the talk you ar
 2. **Invoke as a single-line command:**
 
    ```bash
-   opc dispatch --org {ORG_SLUG} --from-file /tmp/dispatch-<talk_id>.json
+   grassland dispatch --org {ORG_SLUG} --from-file /tmp/dispatch-<talk_id>.json
    ```
 
-   The `--from-file` form is mandatory in agent sessions. Multi-line bash is rejected by the `Bash(opc:*)` permission rule because newlines count as command separators.
+   The `--from-file` form is mandatory in agent sessions. Multi-line bash is rejected by the `Bash(grassland:*)` permission rule because newlines count as command separators.
 
 ## Authorization rules
 
@@ -67,13 +67,13 @@ After dispatching, **record the call in the `transcript_markdown` you will send 
 [during talk] dispatched TASK-042 to dev_agent: "Implement Option B for TASK-087".
 ```
 
-The audit log captures the action (`opc audit --org {ORG_SLUG} TASK-042`), but the transcript is what the founder reads back. Skipping this silently mutates the queue from the founder's point of view.
+The audit log captures the action (`grassland audit --org {ORG_SLUG} TASK-042`), but the transcript is what the founder reads back. Skipping this silently mutates the queue from the founder's point of view.
 
 ## What happens
 
 The orchestrator inserts a new root task with `assigned_agent` set to your `effective_target` and enqueues it for execution. Worker self-dispatch **bypasses the team manager's EH decision step** — the conversation is treated as the gating decision, so the worker runs directly. Manager dispatches to a team worker behave the same way: the manager has already decided, so the orchestrator runs the assignee.
 
-The new task carries `dispatched_from_talk_id = <your talk_id>` for observability. `opc details --org {ORG_SLUG} TASK-NNN` shows a "Dispatched from" line.
+The new task carries `dispatched_from_talk_id = <your talk_id>` for observability. `grassland details --org {ORG_SLUG} TASK-NNN` shows a "Dispatched from" line.
 
 ## Error handling
 
@@ -89,7 +89,7 @@ The new task carries `dispatched_from_talk_id = <your talk_id>` for observabilit
 - `403 target_not_in_team`: you are a manager and `target_agent` is not on your team.
 - `404 unknown_agent`: the resolved target has no approved workspace.
 
-If `opc` returns non-zero, retry once after 1 second. The 4xx codes above are not retryable — fix the payload.
+If `grassland` returns non-zero, retry once after 1 second. The 4xx codes above are not retryable — fix the payload.
 
 ## Naming
 

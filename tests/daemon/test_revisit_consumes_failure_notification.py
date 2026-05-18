@@ -12,7 +12,7 @@ def _build_org_state(tmp_path: Path):
     from src.infrastructure.database import Database
     from src.models import TaskRecord, TaskStatus
 
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.insert_task(TaskRecord(
         id="TASK-9", brief="x", team="engineering",
         assigned_agent="m", status=TaskStatus.FAILED,

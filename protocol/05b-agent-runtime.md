@@ -39,7 +39,7 @@ The orchestrator assembles each agent's context into an executor-specific bootst
 
 ### Permission enforcement and callbacks
 
-Claude workspaces have a `.claude/settings.json` that configures Claude Code's auto-allowed tools. Codex workspaces do not use that file. Across executors, agents call back through the same single-line `opc ... --from-file` contract. Agents can read, write, and execute freely within their workspace and the cloned codebase, subject to the executor's sandbox mode and the orchestrator's workflow rules.
+Claude workspaces have a `.claude/settings.json` that configures Claude Code's auto-allowed tools. Codex workspaces do not use that file. Across executors, agents call back through the same single-line `grassland ... --from-file` contract. Agents can read, write, and execute freely within their workspace and the cloned codebase, subject to the executor's sandbox mode and the orchestrator's workflow rules.
 
 **Only founder-concern boundaries are restricted** (as defined in the org charter):
 - No `git push` to `main` / production deploy
@@ -117,7 +117,7 @@ Each agent accumulates its own operational learnings. The Content QA records "DS
 After each task, the orchestrator prompts the agent: "Based on this task, are there any new learnings to record?" Responses are appended to the learnings file. Over time, when the file gets long, the orchestrator periodically asks the agent to consolidate and prune it.
 
 **3. Performance memory (DB-only)**
-The performance tracker writes a rolling 30-day scorecard (acceptance rate, revision rate, error count, tier) to the SQLite `scorecards` table after every task. The team manager sees a tier label per worker in their decision prompt; the founder inspects details via `opc agents [name] [--detail]`. Agents themselves do **not** see their own scorecard inside the workspace — past designs surfaced this as `scorecard.md` but the file drifted from the DB and was removed.
+The performance tracker writes a rolling 30-day scorecard (acceptance rate, revision rate, error count, tier) to the SQLite `scorecards` table after every task. The team manager sees a tier label per worker in their decision prompt; the founder inspects details via `grassland agents [name] [--detail]`. Agents themselves do **not** see their own scorecard inside the workspace — past designs surfaced this as `scorecard.md` but the file drifted from the DB and was removed.
 
 ### How context gets assembled at session start
 

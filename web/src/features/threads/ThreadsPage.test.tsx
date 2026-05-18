@@ -21,7 +21,7 @@ function mountAt(route: string) {
 
 describe('ThreadsPage — read path', () => {
   test('renders inbox + empty state when no threads', async () => {
-    sessionStorage.setItem('opc.token', 'tok');
+    sessionStorage.setItem('grassland.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, () => HttpResponse.json({ threads: [] })),
       http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
@@ -35,7 +35,7 @@ describe('ThreadsPage — read path', () => {
   });
 
   test('lists threads and supports filter', async () => {
-    sessionStorage.setItem('opc.token', 'tok');
+    sessionStorage.setItem('grassland.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
         HttpResponse.json({
@@ -63,7 +63,7 @@ describe('ThreadsPage — read path', () => {
   });
 
   test('renders detail pane with messages when a thread is selected', async () => {
-    sessionStorage.setItem('opc.token', 'tok');
+    sessionStorage.setItem('grassland.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
         HttpResponse.json({ threads: [mkThread('THR-001', 'My subject')] }),

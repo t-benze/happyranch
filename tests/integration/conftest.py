@@ -33,8 +33,8 @@ def _reset_lark_token_cache():
 
 @pytest.fixture
 def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setenv("OPC_DAEMON_HOME", str(tmp_path / ".opc"))
-    return tmp_path / ".opc"
+    monkeypatch.setenv("GRASSLAND_DAEMON_HOME", str(tmp_path / ".grassland"))
+    return tmp_path / ".grassland"
 
 
 DEFAULT_TEST_SLUG = "test"
@@ -160,8 +160,8 @@ def live_daemon(
     monkeypatch,
 ):
     """Start the daemon via scripts/daemon.sh and stop it after the test."""
-    monkeypatch.setenv("OPC_CLAUDE_CLI_PATH", str(fake_claude))
-    monkeypatch.setenv("OPC_CODEX_CLI_PATH", str(fake_codex))
+    monkeypatch.setenv("GRASSLAND_CLAUDE_CLI_PATH", str(fake_claude))
+    monkeypatch.setenv("GRASSLAND_CODEX_CLI_PATH", str(fake_codex))
     from src.daemon import runtimes as runtimes_mod
 
     runtimes_mod.register(runtime_container)
@@ -195,8 +195,8 @@ def live_daemon_idle(
     monkeypatch,
 ):
     """Start the daemon with no active runtime registered yet."""
-    monkeypatch.setenv("OPC_CLAUDE_CLI_PATH", str(fake_claude))
-    monkeypatch.setenv("OPC_CODEX_CLI_PATH", str(fake_codex))
+    monkeypatch.setenv("GRASSLAND_CLAUDE_CLI_PATH", str(fake_claude))
+    monkeypatch.setenv("GRASSLAND_CODEX_CLI_PATH", str(fake_codex))
     script = Path(__file__).resolve().parent.parent.parent / "scripts" / "daemon.sh"
     subprocess.run([str(script), "start"], check=True)
     deadline = time.time() + 5

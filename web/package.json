@@ -1,9 +1,9 @@
 {
-  "name": "opc-web",
+  "name": "grassland-web",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "OPC founder console — localhost SPA.",
+  "description": "Grassland founder console — localhost SPA.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",

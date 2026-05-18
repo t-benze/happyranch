@@ -18,7 +18,7 @@ from src.models import (
 
 
 async def test_finalize_thread_writes_transcript_and_archives(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     db.add_thread_participant("THR-001", "dev_agent", added_by="founder")
     db.append_thread_message(
@@ -37,7 +37,7 @@ async def test_finalize_thread_writes_transcript_and_archives(tmp_path):
 
 
 async def test_finalize_waits_for_close_outs_or_times_out(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     db.add_thread_participant("THR-001", "dev_agent", added_by="founder")
     db.set_thread_status("THR-001", status=ThreadStatus.ARCHIVING, summary="done")
@@ -59,7 +59,7 @@ async def test_finalize_waits_for_close_outs_or_times_out(tmp_path):
 async def test_finalize_thread_records_aggregate_learnings_total(tmp_path):
     """Close-out callbacks increment new_learnings_total; finalizer must
     surface that aggregate in both the transcript and the archived audit."""
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     db.add_thread_participant("THR-001", "alice", added_by="founder")
     db.add_thread_participant("THR-001", "bob", added_by="founder")

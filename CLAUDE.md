@@ -1,7 +1,7 @@
-# Project: OPC — Multi-Agent Org Runtime
+# Project: Grassland — Multi-Agent Org Runtime
 
 ## What This Is
-OPC is an **org-agnostic runtime** for operating a multi-agent organization supervised by a single human founder. The repo provides the system kernel (orchestrator, daemon + CLI, audit, scoring, KB, talk, revisit, escalation primitives); the *organization* it runs — charter, teams, agents, escalation rules, jurisdictions, budget authority — is loaded per-runtime from `<runtime>/orgs/<slug>/org/`.
+Grassland is an **org-agnostic runtime** for operating a multi-agent organization supervised by a single human founder. The repo provides the system kernel (orchestrator, daemon + CLI, audit, scoring, KB, talk, revisit, escalation primitives); the *organization* it runs — charter, teams, agents, escalation rules, jurisdictions, budget authority — is loaded per-runtime from `<runtime>/orgs/<slug>/org/`.
 
 A canonical sample org shipped at `examples/orgs/hk-macau-tourism/` runs a one-person tourism company serving foreign visitors to Hong Kong SAR and Macau SAR. Treat it as the reference shape when bootstrapping a new org; nothing about its specific teams, agents, or constraints is baked into the system.
 
@@ -9,11 +9,11 @@ A canonical sample org shipped at `examples/orgs/hk-macau-tourism/` runs a one-p
 - **Layer 1**: Founder (human) — sets org rules, handles escalations, reviews weekly dashboard
 - **Layer 2**: Manager agents — defined per-org in `<runtime>/orgs/<slug>/org/agents/<name>.md` with `role: manager`. Each manager owns one team listed in `teams.yaml`.
 - **Layer 3**: Worker agents — same file shape, `role: worker`. Workers are assigned to a team via `teams.yaml`.
-- **Infrastructure (org-agnostic, lives in this repo)**: orchestrator, FastAPI daemon + `opc` CLI, audit logger, performance scoring, knowledge base, talk store, revisit primitive, escalation routing.
+- **Infrastructure (org-agnostic, lives in this repo)**: orchestrator, FastAPI daemon + `grassland` CLI, audit logger, performance scoring, knowledge base, talk store, revisit primitive, escalation routing.
 
 Agents operate autonomously within authority defined by their org. The system enforces structural patterns regardless of org: managers cross-audit each other (peer review), and no agent both proposes and approves consequential actions (maker-checker pattern). Org-specific authority (e.g., budget thresholds, refund limits) lives in `escalation-rules.md` and the agents' system prompts.
 
-A single runtime container (`<runtime>/`) hosts **multiple orgs** under `<runtime>/orgs/<slug>/`. Each org has its own `org/` content, SQLite DB, workspaces, KB, and talks. One daemon serves all orgs concurrently. Bootstrap: `opc init <runtime>` creates the empty container; `opc orgs init <slug> --from examples/orgs/hk-macau-tourism` materializes an org from the sample tree.
+A single runtime container (`<runtime>/`) hosts **multiple orgs** under `<runtime>/orgs/<slug>/`. Each org has its own `org/` content, SQLite DB, workspaces, KB, and talks. One daemon serves all orgs concurrently. Bootstrap: `grassland init <runtime>` creates the empty container; `grassland orgs init <slug> --from examples/orgs/hk-macau-tourism` materializes an org from the sample tree.
 
 ## Design Documents (read these first)
 
@@ -34,11 +34,11 @@ In the `protocol/` folder:
 - **Agent executor**: Per-agent. Claude Code (`claude -p ... --permission-mode auto`), Codex (`codex exec --json -`), and opencode (`opencode run`) are supported — no third-party agent framework dependency.
 - **Daemon**: FastAPI HTTP service (`src/daemon/`) — serves orchestrator work, SSE task events, agent callbacks
 - **CLI**: Thin HTTP client (`src/client/`) that talks to the daemon over localhost
-- **Web UI**: Localhost SPA bundled into the daemon (`web/` → built to `web/dist/` → served at `/`). React 18 + TypeScript strict + Tailwind 3 + TanStack Query v5 + React Router v6. Auth via the same bearer token at `~/.opc/daemon.token`, fetched once via `GET /api/v1/auth/bootstrap` (localhost-gated). Spec: `docs/superpowers/specs/2026-05-14-web-ui-design.md`. Launch with `opc web`.
+- **Web UI**: Localhost SPA bundled into the daemon (`web/` → built to `web/dist/` → served at `/`). React 18 + TypeScript strict + Tailwind 3 + TanStack Query v5 + React Router v6. Auth via the same bearer token at `~/.grassland/daemon.token`, fetched once via `GET /api/v1/auth/bootstrap` (localhost-gated). Spec: `docs/superpowers/specs/2026-05-14-web-ui-design.md`. Launch with `grassland web`.
 - **Agent workflow**: Shared workspace skills (`protocol/skills/`) — `start-task`, `make-worktree`, `manage-repo`, `manage-agent`. The orchestrator prompt references the same SOPs across all executors.
 - **Orchestrator**: Custom Python application. `run_step` is the only primitive — each invocation advances one task by one subprocess call; an async `TaskQueue` + worker pool (`src/daemon/queue.py`) drives re-enqueues across steps. The team manager drives decisions; performance scoring derives from implicit review verdicts on delegated work.
 - **Data models**: Pydantic v2 + pydantic-settings
-- **Database**: SQLite with WAL mode, per-org under `<runtime>/orgs/<slug>/opc.db`. Schema covers audit logs, scorecards, task state, plus per-feature tables (token usage, Feishu correlation, threads) documented in the corresponding specs under `docs/superpowers/specs/`.
+- **Database**: SQLite with WAL mode, per-org under `<runtime>/orgs/<slug>/grassland.db`. Schema covers audit logs, scorecards, task state, plus per-feature tables (token usage, Feishu correlation, threads) documented in the corresponding specs under `docs/superpowers/specs/`.
 - **Feishu integration**: `lark-oapi>=1.6,<2` (official ByteDance SDK) — outbound `im.v1.message.create` via `src/infrastructure/feishu/`; inbound WS subscription to `im.message.receive_v1` via `src/daemon/feishu_listener.py`.
 - **Knowledge base**: File-backed markdown under `<runtime>/orgs/<slug>/kb/` with atomic writes, substring/tag search, `_index.md` regeneration. No vector store yet.
 - **LLM**: Provider depends on the selected executor
@@ -52,17 +52,17 @@ System kernel milestones — org-agnostic infrastructure. Org content (agent ros
 
 1. Orchestrator + first team — manager-driven decision loop, executor-backed agent sessions.
 2. Audit logging — SQLite-backed semantic events; `session_end` payloads carry full `token_usage` dict.
-3. Manager-driven orchestration — `OPC_MAX_ORCHESTRATION_STEPS` (default 50) before escalation.
+3. Manager-driven orchestration — `GRASSLAND_MAX_ORCHESTRATION_STEPS` (default 50) before escalation.
 4. Agent memory — persistent workspaces, per-entry `learnings/LRN-NNN-<slug>.md`, `task_history.md`. Spec: `2026-05-13-per-agent-learnings-structural-upgrade-design.md`.
 5. Performance scoring — 30-day rolling, green/yellow/red tiers.
 6. Talk flow — founder↔agent conversations with transcripts and end-of-talk learnings.
-7. Knowledge Base — per-org KB with freeform `type`; founder rulings via `opc kb add`.
+7. Knowledge Base — per-org KB with freeform `type`; founder rulings via `grassland kb add`.
 8. Revisit primitive — spec: `2026-04-21-opc-revisit-design.md`.
 9. Org-per-runtime layout — file-backed `org/{charter.md,escalation-rules.md,teams.yaml,config.yaml,agents/}`.
-10. Multi-org container — per-org DB/workspaces/KB/talks; `opc migrate-to-multi-org` for v1 → v2.
+10. Multi-org container — per-org DB/workspaces/KB/talks; `grassland migrate-to-multi-org` for v1 → v2.
 11. Feishu notifications — outbound push + reply-to-unblock; specs: `2026-05-08-feishu-notification-design.md`, `2026-05-12-feishu-interactive-actions-design.md`.
 12. Threads foundation — email-style multi-agent workchannels with daemon-minted invocation tokens; CLI surface + end-to-end integration coverage via `fake_claude.sh` thread-prompt routing. Spec: `2026-05-13-threads-design.md`.
-13. Threads web UI — localhost React+Tailwind SPA bundled into the FastAPI daemon, replaces the original Textual TUI. Three-layer architecture (`lib/api/` 1:1 daemon mirror → `features/<domain>/` → generic `components/`) designed to absorb future CLI domains. OpenAPI snapshot + TS coverage test pin the contract. `opc threads` (no subcommand) points at `opc web`; the `src/tui/` tree was deleted. Spec: `2026-05-14-web-ui-design.md`.
+13. Threads web UI — localhost React+Tailwind SPA bundled into the FastAPI daemon, replaces the original Textual TUI. Three-layer architecture (`lib/api/` 1:1 daemon mirror → `features/<domain>/` → generic `components/`) designed to absorb future CLI domains. OpenAPI snapshot + TS coverage test pin the contract. `grassland threads` (no subcommand) points at `grassland web`; the `src/tui/` tree was deleted. Spec: `2026-05-14-web-ui-design.md`.
 
 **Open:**
 
@@ -77,7 +77,7 @@ System kernel milestones — org-agnostic infrastructure. Org content (agent ros
 |-- protocol/                          # System kernel docs (00, 05*, 06) + shared agent skills
 |-- scripts/daemon.sh                  # Launch the FastAPI daemon
 |-- src/
-|   |-- cli.py                         # `opc` command — HTTP client
+|   |-- cli.py                         # `grassland` command — HTTP client
 |   |-- client/                        # httpx-based client + SSE streaming
 |   |-- daemon/                        # FastAPI app, routes, queue, sessions, Feishu listener
 |   |-- orchestrator/                  # run_step, executors, capabilities, performance, prompt_loader
@@ -86,12 +86,12 @@ System kernel milestones — org-agnostic infrastructure. Org content (agent ros
 |-- tests/                             # Unit + integration (with fake CLIs)
 `-- examples/orgs/hk-macau-tourism/    # Canonical sample org tree
 
-~/.opc/                                # Daemon home — auth_token, runtimes.yaml, daemon.pid, daemon.port
+~/.grassland/                                # Daemon home — auth_token, runtimes.yaml, daemon.pid, daemon.port
 
-<runtime-dir>/                         # Slugless multi-org container (created by `opc init <path>`)
-|-- opc.yaml                           # marker — schema_version: 2, type: multi-org-runtime
-`-- orgs/<slug>/                       # Created by `opc orgs init <slug> [--from <example>]`
-    |-- opc.db                         # per-org SQLite
+<runtime-dir>/                         # Slugless multi-org container (created by `grassland init <path>`)
+|-- grassland.yaml                           # marker — schema_version: 2, type: multi-org-runtime
+`-- orgs/<slug>/                       # Created by `grassland orgs init <slug> [--from <example>]`
+    |-- grassland.db                         # per-org SQLite
     |-- org/                           # editable org content
     |   |-- charter.md, escalation-rules.md, teams.yaml, config.yaml
     |   `-- agents/                    # active `<name>.md` + `_pending/<name>.md`
@@ -101,32 +101,32 @@ System kernel milestones — org-agnostic infrastructure. Org content (agent ros
     `-- threads/                       # THR-NNN.md
 ```
 
-HTTP routes: per-org under `/api/v1/orgs/<slug>/...`; container-level under `/api/v1/runtime` and `/api/v1/orgs`. Legacy v1 (single-org flat layout) migrates in place via `opc migrate-to-multi-org` — TTY-gated, refuses with active tasks or open talks. Even older v0 (DB-backed agent enrollments) migrates first via `opc migrate-to-org-runtime`.
+HTTP routes: per-org under `/api/v1/orgs/<slug>/...`; container-level under `/api/v1/runtime` and `/api/v1/orgs`. Legacy v1 (single-org flat layout) migrates in place via `grassland migrate-to-multi-org` — TTY-gated, refuses with active tasks or open talks. Even older v0 (DB-backed agent enrollments) migrates first via `grassland migrate-to-org-runtime`.
 
 ## Configuration
 
-Operational settings use the `OPC_` env prefix. Runtime paths are derived from the runtime directory.
+Operational settings use the `GRASSLAND_` env prefix. Runtime paths are derived from the runtime directory.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPC_CLAUDE_CLI_PATH` | `claude` | Path to Claude Code CLI |
-| `OPC_CODEX_CLI_PATH` | `codex` | Path to Codex CLI |
-| `OPC_OPENCODE_CLI_PATH` | `opencode` | Path to opencode CLI |
-| `OPC_PERMISSION_MODE` | `auto` | Claude Code permission mode |
-| `OPC_PROTOCOL_DIR` | `protocol` | Protocol docs dirname (relative to project root) |
-| `OPC_MAX_ORCHESTRATION_STEPS` | `50` | Max manager decision steps before escalation |
-| `OPC_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout — global default; see resolution below |
-| `OPC_TIER_GREEN_THRESHOLD` | `0.90` | Acceptance rate for green tier |
-| `OPC_TIER_YELLOW_THRESHOLD` | `0.75` | Acceptance rate for yellow tier |
-| `OPC_ORG_SLUG` | _(unset)_ | Default org slug for per-org CLI commands. Resolution: explicit `--org` flag > `OPC_ORG_SLUG` env > auto-infer (only if exactly one org exists) > error |
+| `GRASSLAND_CLAUDE_CLI_PATH` | `claude` | Path to Claude Code CLI |
+| `GRASSLAND_CODEX_CLI_PATH` | `codex` | Path to Codex CLI |
+| `GRASSLAND_OPENCODE_CLI_PATH` | `opencode` | Path to opencode CLI |
+| `GRASSLAND_PERMISSION_MODE` | `auto` | Claude Code permission mode |
+| `GRASSLAND_PROTOCOL_DIR` | `protocol` | Protocol docs dirname (relative to project root) |
+| `GRASSLAND_MAX_ORCHESTRATION_STEPS` | `50` | Max manager decision steps before escalation |
+| `GRASSLAND_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout — global default; see resolution below |
+| `GRASSLAND_TIER_GREEN_THRESHOLD` | `0.90` | Acceptance rate for green tier |
+| `GRASSLAND_TIER_YELLOW_THRESHOLD` | `0.75` | Acceptance rate for yellow tier |
+| `GRASSLAND_ORG_SLUG` | _(unset)_ | Default org slug for per-org CLI commands. Resolution: explicit `--org` flag > `GRASSLAND_ORG_SLUG` env > auto-infer (only if exactly one org exists) > error |
 
 ### Session timeout resolution
 
 `Orchestrator._resolve_session_timeout(agent_name, task_id=...)` walks three layers, highest precedence first:
 
-1. **Task override** — `tasks.session_timeout_seconds` column, set via `opc revisit ... --session-timeout-seconds N` and inherited by every child spawned from that task.
+1. **Task override** — `tasks.session_timeout_seconds` column, set via `grassland revisit ... --session-timeout-seconds N` and inherited by every child spawned from that task.
 2. **Org override** — `session_timeout_seconds:` in `<runtime>/orgs/<slug>/org/config.yaml` (loaded by `src/orchestrator/org_config.py`).
-3. **Code default** — `Settings.session_timeout_seconds` (1800s; overridable via `OPC_SESSION_TIMEOUT_SECONDS`).
+3. **Code default** — `Settings.session_timeout_seconds` (1800s; overridable via `GRASSLAND_SESSION_TIMEOUT_SECONDS`).
 
 Positive integers only; `<= 0` or non-int raises at parse time. The `agent_name` argument is unused (kept for call-site symmetry); legacy `session_timeout_seconds` in agent frontmatter is silently ignored.
 
@@ -140,11 +140,11 @@ Each workspace declares an `executor` in `agent.yaml`: `claude`, `codex`, or `op
 | Codex | `AGENTS.md` | `.agents/skills/` | sandbox flags on CLI |
 | opencode | `AGENTS.md` | `.agents/skills/` | `opencode.json` `permission.bash` map |
 
-**Codex sandbox**: `CodexExecutor.run` passes `-c sandbox_workspace_write.network_access=true` on every invocation. The `workspace-write` sandbox blocks localhost by default, which would kill the agent's `opc report-completion` callback to `127.0.0.1`. Do not remove this flag without re-architecting the callback path away from localhost sockets.
+**Codex sandbox**: `CodexExecutor.run` passes `-c sandbox_workspace_write.network_access=true` on every invocation. The `workspace-write` sandbox blocks localhost by default, which would kill the agent's `grassland report-completion` callback to `127.0.0.1`. Do not remove this flag without re-architecting the callback path away from localhost sockets.
 
-**opencode permissions**: `OpencodeWorkspaceAdapter.write_opencode_json` writes a strict default — `{"permission": {"bash": {"*": "deny", "opc *": "allow", ...per-agent allow_rules...}}}`. **Do not pass `--dangerously-skip-permissions` on the CLI** — it bypasses `opencode.json` and erases the per-prefix discipline.
+**opencode permissions**: `OpencodeWorkspaceAdapter.write_opencode_json` writes a strict default — `{"permission": {"bash": {"*": "deny", "grassland *": "allow", ...per-agent allow_rules...}}}`. **Do not pass `--dangerously-skip-permissions` on the CLI** — it bypasses `opencode.json` and erases the per-prefix discipline.
 
-Enrolling a non-Claude worker: set `"executor": "codex"` (or `"opencode"`) in the `opc manage-agent --from-file` payload. Founder approval (`opc approve-agent`) bootstraps the right surface for the chosen executor. See `protocol/skills/manage-agent/SKILL.md` for full payload shapes.
+Enrolling a non-Claude worker: set `"executor": "codex"` (or `"opencode"`) in the `grassland manage-agent --from-file` payload. Founder approval (`grassland approve-agent`) bootstraps the right surface for the chosen executor. See `protocol/skills/manage-agent/SKILL.md` for full payload shapes.
 
 Repos are configured per agent in `agent.yaml`:
 ```yaml
@@ -152,11 +152,11 @@ repos:
   web-app: https://github.com/t-benze/web-app.git
   docs: https://github.com/t-benze/docs.git
 ```
-`opc init-agent` creates a default `agent.yaml` with empty repos if missing.
+`grassland init-agent` creates a default `agent.yaml` with empty repos if missing.
 
 ### Agent permission model
 
-Agents call the orchestrator's CLI (`opc report-completion`, `opc learning`, `opc manage-repo`, `opc manage-agent`, `opc dispatch`, ...) as their only sanctioned side-effect channel. **Baseline allow rule for every agent: `opc`.**
+Agents call the orchestrator's CLI (`grassland report-completion`, `grassland learning`, `grassland manage-repo`, `grassland manage-agent`, `grassland dispatch`, ...) as their only sanctioned side-effect channel. **Baseline allow rule for every agent: `grassland`.**
 
 Per-agent extras are declared in agent frontmatter (`<runtime>/orgs/<slug>/org/agents/<name>.md`) under `allow_rules:`. Example: the sample org's `engineering_head` declares `gh pr close`, `gh pr comment`, `gh issue close`, `gh issue comment` — needed because Claude's headless risk heuristic refuses those calls otherwise even in `--permission-mode auto`. Keep extras narrow: each prefix can silently mutate shared external state on every future task.
 
@@ -165,11 +165,11 @@ Per-agent extras are declared in agent frontmatter (`<runtime>/orgs/<slug>/org/a
 1. `.claude/settings.json` `permissions.allow` — written by `ClaudeWorkspaceAdapter.write_settings_json` (used by interactive sessions; surfaces intent).
 2. `--allowedTools` on the CLI — passed by `ClaudeExecutor.run` for headless sessions.
 
-Both surfaces are generated from `allow_rules_for_agent(agent_name, cli=...)` in `src/orchestrator/workspace_adapters.py` (settings uses `Bash(<cmd>:*)`; CLI uses `Bash(<cmd> *)`). **Do not hand-edit either** — `opc init-agent` rewrites them. The two-surface requirement exists because Claude Code 2.1.x ignores `permissions.allow` in headless `-p` mode; without the CLI flag, the agent's first `opc ...` call is blocked and the task silently rejects.
+Both surfaces are generated from `allow_rules_for_agent(agent_name, cli=...)` in `src/orchestrator/workspace_adapters.py` (settings uses `Bash(<cmd>:*)`; CLI uses `Bash(<cmd> *)`). **Do not hand-edit either** — `grassland init-agent` rewrites them. The two-surface requirement exists because Claude Code 2.1.x ignores `permissions.allow` in headless `-p` mode; without the CLI flag, the agent's first `grassland ...` call is blocked and the task silently rejects.
 
-**When adding new orchestrator capabilities, keep them under the `opc` binary** so they stay inside the baseline allow rule. Only add a raw-tool prefix when the operation genuinely cannot be wrapped in `opc` (e.g., third-party CLI for external infra we don't own).
+**When adding new orchestrator capabilities, keep them under the `grassland` binary** so they stay inside the baseline allow rule. Only add a raw-tool prefix when the operation genuinely cannot be wrapped in `grassland` (e.g., third-party CLI for external infra we don't own).
 
-**Agent-side completion payloads must be single-line `opc` invocations.** The Claude permission matcher treats newlines (and `&&`, `||`, `;`, `|`) as command separators and matches each subcommand independently; multi-line bash with backslash continuations is rejected even when the surface command is `opc ...`. The `start-task` skill writes payloads to `/tmp/completion-<task_id>.json` and invokes `opc report-completion --from-file <path>` as a single line. Any new agent-facing callback with multiple arguments must follow the same `--from-file` pattern.
+**Agent-side completion payloads must be single-line `grassland` invocations.** The Claude permission matcher treats newlines (and `&&`, `||`, `;`, `|`) as command separators and matches each subcommand independently; multi-line bash with backslash continuations is rejected even when the surface command is `grassland ...`. The `start-task` skill writes payloads to `/tmp/completion-<task_id>.json` and invokes `grassland report-completion --from-file <path>` as a single line. Any new agent-facing callback with multiple arguments must follow the same `--from-file` pattern.
 
 ## Code Style
 - Type hints on all function signatures
@@ -187,13 +187,13 @@ Both surfaces are generated from `allow_rules_for_agent(agent_name, cli=...)` in
 
 ## Task status vocabularies
 
-Agents self-report `status="completed"|"blocked"` via `opc report-completion` (the worker's view of its session). The orchestrator-owned `TaskStatus` lives on the `tasks` row and is distinct: `{pending, in_progress, blocked, completed, failed}` based on orchestration classification, with `block_kind` (`delegated` | `escalated`) specifying the reason.
+Agents self-report `status="completed"|"blocked"` via `grassland report-completion` (the worker's view of its session). The orchestrator-owned `TaskStatus` lives on the `tasks` row and is distinct: `{pending, in_progress, blocked, completed, failed}` based on orchestration classification, with `block_kind` (`delegated` | `escalated`) specifying the reason.
 
 ## Manager decision contract
 
 Team-manager completion payloads carry two fields with distinct purposes:
 
-- **`summary`** (prose) — human-readable description of what the manager did or concluded this step. Rendered in `opc details`, audit logs, `task_history.md`. Stored on `task_results.output_summary`.
+- **`summary`** (prose) — human-readable description of what the manager did or concluded this step. Rendered in `grassland details`, audit logs, `task_history.md`. Stored on `task_results.output_summary`.
 - **`decision`** (JSON object, NextStep schema) — the structured action the orchestrator will execute: `{"action": "delegate"|"done"|"escalate", ...}`. Stored on `task_results.decision_json` (manager-only column; workers leave NULL). Parsed by `Orchestrator._parse_next_step` directly — no prose inference.
 
 Full schema with worked examples lives in `protocol/00-completion-contract.md` ("Manager decision field"). The decision-field name for a delegated child task's brief is **`prompt`, not `brief`** — Pydantic v2 silently ignores extras, so writing `"brief"` produces an empty-brief child task.
@@ -205,7 +205,7 @@ uv run pytest tests/ -v -m integration   # end-to-end tests (spawns a real daemo
 uv run pytest tests/ -v -m ""            # both
 ```
 
-Integration tests are excluded by default because they spawn a real daemon and fake CLIs. They are isolated from `~/.opc/` via `OPC_DAEMON_HOME`. **Run them locally before any change touching the daemon lifespan, SessionTracker, or callback routes** — that's the surface area where unit tests have historically missed regressions. CI runs them on every PR.
+Integration tests are excluded by default because they spawn a real daemon and fake CLIs. They are isolated from `~/.grassland/` via `GRASSLAND_DAEMON_HOME`. **Run them locally before any change touching the daemon lifespan, SessionTracker, or callback routes** — that's the surface area where unit tests have historically missed regressions. CI runs them on every PR.
 
 `tests/integration/fake_claude.sh` recognizes two prompt shapes and routes to two plan-env vars:
 
@@ -233,7 +233,7 @@ Contract pinning:
 
 - **Python side** — `tests/contract/test_openapi_snapshot.py` pins paths +
   methods + params + responses to `tests/contract/openapi.json`. Regenerate
-  intentional changes via `OPC_REGEN_OPENAPI=1 uv run pytest
+  intentional changes via `GRASSLAND_REGEN_OPENAPI=1 uv run pytest
   tests/contract/test_openapi_snapshot.py`.
 - **TS side** — `web/src/test/openapi-coverage.test.ts` reads the same
   snapshot and asserts every documented path is in exactly one of
@@ -246,7 +246,7 @@ Build + dev:
 ```bash
 scripts/build_web.sh        # production build → web/dist/, served by daemon at /
 cd web && npm run dev       # Vite dev server, /api/* proxied to the daemon
-opc web                     # open the built bundle in the default browser
+grassland web                     # open the built bundle in the default browser
 ```
 
 Auth model: the SPA fetches the daemon's existing bearer token once via
@@ -260,52 +260,52 @@ unchanged.
 The CLI is an HTTP client. Start the daemon once, then run CLI commands.
 
 ```bash
-scripts/daemon.sh start    # background; pid/port under ~/.opc/
+scripts/daemon.sh start    # background; pid/port under ~/.grassland/
 scripts/daemon.sh status   # or stop
 scripts/build_web.sh       # build web/dist/ (npm ci + vite build)
-opc web [--no-open]        # open the SPA in the default browser
+grassland web [--no-open]        # open the SPA in the default browser
 ```
 
-Slug resolution for per-org commands: explicit `--org <slug>` > `OPC_ORG_SLUG` env > auto-infer (only when the container has exactly one org) > error. Container-level commands (`opc init`, `opc use`, `opc orgs ...`, `opc migrate-to-multi-org`) take no `--org`.
+Slug resolution for per-org commands: explicit `--org <slug>` > `GRASSLAND_ORG_SLUG` env > auto-infer (only when the container has exactly one org) > error. Container-level commands (`grassland init`, `grassland use`, `grassland orgs ...`, `grassland migrate-to-multi-org`) take no `--org`.
 
-**Full founder-facing CLI** — tasks, agents, KB, threads, talks, audit, runtime, migrations — is documented in `skills/opc/SKILL.md` (symlinked at `~/.claude/skills/opc`).
+**Full founder-facing CLI** — tasks, agents, KB, threads, talks, audit, runtime, migrations — is documented in `skills/grassland/SKILL.md` (symlinked at `~/.claude/skills/grassland`).
 
 **Agent-side callbacks** (invoked by skills inside agent sessions; do NOT invoke by hand — they falsify audit data and corrupt scorecards):
 
-- `opc report-completion` — terminal callback from the `start-task` skill
-- `opc progress` — long-running mid-task heartbeat
-- `opc learning {add,update,promote,reindex}` on migrated workspaces; legacy `opc learning --text` on pre-migration
-- `opc manage-agent`, `opc manage-repo`, `opc dispatch`
-- `opc threads {reply,decline,dispatch,close-out}`
+- `grassland report-completion` — terminal callback from the `start-task` skill
+- `grassland progress` — long-running mid-task heartbeat
+- `grassland learning {add,update,promote,reindex}` on migrated workspaces; legacy `grassland learning --text` on pre-migration
+- `grassland manage-agent`, `grassland manage-repo`, `grassland dispatch`
+- `grassland threads {reply,decline,dispatch,close-out}`
 
 Every agent callback uses `--from-file <path>` because Claude's permission matcher splits multi-line bash into separate commands; see "Agent permission model" above.
 
 ## Knowledge Base
 
-Per-org under `<runtime>/orgs/<slug>/kb/` (orgs do not share a KB). One entry shape — `KBEntry.type` is freeform; route validation only enforces non-empty `slug/title/type/topic`. The dedicated `kb precedent` route was removed; founder rulings flow through plain `opc kb add` with `source_task: <task-id>` in frontmatter. Implementation: `src/infrastructure/kb_store.py` + `src/daemon/routes/kb.py` (atomic writes, `kb_lock`, substring/tag search, `_index.md` regen). Full rules: `protocol/06-knowledge-base.md`. The context builder injects a "Knowledge Base" section into every agent's bootstrap doc; `start-task` has explicit consult + contribute steps.
+Per-org under `<runtime>/orgs/<slug>/kb/` (orgs do not share a KB). One entry shape — `KBEntry.type` is freeform; route validation only enforces non-empty `slug/title/type/topic`. The dedicated `kb precedent` route was removed; founder rulings flow through plain `grassland kb add` with `source_task: <task-id>` in frontmatter. Implementation: `src/infrastructure/kb_store.py` + `src/daemon/routes/kb.py` (atomic writes, `kb_lock`, substring/tag search, `_index.md` regen). Full rules: `protocol/06-knowledge-base.md`. The context builder injects a "Knowledge Base" section into every agent's bootstrap doc; `start-task` has explicit consult + contribute steps.
 
 ## Per-Agent Learnings
 
-Per-agent under `<runtime>/orgs/<slug>/workspaces/<agent>/learnings/`, one `LRN-NNN-<slug>.md` per entry. Full spec: `docs/superpowers/specs/2026-05-13-per-agent-learnings-structural-upgrade-design.md`. Implementation: `src/infrastructure/learnings_store.py` + the `/agents/{name}/learnings/entries/...` block in `src/daemon/routes/agents.py`. CLI: `opc learning list|get|search|add|update|promote|reindex`.
+Per-agent under `<runtime>/orgs/<slug>/workspaces/<agent>/learnings/`, one `LRN-NNN-<slug>.md` per entry. Full spec: `docs/superpowers/specs/2026-05-13-per-agent-learnings-structural-upgrade-design.md`. Implementation: `src/infrastructure/learnings_store.py` + the `/agents/{name}/learnings/entries/...` block in `src/daemon/routes/agents.py`. CLI: `grassland learning list|get|search|add|update|promote|reindex`.
 
 **Non-obvious invariants:**
 
 - **Per-workspace migration is state-aware** — `PersistentWorkspaceSetup.ensure()` never creates `learnings/` when a non-empty flat `learnings.md` exists. Existing agents stay on the legacy shape until a founder-dispatched migration moves them; new workspaces start on the new layout.
-- **Legacy 410** — `opc learning --agent X --text "..."` returns `410 Gone` once `learnings/` exists.
+- **Legacy 410** — `grassland learning --agent X --text "..."` returns `410 Gone` once `learnings/` exists.
 - **Cross-refs** — `related_to` and `supersedes` validated against existing IDs at write time (unknown → 400); self-refs rejected. `supersedes` is the canonical evolve-a-rule primitive.
-- **Promotion** — `opc learning promote <LRN-NNN> --kb-slug <slug>` is one-way; body becomes a 2-line pointer stub and entry locks.
+- **Promotion** — `grassland learning promote <LRN-NNN> --kb-slug <slug>` is one-way; body becomes a 2-line pointer stub and entry locks.
 - **End-of-talk** — `end_talk` writes into the new store on migrated workspaces (synthesized slug `talk-<talk_id>-<idx>`, topic `talk-residue`); pre-migration → flat-file append.
 
 ## Revisit (founder recovery)
 
-`opc revisit <task-id>` spawns a NEW root task inheriting brief + team from a terminal predecessor; old lineage is frozen. TTY-gated; no `--yes` bypass. Spec: `docs/superpowers/specs/2026-04-21-opc-revisit-design.md`.
+`grassland revisit <task-id>` spawns a NEW root task inheriting brief + team from a terminal predecessor; old lineage is frozen. TTY-gated; no `--yes` bypass. Spec: `docs/superpowers/specs/2026-04-21-opc-revisit-design.md`.
 
 Eligible predecessor states: `failed`, `failed-cancelled` (founder-cancelled, normalized on the wire), `blocked(escalated)`, or `completed`. Anything else → `409 cannot_revisit`.
 
 **Non-obvious invariants:**
 
 - The predecessor-link lives in TWO places: `tasks.revisit_of_task_id` column (indexed, queryable) AND a richer `audit_log` entry (`flagged`, `cascade`, `founder_note`, `prior_status`). The column is a **sideways** reference — `walk_ancestors` MUST NOT follow it, or cascade-fail will re-poison revisits via `_enqueue_parent_if_waiting`. Helpers: `Database.walk_revisit_chain` (backward) and `Database.get_direct_revisits` (forward).
-- On the new root's first orchestration step, `_revisit_header_if_applicable(orch, task_id)` prepends a 5-6 line context header pointing the manager at `opc details` / `opc audit` / `opc recall` for the frozen predecessor.
+- On the new root's first orchestration step, `_revisit_header_if_applicable(orch, task_id)` prepends a 5-6 line context header pointing the manager at `grassland details` / `grassland audit` / `grassland recall` for the frozen predecessor.
 - `run_step` also auto-revisits on opaque-failure recovery; task-row `session_timeout_seconds` is copied onto every spawned revisit root.
 
 ## Feishu notifications (founder push + reply-to-unblock)
@@ -326,7 +326,7 @@ Per-org opt-in via `feishu_notifications` in `<runtime>/orgs/<slug>/org/config.y
 - `notify_on_failure: true` — failure replies; hook in `run_step.py:_notify_failure_if_eligible` gates on enabled + not cancelled + no auto-revisit spawned. Listener routes `(kind=failure, decision=revisit)` to `revisit_from_notification`.
 - `allow_dispatch: true` — top-level DISPATCH messages parsed by `parse_top_level_message(text)`; `dispatch_via_feishu` extracts the in-process helper from `submit_task` and raises `DispatchError(reason ∈ {empty_brief, unknown_team, dispatch_failed})`.
 
-CLI fallbacks (`opc resolve-escalation`, `opc revisit`) consume any open notification row for the task with `consumed_by="cli-fallback"`, so a CLI-first resolution silently no-ops the later Feishu reply.
+CLI fallbacks (`grassland resolve-escalation`, `grassland revisit`) consume any open notification row for the task with `consumed_by="cli-fallback"`, so a CLI-first resolution silently no-ops the later Feishu reply.
 
 ## Maintaining Documentation
 - **README.md** is for end users — setup, CLI commands, configuration. No developer internals.

@@ -13,7 +13,7 @@ def test_dispatched_from_thread_id_round_trips(tmp_path):
     this fails: Pydantic drops the unknown field and/or insert_task ignores
     the column.
     """
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.insert_task(TaskRecord(
         id="TASK-001", brief="x", dispatched_from_thread_id="THR-007",
     ))
@@ -24,7 +24,7 @@ def test_dispatched_from_thread_id_round_trips(tmp_path):
 
 def test_dispatched_from_talk_id_round_trips(tmp_path):
     """Regression guard for the sibling column. Should pass today and after Task 4."""
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.insert_task(TaskRecord(
         id="TASK-002", brief="x", dispatched_from_talk_id="TALK-1",
     ))
@@ -61,12 +61,12 @@ def test_thread_models_roundtrip():
 
 
 def test_next_thread_id_starts_at_one(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     assert db.next_thread_id() == "THR-001"
 
 
 def test_next_thread_id_uses_max_suffix(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db._conn.execute(
         "INSERT INTO threads (id, subject, started_at, status) "
         "VALUES ('THR-001', 's', '2026-01-01T00:00:00+00:00', 'archived')"
@@ -80,7 +80,7 @@ def test_next_thread_id_uses_max_suffix(tmp_path):
 
 
 def test_insert_and_get_thread(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     t = ThreadRecord(id="THR-001", subject="Refund policy")
     db.insert_thread(t)
     got = db.get_thread("THR-001")
@@ -92,12 +92,12 @@ def test_insert_and_get_thread(tmp_path):
 
 
 def test_get_thread_missing_returns_none(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     assert db.get_thread("THR-404") is None
 
 
 def test_list_threads_orders_by_started_desc(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     a = ThreadRecord(id="THR-001", subject="a", started_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
     b = ThreadRecord(id="THR-002", subject="b", started_at=datetime(2026, 1, 5, tzinfo=timezone.utc))
     db.insert_thread(a)
@@ -107,7 +107,7 @@ def test_list_threads_orders_by_started_desc(tmp_path):
 
 
 def test_add_and_list_participants(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     db.add_thread_participant("THR-001", "alice", added_by="founder")
     db.add_thread_participant("THR-001", "bob", added_by="founder")
@@ -116,14 +116,14 @@ def test_add_and_list_participants(tmp_path):
 
 
 def test_add_thread_participant_idempotent(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     db.add_thread_participant("THR-001", "alice", added_by="founder")
     assert db.add_thread_participant("THR-001", "alice", added_by="founder") is False
 
 
 def test_is_thread_participant(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     db.add_thread_participant("THR-001", "alice", added_by="founder")
     assert db.is_thread_participant("THR-001", "alice")
@@ -131,7 +131,7 @@ def test_is_thread_participant(tmp_path):
 
 
 def test_append_thread_message_allocates_monotonic_seq(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     seq_a = db.append_thread_message(
         thread_id="THR-001", speaker="founder",
@@ -152,7 +152,7 @@ def test_append_thread_message_allocates_monotonic_seq(tmp_path):
 
 
 def test_append_thread_decline_message(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     db.append_thread_message(
         thread_id="THR-001", speaker="alice",
@@ -165,7 +165,7 @@ def test_append_thread_decline_message(tmp_path):
 
 
 def test_append_thread_system_message(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     db.append_thread_message(
         thread_id="THR-001", speaker="founder",
@@ -177,7 +177,7 @@ def test_append_thread_system_message(tmp_path):
 
 
 def test_mint_thread_invocation(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     inv = db.mint_thread_invocation(
         thread_id="THR-001", agent_name="alice",
@@ -189,7 +189,7 @@ def test_mint_thread_invocation(tmp_path):
 
 
 def test_get_pending_invocation_by_token(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     inv = db.mint_thread_invocation(
         thread_id="THR-001", agent_name="alice",
@@ -202,7 +202,7 @@ def test_get_pending_invocation_by_token(tmp_path):
 
 
 def test_consume_invocation_marks_consumed(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     inv = db.mint_thread_invocation(
         thread_id="THR-001", agent_name="alice",
@@ -214,7 +214,7 @@ def test_consume_invocation_marks_consumed(tmp_path):
 
 
 def test_record_dispatch_on_invocation(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     inv = db.mint_thread_invocation(
         thread_id="THR-001", agent_name="alice",
@@ -225,7 +225,7 @@ def test_record_dispatch_on_invocation(tmp_path):
 
 
 def test_reap_pending_invocations(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     db.mint_thread_invocation(
         thread_id="THR-001", agent_name="a",
@@ -251,7 +251,7 @@ def test_reap_pending_invocations(tmp_path):
 
 
 def test_increment_turns_used(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     db.increment_thread_turns_used("THR-001", by=2)
     db.increment_thread_turns_used("THR-001", by=1)
@@ -260,7 +260,7 @@ def test_increment_turns_used(tmp_path):
 
 
 def test_set_thread_status_archiving(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     db.set_thread_status(
         "THR-001",
@@ -274,7 +274,7 @@ def test_set_thread_status_archiving(tmp_path):
 
 
 def test_finalize_thread_archived(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     db.set_thread_status("THR-001", status=ThreadStatus.ARCHIVING, summary="s")
     db.finalize_thread_archived(
@@ -290,7 +290,7 @@ def test_finalize_thread_archived(tmp_path):
 
 
 def test_set_thread_turn_cap(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     db.set_thread_turn_cap("THR-001", new_cap=1000)
     assert db.get_thread("THR-001").turn_cap == 1000

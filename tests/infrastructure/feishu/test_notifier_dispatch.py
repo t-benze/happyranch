@@ -22,7 +22,7 @@ class _FakeClient:
 
 @pytest.fixture()
 def notifier(tmp_path: Path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     audit = AuditLogger(db)
     client = _FakeClient()
     cfg = FeishuNotificationsConfig(
@@ -45,7 +45,7 @@ def test_send_dispatch_confirmation_renders_card(notifier):
     assert "TASK-21" in client.sent[0]["title"]
     assert "engineering" in body
     assert "investigate the 503" in body
-    assert "opc tail" in body
+    assert "grassland tail" in body
 
 
 def test_send_dispatch_error_lists_reason(notifier):
