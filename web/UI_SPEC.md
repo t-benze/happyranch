@@ -433,38 +433,49 @@ Stays in the originating dialog or composer, with inline error in `tier.red`. A 
 
 ---
 
-## 8. Tasks — placeholder shell
+## 8. Tasks
 
 ### Purpose
 
-Future surface for the task graph: every running, blocked, completed, and revisited task across the org. Equivalent to `grassland tasks list` + `grassland details <task_id>` + `grassland events <task_id>`.
+Inbox + detail surface for every task across the org. Equivalent to `grassland tasks list` + `grassland details <task_id>` + `grassland events <task_id>` + `grassland cancel|revisit|resolve-escalation`.
 
-### One-screen sketch
+### Layout
 
-Layout: two-pane (240px filter sidebar + 1fr canvas) so it differs from threads on first glance. Filter sidebar groups by team, status, agent. Canvas renders a chronological list of TaskCards in `radius.lg`, `surface.raised`, with the TASK-NNN monospace badge and a `status_*` badge.
+240px FilterSidebar + 1fr canvas. Detail pane mounts as a Drawer (480px slide-in from the right, `primitives/Drawer`) when `:task_id` is in the URL. Closing the Drawer (Esc or backdrop click) navigates back to `/orgs/:slug/tasks`.
 
-```
-+-----------+----------------------------------------------+
-| TEAMS     |  open · blocked · completed · failed         |
-|  content  |                                              |
-|  product  |  ┌────────────────────────────────────────┐ |
-|  ops      |  │ TASK-0091  content/content_writer       │ |
-|           |  │ Draft Hong Kong visa guide v2           │ |
-| STATUS    |  │ [open]  ⏱ 6m 12s   3 children          │ |
-|  open     |  └────────────────────────────────────────┘ |
-|  blocked  |  ┌────────────────────────────────────────┐ |
-|  done     |  │ TASK-0090  ops/partner_liaison …        │ |
-|           |  └────────────────────────────────────────┘ |
-| AGENTS    |                                              |
-|  …        |                                              |
-+-----------+----------------------------------------------+
-```
+### Inbox
 
-Token usage: `surface.sunken` sidebar, `surface.canvas` body, `id_task` badge for monospace IDs. AgentChips render the owning agent.
+Polled at 10s via TanStack Query (`refetchInterval: 10_000`). Filter groups: Status (pending / in_progress / blocked / completed / failed) and Team (auto-derived from the loaded task set). Rows are TaskCard patterns honoring `useDensity()`.
 
-### Engineer note
+**Deferred:** Agent filter (umbrella §6.1) is not shipped in PR 7. `TaskRecord` has no `agent` field — agent is implied per task via orchestration events. A follow-up will either surface a derived `current_agent` column on the task row or filter via a separate event-derived index.
 
-Tasks needs an SSE stream just like threads (`/tasks/events`). The shape is the same recipe as `useThreadsInboxSSE`. The TS module `lib/api/tasks.ts` already exists (pre-built per the original spec).
+### Detail Drawer
+
+- Header: TASK-NNN IdBadge, StatusBadge (extended to handle task statuses + `blockKind`), brief, team. Three action buttons — Resolve… (only when escalated), Revisit, Cancel.
+- Recall tree: indented children, each row an IdBadge (deep-linked to that task's detail) + brief + status badge + output_summary if completed.
+- Live events: SSE subscription to `/tasks/{id}/events`, appended chronologically. Terminal events (`task_complete` / `task_failed` / `task_blocked`) invalidate both the task detail and the inbox list.
+
+### Dialogs
+
+- CancelTaskDialog — required reason, destructive variant.
+- RevisitTaskDialog — optional note, optional session-timeout override (positive integer). On success navigates to the new root.
+- ResolveEscalationDialog — approve/reject radio + required rationale.
+
+### Keyboard
+
+- `g t` — jump to Tasks inbox (registered by TopBar via `useGlobalJump('t', ...)`).
+- `Esc` — close Drawer or dialog.
+
+### Data dependencies
+
+- `GET /orgs/:slug/tasks` (polled).
+- `GET /orgs/:slug/tasks/:id`, `GET /orgs/:slug/tasks/:id/recall` (one-shot per Drawer mount).
+- `GET /orgs/:slug/tasks/:id/events` (SSE while Drawer is open).
+- `POST /orgs/:slug/tasks/:id/cancel|revisit|resolve-escalation`.
+
+### Drift from `2026-05-18-web-app-complete-feature-set-design.md`
+
+The umbrella's §5.5 SSE budget assumed `/tasks/events` (inbox SSE) would land in PR 7. This PR uses polling instead. Net SSE streams added: 1 (per-task tail). If the inbox feels visibly stale in production, revisit the daemon-side event publish wiring as a follow-up; the cap of 4 concurrent streams is preserved either way.
 
 ---
 
