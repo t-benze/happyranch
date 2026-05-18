@@ -183,9 +183,7 @@
       "layer": "pattern",
       "import": "@/design-system/patterns/MentionAutocomplete",
       "variants": {},
-      "consumes": [
-        "components.popover"
-      ],
+      "consumes": [],
       "example": "<MentionAutocomplete anchor={{x:0,y:0,width:0,height:0}} query='' agents={[]} onSelect={() => {}} onDismiss={() => {}} />"
     },
     {

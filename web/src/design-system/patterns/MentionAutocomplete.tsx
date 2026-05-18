@@ -39,6 +39,7 @@ export function MentionAutocomplete({
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      if (matches.length === 0) return;
       if (e.key === 'Escape') { e.preventDefault(); onDismiss(); return; }
       if (e.key === 'ArrowDown') { e.preventDefault(); setActive((i) => Math.min(i + 1, matches.length - 1)); return; }
       if (e.key === 'ArrowUp')   { e.preventDefault(); setActive((i) => Math.max(i - 1, 0)); return; }
@@ -94,6 +95,6 @@ export const meta = {
   layer: 'pattern',
   import: '@/design-system/patterns/MentionAutocomplete',
   variants: {},
-  consumes: ['components.popover'],
+  consumes: [],
   example: "<MentionAutocomplete anchor={{x:0,y:0,width:0,height:0}} query='' agents={[]} onSelect={() => {}} onDismiss={() => {}} />",
 } as const;
