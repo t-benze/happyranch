@@ -66,9 +66,8 @@ System kernel milestones — org-agnostic infrastructure. Org content (agent ros
 
 **Open:**
 
-14. **Inter-team communication** — orchestrator routes tasks between teams (e.g., engineering manager hands a payment-change review to a compliance team manager). `--team <name>` works for single-team runtimes; cross-team handoff not yet implemented.
-15. **Founder dashboard** — aggregate audit logs, escalation summaries, scorecards into a weekly view. Design: `protocol/05e-dashboard.md`.
-16. **Persistent agents** — long-running loops for runtime patterns that don't fit single-task batch execution (e.g., real-time customer-chat worker). Currently every agent session is one task → one subprocess.
+14. **Founder dashboard** — aggregate audit logs, escalation summaries, scorecards into a weekly view. Design: `protocol/05e-dashboard.md`.
+15. **Persistent agents** — long-running loops for runtime patterns that don't fit single-task batch execution (e.g., real-time customer-chat worker). Currently every agent session is one task → one subprocess.
 
 ## Directory Layout
 
