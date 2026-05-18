@@ -26,6 +26,8 @@ import type {
   ThreadRecord,
 } from '@/lib/api/types';
 import type { threads as threadsApi } from '@/lib/api';
+import type { tasks as tasksApi } from '@/lib/api';
+import type { TaskEvent, TaskRecord, TaskRecallNode } from '@/lib/api/types';
 
 // ---------------------------------------------------------------------------
 // Hook-shape primitives
@@ -90,7 +92,47 @@ export interface ThreadsApi {
 }
 
 // ---------------------------------------------------------------------------
-// Context shape — one bag per feature domain. Future PRs add `tasks`, `kb`…
+// TasksApi — covers every hook TasksPage + its dialogs consume.
+// ---------------------------------------------------------------------------
+
+export type CancelTaskArgs = Parameters<typeof tasksApi.cancelTask>[2];
+export type CancelTaskResult = Awaited<ReturnType<typeof tasksApi.cancelTask>>;
+
+export type RevisitTaskArgs = Parameters<typeof tasksApi.revisitTask>[2];
+export type RevisitTaskResult = Awaited<ReturnType<typeof tasksApi.revisitTask>>;
+
+export type ResolveEscalationArgs = Parameters<typeof tasksApi.resolveEscalation>[2];
+export type ResolveEscalationResult = Awaited<ReturnType<typeof tasksApi.resolveEscalation>>;
+
+export interface TasksApi {
+  useTasksList: (params?: {
+    status?: string;
+    limit?: number;
+  }) => QueryLike<{ tasks: TaskRecord[] }>;
+  useTask: (taskId: string | undefined) => QueryLike<TaskRecord>;
+  useTaskRecall: (taskId: string | undefined) => QueryLike<TaskRecallNode>;
+
+  /** Subscribes; passes each event to `onEvent`. No-op under mocks. */
+  useTaskTailSSE: (
+    taskId: string | undefined,
+    onEvent: (ev: TaskEvent) => void,
+  ) => void;
+
+  useCancelTask: (taskId: string) => MutationLike<CancelTaskArgs, CancelTaskResult>;
+  useRevisitTask: (taskId: string) => MutationLike<RevisitTaskArgs, RevisitTaskResult>;
+  useResolveEscalation: (
+    taskId: string,
+  ) => MutationLike<ResolveEscalationArgs, ResolveEscalationResult>;
+}
+
+export interface TasksRoutes {
+  inbox: () => string;
+  detail: (taskId: string) => string;
+  inboxForOrg: (slug: string) => string;
+}
+
+// ---------------------------------------------------------------------------
+// Context shape — one bag per feature domain. Future PRs add `kb`…
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -127,12 +169,14 @@ export interface ThreadRoutes {
 export interface DataContextValue {
   orgs: OrgsApi;
   threads: ThreadsApi;
+  tasks: TasksApi;
   /**
    * Provider-supplied React hook that returns the active feature's route
    * builders. A hook (not a plain object) so the implementation can read
    * the current URL via `useParams` / `useLocation`.
    */
   useThreadRoutes: () => ThreadRoutes;
+  useTasksRoutes: () => TasksRoutes;
 }
 
 export const DataContext = createContext<DataContextValue | null>(null);

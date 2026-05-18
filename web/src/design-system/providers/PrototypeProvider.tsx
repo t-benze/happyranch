@@ -18,6 +18,7 @@ import { MOCK_ORG_SLUG } from '@/mocks';
 import { DataContext } from './DataContext';
 import { mockOrgsApi } from './_mock-orgs';
 import { useMockThreadRoutes } from './_mock-routes';
+import { mockTasksApi, useMockTasksRoutes } from './_mock-tasks';
 import { mockThreadsApi } from './_mock-threads';
 
 function makePrototypeQueryClient(): QueryClient {
@@ -41,7 +42,9 @@ export function PrototypeProvider({ children }: { children: ReactNode }): JSX.El
         value={{
           orgs: mockOrgsApi,
           threads: mockThreadsApi,
+          tasks: mockTasksApi,
           useThreadRoutes: useMockThreadRoutes,
+          useTasksRoutes: useMockTasksRoutes,
         }}
       >
         <TooltipProvider delayDuration={300}>

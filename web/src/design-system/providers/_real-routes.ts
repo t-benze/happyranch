@@ -11,7 +11,7 @@
  * `detail` return `'#'`, which renders the NavLink as inert.
  */
 import { useOrgSlugOptional } from '@/lib/orgSlug';
-import type { ThreadRoutes } from './DataContext';
+import type { TasksRoutes, ThreadRoutes } from './DataContext';
 
 export function useRealThreadRoutes(): ThreadRoutes {
   const slug = useOrgSlugOptional();
@@ -19,5 +19,14 @@ export function useRealThreadRoutes(): ThreadRoutes {
     detail: (threadId: string) => (slug ? `/orgs/${slug}/threads/${threadId}` : '#'),
     inbox: () => (slug ? `/orgs/${slug}/threads` : '#'),
     inboxForOrg: (target: string) => `/orgs/${target}/threads`,
+  };
+}
+
+export function useRealTasksRoutes(): TasksRoutes {
+  const slug = useOrgSlugOptional();
+  return {
+    detail: (taskId: string) => (slug ? `/orgs/${slug}/tasks/${taskId}` : '#'),
+    inbox: () => (slug ? `/orgs/${slug}/tasks` : '#'),
+    inboxForOrg: (target: string) => `/orgs/${target}/tasks`,
   };
 }
