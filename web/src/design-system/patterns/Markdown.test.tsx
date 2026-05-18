@@ -1,18 +1,13 @@
 import { render, screen } from '@testing-library/react';
-import { configure } from '@testing-library/dom';
 import { describe, expect, it, vi } from 'vitest';
 import { Markdown } from './Markdown';
-
-// Use data-test as the testid attribute so findByTestId matches the
-// data-test attribute emitted by the mermaid mock's SVG output.
-configure({ testIdAttribute: 'data-test' });
 
 vi.mock('mermaid', () => ({
   default: {
     initialize: vi.fn(),
     render: vi.fn(async (_id: string, source: string) => {
       if (source.includes('BAD')) throw new Error('boom');
-      return { svg: '<svg data-test="rendered"></svg>' };
+      return { svg: '<svg data-testid="rendered"></svg>' };
     }),
   },
 }));
