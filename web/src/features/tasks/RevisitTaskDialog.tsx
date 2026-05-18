@@ -38,8 +38,7 @@ export function RevisitTaskDialog({ taskId, onClose }: Props): JSX.Element {
         note: note || undefined,
         session_timeout_seconds: sst ? Number(sst) : undefined,
       });
-      const newId = (out as { task_id?: string }).task_id;
-      if (newId) navigate(routes.detail(newId));
+      if (out.task_id) navigate(routes.detail(out.task_id));
       else onClose();
     } catch (e: unknown) {
       const code = (e as { code?: string }).code;
