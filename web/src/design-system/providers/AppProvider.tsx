@@ -8,7 +8,8 @@
  *
  * Mounts at the App root (above `<AppRoutes />`). The active org slug is
  * still resolved per-route by `<OrgProvider>` inside `routes.tsx` — it
- * writes to `OrgSlugContext`, which `useActiveOrgSlug` reads.
+ * writes to `OrgSlugContext`, which `useOrgSlug` / `useOrgSlugOptional`
+ * read.
  *
  * Auth bootstrap (`@/lib/auth`) is intentionally NOT initiated here. The
  * existing model is lazy: `lib/api/client.ts` calls `getToken()` on the first

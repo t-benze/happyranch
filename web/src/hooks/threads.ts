@@ -6,20 +6,10 @@
  * they never reach into `design-system/providers/` directly.
  *
  * The slug is intentionally not an argument; the provider knows its own
- * active org. Compositions that want the slug for URL navigation should
- * use `useActiveOrgSlug()` below.
+ * active org. Compositions that need the slug for URL navigation should
+ * use `useThreadRoutes()` (provider-aware) below.
  */
 import { useData } from '@/design-system/providers/DataContext';
-import { useOrgSlug } from '@/lib/orgSlug';
-
-// ---------------------------------------------------------------------------
-// Active-org passthrough — used by compositions for navigation paths.
-//
-// Reads `OrgSlugContext`, populated either by `<OrgProvider>` (real, from
-// the URL) or `<StaticOrgProvider>` (mock, hardcoded by PrototypeProvider).
-// ---------------------------------------------------------------------------
-
-export const useActiveOrgSlug = useOrgSlug;
 
 /**
  * Provider-aware route builder for the threads feature. Compositions

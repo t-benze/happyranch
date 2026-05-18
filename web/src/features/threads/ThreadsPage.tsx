@@ -9,6 +9,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/design-system/primitives/Button';
+import { Input } from '@/design-system/primitives/Input';
 import { Tabs, TabsList, TabsTrigger } from '@/design-system/primitives/Tabs';
 import { ThreadsLayout } from '@/design-system/layouts/ThreadsLayout';
 import { Composer } from '@/design-system/patterns/Composer';
@@ -155,10 +156,10 @@ export function ThreadsPage(): JSX.Element {
     <>
       <ThreadsLayout
         inbox={(
-      <aside className="flex h-full flex-col border-r border-border-default bg-surface-sunken">
-        <header className="border-b border-border-default px-3 py-2">
+      <aside className="border-border-default bg-surface-sunken flex h-full flex-col border-r">
+        <header className="border-border-default border-b px-3 py-2">
           <div className="flex items-center justify-between gap-2">
-            <h2 className="text-overline uppercase tracking-wide text-text-muted">Inbox</h2>
+            <h2 className="text-overline text-text-muted tracking-wide uppercase">Inbox</h2>
             <Button
               size="sm"
               onClick={openNew}
@@ -168,12 +169,12 @@ export function ThreadsPage(): JSX.Element {
               + New
             </Button>
           </div>
-          <input
+          <Input
             type="text"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Filter…"
-            className="mt-2 w-full rounded-md border border-border-default bg-surface-raised px-2 py-1 text-caption text-text-primary placeholder:text-text-muted focus:border-accent-default focus:outline-none"
+            className="text-caption mt-2 h-7 px-2 py-1"
             aria-label="Filter threads"
           />
           <Tabs
@@ -193,15 +194,15 @@ export function ThreadsPage(): JSX.Element {
         </header>
         <div className="flex-1 overflow-auto p-2">
           {threadsQuery.isLoading && (
-            <p className="px-2 py-4 text-caption text-text-muted">Loading…</p>
+            <p className="text-caption text-text-muted px-2 py-4">Loading…</p>
           )}
           {threadsQuery.isError && (
-            <p className="px-2 py-4 text-caption text-feedback-danger">
+            <p className="text-caption text-feedback-danger px-2 py-4">
               Failed to load threads.
             </p>
           )}
           {!threadsQuery.isLoading && threads.length === 0 && (
-            <p className="px-2 py-4 text-caption text-text-muted">
+            <p className="text-caption text-text-muted px-2 py-4">
               {filter
                 ? 'No threads match the filter.'
                 : 'No threads yet. Press N to compose.'}
@@ -347,14 +348,14 @@ function DetailColumn({
 }: DetailColumnProps): JSX.Element {
   if (loading) {
     return (
-      <section className="flex h-full items-center justify-center text-text-muted">
+      <section className="text-text-muted flex h-full items-center justify-center">
         <p className="text-body">Loading…</p>
       </section>
     );
   }
   if (errored || !thread) {
     return (
-      <section className="flex h-full items-center justify-center text-feedback-danger">
+      <section className="text-feedback-danger flex h-full items-center justify-center">
         <p className="text-body">Failed to load thread.</p>
       </section>
     );
@@ -382,7 +383,7 @@ function DetailColumn({
       <div className="flex-1 overflow-hidden">
         <MessageTranscript messages={messages} loading={messagesLoading} />
       </div>
-      <footer className="border-t border-border-default bg-surface-sunken p-3">
+      <footer className="border-border-default bg-surface-sunken border-t p-3">
         {composer}
       </footer>
     </section>
