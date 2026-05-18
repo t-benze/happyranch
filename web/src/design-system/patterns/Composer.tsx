@@ -8,10 +8,17 @@
  * navigation and are cleared on successful send.
  *
  * Auto-grow: useAutoGrow resizes the textarea up to MAX_TEXTAREA_PX px.
+ *
+ * Mentions: typing @<query> opens MentionAutocomplete anchored below the
+ * textarea. Selecting an agent inserts @<name> and positions the caret
+ * right after it. On send, resolveAddressedTo scans the final body for
+ * @<name> mentions and computes addressed_to.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@/design-system/primitives/Button';
 import { useOrgSlug } from '@/lib/orgSlug';
+import { MentionAutocomplete } from './MentionAutocomplete';
+import type { AgentSummary } from '@/lib/api/agents';
 
 const MAX_TEXTAREA_PX = 240;
 const DRAFT_CAP_CHARS = 65_536;
@@ -76,6 +83,30 @@ function useThreadDraft(orgSlug: string, threadId: string): DraftHandle {
   return { draft, setDraft, clearDraft };
 }
 
+const MENTION_TOKEN_RE = /@([A-Za-z0-9_-]+)/g;
+
+function detectOpenMention(text: string, caret: number):
+  | { query: string; tokenStart: number }
+  | null {
+  for (let i = caret - 1; i >= 0; i--) {
+    const ch = text[i];
+    if (ch === '@') return { query: text.slice(i + 1, caret), tokenStart: i };
+    if (/\s/.test(ch)) return null;
+  }
+  return null;
+}
+
+function resolveAddressedTo(body: string, agents: AgentSummary[] = []): string[] {
+  const byName = new Set(agents.map((a) => a.name));
+  const out = new Set<string>();
+  for (const m of body.matchAll(MENTION_TOKEN_RE)) {
+    const token = m[1];
+    if (token === 'all') { out.add('@all'); continue; }
+    if (byName.has(token)) out.add(token);
+  }
+  return out.size > 0 ? Array.from(out) : ['@all'];
+}
+
 interface ComposerProps {
   disabled?: boolean;
   pending?: boolean;
@@ -94,8 +125,8 @@ interface ComposerProps {
   /** Lets a parent focus the textarea (e.g. the R keyboard shortcut). */
   registerFocus?: (focus: () => void) => void;
 
-  // NEW (required)
-  agents: import('@/lib/api/agents').AgentSummary[];
+  // Required
+  agents: AgentSummary[];
   threadId: string;
 }
 
@@ -107,27 +138,76 @@ export function Composer({
   placeholder,
   registerFocus,
   onSend,
-  agents,           // wired in Task 10
-  threadId,
+  agents = [],
+  threadId = '',
 }: ComposerProps): JSX.Element {
   const orgSlug = useOrgSlug();
   const { draft, setDraft, clearDraft } = useThreadDraft(orgSlug, threadId);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   useAutoGrow(textareaRef, draft);
 
+  const [mention, setMention] = useState<
+    | { query: string; tokenStart: number; anchor: { x: number; y: number; width: number; height: number } }
+    | null
+  >(null);
+
+  // Compute filtered matches here so we can gate Cmd+Enter on actual matches,
+  // not just on whether a @-token is open. This avoids blocking submit when the
+  // user types @all with an empty agents list (no matches → popup renders null
+  // → Enter must fall through to submit).
+  const mentionMatches = useMemo(() => {
+    if (!mention) return [];
+    const q = mention.query.toLowerCase();
+    return agents.filter((a) => a.name.toLowerCase().startsWith(q)).slice(0, 8);
+  }, [mention, agents]);
+
+  const popupOpen = mentionMatches.length > 0;
+
   useEffect(() => {
     registerFocus?.(() => textareaRef.current?.focus());
   }, [registerFocus]);
 
-  // agents is wired in Task 10; suppress unused-var lint for now.
-  void agents;
+  const refreshMention = useCallback(() => {
+    const el = textareaRef.current;
+    if (!el || disabled) { setMention(null); return; }
+    const caret = el.selectionStart ?? 0;
+    const m = detectOpenMention(draft, caret);
+    if (!m) { setMention(null); return; }
+    const rect = el.getBoundingClientRect();
+    // v1: anchor the popup to the textarea's bottom-left corner.
+    setMention({ query: m.query, tokenStart: m.tokenStart, anchor: { x: rect.left, y: rect.top, width: rect.width, height: rect.height } });
+  }, [draft, disabled]);
+
+  useEffect(() => { refreshMention(); }, [refreshMention]);
+
+  const acceptMention = useCallback((agent: AgentSummary) => {
+    if (!mention) return;
+    const el = textareaRef.current;
+    if (!el) return;
+    const caret = el.selectionStart ?? 0;
+    const before = draft.slice(0, mention.tokenStart);
+    const after = draft.slice(caret);
+    const inserted = `@${agent.name} `;
+    const next = before + inserted + after;
+    setDraft(next);
+    setMention(null);
+    // Restore caret position right after the inserted token.
+    // Use queueMicrotask so this runs after React flushes the state update
+    // but before the next userEvent action in tests.
+    queueMicrotask(() => {
+      const newCaret = (before + inserted).length;
+      el.setSelectionRange(newCaret, newCaret);
+      el.focus();
+    });
+  }, [draft, mention, setDraft]);
 
   const submit = async () => {
     if (!draft.trim() || disabled || pending) return;
+    const addressedTo = resolveAddressedTo(draft, agents);
     try {
-      // addressedTo is wired in Task 10; for now always @all.
-      await onSend(draft, ['@all']);
+      await onSend(draft, addressedTo);
       clearDraft();
+      setMention(null);
     } catch {
       // Composition surfaces via errorMessage; draft is preserved for retry.
     }
@@ -139,8 +219,12 @@ export function Composer({
         ref={textareaRef}
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
+        onKeyUp={refreshMention}
+        onClick={refreshMention}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+          // Cmd/Ctrl+Enter submits IF the mention popup is closed (no matches);
+          // otherwise the popup handles Enter via its own document-level keydown.
+          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !popupOpen) {
             e.preventDefault();
             submit();
           }
@@ -153,6 +237,15 @@ export function Composer({
         aria-label="Compose follow-up"
         className="border-border-default bg-surface-raised text-body-lg text-text-primary placeholder:text-text-muted focus:border-accent-default w-full resize-none rounded-md border px-3 py-2 focus:outline-none disabled:opacity-50"
       />
+      {mention && (
+        <MentionAutocomplete
+          anchor={mention.anchor}
+          query={mention.query}
+          agents={agents}
+          onSelect={acceptMention}
+          onDismiss={() => setMention(null)}
+        />
+      )}
       <div className="flex items-center justify-between gap-2">
         {errorMessage ? (
           <span className="text-caption text-feedback-danger">{errorMessage}</span>

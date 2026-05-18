@@ -86,3 +86,90 @@ import { StaticOrgProvider } from '@/lib/orgSlug';
 function WithOrgSlug({ slug, children }: { slug: string; children: React.ReactNode }) {
   return <StaticOrgProvider slug={slug}>{children}</StaticOrgProvider>;
 }
+
+import type { AgentSummary } from '@/lib/api/agents';
+
+const TEST_AGENTS: AgentSummary[] = [
+  { name: 'design_lead',  team: 'design', role: 'manager', executor: 'claude', tier: 'green', description: null },
+  { name: 'design_dev_1', team: 'design', role: 'worker',  executor: 'claude', tier: 'green', description: null },
+];
+
+describe('Composer / mentions', () => {
+  it('typing @de opens the autocomplete', async () => {
+    const user = userEvent.setup();
+    render(
+      <WithOrgSlug slug="test-org">
+        <Composer
+          agents={TEST_AGENTS}
+          threadId="THR-002"
+          pending={false}
+          onSend={vi.fn(async () => {})}
+        />
+      </WithOrgSlug>,
+    );
+    const ta = screen.getByRole<HTMLTextAreaElement>('textbox', { name: /compose/i });
+    await user.type(ta, '@de');
+    expect(await screen.findByText('design_lead')).toBeInTheDocument();
+    expect(screen.getByText('design_dev_1')).toBeInTheDocument();
+  });
+
+  it('selecting an agent inserts @name and sends with addressedTo set', async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn(async () => {});
+    render(
+      <WithOrgSlug slug="test-org">
+        <Composer
+          agents={TEST_AGENTS}
+          threadId="THR-003"
+          pending={false}
+          onSend={onSend}
+        />
+      </WithOrgSlug>,
+    );
+    const ta = screen.getByRole<HTMLTextAreaElement>('textbox', { name: /compose/i });
+    await user.type(ta, 'hi @de');
+    await user.keyboard('{Enter}'); // selects first match: design_lead
+    expect(ta.value).toBe('hi @design_lead ');
+    await user.type(ta, 'please review');
+    await user.keyboard('{Meta>}{Enter}{/Meta}');
+    expect(onSend).toHaveBeenCalledWith('hi @design_lead please review', ['design_lead']);
+  });
+
+  it('send with no mentions falls back to @all', async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn(async () => {});
+    render(
+      <WithOrgSlug slug="test-org">
+        <Composer
+          agents={TEST_AGENTS}
+          threadId="THR-004"
+          pending={false}
+          onSend={onSend}
+        />
+      </WithOrgSlug>,
+    );
+    const ta = screen.getByRole<HTMLTextAreaElement>('textbox', { name: /compose/i });
+    await user.type(ta, 'plain message');
+    await user.keyboard('{Meta>}{Enter}{/Meta}');
+    expect(onSend).toHaveBeenCalledWith('plain message', ['@all']);
+  });
+
+  it('literal @all is recognized regardless of agents list', async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn(async () => {});
+    render(
+      <WithOrgSlug slug="test-org">
+        <Composer
+          agents={[]}
+          threadId="THR-005"
+          pending={false}
+          onSend={onSend}
+        />
+      </WithOrgSlug>,
+    );
+    const ta = screen.getByRole<HTMLTextAreaElement>('textbox', { name: /compose/i });
+    await user.type(ta, 'heads-up @all');
+    await user.keyboard('{Meta>}{Enter}{/Meta}');
+    expect(onSend).toHaveBeenCalledWith('heads-up @all', ['@all']);
+  });
+});
