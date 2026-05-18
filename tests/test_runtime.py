@@ -57,7 +57,7 @@ def test_load_invalid_runtime_raises(tmp_path: Path) -> None:
     empty_dir = tmp_path / "empty"
     empty_dir.mkdir()
 
-    with pytest.raises(ValueError, match="not a valid OPC runtime directory"):
+    with pytest.raises(ValueError, match="not a valid Grassland runtime directory"):
         RuntimeDir.load(empty_dir)
 
 
@@ -80,7 +80,7 @@ def test_load_refuses_schema_v1(tmp_path: Path) -> None:
     """A v1 marker (with slug) is rejected with a clear migration message."""
     root = tmp_path / "legacy"
     root.mkdir()
-    (root / "opc.yaml").write_text(
+    (root / "grassland.yaml").write_text(
         "slug: hk-tourism\nschema_version: 1\ncreated_at: 2026-04-01T00:00:00Z\n"
     )
     with pytest.raises(ValueError, match="migrate-to-multi-org"):

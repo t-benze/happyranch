@@ -5,7 +5,7 @@ import { __resetTokenCacheForTests } from '../auth';
 import { ApiError, request } from './client';
 
 function seedToken(token = 'tok') {
-  sessionStorage.setItem('opc.token', token);
+  sessionStorage.setItem('grassland.token', token);
 }
 
 describe('request', () => {
@@ -85,7 +85,7 @@ describe('request', () => {
   });
 
   test('re-bootstraps once on 401', async () => {
-    sessionStorage.setItem('opc.token', 'stale');
+    sessionStorage.setItem('grassland.token', 'stale');
     let bootstrapped = 0;
     let attempts = 0;
     server.use(

@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 function resolveDaemonPort(): number {
-  const home = process.env.OPC_DAEMON_HOME || path.join(os.homedir(), '.opc');
+  const home = process.env.GRASSLAND_DAEMON_HOME || path.join(os.homedir(), '.grassland');
   const portFile = path.join(home, 'daemon.port');
   try {
     const raw = fs.readFileSync(portFile, 'utf-8').trim();

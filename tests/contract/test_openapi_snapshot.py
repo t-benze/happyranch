@@ -3,7 +3,7 @@
 When a daemon route changes (added/removed/renamed/method change), this test
 fails. To accept the new schema, regenerate the snapshot:
 
-    OPC_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py
+    GRASSLAND_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py
 
 The snapshot is the single source of truth that the TS contract coverage test
 (``web/src/test/openapi-coverage.test.ts``) reads.
@@ -52,14 +52,14 @@ def test_openapi_snapshot_matches() -> None:
     app = create_app(DaemonState.idle(Settings()))
     current = _summarize(app.openapi())
 
-    if os.environ.get("OPC_REGEN_OPENAPI"):
+    if os.environ.get("GRASSLAND_REGEN_OPENAPI"):
         SNAPSHOT_PATH.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n")
         return
 
     if not SNAPSHOT_PATH.exists():
         raise AssertionError(
             f"Snapshot file missing: {SNAPSHOT_PATH}. "
-            f"Run: OPC_REGEN_OPENAPI=1 uv run pytest {__file__}"
+            f"Run: GRASSLAND_REGEN_OPENAPI=1 uv run pytest {__file__}"
         )
 
     stored = json.loads(SNAPSHOT_PATH.read_text())
@@ -76,6 +76,6 @@ def test_openapi_snapshot_matches() -> None:
             msg_lines.append(f"  - removed paths: {removed}")
         msg_lines.append(
             "Regenerate after reviewing: "
-            f"OPC_REGEN_OPENAPI=1 uv run pytest {__file__}"
+            f"GRASSLAND_REGEN_OPENAPI=1 uv run pytest {__file__}"
         )
         raise AssertionError("\n".join(msg_lines))

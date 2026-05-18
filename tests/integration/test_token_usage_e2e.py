@@ -4,7 +4,7 @@ The fakes (`fake_claude.sh`, `fake_codex.sh`) emit fixture-shaped JSON usage
 payloads when invoked with the JSON output flags the real executors pass.
 These tests confirm the full chain — subprocess stdout -> usage parser ->
 ExecutorResult.token_usage -> run_step write -> session_token_usage row +
-session_end audit payload + opc tokens surfacing — actually runs end-to-end.
+session_end audit payload + grassland tokens surfacing — actually runs end-to-end.
 
 The Claude fixture: input=1000, output=500, cache_creation=300, cache_read=200,
 no reasoning. So total token_count (input + output + reasoning) = 1500.
@@ -70,7 +70,7 @@ def _write_done_plan(plan_path: Path, agent: str = "engineering_head") -> None:
         '#!/usr/bin/env bash\n'
         'set -e\n'
         'task_id=$1; session_id=$2; agent=$3; org_slug=$4\n'
-        'opc report-completion --org "$org_slug" \\\n'
+        'grassland report-completion --org "$org_slug" \\\n'
         '  --task-id "$task_id" --session-id "$session_id" \\\n'
         f'  --agent {agent} --status completed --confidence 90 \\\n'
         '  --summary \'{"action":"done","summary":"ok"}\'\n'
@@ -84,7 +84,7 @@ def _write_codex_done_plan(plan_path: Path, agent: str = "engineering_head") -> 
         '#!/usr/bin/env bash\n'
         'set -e\n'
         'task_id=$1; session_id=$2; org_slug=$3\n'
-        'opc report-completion --org "$org_slug" \\\n'
+        'grassland report-completion --org "$org_slug" \\\n'
         '  --task-id "$task_id" --session-id "$session_id" \\\n'
         f'  --agent {agent} --status completed --confidence 90 \\\n'
         '  --summary \'{"action":"done","summary":"ok"}\'\n'
@@ -112,7 +112,7 @@ def test_claude_session_writes_token_usage_row(
     fake_plan_env,
 ):
     """A successful Claude session writes one session_token_usage row with
-    the parser-extracted fields, and `opc tokens` (via the daemon route)
+    the parser-extracted fields, and `grassland tokens` (via the daemon route)
     surfaces it."""
     port = live_daemon
     base = f"http://127.0.0.1:{port}/api/v1/orgs/test"
@@ -123,7 +123,7 @@ def test_claude_session_writes_token_usage_row(
     task_id = _submit_task(base)
     assert _wait_for_terminal_status(base, task_id, timeout=20.0) == "completed"
 
-    db = Database(runtime / "opc.db")
+    db = Database(runtime / "grassland.db")
     rows = db.list_session_token_usage(task_id=task_id)
     assert rows, f"expected token-usage row for {task_id}, found none"
     # The fake fixture maps to exactly one Claude session for the manager.
@@ -175,7 +175,7 @@ def test_audit_log_carries_token_usage_payload(
     task_id = _submit_task(base)
     assert _wait_for_terminal_status(base, task_id, timeout=20.0) == "completed"
 
-    db = Database(runtime / "opc.db")
+    db = Database(runtime / "grassland.db")
     audit = db.get_audit_logs(task_id)
     session_ends = [a for a in audit if a["action"] == "session_end"]
     assert session_ends, f"no session_end entries in {audit}"
@@ -213,7 +213,7 @@ def test_codex_session_writes_token_usage_row(
     task_id = _submit_task(base)
     assert _wait_for_terminal_status(base, task_id, timeout=20.0) == "completed"
 
-    db = Database(runtime / "opc.db")
+    db = Database(runtime / "grassland.db")
     rows = db.list_session_token_usage(task_id=task_id)
     assert rows, f"expected token-usage row for {task_id}, found none"
     codex_rows = [r for r in rows if r["executor"] == "codex"]

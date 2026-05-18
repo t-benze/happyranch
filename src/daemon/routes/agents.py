@@ -618,7 +618,7 @@ def backfill_enrollments(slug: str, org: OrgDep) -> dict:
         "skipped_already_enrolled": [],
         "skipped_unknown_prompt": [],
         "deprecated": True,
-        "note": "Backfill is now done via `opc migrate-to-org-runtime`. Pre-existing workspaces without org/agents/<name>.md should be reconstructed by the founder manually.",
+        "note": "Backfill is now done via `grassland migrate-to-org-runtime`. Pre-existing workspaces without org/agents/<name>.md should be reconstructed by the founder manually.",
     }
 
 

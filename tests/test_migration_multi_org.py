@@ -11,7 +11,7 @@ from src.daemon.migration_multi_org import migrate_to_multi_org
 
 def _make_v1_runtime(root: Path, slug: str = "hk-tourism") -> None:
     root.mkdir(parents=True)
-    (root / "opc.yaml").write_text(yaml.safe_dump({
+    (root / "grassland.yaml").write_text(yaml.safe_dump({
         "slug": slug,
         "schema_version": 1,
         "created_at": "2026-04-01T00:00:00Z",
@@ -23,7 +23,7 @@ def _make_v1_runtime(root: Path, slug: str = "hk-tourism") -> None:
     (root / "kb").mkdir()
     (root / "talks").mkdir()
     # Minimal DB with no in-flight tasks.
-    conn = sqlite3.connect(root / "opc.db")
+    conn = sqlite3.connect(root / "grassland.db")
     conn.executescript("""
         CREATE TABLE tasks (id TEXT PRIMARY KEY, status TEXT);
         CREATE TABLE talks (id TEXT PRIMARY KEY, status TEXT);
@@ -36,8 +36,8 @@ def test_migrate_dry_run_does_not_mutate(tmp_path: Path) -> None:
     rt = tmp_path / "rt"
     _make_v1_runtime(rt)
     report = migrate_to_multi_org(rt, apply=False, i_have_a_backup=True)
-    assert (rt / "opc.yaml").exists()
-    data = yaml.safe_load((rt / "opc.yaml").read_text())
+    assert (rt / "grassland.yaml").exists()
+    data = yaml.safe_load((rt / "grassland.yaml").read_text())
     assert data["schema_version"] == 1  # unchanged
     assert "would_move" in report
 
@@ -48,10 +48,10 @@ def test_migrate_apply_moves_subfolders(tmp_path: Path) -> None:
     migrate_to_multi_org(rt, apply=True, i_have_a_backup=True)
     assert (rt / "orgs" / "hk" / "org" / "teams.yaml").is_file()
     assert (rt / "orgs" / "hk" / "workspaces").is_dir()
-    assert (rt / "orgs" / "hk" / "opc.db").is_file()
+    assert (rt / "orgs" / "hk" / "grassland.db").is_file()
     assert not (rt / "org").exists()
-    assert not (rt / "opc.db").exists()
-    data = yaml.safe_load((rt / "opc.yaml").read_text())
+    assert not (rt / "grassland.db").exists()
+    data = yaml.safe_load((rt / "grassland.yaml").read_text())
     assert data["schema_version"] == 2
     assert data["type"] == "multi-org-runtime"
     assert "slug" not in data
@@ -76,7 +76,7 @@ def test_migrate_refuses_without_backup_ack(tmp_path: Path) -> None:
 def test_migrate_refuses_with_active_tasks(tmp_path: Path) -> None:
     rt = tmp_path / "rt"
     _make_v1_runtime(rt)
-    conn = sqlite3.connect(rt / "opc.db")
+    conn = sqlite3.connect(rt / "grassland.db")
     conn.execute("INSERT INTO tasks(id, status) VALUES('TASK-001', 'in_progress')")
     conn.commit()
     conn.close()
@@ -90,7 +90,7 @@ def test_migrate_refuses_with_blocked_tasks(tmp_path: Path) -> None:
     its child. Migrating either silently makes that work invisible."""
     rt = tmp_path / "rt"
     _make_v1_runtime(rt)
-    conn = sqlite3.connect(rt / "opc.db")
+    conn = sqlite3.connect(rt / "grassland.db")
     conn.execute("INSERT INTO tasks(id, status) VALUES('TASK-007', 'blocked')")
     conn.commit()
     conn.close()

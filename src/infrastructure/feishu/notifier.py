@@ -65,7 +65,7 @@ def _build_body_phase1(
     reason: str,
 ) -> tuple[str, list[str]]:
     """Return (title, body_lines) for the post-format payload."""
-    title = f"[OPC {slug}] {task_id} escalated — action required"
+    title = f"[Grassland {slug}] {task_id} escalated — action required"
     lines = [
         "Brief:",
         brief,
@@ -92,7 +92,7 @@ def _build_failure_body(
     failure_note: str,
 ) -> tuple[str, list[str]]:
     """Return (title, body_lines) for the failure post-format payload."""
-    title = f"[OPC {slug}] {task_id} FAILED — review needed"
+    title = f"[Grassland {slug}] {task_id} FAILED — review needed"
     lines = [
         "Brief:",
         brief,
@@ -274,13 +274,13 @@ class EscalationNotifier:
         Best-effort; swallows + audits exceptions."""
         try:
             brief_trunc = brief if len(brief) <= 240 else brief[:240] + "…"
-            title = f"[OPC {self._slug}] Task {task_id} dispatched"
+            title = f"[Grassland {self._slug}] Task {task_id} dispatched"
             body_lines = [
                 f"Team:  {team or '(auto)'}",
                 f"Brief: {brief_trunc}",
                 "",
                 "Track with:",
-                f"  opc tail --org {self._slug} {task_id}",
+                f"  grassland tail --org {self._slug} {task_id}",
             ]
             self._client.send_post_message(
                 chat_id=self._config.chat_id, title=title, body_lines=body_lines,
@@ -295,7 +295,7 @@ class EscalationNotifier:
     ) -> None:
         """Top-level post reporting a rejected DISPATCH. Best-effort."""
         try:
-            title = f"[OPC {self._slug}] Dispatch rejected"
+            title = f"[Grassland {self._slug}] Dispatch rejected"
             body_lines = [f"Reason: {reason}"]
             if valid_teams:
                 body_lines.append(f"Valid teams: {', '.join(valid_teams)}")

@@ -84,7 +84,7 @@ const componentMap: Record<string, ReactNode> = {
     <div className="border-border-default h-40 w-full max-w-md border">
       <EmptyState
         title="No threads"
-        body="Start one with opc threads compose."
+        body="Start one with grassland threads compose."
       />
     </div>
   ),

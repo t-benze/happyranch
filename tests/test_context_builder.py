@@ -41,7 +41,7 @@ def test_build_settings_json_no_repos(test_settings, tmp_dir, runtime):
     assert "permissions" in data
     # Only the orchestrator CLI is pinned open for non-EH agents; everything
     # else inherits Claude Code's default auto-mode behavior.
-    assert data["permissions"]["allow"] == ["Bash(opc:*)"]
+    assert data["permissions"]["allow"] == ["Bash(grassland:*)"]
     # No repos → no hooks
     assert data["hooks"] == {}
 
@@ -79,7 +79,7 @@ def test_ensure_workspace_ready_grants_engineering_head_gh_resolve_rules(
     )
     data = json.loads((workspace / ".claude" / "settings.json").read_text())
     allow = data["permissions"]["allow"]
-    assert "Bash(opc:*)" in allow
+    assert "Bash(grassland:*)" in allow
     assert "Bash(gh pr close:*)" in allow
     assert "Bash(gh pr comment:*)" in allow
     assert "Bash(gh issue close:*)" in allow
@@ -94,7 +94,7 @@ def test_ensure_workspace_ready_grants_engineering_head_gh_resolve_rules(
 def test_ensure_workspace_ready_does_not_grant_gh_to_non_eh_agents(
     test_settings, tmp_dir, runtime,
 ):
-    """Only EH resolves PRs/issues; workers stay on the narrow opc allowlist."""
+    """Only EH resolves PRs/issues; workers stay on the narrow grassland allowlist."""
     builder = ContextBuilder(test_settings, runtime, slug="test")
     workspace = tmp_dir / "workspaces" / "dev_agent"
     builder.ensure_workspace_ready(
@@ -103,7 +103,7 @@ def test_ensure_workspace_ready_does_not_grant_gh_to_non_eh_agents(
         system_prompt="You are the Dev Agent.",
     )
     data = json.loads((workspace / ".claude" / "settings.json").read_text())
-    assert data["permissions"]["allow"] == ["Bash(opc:*)"]
+    assert data["permissions"]["allow"] == ["Bash(grassland:*)"]
 
 
 def test_build_claude_md_contains_system_prompt(test_settings, tmp_dir, runtime):
@@ -287,11 +287,11 @@ def test_generated_claude_md_contains_kb_section(tmp_path):
     )
     body = (workspace / "CLAUDE.md").read_text()
     assert "## Knowledge Base" in body
-    assert "opc kb list" in body
-    assert "opc kb search" in body
-    assert "opc kb get" in body
-    assert "opc kb add --agent" in body
-    assert "opc kb update" in body
+    assert "grassland kb list" in body
+    assert "grassland kb search" in body
+    assert "grassland kb get" in body
+    assert "grassland kb add --agent" in body
+    assert "grassland kb update" in body
     assert "--from-file" in body
     assert "Consult" in body
     assert "Contribute" in body
@@ -309,7 +309,7 @@ def test_generated_claude_md_contains_task_recall_section(tmp_path):
     )
     body = (workspace / "CLAUDE.md").read_text()
     assert "## Task Recall" in body
-    assert "opc recall" in body
+    assert "grassland recall" in body
     assert "--tree" in body
     assert "--fetch-artifact" in body
     assert "task_history.md" in body

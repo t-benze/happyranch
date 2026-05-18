@@ -35,4 +35,4 @@ class OrgPaths:
 
     @property
     def db_path(self) -> Path:
-        return self.root / "opc.db"
+        return self.root / "grassland.db"

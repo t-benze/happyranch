@@ -39,5 +39,5 @@ export const meta = {
   import: "@/design-system/patterns/EmptyState",
   variants: {},
   consumes: ["components.empty_state"],
-  example: "<EmptyState title='No threads' body='Start one with opc threads compose.' />",
+  example: "<EmptyState title='No threads' body='Start one with grassland threads compose.' />",
 } as const;

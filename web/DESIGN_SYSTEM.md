@@ -1,4 +1,4 @@
-# DESIGN_SYSTEM.md — OPC Founder Console
+# DESIGN_SYSTEM.md — Grassland Founder Console
 
 **Status:** v0.1 — implementation contract. Supersedes the deleted `SHADCN_ADOPTION.md`.
 **Companion to:** `web/DESIGN.md` (token source of truth), `web/UI_SPEC.md` (per-screen UX),
@@ -8,7 +8,7 @@
 
 ## 1. Opening summary
 
-OPC's web UI is a localhost SPA used by exactly one human, every working day, for years.
+Grassland's web UI is a localhost SPA used by exactly one human, every working day, for years.
 That posture pushes us toward **Design System as Code**: every visual primitive lives
 in the repo as code we own, every screen is composed from a small vocabulary of named
 patterns, and an AI designer agent can author a new screen by reading a machine-readable
@@ -39,7 +39,7 @@ data layer. `features/<domain>/` stays, but its contents shrink to *compositions
 
 ---
 
-## 2. How this lands in the OPC worktree
+## 2. How this lands in the Grassland worktree
 
 ### Reconciliation with `ARCHITECTURE.md`'s three-layer rule
 
@@ -591,7 +591,7 @@ screen from UI_SPEC §§8–11.
 
 ---
 
-## 8. Prototype harness for OPC
+## 8. Prototype harness for Grassland
 
 ### Concept
 

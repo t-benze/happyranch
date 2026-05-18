@@ -16,7 +16,7 @@ from src.runtime import RuntimeDir
 
 
 def test_agent_writes_other_agent_reads(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("OPC_DAEMON_HOME", str(tmp_path / ".opc"))
+    monkeypatch.setenv("GRASSLAND_DAEMON_HOME", str(tmp_path / ".grassland"))
     from src.daemon import paths as paths_mod
     paths_mod.ensure_daemon_home()
     paths_mod.ensure_token()

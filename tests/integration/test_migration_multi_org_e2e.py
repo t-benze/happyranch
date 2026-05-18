@@ -4,7 +4,7 @@ Mirrors ``test_end_to_end.py`` and ``test_two_orgs_concurrent.py`` —
 direct ``httpx`` against the live daemon, no CLI subprocess. The plan
 (docs/superpowers/plans/2026-04-28-parallel-multi-org-runtime.md
 §Task 25) sketched the migration call as a subprocess invoking
-``opc migrate-to-multi-org``, but the CLI hard-requires a TTY (no
+``grassland migrate-to-multi-org``, but the CLI hard-requires a TTY (no
 ``--yes`` bypass; see ``cmd_migrate_to_multi_org`` in src/cli.py). The
 TTY gate is already covered by unit tests of the wrapper; what the
 integration test contributes is the *post-migration daemon serves* leg
@@ -38,8 +38,8 @@ def _build_v1_runtime_fixture(rt: Path, *, slug: str) -> None:
     migration script consumes.
 
     Layout:
-        <rt>/opc.yaml                    schema_version: 1, slug: <slug>
-        <rt>/opc.db                      real schema via Database()
+        <rt>/grassland.yaml                    schema_version: 1, slug: <slug>
+        <rt>/grassland.db                      real schema via Database()
         <rt>/org/teams.yaml              engineering team
         <rt>/org/agents/                 (empty — EH dispatch tolerates
                                          missing agent files in tests)
@@ -48,7 +48,7 @@ def _build_v1_runtime_fixture(rt: Path, *, slug: str) -> None:
         <rt>/talks/                      empty
     """
     rt.mkdir(parents=True)
-    (rt / "opc.yaml").write_text(yaml.safe_dump({
+    (rt / "grassland.yaml").write_text(yaml.safe_dump({
         "slug": slug,
         "schema_version": 1,
         "created_at": "2026-04-01T00:00:00Z",
@@ -71,8 +71,8 @@ def _build_v1_runtime_fixture(rt: Path, *, slug: str) -> None:
     (rt / "talks").mkdir()
 
     # Materialize the SQLite schema so the post-migration daemon can
-    # open the moved opc.db without surprises.
-    db = Database(rt / "opc.db")
+    # open the moved grassland.db without surprises.
+    db = Database(rt / "grassland.db")
     db.close()
 
 
@@ -120,7 +120,7 @@ def test_migrate_v1_runtime_then_daemon_serves_it(
 
     # 1. Build a v1-shape runtime on disk.
     _build_v1_runtime_fixture(rt, slug=slug)
-    assert yaml.safe_load((rt / "opc.yaml").read_text())["schema_version"] == 1
+    assert yaml.safe_load((rt / "grassland.yaml").read_text())["schema_version"] == 1
 
     # 2. Migrate in place.
     report = migrate_to_multi_org(rt, apply=True, i_have_a_backup=True)
@@ -131,10 +131,10 @@ def test_migrate_v1_runtime_then_daemon_serves_it(
     org_root = rt / "orgs" / slug
     assert (org_root / "org" / "teams.yaml").is_file()
     assert (org_root / "workspaces" / "engineering_head").is_dir()
-    assert (org_root / "opc.db").is_file()
+    assert (org_root / "grassland.db").is_file()
     assert not (rt / "org").exists()
-    assert not (rt / "opc.db").exists()
-    marker = yaml.safe_load((rt / "opc.yaml").read_text())
+    assert not (rt / "grassland.db").exists()
+    marker = yaml.safe_load((rt / "grassland.yaml").read_text())
     assert marker["schema_version"] == 2
     assert marker["type"] == "multi-org-runtime"
     assert "slug" not in marker
@@ -144,7 +144,7 @@ def test_migrate_v1_runtime_then_daemon_serves_it(
         '#!/usr/bin/env bash\n'
         'set -e\n'
         'task_id=$1; session_id=$2; agent=$3; org_slug=$4\n'
-        'opc report-completion --org "$org_slug" \\\n'
+        'grassland report-completion --org "$org_slug" \\\n'
         '  --task-id "$task_id" --session-id "$session_id" \\\n'
         '  --agent engineering_head --status completed --confidence 90 \\\n'
         '  --summary \'{"action":"done","summary":"ok"}\'\n'

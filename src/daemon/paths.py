@@ -1,4 +1,4 @@
-"""Locations under ``~/.opc/`` for daemon lifecycle state."""
+"""Locations under ``~/.grassland/`` for daemon lifecycle state."""
 from __future__ import annotations
 
 import os
@@ -6,16 +6,16 @@ import secrets
 import stat
 from pathlib import Path
 
-_DEFAULT_HOME = Path.home() / ".opc"
+_DEFAULT_HOME = Path.home() / ".grassland"
 
 
 def daemon_home() -> Path:
     """Return the directory the daemon stores its state in.
 
-    Honors the ``OPC_DAEMON_HOME`` environment variable for tests; falls
-    back to ``~/.opc/``.
+    Honors the ``GRASSLAND_DAEMON_HOME`` environment variable for tests; falls
+    back to ``~/.grassland/``.
     """
-    override = os.environ.get("OPC_DAEMON_HOME")
+    override = os.environ.get("GRASSLAND_DAEMON_HOME")
     return Path(override) if override else _DEFAULT_HOME
 
 

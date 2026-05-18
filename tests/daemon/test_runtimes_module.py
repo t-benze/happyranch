@@ -11,9 +11,9 @@ from src.runtime import RuntimeDir
 
 @pytest.fixture
 def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setenv("OPC_DAEMON_HOME", str(tmp_path / ".opc"))
+    monkeypatch.setenv("GRASSLAND_DAEMON_HOME", str(tmp_path / ".grassland"))
     paths_mod.ensure_daemon_home()
-    return tmp_path / ".opc"
+    return tmp_path / ".grassland"
 
 
 def _make_runtime(base: Path, name: str) -> Path:

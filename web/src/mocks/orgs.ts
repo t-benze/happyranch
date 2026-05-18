@@ -9,5 +9,5 @@ import type { OrgsListResponse } from '@/lib/api/types';
 export const MOCK_ORG_SLUG = 'demo-org';
 
 export const MOCK_ORGS: OrgsListResponse['orgs'] = [
-  { slug: MOCK_ORG_SLUG, root: '/var/opc/demo-org' },
+  { slug: MOCK_ORG_SLUG, root: '/var/grassland/demo-org' },
 ];

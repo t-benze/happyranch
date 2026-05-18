@@ -1,4 +1,4 @@
-# UI_SPEC.md — OPC Founder Console
+# UI_SPEC.md — Grassland Founder Console
 
 **Companion to:** `web/DESIGN.md` (tokens), `web/ARCHITECTURE.md` (layer rules), `docs/superpowers/specs/2026-05-14-web-ui-design.md` (the original web-UI design doc), `protocol/05e-dashboard.md` (informs the future Audit / Trends surface).
 
@@ -39,7 +39,7 @@ Three regions, fixed: a 48px TopBar, a flexible body, a 24px Statusbar. Every sc
 
 ```
 +--------------------------------------------------------------------------+
-| OPC  [hk-macau-tourism ▾]  Threads · Tasks · KB · Audit · Agents     ⏻ ◐|  48px  TopBar
+| Grassland  [hk-macau-tourism ▾]  Threads · Tasks · KB · Audit · Agents     ⏻ ◐|  48px  TopBar
 +--------------------------------------------------------------------------+
 |                                                                          |
 |                                                                          |
@@ -52,7 +52,7 @@ Three regions, fixed: a 48px TopBar, a flexible body, a 24px Statusbar. Every sc
 ```
 
 TopBar elements, left to right:
-- **Wordmark** "OPC" in `typography.h3` weight 600, tracking -0.005em. Click → routes to `/orgs/:slug/threads` (no separate "home").
+- **Wordmark** "Grassland" in `typography.h3` weight 600, tracking -0.005em. Click → routes to `/orgs/:slug/threads` (no separate "home").
 - **OrgSwitcher** — native `<select>` themed as a `components.select`, value = active slug. Shows slug only (not display name), mono in the trigger; on click opens to a list of `{slug — display_name}`. If exactly one org, the trigger is read-only static text in `typography.mono_md` colored `accent.default`.
 - **Nav row** — five tabs: Threads, Tasks, KB, Audit, Agents. Active tab uses `surface.raised` background + `text.primary`. Disabled tabs (Tasks, KB, Audit, Agents until shipped) use `text.muted` + `cursor: not-allowed` + tooltip "Coming soon."
 - **Right slot** — two icon-only ghost buttons: theme toggle (sun/moon, 16px) and density toggle (≡ vs ≣).
@@ -68,7 +68,7 @@ Statusbar elements, left to right:
 
 | State | Visual |
 |---|---|
-| No orgs in container | TopBar shows "OPC", nav disabled, body renders an EmptyState pointing at `opc orgs init` |
+| No orgs in container | TopBar shows "Grassland", nav disabled, body renders an EmptyState pointing at `grassland orgs init` |
 | One org | OrgSwitcher renders as static slug; no chevron |
 | Multiple orgs | OrgSwitcher opens dropdown |
 | Daemon offline | TopBar still renders; Statusbar dot turns red; body shows the global disconnected screen (§7) |
@@ -395,7 +395,7 @@ Five canonical empty states:
 
 | Where | Title | Body | CTA |
 |---|---|---|---|
-| Orgs list empty | "No orgs in this runtime." | "Initialize one with `opc orgs init <slug>`." | (none) |
+| Orgs list empty | "No orgs in this runtime." | "Initialize one with `grassland orgs init <slug>`." | (none) |
 | Inbox open, no threads | "No threads yet." | "Press `N` to compose, or have an agent dispatch one." | "+ New thread" |
 | Inbox filter, no match | "No threads match the filter." | (none) | "Clear filter" (ghost) |
 | Detail, none selected | "Select a thread from the inbox." | "Or press `N` to start a new one." | (none) |
@@ -412,7 +412,7 @@ The whole body of the app is replaced with an EmptyState variant:
 ```
                        ⚡
               Daemon unreachable
-        Is the OPC daemon running on this machine?
+        Is the Grassland daemon running on this machine?
 
            [ Try again ]   [ Show CLI command ]
 ```
@@ -437,7 +437,7 @@ Stays in the originating dialog or composer, with inline error in `tier.red`. A 
 
 ### Purpose
 
-Future surface for the task graph: every running, blocked, completed, and revisited task across the org. Equivalent to `opc tasks list` + `opc details <task_id>` + `opc events <task_id>`.
+Future surface for the task graph: every running, blocked, completed, and revisited task across the org. Equivalent to `grassland tasks list` + `grassland details <task_id>` + `grassland events <task_id>`.
 
 ### One-screen sketch
 
@@ -594,5 +594,5 @@ In v0.1: dark is the only mode actually shipped. The toggle is rendered, hits a 
 
 ### Density toggle
 
-Comfortable (default) ↔ Compact. Stored in `localStorage["opc.density"]`. Affects: InboxRow height, MessageList gap, audit-log row height. Does not affect message-body text size (we never make message bodies less legible).
+Comfortable (default) ↔ Compact. Stored in `localStorage["grassland.density"]`. Affects: InboxRow height, MessageList gap, audit-log row height. Does not affect message-body text size (we never make message bodies less legible).
 

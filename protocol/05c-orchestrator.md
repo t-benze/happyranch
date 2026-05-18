@@ -109,7 +109,7 @@ The Team is instantiated with the appropriate Task list each time. This is not s
 
 ### Approach: executor-native sandboxing + system prompt guardrails
 
-Agents run through their configured executor. Claude sessions use `claude --permission-mode auto` plus a narrow `Bash(opc:*)` allow rule for callbacks. Codex sessions use `codex exec` with the configured sandbox mode. Permissions are otherwise generous — agents can read, write, and execute within their workspace.
+Agents run through their configured executor. Claude sessions use `claude --permission-mode auto` plus a narrow `Bash(grassland:*)` allow rule for callbacks. Codex sessions use `codex exec` with the configured sandbox mode. Permissions are otherwise generous — agents can read, write, and execute within their workspace.
 
 **Founder-concern boundaries** (the only things that truly need restricting) are enforced through two layers:
 
@@ -166,7 +166,7 @@ There are four types of permission blocks, each handled differently:
 **Response**: Agent calls `escalate(category="novel", severity="medium", summary="...")` with its best assessment and a recommendation.
 **Task state**: Moves to `waiting_for_guidance`.
 **Orchestrator action**: Routes to founder. The agent's recommendation is included so the founder can often just approve/deny rather than research from scratch.
-**Resolution**: Founder runs `opc resolve-escalation` to clear the task and — when the ruling should bind future occurrences — writes a KB entry via `opc kb add` (with `source_task: <task-id>` in frontmatter) so the next agent finds the answer without re-escalating.
+**Resolution**: Founder runs `grassland resolve-escalation` to clear the task and — when the ruling should bind future occurrences — writes a KB entry via `grassland kb add` (with `source_task: <task-id>` in frontmatter) so the next agent finds the answer without re-escalating.
 
 ### Task state machine
 
@@ -175,7 +175,7 @@ There are four types of permission blocks, each handled differently:
 - **in_progress** — an agent subprocess is running *right now* for this task.
 - **blocked** — suspended, awaiting an external event. Requires `block_kind`:
   - `delegated` — waiting on one or more child tasks to terminate.
-  - `escalated` — waiting on the founder (via `opc resolve-escalation`).
+  - `escalated` — waiting on the founder (via `grassland resolve-escalation`).
 - **completed** — terminal, success.
 - **failed** — terminal, unsuccessful.
 

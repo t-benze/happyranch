@@ -41,7 +41,7 @@ def _seed_task(db: Database, task_id: str = "TASK-1") -> None:
 
 @pytest.mark.asyncio
 async def test_notify_escalated_sends_and_audits(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     _seed_task(db)
     fake = _FakeFeishuClient(sent=[], next_message_id="om_42")
     notifier = EscalationNotifier(
@@ -87,7 +87,7 @@ class _ExplodingFeishuClient:
 
 @pytest.mark.asyncio
 async def test_notify_escalated_swallows_send_failure(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     _seed_task(db)
     notifier = EscalationNotifier(
         slug="o", db=db, audit=AuditLogger(db),
@@ -105,7 +105,7 @@ async def test_notify_escalated_swallows_send_failure(tmp_path):
 
 @pytest.mark.asyncio
 async def test_notify_escalated_missing_task_is_no_op(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     fake = _FakeFeishuClient(sent=[])
     notifier = EscalationNotifier(
         slug="o", db=db, audit=AuditLogger(db),
@@ -138,7 +138,7 @@ class _ThreadReplyClient:
 
 @pytest.mark.asyncio
 async def test_send_parse_hint_replies_in_thread_and_audits(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     _seed_task(db)
     fake = _ThreadReplyClient(replies=[], next_message_id="om_hint_7")
     notifier = EscalationNotifier(
@@ -183,7 +183,7 @@ class _ExplodingThreadReplyClient:
 
 @pytest.mark.asyncio
 async def test_send_parse_hint_swallows_send_failure(tmp_path):
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     _seed_task(db)
     notifier = EscalationNotifier(
         slug="o", db=db, audit=AuditLogger(db),
@@ -205,7 +205,7 @@ async def test_send_parse_hint_swallows_send_failure(tmp_path):
 async def test_send_parse_hint_truncates_long_preview_in_body(tmp_path):
     """The hint body should display a bounded preview so an attacker (or a
     pasted novel) can't bloat the Feishu post payload arbitrarily."""
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     _seed_task(db)
     fake = _ThreadReplyClient(replies=[])
     notifier = EscalationNotifier(

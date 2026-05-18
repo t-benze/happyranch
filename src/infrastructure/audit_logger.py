@@ -249,7 +249,7 @@ class AuditLogger:
         """Record an agent-controlled mid-task progress note.
 
         Distinct from completion_report: this is a semantic checkpoint the
-        agent emits while still working. Used by `opc tail` and `opc details`
+        agent emits while still working. Used by `grassland tail` and `grassland details`
         to give the founder visibility into long-running tasks without
         waiting for the final completion callback.
         """
@@ -324,7 +324,7 @@ class AuditLogger:
         first-step context header.
 
         `actor` identifies the surface that triggered the revisit: "cli"
-        (HTTP route / opc revisit command) or "feishu-reply" (Feishu listener).
+        (HTTP route / grassland revisit command) or "feishu-reply" (Feishu listener).
         Defaults to "cli" for backward compatibility with existing callers.
         """
         self._db.insert_audit_log(

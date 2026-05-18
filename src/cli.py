@@ -1,4 +1,4 @@
-"""OPC — unified CLI for the multi-agent tourism organization."""
+"""Grassland — unified CLI for the multi-agent tourism organization."""
 from __future__ import annotations
 
 import argparse
@@ -26,7 +26,7 @@ def _ok(r) -> bool:
         pass
     code = detail.get("code")
     if code == "no_active_runtime":
-        print("No active runtime. Run `opc use <runtime-path>` first (see `opc init`).")
+        print("No active runtime. Run `grassland use <runtime-path>` first (see `grassland init`).")
     elif code == "active_tasks_in_flight":
         print(f"Cannot proceed: tasks still in flight ({detail.get('task_ids')}).")
     elif code == "unknown_session":
@@ -49,7 +49,7 @@ def resolve_org_slug(*, args_org: str | None, available: list[str]) -> str:
     """Resolve the per-command --org per the spec §7.4 chain."""
     if args_org:
         return args_org
-    env = os.environ.get("OPC_ORG_SLUG")
+    env = os.environ.get("GRASSLAND_ORG_SLUG")
     if env:
         return env
     if len(available) == 1:
@@ -57,7 +57,7 @@ def resolve_org_slug(*, args_org: str | None, available: list[str]) -> str:
     if not available:
         print(
             "error: no orgs registered yet\n"
-            "create one with: opc orgs init <slug> [--from <example-path>]",
+            "create one with: grassland orgs init <slug> [--from <example-path>]",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -199,8 +199,8 @@ def _fmt_ts(iso: str | None, *, date_only: bool = False) -> str:
 def cmd_run(args: argparse.Namespace) -> None:
     """Submit a task and return immediately.
 
-    The CLI does not stream events. Use `opc tail <task_id>` to attach to
-    a running task, or `opc details <task_id>` for a snapshot.
+    The CLI does not stream events. Use `grassland tail <task_id>` to attach to
+    a running task, or `grassland details <task_id>` for a snapshot.
     """
     try:
         client = OpcClient.from_env()
@@ -229,7 +229,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     if not _ok(r):
         return
     task_id = r.json()["task_id"]
-    print(f"Submitted {task_id}. Attach with: opc tail {task_id}")
+    print(f"Submitted {task_id}. Attach with: grassland tail {task_id}")
 
 
 def cmd_tail(args: argparse.Namespace) -> None:
@@ -263,12 +263,12 @@ def _stream_task_events(client: OpcClient, slug: str, task_id: str) -> None:
                 return
     except httpx.HTTPStatusError as exc:
         # OpcClient.stream calls raise_for_status(), so a 404 (e.g. unknown
-        # task id from `opc tail`) lands here. Surface a clean message instead
+        # task id from `grassland tail`) lands here. Surface a clean message instead
         # of an httpx traceback.
         print(f"Error: stream failed for {task_id} ({exc.response.status_code})")
         sys.exit(1)
     except KeyboardInterrupt:
-        print(f"\nDetached. Reattach with: opc tail {task_id}")
+        print(f"\nDetached. Reattach with: grassland tail {task_id}")
 
 
 def cmd_tasks(args: argparse.Namespace) -> None:
@@ -389,7 +389,7 @@ def cmd_details(args: argparse.Namespace) -> None:
             )
             # Inline the progress message so a long-running task's history
             # reads as a story instead of a sequence of identical "progress"
-            # rows. Other actions stay terse — payload is in `opc audit --json`.
+            # rows. Other actions stay terse — payload is in `grassland audit --json`.
             if log["action"] == "progress":
                 msg = (log.get("payload") or {}).get("message", "")
                 if msg:
@@ -635,8 +635,8 @@ def _completion_payload_from_file(path: str) -> tuple[str, dict]:
 
     Agents use this path because multi-line bash commands (backslash
     continuations) count as separate subcommands under Claude Code's
-    permission model, which breaks the narrow ``Bash(opc:*)`` allow rule.
-    Writing a JSON file and invoking `opc report-completion --from-file
+    permission model, which breaks the narrow ``Bash(grassland:*)`` allow rule.
+    Writing a JSON file and invoking `grassland report-completion --from-file
     <path>` keeps the tool call a single line.
 
     Returns ``(task_id, body)`` shaped for the daemon's completion endpoint.
@@ -883,7 +883,7 @@ def cmd_progress(args: argparse.Namespace) -> None:
     """Agent callback: emit a mid-task progress note.
 
     Single-arg flow only — message text is short enough that a JSON file
-    isn't needed. The Bash(opc:*) baseline allow rule matches the whole
+    isn't needed. The Bash(grassland:*) baseline allow rule matches the whole
     invocation as one line.
     """
     if not args.org:
@@ -909,7 +909,7 @@ def cmd_progress(args: argparse.Namespace) -> None:
 def _manage_repo_payload_from_file(path: str) -> tuple[str, dict]:
     """Load a manage-repo payload from a JSON file.
 
-    Same pattern as report-completion: single-line `opc` invocation avoids
+    Same pattern as report-completion: single-line `grassland` invocation avoids
     Claude Code's permission matcher splitting on newlines.
 
     Returns ``(agent, body)`` shaped for the daemon's manage-repo endpoint.
@@ -1033,7 +1033,7 @@ def cmd_manage_agent(args: argparse.Namespace) -> None:
 def _dispatch_payload_from_file(path: str) -> dict:
     """Load a talk-dispatch payload from a JSON file.
 
-    Same single-line `opc` constraint as the other agent callbacks. Required
+    Same single-line `grassland` constraint as the other agent callbacks. Required
     keys: ``talk_id`` (used in the URL path) and ``brief`` (the new task's
     description). Optional: ``target_agent``, ``team``.
     """
@@ -1152,7 +1152,7 @@ def cmd_backfill_enrollments(args: argparse.Namespace) -> None:
     reports all agents as already enrolled.
     """
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        print("opc backfill-enrollments requires an interactive terminal (no --yes bypass).")
+        print("grassland backfill-enrollments requires an interactive terminal (no --yes bypass).")
         sys.exit(1)
 
     print("About to backfill the enrollment registry (founder-initiated).")
@@ -1396,8 +1396,8 @@ def cmd_talk_start(args: argparse.Namespace) -> None:
             print(
                 f"An open talk with {args.agent} already exists: "
                 f"{detail['prior_open_talk_id']} (started {_fmt_ts(detail.get('prior_started_at'))}). "
-                f"Use `opc talk resume --talk-id {detail['prior_open_talk_id']}` "
-                f"or `opc talk abandon --talk-id {detail['prior_open_talk_id']} --reason orphan`."
+                f"Use `grassland talk resume --talk-id {detail['prior_open_talk_id']}` "
+                f"or `grassland talk abandon --talk-id {detail['prior_open_talk_id']} --reason orphan`."
             )
             sys.exit(1)
     if not _ok(r):
@@ -1518,19 +1518,19 @@ def cmd_talk_show(args: argparse.Namespace) -> None:
 
 
 def cmd_threads_tui(args: argparse.Namespace) -> None:
-    """Stub left in place for `opc threads` (no subcommand).
+    """Stub left in place for `grassland threads` (no subcommand).
 
     The Textual TUI was removed in favor of the web UI. This handler now
-    prints a one-liner pointing the founder at `opc web` and exits 0 so
-    muscle memory typing `opc threads` doesn't error.
+    prints a one-liner pointing the founder at `grassland web` and exits 0 so
+    muscle memory typing `grassland threads` doesn't error.
     """
     del args  # unused
-    print("opc threads — the TUI was removed. Use `opc web` for the threads inbox.")
-    print("CLI subcommands (compose, list, show, send, …) still work — see `opc threads --help`.")
+    print("grassland threads — the TUI was removed. Use `grassland web` for the threads inbox.")
+    print("CLI subcommands (compose, list, show, send, …) still work — see `grassland threads --help`.")
 
 
 def cmd_web(args: argparse.Namespace) -> None:
-    """Open the OPC web UI in the default browser."""
+    """Open the Grassland web UI in the default browser."""
     import webbrowser
 
     client = OpcClient.from_env()
@@ -1545,7 +1545,7 @@ def cmd_web(args: argparse.Namespace) -> None:
         print(f"error: daemon /health returned {r.status_code}", file=sys.stderr)
         sys.exit(2)
     url = client.base_url.rstrip("/") + "/"
-    print(f"opc web → {url}")
+    print(f"grassland web → {url}")
     if args.no_open:
         from urllib.parse import urlparse
         import socket
@@ -1918,7 +1918,7 @@ def cmd_revisit(args: argparse.Namespace) -> None:
     predecessor's brief, with the team manager gated on an audit-log-backed
     context header. TTY-gated — no --yes bypass."""
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        print("opc revisit requires an interactive terminal (no --yes bypass).")
+        print("grassland revisit requires an interactive terminal (no --yes bypass).")
         sys.exit(1)
 
     if args.note_file:
@@ -1941,7 +1941,7 @@ def cmd_revisit(args: argparse.Namespace) -> None:
     )
     print(
         "The team manager for the new root can inspect the old lineage via "
-        "`opc details` / `opc audit` / `opc recall`."
+        "`grassland details` / `grassland audit` / `grassland recall`."
     )
     reply = input("Continue? [y/N] ").strip().lower()
     if reply not in ("y", "yes"):
@@ -1992,11 +1992,11 @@ def cmd_revisit(args: argparse.Namespace) -> None:
         f"Created {new_id} (predecessor: {body['predecessor_root_task_id']}, "
         f"flagged: {body['flagged_task_id']})."
     )
-    print(f"Submitted {new_id}. Attach with: opc tail {new_id}")
+    print(f"Submitted {new_id}. Attach with: grassland tail {new_id}")
 
 
 def cmd_migrate_to_org_runtime(args: argparse.Namespace) -> int:
-    """`opc migrate-to-org-runtime <path> --slug <slug> --i-have-a-backup [--apply]`."""
+    """`grassland migrate-to-org-runtime <path> --slug <slug> --i-have-a-backup [--apply]`."""
     from src.orchestrator.migration import migrate_to_org_runtime
     try:
         result = migrate_to_org_runtime(
@@ -2027,7 +2027,7 @@ def cmd_migrate_to_org_runtime(args: argparse.Namespace) -> int:
 
 
 def cmd_migrate_to_multi_org(args: argparse.Namespace) -> None:
-    """`opc migrate-to-multi-org <path> --i-have-a-backup [--apply]`."""
+    """`grassland migrate-to-multi-org <path> --i-have-a-backup [--apply]`."""
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print("refusing to migrate without an attached terminal", file=sys.stderr)
         sys.exit(1)
@@ -2065,7 +2065,7 @@ def cmd_migrate_to_multi_org(args: argparse.Namespace) -> None:
     print(f"migrated. new layout:")
     print(f"  {rt}/orgs/{report['slug']}/")
     print(f"\nnext step:")
-    print(f"  uv run opc init-agent --org {report['slug']}")
+    print(f"  uv run grassland init-agent --org {report['slug']}")
 
 
 # ── parser ───────────────────────────────────────────────────
@@ -2073,28 +2073,28 @@ def cmd_migrate_to_multi_org(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="opc",
-        description="OPC — multi-agent tourism organization CLI",
+        prog="grassland",
+        description="Grassland — multi-agent tourism organization CLI",
     )
     sub = parser.add_subparsers(dest="command")
 
-    # opc init
+    # grassland init
     p_init_runtime = sub.add_parser(
         "init", help="create + register a multi-org runtime container",
     )
     p_init_runtime.add_argument("path", help="Path for the new runtime container")
     p_init_runtime.set_defaults(func=cmd_init)
 
-    # opc runtime
+    # grassland runtime
     p_runtime = sub.add_parser("runtime", help="show the active runtime")
     p_runtime.set_defaults(func=cmd_runtime)
 
-    # opc use
+    # grassland use
     p_use = sub.add_parser("use", help="switch the active runtime container")
     p_use.add_argument("path", help="Path of an already-registered runtime")
     p_use.set_defaults(func=cmd_use)
 
-    # opc orgs
+    # grassland orgs
     p_orgs = sub.add_parser("orgs", help="manage orgs in the active runtime")
     p_orgs.set_defaults(orgs_cmd="list", func=cmd_orgs)
     orgs_sub = p_orgs.add_subparsers(dest="orgs_cmd")
@@ -2117,9 +2117,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_orgs_unload.add_argument("slug")
     p_orgs_unload.set_defaults(func=cmd_orgs_unload)
 
-    # opc run
+    # grassland run
     p_run = sub.add_parser("run", help="Run a task")
-    p_run.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_run.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_run.add_argument(
         "--team", default=None,
         help="Team to route the task to (default: engineering)",
@@ -2132,9 +2132,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_run.set_defaults(func=cmd_run)
 
-    # opc details
+    # grassland details
     p_details = sub.add_parser("details", help="Show task details")
-    p_details.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_details.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_details.add_argument("task_id", help="Task ID (e.g. TASK-001)")
     p_details.add_argument(
         "--full",
@@ -2143,29 +2143,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_details.set_defaults(func=cmd_details)
 
-    # opc tail
+    # grassland tail
     p_tail = sub.add_parser("tail", help="Stream events for an existing task")
-    p_tail.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_tail.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_tail.add_argument("task_id", help="Task ID")
     p_tail.set_defaults(func=cmd_tail)
 
-    # opc tasks
+    # grassland tasks
     p_tasks = sub.add_parser("tasks", help="List recent tasks")
-    p_tasks.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_tasks.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_tasks.add_argument("--limit", type=int, default=20, help="Max tasks to show")
     p_tasks.set_defaults(func=cmd_tasks)
 
-    # opc agents
+    # grassland agents
     p_agents = sub.add_parser("agents", help="Show agent performance tiers")
-    p_agents.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_agents.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_agents.add_argument("agent", nargs="?", default=None,
                           help="Optional agent name; show that agent's scorecard only")
     p_agents.add_argument("--detail", action="store_true", help="Show detailed scorecards")
     p_agents.set_defaults(func=cmd_agents)
 
-    # opc audit
+    # grassland audit
     p_audit = sub.add_parser("audit", help="Show filtered audit-log entries")
-    p_audit.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_audit.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_audit.add_argument("task_id", nargs="?", default=None,
                          help="Optional task id to filter by (e.g. TASK-007)")
     p_audit.add_argument("--agent", default=None, help="Filter by agent name")
@@ -2179,13 +2179,13 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Emit raw JSON instead of the human-readable table")
     p_audit.set_defaults(func=cmd_audit)
 
-    # opc tokens
+    # grassland tokens
     p_tokens = sub.add_parser(
         "tokens",
         help="Show per-session token usage (or rollups via --by-agent / --by-task)",
     )
     p_tokens.add_argument("--org", default=None,
-                          help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+                          help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_tokens.add_argument("--task-id", dest="task_id", default=None,
                           help="Filter by task id (e.g. TASK-007)")
     p_tokens.add_argument("--agent", default=None, help="Filter by agent name")
@@ -2202,14 +2202,14 @@ def build_parser() -> argparse.ArgumentParser:
                                 help="Rollup: one row per task")
     p_tokens.set_defaults(func=cmd_tokens)
 
-    # opc init-agent
+    # grassland init-agent
     p_init_agent = sub.add_parser("init-agent", help="Initialize agent workspaces with system prompts and repo clone")
-    p_init_agent.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_init_agent.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_init_agent.add_argument("agent", nargs="?", default=None,
                         help="Specific agent to initialize (default: all)")
     p_init_agent.set_defaults(func=cmd_init_agent)
 
-    # opc manage-repo
+    # grassland manage-repo
     p_repo = sub.add_parser("manage-repo", help="Add, remove, or update a repo in an agent's config")
     p_repo.add_argument("--org", required=True, help="Org slug (required for agent callbacks)")
     p_repo.add_argument("action", nargs="?", default=None, choices=["add", "remove", "update"],
@@ -2221,7 +2221,7 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Path to JSON file with action/agent/repo_name/url keys")
     p_repo.set_defaults(func=cmd_manage_repo)
 
-    # opc manage-agent
+    # grassland manage-agent
     p_ma = sub.add_parser("manage-agent", help="Enroll, update, or terminate an agent")
     p_ma.add_argument("--org", required=True, help="Org slug (required for agent callbacks)")
     p_ma.add_argument("action", nargs="?", default=None, choices=["enroll", "update", "terminate"])
@@ -2237,7 +2237,7 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Path to JSON file with enrollment payload")
     p_ma.set_defaults(func=cmd_manage_agent)
 
-    # opc dispatch
+    # grassland dispatch
     p_dispatch = sub.add_parser("dispatch", help="Dispatch a new task from an open talk")
     p_dispatch.add_argument("--org", required=True, help="Org slug (required for agent callbacks)")
     p_dispatch.add_argument(
@@ -2246,25 +2246,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_dispatch.set_defaults(func=cmd_dispatch)
 
-    # opc enrollments
+    # grassland enrollments
     p_enroll = sub.add_parser("enrollments", help="List agent enrollment requests")
-    p_enroll.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_enroll.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_enroll.add_argument("--status", default=None, choices=["pending", "approved", "rejected", "terminated"])
     p_enroll.set_defaults(func=cmd_enrollments)
 
-    # opc approve-agent
+    # grassland approve-agent
     p_approve = sub.add_parser("approve-agent", help="Approve a pending agent enrollment")
-    p_approve.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_approve.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_approve.add_argument("name", help="Agent name to approve")
     p_approve.set_defaults(func=cmd_approve_agent)
 
-    # opc reject-agent
+    # grassland reject-agent
     p_reject = sub.add_parser("reject-agent", help="Reject a pending agent enrollment")
-    p_reject.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_reject.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_reject.add_argument("name", help="Agent name to reject")
     p_reject.set_defaults(func=cmd_reject_agent)
 
-    # opc backfill-enrollments — founder recovery op; TTY-gated; no --yes.
+    # grassland backfill-enrollments — founder recovery op; TTY-gated; no --yes.
     p_backfill = sub.add_parser(
         "backfill-enrollments",
         help=(
@@ -2272,15 +2272,15 @@ def build_parser() -> argparse.ArgumentParser:
             "(founder; TTY-gated)"
         ),
     )
-    p_backfill.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_backfill.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_backfill.set_defaults(func=cmd_backfill_enrollments)
 
-    # opc recall
+    # grassland recall
     p_recall = sub.add_parser(
         "recall",
         help="Recall a task: brief, outcome, optional artifact contents",
     )
-    p_recall.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_recall.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_recall.add_argument("task_id", help="Task ID (e.g. TASK-001)")
     p_recall.add_argument("--tree", action="store_true",
                           help="Include the full subtree of child tasks")
@@ -2295,7 +2295,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--from-file", dest="from_file", default=None,
         help="Path to a JSON file containing the completion payload. "
              "Preferred by agents — keeps the tool call a single line so "
-             "Claude Code's Bash(opc:*) allow rule matches. Keys: task_id, "
+             "Claude Code's Bash(grassland:*) allow rule matches. Keys: task_id, "
              "session_id, agent, status, summary (required), plus optional "
              "confidence, risks, dependencies, reviewer_focus.",
     )
@@ -2316,7 +2316,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_learn = sub.add_parser("learning", help="Per-agent learnings (verb-dispatched)")
     learn_sub = p_learn.add_subparsers(dest="learn_verb")
 
-    # Agent callback: `opc learning --org <slug> --agent X --text "..."`
+    # Agent callback: `grassland learning --org <slug> --agent X --text "..."`
     p_learn.add_argument("--org", required=True)
     p_learn.add_argument("--agent", required=False)
     p_learn.add_argument("--text", required=False)
@@ -2396,23 +2396,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_prog.set_defaults(func=cmd_progress)
 
-    # opc kb ...
+    # grassland kb ...
     p_kb = sub.add_parser("kb", help="Shared knowledge base")
     kb_sub = p_kb.add_subparsers(dest="kb_command", required=True)
 
     p_kb_list = kb_sub.add_parser("list", help="List KB entries")
-    p_kb_list.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_kb_list.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_kb_list.add_argument("--topic")
     p_kb_list.add_argument("--type", help="Filter by type label (freeform)")
     p_kb_list.set_defaults(func=cmd_kb_list)
 
     p_kb_get = kb_sub.add_parser("get", help="Read a KB entry")
-    p_kb_get.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_kb_get.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_kb_get.add_argument("slug")
     p_kb_get.set_defaults(func=cmd_kb_get)
 
     p_kb_search = kb_sub.add_parser("search", help="Search KB entries")
-    p_kb_search.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_kb_search.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_kb_search.add_argument("query")
     p_kb_search.add_argument("--limit", type=int, default=20)
     p_kb_search.add_argument("--json", action="store_true")
@@ -2441,54 +2441,54 @@ def build_parser() -> argparse.ArgumentParser:
     p_kb_delete.set_defaults(func=cmd_kb_delete)
 
     p_kb_reindex = kb_sub.add_parser("reindex", help="Regenerate _index.md")
-    p_kb_reindex.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_kb_reindex.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_kb_reindex.set_defaults(func=cmd_kb_reindex)
 
-    # opc talk ...
+    # grassland talk ...
     p_talk = sub.add_parser("talk", help="Founder↔agent conversation flow")
     talk_sub = p_talk.add_subparsers(dest="talk_command", required=True)
 
     p_talk_start = talk_sub.add_parser("start", help="Start a new talk")
-    p_talk_start.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_talk_start.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_talk_start.add_argument("--agent", required=True)
     p_talk_start.set_defaults(func=cmd_talk_start)
 
     p_talk_resume = talk_sub.add_parser("resume", help="Resume an open talk")
-    p_talk_resume.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_talk_resume.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_talk_resume.add_argument("--talk-id", required=True)
     p_talk_resume.set_defaults(func=cmd_talk_resume)
 
     p_talk_abandon = talk_sub.add_parser("abandon", help="Abandon an open talk")
-    p_talk_abandon.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_talk_abandon.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_talk_abandon.add_argument("--talk-id", required=True)
     p_talk_abandon.add_argument("--reason", default="manual")
     p_talk_abandon.set_defaults(func=cmd_talk_abandon)
 
     p_talk_end = talk_sub.add_parser("end", help="End a talk (agent callback)")
-    p_talk_end.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_talk_end.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_talk_end.add_argument("--talk-id", required=True)
     p_talk_end.add_argument("--from-file", required=True)
     p_talk_end.set_defaults(func=cmd_talk_end)
 
     p_talk_status = talk_sub.add_parser("status", help="List open talks")
-    p_talk_status.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_talk_status.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_talk_status.add_argument("--agent")
     p_talk_status.set_defaults(func=cmd_talk_status)
 
     p_talk_list = talk_sub.add_parser("list", help="List recent talks")
-    p_talk_list.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_talk_list.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_talk_list.add_argument("--agent")
     p_talk_list.add_argument("--limit", type=int, default=20)
     p_talk_list.set_defaults(func=cmd_talk_list)
 
     p_talk_show = talk_sub.add_parser("show", help="Show a talk's metadata + transcript")
-    p_talk_show.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_talk_show.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_talk_show.add_argument("talk_id")
     p_talk_show.add_argument("--json", action="store_true", help="Emit raw JSON instead of human output")
     p_talk_show.set_defaults(func=cmd_talk_show)
 
-    # opc web — open the browser console
-    p_web = sub.add_parser("web", help="Open the OPC web UI in the default browser")
+    # grassland web — open the browser console
+    p_web = sub.add_parser("web", help="Open the Grassland web UI in the default browser")
     p_web.add_argument(
         "--no-open",
         action="store_true",
@@ -2496,9 +2496,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_web.set_defaults(func=cmd_web)
 
-    # opc threads — agent-facing callbacks + founder compose/list
+    # grassland threads — agent-facing callbacks + founder compose/list
     p_threads = sub.add_parser("threads", help="Thread operations (compose, reply, decline, dispatch, close-out)")
-    p_threads.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_threads.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_threads.set_defaults(func=cmd_threads_tui)
     threads_sub = p_threads.add_subparsers(dest="threads_command", required=False)
 
@@ -2583,15 +2583,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_threads_forward.add_argument("--subject", default=None)
     p_threads_forward.set_defaults(func=cmd_threads_forward)
 
-    # opc resolve-escalation
+    # grassland resolve-escalation
     p_resolve = sub.add_parser("resolve-escalation", help="Resolve an escalated task (founder only)")
-    p_resolve.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_resolve.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_resolve.add_argument("--task-id", required=True)
     p_resolve.add_argument("--decision", required=True, choices=["approve", "reject"])
     p_resolve.add_argument("--rationale", required=True)
     p_resolve.set_defaults(func=cmd_resolve_escalation)
 
-    # opc cancel — founder-initiated; cascades by default.
+    # grassland cancel — founder-initiated; cascades by default.
     p_cancel = sub.add_parser(
         "cancel",
         help="Cancel a task (founder): SIGTERMs live subprocesses and cascades down the subtree",
@@ -2599,7 +2599,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_cancel.add_argument("task_id", help="Task ID to cancel (e.g. TASK-052)")
     p_cancel.add_argument(
         "--org", default=None,
-        help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)",
+        help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)",
     )
     p_cancel.add_argument(
         "--rationale", default="",
@@ -2612,7 +2612,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_cancel.set_defaults(func=cmd_cancel)
 
-    # opc revisit — founder-initiated; TTY-gated; no --yes flag by design.
+    # grassland revisit — founder-initiated; TTY-gated; no --yes flag by design.
     p_revisit = sub.add_parser(
         "revisit",
         help=(
@@ -2620,7 +2620,7 @@ def build_parser() -> argparse.ArgumentParser:
             "(founder; TTY-gated)"
         ),
     )
-    p_revisit.add_argument("--org", default=None, help="Org slug (or set OPC_ORG_SLUG; auto-inferred when only one org)")
+    p_revisit.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_revisit.add_argument("task_id", help="Any task id in the lineage to revisit")
     p_revisit_note = p_revisit.add_mutually_exclusive_group()
     p_revisit_note.add_argument(
@@ -2641,7 +2641,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_revisit.set_defaults(func=cmd_revisit)
 
-    # opc migrate-to-org-runtime — one-shot migration for pre-org-cut runtimes.
+    # grassland migrate-to-org-runtime — one-shot migration for pre-org-cut runtimes.
     mig = sub.add_parser(
         "migrate-to-org-runtime",
         help="One-shot: migrate <runtime>/teams.yaml + agent_enrollments → <runtime>/org/.",
@@ -2654,7 +2654,7 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Execute the migration. Without this, the command is a dry run.")
     mig.set_defaults(func=cmd_migrate_to_org_runtime)
 
-    # opc migrate-to-multi-org — convert v1 single-org runtime → v2 multi-org container.
+    # grassland migrate-to-multi-org — convert v1 single-org runtime → v2 multi-org container.
     mig2 = sub.add_parser(
         "migrate-to-multi-org",
         help="convert a v1 single-org runtime into a v2 multi-org container",

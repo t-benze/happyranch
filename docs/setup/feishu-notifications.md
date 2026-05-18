@@ -1,7 +1,7 @@
 # Feishu Notification Setup
 
 This runbook walks you through enabling Feishu push notifications for
-escalations in an OPC org.
+escalations in an Grassland org.
 
 ## 1. Create a self-built app
 
@@ -43,7 +43,7 @@ resp = client.im.v1.chat.list(ListChatRequest.builder().build())
 print(resp.data.items)
 ```
 
-## 5. Configure OPC
+## 5. Configure Grassland
 
 Edit `<runtime>/orgs/<slug>/org/config.yaml` to add the `feishu_notifications`
 block with your app credentials:
@@ -74,6 +74,6 @@ INFO src.daemon.feishu_listener: started Feishu event listener for org=<slug>
 
 ## 6. Test
 
-Trigger an escalation (e.g. via `opc revisit ...` to a stuck task) and
+Trigger an escalation (e.g. via `grassland revisit ...` to a stuck task) and
 confirm the bot posts in your chat. Reply with `APPROVE\nlooks fine` and
 confirm the task transitions to `pending`.

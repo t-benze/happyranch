@@ -12,7 +12,7 @@ def org_with_failed_task(tmp_path: Path):
     from src.infrastructure.database import Database
     from src.models import TaskRecord, TaskStatus
 
-    db = Database(tmp_path / "opc.db")
+    db = Database(tmp_path / "grassland.db")
     db.insert_task(TaskRecord(
         id="TASK-1", brief="ferry scraper", team="engineering",
         assigned_agent="manager", status=TaskStatus.FAILED,

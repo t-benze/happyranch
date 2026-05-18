@@ -2,7 +2,7 @@
 
 Mirrors the bootstrap + lifecycle pattern of ``test_talk_flow_e2e.py``
 and ``test_end_to_end.py``. The dispatch HTTP call simulates the agent
-calling ``opc dispatch`` from inside an open talk; the daemon enqueues
+calling ``grassland dispatch`` from inside an open talk; the daemon enqueues
 the new task and the worker pool drives it under fake-claude until it
 reaches a terminal status.
 
@@ -113,7 +113,7 @@ def test_worker_self_dispatch_runs_to_completion(
         '#!/usr/bin/env bash\n'
         'set -e\n'
         'task_id=$1; session_id=$2; agent=$3; org_slug=$4\n'
-        'opc report-completion --org "$org_slug" \\\n'
+        'grassland report-completion --org "$org_slug" \\\n'
         '  --task-id "$task_id" --session-id "$session_id" \\\n'
         '  --agent "$agent" --status completed --confidence 90 \\\n'
         '  --summary "dispatched task done"\n'

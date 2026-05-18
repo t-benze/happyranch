@@ -13,10 +13,10 @@ from typing import TYPE_CHECKING, Protocol
 if TYPE_CHECKING:
     from src.daemon.state import DaemonState
 
-logger = logging.getLogger("opc.daemon.queue")
+logger = logging.getLogger("grassland.daemon.queue")
 
 # Heartbeat cadence while a subprocess is alive. Independent of the
-# session timeout (1800s) — small enough that `opc details` shows recent
+# session timeout (1800s) — small enough that `grassland details` shows recent
 # liveness for long-running tasks, large enough that we don't flood the
 # audit DB with unrelated writes.
 HEARTBEAT_INTERVAL_SECONDS = 30

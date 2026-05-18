@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from src.daemon.state import DaemonState
 
-logger = logging.getLogger("opc.daemon.dispatcher")
+logger = logging.getLogger("grassland.daemon.dispatcher")
 
 
 class Dispatcher:

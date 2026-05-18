@@ -81,7 +81,7 @@ async def _lifespan(app: FastAPI):
 
 
 def create_app(state: DaemonState) -> FastAPI:
-    app = FastAPI(title="OPC Daemon", version="0.2.0", lifespan=_lifespan)
+    app = FastAPI(title="Grassland Daemon", version="0.2.0", lifespan=_lifespan)
     app.state.daemon = state
     app.include_router(health.router, prefix="/api/v1")
     app.include_router(auth.router, prefix="/api/v1")

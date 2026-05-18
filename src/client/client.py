@@ -9,7 +9,7 @@ from src.daemon import paths
 
 
 class DaemonNotRunning(RuntimeError):
-    """Raised when ~/.opc/daemon.port is missing."""
+    """Raised when ~/.grassland/daemon.port is missing."""
 
 
 class DaemonStateInconsistent(RuntimeError):
