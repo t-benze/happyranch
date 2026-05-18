@@ -66,9 +66,13 @@ async def test_notify_escalated_sends_and_audits(tmp_path):
     assert "hk-macau-tourism" in sent["title"]
     body_text = "\n".join(sent["body_lines"])
     assert "Add Alipay support" in body_text
+    assert "Two delegation rounds failed" in body_text
     assert "Manager requested founder authority" in body_text
-    assert "APPROVE" in body_text
-    assert "REJECT" in body_text
+    assert "Escalation reason:" in body_text
+    # Verbose action instructions were removed — founder reads APPROVE/REJECT
+    # grammar from the parse-hint sent only when their reply fails to parse.
+    assert "APPROVE" not in body_text
+    assert "REJECT" not in body_text
 
     row = db.get_escalation_notification("om_42")
     assert row is not None

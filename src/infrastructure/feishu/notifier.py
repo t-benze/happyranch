@@ -63,23 +63,14 @@ def _build_body_phase1(
     task_id: str,
     brief: str,
     reason: str,
+    last_summary: str = "",
 ) -> tuple[str, list[str]]:
     """Return (title, body_lines) for the post-format payload."""
     title = f"[Grassland {slug}] {task_id} escalated — action required"
-    lines = [
-        "Brief:",
-        brief,
-        "",
-        "Result:",
-        reason,
-        "",
-        "Action — reply in this thread:",
-        "  APPROVE",
-        "  <your rationale>",
-        "or",
-        "  REJECT",
-        "  <your rationale>",
-    ]
+    lines = ["Brief:", brief]
+    if last_summary:
+        lines += ["", "Result:", last_summary]
+    lines += ["", "Escalation reason:", reason]
     return title, lines
 
 
@@ -147,6 +138,7 @@ class EscalationNotifier:
                 task_id=task_id,
                 brief=brief,
                 reason=reason,
+                last_summary=last_summary,
             )
             message_id = self._client.send_post_message(
                 chat_id=self._config.chat_id,
