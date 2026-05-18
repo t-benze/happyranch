@@ -64,6 +64,29 @@ export interface TaskRecord {
 }
 
 // ---------------------------------------------------------------------------
+// Task events (SSE tail)
+// ---------------------------------------------------------------------------
+
+export interface TaskEvent {
+  type: string;
+  timestamp: string;
+  task_id?: string;
+  agent?: string | null;
+  payload?: Record<string, unknown> | null;
+  [extra: string]: unknown;
+}
+
+export interface TaskRecallNode {
+  task_id: string;
+  team: string;
+  brief: string;
+  status: TaskStatus;
+  output_summary?: string | null;
+  children: TaskRecallNode[];
+  [extra: string]: unknown;
+}
+
+// ---------------------------------------------------------------------------
 // Talks
 // ---------------------------------------------------------------------------
 
