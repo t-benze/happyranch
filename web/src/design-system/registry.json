@@ -235,13 +235,28 @@
           "open",
           "archiving",
           "archived",
-          "abandoned"
+          "abandoned",
+          "pending",
+          "in_progress",
+          "blocked",
+          "completed",
+          "failed"
         ]
       },
       "consumes": [
         "components.badge"
       ],
       "example": "<StatusBadge status='open' />"
+    },
+    {
+      "name": "TaskCard",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/TaskCard",
+      "variants": {},
+      "consumes": [
+        "components.badge"
+      ],
+      "example": "<TaskCard task={task} to='/orgs/x/tasks/TASK-001' />"
     },
     {
       "name": "Tabs",
