@@ -11,9 +11,13 @@ const SLUG = 'alpha';
 function mountAt(route: string) {
   // Most ThreadsPage tests don't need a real org list — but the TopBar fetches
   // /api/v1/orgs unconditionally. Stub a default before each.
+  // ThreadsPage also calls useAgentsList() on mount, so stub that endpoint too.
   server.use(
     http.get('/api/v1/orgs', () =>
       HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+    ),
+    http.get(`/api/v1/orgs/${SLUG}/agents`, () =>
+      HttpResponse.json({ agents: [] }),
     ),
   );
   return renderWithProviders(<AppRoutes />, { route });

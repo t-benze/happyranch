@@ -11,6 +11,9 @@ test('root with orgs renders the TopBar org dropdown after navigate', async () =
     http.get('/api/v1/orgs', () =>
       HttpResponse.json({ orgs: [{ slug: 'alpha', root: '/x' }] }),
     ),
+    http.get('/api/v1/orgs/alpha/agents', () =>
+      HttpResponse.json({ agents: [] }),
+    ),
     http.get('/api/v1/orgs/alpha/threads', () => HttpResponse.json({ threads: [] })),
     http.get('/api/v1/orgs/alpha/threads/events', () =>
       HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),

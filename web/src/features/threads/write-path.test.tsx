@@ -13,6 +13,9 @@ function stubBaseHandlers() {
     http.get('/api/v1/orgs', () =>
       HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
     ),
+    http.get(`/api/v1/orgs/${SLUG}/agents`, () =>
+      HttpResponse.json({ agents: [] }),
+    ),
     http.get(`/api/v1/orgs/${SLUG}/threads`, () => HttpResponse.json({ threads: [] })),
     http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
       HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
