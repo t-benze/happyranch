@@ -48,6 +48,11 @@ function useThreadDraft(orgSlug: string, threadId: string): DraftHandle {
     try { setDraftState(localStorage.getItem(key) ?? ''); } catch { setDraftState(''); }
   }, [key]);
 
+  // Cancel any pending debounce write on unmount.
+  useEffect(() => () => {
+    if (timer.current !== null) window.clearTimeout(timer.current);
+  }, []);
+
   const setDraft = useCallback((next: string) => {
     setDraftState(next);
     if (timer.current !== null) window.clearTimeout(timer.current);

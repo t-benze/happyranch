@@ -54,6 +54,30 @@ describe('Composer / drafts', () => {
     expect(NOOP_SEND).toHaveBeenCalled();
     expect(localStorage.getItem('grassland:draft:test-org:THR-001')).toBeNull();
   });
+
+  it('preserves the draft when send rejects', async () => {
+    const user = userEvent.setup();
+    const failingSend = vi.fn().mockRejectedValueOnce(new Error('network down'));
+    render(
+      <WithOrgSlug slug="test-org">
+        <Composer
+          agents={[]}
+          threadId="THR-002"
+          pending={false}
+          onSend={failingSend}
+        />
+      </WithOrgSlug>,
+    );
+    const ta = screen.getByRole<HTMLTextAreaElement>('textbox', { name: /compose/i });
+    await user.type(ta, 'retry-me');
+    await new Promise((r) => setTimeout(r, 320));
+    expect(localStorage.getItem('grassland:draft:test-org:THR-002')).toBe('retry-me');
+    await user.keyboard('{Meta>}{Enter}{/Meta}');
+    expect(failingSend).toHaveBeenCalled();
+    // Draft must survive the rejection — both in localStorage and in the textarea.
+    expect(localStorage.getItem('grassland:draft:test-org:THR-002')).toBe('retry-me');
+    expect(ta.value).toBe('retry-me');
+  });
 });
 
 // Helper: wraps children in a StaticOrgProvider so Composer's
