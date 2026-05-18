@@ -1,6 +1,21 @@
 import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { configure } from '@testing-library/dom';
+import { describe, expect, it, vi } from 'vitest';
 import { Markdown } from './Markdown';
+
+// Use data-test as the testid attribute so findByTestId matches the
+// data-test attribute emitted by the mermaid mock's SVG output.
+configure({ testIdAttribute: 'data-test' });
+
+vi.mock('mermaid', () => ({
+  default: {
+    initialize: vi.fn(),
+    render: vi.fn(async (_id: string, source: string) => {
+      if (source.includes('BAD')) throw new Error('boom');
+      return { svg: '<svg data-test="rendered"></svg>' };
+    }),
+  },
+}));
 
 describe('Markdown', () => {
   it('renders a plain paragraph', () => {
@@ -26,5 +41,18 @@ describe('Markdown', () => {
     render(<Markdown body={'| a | b |\n| - | - |\n| 1 | 2 |'} />);
     expect(document.querySelector('table thead')).not.toBeNull();
     expect(document.querySelector('table tbody')).not.toBeNull();
+  });
+});
+
+describe('Markdown / Mermaid', () => {
+  it('renders a mermaid block as SVG', async () => {
+    render(<Markdown body={'```mermaid\nflowchart LR; A-->B\n```'} />);
+    // Lazy + async render; wait for the svg to appear.
+    await screen.findByTestId('rendered', undefined, { timeout: 2000 });
+  });
+
+  it('falls back to raw source when mermaid render fails', async () => {
+    render(<Markdown body={'```mermaid\nflowchart LR; BAD\n```'} />);
+    await screen.findByText(/flowchart LR; BAD/, undefined, { timeout: 2000 });
   });
 });

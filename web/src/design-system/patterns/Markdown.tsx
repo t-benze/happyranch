@@ -1,20 +1,26 @@
 /**
  * Markdown — render a markdown body inside `.gl-prose`.
  *
- * Pure component. Owns the react-markdown plugin chain: GFM (tables,
- * task-lists, autolinks), rehype-highlight (syntax colors for fenced
- * code), and a `code` override that delegates `language-mermaid` to a
- * lazy-imported Mermaid pattern (added in a follow-up task — for now
- * it falls through to plain rendering).
+ * See spec §4.2 for the full pipeline rationale.
  */
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
-import type { ComponentProps } from 'react';
+import { Suspense, lazy, type ComponentProps } from 'react';
 
-function CodeComponent(props: ComponentProps<'code'>): JSX.Element {
-  // Mermaid handling is wired in Task 5. For now: pass through.
+const Mermaid = lazy(() => import('./Mermaid'));
+
+function CodeOrMermaid(props: ComponentProps<'code'>): JSX.Element {
   const { className, children, ...rest } = props;
+  const lang = /language-(\w+)/.exec(className ?? '')?.[1];
+  if (lang === 'mermaid') {
+    const source = String(children ?? '').replace(/\n$/, '');
+    return (
+      <Suspense fallback={<pre className="gl-prose-mermaid-loading">Rendering diagram…</pre>}>
+        <Mermaid source={source} />
+      </Suspense>
+    );
+  }
   return (
     <code className={className} {...rest}>
       {children}
@@ -28,7 +34,7 @@ export function Markdown({ body }: { body: string }): JSX.Element {
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[[rehypeHighlight, { ignoreMissing: true, detect: true }]]}
-        components={{ code: CodeComponent }}
+        components={{ code: CodeOrMermaid }}
       >
         {body}
       </ReactMarkdown>
