@@ -27,6 +27,7 @@ import type {
 } from '@/lib/api/types';
 import type { threads as threadsApi } from '@/lib/api';
 import type { tasks as tasksApi } from '@/lib/api';
+import type { audit as auditApi } from '@/lib/api';
 import type { TaskEvent, TaskRecord, TaskRecallNode } from '@/lib/api/types';
 
 // ---------------------------------------------------------------------------
@@ -154,6 +155,20 @@ export interface AgentsApi {
   useAgentsList: () => QueryLike<{ agents: import('@/lib/api/agents').AgentSummary[] }>;
 }
 
+// ---------------------------------------------------------------------------
+// AuditApi — read-only audit-log surface for the Audit feature page.
+// ---------------------------------------------------------------------------
+
+export interface AuditApi {
+  useAuditList: (params?: {
+    task_id?: string | null;
+    agent?: string | null;
+    action?: string | null;
+    since?: string | null;
+    limit?: number;
+  }) => QueryLike<Awaited<ReturnType<typeof auditApi.listAudit>>>;
+}
+
 /**
  * Per-feature URL builders. Compositions consume these via the
  * provider-aware `useThreadRoutes()` hook in `@/hooks/threads` instead of
@@ -179,6 +194,7 @@ export interface ThreadRoutes {
 export interface DataContextValue {
   orgs: OrgsApi;
   agents: AgentsApi;
+  audit: AuditApi;
   threads: ThreadsApi;
   tasks: TasksApi;
   /**
