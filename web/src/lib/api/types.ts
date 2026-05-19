@@ -117,12 +117,17 @@ export interface TaskRecallNode {
 
 export interface TalkRecord {
   talk_id: string;
-  agent: string;
+  agent_name: string;
   status: TalkStatus;
   started_at: string;
   ended_at: string | null;
-  abandoned_at: string | null;
-  reason: string | null;
+  summary: string | null;
+  topic_list: string[];
+  new_learnings_count: number;
+  new_kb_slugs: string[];
+  transcript_path: string | null;
+  /** Present on `GET /talks/{id}` for closed talks ≤256 KiB. */
+  transcript?: string;
   [extra: string]: unknown;
 }
 

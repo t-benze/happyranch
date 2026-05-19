@@ -26,9 +26,11 @@ import { realAuditApi } from './_real-audit';
 import { realOrgsApi } from './_real-orgs';
 import {
   useRealAgentsRoutes,
+  useRealTalksRoutes,
   useRealTasksRoutes,
   useRealThreadRoutes,
 } from './_real-routes';
+import { realTalksApi } from './_real-talks';
 import { realTasksApi } from './_real-tasks';
 import { realThreadsApi } from './_real-threads';
 
@@ -62,8 +64,10 @@ export function AppProvider({ children, client }: AppProviderProps): JSX.Element
           audit: realAuditApi,
           threads: realThreadsApi,
           tasks: realTasksApi,
+          talks: realTalksApi,
           useThreadRoutes: useRealThreadRoutes,
           useTasksRoutes: useRealTasksRoutes,
+          useTalksRoutes: useRealTalksRoutes,
           useAgentsRoutes: useRealAgentsRoutes,
         }}
       >

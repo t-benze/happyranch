@@ -20,6 +20,7 @@ import { mockAgentsApi } from './_mock-agents';
 import { mockAuditApi } from './_mock-audit';
 import { mockOrgsApi } from './_mock-orgs';
 import { useMockAgentsRoutes, useMockThreadRoutes } from './_mock-routes';
+import { mockTalksApi, useMockTalksRoutes } from './_mock-talks';
 import { mockTasksApi, useMockTasksRoutes } from './_mock-tasks';
 import { mockThreadsApi } from './_mock-threads';
 
@@ -47,8 +48,10 @@ export function PrototypeProvider({ children }: { children: ReactNode }): JSX.El
           audit: mockAuditApi,
           threads: mockThreadsApi,
           tasks: mockTasksApi,
+          talks: mockTalksApi,
           useThreadRoutes: useMockThreadRoutes,
           useTasksRoutes: useMockTasksRoutes,
+          useTalksRoutes: useMockTalksRoutes,
           useAgentsRoutes: useMockAgentsRoutes,
         }}
       >

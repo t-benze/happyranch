@@ -14,6 +14,7 @@ import { AuditPage } from '@/features/audit/AuditPage';
 import { EscalationsTab } from '@/features/audit/EscalationsTab';
 import { TracesTab } from '@/features/audit/TracesTab';
 import { KbPage } from '@/features/kb/KbPage';
+import { TalksPage } from '@/features/talks/TalksPage';
 import { TasksPage } from '@/features/tasks/TasksPage';
 import { ThreadsPage } from '@/features/threads/ThreadsPage';
 import { PROTOTYPES_DISABLED, prototypeRoutes } from '@/prototypes';
@@ -72,6 +73,8 @@ export function AppRoutes(): JSX.Element {
           <Route path="tasks" element={<TasksPage />} />
           <Route path="tasks/:task_id" element={<TasksPage />} />
           <Route path="kb" element={<KbPage />} />
+          <Route path="talks" element={<TalksPage />} />
+          <Route path="talks/:talk_id" element={<TalksPage />} />
           <Route path="audit" element={<AuditPage />}>
             <Route index element={<ActivityTab />} />
             <Route path="escalations" element={<EscalationsTab />} />

@@ -13,6 +13,7 @@ import {
 } from '@/design-system/primitives/Tooltip';
 import { useAgentsRoutes } from '@/hooks/agents';
 import { useOrgsList } from '@/hooks/orgs';
+import { useTalksRoutes } from '@/hooks/talks';
 import { useTasksRoutes } from '@/hooks/tasks';
 import { useThreadRoutes } from '@/hooks/threads';
 import { useGlobalJump } from '@/hooks/global-jump';
@@ -33,11 +34,15 @@ export function TopBar(): JSX.Element {
   const orgsQuery = useOrgsList();
   const routes = useThreadRoutes();
   const tasksRoutes = useTasksRoutes();
+  const talksRoutes = useTalksRoutes();
   const agentsRoutes = useAgentsRoutes();
   const threadsHref = activeSlug ? routes.inboxForOrg(activeSlug) : '#';
   const agentsHref = activeSlug && !isPrototype ? agentsRoutes.inboxForOrg(activeSlug) : '#';
   useGlobalJump('t', () => {
     if (activeSlug && !isPrototype) navigate(tasksRoutes.inboxForOrg(activeSlug));
+  });
+  useGlobalJump('l', () => {
+    if (activeSlug && !isPrototype) navigate(talksRoutes.inboxForOrg(activeSlug));
   });
   useGlobalJump('a', () => {
     if (activeSlug && !isPrototype) navigate(`/orgs/${activeSlug}/audit`);
@@ -46,9 +51,9 @@ export function TopBar(): JSX.Element {
     if (activeSlug && !isPrototype) navigate(agentsRoutes.inboxForOrg(activeSlug));
   });
   const switchEnabled = !orgsQuery.isLoading && (orgsQuery.data?.orgs.length ?? 0) > 0;
-  // The four placeholder tabs (Tasks/KB/Audit/Agents) live only on the
-  // production routes — the prototype sandbox is threads-only. Disable
-  // them inside `/__prototypes/*` so a click can't escape the sandbox.
+  // The Tasks/KB/Talks/Audit/Agents tabs live only on the production
+  // routes — the prototype sandbox is threads-only. Disable them inside
+  // `/__prototypes/*` so a click can't escape the sandbox.
   const placeholderTab = (path: string) => ({
     to: activeSlug && !isPrototype ? `/orgs/${activeSlug}/${path}` : '#',
     enabled: !!activeSlug && !isPrototype,
@@ -83,6 +88,7 @@ export function TopBar(): JSX.Element {
         </NavTab>
         <NavTab {...placeholderTab('tasks')}>Tasks</NavTab>
         <NavTab {...placeholderTab('kb')}>KB</NavTab>
+        <NavTab {...placeholderTab('talks')}>Talks</NavTab>
         <NavTab {...placeholderTab('audit')}>Audit</NavTab>
         <NavTab to={agentsHref} enabled={agentsHref !== '#'}>
           Agents
