@@ -18,6 +18,7 @@ import { MOCK_ORG_SLUG } from '@/mocks';
 import { DataContext } from './DataContext';
 import { mockAgentsApi } from './_mock-agents';
 import { mockAuditApi } from './_mock-audit';
+import { mockHealthApi } from './_mock-health';
 import { mockKbApi, useMockKbRoutes } from './_mock-kb';
 import { mockOrgsApi } from './_mock-orgs';
 import { useMockAgentsRoutes, useMockThreadRoutes } from './_mock-routes';
@@ -51,6 +52,7 @@ export function PrototypeProvider({ children }: { children: ReactNode }): JSX.El
           tasks: mockTasksApi,
           kb: mockKbApi,
           talks: mockTalksApi,
+          health: mockHealthApi,
           useThreadRoutes: useMockThreadRoutes,
           useTasksRoutes: useMockTasksRoutes,
           useKbRoutes: useMockKbRoutes,
