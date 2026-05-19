@@ -10,6 +10,7 @@ import { useOrgsList } from '@/hooks/orgs';
 import { OrgProvider } from '@/lib/orgSlug';
 import { AgentsPage } from '@/features/agents/AgentsPage';
 import { CommandPaletteHost } from '@/host/CommandPaletteHost';
+import { HelpDrawerHost } from '@/host/HelpDrawerHost';
 import { ActivityTab } from '@/features/audit/ActivityTab';
 import { AuditPage } from '@/features/audit/AuditPage';
 import { EscalationsTab } from '@/features/audit/EscalationsTab';
@@ -54,6 +55,7 @@ function AppShell(): JSX.Element {
         <Outlet />
       </main>
       <CommandPaletteHost />
+      <HelpDrawerHost />
     </div>
   );
 }
