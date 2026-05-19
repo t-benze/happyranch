@@ -10,7 +10,7 @@
 import { useState } from 'react';
 import { IdBadge } from './IdBadge';
 import { cn } from '@/lib/utils';
-import type { AuditEntry } from '@/lib/api/audit';
+import type { AuditEntry } from '@/lib/api/types';
 
 export type Density = 'comfortable' | 'compact';
 

@@ -1,5 +1,5 @@
 import type { AuditApi, QueryLike } from './DataContext';
-import type { AuditEntry } from '@/lib/api/audit';
+import type { AuditEntry } from '@/lib/api/types';
 
 const empty: QueryLike<{ entries: AuditEntry[] }> = {
   data: { entries: [] },

@@ -3,7 +3,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { AuditRow } from './AuditRow';
-import type { AuditEntry } from '@/lib/api/audit';
+import type { AuditEntry } from '@/lib/api/types';
 
 const baseEntry: AuditEntry = {
   id: 1,
