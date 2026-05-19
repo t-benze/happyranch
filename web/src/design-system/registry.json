@@ -64,6 +64,16 @@
       "example": "<Dialog open={false}><DialogContent><DialogHeader><DialogTitle>Confirm</DialogTitle></DialogHeader></DialogContent></Dialog>"
     },
     {
+      "name": "Drawer",
+      "layer": "primitive",
+      "import": "@/design-system/primitives/Drawer",
+      "variants": {},
+      "consumes": [
+        "components.drawer"
+      ],
+      "example": "<Drawer open={false} onOpenChange={() => {}}><DrawerContent><DrawerTitle>Detail</DrawerTitle></DrawerContent></Drawer>"
+    },
+    {
       "name": "DropdownMenu",
       "layer": "primitive",
       "import": "@/design-system/primitives/DropdownMenu",
@@ -82,6 +92,16 @@
         "components.empty_state"
       ],
       "example": "<EmptyState title='No threads' body='Start one with grassland threads compose.' />"
+    },
+    {
+      "name": "FilterSidebar",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/FilterSidebar",
+      "variants": {},
+      "consumes": [
+        "components.filter_sidebar"
+      ],
+      "example": "<FilterSidebar groups={[]} value={{}} onChange={() => {}} />"
     },
     {
       "name": "FormField",
@@ -244,13 +264,28 @@
           "open",
           "archiving",
           "archived",
-          "abandoned"
+          "abandoned",
+          "pending",
+          "in_progress",
+          "blocked",
+          "completed",
+          "failed"
         ]
       },
       "consumes": [
         "components.badge"
       ],
       "example": "<StatusBadge status='open' />"
+    },
+    {
+      "name": "TaskCard",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/TaskCard",
+      "variants": {},
+      "consumes": [
+        "components.badge"
+      ],
+      "example": "<TaskCard task={task} to='/orgs/x/tasks/TASK-001' />"
     },
     {
       "name": "Tabs",

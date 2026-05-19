@@ -12,7 +12,9 @@ import {
   TooltipTrigger,
 } from '@/design-system/primitives/Tooltip';
 import { useOrgsList } from '@/hooks/orgs';
+import { useTasksRoutes } from '@/hooks/tasks';
 import { useThreadRoutes } from '@/hooks/threads';
+import { useGlobalJump } from '@/hooks/global-jump';
 import { useOrgSlugOptional } from '@/lib/orgSlug';
 
 export function TopBar(): JSX.Element {
@@ -29,7 +31,11 @@ export function TopBar(): JSX.Element {
   const isPrototype = location.pathname.startsWith('/__prototypes');
   const orgsQuery = useOrgsList();
   const routes = useThreadRoutes();
+  const tasksRoutes = useTasksRoutes();
   const threadsHref = activeSlug ? routes.inboxForOrg(activeSlug) : '#';
+  useGlobalJump('t', () => {
+    if (activeSlug && !isPrototype) navigate(tasksRoutes.inboxForOrg(activeSlug));
+  });
   const switchEnabled = !orgsQuery.isLoading && (orgsQuery.data?.orgs.length ?? 0) > 0;
   // The four placeholder tabs (Tasks/KB/Audit/Agents) live only on the
   // production routes — the prototype sandbox is threads-only. Disable

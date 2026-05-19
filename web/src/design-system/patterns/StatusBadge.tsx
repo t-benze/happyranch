@@ -1,28 +1,58 @@
 /**
- * StatusBadge — pill for thread status. Per DESIGN.md
- * `components.badge.variants.status_*`. Tier-tint fill, status-color text,
- * transparent border (archived uses a subtle border to read as "outline").
+ * StatusBadge — pill for thread OR task status. Per DESIGN.md
+ * `components.badge.variants.status_*`.
+ *
+ * For task status `blocked`, the optional `blockKind` modifier renders
+ * "blocked (escalated)" vs "blocked (delegated)" with escalated using the
+ * red escalated token.
  *
  * Pure prop-driven.
  */
 
+export type ThreadStatus = 'open' | 'archiving' | 'archived' | 'abandoned';
+export type TaskStatus =
+  | 'pending'
+  | 'in_progress'
+  | 'blocked'
+  | 'completed'
+  | 'failed';
+export type BlockKind = 'delegated' | 'escalated';
+
 interface StatusBadgeProps {
-  status: 'open' | 'archiving' | 'archived' | 'abandoned';
+  status: ThreadStatus | TaskStatus;
+  blockKind?: BlockKind | null;
 }
 
-const STATUS_CLASS: Record<StatusBadgeProps['status'], string> = {
+// Reuse tokens to keep the palette tight. The mapping mirrors semantic
+// kinship: pending→archiving (yellow), in_progress→open (green),
+// completed→archived (grey), failed→abandoned (red).
+const STATUS_CLASS: Record<ThreadStatus | TaskStatus, string> = {
   open: 'bg-tier-green-tint text-status-open',
   archiving: 'bg-tier-yellow-tint text-status-archiving',
   archived: 'border border-border-subtle bg-transparent text-status-archived',
   abandoned: 'bg-tier-red-tint text-status-abandoned',
+  pending: 'bg-tier-yellow-tint text-status-archiving',
+  in_progress: 'bg-tier-green-tint text-status-open',
+  blocked: 'bg-tier-yellow-tint text-status-blocked',
+  completed: 'border border-border-subtle bg-transparent text-status-archived',
+  failed: 'bg-tier-red-tint text-status-abandoned',
 };
 
-export function StatusBadge({ status }: StatusBadgeProps): JSX.Element {
+function label(status: ThreadStatus | TaskStatus, blockKind?: BlockKind | null): string {
+  if (status === 'blocked' && blockKind) return `blocked (${blockKind})`;
+  return status;
+}
+
+export function StatusBadge({ status, blockKind }: StatusBadgeProps): JSX.Element {
+  const cls =
+    status === 'blocked' && blockKind === 'escalated'
+      ? 'bg-tier-red-tint text-status-escalated'
+      : STATUS_CLASS[status];
   return (
     <span
-      className={`text-mono-sm inline-flex items-center rounded-sm px-2 py-px font-mono font-semibold ${STATUS_CLASS[status]}`}
+      className={`text-mono-sm inline-flex items-center rounded-sm px-2 py-px font-mono font-semibold ${cls}`}
     >
-      {status}
+      {label(status, blockKind)}
     </span>
   );
 }
@@ -31,7 +61,19 @@ export const meta = {
   name: "StatusBadge",
   layer: "pattern",
   import: "@/design-system/patterns/StatusBadge",
-  variants: { status: ["open", "archiving", "archived", "abandoned"] },
+  variants: {
+    status: [
+      "open",
+      "archiving",
+      "archived",
+      "abandoned",
+      "pending",
+      "in_progress",
+      "blocked",
+      "completed",
+      "failed",
+    ],
+  },
   consumes: ["components.badge"],
   example: "<StatusBadge status='open' />",
 } as const;
