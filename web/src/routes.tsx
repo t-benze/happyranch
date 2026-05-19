@@ -9,6 +9,7 @@ import { TopBar } from '@/design-system/layouts/AppShell/TopBar';
 import { useOrgsList } from '@/hooks/orgs';
 import { OrgProvider } from '@/lib/orgSlug';
 import { AgentsPage } from '@/features/agents/AgentsPage';
+import { CommandPaletteHost } from '@/host/CommandPaletteHost';
 import { ActivityTab } from '@/features/audit/ActivityTab';
 import { AuditPage } from '@/features/audit/AuditPage';
 import { EscalationsTab } from '@/features/audit/EscalationsTab';
@@ -52,6 +53,7 @@ function AppShell(): JSX.Element {
       <main className="flex-1 overflow-hidden">
         <Outlet />
       </main>
+      <CommandPaletteHost />
     </div>
   );
 }

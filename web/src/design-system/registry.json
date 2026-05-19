@@ -58,6 +58,16 @@
       "example": "<Button variant='default' size='default'>Send</Button>"
     },
     {
+      "name": "CommandPalette",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/CommandPalette",
+      "variants": {},
+      "consumes": [
+        "components.dialog"
+      ],
+      "example": "<CommandPalette open={false} onClose={() => {}} sections={[]} onSelect={() => {}} />"
+    },
+    {
       "name": "Composer",
       "layer": "pattern",
       "import": "@/design-system/patterns/Composer",
