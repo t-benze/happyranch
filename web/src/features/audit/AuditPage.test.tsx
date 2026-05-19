@@ -80,4 +80,31 @@ describe('AuditPage', () => {
       expect(screen.getByText(/Pick a task/i)).toBeInTheDocument(),
     );
   });
+
+  test('traces honors ?task_id= deep link without a path segment', async () => {
+    // Regression: clicking "View audit →" from a Task lands on /audit?task_id=X,
+    // then switching to Traces via the SubTabBar should render the selected
+    // task's trace — not the generic "Pick a task" prompt.
+    sessionStorage.setItem('grassland.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/audit`, () =>
+        HttpResponse.json({ entries: [] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/TASK-42/recall`, () =>
+        HttpResponse.json({
+          task_id: 'TASK-42',
+          assigned_agent: 'engineering_head',
+          brief: 'Investigate spike',
+          status: 'completed',
+          output_summary: null,
+          children: [],
+        }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/audit/traces?task_id=TASK-42`);
+    await waitFor(() =>
+      expect(screen.getByText('Investigate spike')).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/Pick a task/i)).not.toBeInTheDocument();
+  });
 });

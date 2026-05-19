@@ -88,6 +88,17 @@ export function AuditPage(): JSX.Element {
   const search = encodeFilters(filters);
   const suffix = search ? `?${search}` : '';
 
+  // Traces' canonical URL carries the selected task as a path segment, not a
+  // query param. When the founder is on Activity with a `?task_id=` deep link
+  // and clicks the Traces tab, promote that param into the path so the URL
+  // (and the back button) match the picker-click form.
+  const tracesTo = (() => {
+    if (!filters.task_id) return base + '/traces' + suffix;
+    const withoutTaskId = encodeFilters({ ...filters, task_id: null });
+    const tail = withoutTaskId ? `?${withoutTaskId}` : '';
+    return `${base}/traces/${filters.task_id}${tail}`;
+  })();
+
   return (
     <div className="flex h-full">
       <FilterSidebar groups={groups} value={sidebarValue} onChange={onSidebarChange} />
@@ -105,7 +116,7 @@ export function AuditPage(): JSX.Element {
           tabs={[
             { value: 'activity', label: 'Activity', to: base + suffix },
             { value: 'escalations', label: 'Escalations', to: base + '/escalations' + suffix },
-            { value: 'traces', label: 'Traces', to: base + '/traces' + suffix },
+            { value: 'traces', label: 'Traces', to: tracesTo },
           ]}
           active={active}
         />
