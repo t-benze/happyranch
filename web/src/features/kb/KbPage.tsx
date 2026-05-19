@@ -31,13 +31,10 @@ export function KbPage(): JSX.Element {
     ? (searchQuery.data?.entries ?? [])
     : (listQuery.data?.entries ?? []);
 
-  const entries = useMemo(
-    () =>
-      filters.tag
-        ? rawEntries.filter((e) => e.tags.includes(filters.tag as string))
-        : rawEntries,
-    [rawEntries, filters.tag],
-  );
+  const entries = useMemo(() => {
+    const tag = filters.tag;
+    return tag ? rawEntries.filter((e) => e.tags.includes(tag)) : rawEntries;
+  }, [rawEntries, filters.tag]);
 
   // Sidebar option lists derive from the server-returned set (rawEntries),
   // BEFORE the client-side tag filter — so toggling a tag does not collapse
@@ -70,7 +67,7 @@ export function KbPage(): JSX.Element {
 
   return (
     <div className="flex h-full">
-      <aside className="border-border-subtle bg-surface-sunken w-60 shrink-0 overflow-y-auto border-r p-3">
+      <aside aria-label="KB filters" className="border-border-subtle bg-surface-sunken w-60 shrink-0 overflow-y-auto border-r p-3">
         <div className="mb-3">
           <Input
             aria-label="Search KB entries"
