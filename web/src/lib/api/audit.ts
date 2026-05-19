@@ -1,15 +1,8 @@
 /** Mirror of src/daemon/routes/audit.py */
 import { request } from './client';
+import type { AuditEntry } from './types';
 
-export interface AuditEntry {
-  id: number;
-  task_id: string | null;
-  session_id: string | null;
-  agent: string | null;
-  action: string;
-  payload: Record<string, unknown>;
-  created_at: string;
-}
+export type { AuditEntry } from './types';
 
 export const listAudit = (
   slug: string,

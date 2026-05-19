@@ -18,6 +18,21 @@
       "example": "<AgentChip name='engineering_head' role='manager' />"
     },
     {
+      "name": "AuditRow",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/AuditRow",
+      "variants": {
+        "density": [
+          "comfortable",
+          "compact"
+        ]
+      },
+      "consumes": [
+        "components.audit_row"
+      ],
+      "example": "<AuditRow entry={{} as any} density=\"compact\" />"
+    },
+    {
       "name": "Button",
       "layer": "primitive",
       "import": "@/design-system/primitives/Button",
@@ -278,14 +293,14 @@
       "example": "<StatusBadge status='open' />"
     },
     {
-      "name": "TaskCard",
-      "layer": "pattern",
-      "import": "@/design-system/patterns/TaskCard",
+      "name": "SubTabBar",
+      "layer": "primitive",
+      "import": "@/design-system/primitives/SubTabBar",
       "variants": {},
       "consumes": [
-        "components.badge"
+        "components.subtabbar"
       ],
-      "example": "<TaskCard task={task} to='/orgs/x/tasks/TASK-001' />"
+      "example": "<SubTabBar tabs={[]} active=\"activity\" />"
     },
     {
       "name": "Tabs",
@@ -301,6 +316,16 @@
         "components.tabs"
       ],
       "example": "<Tabs value='open'><TabsList><TabsTrigger value='open'>open</TabsTrigger></TabsList></Tabs>"
+    },
+    {
+      "name": "TaskCard",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/TaskCard",
+      "variants": {},
+      "consumes": [
+        "components.badge"
+      ],
+      "example": "<TaskCard task={task} to='/orgs/x/tasks/TASK-001' />"
     },
     {
       "name": "Textarea",
@@ -375,6 +400,21 @@
         "layout.grid.app_shell"
       ],
       "example": "<TopBar />"
+    },
+    {
+      "name": "TraceTree",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/TraceTree",
+      "variants": {
+        "density": [
+          "comfortable",
+          "compact"
+        ]
+      },
+      "consumes": [
+        "components.trace_tree"
+      ],
+      "example": "<TraceTree root={{} as any} costs={{}} density=\"compact\" />"
     }
   ]
 }

@@ -17,9 +17,11 @@ import { StaticOrgProvider } from '@/lib/orgSlug';
 import { MOCK_ORG_SLUG } from '@/mocks';
 import { DataContext } from './DataContext';
 import { mockAgentsApi } from './_mock-agents';
+import { mockAuditApi } from './_mock-audit';
 import { mockKbApi, useMockKbRoutes } from './_mock-kb';
 import { mockOrgsApi } from './_mock-orgs';
-import { useMockThreadRoutes } from './_mock-routes';
+import { useMockAgentsRoutes, useMockThreadRoutes } from './_mock-routes';
+import { mockTalksApi, useMockTalksRoutes } from './_mock-talks';
 import { mockTasksApi, useMockTasksRoutes } from './_mock-tasks';
 import { mockThreadsApi } from './_mock-threads';
 
@@ -44,12 +46,16 @@ export function PrototypeProvider({ children }: { children: ReactNode }): JSX.El
         value={{
           orgs: mockOrgsApi,
           agents: mockAgentsApi,
+          audit: mockAuditApi,
           threads: mockThreadsApi,
           tasks: mockTasksApi,
           kb: mockKbApi,
+          talks: mockTalksApi,
           useThreadRoutes: useMockThreadRoutes,
           useTasksRoutes: useMockTasksRoutes,
           useKbRoutes: useMockKbRoutes,
+          useTalksRoutes: useMockTalksRoutes,
+          useAgentsRoutes: useMockAgentsRoutes,
         }}
       >
         <TooltipProvider delayDuration={300}>

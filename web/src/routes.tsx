@@ -9,8 +9,12 @@ import { TopBar } from '@/design-system/layouts/AppShell/TopBar';
 import { useOrgsList } from '@/hooks/orgs';
 import { OrgProvider } from '@/lib/orgSlug';
 import { AgentsPage } from '@/features/agents/AgentsPage';
+import { ActivityTab } from '@/features/audit/ActivityTab';
 import { AuditPage } from '@/features/audit/AuditPage';
+import { EscalationsTab } from '@/features/audit/EscalationsTab';
+import { TracesTab } from '@/features/audit/TracesTab';
 import { KbPage } from '@/features/kb/KbPage';
+import { TalksPage } from '@/features/talks/TalksPage';
 import { TasksPage } from '@/features/tasks/TasksPage';
 import { ThreadsPage } from '@/features/threads/ThreadsPage';
 import { PROTOTYPES_DISABLED, prototypeRoutes } from '@/prototypes';
@@ -70,8 +74,16 @@ export function AppRoutes(): JSX.Element {
           <Route path="tasks/:task_id" element={<TasksPage />} />
           <Route path="kb" element={<KbPage />} />
           <Route path="kb/*" element={<KbPage />} />
-          <Route path="audit" element={<AuditPage />} />
+          <Route path="talks" element={<TalksPage />} />
+          <Route path="talks/:talk_id" element={<TalksPage />} />
+          <Route path="audit" element={<AuditPage />}>
+            <Route index element={<ActivityTab />} />
+            <Route path="escalations" element={<EscalationsTab />} />
+            <Route path="traces" element={<TracesTab />} />
+            <Route path="traces/:task_id" element={<TracesTab />} />
+          </Route>
           <Route path="agents" element={<AgentsPage />} />
+          <Route path="agents/:agent_name" element={<AgentsPage />} />
         </Route>
         <Route path="*" element={<NotFound />} />
       </Route>

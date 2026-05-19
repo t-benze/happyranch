@@ -28,7 +28,16 @@ import type {
 import type { threads as threadsApi } from '@/lib/api';
 import type { tasks as tasksApi } from '@/lib/api';
 import type { kb as kbApi } from '@/lib/api';
-import type { KBEntry, TaskEvent, TaskRecord, TaskRecallNode } from '@/lib/api/types';
+import type { talks as talksApi } from '@/lib/api';
+import type { audit as auditApi } from '@/lib/api';
+import type { agents as agentsApi } from '@/lib/api';
+import type {
+  KBEntry,
+  TalkRecord,
+  TaskEvent,
+  TaskRecord,
+  TaskRecallNode,
+} from '@/lib/api/types';
 
 // ---------------------------------------------------------------------------
 // Hook-shape primitives
@@ -132,7 +141,6 @@ export interface TasksRoutes {
   inboxForOrg: (slug: string) => string;
 }
 
-// ---------------------------------------------------------------------------
 // KbApi — covers every hook KbPage + its drawer + (optional) compose dialog
 // consume.
 // ---------------------------------------------------------------------------
@@ -160,6 +168,42 @@ export interface KbRoutes {
 }
 
 // ---------------------------------------------------------------------------
+// TalksApi — covers every hook TalksPage + its dialogs consume.
+// ---------------------------------------------------------------------------
+
+export type StartTalkArgs = Parameters<typeof talksApi.startTalk>[1];
+export type StartTalkResult = Awaited<ReturnType<typeof talksApi.startTalk>>;
+
+export type AbandonTalkArgs = Parameters<typeof talksApi.abandonTalk>[2];
+export type AbandonTalkResult = Awaited<ReturnType<typeof talksApi.abandonTalk>>;
+
+export type EndTalkArgs = Parameters<typeof talksApi.endTalk>[2];
+export type EndTalkResult = Awaited<ReturnType<typeof talksApi.endTalk>>;
+
+export type DispatchFromTalkArgs = Parameters<typeof talksApi.dispatchFromTalk>[2];
+export type DispatchFromTalkResult = Awaited<ReturnType<typeof talksApi.dispatchFromTalk>>;
+
+export interface TalksApi {
+  useTalksList: (
+    params?: { status?: string; agent?: string; limit?: number },
+  ) => QueryLike<{ talks: TalkRecord[] }>;
+  useTalk: (talkId: string | undefined) => QueryLike<TalkRecord>;
+
+  useStartTalk: () => MutationLike<StartTalkArgs, StartTalkResult>;
+  useAbandonTalk: (talkId: string) => MutationLike<AbandonTalkArgs, AbandonTalkResult>;
+  useEndTalk: (talkId: string) => MutationLike<EndTalkArgs, EndTalkResult>;
+  useDispatchFromTalk: (
+    talkId: string,
+  ) => MutationLike<DispatchFromTalkArgs, DispatchFromTalkResult>;
+}
+
+export interface TalksRoutes {
+  inbox: () => string;
+  detail: (talkId: string) => string;
+  inboxForOrg: (slug: string) => string;
+}
+
+// ---------------------------------------------------------------------------
 // Context shape — one bag per feature domain. Future PRs add `kb`…
 // ---------------------------------------------------------------------------
 
@@ -178,8 +222,53 @@ export interface OrgsApi {
 // in canned fixtures.
 // ---------------------------------------------------------------------------
 
+export type ApproveAgentArgs = Parameters<typeof agentsApi.approveAgent>[1];
+export type ApproveAgentResult = Awaited<ReturnType<typeof agentsApi.approveAgent>>;
+
+export type RejectAgentArgs = Parameters<typeof agentsApi.rejectAgent>[2];
+export type RejectAgentResult = Awaited<ReturnType<typeof agentsApi.rejectAgent>>;
+
 export interface AgentsApi {
   useAgentsList: () => QueryLike<{ agents: import('@/lib/api/agents').AgentSummary[] }>;
+  /** Pending enrollments — `status` filter narrows the file scan. */
+  useEnrollmentsList: (
+    params?: { status?: 'pending' | 'approved' },
+  ) => QueryLike<{ enrollments: import('@/lib/api/agents').AgentEnrollment[] }>;
+  /** Read-only learnings list for the agent detail drawer. */
+  useAgentLearnings: (
+    agentName: string | undefined,
+  ) => QueryLike<{ entries: import('@/lib/api/agents').LearningEntrySummary[] }>;
+  /** Tasks where this agent was the assigned (manager) agent. */
+  useAgentTasks: (
+    agentName: string | undefined,
+  ) => QueryLike<{ tasks: TaskRecord[] }>;
+
+  useApproveAgent: () => MutationLike<ApproveAgentArgs, ApproveAgentResult>;
+  useRejectAgent: () => MutationLike<
+    { agentName: string; body?: { reason?: string } },
+    RejectAgentResult
+  >;
+}
+
+export interface AgentsRoutes {
+  inbox: () => string;
+  pending: () => string;
+  detail: (agentName: string) => string;
+  inboxForOrg: (slug: string) => string;
+}
+
+// ---------------------------------------------------------------------------
+// AuditApi — read-only audit-log surface for the Audit feature page.
+// ---------------------------------------------------------------------------
+
+export interface AuditApi {
+  useAuditList: (params?: {
+    task_id?: string | null;
+    agent?: string | null;
+    action?: string | null;
+    since?: string | null;
+    limit?: number;
+  }) => QueryLike<Awaited<ReturnType<typeof auditApi.listAudit>>>;
 }
 
 /**
@@ -207,9 +296,11 @@ export interface ThreadRoutes {
 export interface DataContextValue {
   orgs: OrgsApi;
   agents: AgentsApi;
+  audit: AuditApi;
   threads: ThreadsApi;
   tasks: TasksApi;
   kb: KbApi;
+  talks: TalksApi;
   /**
    * Provider-supplied React hook that returns the active feature's route
    * builders. A hook (not a plain object) so the implementation can read
@@ -218,6 +309,8 @@ export interface DataContextValue {
   useThreadRoutes: () => ThreadRoutes;
   useTasksRoutes: () => TasksRoutes;
   useKbRoutes: () => KbRoutes;
+  useTalksRoutes: () => TalksRoutes;
+  useAgentsRoutes: () => AgentsRoutes;
 }
 
 export const DataContext = createContext<DataContextValue | null>(null);

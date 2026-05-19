@@ -11,7 +11,7 @@
  * `detail` return `'#'`, which renders the NavLink as inert.
  */
 import { useOrgSlugOptional } from '@/lib/orgSlug';
-import type { TasksRoutes, ThreadRoutes } from './DataContext';
+import type { AgentsRoutes, KbRoutes, TalksRoutes, TasksRoutes, ThreadRoutes } from './DataContext';
 
 export function useRealThreadRoutes(): ThreadRoutes {
   const slug = useOrgSlugOptional();
@@ -31,12 +31,34 @@ export function useRealTasksRoutes(): TasksRoutes {
   };
 }
 
-export function useRealKbRoutes(): import('./DataContext').KbRoutes {
+export function useRealKbRoutes(): KbRoutes {
   const slug = useOrgSlugOptional();
   return {
     detail: (entrySlug: string) =>
       slug ? `/orgs/${slug}/kb/${entrySlug}` : '#',
     inbox: () => (slug ? `/orgs/${slug}/kb` : '#'),
     inboxForOrg: (target: string) => `/orgs/${target}/kb`,
+  };
+}
+
+export function useRealTalksRoutes(): TalksRoutes {
+  const slug = useOrgSlugOptional();
+  return {
+    detail: (talkId: string) => (slug ? `/orgs/${slug}/talks/${talkId}` : '#'),
+    inbox: () => (slug ? `/orgs/${slug}/talks` : '#'),
+    inboxForOrg: (target: string) => `/orgs/${target}/talks`,
+  };
+}
+
+export function useRealAgentsRoutes(): AgentsRoutes {
+  const slug = useOrgSlugOptional();
+  return {
+    inbox: () => (slug ? `/orgs/${slug}/agents` : '#'),
+    // Tab state rides on a query param so we never reserve a static path
+    // segment that would shadow a real agent slug under `agents/:agent_name`.
+    pending: () => (slug ? `/orgs/${slug}/agents?view=pending` : '#'),
+    detail: (agentName: string) =>
+      slug ? `/orgs/${slug}/agents/${agentName}` : '#',
+    inboxForOrg: (target: string) => `/orgs/${target}/agents`,
   };
 }

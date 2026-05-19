@@ -53,6 +53,7 @@ export interface TaskRecord {
   brief: string;
   status: TaskStatus;
   block_kind: BlockKind | null;
+  assigned_agent: string | null;
   parent_task_id: string | null;
   revisit_of_task_id: string | null;
   created_at: string;
@@ -87,6 +88,17 @@ export interface TaskDetailResponse {
   [extra: string]: unknown;
 }
 
+/** Audit-log entry shape (mirror of `audit_log` table rows). */
+export interface AuditEntry {
+  id: number;
+  task_id: string | null;
+  session_id: string | null;
+  agent: string | null;
+  action: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
 /** Recall payload. With `?tree=true`, `children` is recursive; without it,
  * `children` is a list of task-ID strings — UI must request the tree shape. */
 export interface TaskRecallNode {
@@ -105,12 +117,17 @@ export interface TaskRecallNode {
 
 export interface TalkRecord {
   talk_id: string;
-  agent: string;
+  agent_name: string;
   status: TalkStatus;
   started_at: string;
   ended_at: string | null;
-  abandoned_at: string | null;
-  reason: string | null;
+  summary: string | null;
+  topic_list: string[];
+  new_learnings_count: number;
+  new_kb_slugs: string[];
+  transcript_path: string | null;
+  /** Present on `GET /talks/{id}` for closed talks ≤256 KiB. */
+  transcript?: string;
   [extra: string]: unknown;
 }
 
@@ -191,4 +208,68 @@ export interface OrgsListResponse {
 export interface HealthResponse {
   status: string;
   active_runtime: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Agents
+// ---------------------------------------------------------------------------
+
+/**
+ * 30-day rolling scorecard. NULL fields are returned by the daemon when
+ * the agent has no review history in the window — the founder UI renders
+ * a dash rather than misleading zeros.
+ */
+export interface AgentScorecard {
+  agent: string;
+  period_start: string;
+  period_end: string;
+  acceptance_rate: number;
+  revision_rate: number;
+  error_count: number;
+  tier: PerformanceTier;
+  updated_at: string;
+}
+
+export interface AgentSummary {
+  name: string;
+  team: string | null;
+  role: 'manager' | 'worker' | null;
+  executor: 'claude' | 'codex' | 'opencode' | null;
+  description: string | null;
+  tier: PerformanceTier;
+  scorecard: AgentScorecard | null;
+  avg_confidence: number | null;
+}
+
+export interface AgentEnrollment {
+  name: string;
+  team: string;
+  role: 'manager' | 'worker';
+  executor: 'claude' | 'codex' | 'opencode';
+  description: string;
+  status: 'pending' | 'approved';
+  enrolled_by: string | null;
+  created_at: string | null;
+}
+
+/** Summary shape returned by the learnings list endpoint. */
+export interface LearningEntrySummary {
+  id: string;
+  slug: string;
+  title: string;
+  topic: string;
+  tags: string[];
+  promoted_to: string | null;
+  updated_at: string;
+}
+
+/** Full entry as returned by the learnings get / search endpoints. */
+export interface LearningEntry extends LearningEntrySummary {
+  body: string;
+  source_task: string | null;
+  related_to: string[];
+  supersedes: string | null;
+  authored_by: string;
+  authored_at: string;
+  updated_by: string | null;
 }

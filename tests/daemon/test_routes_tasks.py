@@ -34,6 +34,36 @@ def test_list_tasks_returns_list(tmp_home, app, auth_headers) -> None:
     assert len(items) >= 1
 
 
+def test_list_tasks_filter_by_assigned_agent(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """?assigned_agent= filters the inbox so the agent detail drawer can
+    render an agent-scoped recent-task list."""
+    from datetime import datetime, timezone
+    from src.models import TaskRecord
+
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-A", brief="alpha", team="engineering",
+        assigned_agent="engineering_head",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    ))
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-B", brief="bravo", team="content",
+        assigned_agent="content_manager",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    ))
+
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tasks?assigned_agent=engineering_head",
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    ids = [t["id"] for t in r.json()["tasks"]]
+    assert ids == ["TASK-A"]
+
+
 def test_get_task_detail_404_when_missing(tmp_home, app, auth_headers) -> None:
     r = TestClient(app).get("/api/v1/orgs/alpha/tasks/TASK-999", headers=auth_headers)
     assert r.status_code == 404
