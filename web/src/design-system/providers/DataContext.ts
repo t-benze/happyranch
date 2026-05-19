@@ -27,6 +27,7 @@ import type {
 } from '@/lib/api/types';
 import type { threads as threadsApi } from '@/lib/api';
 import type { tasks as tasksApi } from '@/lib/api';
+import type { agents as agentsApi } from '@/lib/api';
 import type { TaskEvent, TaskRecord, TaskRecallNode } from '@/lib/api/types';
 
 // ---------------------------------------------------------------------------
@@ -150,8 +151,39 @@ export interface OrgsApi {
 // in canned fixtures.
 // ---------------------------------------------------------------------------
 
+export type ApproveAgentArgs = Parameters<typeof agentsApi.approveAgent>[1];
+export type ApproveAgentResult = Awaited<ReturnType<typeof agentsApi.approveAgent>>;
+
+export type RejectAgentArgs = Parameters<typeof agentsApi.rejectAgent>[2];
+export type RejectAgentResult = Awaited<ReturnType<typeof agentsApi.rejectAgent>>;
+
 export interface AgentsApi {
   useAgentsList: () => QueryLike<{ agents: import('@/lib/api/agents').AgentSummary[] }>;
+  /** Pending enrollments — `status` filter narrows the file scan. */
+  useEnrollmentsList: (
+    params?: { status?: 'pending' | 'approved' },
+  ) => QueryLike<{ enrollments: import('@/lib/api/agents').AgentEnrollment[] }>;
+  /** Read-only learnings list for the agent detail drawer. */
+  useAgentLearnings: (
+    agentName: string | undefined,
+  ) => QueryLike<{ entries: import('@/lib/api/agents').LearningEntrySummary[] }>;
+  /** Tasks where this agent was the assigned (manager) agent. */
+  useAgentTasks: (
+    agentName: string | undefined,
+  ) => QueryLike<{ tasks: TaskRecord[] }>;
+
+  useApproveAgent: () => MutationLike<ApproveAgentArgs, ApproveAgentResult>;
+  useRejectAgent: () => MutationLike<
+    { agentName: string; body?: { reason?: string } },
+    RejectAgentResult
+  >;
+}
+
+export interface AgentsRoutes {
+  inbox: () => string;
+  pending: () => string;
+  detail: (agentName: string) => string;
+  inboxForOrg: (slug: string) => string;
 }
 
 /**
@@ -188,6 +220,7 @@ export interface DataContextValue {
    */
   useThreadRoutes: () => ThreadRoutes;
   useTasksRoutes: () => TasksRoutes;
+  useAgentsRoutes: () => AgentsRoutes;
 }
 
 export const DataContext = createContext<DataContextValue | null>(null);

@@ -196,22 +196,27 @@ def _append_to_learnings_file(learnings_path: Path, agent_name: str, text: str) 
 @router.get("/agents")
 def list_agents(slug: str, org: OrgDep) -> dict:
     tracker = PerformanceTracker(org.db, org.settings)
-    ws_dir = org.root / "workspaces"
+    paths = OrgPaths(root=org.root)
+    ws_dir = paths.workspaces_dir
     if ws_dir.exists():
         agent_names = sorted(d.name for d in ws_dir.iterdir() if d.is_dir())
     else:
         agent_names = []
     tiers = tracker.get_all_tiers(agent_names)
-    return {
-        "agents": [
-            {
-                "name": name,
-                "tier": tiers.get(name, PerformanceTier.GREEN).value,
-                "scorecard": org.db.get_scorecard(name),
-            }
-            for name in agent_names
-        ],
-    }
+    rows = []
+    for name in agent_names:
+        agent_def = prompt_loader.load_agent(paths, name)
+        rows.append({
+            "name": name,
+            "team": agent_def.team if agent_def else None,
+            "role": agent_def.role if agent_def else None,
+            "executor": agent_def.executor if agent_def else None,
+            "description": agent_def.description if agent_def else None,
+            "tier": tiers.get(name, PerformanceTier.GREEN).value,
+            "scorecard": org.db.get_scorecard(name),
+            "avg_confidence": tracker.get_avg_confidence(name),
+        })
+    return {"agents": rows}
 
 
 @router.post("/agents/init")
@@ -501,20 +506,30 @@ def list_enrollments(
     """
     paths = OrgPaths(root=org.root)
 
-    # Collect all enrollments from files.
+    # Collect all enrollments from files. `team` and `role` come from the
+    # parsed AgentDef so the founder UI can render the same shape as the
+    # active-agents table without a second roundtrip.
     all_enrollments: list[dict] = []
     for agent in prompt_loader.list_pending(paths):
         all_enrollments.append({
             "name": agent.name,
+            "team": agent.team,
+            "role": agent.role,
+            "executor": agent.executor,
             "description": agent.description or "",
             "status": "pending",
+            "enrolled_by": agent.enrolled_by,
             "created_at": agent.enrolled_at.isoformat() if agent.enrolled_at else None,
         })
     for agent in prompt_loader.list_agents(paths):
         all_enrollments.append({
             "name": agent.name,
+            "team": agent.team,
+            "role": agent.role,
+            "executor": agent.executor,
             "description": agent.description or "",
             "status": "approved",
+            "enrolled_by": agent.enrolled_by,
             "created_at": agent.enrolled_at.isoformat() if agent.enrolled_at else None,
         })
 

@@ -278,16 +278,6 @@
       "example": "<StatusBadge status='open' />"
     },
     {
-      "name": "TaskCard",
-      "layer": "pattern",
-      "import": "@/design-system/patterns/TaskCard",
-      "variants": {},
-      "consumes": [
-        "components.badge"
-      ],
-      "example": "<TaskCard task={task} to='/orgs/x/tasks/TASK-001' />"
-    },
-    {
       "name": "Tabs",
       "layer": "primitive",
       "import": "@/design-system/primitives/Tabs",
@@ -301,6 +291,16 @@
         "components.tabs"
       ],
       "example": "<Tabs value='open'><TabsList><TabsTrigger value='open'>open</TabsTrigger></TabsList></Tabs>"
+    },
+    {
+      "name": "TaskCard",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/TaskCard",
+      "variants": {},
+      "consumes": [
+        "components.badge"
+      ],
+      "example": "<TaskCard task={task} to='/orgs/x/tasks/TASK-001' />"
     },
     {
       "name": "Textarea",
