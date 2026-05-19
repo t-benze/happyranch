@@ -6,6 +6,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/design-system/primitives/Button';
 import { Input } from '@/design-system/primitives/Input';
 import { Tabs, TabsList, TabsTrigger } from '@/design-system/primitives/Tabs';
+import { ThreadsLayout } from '@/design-system/layouts/ThreadsLayout';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { InboxRow } from '@/design-system/patterns/InboxRow';
 import type { TalkRecord } from '@/lib/api/types';
@@ -78,8 +79,9 @@ export function TalksPage(): JSX.Element {
 
   return (
     <>
-      <div className="flex h-full">
-        <aside className="border-border-default bg-surface-sunken flex h-full w-[340px] flex-col border-r">
+      <ThreadsLayout
+        inbox={(
+        <aside className="border-border-default bg-surface-sunken flex h-full flex-col border-r">
           <header className="border-border-default border-b px-3 py-2">
             <div className="flex items-center justify-between gap-2">
               <h2 className="text-overline text-text-muted tracking-wide uppercase">
@@ -153,7 +155,8 @@ export function TalksPage(): JSX.Element {
             </div>
           </div>
         </aside>
-
+        )}
+        detail={(
         <main className="flex h-full flex-1 flex-col">
           {!talkId && (
             <EmptyState
@@ -240,7 +243,8 @@ export function TalksPage(): JSX.Element {
             </>
           )}
         </main>
-      </div>
+        )}
+      />
 
       <StartTalkDialog
         open={showStart}
