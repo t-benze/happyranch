@@ -1,0 +1,83 @@
+import { screen, waitFor } from '@testing-library/react';
+import { http, HttpResponse } from 'msw';
+import { describe, expect, test } from 'vitest';
+import { AppRoutes } from '@/routes';
+import { renderWithProviders } from '@/test/render';
+import { server } from '@/test/server';
+
+const SLUG = 'alpha';
+
+function mountAt(route: string) {
+  server.use(
+    http.get('/api/v1/orgs', () =>
+      HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+    ),
+  );
+  return renderWithProviders(<AppRoutes />, { route });
+}
+
+function seedAudit() {
+  server.use(
+    http.get(`/api/v1/orgs/${SLUG}/audit`, ({ request }) => {
+      const url = new URL(request.url);
+      const agent = url.searchParams.get('agent');
+      return HttpResponse.json({
+        entries: [
+          {
+            id: 1,
+            task_id: 'TASK-1',
+            session_id: 'sess-1',
+            agent: agent ?? 'content_writer',
+            action: 'completion_report',
+            payload: { status: 'completed' },
+            created_at: '2026-05-19T11:00:00Z',
+          },
+        ],
+      });
+    }),
+  );
+}
+
+describe('AuditPage', () => {
+  test('renders activity feed by default and honors agent filter from URL', async () => {
+    sessionStorage.setItem('grassland.token', 'tok');
+    seedAudit();
+    mountAt(`/orgs/${SLUG}/audit?agent=alice`);
+    await waitFor(() =>
+      expect(screen.getByText('alice')).toBeInTheDocument(),
+    );
+    // The audit row renders the action text under the toggle button; the
+    // sidebar Type group also renders "completion_report" as a chip. The
+    // row is identifiable by its accessible toggle label.
+    const toggle = screen.getByRole('button', { name: /toggle row/i });
+    expect(toggle).toHaveTextContent('completion_report');
+    // The "agent" chip is set by the URL deep link; the active-filter banner
+    // surfaces it back to the founder.
+    expect(screen.getByText(/agent: alice/i)).toBeInTheDocument();
+  });
+
+  test('escalations sub-route mounts the escalations tab', async () => {
+    sessionStorage.setItem('grassland.token', 'tok');
+    seedAudit();
+    mountAt(`/orgs/${SLUG}/audit/escalations`);
+    await waitFor(() =>
+      expect(
+        screen.getByRole('tab', { name: 'Escalations' }),
+      ).toHaveAttribute('aria-selected', 'true'),
+    );
+  });
+
+  test('traces sub-route shows the empty picker prompt without a selected task', async () => {
+    sessionStorage.setItem('grassland.token', 'tok');
+    // Empty audit list → no recent tasks → "Pick a task" prompt.
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/audit`, () =>
+        HttpResponse.json({ entries: [] }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/audit/traces`);
+    await waitFor(() =>
+      expect(screen.getByText(/Pick a task/i)).toBeInTheDocument(),
+    );
+  });
+});

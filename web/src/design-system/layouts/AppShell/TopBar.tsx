@@ -36,6 +36,9 @@ export function TopBar(): JSX.Element {
   useGlobalJump('t', () => {
     if (activeSlug && !isPrototype) navigate(tasksRoutes.inboxForOrg(activeSlug));
   });
+  useGlobalJump('a', () => {
+    if (activeSlug && !isPrototype) navigate(`/orgs/${activeSlug}/audit`);
+  });
   const switchEnabled = !orgsQuery.isLoading && (orgsQuery.data?.orgs.length ?? 0) > 0;
   // The four placeholder tabs (Tasks/KB/Audit/Agents) live only on the
   // production routes — the prototype sandbox is threads-only. Disable
