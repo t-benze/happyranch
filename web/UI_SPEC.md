@@ -24,8 +24,9 @@ A structured-markdown UX specification with one section per screen (Purpose / La
 8. Tasks — placeholder shell
 9. KB — placeholder shell
 10. Audit — placeholder shell
-11. Agents — placeholder shell
-12. Global UX — keyboard map, toast queue, theme toggle, density toggle
+11. Talks
+12. Agents — placeholder shell
+13. Global UX — keyboard map, toast queue, theme toggle, density toggle
 
 ---
 
@@ -542,7 +543,58 @@ Audit lists are dense — we lean on `density: compact` (32px row default). Trac
 
 ---
 
-## 11. Agents — placeholder shell
+## 11. Talks
+
+Founder↔agent 1:1 conversations. Read + lifecycle surface for the
+`grassland talk ...` CLI; no real-time chat (the agent session is
+attached via CLI). Two-pane: 340px inbox column with status tabs
+(open / closed / abandoned) + filter; right pane shows the talk header
+(id, agent, status, summary if closed) plus actions (Dispatch, End,
+Abandon) and a transcript or empty-state.
+
+### States
+
+| Talk status | Right-pane content |
+|-------------|--------------------|
+| open        | EmptyState "Talk is open. Use `grassland talk resume`…" |
+| closed      | Transcript rendered via MessageBubble per speaker section (best-effort split on `## founder` / `## agent` / `**founder:**`). Falls back to a single Markdown panel when no markers are present. |
+| abandoned   | EmptyState "Talk abandoned. No transcript was recorded." |
+
+### Interactions
+
+- `N` — start new talk (dialog).
+- `E` — end talk (dialog: summary + transcript markdown + optional
+  learnings, topics, KB slugs).
+- `X` — abandon talk (dialog: reason).
+- `D` — dispatch task from talk (dialog: brief + optional target + team).
+
+### Data dependencies
+
+- `GET /talks?status=` — 60 s polling.
+- `GET /talks/{id}` — 60 s polling; carries inline transcript when
+  closed and ≤ 256 KiB.
+
+### A11y
+
+Dialogs have visible titles, accessible labels for every field, and
+DialogDescription elements. Buttons disable when the underlying
+mutation would be invalid (empty brief, empty reason, missing
+summary).
+
+### Empty + error
+
+- Empty list: "No talks yet. Press N to start."
+- Empty filter: "No talks match the filter."
+- Detail load error: red banner "Failed to load talk."
+
+### Keyboard
+
+`N`, `E`, `X`, `D` per the Interactions table. Global jump `g l` lands
+on the inbox.
+
+---
+
+## 12. Agents — placeholder shell
 
 ### Purpose
 
@@ -571,7 +623,7 @@ Calibration table renders below the main table, same row template.
 
 ---
 
-## 12. Global UX — keyboard, toasts, theme, density
+## 13. Global UX — keyboard, toasts, theme, density
 
 ### Keyboard map (canonical)
 
@@ -580,6 +632,7 @@ Calibration table renders below the main table, same row template.
 | `g i` | global | Jump to `/orgs/:slug/threads` (inbox) |
 | `g t` | global (future) | Jump to Tasks |
 | `g k` | global (future) | Jump to KB |
+| `g l` | global | Jump to Talks |
 | `g a` | global (future) | Jump to Audit |
 | `g g` | global (future) | Jump to Agents |
 | `/` | active feature | Focus that feature's filter/search input |
