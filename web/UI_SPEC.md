@@ -479,33 +479,31 @@ The umbrella's §5.5 SSE budget assumed `/tasks/events` (inbox SSE) would land i
 
 ---
 
-## 9. KB — placeholder shell
+## 9. KB — as built (PR 10)
 
 ### Purpose
 
-Browse and read knowledge-base entries. Read-only in v0.1 — adds are CLI-only.
+Browse and read knowledge-base entries. Read-only by default. A flag-gated compose dialog lets the founder add entries without dropping to the CLI.
 
-### One-screen sketch
+### Layout
 
-Layout: same 240px + 1fr as Tasks. Sidebar: a search box + a list of tag pills + a list of types. Canvas: a list of KB cards (slug, title, type, tags, updated_at) followed by a detail pane when one is selected.
+- 240px left rail = search input + `FilterSidebar` (Types + Tags, derived from the unfiltered entry list).
+- Canvas = `KbEntryCard` rows (slug, title, type, age, tags in comfortable density).
+- Drawer detail at `/orgs/:slug/kb/:entry_slug` — markdown body via `<Markdown>`, source-task `IdBadge` linking to `/orgs/:slug/tasks/:task_id`, related-entry list.
 
-```
-+-----------+----------------------------------------------+
-| [Search…] |  Knowledge base                              |
-|           |                                              |
-| TAGS      |  policy/refund-thresholds                    |
-|  policy   |  Refund authority by tier                    |
-|  intake   |  ─────────────────────────────────────       |
-|  routing  |  Type: precedent · Updated 3d ago            |
-|           |  Tags: policy, finance, customer-care        |
-| TYPES     |                                              |
-|  precedent|  > Refund authority is delegated to the      |
-|  guide    |  > CX Manager up to $150 …                   |
-|  sop      |                                              |
-+-----------+----------------------------------------------+
-```
+### Filters
 
-Markdown bodies use the same `prose` styling as message bodies. The slug uses `mono_sm` colored `text.secondary`. Source-task references in frontmatter render as a `Badge` linking to the (future) task detail.
+- **Type** = server-side `?type=` on `GET /kb`.
+- **Tag** = client-side single-tag filter on the result set.
+- **Search** = non-empty input switches the active query to `GET /kb/search?q=…`, debounced by `useDeferredValue`.
+
+### Compose (flag-gated)
+
+`VITE_ENABLE_KB_COMPOSE=true` shows a `[Compose…]` button next to the page title. The dialog hardcodes `agent: "founder"` and calls `POST /kb`. Edits, deletes, and reindex stay CLI-only.
+
+### Jump-key
+
+`g k` from anywhere navigates to `/orgs/<active-slug>/kb` (registered in `TopBar`).
 
 ---
 
