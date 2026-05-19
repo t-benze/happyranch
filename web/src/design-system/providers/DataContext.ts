@@ -20,6 +20,7 @@
  */
 import { createContext, useContext } from 'react';
 import type {
+  HealthResponse,
   OrgsListResponse,
   ThreadDetailResponse,
   ThreadMessage,
@@ -217,6 +218,14 @@ export interface OrgsApi {
 }
 
 // ---------------------------------------------------------------------------
+// HealthApi — minimal daemon liveness probe consumed by the Dashboard page.
+// ---------------------------------------------------------------------------
+
+export interface HealthApi {
+  useHealth: () => QueryLike<HealthResponse>;
+}
+
+// ---------------------------------------------------------------------------
 // AgentsApi — minimal read-only roster used by the Composer for
 // @-mention autocomplete. Lives on DataContext so prototypes can swap
 // in canned fixtures.
@@ -301,6 +310,7 @@ export interface DataContextValue {
   tasks: TasksApi;
   kb: KbApi;
   talks: TalksApi;
+  health: HealthApi;
   /**
    * Provider-supplied React hook that returns the active feature's route
    * builders. A hook (not a plain object) so the implementation can read

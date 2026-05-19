@@ -69,6 +69,14 @@
       "example": "<Composer onSend={(md, to) => {}} helper='Cmd/Ctrl+Enter to send' agents={[]} threadId='THR-001' />"
     },
     {
+      "name": "DashboardLayout",
+      "layer": "layout",
+      "import": "@/design-system/layouts/DashboardLayout",
+      "variants": {},
+      "consumes": [],
+      "example": "<DashboardLayout health={<div/>} pending={<div/>} activeByTeam={<div/>} blocked={<div/>} />"
+    },
+    {
       "name": "Dialog",
       "layer": "primitive",
       "import": "@/design-system/primitives/Dialog",
