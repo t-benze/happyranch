@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -49,10 +50,10 @@ export function AbandonTalkDialog({ talkId, open, onClose }: Props): JSX.Element
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Abandon talk {talkId}</DialogTitle>
+          <DialogDescription className="text-fg-muted text-sm">
+            Closes the talk without recording a transcript or learnings.
+          </DialogDescription>
         </DialogHeader>
-        <p className="text-fg-muted text-sm">
-          Closes the talk without recording a transcript or learnings.
-        </p>
         <Textarea
           value={reason}
           onChange={(e) => setReason(e.target.value)}
