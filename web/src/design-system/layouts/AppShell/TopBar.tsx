@@ -88,6 +88,7 @@ export function TopBar(): JSX.Element {
         </SelectContent>
       </Select>
       <nav className="flex items-center gap-1 text-sm">
+        <NavTab {...placeholderTab('dashboard')}>Dashboard</NavTab>
         <NavTab to={threadsHref} enabled={!!activeSlug && threadsHref !== '#'}>
           Threads
         </NavTab>

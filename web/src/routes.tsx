@@ -13,6 +13,7 @@ import { ActivityTab } from '@/features/audit/ActivityTab';
 import { AuditPage } from '@/features/audit/AuditPage';
 import { EscalationsTab } from '@/features/audit/EscalationsTab';
 import { TracesTab } from '@/features/audit/TracesTab';
+import { DashboardPage } from '@/features/dashboard/DashboardPage';
 import { KbPage } from '@/features/kb/KbPage';
 import { TalksPage } from '@/features/talks/TalksPage';
 import { TasksPage } from '@/features/tasks/TasksPage';
@@ -68,6 +69,7 @@ export function AppRoutes(): JSX.Element {
         <Route index element={<RootRedirect />} />
         <Route path="/orgs/:slug" element={<OrgLayout />}>
           <Route index element={<NavigateToThreads />} />
+          <Route path="dashboard" element={<DashboardPage />} />
           <Route path="threads" element={<ThreadsPage />} />
           <Route path="threads/:thread_id" element={<ThreadsPage />} />
           <Route path="tasks" element={<TasksPage />} />
