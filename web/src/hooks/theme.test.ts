@@ -1,0 +1,48 @@
+import { describe, it, expect, beforeEach } from 'vitest';
+import { renderHook, act } from '@testing-library/react';
+import { useTheme } from './theme';
+
+describe('useTheme', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    document.documentElement.removeAttribute('data-theme');
+  });
+
+  it('defaults to dark', () => {
+    const { result } = renderHook(() => useTheme());
+    expect(result.current.theme).toBe('dark');
+  });
+
+  it('reads persisted value', () => {
+    localStorage.setItem('grassland.theme', 'light');
+    const { result } = renderHook(() => useTheme());
+    expect(result.current.theme).toBe('light');
+  });
+
+  it('persists and applies attribute on setTheme', () => {
+    const { result } = renderHook(() => useTheme());
+    act(() => result.current.setTheme('light'));
+    expect(result.current.theme).toBe('light');
+    expect(localStorage.getItem('grassland.theme')).toBe('light');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('light');
+  });
+
+  it('ignores invalid persisted value', () => {
+    localStorage.setItem('grassland.theme', 'sepia');
+    const { result } = renderHook(() => useTheme());
+    expect(result.current.theme).toBe('dark');
+  });
+
+  it('mirrors storage events from other tabs', () => {
+    const { result } = renderHook(() => useTheme());
+    act(() => {
+      window.dispatchEvent(
+        new StorageEvent('storage', {
+          key: 'grassland.theme',
+          newValue: 'light',
+        }),
+      );
+    });
+    expect(result.current.theme).toBe('light');
+  });
+});

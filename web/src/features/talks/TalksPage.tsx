@@ -10,6 +10,7 @@ import { ThreadsLayout } from '@/design-system/layouts/ThreadsLayout';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { InboxRow } from '@/design-system/patterns/InboxRow';
 import type { TalkRecord } from '@/lib/api/types';
+import { isGPrefixArmed } from '@/hooks/global-jump';
 import { useTasksRoutes } from '@/hooks/tasks';
 import { useTalk, useTalksList, useTalksRoutes } from '@/hooks/talks';
 import { AbandonTalkDialog } from './AbandonTalkDialog';
@@ -59,6 +60,8 @@ export function TalksPage(): JSX.Element {
       const target = e.target as HTMLElement | null;
       const tag = target?.tagName?.toLowerCase();
       if (tag === 'input' || tag === 'textarea' || target?.isContentEditable) return;
+      // Don't let `g d` / `g l` chords also fire the bare D/N actions here.
+      if (isGPrefixArmed()) return;
       if (e.key === 'n' || e.key === 'N') {
         e.preventDefault();
         setShowStart(true);

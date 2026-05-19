@@ -226,3 +226,43 @@
 :root {
   --radius: var(--radius-md);
 }
+
+/* ========================================================================== */
+/* Light-mode overrides — PR 13 polish (spec 2026-05-19-web-polish-design §3).*/
+/* Token names do not change; only their values flip when                    */
+/* `<html data-theme="light">` is set by useTheme(). Accent + tier + the     */
+/* `_tint` rgba companions are mode-neutral and stay at their dark values.   */
+/* ========================================================================== */
+
+:root[data-theme="light"] {
+  /* DESIGN.md `semantic.light` surface ramp — light ink_50…ink_300. */
+  --color-surface-canvas:  #f7f8fa;
+  --color-surface-sunken:  #eef0f4;
+  --color-surface-raised:  #ffffff;
+  --color-surface-overlay: #ffffff;
+  --color-surface-scrim:   rgba(12, 13, 15, 0.35);
+
+  /* Text — invert primary, soften muted, keep mid-grey muted as-is. */
+  --color-text-primary:    #0c0d0f;
+  --color-text-secondary:  #3e424b;
+  --color-text-muted:      #6d7280;
+  --color-text-inverse:    #ffffff;
+
+  /* Borders pick lighter neutrals; strong stays a notch darker. */
+  --color-border-default:  #d8dbe2;
+  --color-border-strong:   #b9bdc6;
+
+  /* Accent muted/ring scale stays the same rgba — the alpha gives it
+   * acceptable contrast on either surface. */
+
+  /* v3 backwards-compat aliases — keep every utility used in the codebase
+   * pointing at the light hex equivalents so no .tsx file has to change. */
+  --color-bg:              #f7f8fa;
+  --color-bg-subtle:       #eef0f4;
+  --color-bg-raised:       #ffffff;
+  --color-border:          #d8dbe2;
+  --color-border-subtle:   #e3e6ec;
+  --color-fg:              #0c0d0f;
+  --color-fg-muted:        #3e424b;
+  --color-fg-subtle:       #6d7280;
+}
