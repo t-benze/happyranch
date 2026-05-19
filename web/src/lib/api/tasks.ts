@@ -4,7 +4,7 @@
  * POST /tasks/{id}/progress. See spec §2.
  */
 import { request } from './client';
-import type { TaskRecord } from './types';
+import type { TaskDetailResponse, TaskRecallNode, TaskRecord } from './types';
 
 export type TaskListItem = TaskRecord;
 
@@ -20,14 +20,14 @@ export const listTasks = (
 ): Promise<{ tasks: TaskListItem[] }> =>
   request(`/orgs/${slug}/tasks`, { params });
 
-export const getTask = (slug: string, taskId: string): Promise<TaskRecord> =>
+export const getTask = (slug: string, taskId: string): Promise<TaskDetailResponse> =>
   request(`/orgs/${slug}/tasks/${taskId}`);
 
 export const recallTask = (
   slug: string,
   taskId: string,
-  params?: { fetch_artifact?: string },
-): Promise<Record<string, unknown>> =>
+  params?: { tree?: boolean; include_artifact?: boolean },
+): Promise<TaskRecallNode> =>
   request(`/orgs/${slug}/tasks/${taskId}/recall`, { params });
 
 export const resolveEscalation = (

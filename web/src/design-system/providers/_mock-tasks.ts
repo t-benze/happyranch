@@ -39,14 +39,14 @@ const FIXTURES: TaskRecord[] = [
 
 const RECALL_TREE: TaskRecallNode = {
   task_id: 'TASK-0091',
-  team: 'content',
+  assigned_agent: 'content_writer',
   brief: 'Draft Hong Kong visa guide v2',
   status: 'in_progress',
   output_summary: null,
   children: [
     {
       task_id: 'TASK-0092',
-      team: 'content',
+      assigned_agent: 'content_writer',
       brief: 'Section 4: currency policy',
       status: 'completed',
       output_summary: 'Wrote section 4 (245 words).',

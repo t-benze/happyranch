@@ -32,10 +32,24 @@ function stubBaseHandlers() {
       HttpResponse.json({ tasks: [TASK] }),
     ),
     http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}`, () =>
-      HttpResponse.json(TASK),
+      HttpResponse.json({
+        task: TASK,
+        results: [],
+        audit_log: [],
+        revisit_chain: [],
+        direct_revisits: [],
+        predecessor_prior_status: null,
+      }),
     ),
     http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/recall`, () =>
-      HttpResponse.json({ ...TASK, children: [] }),
+      HttpResponse.json({
+        task_id: TASK.task_id,
+        assigned_agent: 'content_writer',
+        brief: TASK.brief,
+        status: TASK.status,
+        output_summary: null,
+        children: [],
+      }),
     ),
     // SSE — return an empty stream so subscribeSSE opens, gets no events, and stays quiet
     http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/events`, () =>

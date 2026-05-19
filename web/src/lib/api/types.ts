@@ -76,9 +76,22 @@ export interface TaskEvent {
   [extra: string]: unknown;
 }
 
+/** Envelope returned by `GET /api/v1/orgs/{slug}/tasks/{task_id}`. */
+export interface TaskDetailResponse {
+  task: TaskRecord;
+  results: unknown[] | null;
+  audit_log: unknown[];
+  revisit_chain: string[];
+  direct_revisits: unknown[];
+  predecessor_prior_status: string | null;
+  [extra: string]: unknown;
+}
+
+/** Recall payload. With `?tree=true`, `children` is recursive; without it,
+ * `children` is a list of task-ID strings — UI must request the tree shape. */
 export interface TaskRecallNode {
   task_id: string;
-  team: string;
+  assigned_agent?: string | null;
   brief: string;
   status: TaskStatus;
   output_summary?: string | null;

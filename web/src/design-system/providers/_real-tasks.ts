@@ -35,6 +35,8 @@ function useTask(taskId: string | undefined) {
   return useQuery({
     queryKey: ['task', slug, taskId],
     queryFn: () => tasksApi.getTask(slug, taskId as string),
+    // Daemon returns an envelope; consumers want the bare TaskRecord.
+    select: (response) => response.task,
     enabled: !!slug && !!taskId,
   });
 }
@@ -43,7 +45,10 @@ function useTaskRecall(taskId: string | undefined) {
   const slug = useRealOrgSlug();
   return useQuery({
     queryKey: ['task-recall', slug, taskId],
-    queryFn: () => tasksApi.recallTask(slug, taskId as string),
+    // tree=true expands children into nested TaskRecallNode payloads;
+    // without it, `children` is a flat list of task-ID strings that the
+    // TaskRecallTree component cannot render.
+    queryFn: () => tasksApi.recallTask(slug, taskId as string, { tree: true }),
     enabled: !!slug && !!taskId,
   });
 }

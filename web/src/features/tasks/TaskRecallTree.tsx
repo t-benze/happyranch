@@ -18,7 +18,9 @@ export function TaskRecallTree({ node, depth = 0 }: { node: TaskRecallNode; dept
     <div className={`${pl} py-1`}>
       <div className="flex items-center gap-2 text-sm">
         <IdBadge kind="task" id={node.task_id} to={routes.detail(node.task_id)} />
-        <span className="text-fg-muted">{node.team}</span>
+        {node.assigned_agent && (
+          <span className="text-fg-muted">{node.assigned_agent}</span>
+        )}
         <StatusBadge status={node.status} />
       </div>
       <p className="text-fg mt-1 text-sm">{node.brief}</p>
