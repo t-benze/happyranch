@@ -24,6 +24,7 @@ import { DataContext } from './DataContext';
 import { realAgentsApi } from './_real-agents';
 import { realOrgsApi } from './_real-orgs';
 import {
+  useRealAgentsRoutes,
   useRealTalksRoutes,
   useRealTasksRoutes,
   useRealThreadRoutes,
@@ -65,6 +66,7 @@ export function AppProvider({ children, client }: AppProviderProps): JSX.Element
           useThreadRoutes: useRealThreadRoutes,
           useTasksRoutes: useRealTasksRoutes,
           useTalksRoutes: useRealTalksRoutes,
+          useAgentsRoutes: useRealAgentsRoutes,
         }}
       >
         <TooltipProvider delayDuration={300}>{children}</TooltipProvider>

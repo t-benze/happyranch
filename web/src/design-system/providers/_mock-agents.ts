@@ -2,11 +2,16 @@
  * Mock `AgentsApi` for the prototype harness. Returns canned roster
  * from `@/mocks/agents.ts`. Synchronous-ish — wrapped in useQuery to
  * mirror the real shape, so loading-state JSX in compositions still
- * runs.
+ * runs. Mutations are no-ops that resolve immediately.
  */
-import { useQuery } from '@tanstack/react-query';
-import type { AgentSummary } from '@/lib/api/agents';
-import { MOCK_AGENTS } from '@/mocks';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import type {
+  AgentEnrollment,
+  AgentSummary,
+  LearningEntrySummary,
+} from '@/lib/api/agents';
+import type { TaskRecord } from '@/lib/api/types';
+import { MOCK_AGENTS, MOCK_ENROLLMENTS } from '@/mocks';
 import type { AgentsApi } from './DataContext';
 
 export const mockAgentsApi: AgentsApi = {
@@ -15,5 +20,44 @@ export const mockAgentsApi: AgentsApi = {
       queryKey: ['mock-agents'],
       queryFn: async (): Promise<{ agents: AgentSummary[] }> => ({ agents: MOCK_AGENTS }),
       staleTime: Infinity,
+    }),
+
+  useEnrollmentsList: (params) =>
+    useQuery({
+      queryKey: ['mock-agent-enrollments', params],
+      queryFn: async (): Promise<{ enrollments: AgentEnrollment[] }> => ({
+        enrollments: params?.status
+          ? MOCK_ENROLLMENTS.filter((e) => e.status === params.status)
+          : MOCK_ENROLLMENTS,
+      }),
+      staleTime: Infinity,
+    }),
+
+  useAgentLearnings: (agentName) =>
+    useQuery({
+      queryKey: ['mock-agent-learnings', agentName],
+      queryFn: async (): Promise<{ entries: LearningEntrySummary[] }> => ({
+        entries: [],
+      }),
+      enabled: !!agentName,
+      staleTime: Infinity,
+    }),
+
+  useAgentTasks: (agentName) =>
+    useQuery({
+      queryKey: ['mock-agent-tasks', agentName],
+      queryFn: async (): Promise<{ tasks: TaskRecord[] }> => ({ tasks: [] }),
+      enabled: !!agentName,
+      staleTime: Infinity,
+    }),
+
+  useApproveAgent: () =>
+    useMutation({
+      mutationFn: async (_agentName: string) => ({ name: _agentName }),
+    }),
+
+  useRejectAgent: () =>
+    useMutation({
+      mutationFn: async ({ agentName }: { agentName: string }) => ({ name: agentName }),
     }),
 };

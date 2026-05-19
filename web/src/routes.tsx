@@ -74,6 +74,7 @@ export function AppRoutes(): JSX.Element {
           <Route path="talks/:talk_id" element={<TalksPage />} />
           <Route path="audit" element={<AuditPage />} />
           <Route path="agents" element={<AgentsPage />} />
+          <Route path="agents/:agent_name" element={<AgentsPage />} />
         </Route>
         <Route path="*" element={<NotFound />} />
       </Route>
