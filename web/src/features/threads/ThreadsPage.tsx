@@ -3,8 +3,9 @@
  *
  * Owns every TanStack Query hook + SSE subscription for this screen, plus
  * dialog state and routing. The visual pieces — InboxRow, ThreadHeader,
- * MessageBubble, Composer, HelpSheet, EmptyState — are pure-prop patterns
- * from @/design-system/patterns/.
+ * MessageBubble, Composer, EmptyState — are pure-prop patterns from
+ * @/design-system/patterns/. The `?` HelpDrawer is owned globally by
+ * `HelpDrawerHost` mounted in AppShell, not by this page.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
@@ -14,7 +15,6 @@ import { Tabs, TabsList, TabsTrigger } from '@/design-system/primitives/Tabs';
 import { ThreadsLayout } from '@/design-system/layouts/ThreadsLayout';
 import { Composer } from '@/design-system/patterns/Composer';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
-import { HelpSheet } from '@/design-system/patterns/HelpSheet';
 import { InboxRow } from '@/design-system/patterns/InboxRow';
 import { KbdChip } from '@/design-system/patterns/KbdChip';
 import { MessageBubble, type MessageVariant } from '@/design-system/patterns/MessageBubble';
@@ -22,6 +22,7 @@ import { ThreadHeader } from '@/design-system/patterns/ThreadHeader';
 import { ApiError } from '@/lib/api';
 import type { ThreadMessage } from '@/lib/api/types';
 import { useAgentsList } from '@/hooks/agents';
+import { isGPrefixArmed } from '@/hooks/global-jump';
 import {
   useSendFollowUp,
   useThread,
@@ -37,7 +38,6 @@ import { ExtendDialog } from './ExtendDialog';
 import { InviteDialog } from './InviteDialog';
 import { NewThreadDialog } from './NewThreadDialog';
 import { describeError } from './strings';
-import { THREADS_SHORTCUTS, THREADS_SHORTCUTS_FOOTNOTE } from './threads-shortcuts';
 
 const STATUS_TABS = ['open', 'archived', 'abandoned'] as const;
 type StatusTab = (typeof STATUS_TABS)[number];
@@ -89,7 +89,6 @@ export function ThreadsPage(): JSX.Element {
   const [showArchive, setShowArchive] = useState(false);
   const [showAbandon, setShowAbandon] = useState(false);
   const [showExtend, setShowExtend] = useState(false);
-  const [showHelp, setShowHelp] = useState(false);
 
   const openNew = () => {
     setNewPrefill(undefined);
@@ -132,12 +131,16 @@ export function ThreadsPage(): JSX.Element {
     }
   };
 
-  // Keyboard shortcuts: N / I / A / X / F / R / ?. Limited to when no input is focused.
+  // Keyboard shortcuts: N / I / A / X / F / R. Limited to when no input is
+  // focused. The `?` help trigger lives on the global `HelpDrawerHost`.
+  // `isGPrefixArmed()` keeps `g i / g a / g d`-style chords from also
+  // firing the bare-letter dialogs here.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
       const tag = target?.tagName?.toLowerCase();
       if (tag === 'input' || tag === 'textarea' || target?.isContentEditable) return;
+      if (isGPrefixArmed()) return;
       if (e.key === 'n' || e.key === 'N') { e.preventDefault(); openNew(); }
       else if (threadId && (e.key === 'i' || e.key === 'I')) { e.preventDefault(); setShowInvite(true); }
       else if (threadId && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); setShowArchive(true); }
@@ -147,7 +150,6 @@ export function ThreadsPage(): JSX.Element {
         e.preventDefault();
         composerFocusRef.current?.();
       }
-      else if (e.key === '?') { e.preventDefault(); setShowHelp(true); }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -275,12 +277,6 @@ export function ThreadsPage(): JSX.Element {
         onClose={() => setShowNew(false)}
         prefill={newPrefill}
         onCreated={(newId) => navigate(routes.detail(newId))}
-      />
-      <HelpSheet
-        open={showHelp}
-        onClose={() => setShowHelp(false)}
-        shortcuts={THREADS_SHORTCUTS}
-        footnote={THREADS_SHORTCUTS_FOOTNOTE}
       />
       {threadId && (
         <>
