@@ -12,6 +12,7 @@ import {
   TooltipTrigger,
 } from '@/design-system/primitives/Tooltip';
 import { useOrgsList } from '@/hooks/orgs';
+import { useKbRoutes } from '@/hooks/kb';
 import { useTasksRoutes } from '@/hooks/tasks';
 import { useThreadRoutes } from '@/hooks/threads';
 import { useGlobalJump } from '@/hooks/global-jump';
@@ -35,6 +36,10 @@ export function TopBar(): JSX.Element {
   const threadsHref = activeSlug ? routes.inboxForOrg(activeSlug) : '#';
   useGlobalJump('t', () => {
     if (activeSlug && !isPrototype) navigate(tasksRoutes.inboxForOrg(activeSlug));
+  });
+  const kbRoutes = useKbRoutes();
+  useGlobalJump('k', () => {
+    if (activeSlug && !isPrototype) navigate(kbRoutes.inboxForOrg(activeSlug));
   });
   const switchEnabled = !orgsQuery.isLoading && (orgsQuery.data?.orgs.length ?? 0) > 0;
   // The four placeholder tabs (Tasks/KB/Audit/Agents) live only on the
