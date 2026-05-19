@@ -7,7 +7,7 @@
  * from @/design-system/patterns/.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/design-system/primitives/Button';
 import { Input } from '@/design-system/primitives/Input';
 import { Tabs, TabsList, TabsTrigger } from '@/design-system/primitives/Tabs';
@@ -45,7 +45,7 @@ type StatusTab = (typeof STATUS_TABS)[number];
 export function ThreadsPage(): JSX.Element {
   const routes = useThreadRoutes();
   const navigate = useNavigate();
-  const { thread_id: threadId } = useParams<{ thread_id: string }>();
+  const { slug, thread_id: threadId } = useParams<{ slug: string; thread_id: string }>();
   const composerFocusRef = useRef<(() => void) | null>(null);
 
   // Inbox state
@@ -254,6 +254,7 @@ export function ThreadsPage(): JSX.Element {
               registerFocus={(focus) => { composerFocusRef.current = focus; }}
             />
           }
+          slug={slug}
         />
       ) : (
         <EmptyState
@@ -336,6 +337,8 @@ interface DetailColumnProps {
   onAbandon: () => void;
   onExtend: () => void;
   composer: JSX.Element;
+  /** Active org slug — used to build the cross-surface "View audit" link. */
+  slug: string | undefined;
 }
 
 function DetailColumn({
@@ -349,6 +352,7 @@ function DetailColumn({
   onAbandon,
   onExtend,
   composer,
+  slug,
 }: DetailColumnProps): JSX.Element {
   if (loading) {
     return (
@@ -381,6 +385,15 @@ function DetailColumn({
             <Button variant="ghost" size="sm" onClick={onExtend} disabled={!open} title="Extend turn cap">Extend</Button>
             <Button variant="ghost" size="sm" onClick={onArchive} disabled={!open} title="Archive (A)">Archive</Button>
             <Button variant="ghost" size="sm" onClick={onAbandon} disabled={!open} title="Abandon (X)">Abandon</Button>
+            {slug && thread.participants[0] && (
+              <Link
+                to={`/orgs/${slug}/audit?agent=${encodeURIComponent(thread.participants[0])}`}
+                className="text-accent self-center text-xs hover:underline"
+                title="View audit log for the lead participant"
+              >
+                Audit ↗
+              </Link>
+            )}
           </>
         }
       />

@@ -44,6 +44,9 @@ export function TopBar(): JSX.Element {
   useGlobalJump('l', () => {
     if (activeSlug && !isPrototype) navigate(talksRoutes.inboxForOrg(activeSlug));
   });
+  useGlobalJump('a', () => {
+    if (activeSlug && !isPrototype) navigate(`/orgs/${activeSlug}/audit`);
+  });
   useGlobalJump('g', () => {
     if (activeSlug && !isPrototype) navigate(agentsRoutes.inboxForOrg(activeSlug));
   });

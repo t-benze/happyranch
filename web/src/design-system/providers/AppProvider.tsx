@@ -22,6 +22,7 @@ import { useState, type ReactNode } from 'react';
 import { TooltipProvider } from '@/design-system/primitives/Tooltip';
 import { DataContext } from './DataContext';
 import { realAgentsApi } from './_real-agents';
+import { realAuditApi } from './_real-audit';
 import { realOrgsApi } from './_real-orgs';
 import {
   useRealAgentsRoutes,
@@ -60,6 +61,7 @@ export function AppProvider({ children, client }: AppProviderProps): JSX.Element
         value={{
           orgs: realOrgsApi,
           agents: realAgentsApi,
+          audit: realAuditApi,
           threads: realThreadsApi,
           tasks: realTasksApi,
           talks: realTalksApi,

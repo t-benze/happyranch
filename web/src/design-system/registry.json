@@ -18,6 +18,21 @@
       "example": "<AgentChip name='engineering_head' role='manager' />"
     },
     {
+      "name": "AuditRow",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/AuditRow",
+      "variants": {
+        "density": [
+          "comfortable",
+          "compact"
+        ]
+      },
+      "consumes": [
+        "components.audit_row"
+      ],
+      "example": "<AuditRow entry={{} as any} density=\"compact\" />"
+    },
+    {
       "name": "Button",
       "layer": "primitive",
       "import": "@/design-system/primitives/Button",
@@ -278,6 +293,16 @@
       "example": "<StatusBadge status='open' />"
     },
     {
+      "name": "SubTabBar",
+      "layer": "primitive",
+      "import": "@/design-system/primitives/SubTabBar",
+      "variants": {},
+      "consumes": [
+        "components.subtabbar"
+      ],
+      "example": "<SubTabBar tabs={[]} active=\"activity\" />"
+    },
+    {
       "name": "Tabs",
       "layer": "primitive",
       "import": "@/design-system/primitives/Tabs",
@@ -375,6 +400,21 @@
         "layout.grid.app_shell"
       ],
       "example": "<TopBar />"
+    },
+    {
+      "name": "TraceTree",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/TraceTree",
+      "variants": {
+        "density": [
+          "comfortable",
+          "compact"
+        ]
+      },
+      "consumes": [
+        "components.trace_tree"
+      ],
+      "example": "<TraceTree root={{} as any} costs={{}} density=\"compact\" />"
     }
   ]
 }
