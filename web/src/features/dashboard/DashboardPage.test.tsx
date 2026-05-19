@@ -1,5 +1,5 @@
 import { screen, waitFor, within } from '@testing-library/react';
-import { http, HttpResponse } from 'msw';
+import { delay, http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
@@ -133,6 +133,65 @@ describe('DashboardPage', () => {
     });
     expect(within(card).queryByText(/refund \$280/i)).toBeNull();
     expect(within(card).queryByText(/already shipped/i)).toBeNull();
+  });
+
+  test('task cards show loading state while /tasks is in flight', async () => {
+    sessionStorage.setItem('grassland.token', 'tok');
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get('/api/v1/health', () =>
+        HttpResponse.json({ status: 'ok', active_runtime: '/Users/x/grassland' }),
+      ),
+      // Pending forever so the dashboard observes the loading branch.
+      http.get(`/api/v1/orgs/${SLUG}/tasks`, async () => {
+        await delay('infinite');
+        return HttpResponse.json({ tasks: [] });
+      }),
+    );
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
+
+    const pending = await screen.findByLabelText(/pending your action/i);
+    await waitFor(() => {
+      expect(within(pending).getByText(/loading…/i)).toBeInTheDocument();
+    });
+    expect(
+      within(screen.getByLabelText(/active tasks by team/i)).getByText(/loading…/i),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByLabelText(/blocked tasks/i)).getByText(/loading…/i),
+    ).toBeInTheDocument();
+    // No false-negative empty state should leak through during loading.
+    expect(within(pending).queryByText(/all clear/i)).toBeNull();
+  });
+
+  test('task cards show an error message when /tasks fails', async () => {
+    sessionStorage.setItem('grassland.token', 'tok');
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get('/api/v1/health', () =>
+        HttpResponse.json({ status: 'ok', active_runtime: '/Users/x/grassland' }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
+        HttpResponse.json({ detail: 'boom' }, { status: 500 }),
+      ),
+    );
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
+
+    const pending = await screen.findByLabelText(/pending your action/i);
+    await waitFor(() => {
+      expect(within(pending).getByText(/failed to load tasks/i)).toBeInTheDocument();
+    });
+    expect(
+      within(screen.getByLabelText(/active tasks by team/i)).getByText(/failed to load tasks/i),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByLabelText(/blocked tasks/i)).getByText(/failed to load tasks/i),
+    ).toBeInTheDocument();
+    expect(within(pending).queryByText(/all clear/i)).toBeNull();
   });
 
   test('empty buckets render their respective empty states', async () => {

@@ -7,7 +7,7 @@
  * client-side by status + block_kind); one `useHealth()` query powers the
  * fourth. Read-only — clicking a task opens the Tasks feature.
  */
-import { useMemo } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import { DashboardLayout } from '@/design-system/layouts/DashboardLayout';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { TaskCard } from '@/design-system/patterns/TaskCard';
@@ -82,7 +82,24 @@ export function DashboardPage(): JSX.Element {
   const tasksQuery = useTasksList({ limit: FETCH_LIMIT });
   const routes = useTasksRoutes();
 
+  // Branch on loading/error BEFORE falling back to `?? []`. Otherwise a slow
+  // or failed `/tasks` fetch renders reassuring empty states ("All clear",
+  // "No active tasks") and hides real escalations from the founder.
+  const tasksLoading = tasksQuery.isLoading;
+  const tasksError = tasksQuery.isError;
   const all = tasksQuery.data?.tasks ?? [];
+
+  function gate(body: ReactNode): ReactNode {
+    if (tasksLoading) {
+      return <p className="text-text-muted text-sm">loading…</p>;
+    }
+    if (tasksError) {
+      return (
+        <p className="text-feedback-danger text-sm">Failed to load tasks.</p>
+      );
+    }
+    return body;
+  }
 
   const escalated = useMemo(
     () =>
@@ -150,9 +167,9 @@ export function DashboardPage(): JSX.Element {
   return (
     <DashboardLayout
       health={<HealthBody />}
-      pending={pending}
-      activeByTeam={active}
-      blocked={blocked}
+      pending={gate(pending)}
+      activeByTeam={gate(active)}
+      blocked={gate(blocked)}
     />
   );
 }
