@@ -3,11 +3,15 @@ import { useParams } from 'react-router-dom';
 import { FilterSidebar, type FilterGroup } from '@/design-system/patterns/FilterSidebar';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { Input } from '@/design-system/primitives/Input';
+import { Button } from '@/design-system/primitives/Button';
 import { useDensity } from '@/hooks/density';
 import { useKBList, useKBSearch, useKbRoutes } from '@/hooks/kb';
 import { KbEntryCard } from './KbEntryCard';
 import { KbEntryDetailPane } from './KbEntryDetailPane';
+import { ComposeKbEntryDialog } from './ComposeKbEntryDialog';
 import { KB_STRINGS } from './strings';
+
+const COMPOSE_ENABLED = import.meta.env.VITE_ENABLE_KB_COMPOSE === 'true';
 
 export function KbPage(): JSX.Element {
   // KB slugs contain forward slashes (e.g. `policy/refund-thresholds`), so the
@@ -19,6 +23,7 @@ export function KbPage(): JSX.Element {
     tag: null,
   });
   const [searchInput, setSearchInput] = useState('');
+  const [composeOpen, setComposeOpen] = useState(false);
   const deferredQ = useDeferredValue(searchInput.trim());
   const { density } = useDensity();
   const routes = useKbRoutes();
@@ -79,7 +84,14 @@ export function KbPage(): JSX.Element {
         <FilterSidebar groups={groups} value={filters} onChange={setFilters} />
       </aside>
       <main className="bg-surface-canvas flex-1 overflow-y-auto p-4">
-        <h1 className="text-fg mb-3 text-lg font-semibold">{KB_STRINGS.pageTitle}</h1>
+        <div className="mb-3 flex items-center justify-between">
+          <h1 className="text-fg text-lg font-semibold">{KB_STRINGS.pageTitle}</h1>
+          {COMPOSE_ENABLED && (
+            <Button size="sm" onClick={() => setComposeOpen(true)}>
+              {KB_STRINGS.composeButton}
+            </Button>
+          )}
+        </div>
         {loading ? (
           <p className="text-fg-muted">Loading…</p>
         ) : entries.length === 0 ? (
@@ -103,6 +115,7 @@ export function KbPage(): JSX.Element {
         )}
       </main>
       {openSlug && <KbEntryDetailPane entrySlug={openSlug} />}
+      {composeOpen && <ComposeKbEntryDialog onClose={() => setComposeOpen(false)} />}
     </div>
   );
 }
