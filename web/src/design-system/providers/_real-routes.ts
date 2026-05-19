@@ -30,3 +30,13 @@ export function useRealTasksRoutes(): TasksRoutes {
     inboxForOrg: (target: string) => `/orgs/${target}/tasks`,
   };
 }
+
+export function useRealKbRoutes(): import('./DataContext').KbRoutes {
+  const slug = useOrgSlugOptional();
+  return {
+    detail: (entrySlug: string) =>
+      slug ? `/orgs/${slug}/kb/${entrySlug}` : '#',
+    inbox: () => (slug ? `/orgs/${slug}/kb` : '#'),
+    inboxForOrg: (target: string) => `/orgs/${target}/kb`,
+  };
+}
