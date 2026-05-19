@@ -53,6 +53,7 @@ export interface TaskRecord {
   brief: string;
   status: TaskStatus;
   block_kind: BlockKind | null;
+  assigned_agent: string | null;
   parent_task_id: string | null;
   revisit_of_task_id: string | null;
   created_at: string;
@@ -174,4 +175,68 @@ export interface OrgsListResponse {
 export interface HealthResponse {
   status: string;
   active_runtime: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Agents
+// ---------------------------------------------------------------------------
+
+/**
+ * 30-day rolling scorecard. NULL fields are returned by the daemon when
+ * the agent has no review history in the window — the founder UI renders
+ * a dash rather than misleading zeros.
+ */
+export interface AgentScorecard {
+  agent: string;
+  period_start: string;
+  period_end: string;
+  acceptance_rate: number;
+  revision_rate: number;
+  error_count: number;
+  tier: PerformanceTier;
+  updated_at: string;
+}
+
+export interface AgentSummary {
+  name: string;
+  team: string | null;
+  role: 'manager' | 'worker' | null;
+  executor: 'claude' | 'codex' | 'opencode' | null;
+  description: string | null;
+  tier: PerformanceTier;
+  scorecard: AgentScorecard | null;
+  avg_confidence: number | null;
+}
+
+export interface AgentEnrollment {
+  name: string;
+  team: string;
+  role: 'manager' | 'worker';
+  executor: 'claude' | 'codex' | 'opencode';
+  description: string;
+  status: 'pending' | 'approved';
+  enrolled_by: string | null;
+  created_at: string | null;
+}
+
+/** Summary shape returned by the learnings list endpoint. */
+export interface LearningEntrySummary {
+  id: string;
+  slug: string;
+  title: string;
+  topic: string;
+  tags: string[];
+  promoted_to: string | null;
+  updated_at: string;
+}
+
+/** Full entry as returned by the learnings get / search endpoints. */
+export interface LearningEntry extends LearningEntrySummary {
+  body: string;
+  source_task: string | null;
+  related_to: string[];
+  supersedes: string | null;
+  authored_by: string;
+  authored_at: string;
+  updated_by: string | null;
 }

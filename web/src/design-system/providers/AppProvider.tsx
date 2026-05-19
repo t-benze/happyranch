@@ -23,7 +23,11 @@ import { TooltipProvider } from '@/design-system/primitives/Tooltip';
 import { DataContext } from './DataContext';
 import { realAgentsApi } from './_real-agents';
 import { realOrgsApi } from './_real-orgs';
-import { useRealTasksRoutes, useRealThreadRoutes } from './_real-routes';
+import {
+  useRealAgentsRoutes,
+  useRealTasksRoutes,
+  useRealThreadRoutes,
+} from './_real-routes';
 import { realTasksApi } from './_real-tasks';
 import { realThreadsApi } from './_real-threads';
 
@@ -58,6 +62,7 @@ export function AppProvider({ children, client }: AppProviderProps): JSX.Element
           tasks: realTasksApi,
           useThreadRoutes: useRealThreadRoutes,
           useTasksRoutes: useRealTasksRoutes,
+          useAgentsRoutes: useRealAgentsRoutes,
         }}
       >
         <TooltipProvider delayDuration={300}>{children}</TooltipProvider>

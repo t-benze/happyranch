@@ -16,7 +16,7 @@ export const submitTask = (
 
 export const listTasks = (
   slug: string,
-  params?: { limit?: number; status?: string },
+  params?: { limit?: number; status?: string; assigned_agent?: string },
 ): Promise<{ tasks: TaskListItem[] }> =>
   request(`/orgs/${slug}/tasks`, { params });
 

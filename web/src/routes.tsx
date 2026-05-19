@@ -71,6 +71,7 @@ export function AppRoutes(): JSX.Element {
           <Route path="kb" element={<KbPage />} />
           <Route path="audit" element={<AuditPage />} />
           <Route path="agents" element={<AgentsPage />} />
+          <Route path="agents/:agent_name" element={<AgentsPage />} />
         </Route>
         <Route path="*" element={<NotFound />} />
       </Route>

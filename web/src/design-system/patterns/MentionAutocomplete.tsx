@@ -77,7 +77,7 @@ export function MentionAutocomplete({
           }`}
         >
           <span className="font-medium">{a.name}</span>
-          <span className="text-text-muted ml-2">{a.team}</span>
+          {a.team && <span className="text-text-muted ml-2">{a.team}</span>}
         </button>
       ))}
     </div>

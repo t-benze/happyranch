@@ -780,6 +780,10 @@
       "GET": {
         "params": [
           [
+            "assigned_agent",
+            "query"
+          ],
+          [
             "authorization",
             "header"
           ],

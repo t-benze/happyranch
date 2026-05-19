@@ -536,10 +536,21 @@ class Database:
         )
 
     @_synchronized
-    def list_tasks(self, limit: int = 20) -> list[TaskRecord]:
-        cursor = self._conn.execute(
-            "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)
-        )
+    def list_tasks(
+        self,
+        limit: int = 20,
+        assigned_agent: str | None = None,
+    ) -> list[TaskRecord]:
+        if assigned_agent is not None:
+            cursor = self._conn.execute(
+                "SELECT * FROM tasks WHERE assigned_agent = ? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (assigned_agent, limit),
+            )
+        else:
+            cursor = self._conn.execute(
+                "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)
+            )
         return [
             TaskRecord(
                 id=row["id"],

@@ -542,32 +542,115 @@ Audit lists are dense — we lean on `density: compact` (32px row default). Trac
 
 ---
 
-## 11. Agents — placeholder shell
+## 11. Agents
 
 ### Purpose
 
-The scorecard surface from `protocol/05e-dashboard.md` Page 2. Tier color earns its rent here.
+Scorecard + calibration surface from `protocol/05e-dashboard.md` Page 2,
+plus the founder's pending-enrollment review queue. Tier color earns its
+rent here.
 
-### One-screen sketch
+### Layout
 
-Layout: a single canvas (no sidebar) with a header row of summary stats and a sortable table. Clicking a row opens a right-side Drawer with the agent's recent task history, calibration chart, and current learnings.
+Single canvas (no sidebar). Header carries the page title + a sub-tab bar:
+**Active** (scorecards + calibration) and **Pending** (enrollment queue).
+Tab state rides on a `?view=pending` query param rather than a static path
+segment — agent names are arbitrary `[a-z][a-z0-9_]*`, so any static
+`agents/<word>` sibling of `agents/:agent_name` would silently shadow a
+real agent with that name. Clicking an agent row navigates to
+`/orgs/:slug/agents/:agent_name`, which mounts the AgentDetailDrawer over
+the (forced) Active tab.
+
+### Active tab
+
+Two tables stacked, both honoring `useDensity()`:
 
 ```
 +----------------------------------------------------------+
-| Agent scorecards — 30 day rolling          [Export CSV]   |
+| Scorecards                                               |
 +----------------------------------------------------------+
-| Agent              Team       Tier  Accept  Revise  Errs |
-| ● content_writer   content     ● 92%   92%    6%     2  |
-| ● content_qa       content     ● 96%   96%    3%     0  |
-| ● seo_agent        content     ● 91%   91%    7%     1  |
-| ● support_agent    cx          ● 82%   82%   12%     4  |
-| …                                                        |
+| Agent              Team       Tier   Acceptance  Revision  Errors |
+| ● content_writer   content    green     92%        6%       2     |
+| ● content_qa       content    green     96%        3%       0     |
+| ● support_agent    cx         yellow    82%       12%       4     |
++----------------------------------------------------------+
+
++----------------------------------------------------------+
+| Calibration                                              |
++----------------------------------------------------------+
+| Agent              Avg confidence  Actual accuracy  Gap  |
+| ● content_writer        85%             92%         -7%  |
+| ● content_qa            90%             96%         -6%  |
+| ● support_agent         88%             82%         +6%  |  ← over-confident
 +----------------------------------------------------------+
 ```
 
-Each row: AgentChip with role dot, team name in `text.muted`, then a Tier Badge using `tier_*` variants (the *only* surface where tier coloring is used on a whole badge with a percentage), then numeric columns in `mono_md`.
+Row anatomy: AgentChip with role dot, team in `text.muted`, then a
+`TierBadge` (the *only* surface where tier coloring lights up a whole
+badge), then numeric columns in `mono_sm`. Cells with no underlying data
+render as `—` instead of zeros — calibration shows a dash whenever an
+agent has no completion reports with a confidence score in the rolling
+30-day window. The Gap column tints yellow when |gap| > 5 to flag
+miscalibration without rendering a separate chart.
 
-Calibration table renders below the main table, same row template.
+### Pending tab
+
+Each enrollment renders as a card with name, team/executor metadata,
+description, and two buttons:
+
+- **Approve** — one-click POST `/agents/{name}/approve`.
+- **Reject** — opens an inline dialog asking for an optional reason
+  before POST `/agents/{name}/reject`.
+
+The Approve / Reject mutations invalidate both the scorecards list and
+the enrollments list so the post-action UI flips immediately.
+
+### Detail Drawer
+
+- Header: AgentChip + TierBadge + metadata line (team + executor) +
+  optional description paragraph.
+- Recent tasks: list of `TaskCard`s filtered by
+  `?assigned_agent=<name>` on the tasks endpoint. Empty state when the
+  agent has never been the assigned manager.
+- Learnings: read-only list of summaries from
+  `GET /agents/{name}/learnings/entries/`. Surfaces a 412
+  (`workspace_not_migrated`) error with a hint to run
+  `grassland learning reindex` rather than silently failing.
+- Writes (creating a learning) stay agent-callback-only — the umbrella
+  spec §5.7 reserves this surface for the CLI.
+
+### Daemon contract changes (this PR)
+
+- `GET /agents` now returns `team`, `role`, `executor`, `description`,
+  and `avg_confidence` alongside the existing `tier` and `scorecard`.
+  `avg_confidence` is the mean of `task_results.confidence_score` over
+  the rolling 30-day window — `null` when the agent has zero scored
+  reports.
+- `GET /agents/enrollments` returns `team`, `role`, `executor`, and
+  `enrolled_by` so the Pending tab can render without a second
+  roundtrip.
+- `GET /tasks` accepts `?assigned_agent=<name>` so the Drawer can scope
+  its task list.
+
+### Keyboard
+
+- `g g` — jump to the Agents page (registered by TopBar via
+  `useGlobalJump('g', …)`).
+- `Esc` — close the Drawer or the reject dialog.
+
+### Drift from `2026-05-18-web-app-complete-feature-set-design.md`
+
+- Umbrella §6.2 mentions a calibration table without specifying its
+  data model. This PR resolves it as "avg confidence vs. acceptance
+  rate," with both signals readable from existing tables (no schema
+  migration). When the daemon eventually starts persisting a richer
+  "actual accuracy" metric (e.g., review-verdict outcome rate from
+  `audit_log`), the Calibration column header swaps without a UI churn.
+- Umbrella §5.7 reserved approve/reject in the Pending tab. The PR
+  ships exactly that — no agent-editing surface (which would re-open
+  the agent-callback boundary).
+- Umbrella §5.4 calls for `g g` as the Agents jump-key. Registered in
+  TopBar alongside the existing `g t` (Tasks).
 
 ---
 
