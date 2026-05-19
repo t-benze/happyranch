@@ -88,6 +88,17 @@ export interface TaskDetailResponse {
   [extra: string]: unknown;
 }
 
+/** Audit-log entry shape (mirror of `audit_log` table rows). */
+export interface AuditEntry {
+  id: number;
+  task_id: string | null;
+  session_id: string | null;
+  agent: string | null;
+  action: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
 /** Recall payload. With `?tree=true`, `children` is recursive; without it,
  * `children` is a list of task-ID strings — UI must request the tree shape. */
 export interface TaskRecallNode {

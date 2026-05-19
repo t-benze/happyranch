@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   Drawer,
   DrawerContent,
@@ -17,6 +17,7 @@ import { ResolveEscalationDialog } from './ResolveEscalationDialog';
 
 export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
   const navigate = useNavigate();
+  const { slug } = useParams<{ slug: string }>();
   const routes = useTasksRoutes();
   const task = useTask(taskId);
   const recall = useTaskRecall(taskId);
@@ -50,6 +51,14 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
               <Button size="sm" variant="ghost" onClick={() => setDialog('cancel')}>
                 Cancel
               </Button>
+              {slug && (
+                <Link
+                  to={`/orgs/${slug}/audit?task_id=${taskId}`}
+                  className="text-accent ml-auto self-center text-xs hover:underline"
+                >
+                  View audit →
+                </Link>
+              )}
             </div>
           </header>
           <section className="flex-1 overflow-y-auto p-4">
