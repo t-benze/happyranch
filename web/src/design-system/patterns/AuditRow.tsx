@@ -69,12 +69,12 @@ export function AuditRow({
           </pre>
           <div className="mt-3 flex gap-3">
             {taskHref && entry.task_id && (
-              <a className="text-accent hover:underline text-xs" href={taskHref}>
+              <a className="text-accent text-xs hover:underline" href={taskHref}>
                 View task →
               </a>
             )}
             {agentHref && entry.agent && (
-              <a className="text-accent hover:underline text-xs" href={agentHref}>
+              <a className="text-accent text-xs hover:underline" href={agentHref}>
                 View agent activity →
               </a>
             )}
