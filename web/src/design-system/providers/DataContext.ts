@@ -27,6 +27,8 @@ import type {
 } from '@/lib/api/types';
 import type { threads as threadsApi } from '@/lib/api';
 import type { tasks as tasksApi } from '@/lib/api';
+import type { kb as kbApi } from '@/lib/api';
+import type { KBEntry } from '@/lib/api/kb';
 import type { TaskEvent, TaskRecord, TaskRecallNode } from '@/lib/api/types';
 
 // ---------------------------------------------------------------------------
@@ -132,6 +134,33 @@ export interface TasksRoutes {
 }
 
 // ---------------------------------------------------------------------------
+// KbApi — covers every hook KbPage + its drawer + (optional) compose dialog
+// consume.
+// ---------------------------------------------------------------------------
+
+export type AddKBEntryArgs = Parameters<typeof kbApi.addKBEntry>[1];
+export type AddKBEntryResult = Awaited<ReturnType<typeof kbApi.addKBEntry>>;
+
+export interface KbApi {
+  useKBList: (params?: {
+    type?: string;
+  }) => QueryLike<{ entries: KBEntry[] }>;
+  useKBSearch: (
+    q: string,
+    params?: { limit?: number },
+  ) => QueryLike<{ entries: KBEntry[] }>;
+  useKBEntry: (entrySlug: string | undefined) => QueryLike<KBEntry>;
+  /** Mutation is wired only under the real provider; mocks no-op. */
+  useAddKBEntry: () => MutationLike<AddKBEntryArgs, AddKBEntryResult>;
+}
+
+export interface KbRoutes {
+  inbox: () => string;
+  detail: (entrySlug: string) => string;
+  inboxForOrg: (slug: string) => string;
+}
+
+// ---------------------------------------------------------------------------
 // Context shape — one bag per feature domain. Future PRs add `kb`…
 // ---------------------------------------------------------------------------
 
@@ -181,6 +210,7 @@ export interface DataContextValue {
   agents: AgentsApi;
   threads: ThreadsApi;
   tasks: TasksApi;
+  kb: KbApi;
   /**
    * Provider-supplied React hook that returns the active feature's route
    * builders. A hook (not a plain object) so the implementation can read
@@ -188,6 +218,7 @@ export interface DataContextValue {
    */
   useThreadRoutes: () => ThreadRoutes;
   useTasksRoutes: () => TasksRoutes;
+  useKbRoutes: () => KbRoutes;
 }
 
 export const DataContext = createContext<DataContextValue | null>(null);
