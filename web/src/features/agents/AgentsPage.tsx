@@ -4,11 +4,18 @@
  *   - Active: scorecard table → calibration table.
  *   - Pending: enrollment list with approve/reject actions.
  *
- * Tab state is encoded in the URL (`/orgs/:slug/agents` ↔ `/agents/pending`)
- * so a refresh keeps the founder where they were. The agent detail Drawer
- * mounts on top of the Active tab when `:agent_name` is present.
+ * Tab state rides on a `?view=pending` search param rather than a static
+ * path segment — agent names are arbitrary `[a-z][a-z0-9_]*` so any
+ * static `agents/<word>` sibling of `agents/:agent_name` would silently
+ * shadow a real agent with that name. The agent detail Drawer mounts on
+ * top of the Active tab when `:agent_name` is present (and forces the
+ * Active tab — a Pending list under a per-agent drawer makes no sense).
  */
-import { useNavigate, useParams } from 'react-router-dom';
+import {
+  useNavigate,
+  useParams,
+  useSearchParams,
+} from 'react-router-dom';
 import { PageHeader } from '@/design-system/patterns/PageHeader';
 import {
   Tabs,
@@ -23,18 +30,21 @@ import { AgentCalibrationTable } from './AgentCalibrationTable';
 import { PendingEnrollmentsTab } from './PendingEnrollmentsTab';
 import { AgentDetailDrawer } from './AgentDetailDrawer';
 
-interface AgentsPageProps {
-  /** Set when mounted at /orgs/:slug/agents/pending */
-  view?: 'pending';
-}
-
-export function AgentsPage({ view }: AgentsPageProps = {}): JSX.Element {
+export function AgentsPage(): JSX.Element {
   const { agent_name: openAgentName } = useParams<{ agent_name?: string }>();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const routes = useAgentsRoutes();
   const agentsQuery = useAgentsList();
 
-  const tab = view === 'pending' ? 'pending' : 'active';
+  // A per-agent drawer pins the Active tab — Pending under a detail view
+  // doesn't make sense as a state. The URL's `view=pending` is otherwise
+  // the source of truth so refresh + back/forward both round-trip.
+  const tab =
+    openAgentName ? 'active'
+    : searchParams.get('view') === 'pending' ? 'pending'
+    : 'active';
+
   const onTabChange = (next: string) => {
     if (next === 'pending') navigate(routes.pending());
     else navigate(routes.inbox());

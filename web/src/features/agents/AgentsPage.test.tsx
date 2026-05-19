@@ -123,6 +123,48 @@ describe('AgentsPage — active tab', () => {
   });
 });
 
+describe('AgentsPage — route collision regression', () => {
+  test('an agent literally named "pending" opens the detail drawer (not the tab)', async () => {
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/agents`, () =>
+        HttpResponse.json({
+          agents: [
+            {
+              name: 'pending',
+              team: 'engineering',
+              role: 'worker',
+              executor: 'claude',
+              description: 'Edge-case agent name.',
+              tier: 'green',
+              scorecard: null,
+              avg_confidence: null,
+            },
+          ],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
+        HttpResponse.json({ tasks: [] }),
+      ),
+      http.get(
+        `/api/v1/orgs/${SLUG}/agents/pending/learnings/entries/`,
+        () => HttpResponse.json({ entries: [] }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/agents/pending`);
+
+    // Drawer mounts (not the Pending enrollments tab).
+    await waitFor(() =>
+      expect(screen.getByText(/executor: claude/)).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByText(/No tasks where this agent was the assigned manager/),
+    ).toBeInTheDocument();
+  });
+});
+
 describe('AgentsPage — pending tab', () => {
   test('lists pending enrollments and approves one', async () => {
     let approveCalled = false;
@@ -150,7 +192,7 @@ describe('AgentsPage — pending tab', () => {
       }),
     );
     const user = userEvent.setup();
-    mountAt(`/orgs/${SLUG}/agents/pending`);
+    mountAt(`/orgs/${SLUG}/agents?view=pending`);
 
     await waitFor(() =>
       expect(screen.getByText('new_writer')).toBeInTheDocument(),
@@ -190,7 +232,7 @@ describe('AgentsPage — pending tab', () => {
       ),
     );
     const user = userEvent.setup();
-    mountAt(`/orgs/${SLUG}/agents/pending`);
+    mountAt(`/orgs/${SLUG}/agents?view=pending`);
 
     await waitFor(() =>
       expect(screen.getByText('new_writer')).toBeInTheDocument(),

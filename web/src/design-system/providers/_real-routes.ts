@@ -35,7 +35,9 @@ export function useRealAgentsRoutes(): AgentsRoutes {
   const slug = useOrgSlugOptional();
   return {
     inbox: () => (slug ? `/orgs/${slug}/agents` : '#'),
-    pending: () => (slug ? `/orgs/${slug}/agents/pending` : '#'),
+    // Tab state rides on a query param so we never reserve a static path
+    // segment that would shadow a real agent slug under `agents/:agent_name`.
+    pending: () => (slug ? `/orgs/${slug}/agents?view=pending` : '#'),
     detail: (agentName: string) =>
       slug ? `/orgs/${slug}/agents/${agentName}` : '#',
     inboxForOrg: (target: string) => `/orgs/${target}/agents`,

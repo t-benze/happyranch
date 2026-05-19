@@ -554,10 +554,12 @@ rent here.
 
 Single canvas (no sidebar). Header carries the page title + a sub-tab bar:
 **Active** (scorecards + calibration) and **Pending** (enrollment queue).
-Tab state is mirrored to the URL — `/orgs/:slug/agents` ↔
-`/orgs/:slug/agents/pending` — so a refresh keeps the founder where they
-were. Clicking an agent row navigates to `/orgs/:slug/agents/:agent_name`,
-which mounts the AgentDetailDrawer over the Active tab.
+Tab state rides on a `?view=pending` query param rather than a static path
+segment — agent names are arbitrary `[a-z][a-z0-9_]*`, so any static
+`agents/<word>` sibling of `agents/:agent_name` would silently shadow a
+real agent with that name. Clicking an agent row navigates to
+`/orgs/:slug/agents/:agent_name`, which mounts the AgentDetailDrawer over
+the (forced) Active tab.
 
 ### Active tab
 
