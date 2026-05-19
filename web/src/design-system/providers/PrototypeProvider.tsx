@@ -17,6 +17,7 @@ import { StaticOrgProvider } from '@/lib/orgSlug';
 import { MOCK_ORG_SLUG } from '@/mocks';
 import { DataContext } from './DataContext';
 import { mockAgentsApi } from './_mock-agents';
+import { mockKbApi, useMockKbRoutes } from './_mock-kb';
 import { mockOrgsApi } from './_mock-orgs';
 import { useMockThreadRoutes } from './_mock-routes';
 import { mockTasksApi, useMockTasksRoutes } from './_mock-tasks';
@@ -45,8 +46,10 @@ export function PrototypeProvider({ children }: { children: ReactNode }): JSX.El
           agents: mockAgentsApi,
           threads: mockThreadsApi,
           tasks: mockTasksApi,
+          kb: mockKbApi,
           useThreadRoutes: useMockThreadRoutes,
           useTasksRoutes: useMockTasksRoutes,
+          useKbRoutes: useMockKbRoutes,
         }}
       >
         <TooltipProvider delayDuration={300}>
