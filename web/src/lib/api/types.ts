@@ -181,6 +181,23 @@ export interface ThreadTailEvent {
 }
 
 // ---------------------------------------------------------------------------
+// Knowledge Base
+// ---------------------------------------------------------------------------
+
+export interface KBEntry {
+  slug: string;
+  title: string;
+  type: string;
+  topic: string;
+  tags: string[];
+  body: string;
+  updated_at: string;
+  authored_by: string;
+  source_task: string | null;
+  related_entries: string[];
+}
+
+// ---------------------------------------------------------------------------
 // Orgs / runtime / agents (minimal shapes used by the UI today; expand later)
 // ---------------------------------------------------------------------------
 

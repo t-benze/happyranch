@@ -11,6 +11,7 @@
     "lint": "eslint src",
     "typecheck": "tsc -b --noEmit",
     "test": "vitest",
+    "test:write-path": "VITE_ENABLE_KB_COMPOSE=true vitest run src/features/kb/write-path.test.tsx",
     "build:registry": "tsx scripts/build-registry.ts",
     "prebuild": "npm run build:registry",
     "predev": "npm run build:registry"

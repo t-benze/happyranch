@@ -23,9 +23,11 @@ import { TooltipProvider } from '@/design-system/primitives/Tooltip';
 import { DataContext } from './DataContext';
 import { realAgentsApi } from './_real-agents';
 import { realAuditApi } from './_real-audit';
+import { realKbApi } from './_real-kb';
 import { realOrgsApi } from './_real-orgs';
 import {
   useRealAgentsRoutes,
+  useRealKbRoutes,
   useRealTalksRoutes,
   useRealTasksRoutes,
   useRealThreadRoutes,
@@ -64,9 +66,11 @@ export function AppProvider({ children, client }: AppProviderProps): JSX.Element
           audit: realAuditApi,
           threads: realThreadsApi,
           tasks: realTasksApi,
+          kb: realKbApi,
           talks: realTalksApi,
           useThreadRoutes: useRealThreadRoutes,
           useTasksRoutes: useRealTasksRoutes,
+          useKbRoutes: useRealKbRoutes,
           useTalksRoutes: useRealTalksRoutes,
           useAgentsRoutes: useRealAgentsRoutes,
         }}

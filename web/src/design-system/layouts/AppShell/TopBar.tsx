@@ -12,6 +12,7 @@ import {
   TooltipTrigger,
 } from '@/design-system/primitives/Tooltip';
 import { useAgentsRoutes } from '@/hooks/agents';
+import { useKbRoutes } from '@/hooks/kb';
 import { useOrgsList } from '@/hooks/orgs';
 import { useTalksRoutes } from '@/hooks/talks';
 import { useTasksRoutes } from '@/hooks/tasks';
@@ -40,6 +41,10 @@ export function TopBar(): JSX.Element {
   const agentsHref = activeSlug && !isPrototype ? agentsRoutes.inboxForOrg(activeSlug) : '#';
   useGlobalJump('t', () => {
     if (activeSlug && !isPrototype) navigate(tasksRoutes.inboxForOrg(activeSlug));
+  });
+  const kbRoutes = useKbRoutes();
+  useGlobalJump('k', () => {
+    if (activeSlug && !isPrototype) navigate(kbRoutes.inboxForOrg(activeSlug));
   });
   useGlobalJump('l', () => {
     if (activeSlug && !isPrototype) navigate(talksRoutes.inboxForOrg(activeSlug));

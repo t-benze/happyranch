@@ -1,18 +1,6 @@
 /** Mirror of src/daemon/routes/kb.py */
 import { request } from './client';
-
-export interface KBEntry {
-  slug: string;
-  title: string;
-  type: string;
-  topic: string;
-  tags: string[];
-  body: string;
-  updated_at: string;
-  authored_by: string;
-  source_task: string | null;
-  related_entries: string[];
-}
+import type { KBEntry } from './types';
 
 export const listKB = (
   slug: string,

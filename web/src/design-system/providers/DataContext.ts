@@ -27,10 +27,12 @@ import type {
 } from '@/lib/api/types';
 import type { threads as threadsApi } from '@/lib/api';
 import type { tasks as tasksApi } from '@/lib/api';
+import type { kb as kbApi } from '@/lib/api';
 import type { talks as talksApi } from '@/lib/api';
 import type { audit as auditApi } from '@/lib/api';
 import type { agents as agentsApi } from '@/lib/api';
 import type {
+  KBEntry,
   TalkRecord,
   TaskEvent,
   TaskRecord,
@@ -136,6 +138,32 @@ export interface TasksApi {
 export interface TasksRoutes {
   inbox: () => string;
   detail: (taskId: string) => string;
+  inboxForOrg: (slug: string) => string;
+}
+
+// KbApi — covers every hook KbPage + its drawer + (optional) compose dialog
+// consume.
+// ---------------------------------------------------------------------------
+
+export type AddKBEntryArgs = Parameters<typeof kbApi.addKBEntry>[1];
+export type AddKBEntryResult = Awaited<ReturnType<typeof kbApi.addKBEntry>>;
+
+export interface KbApi {
+  useKBList: (params?: {
+    type?: string;
+  }) => QueryLike<{ entries: KBEntry[] }>;
+  useKBSearch: (
+    q: string,
+    params?: { limit?: number },
+  ) => QueryLike<{ entries: KBEntry[] }>;
+  useKBEntry: (entrySlug: string | undefined) => QueryLike<KBEntry>;
+  /** Mutation is wired only under the real provider; mocks no-op. */
+  useAddKBEntry: () => MutationLike<AddKBEntryArgs, AddKBEntryResult>;
+}
+
+export interface KbRoutes {
+  inbox: () => string;
+  detail: (entrySlug: string) => string;
   inboxForOrg: (slug: string) => string;
 }
 
@@ -271,6 +299,7 @@ export interface DataContextValue {
   audit: AuditApi;
   threads: ThreadsApi;
   tasks: TasksApi;
+  kb: KbApi;
   talks: TalksApi;
   /**
    * Provider-supplied React hook that returns the active feature's route
@@ -279,6 +308,7 @@ export interface DataContextValue {
    */
   useThreadRoutes: () => ThreadRoutes;
   useTasksRoutes: () => TasksRoutes;
+  useKbRoutes: () => KbRoutes;
   useTalksRoutes: () => TalksRoutes;
   useAgentsRoutes: () => AgentsRoutes;
 }
