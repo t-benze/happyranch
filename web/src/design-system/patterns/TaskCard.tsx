@@ -3,7 +3,12 @@ import { cn } from '@/lib/utils';
 import { StatusBadge } from './StatusBadge';
 import { IdBadge } from './IdBadge';
 import type { TaskRecord } from '@/lib/api/types';
-import type { Density } from '@/hooks/density';
+
+// Inline the union rather than importing `Density` from `@/hooks/` —
+// patterns must not reach into hooks (per `ARCHITECTURE.md`). The
+// `useDensity` hook is still the runtime owner; this pattern just
+// receives the value as a prop.
+type Density = 'comfortable' | 'compact';
 
 function relativeAge(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
