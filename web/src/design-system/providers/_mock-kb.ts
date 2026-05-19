@@ -1,5 +1,5 @@
 import { MOCK_KB_ENTRIES } from '@/mocks/kb';
-import type { KBEntry } from '@/lib/api/kb';
+import type { KBEntry } from '@/lib/api/types';
 import type {
   AddKBEntryArgs,
   AddKBEntryResult,

@@ -32,9 +32,15 @@ export function KbPage(): JSX.Element {
   const searchQuery = useKBSearch(deferredQ);
   const isSearching = deferredQ.length > 0;
 
-  const rawEntries = isSearching
-    ? (searchQuery.data?.entries ?? [])
-    : (listQuery.data?.entries ?? []);
+  // Memoize so the `?? []` fallback (a fresh array literal each render) doesn't
+  // re-trigger the three useMemos below on every parent re-render.
+  const rawEntries = useMemo(
+    () =>
+      isSearching
+        ? (searchQuery.data?.entries ?? [])
+        : (listQuery.data?.entries ?? []),
+    [isSearching, searchQuery.data?.entries, listQuery.data?.entries],
+  );
 
   const entries = useMemo(() => {
     const tag = filters.tag;

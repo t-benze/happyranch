@@ -1,4 +1,4 @@
-import type { KBEntry } from '@/lib/api/kb';
+import type { KBEntry } from '@/lib/api/types';
 
 export const MOCK_KB_ENTRIES: KBEntry[] = [
   {

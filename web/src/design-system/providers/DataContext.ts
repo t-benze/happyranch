@@ -28,8 +28,7 @@ import type {
 import type { threads as threadsApi } from '@/lib/api';
 import type { tasks as tasksApi } from '@/lib/api';
 import type { kb as kbApi } from '@/lib/api';
-import type { KBEntry } from '@/lib/api/kb';
-import type { TaskEvent, TaskRecord, TaskRecallNode } from '@/lib/api/types';
+import type { KBEntry, TaskEvent, TaskRecord, TaskRecallNode } from '@/lib/api/types';
 
 // ---------------------------------------------------------------------------
 // Hook-shape primitives

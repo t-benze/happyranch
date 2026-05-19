@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 import { cn } from '@/lib/utils';
-import type { KBEntry } from '@/lib/api/kb';
+import type { KBEntry } from '@/lib/api/types';
 
 type Density = 'comfortable' | 'compact';
 
