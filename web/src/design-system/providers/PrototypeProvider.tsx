@@ -19,6 +19,7 @@ import { DataContext } from './DataContext';
 import { mockAgentsApi } from './_mock-agents';
 import { mockOrgsApi } from './_mock-orgs';
 import { useMockThreadRoutes } from './_mock-routes';
+import { mockTalksApi, useMockTalksRoutes } from './_mock-talks';
 import { mockTasksApi, useMockTasksRoutes } from './_mock-tasks';
 import { mockThreadsApi } from './_mock-threads';
 
@@ -45,8 +46,10 @@ export function PrototypeProvider({ children }: { children: ReactNode }): JSX.El
           agents: mockAgentsApi,
           threads: mockThreadsApi,
           tasks: mockTasksApi,
+          talks: mockTalksApi,
           useThreadRoutes: useMockThreadRoutes,
           useTasksRoutes: useMockTasksRoutes,
+          useTalksRoutes: useMockTalksRoutes,
         }}
       >
         <TooltipProvider delayDuration={300}>
