@@ -28,9 +28,13 @@ export const mockTalksApi: TalksApi = {
 };
 
 export function useMockTalksRoutes(): TalksRoutes {
+  // No talks prototype is mounted under `/__prototypes/*` yet, so return
+  // '#' for every URL. Consumers that render these as `<a href>` get an
+  // inert link; the TopBar Talks tab is independently disabled inside
+  // the prototype shell via `placeholderTab`.
   return {
-    inbox: () => '/__prototypes/talks/inbox',
-    detail: (talkId: string) => `/__prototypes/talks/${talkId}`,
-    inboxForOrg: () => '/__prototypes/talks/inbox',
+    inbox: () => '#',
+    detail: () => '#',
+    inboxForOrg: () => '#',
   };
 }

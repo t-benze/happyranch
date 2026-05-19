@@ -35,7 +35,6 @@ export function TopBar(): JSX.Element {
   const tasksRoutes = useTasksRoutes();
   const talksRoutes = useTalksRoutes();
   const threadsHref = activeSlug ? routes.inboxForOrg(activeSlug) : '#';
-  const talksHref = activeSlug ? talksRoutes.inboxForOrg(activeSlug) : '#';
   useGlobalJump('t', () => {
     if (activeSlug && !isPrototype) navigate(tasksRoutes.inboxForOrg(activeSlug));
   });
@@ -43,9 +42,9 @@ export function TopBar(): JSX.Element {
     if (activeSlug && !isPrototype) navigate(talksRoutes.inboxForOrg(activeSlug));
   });
   const switchEnabled = !orgsQuery.isLoading && (orgsQuery.data?.orgs.length ?? 0) > 0;
-  // The four placeholder tabs (Tasks/KB/Audit/Agents) live only on the
-  // production routes — the prototype sandbox is threads-only. Disable
-  // them inside `/__prototypes/*` so a click can't escape the sandbox.
+  // The Tasks/KB/Talks/Audit/Agents tabs live only on the production
+  // routes — the prototype sandbox is threads-only. Disable them inside
+  // `/__prototypes/*` so a click can't escape the sandbox.
   const placeholderTab = (path: string) => ({
     to: activeSlug && !isPrototype ? `/orgs/${activeSlug}/${path}` : '#',
     enabled: !!activeSlug && !isPrototype,
@@ -80,9 +79,7 @@ export function TopBar(): JSX.Element {
         </NavTab>
         <NavTab {...placeholderTab('tasks')}>Tasks</NavTab>
         <NavTab {...placeholderTab('kb')}>KB</NavTab>
-        <NavTab to={talksHref} enabled={!!activeSlug && talksHref !== '#'}>
-          Talks
-        </NavTab>
+        <NavTab {...placeholderTab('talks')}>Talks</NavTab>
         <NavTab {...placeholderTab('audit')}>Audit</NavTab>
         <NavTab {...placeholderTab('agents')}>Agents</NavTab>
       </nav>

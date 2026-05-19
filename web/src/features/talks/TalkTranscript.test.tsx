@@ -28,6 +28,29 @@ describe('splitTranscript', () => {
     expect(sections.map((s) => s.speaker)).toEqual(['founder', 'agent']);
   });
 
+  test('matches real snake_case agent names, not just the literal word "agent"', () => {
+    const md = [
+      '## founder',
+      'what was the visa update?',
+      '## support_lead',
+      'pulled the new policy doc.',
+      '**engineering_head:**',
+      'verified the API contract.',
+    ].join('\n');
+    const sections = splitTranscript(md);
+    expect(sections.map((s) => s.speaker)).toEqual(['founder', 'agent', 'agent']);
+    expect(sections[1].body).toContain('policy doc');
+    expect(sections[2].body).toContain('API contract');
+  });
+
+  test('does not treat title-case headings like "## Summary" as speakers', () => {
+    const md = '## Summary\nWrap up.\n## founder\nactually a speaker';
+    const sections = splitTranscript(md);
+    // The Summary heading should be absorbed as null-speaker body; only the
+    // founder section is recognized as a real speaker.
+    expect(sections.map((s) => s.speaker)).toEqual([null, 'founder']);
+  });
+
   test('drops empty sections', () => {
     const md = '## founder\n\n## agent\nactual content';
     const sections = splitTranscript(md);

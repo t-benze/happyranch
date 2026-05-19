@@ -2,9 +2,15 @@
  * Pure transform from a closed talk's `transcript` markdown into a list of
  * `MessageBubble`s. The talk transcript has no enforced structure, so we
  * apply a best-effort speaker split on lines that start with
- *   `## founder` | `## agent` | `**founder:**` | `**agent_name:**`
- * and fall back to a single Markdown render of the entire body when no
- * markers are present.
+ *   `## founder` | `## <agent_name>` | `**founder:**` | `**<agent_name>:**`
+ * where `<agent_name>` is any snake_case identifier (matches real agent
+ * ids like `support_lead`, `engineering_head`, not just the literal word
+ * "agent"). Falls back to a single Markdown render of the entire body
+ * when no markers are present.
+ *
+ * The identifier pattern is intentionally lowercase + snake_case so a
+ * generic title-case heading like `## Summary` is NOT misread as a
+ * speaker marker.
  */
 import { Markdown } from '@/design-system/patterns/Markdown';
 import { MessageBubble } from '@/design-system/patterns/MessageBubble';
@@ -14,7 +20,7 @@ export interface TranscriptSection {
   body: string;
 }
 
-const SPEAKER_RE = /^(?:##\s+(founder|agent)\b|\*\*(founder|agent)[^*]*\*\*:?)/i;
+const SPEAKER_RE = /^(?:##\s+([a-z_][a-z0-9_]*)\b|\*\*([a-z_][a-z0-9_]*)\s*:?\s*\*\*)/;
 
 export function splitTranscript(markdown: string): TranscriptSection[] {
   const lines = markdown.split('\n');
@@ -30,9 +36,9 @@ export function splitTranscript(markdown: string): TranscriptSection[] {
     const m = line.match(SPEAKER_RE);
     if (m) {
       flush();
-      const who = (m[1] ?? m[2] ?? '').toLowerCase();
+      const ident = (m[1] ?? m[2] ?? '').toLowerCase();
       current = {
-        speaker: who.startsWith('founder') ? 'founder' : 'agent',
+        speaker: ident === 'founder' ? 'founder' : 'agent',
         body: '',
       };
       continue;
