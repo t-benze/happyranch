@@ -138,4 +138,40 @@ describe('KbPage — read path', () => {
     await user.type(screen.getByPlaceholderText(/Search entries/i), 'refund');
     await waitFor(() => expect(searchHit).toBe(true), { timeout: 2000 });
   });
+
+  test('type filter persists when search becomes active', async () => {
+    sessionStorage.setItem('grassland.token', 'tok');
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/kb`, ({ request }) => {
+        const url = new URL(request.url);
+        const t = url.searchParams.get('type');
+        const all = [ENTRY_A, ENTRY_B];
+        return HttpResponse.json({
+          entries: t ? all.filter((e) => e.type === t) : all,
+        });
+      }),
+      // Search endpoint deliberately returns BOTH types — the page must
+      // re-apply the active type filter client-side, per spec §4.
+      http.get(`/api/v1/orgs/${SLUG}/kb/search`, () =>
+        HttpResponse.json({ entries: [ENTRY_A, ENTRY_B] }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/Refund authority by tier/);
+    await user.click(screen.getByRole('button', { name: /^precedent$/ }));
+    await waitFor(() =>
+      expect(screen.queryByText(/Spanish-speaking walk-in flow/)).not.toBeInTheDocument(),
+    );
+    await user.type(screen.getByPlaceholderText(/Search entries/i), 'a');
+    // Wait for debounced search to land and the result list to settle.
+    await waitFor(() =>
+      expect(screen.getByText(/Refund authority by tier/)).toBeInTheDocument(),
+      { timeout: 2000 },
+    );
+    expect(screen.queryByText(/Spanish-speaking walk-in flow/)).not.toBeInTheDocument();
+  });
 });

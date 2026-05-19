@@ -176,7 +176,7 @@ M web/UI_SPEC.md
 | Risk | Mitigation |
 |---|---|
 | Tag list derived from current entries would collapse to the chosen tag when the user filters. | Derive tag and type lists from the **unfiltered** entry set (§5.1) — same shape as Tasks' team filter. |
-| Search query churn on each keystroke. | Debounce 200ms in `KbPage` (`useDeferredValue` or a small ref). |
+| Search query churn on each keystroke. | Debounce 200ms in `KbPage` via a `setTimeout` ref. (Initial impl used `useDeferredValue`, but that only lowers render priority — it still fires one request per keystroke.) |
 | `useKBSearch` ignoring server-side `type` filter. | Apply `type` and `tag` client-side over the search result set. Documented in §4. |
 | Drawer route swap dropping focus. | Mirror `TaskDetailPane`'s focus management — `Drawer`'s shadcn implementation already restores focus to the trigger. New patterns are not introduced; rely on existing behavior. |
 | `VITE_ENABLE_KB_COMPOSE` accidentally on in production. | Default is unset → falsy. Production `scripts/build_web.sh` does not set it. Document the flag in `web/UI_SPEC.md` §9. |

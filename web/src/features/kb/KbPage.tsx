@@ -1,4 +1,4 @@
-import { useDeferredValue, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { FilterSidebar, type FilterGroup } from '@/design-system/patterns/FilterSidebar';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
@@ -23,14 +23,22 @@ export function KbPage(): JSX.Element {
     tag: null,
   });
   const [searchInput, setSearchInput] = useState('');
+  const [debouncedQ, setDebouncedQ] = useState('');
   const [composeOpen, setComposeOpen] = useState(false);
-  const deferredQ = useDeferredValue(searchInput.trim());
   const { density } = useDensity();
   const routes = useKbRoutes();
 
+  // Real 200ms debounce — `useDeferredValue` only lowers render priority and
+  // would still fire one `/kb/search` per keystroke under typical typing
+  // cadence. The timeout coalesces rapid keystrokes into a single request.
+  useEffect(() => {
+    const id = setTimeout(() => setDebouncedQ(searchInput.trim()), 200);
+    return () => clearTimeout(id);
+  }, [searchInput]);
+
   const listQuery = useKBList(filters.type ? { type: filters.type } : undefined);
-  const searchQuery = useKBSearch(deferredQ);
-  const isSearching = deferredQ.length > 0;
+  const searchQuery = useKBSearch(debouncedQ);
+  const isSearching = debouncedQ.length > 0;
 
   // Memoize so the `?? []` fallback (a fresh array literal each render) doesn't
   // re-trigger the three useMemos below on every parent re-render.
@@ -44,8 +52,15 @@ export function KbPage(): JSX.Element {
 
   const entries = useMemo(() => {
     const tag = filters.tag;
-    return tag ? rawEntries.filter((e) => e.tags.includes(tag)) : rawEntries;
-  }, [rawEntries, filters.tag]);
+    const type = filters.type;
+    let result = rawEntries;
+    // When searching, `/kb/search` returns matches across ALL types — apply
+    // the selected type client-side so the active pill stays honored. The
+    // non-search branch already filters via the server-side `?type=` param.
+    if (isSearching && type) result = result.filter((e) => e.type === type);
+    if (tag) result = result.filter((e) => e.tags.includes(tag));
+    return result;
+  }, [rawEntries, filters.tag, filters.type, isSearching]);
 
   // Sidebar option lists derive from the server-returned set (rawEntries),
   // BEFORE the client-side tag filter — so toggling a tag does not collapse

@@ -495,7 +495,7 @@ Browse and read knowledge-base entries. Read-only by default. A flag-gated compo
 
 - **Type** = server-side `?type=` on `GET /kb`.
 - **Tag** = client-side single-tag filter on the result set.
-- **Search** = non-empty input switches the active query to `GET /kb/search?q=…`, debounced by `useDeferredValue`.
+- **Search** = non-empty input switches the active query to `GET /kb/search?q=…`, debounced 200ms via a `setTimeout` ref. The active **type** filter is re-applied client-side over the search result set, since `/kb/search` ignores the `type` parameter.
 
 ### Compose (flag-gated)
 
