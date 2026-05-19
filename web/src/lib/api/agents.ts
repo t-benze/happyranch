@@ -4,36 +4,32 @@
  * POST /agents/manage, POST /agents/{a}/learnings (legacy + entries
  * add/update/promote, reindex). See spec §2.
  *
- * Founder-facing learnings READS (list/get/search) are exposed because the
- * web UI may eventually render an agent profile that shows their learnings.
+ * Type definitions live in `./types.ts` so feature compositions can import
+ * them without violating the no-restricted-imports rule that forbids
+ * `@/lib/api/<X>` deep imports from `src/features/`.
  */
 import { request } from './client';
-import type { PerformanceTier } from './types';
+import type {
+  AgentEnrollment,
+  AgentSummary,
+  LearningEntry,
+  LearningEntrySummary,
+} from './types';
 
-export interface AgentSummary {
-  name: string;
-  team: string;
-  role: 'manager' | 'worker';
-  executor: 'claude' | 'codex' | 'opencode';
-  tier: PerformanceTier | null;
-  description: string | null;
-}
-
-export interface AgentEnrollment {
-  name: string;
-  team: string;
-  role: 'manager' | 'worker';
-  enrolled_by: string;
-  enrolled_at: string;
-  enrolled_at_task: string | null;
-  description: string;
-}
+// Re-export for callers that import from this module by name (the
+// providers layer; never feature compositions).
+export type {
+  AgentEnrollment,
+  AgentScorecard,
+  AgentSummary,
+  LearningEntry,
+  LearningEntrySummary,
+} from './types';
 
 export const listAgents = (
   slug: string,
-  params?: { detail?: boolean },
 ): Promise<{ agents: AgentSummary[] }> =>
-  request(`/orgs/${slug}/agents`, { params });
+  request(`/orgs/${slug}/agents`);
 
 export const initAgents = (
   slug: string,
@@ -43,7 +39,7 @@ export const initAgents = (
 
 export const listEnrollments = (
   slug: string,
-  params?: { status?: 'pending' | 'active' | 'rejected' },
+  params?: { status?: 'pending' | 'approved'; team?: string },
 ): Promise<{ enrollments: AgentEnrollment[] }> =>
   request(`/orgs/${slug}/agents/enrollments`, { params });
 
@@ -69,21 +65,6 @@ export const backfillEnrollments = (
 // Per-agent learnings — READ ONLY (writes are agent-subprocess only)
 // ---------------------------------------------------------------------------
 
-export interface LearningEntry {
-  id: string;
-  slug: string;
-  title: string;
-  topic: string;
-  tags: string[];
-  body: string;
-  related_to: string[];
-  supersedes: string | null;
-  promoted_to: string | null;
-  authored_by: string;
-  authored_at: string;
-  updated_at: string;
-}
-
 export const listLearnings = (
   slug: string,
   agentName: string,
@@ -91,9 +72,8 @@ export const listLearnings = (
     topic?: string;
     tag?: string;
     promoted?: boolean;
-    not_promoted?: boolean;
   },
-): Promise<{ entries: LearningEntry[] }> =>
+): Promise<{ entries: LearningEntrySummary[] }> =>
   request(`/orgs/${slug}/agents/${agentName}/learnings/entries/`, { params });
 
 export const getLearning = (
@@ -106,8 +86,8 @@ export const getLearning = (
 export const searchLearnings = (
   slug: string,
   agentName: string,
-  body: { q: string; limit?: number; include_promoted?: boolean },
-): Promise<{ entries: LearningEntry[] }> =>
+  body: { query: string; limit?: number; include_promoted?: boolean },
+): Promise<{ hits: { id: string; slug: string; title: string; snippet: string; score: number }[] }> =>
   request(`/orgs/${slug}/agents/${agentName}/learnings/entries/search`, {
     method: 'POST',
     body,

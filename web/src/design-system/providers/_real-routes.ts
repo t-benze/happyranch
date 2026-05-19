@@ -11,7 +11,7 @@
  * `detail` return `'#'`, which renders the NavLink as inert.
  */
 import { useOrgSlugOptional } from '@/lib/orgSlug';
-import type { TasksRoutes, ThreadRoutes } from './DataContext';
+import type { AgentsRoutes, TasksRoutes, ThreadRoutes } from './DataContext';
 
 export function useRealThreadRoutes(): ThreadRoutes {
   const slug = useOrgSlugOptional();
@@ -28,5 +28,18 @@ export function useRealTasksRoutes(): TasksRoutes {
     detail: (taskId: string) => (slug ? `/orgs/${slug}/tasks/${taskId}` : '#'),
     inbox: () => (slug ? `/orgs/${slug}/tasks` : '#'),
     inboxForOrg: (target: string) => `/orgs/${target}/tasks`,
+  };
+}
+
+export function useRealAgentsRoutes(): AgentsRoutes {
+  const slug = useOrgSlugOptional();
+  return {
+    inbox: () => (slug ? `/orgs/${slug}/agents` : '#'),
+    // Tab state rides on a query param so we never reserve a static path
+    // segment that would shadow a real agent slug under `agents/:agent_name`.
+    pending: () => (slug ? `/orgs/${slug}/agents?view=pending` : '#'),
+    detail: (agentName: string) =>
+      slug ? `/orgs/${slug}/agents/${agentName}` : '#',
+    inboxForOrg: (target: string) => `/orgs/${target}/agents`,
   };
 }

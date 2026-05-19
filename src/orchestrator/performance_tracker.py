@@ -83,3 +83,17 @@ class PerformanceTracker:
             else:
                 tiers[agent] = PerformanceTier.GREEN
         return tiers
+
+    def get_avg_confidence(self, agent: str) -> float | None:
+        """Mean confidence_score over the rolling 30-day window.
+
+        Returns None when the agent has no completion reports with a
+        non-null confidence score in the window — the calibration UI
+        renders a dash rather than a misleading 0.
+        """
+        since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        rows = self._db.get_agent_task_results(agent, since=since)
+        scored = [r["confidence_score"] for r in rows if r.get("confidence_score") is not None]
+        if not scored:
+            return None
+        return round(sum(scored) / len(scored), 2)

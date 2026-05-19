@@ -31,6 +31,119 @@ def test_list_agents_returns_tiers(tmp_home, app, org_state, auth_headers) -> No
     assert "engineering_head" in names
 
 
+def test_list_agents_returns_full_shape(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Each agent row carries the founder-UI fields: team/role/executor/
+    description, plus tier + scorecard + avg_confidence (None when no data)."""
+    from datetime import datetime, timezone
+    from src.orchestrator.agent_def import AgentDef
+    from src.orchestrator import prompt_loader
+
+    ws = org_state.root / "workspaces" / "engineering_head"
+    ws.mkdir(parents=True, exist_ok=True)
+
+    paths = _paths(org_state)
+    agent = AgentDef(
+        name="engineering_head",
+        team="engineering",
+        role="manager",
+        executor="claude",
+        allow_rules=tuple(),
+        repos={},
+        enrolled_by=None,
+        enrolled_at_task=None,
+        enrolled_at=datetime.now(timezone.utc),
+        system_prompt="manage the engineering team",
+        description="Owns the engineering team.",
+    )
+    paths.agents_dir.mkdir(parents=True, exist_ok=True)
+    (paths.agents_dir / "engineering_head.md").write_text(
+        # use the canonical render helper so the file round-trips cleanly
+        __import__("src.orchestrator.agent_def", fromlist=["render_agent_text"])
+            .render_agent_text(agent),
+    )
+
+    r = TestClient(app).get("/api/v1/orgs/alpha/agents", headers=auth_headers)
+    assert r.status_code == 200
+    rows = {a["name"]: a for a in r.json()["agents"]}
+    eh = rows["engineering_head"]
+    assert eh["team"] == "engineering"
+    assert eh["role"] == "manager"
+    assert eh["executor"] == "claude"
+    assert eh["description"] == "Owns the engineering team."
+    assert eh["tier"] == "green"  # no review history → default
+    assert eh["scorecard"] is None
+    assert eh["avg_confidence"] is None
+
+
+def test_list_agents_avg_confidence_aggregates_task_results(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """avg_confidence = mean of task_results.confidence_score (last 30 days)."""
+    ws = org_state.root / "workspaces" / "dev_agent"
+    ws.mkdir(parents=True, exist_ok=True)
+
+    org_state.db.insert_task_result(
+        task_id="TASK-001", agent="dev_agent", session_id="s1",
+        output_summary="ok", confidence_score=80, learnings="",
+        risks_flagged=[], duration_seconds=10, token_count=0,
+        estimated_cost=0.0,
+    )
+    org_state.db.insert_task_result(
+        task_id="TASK-002", agent="dev_agent", session_id="s2",
+        output_summary="ok", confidence_score=70, learnings="",
+        risks_flagged=[], duration_seconds=10, token_count=0,
+        estimated_cost=0.0,
+    )
+
+    r = TestClient(app).get("/api/v1/orgs/alpha/agents", headers=auth_headers)
+    assert r.status_code == 200
+    rows = {a["name"]: a for a in r.json()["agents"]}
+    assert rows["dev_agent"]["avg_confidence"] == 75.0
+
+
+def test_list_enrollments_returns_team_and_role(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Enrollment rows carry team/role/executor so the Pending tab can render
+    without a second roundtrip."""
+    from datetime import datetime, timezone
+    from src.orchestrator.agent_def import AgentDef, render_agent_text
+
+    paths = _paths(org_state)
+    paths.pending_agents_dir.mkdir(parents=True, exist_ok=True)
+    agent = AgentDef(
+        name="new_writer",
+        team="content",
+        role="worker",
+        executor="codex",
+        allow_rules=tuple(),
+        repos={},
+        enrolled_by="content_manager",
+        enrolled_at_task="TASK-050",
+        enrolled_at=datetime.now(timezone.utc),
+        system_prompt="write things",
+        description="Drafts blog posts.",
+    )
+    (paths.pending_agents_dir / "new_writer.md").write_text(render_agent_text(agent))
+
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/agents/enrollments?status=pending",
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    rows = r.json()["enrollments"]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["name"] == "new_writer"
+    assert row["team"] == "content"
+    assert row["role"] == "worker"
+    assert row["executor"] == "codex"
+    assert row["enrolled_by"] == "content_manager"
+    assert row["status"] == "pending"
+
+
 def test_learnings_requires_session_id(tmp_home, app, org_state, auth_headers) -> None:
     org_state.sessions.set_active("TASK-001", "dev_agent", "sess-1")
     r = TestClient(app).post(

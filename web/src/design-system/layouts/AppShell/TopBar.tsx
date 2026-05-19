@@ -11,6 +11,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/design-system/primitives/Tooltip';
+import { useAgentsRoutes } from '@/hooks/agents';
 import { useOrgsList } from '@/hooks/orgs';
 import { useTasksRoutes } from '@/hooks/tasks';
 import { useThreadRoutes } from '@/hooks/threads';
@@ -32,12 +33,17 @@ export function TopBar(): JSX.Element {
   const orgsQuery = useOrgsList();
   const routes = useThreadRoutes();
   const tasksRoutes = useTasksRoutes();
+  const agentsRoutes = useAgentsRoutes();
   const threadsHref = activeSlug ? routes.inboxForOrg(activeSlug) : '#';
+  const agentsHref = activeSlug && !isPrototype ? agentsRoutes.inboxForOrg(activeSlug) : '#';
   useGlobalJump('t', () => {
     if (activeSlug && !isPrototype) navigate(tasksRoutes.inboxForOrg(activeSlug));
   });
   useGlobalJump('a', () => {
     if (activeSlug && !isPrototype) navigate(`/orgs/${activeSlug}/audit`);
+  });
+  useGlobalJump('g', () => {
+    if (activeSlug && !isPrototype) navigate(agentsRoutes.inboxForOrg(activeSlug));
   });
   const switchEnabled = !orgsQuery.isLoading && (orgsQuery.data?.orgs.length ?? 0) > 0;
   // The four placeholder tabs (Tasks/KB/Audit/Agents) live only on the
@@ -78,7 +84,9 @@ export function TopBar(): JSX.Element {
         <NavTab {...placeholderTab('tasks')}>Tasks</NavTab>
         <NavTab {...placeholderTab('kb')}>KB</NavTab>
         <NavTab {...placeholderTab('audit')}>Audit</NavTab>
-        <NavTab {...placeholderTab('agents')}>Agents</NavTab>
+        <NavTab to={agentsHref} enabled={agentsHref !== '#'}>
+          Agents
+        </NavTab>
       </nav>
     </header>
   );

@@ -79,6 +79,7 @@ export function AppRoutes(): JSX.Element {
             <Route path="traces/:task_id" element={<TracesTab />} />
           </Route>
           <Route path="agents" element={<AgentsPage />} />
+          <Route path="agents/:agent_name" element={<AgentsPage />} />
         </Route>
         <Route path="*" element={<NotFound />} />
       </Route>

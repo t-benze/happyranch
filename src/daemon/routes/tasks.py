@@ -63,8 +63,12 @@ async def submit_task(body: SubmitTask, org: OrgDep, request: Request) -> dict:
 
 
 @router.get("/tasks")
-def list_tasks(org: OrgDep, limit: int = 20) -> dict:
-    tasks = org.db.list_tasks(limit=limit)
+def list_tasks(
+    org: OrgDep,
+    limit: int = 20,
+    assigned_agent: str | None = None,
+) -> dict:
+    tasks = org.db.list_tasks(limit=limit, assigned_agent=assigned_agent)
     return {"tasks": [t.model_dump() for t in tasks]}
 
 
