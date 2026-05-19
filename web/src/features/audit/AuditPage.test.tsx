@@ -81,6 +81,60 @@ describe('AuditPage', () => {
     );
   });
 
+  test('escalations forwards ?task_id= to the wire query', async () => {
+    // Regression: previously the Escalations query dropped filters.task_id,
+    // so the table showed org-wide escalations under a "task: X" banner.
+    sessionStorage.setItem('grassland.token', 'tok');
+    let lastTaskId: string | null = null;
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/audit`, ({ request }) => {
+        const url = new URL(request.url);
+        lastTaskId = url.searchParams.get('task_id');
+        return HttpResponse.json({ entries: [] });
+      }),
+    );
+    mountAt(`/orgs/${SLUG}/audit/escalations?task_id=TASK-7`);
+    await waitFor(() => expect(lastTaskId).toBe('TASK-7'));
+  });
+
+  test('escalations pairs a resolution authored by a different agent', async () => {
+    // Regression: previously the wire query carried agent=alice, which
+    // filtered out escalation_resolved rows authored by the founder/peer
+    // manager — the table then showed the escalation as still open.
+    sessionStorage.setItem('grassland.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/audit`, () =>
+        HttpResponse.json({
+          entries: [
+            {
+              id: 1,
+              task_id: 'TASK-99',
+              session_id: null,
+              agent: 'alice',
+              action: 'escalation',
+              payload: {},
+              created_at: '2026-05-19T10:00:00Z',
+            },
+            {
+              id: 2,
+              task_id: 'TASK-99',
+              session_id: null,
+              agent: 'founder',
+              action: 'escalation_resolved',
+              payload: {},
+              created_at: '2026-05-19T10:30:00Z',
+            },
+          ],
+        }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/audit/escalations?agent=alice`);
+    await waitFor(() =>
+      expect(screen.getByText(/resolved/i)).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/^open$/i)).not.toBeInTheDocument();
+  });
+
   test('traces honors ?task_id= deep link without a path segment', async () => {
     // Regression: clicking "View audit →" from a Task lands on /audit?task_id=X,
     // then switching to Traces via the SubTabBar should render the selected

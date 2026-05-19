@@ -22,15 +22,23 @@ export function EscalationsTab(): JSX.Element {
   const filters = useMemo(() => decodeFilters(searchParams), [searchParams]);
   // Pull a wider window than Activity so the FIFO fold can pair multi-cycle
   // escalate / resolved pairs without a second round-trip.
+  //
+  // The agent filter is applied AFTER the fold — narrowing at the wire layer
+  // drops `escalation_resolved` rows authored by a different actor (founder,
+  // peer manager) and breaks resolution pairing for the Threads-deep-link
+  // case where the founder filters by a thread participant.
   const auditQuery = useAuditList({
-    agent: filters.agent,
+    task_id: filters.task_id,
     since: sinceToISO(filters.since),
     limit: 500,
   });
 
   if (auditQuery.isLoading) return <p className="text-fg-muted">Loading…</p>;
   const entries = auditQuery.data?.entries ?? [];
-  const folded = foldEscalations(entries);
+  let folded = foldEscalations(entries);
+  if (filters.agent) {
+    folded = folded.filter((row) => row.agent === filters.agent);
+  }
   if (folded.length === 0) {
     return (
       <EmptyState
