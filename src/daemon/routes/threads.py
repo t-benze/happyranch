@@ -218,6 +218,9 @@ def _thread_row_to_dict(t: ThreadRecord) -> dict:
         "summary": t.summary,
         "new_kb_slugs": t.new_kb_slugs,
         "transcript_path": t.transcript_path,
+        "composed_by": t.composed_by,
+        "composed_from_task_id": t.composed_from_task_id,
+        "composed_from_talk_id": t.composed_from_talk_id,
     }
 
 

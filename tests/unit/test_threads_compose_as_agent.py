@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from src.daemon.routes.threads import _thread_row_to_dict
 from src.infrastructure.database import Database
 from src.models import ThreadRecord
 
@@ -84,3 +85,19 @@ def test_thread_record_roundtrip_with_talk_binding(tmp_path: Path) -> None:
     assert got.composed_by == "payment_agt"
     assert got.composed_from_talk_id == "TALK-042"
     assert got.composed_from_task_id is None
+
+
+def test_thread_row_dict_exposes_composer_fields(tmp_path: Path) -> None:
+    db = Database(tmp_path / "grassland.db")
+    db.insert_thread(
+        ThreadRecord(
+            id="THR-010", subject="s",
+            composed_by="engineering_head",
+            composed_from_talk_id="TALK-007",
+        )
+    )
+    rec = db.get_thread("THR-010")
+    d = _thread_row_to_dict(rec)
+    assert d["composed_by"] == "engineering_head"
+    assert d["composed_from_task_id"] is None
+    assert d["composed_from_talk_id"] == "TALK-007"
