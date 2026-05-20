@@ -194,7 +194,7 @@ export interface KBEntry {
   updated_at: string;
   authored_by: string;
   source_task: string | null;
-  related_entries: string[];
+  related_entries?: string[];
 }
 
 // ---------------------------------------------------------------------------

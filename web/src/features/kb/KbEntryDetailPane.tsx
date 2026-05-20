@@ -65,7 +65,7 @@ export function KbEntryDetailPane({ entrySlug }: { entrySlug: string }): JSX.Ele
               />
             </p>
           )}
-          {entry && entry.related_entries.length > 0 && (
+          {entry?.related_entries && entry.related_entries.length > 0 && (
             <div className="text-fg-muted mt-3 text-xs">
               <div>{KB_STRINGS.relatedEntriesLabel}</div>
               <ul className="mt-1 list-disc pl-5">
