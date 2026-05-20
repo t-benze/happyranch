@@ -53,3 +53,34 @@ def test_thread_record_defaults_to_founder(tmp_path: Path) -> None:
     assert got.composed_by == "founder"
     assert got.composed_from_task_id is None
     assert got.composed_from_talk_id is None
+
+
+def test_insert_thread_rejects_dual_binding(tmp_path: Path) -> None:
+    db = Database(tmp_path / "grassland.db")
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        db.insert_thread(
+            ThreadRecord(
+                id="THR-099",
+                subject="bad",
+                composed_by="engineering_head",
+                composed_from_task_id="TASK-1",
+                composed_from_talk_id="TALK-1",
+            )
+        )
+
+
+def test_thread_record_roundtrip_with_talk_binding(tmp_path: Path) -> None:
+    """Talk-side roundtrip symmetric to test_thread_record_roundtrip_with_composer_fields."""
+    db = Database(tmp_path / "grassland.db")
+    rec = ThreadRecord(
+        id="THR-003",
+        subject="talk-side handoff",
+        composed_by="payment_agt",
+        composed_from_talk_id="TALK-042",
+    )
+    db.insert_thread(rec)
+    got = db.get_thread("THR-003")
+    assert got is not None
+    assert got.composed_by == "payment_agt"
+    assert got.composed_from_talk_id == "TALK-042"
+    assert got.composed_from_task_id is None
