@@ -384,6 +384,29 @@ class Database:
             "ON tasks(dispatched_from_thread_id) "
             "WHERE dispatched_from_thread_id IS NOT NULL"
         )
+        # Agent-initiated threads: composer attribution + session binding.
+        # Sideways refs — NOT walked by walk_ancestors. Mutually exclusive at
+        # insert time (daemon enforces); default 'founder' preserves all
+        # existing rows on first migration.
+        for ddl in (
+            "ALTER TABLE threads ADD COLUMN composed_by TEXT NOT NULL DEFAULT 'founder'",
+            "ALTER TABLE threads ADD COLUMN composed_from_task_id TEXT",
+            "ALTER TABLE threads ADD COLUMN composed_from_talk_id TEXT",
+        ):
+            try:
+                self._conn.execute(ddl)
+            except sqlite3.OperationalError:
+                pass
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_threads_composed_from_task "
+            "ON threads(composed_from_task_id) "
+            "WHERE composed_from_task_id IS NOT NULL"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_threads_composed_from_talk "
+            "ON threads(composed_from_talk_id) "
+            "WHERE composed_from_talk_id IS NOT NULL"
+        )
         # kind column for escalation_notifications: 'escalation' (default) or
         # 'failure'. Additive; existing rows keep the default.
         try:
