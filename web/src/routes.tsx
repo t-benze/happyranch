@@ -3,8 +3,10 @@ import {
   Outlet,
   Route,
   Routes,
+  useLocation,
   useParams,
 } from 'react-router-dom';
+import { ErrorBoundary } from '@/design-system/layouts/AppShell/ErrorBoundary';
 import { TopBar } from '@/design-system/layouts/AppShell/TopBar';
 import { useOrgsList } from '@/hooks/orgs';
 import { OrgProvider } from '@/lib/orgSlug';
@@ -48,11 +50,14 @@ function OrgLayout(): JSX.Element {
 }
 
 function AppShell(): JSX.Element {
+  const location = useLocation();
   return (
     <div className="flex h-full flex-col">
       <TopBar />
       <main className="flex-1 overflow-hidden">
-        <Outlet />
+        <ErrorBoundary resetKey={location.pathname}>
+          <Outlet />
+        </ErrorBoundary>
       </main>
       <CommandPaletteHost />
       <HelpDrawerHost />
