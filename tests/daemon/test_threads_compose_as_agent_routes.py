@@ -296,3 +296,89 @@ def test_compose_as_agent_task_path_rejects_completed_task(
     assert r.status_code == 400
     assert r.json()["detail"]["code"] == "task_not_active"
     assert r.json()["detail"]["status"] == "completed"
+
+
+def _seed_active_task(
+    org_state, daemon_state, agent: str,
+    task_id: str = "TASK-200", sid: str = "sid-1",
+) -> tuple[str, str]:
+    org_state.db.insert_task(TaskRecord(
+        id=task_id, brief="x", team="engineering", assigned_agent=agent,
+    ))
+    daemon_state.orgs["alpha"].sessions.set_active(task_id, agent, sid)
+    return task_id, sid
+
+
+def test_compose_as_agent_rejects_self_only(tmp_home, app, org_state, auth_headers, daemon_state):
+    _seed_agent(org_state, "engineering_head")
+    task_id, sid = _seed_active_task(org_state, daemon_state, "engineering_head")
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads/compose-as-agent",
+        headers=auth_headers,
+        json={
+            "composer": "engineering_head", "subject": "s",
+            "recipients": ["engineering_head"], "body_markdown": "b",
+            "task_id": task_id, "session_id": sid,
+        },
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "empty_external_recipients"
+
+
+def test_compose_as_agent_rejects_unknown_recipient(tmp_home, app, org_state, auth_headers, daemon_state):
+    _seed_agent(org_state, "engineering_head")
+    task_id, sid = _seed_active_task(org_state, daemon_state, "engineering_head")
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads/compose-as-agent",
+        headers=auth_headers,
+        json={
+            "composer": "engineering_head", "subject": "s",
+            "recipients": ["who_is_this"], "body_markdown": "b",
+            "task_id": task_id, "session_id": sid,
+        },
+    )
+    assert r.status_code == 404
+    assert r.json()["detail"]["code"] == "unknown_agent"
+
+
+def test_compose_as_agent_accepts_at_founder_literal(tmp_home, app, org_state, auth_headers, daemon_state):
+    """@founder is a permitted recipient — skips agent existence check.
+
+    Route still returns 501 (insert not implemented yet, Task 10), but must NOT 404."""
+    _seed_agent(org_state, "engineering_head")
+    task_id, sid = _seed_active_task(org_state, daemon_state, "engineering_head")
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads/compose-as-agent",
+        headers=auth_headers,
+        json={
+            "composer": "engineering_head", "subject": "s",
+            "recipients": ["@founder"], "body_markdown": "b",
+            "addressed_to": ["@founder"],
+            "task_id": task_id, "session_id": sid,
+        },
+    )
+    assert r.status_code != 404, r.text
+    # Should fall through to the 501 stub at the end of the function.
+    assert r.status_code == 501
+
+
+def test_compose_as_agent_rejects_addressed_to_not_subset(tmp_home, app, org_state, auth_headers, daemon_state):
+    _seed_agent(org_state, "engineering_head")
+    _seed_agent(org_state, "payment_agt")
+    task_id, sid = _seed_active_task(org_state, daemon_state, "engineering_head")
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads/compose-as-agent",
+        headers=auth_headers,
+        json={
+            "composer": "engineering_head", "subject": "s",
+            "recipients": ["payment_agt"], "body_markdown": "b",
+            "addressed_to": ["@founder"],   # not in recipients
+            "task_id": task_id, "session_id": sid,
+        },
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "addressed_to_not_subset"

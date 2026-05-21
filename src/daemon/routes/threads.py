@@ -294,6 +294,40 @@ async def compose_thread_as_agent(
                         "composer": body.composer, "talk_agent": talk.agent_name},
             )
 
+    # Dedupe recipients (preserve order).
+    seen: set[str] = set()
+    recipients: list[str] = []
+    for name in body.recipients:
+        if name in seen:
+            continue
+        seen.add(name)
+        recipients.append(name)
+
+    # Validate each non-@founder recipient is approved with a workspace.
+    for name in recipients:
+        if name == "@founder":
+            continue
+        agent_def = prompt_loader.load_agent(org_paths, name)
+        workspace_exists = (org.root / "workspaces" / name).exists()
+        if agent_def is None or not workspace_exists:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "unknown_agent", "agent": name},
+            )
+
+    # External-recipients rule: recipients minus composer must be non-empty OR
+    # @founder must appear in addressed_to (resolved if @all).
+    external = [r for r in recipients if r != body.composer]
+    addressed_includes_founder = (
+        "@founder" in body.addressed_to
+        or (body.addressed_to == ["@all"] and "@founder" in recipients)
+    )
+    if not external and not addressed_includes_founder:
+        raise HTTPException(status_code=422, detail={"code": "empty_external_recipients"})
+
+    # addressed_to: either ["@all"] or non-empty subset of recipients.
+    _validate_addressed_to(body.addressed_to, recipients)
+
     raise HTTPException(status_code=501, detail={"code": "not_implemented"})
 
 
