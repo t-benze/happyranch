@@ -454,7 +454,7 @@ def maybe_start_feishu_listener_for_org(org, state, loop) -> None:
     async def _resolve_thread_for_listener(*, thread_id, founder_text, message_id):
         from src.daemon.routes.threads import resolve_thread_from_notification
         return await resolve_thread_from_notification(
-            org, state,
+            org,
             thread_id=thread_id, founder_text=founder_text,
             message_id=message_id, slug=org.slug,
         )

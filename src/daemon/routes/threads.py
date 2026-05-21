@@ -1003,7 +1003,6 @@ async def _send_thread_message_inprocess(
 
 async def resolve_thread_from_notification(
     org: object,
-    state: object,
     *,
     thread_id: str,
     founder_text: str,

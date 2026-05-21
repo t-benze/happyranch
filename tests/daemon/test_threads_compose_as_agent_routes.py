@@ -635,7 +635,7 @@ async def test_resolve_thread_from_notification_appends_founder_message(
     )
 
     await resolve_thread_from_notification(
-        org_state, daemon_state,
+        org_state,
         thread_id="THR-100",
         founder_text="ship it",
         message_id="fake-msg-id",
