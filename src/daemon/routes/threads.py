@@ -232,8 +232,27 @@ async def compose_thread_as_agent(
     if not body.recipients:
         raise HTTPException(status_code=422, detail={"code": "empty_recipients"})
 
-    # Later tasks: composer validation, binding XOR, recipient validation,
-    # addressed_to subset, transaction insert, fan-out, founder push.
+    # Composer must be an approved agent with a workspace.
+    org_paths = OrgPaths(root=org.root)
+    composer_def = prompt_loader.load_agent(org_paths, body.composer)
+    composer_workspace = (org.root / "workspaces" / body.composer).exists()
+    if composer_def is None or not composer_workspace:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "unknown_composer", "agent": body.composer},
+        )
+
+    # Exactly one binding (task XOR talk).
+    has_task = body.task_id is not None
+    has_talk = body.talk_id is not None
+    if not has_task and not has_talk:
+        raise HTTPException(status_code=422, detail={"code": "binding_required"})
+    if has_task and has_talk:
+        raise HTTPException(status_code=422, detail={"code": "binding_ambiguous"})
+    if has_task and not body.session_id:
+        raise HTTPException(status_code=422, detail={"code": "binding_required", "missing": "session_id"})
+
+    # Later tasks: validate task/talk binding bodies, recipients, addressed_to, fan-out.
     raise HTTPException(status_code=501, detail={"code": "not_implemented"})
 
 
