@@ -588,8 +588,10 @@ class AuditLogger:
     def log_thread_founder_notify_sent(
         self, *, thread_id: str, feishu_message_id: str,
     ) -> None:
+        # agent="daemon" matches log_escalation_notify_sent / log_failure_notify_sent
+        # — these are infrastructure-generated push events, not founder actions.
         self._db.insert_audit_log(
-            task_id=thread_id, agent="founder",
+            task_id=thread_id, agent="daemon",
             action="thread_founder_notify_sent",
             payload={"feishu_message_id": feishu_message_id},
         )
@@ -598,7 +600,7 @@ class AuditLogger:
         self, *, thread_id: str, error: str,
     ) -> None:
         self._db.insert_audit_log(
-            task_id=thread_id, agent="founder",
+            task_id=thread_id, agent="daemon",
             action="thread_founder_notify_failed",
             payload={"error": error},
         )

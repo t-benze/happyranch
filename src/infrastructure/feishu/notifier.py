@@ -316,7 +316,10 @@ class EscalationNotifier:
         the audit log is the canonical "did it actually deliver" record.
         Returns False only if a precondition failure prevents even attempting.
         """
-        preview = body_text if len(body_text) <= 200 else body_text[:197] + "..."
+        preview = (
+            body_text if len(body_text) <= _HINT_PREVIEW_CAP
+            else body_text[:_HINT_PREVIEW_CAP] + "…"
+        )
         title = f"Thread {thread_id} · started by {composer}"
         lines = [
             f"Subject: {subject}",
