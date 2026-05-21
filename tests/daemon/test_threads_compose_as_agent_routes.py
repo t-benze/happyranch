@@ -273,16 +273,22 @@ def test_compose_as_agent_talk_path_rejects_unowned_talk(tmp_home, app, org_stat
 
 
 def test_compose_as_agent_task_path_rejects_completed_task(
-    tmp_home, app, org_state, auth_headers, daemon_state,
+    tmp_home, app, org_state, auth_headers,
 ):
-    """Task already in a terminal state (completed/failed) is rejected as task_not_active."""
+    """Task already in a terminal state (completed/failed) is rejected as task_not_active.
+
+    In production a completed task has no active session entry — the status
+    gate must run BEFORE the session gate so the caller sees the accurate
+    `task_not_active` reason rather than a misleading `session_mismatch`.
+    """
     _seed_agent(org_state, "engineering_head")
     _seed_agent(org_state, "payment_agt")
     org_state.db.insert_task(TaskRecord(
         id="TASK-60", brief="x", team="engineering",
         assigned_agent="engineering_head", status=TaskStatus.COMPLETED,
     ))
-    daemon_state.orgs["alpha"].sessions.set_active("TASK-60", "engineering_head", "sid-60")
+    # No session_id pre-seeded — mirrors what happens after the original
+    # session completes in production.
     client = TestClient(app)
     r = client.post(
         "/api/v1/orgs/alpha/threads/compose-as-agent",
@@ -290,7 +296,7 @@ def test_compose_as_agent_task_path_rejects_completed_task(
         json={
             "composer": "engineering_head", "subject": "s",
             "recipients": ["payment_agt"], "body_markdown": "b",
-            "task_id": "TASK-60", "session_id": "sid-60",
+            "task_id": "TASK-60", "session_id": "stale-sid",
         },
     )
     assert r.status_code == 400
@@ -344,9 +350,7 @@ def test_compose_as_agent_rejects_unknown_recipient(tmp_home, app, org_state, au
 
 
 def test_compose_as_agent_accepts_at_founder_literal(tmp_home, app, org_state, auth_headers, daemon_state):
-    """@founder is a permitted recipient — skips agent existence check.
-
-    Route still returns 501 (insert not implemented yet, Task 10), but must NOT 404."""
+    """@founder is a permitted recipient — skips the agent existence check."""
     _seed_agent(org_state, "engineering_head")
     task_id, sid = _seed_active_task(org_state, daemon_state, "engineering_head")
     client = TestClient(app)
@@ -652,3 +656,33 @@ async def test_resolve_thread_from_notification_appends_founder_message(
     notif = org_state.db.get_escalation_notification("fake-msg-id")
     assert notif["consumed_at"] is not None
     assert notif["consumed_by"] == "feishu-reply"
+
+
+def test_compose_as_agent_liberal_authority_cross_team(
+    tmp_home, app, org_state, auth_headers, daemon_state,
+):
+    """Spec §4.1: any agent → any agent, no team or role gate.
+
+    An engineering-team worker composes a thread addressing the content-team
+    manager. The route MUST accept — no role/team check fires.
+    """
+    _seed_agent(org_state, "dev_agent", team="engineering")
+    _seed_agent(org_state, "content_manager", team="content")
+    task_id, sid = _seed_active_task(
+        org_state, daemon_state, "dev_agent",
+        task_id="TASK-CROSS", sid="sid-cross",
+    )
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads/compose-as-agent",
+        headers=auth_headers,
+        json={
+            "composer": "dev_agent", "subject": "cross-team coordination",
+            "recipients": ["content_manager"], "body_markdown": "loop you in",
+            "addressed_to": ["@all"],
+            "task_id": task_id, "session_id": sid,
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["composed_by"] == "dev_agent"
+    assert r.json()["pending_replies"] == ["content_manager"]

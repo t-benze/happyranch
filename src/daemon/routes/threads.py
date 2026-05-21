@@ -246,10 +246,8 @@ async def _maybe_notify_founder_addressed(
 
 @router.post("/threads/compose-as-agent")
 async def compose_thread_as_agent(
-    slug: str, body: ComposeAsAgentBody, org: OrgDep, request: Request
+    slug: str, body: ComposeAsAgentBody, org: OrgDep,
 ) -> dict:
-    state: DaemonState = request.app.state.daemon
-
     subject = body.subject.strip()
     if not subject:
         raise HTTPException(status_code=422, detail={"code": "empty_subject"})
@@ -279,8 +277,11 @@ async def compose_thread_as_agent(
     if has_task and not body.session_id:
         raise HTTPException(status_code=422, detail={"code": "binding_required", "missing": "session_id"})
 
-    # Task binding: task exists, composer == assigned_agent, active session matches,
-    # task in {pending, in_progress}.
+    # Task binding: task exists, composer owns it, task is active, session matches.
+    # Status gate runs BEFORE session gate so a finished task surfaces
+    # `task_not_active` rather than `session_mismatch` (a completed task has
+    # no active session in normal operation; reporting "session mismatch"
+    # would mislead the caller).
     if has_task:
         task = org.db.get_task(body.task_id)
         if task is None:
@@ -291,33 +292,36 @@ async def compose_thread_as_agent(
                 detail={"code": "composer_not_task_owner",
                         "composer": body.composer, "assigned_agent": task.assigned_agent},
             )
+        if task.status.value not in ("pending", "in_progress"):
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "task_not_active", "status": task.status.value},
+            )
         active_sid = org.sessions.get_active(body.task_id, body.composer)
         if active_sid is None or active_sid != body.session_id:
             raise HTTPException(
                 status_code=409,
                 detail={"code": "session_mismatch", "active": active_sid, "got": body.session_id},
             )
-        if task.status.value not in ("pending", "in_progress"):
-            raise HTTPException(
-                status_code=400,
-                detail={"code": "task_not_active", "status": task.status.value},
-            )
 
-    # Talk binding: talk exists, OPEN, owned by composer.
+    # Talk binding: talk exists, owned by composer, OPEN.
+    # Ownership gate runs BEFORE status gate so a closed talk owned by
+    # someone else surfaces `composer_not_talk_owner` rather than leaking
+    # the talk's status to a non-owner.
     if has_talk:
         talk = org.db.get_talk(body.talk_id)
         if talk is None:
             raise HTTPException(status_code=404, detail={"code": "unknown_talk", "talk_id": body.talk_id})
-        if talk.status != TalkStatus.OPEN:
-            raise HTTPException(
-                status_code=400,
-                detail={"code": "talk_not_open", "status": talk.status.value},
-            )
         if talk.agent_name != body.composer:
             raise HTTPException(
                 status_code=403,
                 detail={"code": "composer_not_talk_owner",
                         "composer": body.composer, "talk_agent": talk.agent_name},
+            )
+        if talk.status != TalkStatus.OPEN:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "talk_not_open", "status": talk.status.value},
             )
 
     # Dedupe recipients (preserve order).
