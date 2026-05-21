@@ -27,6 +27,12 @@ from src.orchestrator.org_config import load_org_config
 
 router = APIRouter(dependencies=[require_token()])
 
+# Special routing literal for addressing the founder. NOT a real agent name —
+# it never appears in `thread_participants`, never receives a ThreadInvocation,
+# and is permitted only in `recipients` / `addressed_to` on agent-initiated
+# composes. Routes via the Feishu notifier and the inbox UI instead.
+FOUNDER_LITERAL = "@founder"
+
 
 async def _publish_thread_event(
     org,
@@ -305,7 +311,7 @@ async def compose_thread_as_agent(
 
     # Validate each non-@founder recipient is approved with a workspace.
     for name in recipients:
-        if name == "@founder":
+        if name == FOUNDER_LITERAL:
             continue
         agent_def = prompt_loader.load_agent(org_paths, name)
         workspace_exists = (org.root / "workspaces" / name).exists()
@@ -317,10 +323,13 @@ async def compose_thread_as_agent(
 
     # External-recipients rule: recipients minus composer must be non-empty OR
     # @founder must appear in addressed_to (resolved if @all).
+    # NOTE: `external` includes @founder by design — used only for the empty-
+    # check below. Do NOT reuse this list to mint ThreadInvocations in Task 10;
+    # @founder is not a subprocess and must be excluded from the invocation set.
     external = [r for r in recipients if r != body.composer]
     addressed_includes_founder = (
-        "@founder" in body.addressed_to
-        or (body.addressed_to == ["@all"] and "@founder" in recipients)
+        FOUNDER_LITERAL in body.addressed_to
+        or (body.addressed_to == ["@all"] and FOUNDER_LITERAL in recipients)
     )
     if not external and not addressed_includes_founder:
         raise HTTPException(status_code=422, detail={"code": "empty_external_recipients"})

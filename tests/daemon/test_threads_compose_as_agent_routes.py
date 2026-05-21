@@ -382,3 +382,26 @@ def test_compose_as_agent_rejects_addressed_to_not_subset(tmp_home, app, org_sta
     )
     assert r.status_code == 422
     assert r.json()["detail"]["code"] == "addressed_to_not_subset"
+
+
+def test_compose_as_agent_at_all_expands_to_include_founder(
+    tmp_home, app, org_state, auth_headers, daemon_state,
+):
+    """recipients=[composer, @founder] with addressed_to=[@all] must accept —
+    @all expansion covers @founder, so external-recipients rule passes via
+    the founder-addressed leg even though `external` only has @founder."""
+    _seed_agent(org_state, "engineering_head")
+    task_id, sid = _seed_active_task(org_state, daemon_state, "engineering_head")
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads/compose-as-agent",
+        headers=auth_headers,
+        json={
+            "composer": "engineering_head", "subject": "s",
+            "recipients": ["engineering_head", "@founder"], "body_markdown": "b",
+            "addressed_to": ["@all"],
+            "task_id": task_id, "session_id": sid,
+        },
+    )
+    # Falls through to 501 — Task 10 will turn this into 200.
+    assert r.status_code == 501, r.text
