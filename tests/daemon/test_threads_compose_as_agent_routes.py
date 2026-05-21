@@ -38,3 +38,40 @@ def test_compose_as_agent_route_rejects_empty_subject(tmp_home, app, org_state, 
     )
     assert r.status_code == 422
     assert r.json()["detail"]["code"] == "empty_subject"
+
+
+def test_compose_as_agent_route_rejects_empty_body(tmp_home, app, org_state, auth_headers):
+    _seed_agent(org_state, "engineering_head")
+    _seed_agent(org_state, "payment_agt")
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads/compose-as-agent",
+        headers=auth_headers,
+        json={
+            "composer": "engineering_head",
+            "subject": "s",
+            "recipients": ["payment_agt"],
+            "body_markdown": "   ",
+            "task_id": "TASK-1", "session_id": "abc",
+        },
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "empty_body"
+
+
+def test_compose_as_agent_route_rejects_empty_recipients(tmp_home, app, org_state, auth_headers):
+    _seed_agent(org_state, "engineering_head")
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads/compose-as-agent",
+        headers=auth_headers,
+        json={
+            "composer": "engineering_head",
+            "subject": "s",
+            "recipients": [],
+            "body_markdown": "hi",
+            "task_id": "TASK-1", "session_id": "abc",
+        },
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "empty_recipients"
