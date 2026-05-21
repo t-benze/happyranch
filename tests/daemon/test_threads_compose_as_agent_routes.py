@@ -459,7 +459,7 @@ def test_compose_as_agent_founder_only_addressing_skips_invocations(
 ):
     """recipients includes payment_agt but addressed_to is @founder only —
     no agent invocations should be minted (payment_agt sees nothing this turn)
-    but founder_notified=True (because @founder is addressed)."""
+    but founder_notified=False (no notifier configured)."""
     _seed_agent(org_state, "engineering_head")
     _seed_agent(org_state, "payment_agt")
     task_id, sid = _seed_active_task(org_state, daemon_state, "engineering_head")
@@ -477,14 +477,15 @@ def test_compose_as_agent_founder_only_addressing_skips_invocations(
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["pending_replies"] == []
-    assert body["founder_notified"] is True
+    assert body["founder_notified"] is False
 
 
 def test_compose_as_agent_at_all_excludes_composer_and_founder_from_invocations(
     tmp_home, app, org_state, auth_headers, daemon_state,
 ):
     """addressed_to=@all expands to all participants, but invocations are
-    minted only for concrete OTHER agents — not composer, not @founder."""
+    minted only for concrete OTHER agents — not composer, not @founder.
+    founder_notified=False because no notifier is configured."""
     _seed_agent(org_state, "engineering_head")
     _seed_agent(org_state, "payment_agt")
     task_id, sid = _seed_active_task(org_state, daemon_state, "engineering_head")
@@ -502,7 +503,7 @@ def test_compose_as_agent_at_all_excludes_composer_and_founder_from_invocations(
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["pending_replies"] == ["payment_agt"]
-    assert body["founder_notified"] is True
+    assert body["founder_notified"] is False
 
 
 def test_compose_as_agent_audit_records_composer(
@@ -531,3 +532,68 @@ def test_compose_as_agent_audit_records_composer(
     payload = _json.loads(row["payload"])
     assert payload["composed_by"] == "engineering_head"
     assert payload["composed_from_task_id"] == task_id
+
+
+def test_compose_as_agent_founder_addressed_fires_notifier_send(
+    tmp_home, app, org_state, auth_headers, daemon_state, monkeypatch,
+):
+    """When @founder is addressed and the org has a notifier, send_thread_addressed fires."""
+    _seed_agent(org_state, "engineering_head")
+    _seed_agent(org_state, "payment_agt")
+
+    # Install a fake notifier with the new send_thread_addressed coroutine.
+    sent: list[dict] = []
+
+    class _FakeNotifier:
+        async def send_thread_addressed(self, *, thread_id, subject, composer, body_text, addressed_to):
+            sent.append({
+                "thread_id": thread_id, "subject": subject,
+                "composer": composer, "body_text": body_text,
+                "addressed_to": list(addressed_to),
+            })
+            return True
+
+    org_state.notifier = _FakeNotifier()
+
+    task_id, sid = _seed_active_task(org_state, daemon_state, "engineering_head")
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads/compose-as-agent",
+        headers=auth_headers,
+        json={
+            "composer": "engineering_head", "subject": "loop founder in",
+            "recipients": ["payment_agt", "@founder"], "body_markdown": "founder check this",
+            "addressed_to": ["payment_agt", "@founder"],
+            "task_id": task_id, "session_id": sid,
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["founder_notified"] is True
+    assert len(sent) == 1
+    assert sent[0]["composer"] == "engineering_head"
+    assert sent[0]["subject"] == "loop founder in"
+    assert "founder check this" in sent[0]["body_text"]
+
+
+def test_compose_as_agent_founder_addressed_without_notifier_reports_false(
+    tmp_home, app, org_state, auth_headers, daemon_state,
+):
+    """When @founder is addressed but no notifier is configured, founder_notified=False."""
+    _seed_agent(org_state, "engineering_head")
+    _seed_agent(org_state, "payment_agt")
+    assert org_state.notifier is None  # default for unconfigured Feishu
+
+    task_id, sid = _seed_active_task(org_state, daemon_state, "engineering_head")
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads/compose-as-agent",
+        headers=auth_headers,
+        json={
+            "composer": "engineering_head", "subject": "x",
+            "recipients": ["payment_agt", "@founder"], "body_markdown": "y",
+            "addressed_to": ["@founder"],
+            "task_id": task_id, "session_id": sid,
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["founder_notified"] is False

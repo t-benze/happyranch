@@ -230,12 +230,18 @@ async def _maybe_notify_founder_addressed(
 ) -> bool:
     """Push a Feishu card if @founder addressed and org has Feishu configured.
 
-    Returns True iff an attempt was made (delivery failures are swallowed and
-    audited, but the caller still reports `founder_notified: true`).
-
-    Task 11 will fill in the real notifier call.
+    Returns True iff a send was attempted (notifier is configured and reached
+    the send call). Returns False if no notifier is configured. Delivery
+    failures still return True — the audit log is the source of truth for
+    actual delivery status.
     """
-    return False
+    notifier = org.notifier
+    if notifier is None:
+        return False
+    return await notifier.send_thread_addressed(
+        thread_id=thread_id, subject=subject, composer=composer,
+        body_text=body_text, addressed_to=addressed_to,
+    )
 
 
 @router.post("/threads/compose-as-agent")
@@ -418,8 +424,9 @@ async def compose_thread_as_agent(
             addressed_to=body.addressed_to, kind="message",
         )
         if founder_in_addressed:
+            channel = "feishu" if org.notifier is not None else "none"
             AuditLogger(org.db).log_thread_founder_addressed(
-                thread_id, seq=seq, speaker=body.composer, notify_channel="feishu",
+                thread_id, seq=seq, speaker=body.composer, notify_channel=channel,
             )
         tokens_to_enqueue: list[str] = []
         for name in addressed_agents:
@@ -432,12 +439,12 @@ async def compose_thread_as_agent(
     for tok in tokens_to_enqueue:
         await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=tok))
 
+    founder_notified = False
     if founder_in_addressed:
-        await _maybe_notify_founder_addressed(
+        founder_notified = await _maybe_notify_founder_addressed(
             org, thread_id=thread_id, subject=subject, composer=body.composer,
             body_text=body_text, addressed_to=body.addressed_to,
         )
-    founder_notified = founder_in_addressed
 
     await _publish_thread_event(
         org, slug,

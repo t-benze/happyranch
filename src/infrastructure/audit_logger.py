@@ -585,6 +585,24 @@ class AuditLogger:
             payload={"seq": seq, "speaker": speaker, "notify_channel": notify_channel},
         )
 
+    def log_thread_founder_notify_sent(
+        self, *, thread_id: str, feishu_message_id: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=thread_id, agent="founder",
+            action="thread_founder_notify_sent",
+            payload={"feishu_message_id": feishu_message_id},
+        )
+
+    def log_thread_founder_notify_failed(
+        self, *, thread_id: str, error: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=thread_id, agent="founder",
+            action="thread_founder_notify_failed",
+            payload={"error": error},
+        )
+
     def log_thread_message_sent(
         self,
         thread_id: str,

@@ -1950,8 +1950,10 @@ class Database:
         expires_at: datetime,
         kind: str = "escalation",
     ) -> None:
-        if kind not in ("escalation", "failure"):
-            raise ValueError(f"kind must be 'escalation' or 'failure', got {kind!r}")
+        if kind not in ("escalation", "failure", "thread_addressed"):
+            raise ValueError(
+                f"kind must be 'escalation', 'failure', or 'thread_addressed', got {kind!r}"
+            )
         expires_at_str = expires_at.astimezone(timezone.utc).isoformat()
         self._conn.execute(
             """INSERT INTO escalation_notifications
