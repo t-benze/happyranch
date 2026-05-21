@@ -126,6 +126,8 @@ const EXCLUDED_PATHS = new Map<string, string>([
   ['POST /api/v1/orgs/{slug}/threads/{thread_id}/decline', 'agent invocation token only'],
   ['POST /api/v1/orgs/{slug}/threads/{thread_id}/dispatch', 'agent invocation token only'],
   ['POST /api/v1/orgs/{slug}/threads/{thread_id}/close-out', 'agent invocation token only'],
+  // agent-initiated thread compose (agent callback — not exercised from the Web UI)
+  ['POST /api/v1/orgs/{slug}/threads/compose-as-agent', 'agent callback — not exercised from the Web UI'],
 ]);
 
 describe('openapi coverage', () => {

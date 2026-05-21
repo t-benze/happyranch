@@ -1044,6 +1044,24 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/threads/compose-as-agent": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/threads/events": {
       "GET": {
         "params": [
