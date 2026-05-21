@@ -124,6 +124,10 @@ The `--from-file` pattern matches `grassland report-completion`, `grassland mana
 - Don't start tasks (`grassland run ...`) from inside a talk — that's out of scope for v1. If something actionable comes up, tell the founder explicitly and let them submit.
 - **Exception:** `grassland manage-agent` (enroll / update / terminate) is allowed during a talk via the talk-path payload (pass `talk_id` instead of `task_id`+`session_id`). See the `manage-agent` skill. Record any such call in your `transcript_markdown` so the founder has a human-readable record at talk-end.
 - **Exception:** `grassland dispatch` (create a new task from inside the talk) is allowed via the talk-path payload — see the `dispatch` skill. Workers can only dispatch to themselves; team managers can dispatch to any agent in their team. Cross-team dispatch is forbidden. Record any such call in your `transcript_markdown` so the founder has a human-readable record at talk-end.
+- **Exception:** Composing a thread to loop in another agent is allowed
+  via the talk-path payload (`--talk-id` on `grassland threads compose`).
+  See the `thread` skill. Record the thread_id in your
+  `transcript_markdown` so the founder has a record at talk-end.
 - Don't call `grassland talk end` without a summary + transcript. An empty payload is useless on recall.
 - Don't write learnings you've already written — the daemon appends verbatim, so duplicates will clutter `learnings.md`.
 - Don't treat KB entries as a catch-all for in-talk notes. KB is for durable, cross-agent-relevant knowledge. Everything else is a per-agent learning.

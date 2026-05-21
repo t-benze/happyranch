@@ -60,6 +60,10 @@ Parameters:
 
    If the task produces a standalone document (report, plan, analysis), write its files under `artifacts/<task_id>/` in your workspace root — **not** inside any repo or worktree. Capture the relative path (e.g. `artifacts/TASK-001`) and include it as `artifact_dir` in your completion payload so future sessions can retrieve it via `grassland recall --org {ORG_SLUG} <task_id>`.
 
+   If during the task you realize you need async input from another agent
+   (and you're not yet blocked), consult `protocol/skills/thread/SKILL.md`
+   "Compose a new thread" rather than escalating.
+
 5. **Report progress (long-running tasks).** If the task spans more than a
    few minutes — multi-phase implementation, lengthy build/test, large
    research sweep — emit a one-line progress note at every meaningful
