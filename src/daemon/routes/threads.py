@@ -224,6 +224,20 @@ async def compose_thread(
 # ---------------------------------------------------------------------------
 
 
+async def _maybe_notify_founder_addressed(
+    org, *, thread_id: str, subject: str, composer: str,
+    body_text: str, addressed_to: list[str],
+) -> bool:
+    """Push a Feishu card if @founder addressed and org has Feishu configured.
+
+    Returns True iff an attempt was made (delivery failures are swallowed and
+    audited, but the caller still reports `founder_notified: true`).
+
+    Task 11 will fill in the real notifier call.
+    """
+    return False
+
+
 @router.post("/threads/compose-as-agent")
 async def compose_thread_as_agent(
     slug: str, body: ComposeAsAgentBody, org: OrgDep, request: Request
@@ -337,7 +351,109 @@ async def compose_thread_as_agent(
     # addressed_to: either ["@all"] or non-empty subset of recipients.
     _validate_addressed_to(body.addressed_to, recipients)
 
-    raise HTTPException(status_code=501, detail={"code": "not_implemented"})
+    org_cfg = load_org_config(org_paths)
+    turn_cap = org_cfg.threads_default_turn_cap
+
+    # Resolve the addressee set:
+    # - @all → every recipient (including @founder if present, including composer);
+    # - otherwise the explicit list.
+    if body.addressed_to == ["@all"]:
+        resolved = list(recipients)
+    else:
+        resolved = list(body.addressed_to)
+    # Concrete agent invocations exclude both @founder and the composer
+    # (composer is already running; @founder isn't a subprocess).
+    addressed_agents = [
+        a for a in resolved
+        if a != FOUNDER_LITERAL and a != body.composer
+    ]
+    founder_in_addressed = FOUNDER_LITERAL in resolved
+
+    if len(addressed_agents) > turn_cap:
+        raise HTTPException(
+            status_code=429,
+            detail={"code": "turn_cap_exceeded",
+                    "used": 0, "cap": turn_cap,
+                    "requested": len(addressed_agents)},
+        )
+
+    composed_from_task_id = body.task_id if has_task else None
+    composed_from_talk_id = body.talk_id if has_talk else None
+
+    async with org.db_lock:
+        thread_id = org.db.next_thread_id()
+        org.db.insert_thread(ThreadRecord(
+            id=thread_id, subject=subject, turn_cap=turn_cap,
+            composed_by=body.composer,
+            composed_from_task_id=composed_from_task_id,
+            composed_from_talk_id=composed_from_talk_id,
+        ))
+        # Composer + every recipient become participants. @founder is NOT a
+        # row (spec §3.3); skip it when iterating recipients. The composer
+        # is added once explicitly; the loop skips them if they're also in
+        # recipients to avoid a duplicate insert (which would silently no-op
+        # but is wasteful).
+        org.db.add_thread_participant(thread_id, body.composer, added_by=body.composer)
+        for name in recipients:
+            if name == FOUNDER_LITERAL or name == body.composer:
+                continue
+            org.db.add_thread_participant(thread_id, name, added_by=body.composer)
+
+        seq = org.db.append_thread_message(
+            thread_id=thread_id, speaker=body.composer,
+            kind=ThreadMessageKind.MESSAGE,
+            body_markdown=body_text, addressed_to=body.addressed_to,
+        )
+        AuditLogger(org.db).log_thread_started(
+            thread_id,
+            subject=subject,
+            initial_recipients=recipients,
+            forwarded_from_id=None,
+            composed_by=body.composer,
+            composed_from_task_id=composed_from_task_id,
+            composed_from_talk_id=composed_from_talk_id,
+        )
+        AuditLogger(org.db).log_thread_message_sent(
+            thread_id, seq=seq, speaker=body.composer,
+            addressed_to=body.addressed_to, kind="message",
+        )
+        if founder_in_addressed:
+            AuditLogger(org.db).log_thread_founder_addressed(
+                thread_id, seq=seq, speaker=body.composer, notify_channel="feishu",
+            )
+        tokens_to_enqueue: list[str] = []
+        for name in addressed_agents:
+            inv = org.db.mint_thread_invocation(
+                thread_id=thread_id, agent_name=name,
+                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
+            )
+            tokens_to_enqueue.append(inv.invocation_token)
+
+    for tok in tokens_to_enqueue:
+        await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=tok))
+
+    if founder_in_addressed:
+        await _maybe_notify_founder_addressed(
+            org, thread_id=thread_id, subject=subject, composer=body.composer,
+            body_text=body_text, addressed_to=body.addressed_to,
+        )
+    founder_notified = founder_in_addressed
+
+    await _publish_thread_event(
+        org, slug,
+        thread_id=thread_id, seq=seq, speaker=body.composer,
+        kind="message", preview=body_text, status="open",
+    )
+
+    return {
+        "thread_id": thread_id,
+        "started_at": org.db.get_thread(thread_id).started_at.isoformat(),
+        "composed_by": body.composer,
+        "composed_from_task_id": composed_from_task_id,
+        "composed_from_talk_id": composed_from_talk_id,
+        "pending_replies": addressed_agents,
+        "founder_notified": founder_notified,
+    }
 
 
 # ---------------------------------------------------------------------------

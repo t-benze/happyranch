@@ -361,8 +361,7 @@ def test_compose_as_agent_accepts_at_founder_literal(tmp_home, app, org_state, a
         },
     )
     assert r.status_code != 404, r.text
-    # Should fall through to the 501 stub at the end of the function.
-    assert r.status_code == 501
+    assert r.status_code == 200
 
 
 def test_compose_as_agent_rejects_addressed_to_not_subset(tmp_home, app, org_state, auth_headers, daemon_state):
@@ -403,5 +402,132 @@ def test_compose_as_agent_at_all_expands_to_include_founder(
             "task_id": task_id, "session_id": sid,
         },
     )
-    # Falls through to 501 — Task 10 will turn this into 200.
-    assert r.status_code == 501, r.text
+    assert r.status_code == 200, r.text
+
+
+def test_compose_as_agent_happy_path_returns_thread(
+    tmp_home, app, org_state, auth_headers, daemon_state,
+):
+    _seed_agent(org_state, "engineering_head")
+    _seed_agent(org_state, "payment_agt")
+    task_id, sid = _seed_active_task(org_state, daemon_state, "engineering_head")
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads/compose-as-agent",
+        headers=auth_headers,
+        json={
+            "composer": "engineering_head", "subject": "subj",
+            "recipients": ["payment_agt"], "body_markdown": "hi",
+            "addressed_to": ["@all"],
+            "task_id": task_id, "session_id": sid,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["thread_id"].startswith("THR-")
+    assert body["composed_by"] == "engineering_head"
+    assert body["composed_from_task_id"] == task_id
+    assert body["composed_from_talk_id"] is None
+    assert body["pending_replies"] == ["payment_agt"]
+    assert body["founder_notified"] is False
+
+
+def test_compose_as_agent_adds_composer_as_participant(
+    tmp_home, app, org_state, auth_headers, daemon_state,
+):
+    _seed_agent(org_state, "engineering_head")
+    _seed_agent(org_state, "payment_agt")
+    task_id, sid = _seed_active_task(org_state, daemon_state, "engineering_head")
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads/compose-as-agent",
+        headers=auth_headers,
+        json={
+            "composer": "engineering_head", "subject": "subj",
+            "recipients": ["payment_agt"], "body_markdown": "hi",
+            "task_id": task_id, "session_id": sid,
+        },
+    )
+    assert r.status_code == 200, r.text
+    thread_id = r.json()["thread_id"]
+    parts = {p.agent_name for p in org_state.db.list_thread_participants(thread_id)}
+    assert parts == {"engineering_head", "payment_agt"}
+
+
+def test_compose_as_agent_founder_only_addressing_skips_invocations(
+    tmp_home, app, org_state, auth_headers, daemon_state,
+):
+    """recipients includes payment_agt but addressed_to is @founder only —
+    no agent invocations should be minted (payment_agt sees nothing this turn)
+    but founder_notified=True (because @founder is addressed)."""
+    _seed_agent(org_state, "engineering_head")
+    _seed_agent(org_state, "payment_agt")
+    task_id, sid = _seed_active_task(org_state, daemon_state, "engineering_head")
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads/compose-as-agent",
+        headers=auth_headers,
+        json={
+            "composer": "engineering_head", "subject": "founder only",
+            "recipients": ["payment_agt", "@founder"], "body_markdown": "hi",
+            "addressed_to": ["@founder"],
+            "task_id": task_id, "session_id": sid,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["pending_replies"] == []
+    assert body["founder_notified"] is True
+
+
+def test_compose_as_agent_at_all_excludes_composer_and_founder_from_invocations(
+    tmp_home, app, org_state, auth_headers, daemon_state,
+):
+    """addressed_to=@all expands to all participants, but invocations are
+    minted only for concrete OTHER agents — not composer, not @founder."""
+    _seed_agent(org_state, "engineering_head")
+    _seed_agent(org_state, "payment_agt")
+    task_id, sid = _seed_active_task(org_state, daemon_state, "engineering_head")
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads/compose-as-agent",
+        headers=auth_headers,
+        json={
+            "composer": "engineering_head", "subject": "all",
+            "recipients": ["payment_agt", "@founder"], "body_markdown": "hi",
+            "addressed_to": ["@all"],
+            "task_id": task_id, "session_id": sid,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["pending_replies"] == ["payment_agt"]
+    assert body["founder_notified"] is True
+
+
+def test_compose_as_agent_audit_records_composer(
+    tmp_home, app, org_state, auth_headers, daemon_state,
+):
+    """thread_started audit row includes composer attribution."""
+    import json as _json
+    _seed_agent(org_state, "engineering_head")
+    _seed_agent(org_state, "payment_agt")
+    task_id, sid = _seed_active_task(org_state, daemon_state, "engineering_head")
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads/compose-as-agent",
+        headers=auth_headers,
+        json={
+            "composer": "engineering_head", "subject": "x",
+            "recipients": ["payment_agt"], "body_markdown": "y",
+            "task_id": task_id, "session_id": sid,
+        },
+    )
+    thread_id = r.json()["thread_id"]
+    row = org_state.db._conn.execute(
+        "SELECT payload FROM audit_log WHERE task_id = ? AND action = 'thread_started'",
+        (thread_id,),
+    ).fetchone()
+    payload = _json.loads(row["payload"])
+    assert payload["composed_by"] == "engineering_head"
+    assert payload["composed_from_task_id"] == task_id
