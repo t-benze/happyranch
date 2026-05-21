@@ -64,6 +64,17 @@ class ComposeBody(BaseModel):
     forwarded_from_kind: str | None = None  # 'thread' | 'talk'
 
 
+class ComposeAsAgentBody(BaseModel):
+    composer: str
+    subject: str
+    recipients: list[str]
+    body_markdown: str
+    addressed_to: list[str] = ["@all"]
+    task_id: str | None = None
+    session_id: str | None = None
+    talk_id: str | None = None
+
+
 def _validate_addressed_to(addressed_to: list[str], recipients: list[str]) -> None:
     if addressed_to == ["@all"]:
         return
@@ -197,6 +208,33 @@ async def compose_thread(
         "started_at": org.db.get_thread(thread_id).started_at.isoformat(),
         "pending_replies": addressed_agents,
     }
+
+
+# ---------------------------------------------------------------------------
+# Task 6 — POST /threads/compose-as-agent (agent-initiated threads)
+# NOTE: This route must be registered BEFORE /threads/{thread_id} routes so
+# FastAPI does not match the literal "compose-as-agent" as a thread_id param.
+# ---------------------------------------------------------------------------
+
+
+@router.post("/threads/compose-as-agent")
+async def compose_thread_as_agent(
+    slug: str, body: ComposeAsAgentBody, org: OrgDep, request: Request
+) -> dict:
+    state: DaemonState = request.app.state.daemon
+
+    subject = body.subject.strip()
+    if not subject:
+        raise HTTPException(status_code=422, detail={"code": "empty_subject"})
+    body_text = body.body_markdown.strip()
+    if not body_text:
+        raise HTTPException(status_code=422, detail={"code": "empty_body"})
+    if not body.recipients:
+        raise HTTPException(status_code=422, detail={"code": "empty_recipients"})
+
+    # Later tasks: composer validation, binding XOR, recipient validation,
+    # addressed_to subset, transaction insert, fan-out, founder push.
+    raise HTTPException(status_code=501, detail={"code": "not_implemented"})
 
 
 # ---------------------------------------------------------------------------
