@@ -101,3 +101,46 @@ def test_thread_row_dict_exposes_composer_fields(tmp_path: Path) -> None:
     assert d["composed_by"] == "engineering_head"
     assert d["composed_from_task_id"] is None
     assert d["composed_from_talk_id"] == "TALK-007"
+
+
+import json as _json
+
+from src.infrastructure.audit_logger import AuditLogger
+
+
+def test_log_thread_started_payload_includes_composer(tmp_path: Path) -> None:
+    db = Database(tmp_path / "grassland.db")
+    db.insert_thread(ThreadRecord(id="THR-020", subject="x", composed_by="engineering_head", composed_from_task_id="TASK-9"))
+    AuditLogger(db).log_thread_started(
+        "THR-020",
+        subject="x",
+        initial_recipients=["payment_agt"],
+        forwarded_from_id=None,
+        composed_by="engineering_head",
+        composed_from_task_id="TASK-9",
+        composed_from_talk_id=None,
+    )
+    rows = db._conn.execute(
+        "SELECT payload FROM audit_log WHERE task_id = ? AND action = 'thread_started'",
+        ("THR-020",),
+    ).fetchall()
+    assert len(rows) == 1
+    payload = _json.loads(rows[0]["payload"])
+    assert payload["composed_by"] == "engineering_head"
+    assert payload["composed_from_task_id"] == "TASK-9"
+    assert payload["composed_from_talk_id"] is None
+
+
+def test_log_thread_founder_addressed_emits_audit(tmp_path: Path) -> None:
+    db = Database(tmp_path / "grassland.db")
+    db.insert_thread(ThreadRecord(id="THR-021", subject="x"))
+    AuditLogger(db).log_thread_founder_addressed(
+        "THR-021", seq=1, speaker="engineering_head", notify_channel="feishu",
+    )
+    row = db._conn.execute(
+        "SELECT payload FROM audit_log WHERE task_id = ? AND action = 'thread_founder_addressed'",
+        ("THR-021",),
+    ).fetchone()
+    assert row is not None
+    payload = _json.loads(row["payload"])
+    assert payload == {"seq": 1, "speaker": "engineering_head", "notify_channel": "feishu"}

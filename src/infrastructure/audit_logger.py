@@ -552,16 +552,37 @@ class AuditLogger:
         subject: str,
         initial_recipients: list[str],
         forwarded_from_id: str | None,
+        composed_by: str = "founder",
+        composed_from_task_id: str | None = None,
+        composed_from_talk_id: str | None = None,
     ) -> None:
         self._db.insert_audit_log(
             task_id=thread_id,
-            agent="founder",
+            agent=composed_by,
             action="thread_started",
             payload={
                 "subject": subject,
                 "initial_recipients": initial_recipients,
                 "forwarded_from_id": forwarded_from_id,
+                "composed_by": composed_by,
+                "composed_from_task_id": composed_from_task_id,
+                "composed_from_talk_id": composed_from_talk_id,
             },
+        )
+
+    def log_thread_founder_addressed(
+        self,
+        thread_id: str,
+        *,
+        seq: int,
+        speaker: str,
+        notify_channel: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=thread_id,
+            agent=speaker,
+            action="thread_founder_addressed",
+            payload={"seq": seq, "speaker": speaker, "notify_channel": notify_channel},
         )
 
     def log_thread_message_sent(
