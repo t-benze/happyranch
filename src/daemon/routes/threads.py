@@ -919,31 +919,56 @@ class SendBody(BaseModel):
     addressed_to: list[str]
 
 
-@router.post("/threads/{thread_id}/send")
-async def send_thread_endpoint(
-    slug: str, thread_id: str, body: SendBody, org: OrgDep,
+class _SendThreadError(Exception):
+    """In-process send failures — translated to HTTPException by the route."""
+
+    def __init__(self, status_code: int, code: str, **details: object) -> None:
+        super().__init__(code)
+        self.status_code = status_code
+        self.code = code
+        self.details = details
+
+
+async def _send_thread_message_inprocess(
+    org: object,
+    slug: str,
+    thread_id: str,
+    *,
+    body_markdown: str,
+    addressed_to: list[str],
 ) -> dict:
+    """Append a founder message to an open thread + mint reply invocations.
+
+    Returns the same response shape as POST /threads/{id}/send.
+    Raises _SendThreadError on validation failures (route translates to HTTP).
+    """
     t = org.db.get_thread(thread_id)
     if t is None:
-        raise HTTPException(status_code=404, detail={"code": "not_found"})
+        raise _SendThreadError(404, "not_found")
     if t.status is not ThreadStatus.OPEN:
-        raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
-    body_text = body.body_markdown.strip()
+        raise _SendThreadError(400, "thread_not_open")
+    body_text = body_markdown.strip()
     if not body_text:
-        raise HTTPException(status_code=422, detail={"code": "empty_body"})
+        raise _SendThreadError(422, "empty_body")
 
     participants = [p.agent_name for p in org.db.list_thread_participants(thread_id)]
-    _validate_addressed_to(body.addressed_to, participants)
-    addressed = _resolve_addressed_agents(body.addressed_to, participants)
+    try:
+        _validate_addressed_to(addressed_to, participants)
+    except HTTPException as exc:
+        raise _SendThreadError(
+            exc.status_code,
+            exc.detail["code"],
+            **{k: v for k, v in exc.detail.items() if k != "code"},
+        ) from exc
+    addressed = _resolve_addressed_agents(addressed_to, participants)
 
     pending_load = _pending_reply_load(org, thread_id)
     projected = t.turns_used + pending_load + len(addressed)
     if projected > t.turn_cap:
-        raise HTTPException(
-            status_code=429,
-            detail={"code": "turn_cap_exceeded",
-                    "used": t.turns_used, "pending": pending_load,
-                    "cap": t.turn_cap, "requested": len(addressed)},
+        raise _SendThreadError(
+            429, "turn_cap_exceeded",
+            used=t.turns_used, pending=pending_load,
+            cap=t.turn_cap, requested=len(addressed),
         )
 
     tokens_to_enqueue: list[str] = []
@@ -951,11 +976,11 @@ async def send_thread_endpoint(
         seq = org.db.append_thread_message(
             thread_id=thread_id, speaker="founder",
             kind=ThreadMessageKind.MESSAGE,
-            body_markdown=body_text, addressed_to=body.addressed_to,
+            body_markdown=body_text, addressed_to=addressed_to,
         )
         AuditLogger(org.db).log_thread_message_sent(
             thread_id, seq=seq, speaker="founder",
-            addressed_to=body.addressed_to, kind="message",
+            addressed_to=addressed_to, kind="message",
         )
         for name in addressed:
             inv = org.db.mint_thread_invocation(
@@ -974,6 +999,49 @@ async def send_thread_endpoint(
     )
 
     return {"thread_id": thread_id, "seq": seq, "pending_replies": addressed}
+
+
+async def resolve_thread_from_notification(
+    org: object,
+    state: object,
+    *,
+    thread_id: str,
+    founder_text: str,
+    message_id: str,
+    slug: str,
+) -> None:
+    """Listener-side resolver for founder replies on ``thread_addressed`` cards.
+
+    Translates a freeform founder reply into a ``POST /threads/{id}/send``
+    server-side, then consumes the notification row.
+
+    Raises _SendThreadError if the send fails. The caller (listener) should
+    treat any exception as a rejection and leave the row unconsumed so the
+    founder's intent is preserved for CLI fallback.
+    """
+    await _send_thread_message_inprocess(
+        org, slug, thread_id,
+        body_markdown=founder_text,
+        addressed_to=["@all"],
+    )
+    # Only consume after successful send.
+    org.db.consume_escalation_notification(message_id, consumed_by="feishu-reply")
+
+
+@router.post("/threads/{thread_id}/send")
+async def send_thread_endpoint(
+    slug: str, thread_id: str, body: SendBody, org: OrgDep,
+) -> dict:
+    try:
+        return await _send_thread_message_inprocess(
+            org, slug, thread_id,
+            body_markdown=body.body_markdown, addressed_to=body.addressed_to,
+        )
+    except _SendThreadError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, **exc.details},
+        ) from exc
 
 
 # ---------------------------------------------------------------------------

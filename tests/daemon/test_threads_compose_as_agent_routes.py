@@ -597,3 +597,58 @@ def test_compose_as_agent_founder_addressed_without_notifier_reports_false(
     )
     assert r.status_code == 200, r.text
     assert r.json()["founder_notified"] is False
+
+
+# ---------------------------------------------------------------------------
+# Task 12 — Feishu inbound: founder thread_addressed reply → /send
+# ---------------------------------------------------------------------------
+
+
+async def test_resolve_thread_from_notification_appends_founder_message(
+    tmp_home, app, org_state, auth_headers, daemon_state,
+):
+    """Simulate: founder replies on a thread_addressed card. Resolver should
+    append the text as a founder /send and consume the notification row."""
+    from datetime import datetime, timedelta, timezone
+
+    from src.daemon.routes.threads import resolve_thread_from_notification
+    from src.models import ThreadRecord
+
+    _seed_agent(org_state, "engineering_head")
+    _seed_agent(org_state, "payment_agt")
+
+    # Seed a thread + participants directly.
+    org_state.db.insert_thread(ThreadRecord(
+        id="THR-100", subject="x", composed_by="engineering_head",
+    ))
+    org_state.db.add_thread_participant("THR-100", "engineering_head", added_by="engineering_head")
+    org_state.db.add_thread_participant("THR-100", "payment_agt", added_by="engineering_head")
+
+    # Seed a fake escalation_notifications row keyed off "fake-msg-id".
+    org_state.db.mint_escalation_notification(
+        feishu_message_id="fake-msg-id",
+        org_slug="alpha",
+        task_id="THR-100",
+        chat_id="chat-xyz",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+        kind="thread_addressed",
+    )
+
+    await resolve_thread_from_notification(
+        org_state, daemon_state,
+        thread_id="THR-100",
+        founder_text="ship it",
+        message_id="fake-msg-id",
+        slug="alpha",
+    )
+
+    # Verify: thread now has a founder message.
+    msgs = org_state.db.list_thread_messages("THR-100")
+    founder_msgs = [m for m in msgs if m.speaker == "founder"]
+    assert len(founder_msgs) == 1
+    assert founder_msgs[0].body_markdown == "ship it"
+
+    # Verify: notification consumed.
+    notif = org_state.db.get_escalation_notification("fake-msg-id")
+    assert notif["consumed_at"] is not None
+    assert notif["consumed_by"] == "feishu-reply"
