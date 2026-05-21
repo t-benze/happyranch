@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from src.models import TaskRecord, TalkRecord, TalkStatus
+from src.models import TalkRecord, TalkStatus, TaskRecord, TaskStatus
 
 
 def _seed_agent(org_state, name: str, *, team: str = "engineering") -> None:
@@ -270,3 +270,29 @@ def test_compose_as_agent_talk_path_rejects_unowned_talk(tmp_home, app, org_stat
     )
     assert r.status_code == 403
     assert r.json()["detail"]["code"] == "composer_not_talk_owner"
+
+
+def test_compose_as_agent_task_path_rejects_completed_task(
+    tmp_home, app, org_state, auth_headers, daemon_state,
+):
+    """Task already in a terminal state (completed/failed) is rejected as task_not_active."""
+    _seed_agent(org_state, "engineering_head")
+    _seed_agent(org_state, "payment_agt")
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-60", brief="x", team="engineering",
+        assigned_agent="engineering_head", status=TaskStatus.COMPLETED,
+    ))
+    daemon_state.orgs["alpha"].sessions.set_active("TASK-60", "engineering_head", "sid-60")
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads/compose-as-agent",
+        headers=auth_headers,
+        json={
+            "composer": "engineering_head", "subject": "s",
+            "recipients": ["payment_agt"], "body_markdown": "b",
+            "task_id": "TASK-60", "session_id": "sid-60",
+        },
+    )
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "task_not_active"
+    assert r.json()["detail"]["status"] == "completed"

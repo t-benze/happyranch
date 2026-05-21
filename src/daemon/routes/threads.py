@@ -14,6 +14,7 @@ from src.daemon.state import DaemonState
 from src.daemon.thread_queue import ThreadJob
 from src.infrastructure.audit_logger import AuditLogger
 from src.models import (
+    TalkStatus,
     TaskRecord,
     ThreadInvocationPurpose,
     ThreadMessageKind,
@@ -278,11 +279,10 @@ async def compose_thread_as_agent(
 
     # Talk binding: talk exists, OPEN, owned by composer.
     if has_talk:
-        from src.models import TalkStatus as _TalkStatus
         talk = org.db.get_talk(body.talk_id)
         if talk is None:
             raise HTTPException(status_code=404, detail={"code": "unknown_talk", "talk_id": body.talk_id})
-        if talk.status != _TalkStatus.OPEN:
+        if talk.status != TalkStatus.OPEN:
             raise HTTPException(
                 status_code=400,
                 detail={"code": "talk_not_open", "status": talk.status.value},
