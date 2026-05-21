@@ -686,3 +686,97 @@ def test_compose_as_agent_liberal_authority_cross_team(
     assert r.status_code == 200, r.text
     assert r.json()["composed_by"] == "dev_agent"
     assert r.json()["pending_replies"] == ["content_manager"]
+
+
+def test_compose_as_agent_rejects_empty_addressed_to(
+    tmp_home, app, org_state, auth_headers, daemon_state,
+):
+    """Spec §4.3 / Codex P2: `addressed_to: []` is "broadcast to nobody" — not allowed.
+
+    Without this guard the thread would create with zero invocations and zero
+    founder push, effectively delivering the opening message to no one.
+    """
+    _seed_agent(org_state, "engineering_head")
+    _seed_agent(org_state, "payment_agt")
+    task_id, sid = _seed_active_task(org_state, daemon_state, "engineering_head")
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads/compose-as-agent",
+        headers=auth_headers,
+        json={
+            "composer": "engineering_head", "subject": "s",
+            "recipients": ["payment_agt"], "body_markdown": "b",
+            "addressed_to": [],
+            "task_id": task_id, "session_id": sid,
+        },
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "addressed_to_empty"
+
+
+def test_compose_as_agent_deduplicates_addressed_to(
+    tmp_home, app, org_state, auth_headers, daemon_state,
+):
+    """Codex P2: duplicate names in `addressed_to` must not mint two invocations
+    for the same agent on a single message."""
+    _seed_agent(org_state, "engineering_head")
+    _seed_agent(org_state, "payment_agt")
+    task_id, sid = _seed_active_task(org_state, daemon_state, "engineering_head")
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads/compose-as-agent",
+        headers=auth_headers,
+        json={
+            "composer": "engineering_head", "subject": "s",
+            "recipients": ["payment_agt"], "body_markdown": "b",
+            "addressed_to": ["payment_agt", "payment_agt"],
+            "task_id": task_id, "session_id": sid,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # Exactly one entry in pending_replies and exactly one row in the DB.
+    assert body["pending_replies"] == ["payment_agt"]
+    invs = org_state.db.list_thread_invocations(body["thread_id"])
+    assert len(invs) == 1
+    assert invs[0].agent_name == "payment_agt"
+
+
+def test_compose_as_agent_founder_card_receives_actual_recipients(
+    tmp_home, app, org_state, auth_headers, daemon_state,
+):
+    """Codex P3: the Feishu `Recipients:` line lists the thread roster, not
+    the addressing expression. Founder should see who's actually on the thread,
+    not literal `@all`."""
+    _seed_agent(org_state, "engineering_head")
+    _seed_agent(org_state, "payment_agt")
+    _seed_agent(org_state, "qa_engineer")
+
+    captured: dict = {}
+
+    class _FakeNotifier:
+        async def send_thread_addressed(self, *, thread_id, subject, composer, body_text, addressed_to):
+            captured["addressed_to"] = list(addressed_to)
+            return True
+
+    org_state.notifier = _FakeNotifier()
+    task_id, sid = _seed_active_task(org_state, daemon_state, "engineering_head")
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads/compose-as-agent",
+        headers=auth_headers,
+        json={
+            "composer": "engineering_head", "subject": "x",
+            "recipients": ["payment_agt", "qa_engineer", "@founder"],
+            "body_markdown": "y",
+            "addressed_to": ["@all"],
+            "task_id": task_id, "session_id": sid,
+        },
+    )
+    assert r.status_code == 200, r.text
+    # The notifier received the resolved roster, not literal "@all".
+    assert "@all" not in captured["addressed_to"]
+    assert "payment_agt" in captured["addressed_to"]
+    assert "qa_engineer" in captured["addressed_to"]
+    assert "engineering_head" in captured["addressed_to"]  # composer included
+    assert "@founder" in captured["addressed_to"]

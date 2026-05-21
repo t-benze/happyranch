@@ -359,6 +359,11 @@ async def compose_thread_as_agent(
         raise HTTPException(status_code=422, detail={"code": "empty_external_recipients"})
 
     # addressed_to: either ["@all"] or non-empty subset of recipients.
+    # `_validate_addressed_to` doesn't fail on an empty list — guard
+    # explicitly so a `"addressed_to": []` payload doesn't create a thread
+    # with no addressees (spec §4.3: "broadcast to nobody" is not allowed).
+    if not body.addressed_to:
+        raise HTTPException(status_code=422, detail={"code": "addressed_to_empty"})
     _validate_addressed_to(body.addressed_to, recipients)
 
     org_cfg = load_org_config(org_paths)
@@ -366,11 +371,18 @@ async def compose_thread_as_agent(
 
     # Resolve the addressee set:
     # - @all → every recipient (including @founder if present, including composer);
-    # - otherwise the explicit list.
+    # - otherwise the explicit list, deduped (preserve order) so a payload
+    #   with the same name twice doesn't mint two invocations for one message.
     if body.addressed_to == ["@all"]:
         resolved = list(recipients)
     else:
-        resolved = list(body.addressed_to)
+        _seen: set[str] = set()
+        resolved = []
+        for name in body.addressed_to:
+            if name in _seen:
+                continue
+            _seen.add(name)
+            resolved.append(name)
     # Concrete agent invocations exclude both @founder and the composer
     # (composer is already running; @founder isn't a subprocess).
     addressed_agents = [
@@ -445,9 +457,17 @@ async def compose_thread_as_agent(
 
     founder_notified = False
     if founder_in_addressed:
+        # The card's "Recipients:" line lists the actual roster — every
+        # participant the thread carries — not the addressing expression
+        # (`@all` or a subset). Otherwise the founder sees `Recipients: @all`
+        # and has to open the UI to find out who's actually on the thread.
+        card_recipients = [r for r in recipients if r != FOUNDER_LITERAL]
+        if body.composer not in card_recipients:
+            card_recipients.append(body.composer)
+        card_recipients.append(FOUNDER_LITERAL)
         founder_notified = await _maybe_notify_founder_addressed(
             org, thread_id=thread_id, subject=subject, composer=body.composer,
-            body_text=body_text, addressed_to=body.addressed_to,
+            body_text=body_text, addressed_to=card_recipients,
         )
 
     await _publish_thread_event(
