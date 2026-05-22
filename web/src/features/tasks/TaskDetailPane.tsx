@@ -8,6 +8,7 @@ import {
 import { Button } from '@/design-system/primitives/Button';
 import { IdBadge } from '@/design-system/patterns/IdBadge';
 import { StatusBadge } from '@/design-system/patterns/StatusBadge';
+import { Markdown } from '@/design-system/patterns/Markdown';
 import { useTask, useTaskRecall, useTasksRoutes } from '@/hooks/tasks';
 import { TaskRecallTree } from './TaskRecallTree';
 import { TaskEventsLog } from './TaskEventsLog';
@@ -30,16 +31,18 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
     <>
       <Drawer open onOpenChange={(o) => !o && onClose()}>
         <DrawerContent className="flex flex-col">
-          <header className="border-border-subtle border-b p-4">
+          <header className="border-border-subtle shrink-0 border-b p-4">
             <DrawerTitle className="text-fg flex items-center gap-2 text-lg">
               <IdBadge kind="task" id={taskId} />
               {task.data && <StatusBadge status={task.data.status} blockKind={task.data.block_kind} />}
             </DrawerTitle>
             {task.data && (
-              <>
-                <p className="text-fg mt-2 text-sm">{task.data.brief}</p>
-                <p className="text-fg-muted mt-1 text-xs">team: {task.data.team}</p>
-              </>
+              <p className="text-fg-muted mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                <span>{task.data.team}</span>
+                {task.data.assigned_agent && (
+                  <span>· {task.data.assigned_agent}</span>
+                )}
+              </p>
             )}
             <div className="mt-3 flex gap-2">
               {isEscalated && (
@@ -61,8 +64,16 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
               )}
             </div>
           </header>
-          <section className="flex-1 overflow-y-auto p-4">
-            <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+          <section className="min-h-0 flex-1 overflow-y-auto p-4">
+            {task.data && (
+              <>
+                <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+                  Brief
+                </h3>
+                <Markdown body={task.data.brief} />
+              </>
+            )}
+            <h3 className="text-fg-muted mt-6 mb-2 text-xs font-medium tracking-wider uppercase">
               Recall tree
             </h3>
             {recall.data ? (

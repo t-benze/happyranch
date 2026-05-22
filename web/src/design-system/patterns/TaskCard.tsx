@@ -21,6 +21,14 @@ function relativeAge(iso: string): string {
   return `${d}d`;
 }
 
+// Briefs are markdown — often a multi-page document with headings, code
+// fences, and PR details. The list view only needs a scannable one-liner,
+// so pick the first non-empty line and strip leading heading markers.
+function briefHeadline(brief: string): string {
+  const line = brief.split('\n').find((l) => l.trim().length > 0) ?? '';
+  return line.trim().replace(/^#+\s*/, '');
+}
+
 export interface TaskCardProps {
   task: TaskRecord;
   to: string;
@@ -40,15 +48,16 @@ export function TaskCard({ task, to, active, density = 'comfortable' }: TaskCard
         'hover:bg-surface-raised/80',
       )}
     >
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 text-xs">
         <IdBadge kind="task" id={task.task_id} />
-        <span className="text-fg-muted text-xs">{task.team}</span>
-      </div>
-      <p className="text-fg mt-1 text-sm">{task.brief}</p>
-      <div className="text-fg-muted mt-2 flex items-center gap-2 text-xs">
         <StatusBadge status={task.status} blockKind={task.block_kind} />
-        <span>· updated {relativeAge(task.updated_at)} ago</span>
+        <span className="text-fg-muted">{task.team}</span>
+        {task.assigned_agent && (
+          <span className="text-fg-muted">· {task.assigned_agent}</span>
+        )}
+        <span className="text-fg-muted ml-auto">{relativeAge(task.updated_at)}</span>
       </div>
+      <p className="text-fg mt-1 line-clamp-1 text-sm">{briefHeadline(task.brief)}</p>
     </Link>
   );
 }
