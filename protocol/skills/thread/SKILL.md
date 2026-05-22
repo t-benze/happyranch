@@ -116,6 +116,61 @@ contributes to their own learnings.md; KB slugs are unioned.
 Close-out tokens may NOT dispatch tasks. If something actionable surfaces in
 the close-out, mention it in the learnings text instead.
 
+## Compose a new thread (from inside a task or talk)
+
+Use this when:
+
+- You need written async input from another agent and aren't blocked enough
+  to justify an escalation.
+- You want a durable record of a cross-team coordination decision.
+- You're inside a talk and want to loop in an agent who isn't present.
+
+Requirements:
+
+- You are currently in an active task session (you have a `task_id` +
+  `session_id` from `start-task`) OR an open talk (`talk_id` from `/talk
+  start`).
+- You name the OTHER agents you want in the thread. You may also include
+  `@founder` if you want the founder pushed via Feishu (and otherwise
+  notified).
+
+### Procedure
+
+1. Write `/tmp/thread-compose-<short-tag>.json`:
+
+   {"composer": "<your name>",
+    "subject": "<≤120 chars>",
+    "recipients": ["agent_a", "agent_b"],
+    "addressed_to": ["@all"] OR a subset of recipients (+ optional "@founder"),
+    "body_markdown": "<the message>"}
+
+2. From a task, single-line:
+
+   grassland threads compose --org <slug> --task-id <TASK> --session-id <SID> --from-file /tmp/thread-compose-<tag>.json
+
+   From a talk:
+
+   grassland threads compose --org <slug> --talk-id <TALK> --from-file /tmp/thread-compose-<tag>.json
+
+3. Capture the returned `thread_id`. Mention it in your task completion
+   summary (or talk transcript) so the founder can find it.
+
+### Authority
+
+- Any agent → any agent. No team or role gate.
+- You are automatically added as a participant; replies will come back to
+  you on a future invocation, NOT in your current session.
+
+### When NOT to compose
+
+- The work is yours to do → don't outsource it via a thread. Do the work
+  (or dispatch a task to yourself).
+- You're blocked and need founder intervention → use `status: "blocked"` on
+  `report-completion` instead. Threads are for conversation, not escalation.
+- You'd be sending the same content to every agent — that's a broadcast,
+  not a conversation. Talk to the founder first.
+- You're already on a thread that covers the same topic → reply there.
+
 ## What NOT to do
 
 - Do NOT spawn arbitrary side-effects (run repos, hit APIs) inside a thread

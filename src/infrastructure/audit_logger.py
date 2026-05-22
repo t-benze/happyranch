@@ -552,16 +552,57 @@ class AuditLogger:
         subject: str,
         initial_recipients: list[str],
         forwarded_from_id: str | None,
+        composed_by: str = "founder",
+        composed_from_task_id: str | None = None,
+        composed_from_talk_id: str | None = None,
     ) -> None:
         self._db.insert_audit_log(
             task_id=thread_id,
-            agent="founder",
+            agent=composed_by,
             action="thread_started",
             payload={
                 "subject": subject,
                 "initial_recipients": initial_recipients,
                 "forwarded_from_id": forwarded_from_id,
+                "composed_by": composed_by,
+                "composed_from_task_id": composed_from_task_id,
+                "composed_from_talk_id": composed_from_talk_id,
             },
+        )
+
+    def log_thread_founder_addressed(
+        self,
+        thread_id: str,
+        *,
+        seq: int,
+        speaker: str,
+        notify_channel: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=thread_id,
+            agent=speaker,
+            action="thread_founder_addressed",
+            payload={"seq": seq, "speaker": speaker, "notify_channel": notify_channel},
+        )
+
+    def log_thread_founder_notify_sent(
+        self, *, thread_id: str, feishu_message_id: str,
+    ) -> None:
+        # agent="daemon" matches log_escalation_notify_sent / log_failure_notify_sent
+        # — these are infrastructure-generated push events, not founder actions.
+        self._db.insert_audit_log(
+            task_id=thread_id, agent="daemon",
+            action="thread_founder_notify_sent",
+            payload={"feishu_message_id": feishu_message_id},
+        )
+
+    def log_thread_founder_notify_failed(
+        self, *, thread_id: str, error: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=thread_id, agent="daemon",
+            action="thread_founder_notify_failed",
+            payload={"error": error},
         )
 
     def log_thread_message_sent(

@@ -1560,12 +1560,55 @@ def cmd_web(args: argparse.Namespace) -> None:
 
 def cmd_threads_compose(args: argparse.Namespace) -> None:
     import json as _json
+    import sys
     client = OpcClient.from_env()
     slug = resolve_org_slug(
         args_org=args.org, available=_fetch_available_orgs(client),
     )
+    # Agent-initiated compose: requires --from-file with a JSON payload that
+    # includes `composer` + (the binding flags supplied on the CLI).
+    if getattr(args, "task_id", None) or getattr(args, "talk_id", None):
+        if not args.from_file:
+            print(
+                "error: --from-file is required for agent-initiated compose",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        with open(args.from_file) as fh:
+            payload = _json.load(fh)
+        if args.task_id:
+            payload["task_id"] = args.task_id
+            if args.session_id:
+                payload["session_id"] = args.session_id
+            # Strip the other binding to avoid binding_ambiguous if the file had it.
+            payload.pop("talk_id", None)
+        else:
+            payload["talk_id"] = args.talk_id
+            payload.pop("task_id", None)
+            payload.pop("session_id", None)
+        r = client.post(
+            f"/api/v1/orgs/{slug}/threads/compose-as-agent", json=payload,
+        )
+        if not _ok(r):
+            return
+        body = r.json()
+        print(
+            f"{body['thread_id']}  started={_fmt_ts(body['started_at'])}  "
+            f"composed_by={body['composed_by']}  "
+            f"pending={body['pending_replies']}  "
+            f"founder_notified={body['founder_notified']}"
+        )
+        return
+
+    # Founder path — unchanged.
+    if not (args.subject and args.recipients and args.body):
+        print(
+            "error: --subject, --recipients, --body required for founder compose",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     recipients = [r.strip() for r in args.recipients.split(",") if r.strip()]
-    payload: dict = {
+    payload = {
         "subject": args.subject,
         "recipients": recipients,
         "body_markdown": args.body,
@@ -1575,7 +1618,10 @@ def cmd_threads_compose(args: argparse.Namespace) -> None:
     if not _ok(r):
         return
     body = r.json()
-    print(f"{body['thread_id']}  started={_fmt_ts(body['started_at'])}  pending={body['pending_replies']}")
+    print(
+        f"{body['thread_id']}  started={_fmt_ts(body['started_at'])}  "
+        f"pending={body['pending_replies']}"
+    )
 
 
 def cmd_threads_list(args: argparse.Namespace) -> None:
@@ -2502,11 +2548,36 @@ def build_parser() -> argparse.ArgumentParser:
     p_threads.set_defaults(func=cmd_threads_tui)
     threads_sub = p_threads.add_subparsers(dest="threads_command", required=False)
 
-    p_threads_compose = threads_sub.add_parser("compose", help="Compose a new thread (founder)")
+    p_threads_compose = threads_sub.add_parser(
+        "compose", help="Compose a new thread (founder direct or agent-initiated)",
+    )
     p_threads_compose.add_argument("--org", default=None, help="Org slug")
-    p_threads_compose.add_argument("--subject", required=True)
-    p_threads_compose.add_argument("--recipients", required=True, help="Comma-separated agent names")
-    p_threads_compose.add_argument("--body", required=True, help="Opening message body (markdown)")
+    p_threads_compose.add_argument(
+        "--from-file", default=None, dest="from_file",
+        help="JSON payload (required for agent-initiated compose)",
+    )
+    p_threads_compose.add_argument(
+        "--task-id", default=None, dest="task_id",
+        help="Active task binding for agent-initiated compose",
+    )
+    p_threads_compose.add_argument(
+        "--session-id", default=None, dest="session_id",
+        help="Active session id (required with --task-id)",
+    )
+    p_threads_compose.add_argument(
+        "--talk-id", default=None, dest="talk_id",
+        help="Open talk binding for agent-initiated compose",
+    )
+    # Legacy founder-direct flags (still supported, no --from-file needed):
+    p_threads_compose.add_argument("--subject", default=None)
+    p_threads_compose.add_argument(
+        "--recipients", default=None,
+        help="Comma-separated agent names (founder path)",
+    )
+    p_threads_compose.add_argument(
+        "--body", default=None,
+        help="Opening message body (founder path)",
+    )
     p_threads_compose.set_defaults(func=cmd_threads_compose)
 
     p_threads_list = threads_sub.add_parser("list", help="List threads")

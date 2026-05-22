@@ -384,6 +384,29 @@ class Database:
             "ON tasks(dispatched_from_thread_id) "
             "WHERE dispatched_from_thread_id IS NOT NULL"
         )
+        # Agent-initiated threads: composer attribution + session binding.
+        # Sideways refs — NOT walked by walk_ancestors. Mutually exclusive at
+        # insert time (daemon enforces); default 'founder' preserves all
+        # existing rows on first migration.
+        for ddl in (
+            "ALTER TABLE threads ADD COLUMN composed_by TEXT NOT NULL DEFAULT 'founder'",
+            "ALTER TABLE threads ADD COLUMN composed_from_task_id TEXT",
+            "ALTER TABLE threads ADD COLUMN composed_from_talk_id TEXT",
+        ):
+            try:
+                self._conn.execute(ddl)
+            except sqlite3.OperationalError:
+                pass
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_threads_composed_from_task "
+            "ON threads(composed_from_task_id) "
+            "WHERE composed_from_task_id IS NOT NULL"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_threads_composed_from_talk "
+            "ON threads(composed_from_talk_id) "
+            "WHERE composed_from_talk_id IS NOT NULL"
+        )
         # kind column for escalation_notifications: 'escalation' (default) or
         # 'failure'. Additive; existing rows keep the default.
         try:
@@ -1324,13 +1347,20 @@ class Database:
 
     @_synchronized
     def insert_thread(self, t: ThreadRecord) -> None:
+        # Spec §3.1: composed_from_task_id and composed_from_talk_id are
+        # mutually exclusive; daemon enforces at insert time.
+        if t.composed_from_task_id is not None and t.composed_from_talk_id is not None:
+            raise ValueError(
+                "composed_from_task_id and composed_from_talk_id are mutually exclusive"
+            )
         self._conn.execute(
             """INSERT INTO threads (
                 id, subject, started_at, archived_at, status,
                 forwarded_from_id, forwarded_from_kind,
                 turn_cap, turns_used, summary, new_kb_slugs_json,
-                transcript_path, archive_requested_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                transcript_path, archive_requested_at,
+                composed_by, composed_from_task_id, composed_from_talk_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 t.id,
                 t.subject,
@@ -1345,11 +1375,15 @@ class Database:
                 json.dumps(t.new_kb_slugs) if t.new_kb_slugs else None,
                 t.transcript_path,
                 t.archive_requested_at.isoformat() if t.archive_requested_at else None,
+                t.composed_by,
+                t.composed_from_task_id,
+                t.composed_from_talk_id,
             ),
         )
         self._conn.commit()
 
     def _row_to_thread(self, row) -> ThreadRecord:
+        keys = row.keys()
         return ThreadRecord(
             id=row["id"],
             subject=row["subject"],
@@ -1362,9 +1396,12 @@ class Database:
             turns_used=row["turns_used"],
             summary=row["summary"],
             new_kb_slugs=json.loads(row["new_kb_slugs_json"]) if row["new_kb_slugs_json"] else [],
-            new_learnings_total=row["new_learnings_total"] if "new_learnings_total" in row.keys() else 0,
+            new_learnings_total=row["new_learnings_total"] if "new_learnings_total" in keys else 0,
             transcript_path=row["transcript_path"],
             archive_requested_at=datetime.fromisoformat(row["archive_requested_at"]) if row["archive_requested_at"] else None,
+            composed_by=row["composed_by"] if "composed_by" in keys else "founder",
+            composed_from_task_id=row["composed_from_task_id"] if "composed_from_task_id" in keys else None,
+            composed_from_talk_id=row["composed_from_talk_id"] if "composed_from_talk_id" in keys else None,
         )
 
     @_synchronized
@@ -1913,8 +1950,10 @@ class Database:
         expires_at: datetime,
         kind: str = "escalation",
     ) -> None:
-        if kind not in ("escalation", "failure"):
-            raise ValueError(f"kind must be 'escalation' or 'failure', got {kind!r}")
+        if kind not in ("escalation", "failure", "thread_addressed"):
+            raise ValueError(
+                f"kind must be 'escalation', 'failure', or 'thread_addressed', got {kind!r}"
+            )
         expires_at_str = expires_at.astimezone(timezone.utc).isoformat()
         self._conn.execute(
             """INSERT INTO escalation_notifications

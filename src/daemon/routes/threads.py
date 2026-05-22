@@ -14,6 +14,7 @@ from src.daemon.state import DaemonState
 from src.daemon.thread_queue import ThreadJob
 from src.infrastructure.audit_logger import AuditLogger
 from src.models import (
+    TalkStatus,
     TaskRecord,
     ThreadInvocationPurpose,
     ThreadMessageKind,
@@ -25,6 +26,12 @@ from src.orchestrator._paths import OrgPaths
 from src.orchestrator.org_config import load_org_config
 
 router = APIRouter(dependencies=[require_token()])
+
+# Special routing literal for addressing the founder. NOT a real agent name —
+# it never appears in `thread_participants`, never receives a ThreadInvocation,
+# and is permitted only in `recipients` / `addressed_to` on agent-initiated
+# composes. Routes via the Feishu notifier and the inbox UI instead.
+FOUNDER_LITERAL = "@founder"
 
 
 async def _publish_thread_event(
@@ -62,6 +69,17 @@ class ComposeBody(BaseModel):
     addressed_to: list[str] = ["@all"]
     forwarded_from_id: str | None = None
     forwarded_from_kind: str | None = None  # 'thread' | 'talk'
+
+
+class ComposeAsAgentBody(BaseModel):
+    composer: str
+    subject: str
+    recipients: list[str]
+    body_markdown: str
+    addressed_to: list[str] = ["@all"]
+    task_id: str | None = None
+    session_id: str | None = None
+    talk_id: str | None = None
 
 
 def _validate_addressed_to(addressed_to: list[str], recipients: list[str]) -> None:
@@ -200,6 +218,276 @@ async def compose_thread(
 
 
 # ---------------------------------------------------------------------------
+# Task 6 — POST /threads/compose-as-agent (agent-initiated threads)
+# NOTE: This route must be registered BEFORE /threads/{thread_id} routes so
+# FastAPI does not match the literal "compose-as-agent" as a thread_id param.
+# ---------------------------------------------------------------------------
+
+
+async def _maybe_notify_founder_addressed(
+    org, *, thread_id: str, subject: str, composer: str,
+    body_text: str, addressed_to: list[str],
+) -> bool:
+    """Push a Feishu card if @founder addressed and org has Feishu configured.
+
+    Returns True iff a send was attempted (notifier is configured and reached
+    the send call). Returns False if no notifier is configured. Delivery
+    failures still return True — the audit log is the source of truth for
+    actual delivery status.
+    """
+    notifier = org.notifier
+    if notifier is None:
+        return False
+    return await notifier.send_thread_addressed(
+        thread_id=thread_id, subject=subject, composer=composer,
+        body_text=body_text, addressed_to=addressed_to,
+    )
+
+
+@router.post("/threads/compose-as-agent")
+async def compose_thread_as_agent(
+    slug: str, body: ComposeAsAgentBody, org: OrgDep,
+) -> dict:
+    subject = body.subject.strip()
+    if not subject:
+        raise HTTPException(status_code=422, detail={"code": "empty_subject"})
+    body_text = body.body_markdown.strip()
+    if not body_text:
+        raise HTTPException(status_code=422, detail={"code": "empty_body"})
+    if not body.recipients:
+        raise HTTPException(status_code=422, detail={"code": "empty_recipients"})
+
+    # Composer must be an approved agent with a workspace.
+    org_paths = OrgPaths(root=org.root)
+    composer_def = prompt_loader.load_agent(org_paths, body.composer)
+    composer_workspace = (org.root / "workspaces" / body.composer).exists()
+    if composer_def is None or not composer_workspace:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "unknown_composer", "agent": body.composer},
+        )
+
+    # Exactly one binding (task XOR talk).
+    has_task = body.task_id is not None
+    has_talk = body.talk_id is not None
+    if not has_task and not has_talk:
+        raise HTTPException(status_code=422, detail={"code": "binding_required"})
+    if has_task and has_talk:
+        raise HTTPException(status_code=422, detail={"code": "binding_ambiguous"})
+    if has_task and not body.session_id:
+        raise HTTPException(status_code=422, detail={"code": "binding_required", "missing": "session_id"})
+
+    # Task binding: task exists, composer owns it, task is active, session matches.
+    # Status gate runs BEFORE session gate so a finished task surfaces
+    # `task_not_active` rather than `session_mismatch` (a completed task has
+    # no active session in normal operation; reporting "session mismatch"
+    # would mislead the caller).
+    if has_task:
+        task = org.db.get_task(body.task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail={"code": "unknown_task", "task_id": body.task_id})
+        if task.assigned_agent != body.composer:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "composer_not_task_owner",
+                        "composer": body.composer, "assigned_agent": task.assigned_agent},
+            )
+        if task.status.value not in ("pending", "in_progress"):
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "task_not_active", "status": task.status.value},
+            )
+        active_sid = org.sessions.get_active(body.task_id, body.composer)
+        if active_sid is None or active_sid != body.session_id:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "session_mismatch", "active": active_sid, "got": body.session_id},
+            )
+
+    # Talk binding: talk exists, owned by composer, OPEN.
+    # Ownership gate runs BEFORE status gate so a closed talk owned by
+    # someone else surfaces `composer_not_talk_owner` rather than leaking
+    # the talk's status to a non-owner.
+    if has_talk:
+        talk = org.db.get_talk(body.talk_id)
+        if talk is None:
+            raise HTTPException(status_code=404, detail={"code": "unknown_talk", "talk_id": body.talk_id})
+        if talk.agent_name != body.composer:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "composer_not_talk_owner",
+                        "composer": body.composer, "talk_agent": talk.agent_name},
+            )
+        if talk.status != TalkStatus.OPEN:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "talk_not_open", "status": talk.status.value},
+            )
+
+    # Dedupe recipients (preserve order).
+    seen: set[str] = set()
+    recipients: list[str] = []
+    for name in body.recipients:
+        if name in seen:
+            continue
+        seen.add(name)
+        recipients.append(name)
+
+    # Validate each non-@founder recipient is approved with a workspace.
+    for name in recipients:
+        if name == FOUNDER_LITERAL:
+            continue
+        agent_def = prompt_loader.load_agent(org_paths, name)
+        workspace_exists = (org.root / "workspaces" / name).exists()
+        if agent_def is None or not workspace_exists:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "unknown_agent", "agent": name},
+            )
+
+    # External-recipients rule: recipients minus composer must be non-empty OR
+    # @founder must appear in addressed_to (resolved if @all).
+    # NOTE: `external` includes @founder by design — used only for the empty-
+    # check below. Do NOT reuse this list to mint ThreadInvocations in Task 10;
+    # @founder is not a subprocess and must be excluded from the invocation set.
+    external = [r for r in recipients if r != body.composer]
+    addressed_includes_founder = (
+        FOUNDER_LITERAL in body.addressed_to
+        or (body.addressed_to == ["@all"] and FOUNDER_LITERAL in recipients)
+    )
+    if not external and not addressed_includes_founder:
+        raise HTTPException(status_code=422, detail={"code": "empty_external_recipients"})
+
+    # addressed_to: either ["@all"] or non-empty subset of recipients.
+    # `_validate_addressed_to` doesn't fail on an empty list — guard
+    # explicitly so a `"addressed_to": []` payload doesn't create a thread
+    # with no addressees (spec §4.3: "broadcast to nobody" is not allowed).
+    if not body.addressed_to:
+        raise HTTPException(status_code=422, detail={"code": "addressed_to_empty"})
+    _validate_addressed_to(body.addressed_to, recipients)
+
+    org_cfg = load_org_config(org_paths)
+    turn_cap = org_cfg.threads_default_turn_cap
+
+    # Resolve the addressee set:
+    # - @all → every recipient (including @founder if present, including composer);
+    # - otherwise the explicit list, deduped (preserve order) so a payload
+    #   with the same name twice doesn't mint two invocations for one message.
+    if body.addressed_to == ["@all"]:
+        resolved = list(recipients)
+    else:
+        _seen: set[str] = set()
+        resolved = []
+        for name in body.addressed_to:
+            if name in _seen:
+                continue
+            _seen.add(name)
+            resolved.append(name)
+    # Concrete agent invocations exclude both @founder and the composer
+    # (composer is already running; @founder isn't a subprocess).
+    addressed_agents = [
+        a for a in resolved
+        if a != FOUNDER_LITERAL and a != body.composer
+    ]
+    founder_in_addressed = FOUNDER_LITERAL in resolved
+
+    if len(addressed_agents) > turn_cap:
+        raise HTTPException(
+            status_code=429,
+            detail={"code": "turn_cap_exceeded",
+                    "used": 0, "cap": turn_cap,
+                    "requested": len(addressed_agents)},
+        )
+
+    composed_from_task_id = body.task_id if has_task else None
+    composed_from_talk_id = body.talk_id if has_talk else None
+
+    async with org.db_lock:
+        thread_id = org.db.next_thread_id()
+        org.db.insert_thread(ThreadRecord(
+            id=thread_id, subject=subject, turn_cap=turn_cap,
+            composed_by=body.composer,
+            composed_from_task_id=composed_from_task_id,
+            composed_from_talk_id=composed_from_talk_id,
+        ))
+        # Composer + every recipient become participants. @founder is NOT a
+        # row (spec §3.3); skip it when iterating recipients. The composer
+        # is added once explicitly; the loop skips them if they're also in
+        # recipients to avoid a duplicate insert (which would silently no-op
+        # but is wasteful).
+        org.db.add_thread_participant(thread_id, body.composer, added_by=body.composer)
+        for name in recipients:
+            if name == FOUNDER_LITERAL or name == body.composer:
+                continue
+            org.db.add_thread_participant(thread_id, name, added_by=body.composer)
+
+        seq = org.db.append_thread_message(
+            thread_id=thread_id, speaker=body.composer,
+            kind=ThreadMessageKind.MESSAGE,
+            body_markdown=body_text, addressed_to=body.addressed_to,
+        )
+        AuditLogger(org.db).log_thread_started(
+            thread_id,
+            subject=subject,
+            initial_recipients=recipients,
+            forwarded_from_id=None,
+            composed_by=body.composer,
+            composed_from_task_id=composed_from_task_id,
+            composed_from_talk_id=composed_from_talk_id,
+        )
+        AuditLogger(org.db).log_thread_message_sent(
+            thread_id, seq=seq, speaker=body.composer,
+            addressed_to=body.addressed_to, kind="message",
+        )
+        if founder_in_addressed:
+            channel = "feishu" if org.notifier is not None else "none"
+            AuditLogger(org.db).log_thread_founder_addressed(
+                thread_id, seq=seq, speaker=body.composer, notify_channel=channel,
+            )
+        tokens_to_enqueue: list[str] = []
+        for name in addressed_agents:
+            inv = org.db.mint_thread_invocation(
+                thread_id=thread_id, agent_name=name,
+                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
+            )
+            tokens_to_enqueue.append(inv.invocation_token)
+
+    for tok in tokens_to_enqueue:
+        await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=tok))
+
+    founder_notified = False
+    if founder_in_addressed:
+        # The card's "Recipients:" line lists the actual roster — every
+        # participant the thread carries — not the addressing expression
+        # (`@all` or a subset). Otherwise the founder sees `Recipients: @all`
+        # and has to open the UI to find out who's actually on the thread.
+        card_recipients = [r for r in recipients if r != FOUNDER_LITERAL]
+        if body.composer not in card_recipients:
+            card_recipients.append(body.composer)
+        card_recipients.append(FOUNDER_LITERAL)
+        founder_notified = await _maybe_notify_founder_addressed(
+            org, thread_id=thread_id, subject=subject, composer=body.composer,
+            body_text=body_text, addressed_to=card_recipients,
+        )
+
+    await _publish_thread_event(
+        org, slug,
+        thread_id=thread_id, seq=seq, speaker=body.composer,
+        kind="message", preview=body_text, status="open",
+    )
+
+    return {
+        "thread_id": thread_id,
+        "started_at": org.db.get_thread(thread_id).started_at.isoformat(),
+        "composed_by": body.composer,
+        "composed_from_task_id": composed_from_task_id,
+        "composed_from_talk_id": composed_from_talk_id,
+        "pending_replies": addressed_agents,
+        "founder_notified": founder_notified,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Shared serializers
 # ---------------------------------------------------------------------------
 
@@ -218,6 +506,9 @@ def _thread_row_to_dict(t: ThreadRecord) -> dict:
         "summary": t.summary,
         "new_kb_slugs": t.new_kb_slugs,
         "transcript_path": t.transcript_path,
+        "composed_by": t.composed_by,
+        "composed_from_task_id": t.composed_from_task_id,
+        "composed_from_talk_id": t.composed_from_talk_id,
     }
 
 
@@ -652,31 +943,56 @@ class SendBody(BaseModel):
     addressed_to: list[str]
 
 
-@router.post("/threads/{thread_id}/send")
-async def send_thread_endpoint(
-    slug: str, thread_id: str, body: SendBody, org: OrgDep,
+class _SendThreadError(Exception):
+    """In-process send failures — translated to HTTPException by the route."""
+
+    def __init__(self, status_code: int, code: str, **details: object) -> None:
+        super().__init__(code)
+        self.status_code = status_code
+        self.code = code
+        self.details = details
+
+
+async def _send_thread_message_inprocess(
+    org: object,
+    slug: str,
+    thread_id: str,
+    *,
+    body_markdown: str,
+    addressed_to: list[str],
 ) -> dict:
+    """Append a founder message to an open thread + mint reply invocations.
+
+    Returns the same response shape as POST /threads/{id}/send.
+    Raises _SendThreadError on validation failures (route translates to HTTP).
+    """
     t = org.db.get_thread(thread_id)
     if t is None:
-        raise HTTPException(status_code=404, detail={"code": "not_found"})
+        raise _SendThreadError(404, "not_found")
     if t.status is not ThreadStatus.OPEN:
-        raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
-    body_text = body.body_markdown.strip()
+        raise _SendThreadError(400, "thread_not_open")
+    body_text = body_markdown.strip()
     if not body_text:
-        raise HTTPException(status_code=422, detail={"code": "empty_body"})
+        raise _SendThreadError(422, "empty_body")
 
     participants = [p.agent_name for p in org.db.list_thread_participants(thread_id)]
-    _validate_addressed_to(body.addressed_to, participants)
-    addressed = _resolve_addressed_agents(body.addressed_to, participants)
+    try:
+        _validate_addressed_to(addressed_to, participants)
+    except HTTPException as exc:
+        raise _SendThreadError(
+            exc.status_code,
+            exc.detail["code"],
+            **{k: v for k, v in exc.detail.items() if k != "code"},
+        ) from exc
+    addressed = _resolve_addressed_agents(addressed_to, participants)
 
     pending_load = _pending_reply_load(org, thread_id)
     projected = t.turns_used + pending_load + len(addressed)
     if projected > t.turn_cap:
-        raise HTTPException(
-            status_code=429,
-            detail={"code": "turn_cap_exceeded",
-                    "used": t.turns_used, "pending": pending_load,
-                    "cap": t.turn_cap, "requested": len(addressed)},
+        raise _SendThreadError(
+            429, "turn_cap_exceeded",
+            used=t.turns_used, pending=pending_load,
+            cap=t.turn_cap, requested=len(addressed),
         )
 
     tokens_to_enqueue: list[str] = []
@@ -684,11 +1000,11 @@ async def send_thread_endpoint(
         seq = org.db.append_thread_message(
             thread_id=thread_id, speaker="founder",
             kind=ThreadMessageKind.MESSAGE,
-            body_markdown=body_text, addressed_to=body.addressed_to,
+            body_markdown=body_text, addressed_to=addressed_to,
         )
         AuditLogger(org.db).log_thread_message_sent(
             thread_id, seq=seq, speaker="founder",
-            addressed_to=body.addressed_to, kind="message",
+            addressed_to=addressed_to, kind="message",
         )
         for name in addressed:
             inv = org.db.mint_thread_invocation(
@@ -707,6 +1023,48 @@ async def send_thread_endpoint(
     )
 
     return {"thread_id": thread_id, "seq": seq, "pending_replies": addressed}
+
+
+async def resolve_thread_from_notification(
+    org: object,
+    *,
+    thread_id: str,
+    founder_text: str,
+    message_id: str,
+    slug: str,
+) -> None:
+    """Listener-side resolver for founder replies on ``thread_addressed`` cards.
+
+    Translates a freeform founder reply into a ``POST /threads/{id}/send``
+    server-side, then consumes the notification row.
+
+    Raises _SendThreadError if the send fails. The caller (listener) should
+    treat any exception as a rejection and leave the row unconsumed so the
+    founder's intent is preserved for CLI fallback.
+    """
+    await _send_thread_message_inprocess(
+        org, slug, thread_id,
+        body_markdown=founder_text,
+        addressed_to=["@all"],
+    )
+    # Only consume after successful send.
+    org.db.consume_escalation_notification(message_id, consumed_by="feishu-reply")
+
+
+@router.post("/threads/{thread_id}/send")
+async def send_thread_endpoint(
+    slug: str, thread_id: str, body: SendBody, org: OrgDep,
+) -> dict:
+    try:
+        return await _send_thread_message_inprocess(
+            org, slug, thread_id,
+            body_markdown=body.body_markdown, addressed_to=body.addressed_to,
+        )
+    except _SendThreadError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, **exc.details},
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
