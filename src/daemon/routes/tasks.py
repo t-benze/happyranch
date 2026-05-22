@@ -25,6 +25,16 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[require_token()])
 
+
+def _task_to_dict(t: TaskRecord) -> dict:
+    # Wire convention: every other task-shaped response (submit POST, recall)
+    # exposes the primary key as `task_id`; talk/thread routes do the same via
+    # their own helpers. Rename here so list + detail responses match.
+    d = t.model_dump()
+    d["task_id"] = d.pop("id")
+    return d
+
+
 # Artifacts are fully inlined into the recall response when an agent asks for
 # them, so cap the total to keep one recall under a comfortable prompt budget.
 MAX_ARTIFACT_BYTES = 200 * 1024
@@ -69,7 +79,7 @@ def list_tasks(
     assigned_agent: str | None = None,
 ) -> dict:
     tasks = org.db.list_tasks(limit=limit, assigned_agent=assigned_agent)
-    return {"tasks": [t.model_dump() for t in tasks]}
+    return {"tasks": [_task_to_dict(t) for t in tasks]}
 
 
 @router.get("/tasks/{task_id}")
@@ -95,7 +105,7 @@ def get_task(task_id: str, org: OrgDep) -> dict:
                 break
 
     return {
-        "task": task.model_dump(),
+        "task": _task_to_dict(task),
         "results": org.db.get_task_results(task_id),
         "audit_log": audit_log,
         "revisit_chain": chain,

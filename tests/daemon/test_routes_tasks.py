@@ -60,7 +60,7 @@ def test_list_tasks_filter_by_assigned_agent(
         headers=auth_headers,
     )
     assert r.status_code == 200
-    ids = [t["id"] for t in r.json()["tasks"]]
+    ids = [t["task_id"] for t in r.json()["tasks"]]
     assert ids == ["TASK-A"]
 
 
