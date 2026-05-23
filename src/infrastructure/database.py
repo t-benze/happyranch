@@ -278,6 +278,36 @@ class Database:
                 ON thread_invocations(thread_id);
             CREATE INDEX IF NOT EXISTS idx_thread_invocations_pending
                 ON thread_invocations(status) WHERE status = 'pending';
+
+            CREATE TABLE IF NOT EXISTS script_requests (
+                id                  TEXT PRIMARY KEY,
+                task_id             TEXT NOT NULL,
+                agent_name          TEXT NOT NULL,
+                title               TEXT NOT NULL,
+                rationale           TEXT NOT NULL,
+                script_text         TEXT NOT NULL,
+                interpreter         TEXT NOT NULL,
+                cwd_hint            TEXT,
+                status              TEXT NOT NULL DEFAULT 'pending',
+                exit_code           INTEGER,
+                stdout_head         TEXT,
+                stderr_head         TEXT,
+                stdout_path         TEXT,
+                stderr_path         TEXT,
+                duration_ms         INTEGER,
+                started_at          TEXT,
+                finished_at         TEXT,
+                reviewed_at         TEXT,
+                reviewed_by         TEXT,
+                reject_reason       TEXT,
+                cwd_resolved        TEXT,
+                timeout_seconds     INTEGER NOT NULL DEFAULT 300,
+                created_at          TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_script_requests_task        ON script_requests(task_id);
+            CREATE INDEX IF NOT EXISTS idx_script_requests_agent       ON script_requests(agent_name);
+            CREATE INDEX IF NOT EXISTS idx_script_requests_status      ON script_requests(status);
+            CREATE INDEX IF NOT EXISTS idx_script_requests_created_at  ON script_requests(created_at);
         """)
         # Best-effort migration for DBs created before `status` existed. SQLite
         # has no IF NOT EXISTS for ADD COLUMN; swallow the duplicate-column
