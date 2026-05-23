@@ -206,3 +206,62 @@ def test_reject_not_pending(client_with_runtime):
     r = client.post(f"/api/v1/orgs/alpha/scripts/{sr_id}/reject", json={"reason": "y"})
     assert r.status_code == 409
     assert r.json()["detail"]["code"] == "not_pending"
+
+
+def test_list_scripts_default_filter_pending(client_with_runtime):
+    client, org = client_with_runtime
+    sr1 = _submit_pending(client, org)
+    sr2 = _submit_pending(client, org)
+    client.post(f"/api/v1/orgs/alpha/scripts/{sr1}/reject", json={"reason": "x"})
+    r = client.get("/api/v1/orgs/alpha/scripts/")
+    assert r.status_code == 200, r.text
+    ids = [item["id"] for item in r.json()["scripts"]]
+    assert sr2 in ids
+    assert sr1 not in ids
+
+
+def test_list_scripts_status_all(client_with_runtime):
+    client, org = client_with_runtime
+    sr1 = _submit_pending(client, org)
+    client.post(f"/api/v1/orgs/alpha/scripts/{sr1}/reject", json={"reason": "x"})
+    r = client.get("/api/v1/orgs/alpha/scripts/?status=all")
+    assert r.status_code == 200, r.text
+    ids = [item["id"] for item in r.json()["scripts"]]
+    assert sr1 in ids
+
+
+def test_get_script_detail(client_with_runtime):
+    client, org = client_with_runtime
+    task_id, sid = _make_active_session(org)
+    r = client.post(
+        "/api/v1/orgs/alpha/scripts/submit",
+        json={"task_id": task_id, "session_id": sid,
+              "title": "title-x", "rationale": "y", "script": "echo 1", "interpreter": "bash"},
+    )
+    sr_id = r.json()["id"]
+    r = client.get(f"/api/v1/orgs/alpha/scripts/{sr_id}")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["id"] == sr_id
+    assert body["title"] == "title-x"
+    assert body["script_text"] == "echo 1"
+
+
+def test_get_script_detail_404(client_with_runtime):
+    client, _org = client_with_runtime
+    r = client.get("/api/v1/orgs/alpha/scripts/SR-999")
+    assert r.status_code == 404
+
+
+def test_list_scripts_invalid_status(client_with_runtime):
+    client, _org = client_with_runtime
+    r = client.get("/api/v1/orgs/alpha/scripts/?status=bogus")
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "invalid_status"
+
+
+def test_list_scripts_invalid_limit(client_with_runtime):
+    client, _org = client_with_runtime
+    r = client.get("/api/v1/orgs/alpha/scripts/?limit=0")
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "invalid_limit"

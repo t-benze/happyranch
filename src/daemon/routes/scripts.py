@@ -193,3 +193,38 @@ async def reject_script(slug: str, sr_id: str, body: RejectBody, org: OrgDep) ->
 
     updated = org.db.get_script_request(sr_id)
     return updated.model_dump()
+
+
+_VALID_STATUSES = {"pending", "rejected", "running", "completed", "failed"}
+
+
+@router.get("/scripts/")
+async def list_scripts(
+    slug: str,
+    org: OrgDep,
+    status: str | None = "pending",
+    agent: str | None = None,
+    task_id: str | None = None,
+    limit: int = 50,
+) -> dict:
+    if limit <= 0 or limit > 200:
+        raise HTTPException(status_code=422, detail={"code": "invalid_limit"})
+    if status == "all" or status is None:
+        status_filter: list[str] | None = None
+    else:
+        status_filter = [s.strip() for s in status.split(",") if s.strip()]
+        for s in status_filter:
+            if s not in _VALID_STATUSES:
+                raise HTTPException(status_code=422, detail={"code": "invalid_status", "got": s})
+    rows = org.db.list_script_requests(
+        status=status_filter, agent=agent, task_id=task_id, limit=limit,
+    )
+    return {"scripts": [r.model_dump() for r in rows]}
+
+
+@router.get("/scripts/{sr_id}")
+async def get_script(slug: str, sr_id: str, org: OrgDep) -> dict:
+    record = org.db.get_script_request(sr_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail={"code": "unknown_script_request", "sr_id": sr_id})
+    return record.model_dump()
