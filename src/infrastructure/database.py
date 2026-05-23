@@ -1376,6 +1376,21 @@ class Database:
         return f"THR-{n:03d}"
 
     @_synchronized
+    def next_script_request_id(self) -> str:
+        """Return the next available SR-NNN id.
+
+        Callers must hold DaemonState.db_lock across the next_script_request_id()
+        + insert_script_request() pair to avoid duplicate IDs under concurrent
+        requests (same requirement as next_task_id / next_talk_id / next_thread_id).
+        """
+        cursor = self._conn.execute(
+            "SELECT MAX(CAST(SUBSTR(id, 4) AS INTEGER)) AS m "
+            "FROM script_requests WHERE id GLOB 'SR-[0-9]*'"
+        )
+        n = (cursor.fetchone()["m"] or 0) + 1
+        return f"SR-{n:03d}"
+
+    @_synchronized
     def insert_thread(self, t: ThreadRecord) -> None:
         # Spec §3.1: composed_from_task_id and composed_from_talk_id are
         # mutually exclusive; daemon enforces at insert time.

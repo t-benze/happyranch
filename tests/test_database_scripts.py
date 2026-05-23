@@ -36,3 +36,18 @@ def test_script_requests_indexes(db: Database):
     assert "idx_script_requests_agent" in names
     assert "idx_script_requests_status" in names
     assert "idx_script_requests_created_at" in names
+
+
+def test_next_script_request_id_first(db: Database):
+    assert db.next_script_request_id() == "SR-001"
+
+
+def test_next_script_request_id_monotonic(db: Database):
+    # Manually insert a row with SR-005 to verify the allocator picks SR-006.
+    db._conn.execute(
+        "INSERT INTO script_requests (id, task_id, agent_name, title, rationale, "
+        "script_text, interpreter, status, created_at) "
+        "VALUES ('SR-005', 'TASK-001', 'a', 't', 'r', 's', 'bash', 'pending', '2026-05-23T00:00:00Z')"
+    )
+    db._conn.commit()
+    assert db.next_script_request_id() == "SR-006"
