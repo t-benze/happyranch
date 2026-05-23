@@ -202,19 +202,20 @@ All routes under `/api/v1/orgs/{slug}/scripts/`. The agent-callback route (`POST
 
 ### 5.1 `POST /submit` — agent callback
 
-Request body matches §4.2 (agent supplies `task_id` and `session_id` explicitly).
+Request body matches §4.2 (agent supplies `task_id` and `session_id` explicitly). All daemon routes share a single bearer token (`require_token()` is global; there is no per-agent bearer scoping). Agent identity is therefore established by the **session-binding chain** (`task_id` exists → `task.assigned_agent` is the agent → `org.sessions.get_active(task_id, assigned_agent) == session_id`), exactly as `report-completion` does.
 
 Validation order, each step gating the next:
 
-1. **Agent identity from bearer** — the bearer token resolves to an agent name via the existing token-scoping map. Else 401 `unknown_agent`.
-2. **Task exists and is owned by this agent** — `tasks` row for `task_id` exists; `tasks.assigned_agent == agent`. Else 404 `unknown_task` / 403 `agent_not_task_owner`.
-3. **Session ownership** — `SessionTracker.expected_session_id(task_id) == session_id` (same check used by `report-completion`). Else 409 `session_mismatch`.
-4. **Task status** — task is `pending` or `in_progress`. Else 400 `task_not_active`.
-5. **`title`** — non-empty after strip, ≤ 200 chars. Else 422 `empty_title` / `title_too_long`.
-6. **`rationale`** — non-empty after strip. Else 422 `empty_rationale`.
-7. **`script`** — non-empty after strip, ≤ 65536 bytes (UTF-8 encoded). Else 422 `empty_script` / `script_too_large`.
-8. **`interpreter`** — exactly one of `{bash, sh, zsh, python3}`. Else 422 `unknown_interpreter`.
-9. **`cwd_hint`** (if present) — non-absolute, no `..` segments after normalization, resolves under `<runtime>/orgs/<slug>/workspaces/<agent>/`. Path existence is NOT checked at submit-time (the founder may want to create it before running); existence is re-checked at `/run` time. Else 422 `invalid_cwd_hint`.
+1. **Task exists** — `org.db.get_task(task_id)` returns a row. Else 404 `unknown_task`.
+2. **Task status active** — `task.status ∈ {pending, in_progress}`. Else 400 `task_not_active`. (Status gate BEFORE session gate so a completed task surfaces `task_not_active` rather than the misleading `session_mismatch` from a torn-down session.)
+3. **Session ownership** — `org.sessions.get_active(task_id, task.assigned_agent) == session_id`. Else 409 `session_mismatch`.
+4. **`title`** — non-empty after strip, ≤ 200 chars. Else 422 `empty_title` / `title_too_long`.
+5. **`rationale`** — non-empty after strip. Else 422 `empty_rationale`.
+6. **`script`** — non-empty after strip, ≤ 65536 bytes (UTF-8 encoded). Else 422 `empty_script` / `script_too_large`.
+7. **`interpreter`** — exactly one of `{bash, sh, zsh, python3}`. Else 422 `unknown_interpreter`.
+8. **`cwd_hint`** (if present) — non-absolute, no `..` segments after normalization, resolves under `<runtime>/orgs/<slug>/workspaces/<task.assigned_agent>/`. Path existence is NOT checked at submit-time (the founder may want to create it before running); existence is re-checked at `/run` time. Else 422 `invalid_cwd_hint`.
+
+The SR row's `agent_name` is set to `task.assigned_agent` — derived, not echoed from the payload, so a malicious caller cannot mis-attribute the SR.
 
 Effect (single transaction under `org.db_lock`):
 
@@ -539,12 +540,15 @@ Script execution happens entirely inside the daemon HTTP layer (route handler + 
 
 ## 10. Auth boundaries
 
-| Caller | Routes |
-|---|---|
-| Agent bearer | `POST /scripts/submit` only |
-| Founder bearer (CLI + Web) | All other `/scripts/*` routes |
+There is no per-agent bearer scoping today — `require_token()` is a single global gate. The auth model for SRs matches the existing pattern (`report-completion`, `compose-as-agent`): a single bearer plus a per-route session-binding check that proves the caller is the live agent for the named task.
 
-Bearer-to-role mapping uses the existing token-scoping logic in `src/daemon/routes/_org_dep.py` (the same mechanism that gates `report-completion` to agents and `manage-agent` approval to founder). Any attempt by an agent token to call a founder-only route returns 403 `agent_not_authorized`. Any attempt by founder to call `POST /submit` returns 403 `founder_cannot_submit_as_agent` (founders run scripts directly, they don't submit them).
+| Route | Caller proof |
+|---|---|
+| `POST /scripts/submit` | Bearer + `(task_id, session_id)` matches an active session row in `SessionTracker` (§5.1). |
+| `POST /scripts/{id}/run`, `POST /scripts/{id}/reject` | Bearer only. The daemon trusts the bearer-holder as the founder for these routes; this is the same trust model the founder CLI and the web UI already use for `/tasks/{id}/cancel`, `/tasks/{id}/revisit`, KB writes, etc. |
+| `GET /scripts/`, `GET /scripts/{id}`, `GET /scripts/{id}/output`, `GET /scripts/{id}/events` | Bearer only (founder-facing read APIs; no agent-side use case in v1). |
+
+No "founder cannot submit" check is needed — the founder has no session_id for any task, so step 3 of §5.1 (`session_mismatch`) naturally blocks them.
 
 ## 11. Failure modes
 
