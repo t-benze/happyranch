@@ -124,3 +124,65 @@ def test_list_script_requests_limit(db: Database):
     results = db.list_script_requests(limit=3)
     assert len(results) == 3
     assert [r.id for r in results] == ["SR-010", "SR-009", "SR-008"]
+
+
+def test_transition_to_rejected(db: Database):
+    db.insert_script_request(_make_record("SR-001"))
+    db.transition_script_to_rejected("SR-001", reviewer="founder",
+                                     reason="too risky", reviewed_at="2026-05-23T10:05:00Z")
+    fetched = db.get_script_request("SR-001")
+    assert fetched.status == ScriptRequestStatus.REJECTED
+    assert fetched.reviewed_by == "founder"
+    assert fetched.reject_reason == "too risky"
+    assert fetched.reviewed_at == "2026-05-23T10:05:00Z"
+
+
+def test_transition_to_rejected_only_from_pending(db: Database):
+    db.insert_script_request(_make_record("SR-001"))
+    db._conn.execute("UPDATE script_requests SET status='running' WHERE id='SR-001'")
+    db._conn.commit()
+    with pytest.raises(ValueError, match="not_pending"):
+        db.transition_script_to_rejected("SR-001", reviewer="founder",
+                                         reason="x", reviewed_at="2026-05-23T10:05:00Z")
+
+
+def test_transition_to_running(db: Database):
+    db.insert_script_request(_make_record("SR-001"))
+    db.transition_script_to_running(
+        "SR-001",
+        reviewer="founder",
+        reviewed_at="2026-05-23T10:10:00Z",
+        started_at="2026-05-23T10:10:00Z",
+        cwd_resolved="/abs/path",
+        timeout_seconds=600,
+        stdout_path="/abs/scripts/SR-001.out",
+        stderr_path="/abs/scripts/SR-001.err",
+    )
+    fetched = db.get_script_request("SR-001")
+    assert fetched.status == ScriptRequestStatus.RUNNING
+    assert fetched.cwd_resolved == "/abs/path"
+    assert fetched.timeout_seconds == 600
+    assert fetched.started_at == "2026-05-23T10:10:00Z"
+
+
+def test_transition_to_terminal_completed(db: Database):
+    db.insert_script_request(_make_record("SR-001"))
+    db.transition_script_to_running(
+        "SR-001", reviewer="founder", reviewed_at="2026-05-23T10:10:00Z",
+        started_at="2026-05-23T10:10:00Z", cwd_resolved="/x",
+        timeout_seconds=300, stdout_path="/x/SR-001.out", stderr_path="/x/SR-001.err",
+    )
+    db.transition_script_to_terminal(
+        "SR-001",
+        status=ScriptRequestStatus.COMPLETED,
+        exit_code=0,
+        finished_at="2026-05-23T10:11:00Z",
+        duration_ms=60000,
+        stdout_head="hello\n",
+        stderr_head="",
+    )
+    fetched = db.get_script_request("SR-001")
+    assert fetched.status == ScriptRequestStatus.COMPLETED
+    assert fetched.exit_code == 0
+    assert fetched.duration_ms == 60000
+    assert fetched.stdout_head == "hello\n"

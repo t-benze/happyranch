@@ -1482,6 +1482,71 @@ class Database:
         return [self._row_to_script_request(r) for r in rows]
 
     @_synchronized
+    def transition_script_to_rejected(
+        self, sr_id: str, *, reviewer: str, reason: str, reviewed_at: str
+    ) -> None:
+        cur = self._conn.execute(
+            "UPDATE script_requests "
+            "SET status='rejected', reviewed_by=?, reject_reason=?, reviewed_at=? "
+            "WHERE id=? AND status='pending'",
+            (reviewer, reason, reviewed_at, sr_id),
+        )
+        self._conn.commit()
+        if cur.rowcount == 0:
+            raise ValueError(f"not_pending: SR {sr_id} cannot be rejected")
+
+    @_synchronized
+    def transition_script_to_running(
+        self,
+        sr_id: str,
+        *,
+        reviewer: str,
+        reviewed_at: str,
+        started_at: str,
+        cwd_resolved: str,
+        timeout_seconds: int,
+        stdout_path: str,
+        stderr_path: str,
+    ) -> None:
+        cur = self._conn.execute(
+            "UPDATE script_requests SET "
+            "status='running', reviewed_by=?, reviewed_at=?, started_at=?, "
+            "cwd_resolved=?, timeout_seconds=?, stdout_path=?, stderr_path=? "
+            "WHERE id=? AND status='pending'",
+            (reviewer, reviewed_at, started_at, cwd_resolved, timeout_seconds,
+             stdout_path, stderr_path, sr_id),
+        )
+        self._conn.commit()
+        if cur.rowcount == 0:
+            raise ValueError(f"not_pending: SR {sr_id} cannot transition to running")
+
+    @_synchronized
+    def transition_script_to_terminal(
+        self,
+        sr_id: str,
+        *,
+        status: "ScriptRequestStatus",
+        exit_code: int | None,
+        finished_at: str,
+        duration_ms: int,
+        stdout_head: str | None,
+        stderr_head: str | None,
+    ) -> None:
+        if status.value not in ("completed", "failed"):
+            raise ValueError(f"invalid terminal status: {status.value}")
+        cur = self._conn.execute(
+            "UPDATE script_requests SET "
+            "status=?, exit_code=?, finished_at=?, duration_ms=?, "
+            "stdout_head=?, stderr_head=? "
+            "WHERE id=? AND status='running'",
+            (status.value, exit_code, finished_at, duration_ms,
+             stdout_head, stderr_head, sr_id),
+        )
+        self._conn.commit()
+        if cur.rowcount == 0:
+            raise ValueError(f"not_running: SR {sr_id} cannot transition to terminal")
+
+    @_synchronized
     def insert_thread(self, t: ThreadRecord) -> None:
         # Spec §3.1: composed_from_task_id and composed_from_talk_id are
         # mutually exclusive; daemon enforces at insert time.
