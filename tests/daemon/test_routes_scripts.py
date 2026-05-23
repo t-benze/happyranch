@@ -265,3 +265,82 @@ def test_list_scripts_invalid_limit(client_with_runtime):
     r = client.get("/api/v1/orgs/alpha/scripts/?limit=0")
     assert r.status_code == 422
     assert r.json()["detail"]["code"] == "invalid_limit"
+
+
+import time
+
+
+def test_run_happy_path_completes(tmp_home, daemon_state):
+    """Submit, run, and verify the SR transitions to completed.
+
+    Uses TestClient as a context manager so the anyio portal stays alive
+    across requests — asyncio.create_task in the /run handler needs the
+    event loop to keep running between HTTP calls to drain the background task.
+    """
+    from fastapi.testclient import TestClient
+    from src.daemon.app import create_app
+    from src.daemon import paths as paths_mod
+
+    org = daemon_state.orgs["alpha"]
+    app = create_app(daemon_state)
+
+    with TestClient(app, raise_server_exceptions=True) as client:
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+
+        task_id, sid = _make_active_session(org)
+        r = client.post(
+            "/api/v1/orgs/alpha/scripts/submit",
+            json={"task_id": task_id, "session_id": sid,
+                  "title": "echo", "rationale": "test",
+                  "script": "echo hello", "interpreter": "bash"},
+        )
+        sr_id = r.json()["id"]
+        # Ensure workspace dir exists (cwd defaults to workspaces/<agent>/).
+        ws = org.root / "workspaces" / "engineering_head"
+        ws.mkdir(parents=True, exist_ok=True)
+        r = client.post(f"/api/v1/orgs/alpha/scripts/{sr_id}/run", json={})
+        assert r.status_code == 202, r.text
+        body = r.json()
+        assert body["status"] == "running"
+        assert body["events_url"].endswith(f"/scripts/{sr_id}/events")
+
+        # Poll for terminal state (max ~5s).
+        for _ in range(50):
+            d = client.get(f"/api/v1/orgs/alpha/scripts/{sr_id}").json()
+            if d["status"] in ("completed", "failed"):
+                break
+            time.sleep(0.1)
+    assert d["status"] == "completed", d
+    assert d["exit_code"] == 0
+    assert "hello" in (d["stdout_head"] or "")
+
+
+def test_run_not_pending(client_with_runtime):
+    client, org = client_with_runtime
+    sr_id = _submit_pending(client, org)
+    client.post(f"/api/v1/orgs/alpha/scripts/{sr_id}/reject", json={"reason": "x"})
+    r = client.post(f"/api/v1/orgs/alpha/scripts/{sr_id}/run", json={})
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "not_pending"
+
+
+def test_run_invalid_timeout(client_with_runtime):
+    client, org = client_with_runtime
+    sr_id = _submit_pending(client, org)
+    r = client.post(f"/api/v1/orgs/alpha/scripts/{sr_id}/run", json={"timeout_seconds": 0})
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "invalid_timeout"
+
+
+def test_run_cwd_override_missing(client_with_runtime):
+    client, org = client_with_runtime
+    sr_id = _submit_pending(client, org)
+    r = client.post(
+        f"/api/v1/orgs/alpha/scripts/{sr_id}/run",
+        json={"cwd_override": "/this/path/does/not/exist"},
+    )
+    # Either 422 (invalid_cwd_override) or 409 (cwd_missing) is acceptable;
+    # spec §5.4 step 4 says cwd_missing is the right code when resolved path doesn't exist.
+    assert r.status_code in (409, 422), r.text
+    code = r.json()["detail"]["code"]
+    assert code in ("invalid_cwd_override", "cwd_missing")
