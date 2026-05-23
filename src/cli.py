@@ -1249,6 +1249,99 @@ def cmd_scripts_output(args: argparse.Namespace) -> None:
         print(body["stderr"], end="" if body["stderr"].endswith("\n") else "\n")
 
 
+def cmd_scripts_run(args: argparse.Namespace) -> None:
+    """Founder action: run a pending script request with TTY-gated confirm + SSE stream."""
+    import json as _json
+
+    if not sys.stdin.isatty():
+        print(
+            "error: scripts run requires a TTY (interactive confirmation). "
+            "Use the web UI to run non-interactively.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    slug = resolve_org_slug(args_org=args.org, available=_fetch_available_orgs(client))
+
+    # Fetch + show.
+    r = client.get(f"/api/v1/orgs/{slug}/scripts/{args.sr_id}")
+    if not _ok(r):
+        return
+    d = r.json()
+    if d["status"] != "pending":
+        print(f"Error: SR {args.sr_id} is {d['status']}, not pending", file=sys.stderr)
+        sys.exit(1)
+    print(f"About to execute {d['id']}:")
+    print(f"  Agent:       {d['agent_name']}")
+    print(f"  Task:        {d['task_id']}")
+    print(f"  Interpreter: {d['interpreter']}")
+    cwd_display = args.cwd_override or d["cwd_hint"] or "(workspace root)"
+    print(f"  Cwd:         {cwd_display}")
+    print(f"  Timeout:     {args.timeout_seconds or d['timeout_seconds']}s")
+    print()
+    print("Script:")
+    for line in d["script_text"].splitlines():
+        print(f"  {line}")
+    print()
+    answer = input("Proceed? [y/N]: ").strip().lower()
+    if answer != "y":
+        print("Aborted.")
+        sys.exit(1)
+
+    # POST /run.
+    body: dict = {}
+    if args.cwd_override is not None:
+        body["cwd_override"] = args.cwd_override
+    if args.timeout_seconds is not None:
+        body["timeout_seconds"] = args.timeout_seconds
+    r = client.post(f"/api/v1/orgs/{slug}/scripts/{args.sr_id}/run", json=body)
+    if r.status_code != 202:
+        print(f"Error: {r.status_code} {r.text}", file=sys.stderr)
+        sys.exit(1)
+
+    # Stream SSE until terminal event. The events endpoint uses `event:` lines to
+    # distinguish stdout/stderr/terminal, so we consume raw lines via httpx directly
+    # rather than client.stream() which strips the event: prefix.
+    terminal_status = None
+    terminal_exit = None
+    etype = ""
+    edata = ""
+    events_path = f"/api/v1/orgs/{slug}/scripts/{args.sr_id}/events"
+    with client._client.stream("GET", events_path) as response:
+        response.raise_for_status()
+        for raw_line in response.iter_lines():
+            if raw_line.startswith("event: "):
+                etype = raw_line[7:].strip()
+                edata = ""
+            elif raw_line.startswith("data: "):
+                edata = raw_line[6:]
+            elif raw_line == "":
+                # blank line = end of SSE frame; dispatch
+                if etype in ("stdout", "stderr"):
+                    payload = _json.loads(edata) if edata else {}
+                    prefix = "[stdout]" if etype == "stdout" else "[stderr]"
+                    print(f"{prefix} {payload.get('line', '')}")
+                elif etype == "terminal":
+                    payload = _json.loads(edata) if edata else {}
+                    terminal_status = payload.get("status")
+                    terminal_exit = payload.get("exit_code")
+                    dur = payload.get("duration_ms") or 0
+                    print(f"[done]   exit={terminal_exit} duration={dur/1000:.1f}s")
+                    break
+                etype = ""
+                edata = ""
+
+    if terminal_status == "completed":
+        sys.exit(0 if (terminal_exit or 0) == 0 else 1)
+    sys.exit(2)
+
+
 def cmd_enrollments(args: argparse.Namespace) -> None:
     """List agent enrollment requests."""
     try:
@@ -2490,6 +2583,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_scripts_output.add_argument("--max-bytes", type=int, default=1_048_576)
     p_scripts_output.add_argument("--org")
     p_scripts_output.set_defaults(func=cmd_scripts_output)
+
+    p_scripts_run = scripts_sub.add_parser("run", help="Run a pending script request (TTY-gated)")
+    p_scripts_run.add_argument("sr_id")
+    p_scripts_run.add_argument("--cwd", dest="cwd_override")
+    p_scripts_run.add_argument("--timeout-seconds", type=int, dest="timeout_seconds")
+    p_scripts_run.add_argument("--org")
+    p_scripts_run.set_defaults(func=cmd_scripts_run)
 
     # grassland enrollments
     p_enroll = sub.add_parser("enrollments", help="List agent enrollment requests")

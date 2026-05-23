@@ -50,3 +50,17 @@ def test_scripts_output_help():
     r = _run("scripts", "output", "--help")
     assert r.returncode == 0
     assert "--stream" in r.stdout
+
+
+def test_scripts_run_help():
+    r = _run("scripts", "run", "--help")
+    assert r.returncode == 0
+    assert "--cwd" in r.stdout
+    assert "--timeout-seconds" in r.stdout
+
+
+def test_scripts_run_requires_tty():
+    """Non-TTY invocation fails-fast with canonical message."""
+    r = _run("scripts", "run", "SR-001", "--org", "alpha")
+    assert r.returncode != 0
+    assert "TTY" in (r.stderr + r.stdout)
