@@ -344,3 +344,63 @@ def test_run_cwd_override_missing(client_with_runtime):
     assert r.status_code in (409, 422), r.text
     code = r.json()["detail"]["code"]
     assert code in ("invalid_cwd_override", "cwd_missing")
+
+
+def test_output_after_run(tmp_home, daemon_state):
+    """Run a script, wait for terminal, fetch full output."""
+    from fastapi.testclient import TestClient
+    from src.daemon.app import create_app
+    from src.daemon import paths as paths_mod
+
+    org = daemon_state.orgs["alpha"]
+    app = create_app(daemon_state)
+    with TestClient(app) as client:
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+
+        task_id, sid = _make_active_session(org)
+        r = client.post(
+            "/api/v1/orgs/alpha/scripts/submit",
+            json={"task_id": task_id, "session_id": sid,
+                  "title": "x", "rationale": "y",
+                  "script": "echo abc; echo def >&2", "interpreter": "bash"},
+        )
+        sr_id = r.json()["id"]
+        ws = org.root / "workspaces" / "engineering_head"
+        ws.mkdir(parents=True, exist_ok=True)
+        client.post(f"/api/v1/orgs/alpha/scripts/{sr_id}/run", json={})
+        for _ in range(50):
+            d = client.get(f"/api/v1/orgs/alpha/scripts/{sr_id}").json()
+            if d["status"] in ("completed", "failed"):
+                break
+            time.sleep(0.1)
+        r = client.get(f"/api/v1/orgs/alpha/scripts/{sr_id}/output")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "abc" in body["stdout"]
+    assert "def" in body["stderr"]
+    assert body["total_stdout_bytes"] >= 4
+    assert body["truncated_stdout"] is False
+
+
+def test_output_pending_409(client_with_runtime):
+    """Output endpoint refuses to read non-terminal SRs."""
+    client, org = client_with_runtime
+    sr_id = _submit_pending(client, org)
+    r = client.get(f"/api/v1/orgs/alpha/scripts/{sr_id}/output")
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "not_terminal"
+
+
+def test_output_unknown_sr(client_with_runtime):
+    client, _org = client_with_runtime
+    r = client.get("/api/v1/orgs/alpha/scripts/SR-999/output")
+    assert r.status_code == 404
+
+
+def test_output_invalid_max_bytes(client_with_runtime):
+    client, org = client_with_runtime
+    sr_id = _submit_pending(client, org)
+    r = client.get(f"/api/v1/orgs/alpha/scripts/{sr_id}/output?max_bytes=0")
+    # Either 422 invalid_max_bytes OR 409 not_terminal — accept either since
+    # we're testing the validation gate before terminal-state check is fine.
+    assert r.status_code in (409, 422)

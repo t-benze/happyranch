@@ -414,3 +414,45 @@ async def run_script_route(
         "timeout_seconds": timeout,
         "events_url": f"/api/v1/orgs/{slug}/scripts/{sr_id}/events",
     }
+
+
+@router.get("/scripts/{sr_id}/output")
+async def get_script_output(
+    slug: str, sr_id: str, org: OrgDep,
+    stream: str = "both",
+    max_bytes: int = 1_048_576,
+) -> dict:
+    record = org.db.get_script_request(sr_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail={"code": "unknown_script_request"})
+    if max_bytes <= 0 or max_bytes > 10 * 1_048_576:
+        raise HTTPException(status_code=422, detail={"code": "invalid_max_bytes"})
+    if record.status not in (
+        ScriptRequestStatus.COMPLETED,
+        ScriptRequestStatus.FAILED,
+        ScriptRequestStatus.REJECTED,
+    ):
+        raise HTTPException(status_code=409, detail={"code": "not_terminal", "status": record.status.value})
+    if stream not in ("stdout", "stderr", "both"):
+        raise HTTPException(status_code=422, detail={"code": "invalid_stream"})
+
+    def _read(path: str | None) -> tuple[str, bool, int]:
+        if path is None:
+            return ("", False, 0)
+        p = Path(path)
+        if not p.exists():
+            return ("", False, 0)
+        total = p.stat().st_size
+        data = p.read_bytes()[:max_bytes]
+        return (data.decode("utf-8", errors="replace"), total > max_bytes, total)
+
+    out, out_trunc, out_total = _read(record.stdout_path) if stream in ("stdout", "both") else ("", False, 0)
+    err, err_trunc, err_total = _read(record.stderr_path) if stream in ("stderr", "both") else ("", False, 0)
+    return {
+        "stdout": out,
+        "stderr": err,
+        "truncated_stdout": out_trunc,
+        "truncated_stderr": err_trunc,
+        "total_stdout_bytes": out_total,
+        "total_stderr_bytes": err_total,
+    }
