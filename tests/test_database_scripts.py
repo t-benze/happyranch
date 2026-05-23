@@ -1,20 +1,9 @@
 """Schema + CRUD tests for script_requests (spec §3.1)."""
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
-
 import pytest
 
 from src.infrastructure.database import Database
-
-
-@pytest.fixture
-def db() -> Database:
-    d = tempfile.mkdtemp()
-    db = Database(Path(d) / "test.db")
-    yield db
-    db.close()
 
 
 def test_script_requests_table_exists(db: Database):
