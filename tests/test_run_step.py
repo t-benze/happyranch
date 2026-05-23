@@ -1196,3 +1196,87 @@ def test_run_step_concurrent_claim_spawns_only_one_agent(
     assert par.orchestration_step_count == 1, (
         f"expected orchestration_step_count=1, got {par.orchestration_step_count}"
     )
+
+
+def test_revisit_header_includes_sr_summary(runtime, db):
+    """When the predecessor task submitted SRs, revisit header lists them."""
+    from datetime import datetime, timezone
+
+    from src.infrastructure.audit_logger import AuditLogger
+    from src.models import (
+        ScriptInterpreter,
+        ScriptRequestRecord,
+        ScriptRequestStatus,
+        TaskRecord,
+        TaskStatus,
+    )
+    from src.orchestrator.run_step import _revisit_header_if_applicable
+
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    predecessor = TaskRecord(
+        id="TASK-001",
+        assigned_agent="engineering_head",
+        team="engineering",
+        brief="orig",
+        status=TaskStatus.FAILED,
+    )
+    revisit = TaskRecord(
+        id="TASK-002",
+        assigned_agent="engineering_head",
+        team="engineering",
+        brief="retry",
+        status=TaskStatus.IN_PROGRESS,
+    )
+    db.insert_task(predecessor)
+    db.insert_task(revisit)
+
+    # Seed an SR submitted by the predecessor.
+    sr = ScriptRequestRecord(
+        id="SR-019",
+        task_id="TASK-001",
+        agent_name="engineering_head",
+        title="Close PR #247 with approval comment",
+        rationale="r",
+        script_text="echo x",
+        interpreter=ScriptInterpreter.BASH,
+        status=ScriptRequestStatus.COMPLETED,
+        created_at=now,
+    )
+    db.insert_script_request(sr)
+
+    # Audit: script_submitted on predecessor, revisit_of on revisit.
+    audit = AuditLogger(db)
+    audit.log_script_submitted(
+        task_id="TASK-001",
+        sr_id="SR-019",
+        agent="engineering_head",
+        title="Close PR #247 with approval comment",
+        interpreter="bash",
+        cwd_hint=None,
+        byte_size=10,
+        line_count=1,
+    )
+    db.insert_audit_log(
+        task_id="TASK-002",
+        agent="founder",
+        action="revisit_of",
+        payload={
+            "predecessor_root": "TASK-001",
+            "flagged": "TASK-001",
+            "prior_status": "failed",
+            "cascade": ["TASK-001"],
+            "founder_note": "retry",
+        },
+    )
+
+    # Mock orchestrator: just needs ._db.
+    class _MockOrch:
+        def __init__(self, d):
+            self._db = d
+
+    header = _revisit_header_if_applicable(_MockOrch(db), "TASK-002")
+    assert header is not None
+    assert "SR-019" in header
+    assert "Close PR #247" in header
+    assert "grassland scripts show SR-019" in header
+    assert "grassland scripts output SR-019" in header
