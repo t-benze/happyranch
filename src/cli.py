@@ -1085,6 +1085,41 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
     )
 
 
+def _scripts_submit_payload_from_file(path: str) -> dict:
+    """Load a scripts-submit payload from a JSON file (mirrors manage-repo / dispatch pattern)."""
+    import json as _json
+    with open(path) as f:
+        data = _json.load(f)
+    required = ("task_id", "session_id", "title", "rationale", "script", "interpreter")
+    missing = [k for k in required if not data.get(k)]
+    if missing:
+        raise ValueError(f"scripts submit file missing keys: {missing}")
+    return data
+
+
+def cmd_scripts_submit(args: argparse.Namespace) -> None:
+    """Agent callback: submit a script for founder review."""
+    if not args.org:
+        print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
+        sys.exit(1)
+    import json as _json
+    try:
+        body = _scripts_submit_payload_from_file(args.from_file)
+    except (OSError, _json.JSONDecodeError, ValueError) as exc:
+        print(f"Error reading scripts-submit file {args.from_file}: {exc}", file=sys.stderr)
+        sys.exit(2)
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    r = client.post(f"/api/v1/orgs/{args.org}/scripts/submit", json=body)
+    if not _ok(r):
+        return
+    result = r.json()
+    print(f"ok: submitted {result['id']} (status={result['status']}). Self-block your task referencing this ID.")
+
+
 def cmd_enrollments(args: argparse.Namespace) -> None:
     """List agent enrollment requests."""
     try:
@@ -2291,6 +2326,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to JSON file with dispatch payload (talk_id, brief, optional target_agent/team)",
     )
     p_dispatch.set_defaults(func=cmd_dispatch)
+
+    # grassland scripts
+    p_scripts = sub.add_parser("scripts", help="Script requests (agent → founder review)")
+    scripts_sub = p_scripts.add_subparsers(dest="scripts_cmd")
+
+    p_scripts_submit = scripts_sub.add_parser("submit", help="Agent callback: submit a script for founder review")
+    p_scripts_submit.add_argument("--from-file", dest="from_file", required=True, help="JSON payload file")
+    p_scripts_submit.add_argument("--org", help="Org slug (required for agent callbacks)")
+    p_scripts_submit.set_defaults(func=cmd_scripts_submit)
 
     # grassland enrollments
     p_enroll = sub.add_parser("enrollments", help="List agent enrollment requests")
