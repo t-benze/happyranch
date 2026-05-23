@@ -1120,6 +1120,135 @@ def cmd_scripts_submit(args: argparse.Namespace) -> None:
     print(f"ok: submitted {result['id']} (status={result['status']}). Self-block your task referencing this ID.")
 
 
+def cmd_scripts_list(args: argparse.Namespace) -> None:
+    """Founder: list script requests."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    slug = resolve_org_slug(args_org=args.org, available=_fetch_available_orgs(client))
+    params: dict = {"status": args.status, "limit": args.limit}
+    if args.agent:
+        params["agent"] = args.agent
+    if args.task:
+        params["task_id"] = args.task
+    r = client.get(f"/api/v1/orgs/{slug}/scripts/", params=params)
+    if not _ok(r):
+        return
+    rows = r.json()["scripts"]
+    if not rows:
+        print("(no script requests match)")
+        return
+    print(f"{'ID':<8} {'AGENT':<20} {'TASK':<12} {'STATUS':<10} TITLE")
+    for row in rows:
+        title = row["title"][:60]
+        print(f"{row['id']:<8} {row['agent_name']:<20} {row['task_id']:<12} {row['status']:<10} {title}")
+
+
+def cmd_scripts_show(args: argparse.Namespace) -> None:
+    """Founder: show one script request."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    slug = resolve_org_slug(args_org=args.org, available=_fetch_available_orgs(client))
+    r = client.get(f"/api/v1/orgs/{slug}/scripts/{args.sr_id}")
+    if not _ok(r):
+        return
+    d = r.json()
+    print(f"{d['id']}   {d['status']}   submitted {d['created_at']}")
+    print(f"Agent:        {d['agent_name']}")
+    print(f"Task:         {d['task_id']}")
+    print(f"Interpreter:  {d['interpreter']}")
+    print(f"Cwd hint:     {d['cwd_hint'] or '(workspace root)'}")
+    print()
+    print(f"Title:        {d['title']}")
+    print()
+    print("Rationale:")
+    for line in d["rationale"].splitlines():
+        print(f"  {line}")
+    print()
+    print("Script:")
+    for line in d["script_text"].splitlines():
+        print(f"  {line}")
+    if d["status"] in ("completed", "failed"):
+        print()
+        print(f"Exit code:    {d['exit_code']}")
+        print(f"Duration:     {d['duration_ms']}ms")
+        if d["stdout_head"]:
+            print("Stdout (head):")
+            for line in d["stdout_head"].splitlines():
+                print(f"  {line}")
+        if d["stderr_head"]:
+            print("Stderr (head):")
+            for line in d["stderr_head"].splitlines():
+                print(f"  {line}")
+        print(f"Full output:  grassland scripts output {d['id']}")
+    elif d["status"] == "pending":
+        print()
+        print("Founder actions:")
+        print(f"  grassland scripts run {d['id']} [--cwd PATH] [--timeout-seconds N]")
+        print(f"  grassland scripts reject {d['id']} --reason \"...\"")
+    elif d["status"] == "rejected":
+        print()
+        print(f"Reject reason: {d['reject_reason']}")
+
+
+def cmd_scripts_reject(args: argparse.Namespace) -> None:
+    """Founder: reject a pending script request."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    slug = resolve_org_slug(args_org=args.org, available=_fetch_available_orgs(client))
+    reason = args.reason
+    if not reason:
+        print("Enter rejection reason (end with '.' on its own line):")
+        lines: list[str] = []
+        while True:
+            try:
+                line = input()
+            except EOFError:
+                break
+            if line.strip() == ".":
+                break
+            lines.append(line)
+        reason = "\n".join(lines).strip()
+    if not reason:
+        print("Error: empty reason", file=sys.stderr)
+        sys.exit(2)
+    r = client.post(f"/api/v1/orgs/{slug}/scripts/{args.sr_id}/reject", json={"reason": reason})
+    if not _ok(r):
+        return
+    print(f"ok: rejected {args.sr_id}")
+
+
+def cmd_scripts_output(args: argparse.Namespace) -> None:
+    """Founder: fetch captured output of a terminal script request."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    slug = resolve_org_slug(args_org=args.org, available=_fetch_available_orgs(client))
+    r = client.get(
+        f"/api/v1/orgs/{slug}/scripts/{args.sr_id}/output",
+        params={"stream": args.stream, "max_bytes": args.max_bytes},
+    )
+    if not _ok(r):
+        return
+    body = r.json()
+    if args.stream in ("stdout", "both"):
+        print("--- stdout ---")
+        print(body["stdout"], end="" if body["stdout"].endswith("\n") else "\n")
+    if args.stream in ("stderr", "both"):
+        print("--- stderr ---")
+        print(body["stderr"], end="" if body["stderr"].endswith("\n") else "\n")
+
+
 def cmd_enrollments(args: argparse.Namespace) -> None:
     """List agent enrollment requests."""
     try:
@@ -2335,6 +2464,32 @@ def build_parser() -> argparse.ArgumentParser:
     p_scripts_submit.add_argument("--from-file", dest="from_file", required=True, help="JSON payload file")
     p_scripts_submit.add_argument("--org", help="Org slug (required for agent callbacks)")
     p_scripts_submit.set_defaults(func=cmd_scripts_submit)
+
+    p_scripts_list = scripts_sub.add_parser("list", help="List script requests")
+    p_scripts_list.add_argument("--status", default="pending", help="comma-separated statuses, or 'all'")
+    p_scripts_list.add_argument("--agent")
+    p_scripts_list.add_argument("--task")
+    p_scripts_list.add_argument("--limit", type=int, default=50)
+    p_scripts_list.add_argument("--org")
+    p_scripts_list.set_defaults(func=cmd_scripts_list)
+
+    p_scripts_show = scripts_sub.add_parser("show", help="Show one script request")
+    p_scripts_show.add_argument("sr_id")
+    p_scripts_show.add_argument("--org")
+    p_scripts_show.set_defaults(func=cmd_scripts_show)
+
+    p_scripts_reject = scripts_sub.add_parser("reject", help="Reject a pending script request")
+    p_scripts_reject.add_argument("sr_id")
+    p_scripts_reject.add_argument("--reason", help="rejection reason (prompted if omitted)")
+    p_scripts_reject.add_argument("--org")
+    p_scripts_reject.set_defaults(func=cmd_scripts_reject)
+
+    p_scripts_output = scripts_sub.add_parser("output", help="Fetch captured output of a terminal SR")
+    p_scripts_output.add_argument("sr_id")
+    p_scripts_output.add_argument("--stream", choices=["stdout", "stderr", "both"], default="both")
+    p_scripts_output.add_argument("--max-bytes", type=int, default=1_048_576)
+    p_scripts_output.add_argument("--org")
+    p_scripts_output.set_defaults(func=cmd_scripts_output)
 
     # grassland enrollments
     p_enroll = sub.add_parser("enrollments", help="List agent enrollment requests")

@@ -27,3 +27,26 @@ def test_scripts_submit_missing_from_file():
     result = _run("scripts", "submit", "--org", "alpha")
     assert result.returncode != 0
     assert "from-file" in (result.stderr + result.stdout)
+
+
+def test_scripts_list_help():
+    r = _run("scripts", "list", "--help")
+    assert r.returncode == 0
+    assert "--status" in r.stdout
+
+
+def test_scripts_show_help():
+    r = _run("scripts", "show", "--help")
+    assert r.returncode == 0
+
+
+def test_scripts_reject_help():
+    r = _run("scripts", "reject", "--help")
+    assert r.returncode == 0
+    assert "--reason" in r.stdout
+
+
+def test_scripts_output_help():
+    r = _run("scripts", "output", "--help")
+    assert r.returncode == 0
+    assert "--stream" in r.stdout
