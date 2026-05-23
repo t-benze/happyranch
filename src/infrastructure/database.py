@@ -1451,6 +1451,37 @@ class Database:
         )
 
     @_synchronized
+    def list_script_requests(
+        self,
+        *,
+        status: str | list[str] | None = None,
+        agent: str | None = None,
+        task_id: str | None = None,
+        limit: int = 50,
+    ) -> list["ScriptRequestRecord"]:
+        clauses: list[str] = []
+        params: list = []
+        if status is not None:
+            statuses = [status] if isinstance(status, str) else list(status)
+            placeholders = ",".join("?" * len(statuses))
+            clauses.append(f"status IN ({placeholders})")
+            params.extend(statuses)
+        if agent is not None:
+            clauses.append("agent_name = ?")
+            params.append(agent)
+        if task_id is not None:
+            clauses.append("task_id = ?")
+            params.append(task_id)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(int(limit))
+        rows = self._conn.execute(
+            f"SELECT * FROM script_requests {where} "
+            f"ORDER BY created_at DESC, id DESC LIMIT ?",
+            params,
+        ).fetchall()
+        return [self._row_to_script_request(r) for r in rows]
+
+    @_synchronized
     def insert_thread(self, t: ThreadRecord) -> None:
         # Spec §3.1: composed_from_task_id and composed_from_talk_id are
         # mutually exclusive; daemon enforces at insert time.

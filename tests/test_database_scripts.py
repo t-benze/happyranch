@@ -86,3 +86,41 @@ def test_insert_and_get_script_request(db: Database):
 
 def test_get_script_request_missing(db: Database):
     assert db.get_script_request("SR-999") is None
+
+
+def test_list_script_requests_all(db: Database):
+    for i in range(1, 4):
+        rec = _make_record(f"SR-{i:03d}")
+        db.insert_script_request(rec)
+    results = db.list_script_requests()
+    assert len(results) == 3
+    # Most recent first (created_at DESC, ties broken by id DESC).
+    assert results[0].id == "SR-003"
+
+
+def test_list_script_requests_filter_by_status(db: Database):
+    r1 = _make_record("SR-001")
+    db.insert_script_request(r1)
+    r2 = _make_record("SR-002")
+    db.insert_script_request(r2)
+    db._conn.execute("UPDATE script_requests SET status='rejected' WHERE id='SR-002'")
+    db._conn.commit()
+    pending = db.list_script_requests(status="pending")
+    assert [r.id for r in pending] == ["SR-001"]
+
+
+def test_list_script_requests_filter_by_agent(db: Database):
+    db.insert_script_request(_make_record("SR-001"))
+    other = _make_record("SR-002")
+    other.agent_name = "payment_agt"
+    db.insert_script_request(other)
+    only_payment = db.list_script_requests(agent="payment_agt")
+    assert [r.id for r in only_payment] == ["SR-002"]
+
+
+def test_list_script_requests_limit(db: Database):
+    for i in range(1, 11):
+        db.insert_script_request(_make_record(f"SR-{i:03d}"))
+    results = db.list_script_requests(limit=3)
+    assert len(results) == 3
+    assert [r.id for r in results] == ["SR-010", "SR-009", "SR-008"]
