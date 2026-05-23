@@ -157,3 +157,52 @@ def test_submit_script_too_large(client_with_runtime):
     )
     assert r.status_code == 422
     assert r.json()["detail"]["code"] == "script_too_large"
+
+
+def _submit_pending(client, org) -> str:
+    """Helper: submit one pending SR and return its id."""
+    task_id, sid = _make_active_session(org)
+    r = client.post(
+        "/api/v1/orgs/alpha/scripts/submit",
+        json={"task_id": task_id, "session_id": sid,
+              "title": "t", "rationale": "r", "script": "echo z", "interpreter": "bash"},
+    )
+    assert r.status_code == 201, r.text
+    return r.json()["id"]
+
+
+def test_reject_happy_path(client_with_runtime):
+    client, org = client_with_runtime
+    sr_id = _submit_pending(client, org)
+    r = client.post(
+        f"/api/v1/orgs/alpha/scripts/{sr_id}/reject",
+        json={"reason": "too risky in prod"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "rejected"
+    assert r.json()["reject_reason"] == "too risky in prod"
+
+
+def test_reject_empty_reason(client_with_runtime):
+    client, org = client_with_runtime
+    sr_id = _submit_pending(client, org)
+    r = client.post(
+        f"/api/v1/orgs/alpha/scripts/{sr_id}/reject", json={"reason": "  "}
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "empty_reason"
+
+
+def test_reject_unknown_sr(client_with_runtime):
+    client, _org = client_with_runtime
+    r = client.post("/api/v1/orgs/alpha/scripts/SR-999/reject", json={"reason": "x"})
+    assert r.status_code == 404
+
+
+def test_reject_not_pending(client_with_runtime):
+    client, org = client_with_runtime
+    sr_id = _submit_pending(client, org)
+    client.post(f"/api/v1/orgs/alpha/scripts/{sr_id}/reject", json={"reason": "x"})
+    r = client.post(f"/api/v1/orgs/alpha/scripts/{sr_id}/reject", json={"reason": "y"})
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "not_pending"

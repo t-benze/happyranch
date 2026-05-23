@@ -147,3 +147,49 @@ async def submit_script(slug: str, body: SubmitBody, org: OrgDep) -> dict:
     )
 
     return {"id": sr_id, "status": "pending", "created_at": record.created_at}
+
+
+_MAX_REJECT_REASON_LEN = 1000
+
+
+class RejectBody(BaseModel):
+    reason: str
+
+
+@router.post("/scripts/{sr_id}/reject")
+async def reject_script(slug: str, sr_id: str, body: RejectBody, org: OrgDep) -> dict:
+    record = org.db.get_script_request(sr_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail={"code": "unknown_script_request", "sr_id": sr_id})
+
+    reason = body.reason.strip()
+    if not reason:
+        raise HTTPException(status_code=422, detail={"code": "empty_reason"})
+    if len(reason) > _MAX_REJECT_REASON_LEN:
+        raise HTTPException(status_code=422, detail={"code": "reason_too_long", "max": _MAX_REJECT_REASON_LEN})
+
+    if record.status != ScriptRequestStatus.PENDING:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "not_pending", "status": record.status.value},
+        )
+
+    reviewed_at = _now_iso()
+    try:
+        org.db.transition_script_to_rejected(
+            sr_id, reviewer="founder", reason=reason, reviewed_at=reviewed_at,
+        )
+    except ValueError:
+        # Race: someone else acted between our read and our write.
+        raise HTTPException(status_code=409, detail={"code": "not_pending"})
+
+    audit = AuditLogger(org.db)
+    audit.log_script_rejected(
+        task_id=record.task_id,
+        sr_id=sr_id,
+        reviewer="founder",
+        reason=reason,
+    )
+
+    updated = org.db.get_script_request(sr_id)
+    return updated.model_dump()
