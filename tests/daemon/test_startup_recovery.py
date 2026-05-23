@@ -118,3 +118,42 @@ def test_sweep_works_without_orchestrator_arg(tmp_path):
     db.update_task("T-BC", status=TaskStatus.IN_PROGRESS)
     _sweep_on_startup(db, TaskQueue(), "test")
     assert db.get_task("T-BC").status == TaskStatus.FAILED
+
+
+def test_lifespan_recovers_orphaned_running_scripts(tmp_home, daemon_state):
+    """SR rows left in 'running' state on daemon startup are force-failed."""
+    from datetime import datetime, timezone
+
+    from fastapi.testclient import TestClient
+
+    from src.daemon.app import create_app
+    from src.models import ScriptInterpreter, ScriptRequestRecord, ScriptRequestStatus
+
+    org = daemon_state.orgs["alpha"]
+    # Seed: insert a pending SR then mark it running manually.
+    sr = ScriptRequestRecord(
+        id="SR-001",
+        task_id="TASK-001",
+        agent_name="engineering_head",
+        title="t",
+        rationale="r",
+        script_text="echo x",
+        interpreter=ScriptInterpreter.BASH,
+        created_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    )
+    org.db.insert_script_request(sr)
+    org.db._conn.execute(
+        "UPDATE script_requests SET status='running', started_at='2026-05-23T00:00:00Z' WHERE id='SR-001'"
+    )
+    org.db._conn.commit()
+
+    # Boot lifespan via TestClient context manager — startup hook fires.
+    app = create_app(daemon_state)
+    with TestClient(app):
+        # Query inside the context so the DB is still open (lifespan teardown
+        # calls close_all() on __exit__, after which the connection is gone).
+        fetched = org.db.get_script_request("SR-001")
+
+    assert fetched is not None
+    assert fetched.status == ScriptRequestStatus.FAILED
+    assert fetched.finished_at is not None
