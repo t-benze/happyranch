@@ -14,6 +14,7 @@ from src.daemon.routes import (
     kb,
     orgs,
     runtime,
+    scripts,
     talks,
     tasks,
     threads,
@@ -94,6 +95,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(kb.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(talks.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(threads.router, prefix="/api/v1/orgs/{slug}", tags=["threads"])
+    app.include_router(scripts.router, prefix="/api/v1/orgs/{slug}", tags=["scripts"])
     from src.daemon.routes import web_static
     web_static.register(app)
     return app
