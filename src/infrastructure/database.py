@@ -1391,6 +1391,66 @@ class Database:
         return f"SR-{n:03d}"
 
     @_synchronized
+    def insert_script_request(self, r: "ScriptRequestRecord") -> None:
+        self._conn.execute(
+            """INSERT INTO script_requests (
+                id, task_id, agent_name, title, rationale, script_text,
+                interpreter, cwd_hint, status, exit_code,
+                stdout_head, stderr_head, stdout_path, stderr_path,
+                duration_ms, started_at, finished_at,
+                reviewed_at, reviewed_by, reject_reason,
+                cwd_resolved, timeout_seconds, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                r.id, r.task_id, r.agent_name, r.title, r.rationale, r.script_text,
+                r.interpreter.value, r.cwd_hint, r.status.value, r.exit_code,
+                r.stdout_head, r.stderr_head, r.stdout_path, r.stderr_path,
+                r.duration_ms, r.started_at, r.finished_at,
+                r.reviewed_at, r.reviewed_by, r.reject_reason,
+                r.cwd_resolved, r.timeout_seconds, r.created_at,
+            ),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def get_script_request(self, sr_id: str) -> "ScriptRequestRecord | None":
+        row = self._conn.execute(
+            "SELECT * FROM script_requests WHERE id = ?", (sr_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_script_request(row)
+
+    @staticmethod
+    def _row_to_script_request(row) -> "ScriptRequestRecord":
+        from src.models import ScriptRequestRecord, ScriptRequestStatus, ScriptInterpreter
+        return ScriptRequestRecord(
+            id=row["id"],
+            task_id=row["task_id"],
+            agent_name=row["agent_name"],
+            title=row["title"],
+            rationale=row["rationale"],
+            script_text=row["script_text"],
+            interpreter=ScriptInterpreter(row["interpreter"]),
+            cwd_hint=row["cwd_hint"],
+            status=ScriptRequestStatus(row["status"]),
+            exit_code=row["exit_code"],
+            stdout_head=row["stdout_head"],
+            stderr_head=row["stderr_head"],
+            stdout_path=row["stdout_path"],
+            stderr_path=row["stderr_path"],
+            duration_ms=row["duration_ms"],
+            started_at=row["started_at"],
+            finished_at=row["finished_at"],
+            reviewed_at=row["reviewed_at"],
+            reviewed_by=row["reviewed_by"],
+            reject_reason=row["reject_reason"],
+            cwd_resolved=row["cwd_resolved"],
+            timeout_seconds=row["timeout_seconds"],
+            created_at=row["created_at"],
+        )
+
+    @_synchronized
     def insert_thread(self, t: ThreadRecord) -> None:
         # Spec §3.1: composed_from_task_id and composed_from_talk_id are
         # mutually exclusive; daemon enforces at insert time.

@@ -51,3 +51,38 @@ def test_next_script_request_id_monotonic(db: Database):
     )
     db._conn.commit()
     assert db.next_script_request_id() == "SR-006"
+
+
+from src.models import ScriptRequestRecord, ScriptRequestStatus, ScriptInterpreter
+
+
+def _make_record(id_: str = "SR-001") -> ScriptRequestRecord:
+    return ScriptRequestRecord(
+        id=id_,
+        task_id="TASK-001",
+        agent_name="engineering_head",
+        title="Close PR #247",
+        rationale="needs founder gh scope",
+        script_text="gh pr close 247",
+        interpreter=ScriptInterpreter.BASH,
+        cwd_hint="repos/web-app",
+        created_at="2026-05-23T10:00:00Z",
+    )
+
+
+def test_insert_and_get_script_request(db: Database):
+    rec = _make_record()
+    db.insert_script_request(rec)
+    fetched = db.get_script_request("SR-001")
+    assert fetched is not None
+    assert fetched.id == "SR-001"
+    assert fetched.task_id == "TASK-001"
+    assert fetched.agent_name == "engineering_head"
+    assert fetched.interpreter == ScriptInterpreter.BASH
+    assert fetched.status == ScriptRequestStatus.PENDING
+    assert fetched.timeout_seconds == 300
+    assert fetched.cwd_hint == "repos/web-app"
+
+
+def test_get_script_request_missing(db: Database):
+    assert db.get_script_request("SR-999") is None
