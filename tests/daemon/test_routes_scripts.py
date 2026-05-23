@@ -404,3 +404,47 @@ def test_output_invalid_max_bytes(client_with_runtime):
     # Either 422 invalid_max_bytes OR 409 not_terminal — accept either since
     # we're testing the validation gate before terminal-state check is fine.
     assert r.status_code in (409, 422)
+
+
+def test_events_terminal_after_completed(tmp_home, daemon_state):
+    """Connecting to /events on an already-terminal SR sends one terminal
+    event and closes."""
+    from fastapi.testclient import TestClient
+    from src.daemon.app import create_app
+    from src.daemon import paths as paths_mod
+
+    org = daemon_state.orgs["alpha"]
+    app = create_app(daemon_state)
+    with TestClient(app) as client:
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+
+        task_id, sid = _make_active_session(org)
+        r = client.post(
+            "/api/v1/orgs/alpha/scripts/submit",
+            json={"task_id": task_id, "session_id": sid,
+                  "title": "x", "rationale": "y",
+                  "script": "echo hi", "interpreter": "bash"},
+        )
+        sr_id = r.json()["id"]
+        ws = org.root / "workspaces" / "engineering_head"
+        ws.mkdir(parents=True, exist_ok=True)
+        client.post(f"/api/v1/orgs/alpha/scripts/{sr_id}/run", json={})
+        for _ in range(50):
+            if client.get(f"/api/v1/orgs/alpha/scripts/{sr_id}").json()["status"] in ("completed", "failed"):
+                break
+            time.sleep(0.1)
+        # Now connect to /events — should immediately get a terminal event.
+        with client.stream("GET", f"/api/v1/orgs/alpha/scripts/{sr_id}/events") as resp:
+            assert resp.status_code == 200
+            data = b""
+            for chunk in resp.iter_bytes():
+                data += chunk
+                if b"event: terminal" in data:
+                    break
+            assert b"event: terminal" in data
+
+
+def test_events_unknown_sr(client_with_runtime):
+    client, _org = client_with_runtime
+    r = client.get("/api/v1/orgs/alpha/scripts/SR-999/events")
+    assert r.status_code == 404

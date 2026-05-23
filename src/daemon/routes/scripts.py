@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import json as _json
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from src.daemon.auth import require_token
@@ -456,3 +458,35 @@ async def get_script_output(
         "total_stdout_bytes": out_total,
         "total_stderr_bytes": err_total,
     }
+
+
+@router.get("/scripts/{sr_id}/events")
+async def script_events_stream(slug: str, sr_id: str, org: OrgDep) -> StreamingResponse:
+    record = org.db.get_script_request(sr_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail={"code": "unknown_script_request"})
+
+    async def gen():
+        # If already terminal, emit one terminal event and close.
+        if record.status in (
+            ScriptRequestStatus.COMPLETED,
+            ScriptRequestStatus.FAILED,
+            ScriptRequestStatus.REJECTED,
+        ):
+            payload = {
+                "status": record.status.value,
+                "exit_code": record.exit_code,
+                "duration_ms": record.duration_ms,
+            }
+            yield f"event: terminal\ndata: {_json.dumps(payload)}\n\n"
+            return
+        async for evt in org.event_bus.subscribe(script_topic(sr_id)):
+            kind = evt.get("kind", "line")
+            if kind == "line":
+                stream_name = evt.get("stream", "stdout")
+                yield f"event: {stream_name}\ndata: {_json.dumps({'line': evt.get('line', ''), 'ts': evt.get('ts')})}\n\n"
+            elif kind == "terminal":
+                yield f"event: terminal\ndata: {_json.dumps({'status': evt.get('status'), 'exit_code': evt.get('exit_code'), 'duration_ms': evt.get('duration_ms'), 'reason': evt.get('reason')})}\n\n"
+                return
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
