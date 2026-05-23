@@ -186,3 +186,26 @@ def test_transition_to_terminal_completed(db: Database):
     assert fetched.exit_code == 0
     assert fetched.duration_ms == 60000
     assert fetched.stdout_head == "hello\n"
+
+
+def test_recover_orphaned_running_scripts(db: Database):
+    """On daemon startup, any SR left in 'running' state is orphaned and
+    must be force-transitioned to 'failed' with reason=killed_daemon_restart."""
+    db.insert_script_request(_make_record("SR-001"))
+    db._conn.execute(
+        "UPDATE script_requests SET status='running', "
+        "started_at='2026-05-23T10:00:00Z', cwd_resolved='/x', "
+        "stdout_path='/x/SR-001.out', stderr_path='/x/SR-001.err' "
+        "WHERE id='SR-001'"
+    )
+    db._conn.commit()
+    recovered = db.recover_orphaned_running_scripts(now_iso="2026-05-23T11:00:00Z")
+    assert recovered == ["SR-001"]
+    fetched = db.get_script_request("SR-001")
+    assert fetched.status == ScriptRequestStatus.FAILED
+    assert fetched.finished_at == "2026-05-23T11:00:00Z"
+
+
+def test_recover_no_orphans(db: Database):
+    db.insert_script_request(_make_record("SR-001"))  # stays pending
+    assert db.recover_orphaned_running_scripts(now_iso="2026-05-23T11:00:00Z") == []

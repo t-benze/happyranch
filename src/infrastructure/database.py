@@ -1547,6 +1547,31 @@ class Database:
             raise ValueError(f"not_running: SR {sr_id} cannot transition to terminal")
 
     @_synchronized
+    def recover_orphaned_running_scripts(self, *, now_iso: str) -> list[str]:
+        """Force-transition any SR left in 'running' state to 'failed'.
+
+        Called from the daemon FastAPI lifespan on startup. The subprocess
+        and its parent daemon process are gone; partial output on disk is
+        preserved but the row is marked failed so the founder UI doesn't
+        leave them in a permanent running state.
+        """
+        rows = self._conn.execute(
+            "SELECT id FROM script_requests WHERE status='running'"
+        ).fetchall()
+        ids = [r["id"] for r in rows]
+        if not ids:
+            return []
+        self._conn.executemany(
+            "UPDATE script_requests SET status='failed', finished_at=?, "
+            "duration_ms=COALESCE(duration_ms, 0), "
+            "stderr_head=COALESCE(stderr_head, '') || '\n[daemon restart killed run]' "
+            "WHERE id=?",
+            [(now_iso, sr_id) for sr_id in ids],
+        )
+        self._conn.commit()
+        return ids
+
+    @_synchronized
     def insert_thread(self, t: ThreadRecord) -> None:
         # Spec §3.1: composed_from_task_id and composed_from_talk_id are
         # mutually exclusive; daemon enforces at insert time.
