@@ -182,3 +182,7 @@ Parameters:
 
 - If `grassland` returns non-zero, retry once after 1 second.
 - **Exceptions (no retry, fatal):** `409 session_mismatch` (the daemon has spawned a newer session for this `(task_id, agent)`) and `409 unknown_session` (the daemon has no record of this spawn — the session is orphaned). Either way, exit immediately.
+
+## Permission walls
+
+If your executor refuses a command (Claude `--allowedTools`, opencode `permission.bash`, Codex sandbox), and the operation genuinely needs founder-grade credentials, see `protocol/skills/scripts/SKILL.md`. Submit the script for founder review, then self-block your task referencing the SR-NNN.
