@@ -59,6 +59,7 @@ scripts/grassland tail TASK-001
 
 # Snapshot: status, block_kind, note, results, last event, audit summary
 scripts/grassland details TASK-001
+scripts/grassland details TASK-001 --full   # untruncated per-step output summaries
 # Task status is one of {pending, in_progress, blocked, completed, failed}.
 # When status=blocked the block_kind is either `delegated` (waiting on child
 # tasks) or `escalated` (waiting on founder). `note` carries the human-readable
@@ -78,13 +79,17 @@ scripts/grassland recall TASK-001 --fetch-artifact             # inline artifact
 scripts/grassland revisit TASK-052 [--note "founder hint" | --note-file PATH] [--session-timeout-seconds N]
 
 # Cancel a running task (founder). SIGTERMs live subprocesses and cascades down the subtree.
-scripts/grassland cancel TASK-052 [--reason "..."]
+scripts/grassland cancel TASK-052 [--rationale "..."] [--no-cascade]
+# --no-cascade cancels only this row and leaves children parentless — dangerous; default cascades.
 
 # Per-session token usage (input/output/cache_read/cache_creation/reasoning)
 scripts/grassland tokens                                       # most recent sessions
 scripts/grassland tokens --task-id TASK-001
+scripts/grassland tokens --agent engineering_head
+scripts/grassland tokens --since 2026-05-01                    # ISO date or full timestamp
 scripts/grassland tokens --by-agent                            # rollup per agent
 scripts/grassland tokens --by-task                             # rollup per task
+scripts/grassland tokens --json                                # raw JSON for piping
 ```
 
 ## Agents
@@ -100,9 +105,15 @@ scripts/grassland init-agent dev_agent        # specific agent
 
 # Enrollment flow (founder-gated) — the founder-side counterpart to the
 # agent-callback `manage-agent` subcommand.
-scripts/grassland enrollments --status pending
+scripts/grassland enrollments                                  # all enrollments
+scripts/grassland enrollments --status pending                 # one of {pending,approved,rejected,terminated}
 scripts/grassland approve-agent content_writer
 scripts/grassland reject-agent  content_writer
+
+# One-shot: import pre-existing workspaces into the enrollment registry
+# (founder; TTY-gated). Run once after manually placing agent files in
+# `<runtime>/orgs/<slug>/org/agents/` outside the standard enroll flow.
+scripts/grassland backfill-enrollments
 
 # Per-agent repos (founder-direct; agents usually go through manage-repo skill)
 scripts/grassland manage-repo add    --agent dev_agent --repo-name docs --url https://github.com/t-benze/docs.git
@@ -123,6 +134,10 @@ scripts/grassland kb search "<terms>"
 # Write (any agent, --from-file only — multi-line grassland invocations are blocked
 # by the Bash(grassland:*) permission matcher, so a file is mandatory)
 scripts/grassland kb add    --agent <you> --from-file /tmp/kb-<slug>.md
+scripts/grassland kb add    --agent <you> --from-file /tmp/kb-<slug>.md --force-new-sibling
+# --force-new-sibling bypasses the near-duplicate (similar title/tags) check
+# returned as 409 near_duplicate. Use when the daemon's match is a false
+# positive and you genuinely want a second sibling entry.
 scripts/grassland kb update <slug> --agent <you> --from-file /tmp/kb-<slug>.md
 
 # Delete — team manager (audited); founder may override with --as-founder
@@ -158,6 +173,30 @@ scripts/grassland kb add --agent founder --from-file /tmp/kb-<slug>.md
 ```
 
 `--agent` on `kb add` / `kb update` is metadata (stamped as `authored_by`) — the daemon does not validate it against the team registry. By convention, founder-authored entries use `--agent founder` so future readers can tell the entry came from a human ruling rather than an agent. Bearer-token auth controls *whether* the call succeeds.
+
+## Talks
+
+1:1 founder↔agent conversation flow (TALK-NNN). Talks are the simplest interactive surface — use them for quick Q&A, brainstorming, or dispatching a task with full conversational context. End-of-talk residue lands in the agent's learnings (or legacy `learnings.md`) automatically. Use threads (below) instead when 2+ agents need to participate.
+
+```bash
+# Start a new talk with one agent (returns TALK-NNN + first agent response)
+scripts/grassland talk start --agent engineering_head
+
+# Resume an existing talk
+scripts/grassland talk resume --talk-id TALK-007
+
+# List / inspect
+scripts/grassland talk status                     # open talks only
+scripts/grassland talk status --agent payment_agent
+scripts/grassland talk list [--agent <name>] [--limit 50]
+scripts/grassland talk show TALK-007              # transcript
+scripts/grassland talk show TALK-007 --json       # raw JSON
+
+# Abandon an open talk (founder; frozen with reason, no end-of-talk residue)
+scripts/grassland talk abandon --talk-id TALK-007 --reason "superseded by TALK-008"
+```
+
+`grassland talk end --talk-id TALK-NNN --from-file ...` is the **agent-side** end-of-talk callback — the founder does not run it directly. Dispatching a task from inside a talk also goes through the agent (`grassland dispatch`).
 
 ## Threads
 
@@ -224,8 +263,8 @@ scripts/grassland scripts run SR-NNN [--cwd <path>] [--timeout-seconds <int>]
 # Reject a request with a reason (prompts for reason if omitted)
 scripts/grassland scripts reject SR-NNN [--reason <text>]
 
-# Fetch captured output (stdout, stderr, or both)
-scripts/grassland scripts output SR-NNN [--stream stdout|stderr|both]
+# Fetch captured output (stdout, stderr, or both); --max-bytes caps the read tail
+scripts/grassland scripts output SR-NNN [--stream stdout|stderr|both] [--max-bytes <int>]
 ```
 
 Scripts run inside the daemon process with the daemon's inherited `os.environ`. If you rotate credentials interactively, restart the daemon so the new env is picked up.
@@ -318,24 +357,30 @@ scripts/grassland init-agent                                   # bootstrap works
 
 ## Safety Rules
 
-- **Safe (no confirmation):** `run`, `tail`, `details`, `tasks`, `tokens`, `recall`, `audit`, `agents`, `enrollments`, `init-agent`, `orgs`, `kb list`, `kb get`, `kb search`, `kb reindex`, `threads list`, `threads show`
+- **Safe (no confirmation):** `run`, `tail`, `details`, `tasks`, `tokens`, `recall`, `audit`, `agents`, `enrollments`, `init-agent`, `orgs`, `kb list`, `kb get`, `kb search`, `kb reindex`, `threads list`, `threads show`, `talk status`, `talk list`, `talk show`, `scripts list`, `scripts show`, `scripts output`
 - **Confirm with user first:**
   - `use` — changes which container the daemon serves (affects all subsequent commands)
   - `orgs unload` — detaches an org from the daemon (files remain, but live state is dropped)
   - `approve-agent` / `reject-agent` — irreversible enrollment state changes
+  - `backfill-enrollments` — TTY-gated; rewrites the enrollment registry from on-disk workspaces
   - `manage-repo remove` / `manage-repo update` — mutates agent workspace config
   - `kb add` / `kb update` — writes to shared KB (visible to every agent in that org; hard to un-ring)
+  - `kb add --force-new-sibling` — bypasses near-duplicate detection; only after reviewing the candidates the daemon returned
   - `kb delete` — destructive; team manager only by default, `--as-founder` overrides
   - `resolve-escalation` — founder state transition; usually paired with a follow-up `kb add` for precedents
   - `revisit` — founder-initiated spawn of a new root task from a terminal predecessor (TTY-gated CLI; agent sessions cannot invoke it)
   - `cancel` — SIGTERMs live subprocesses and cascades cancellation down the subtree
+  - `cancel --no-cascade` — extra dangerous; leaves live children parentless
+  - `talk start` / `talk resume` / `talk abandon` — opens or terminates a founder↔agent conversation (agent invocation triggered)
   - `threads compose` / `threads send` / `threads invite` / `threads extend` — visible to participants and triggers agent invocations
-  - `threads abandon` / `threads archive` — irreversible thread terminal transitions
+  - `threads abandon` / `threads archive` / `threads forward` — irreversible thread terminal transitions / new-thread spawn
+  - `scripts run` — TTY-gated; executes the SR body inside the daemon process with the daemon's env
+  - `scripts reject` — irreversible terminal transition for an SR
   - `migrate-to-org-runtime` — v0 → v1 rewrite; requires a backup and `--apply`
   - `migrate-to-multi-org` — v1 → v2 rewrite; TTY-gated, refuses with active tasks or open talks
 - **Agent-callback subcommands — do NOT invoke by hand:**
-  - `report-completion`, `progress`, `learning {add,update,promote,reindex}`, `manage-agent`, `manage-repo`, `dispatch`, `threads {reply,decline,dispatch,close-out}`
-  - These run inside an agent session under the `Bash(grassland:*)` allow rule. Invoking them manually falsifies audit data and can corrupt scorecards. Read-side learning verbs (`list`, `get`, `search`) are safe for ad-hoc inspection.
+  - `report-completion`, `progress`, `learning {add,update,promote,reindex}`, `manage-agent`, `manage-repo`, `dispatch`, `talk end`, `threads {reply,decline,dispatch,close-out}`, `scripts submit`
+  - These run inside an agent session under the `Bash(grassland:*)` allow rule. Invoking them manually falsifies audit data and can corrupt scorecards. Read-side verbs (learning `list|get|search`, `scripts list|show|output`, `talk list|show|status`) are safe for ad-hoc inspection.
 
 ## Troubleshooting
 
