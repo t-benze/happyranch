@@ -406,7 +406,8 @@ async def run_script_route(
                 reason=result.reason or "unknown",
             )
 
-    asyncio.create_task(_run_and_persist())
+    from src.daemon.scripts_runner import register_runner_task
+    register_runner_task(sr_id, asyncio.create_task(_run_and_persist()))
 
     return {
         "id": sr_id,
@@ -460,6 +461,22 @@ async def get_script_output(
     }
 
 
+_TERMINAL_SR_STATUSES = (
+    ScriptRequestStatus.COMPLETED,
+    ScriptRequestStatus.FAILED,
+    ScriptRequestStatus.REJECTED,
+)
+
+
+def _terminal_frame_from_record(record) -> str:
+    payload = {
+        "status": record.status.value,
+        "exit_code": record.exit_code,
+        "duration_ms": record.duration_ms,
+    }
+    return f"event: terminal\ndata: {_json.dumps(payload)}\n\n"
+
+
 @router.get("/scripts/{sr_id}/events")
 async def script_events_stream(slug: str, sr_id: str, org: OrgDep) -> StreamingResponse:
     record = org.db.get_script_request(sr_id)
@@ -467,26 +484,45 @@ async def script_events_stream(slug: str, sr_id: str, org: OrgDep) -> StreamingR
         raise HTTPException(status_code=404, detail={"code": "unknown_script_request"})
 
     async def gen():
-        # If already terminal, emit one terminal event and close.
-        if record.status in (
-            ScriptRequestStatus.COMPLETED,
-            ScriptRequestStatus.FAILED,
-            ScriptRequestStatus.REJECTED,
-        ):
-            payload = {
-                "status": record.status.value,
-                "exit_code": record.exit_code,
-                "duration_ms": record.duration_ms,
-            }
-            yield f"event: terminal\ndata: {_json.dumps(payload)}\n\n"
+        # If already terminal at request time, emit one terminal event and close.
+        if record.status in _TERMINAL_SR_STATUSES:
+            yield _terminal_frame_from_record(record)
             return
-        async for evt in org.event_bus.subscribe(script_topic(sr_id)):
-            kind = evt.get("kind", "line")
-            if kind == "line":
-                stream_name = evt.get("stream", "stdout")
-                yield f"event: {stream_name}\ndata: {_json.dumps({'line': evt.get('line', ''), 'ts': evt.get('ts')})}\n\n"
-            elif kind == "terminal":
-                yield f"event: terminal\ndata: {_json.dumps({'status': evt.get('status'), 'exit_code': evt.get('exit_code'), 'duration_ms': evt.get('duration_ms'), 'reason': evt.get('reason')})}\n\n"
-                return
+
+        # Race window: between this check and the moment the subscription is
+        # actually registered inside event_bus.subscribe (which only happens
+        # on the first __anext__), the runner can publish a terminal event and
+        # we'd miss it — hanging until disconnect. Mitigate by waking up
+        # periodically to re-poll the DB; the row is the authoritative source.
+        sub_iter = org.event_bus.subscribe(script_topic(sr_id)).__aiter__()
+        next_task: asyncio.Task | None = asyncio.create_task(sub_iter.__anext__())
+        try:
+            while True:
+                done, _pending = await asyncio.wait({next_task}, timeout=1.0)
+                if not done:
+                    # Timeout: re-check DB in case we raced past a terminal publish.
+                    rec_now = org.db.get_script_request(sr_id)
+                    if rec_now is None:
+                        return
+                    if rec_now.status in _TERMINAL_SR_STATUSES:
+                        yield _terminal_frame_from_record(rec_now)
+                        return
+                    continue
+                try:
+                    evt = next_task.result()
+                except StopAsyncIteration:
+                    return
+                next_task = None
+                kind = evt.get("kind", "line")
+                if kind == "line":
+                    stream_name = evt.get("stream", "stdout")
+                    yield f"event: {stream_name}\ndata: {_json.dumps({'line': evt.get('line', ''), 'ts': evt.get('ts')})}\n\n"
+                elif kind == "terminal":
+                    yield f"event: terminal\ndata: {_json.dumps({'status': evt.get('status'), 'exit_code': evt.get('exit_code'), 'duration_ms': evt.get('duration_ms'), 'reason': evt.get('reason')})}\n\n"
+                    return
+                next_task = asyncio.create_task(sub_iter.__anext__())
+        finally:
+            if next_task is not None and not next_task.done():
+                next_task.cancel()
 
     return StreamingResponse(gen(), media_type="text/event-stream")

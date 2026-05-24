@@ -448,3 +448,79 @@ def test_events_unknown_sr(client_with_runtime):
     client, _org = client_with_runtime
     r = client.get("/api/v1/orgs/alpha/scripts/SR-999/events")
     assert r.status_code == 404
+
+
+def test_events_stream_terminates_after_db_only_terminal_transition(
+    tmp_home, daemon_state,
+):
+    """Regression for the SSE race: if the SR is marked terminal in the DB
+    AFTER the /events handler's initial check but BEFORE its subscribe queue
+    is registered (so the runner's terminal publish went to a subscriber list
+    that didn't include us), the handler must still close via the periodic
+    DB re-poll rather than hang forever.
+
+    Setup: insert a running SR, schedule a background thread to flip it to
+    `completed` ~250ms later WITHOUT publishing on the event bus. Open the
+    stream — only the poll-recovery path can produce the terminal frame.
+    """
+    import threading
+    import time as _t
+
+    from fastapi.testclient import TestClient
+    from src.daemon.app import create_app
+    from src.daemon import paths as paths_mod
+
+    org = daemon_state.orgs["alpha"]
+    app = create_app(daemon_state)
+    with TestClient(app) as client:
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+
+        task_id, sid = _make_active_session(org)
+        r = client.post(
+            "/api/v1/orgs/alpha/scripts/submit",
+            json={"task_id": task_id, "session_id": sid,
+                  "title": "x", "rationale": "y",
+                  "script": "echo hi", "interpreter": "bash"},
+        )
+        sr_id = r.json()["id"]
+
+        # Pre-flip to `running` so /events takes the subscribe-and-poll path
+        # (not the early-terminal short-circuit).
+        org.db._conn.execute(
+            "UPDATE script_requests SET status='running', started_at='2026-05-23T00:00:00Z' "
+            "WHERE id=?", (sr_id,),
+        )
+        org.db._conn.commit()
+
+        # Background thread: ~250ms in, mark terminal in DB. No event-bus
+        # publish — only the poll-recovery path can detect this transition.
+        def flip_terminal() -> None:
+            _t.sleep(0.25)
+            org.db._conn.execute(
+                "UPDATE script_requests SET status='completed', exit_code=0, "
+                "finished_at='2026-05-23T00:00:01Z', duration_ms=100 WHERE id=?",
+                (sr_id,),
+            )
+            org.db._conn.commit()
+
+        flipper = threading.Thread(target=flip_terminal, daemon=True)
+        flipper.start()
+
+        # Open the stream and iterate. Poll cadence is 1s, so the terminal
+        # frame should arrive within ~1.5s of the DB flip = ~1.75s total.
+        with client.stream("GET", f"/api/v1/orgs/alpha/scripts/{sr_id}/events") as resp:
+            assert resp.status_code == 200
+            data = b""
+            deadline = _t.time() + 5.0
+            for chunk in resp.iter_bytes():
+                data += chunk
+                if b"event: terminal" in data:
+                    break
+                if _t.time() > deadline:
+                    break
+
+        flipper.join(timeout=1.0)
+        assert b"event: terminal" in data, (
+            f"timed out waiting for terminal frame "
+            f"(poll-recovery never fired; got {len(data)} bytes)"
+        )

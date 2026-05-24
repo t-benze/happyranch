@@ -20,7 +20,19 @@ from typing import Callable
 # In-flight registry; shutdown handler walks this to clean up.
 _INFLIGHT: dict[str, asyncio.subprocess.Process] = {}
 
+# Background runner tasks (the route's _run_and_persist coroutines). The shutdown
+# hook awaits these AFTER killing subprocesses so they can transition the SR row
+# to a terminal state before per-org DBs are closed. Without this wait, an
+# in-flight SR stays `running` until the next daemon startup recovery scan.
+_RUNNER_TASKS: dict[str, asyncio.Task] = {}
+
 _HEAD_CAP_BYTES = 65536  # spec §3.1, §6.2
+
+
+def register_runner_task(sr_id: str, task: asyncio.Task) -> None:
+    """Register a background _run_and_persist task so shutdown can await it."""
+    _RUNNER_TASKS[sr_id] = task
+    task.add_done_callback(lambda _t: _RUNNER_TASKS.pop(sr_id, None))
 
 
 def _interpreter_binary(interpreter: str) -> str | None:
@@ -199,20 +211,42 @@ def in_flight_sr_ids() -> list[str]:
     return list(_INFLIGHT.keys())
 
 
-async def terminate_all_inflight(*, grace_seconds: int = 5) -> None:
-    """Daemon shutdown hook: SIGTERM every in-flight subprocess, then SIGKILL."""
+async def terminate_all_inflight(
+    *, grace_seconds: int = 5, persist_timeout_seconds: float = 5.0,
+) -> None:
+    """Daemon shutdown hook: SIGTERM every in-flight subprocess, then SIGKILL,
+    then await the runner background tasks so they can persist terminal state
+    (transition the SR row from `running` to `failed`/`completed`) BEFORE the
+    caller closes per-org DB connections.
+
+    Without the runner-task wait, the row sits in `running` until the next
+    daemon startup's recovery scan — making a dead SR look live to founders
+    in the meantime.
+    """
     procs = list(_INFLIGHT.items())
     for sr_id, proc in procs:
         try:
             os.killpg(proc.pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
-    if not procs:
-        return
-    await asyncio.sleep(grace_seconds)
-    for sr_id, proc in procs:
-        if proc.returncode is None:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+    if procs:
+        await asyncio.sleep(grace_seconds)
+        for sr_id, proc in procs:
+            if proc.returncode is None:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+    # Drain runner tasks so they persist terminal state before DBs close.
+    # Snapshot once — entries self-clear via the done-callback registered by
+    # register_runner_task.
+    runners = list(_RUNNER_TASKS.values())
+    if runners:
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*runners, return_exceptions=True),
+                timeout=persist_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            # Best effort — startup recovery scan handles any stragglers.
+            pass

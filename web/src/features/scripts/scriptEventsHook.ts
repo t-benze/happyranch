@@ -23,6 +23,11 @@ export function useScriptEventStream(
   const [terminal, setTerminal] = useState<ScriptEvent | null>(null);
 
   useEffect(() => {
+    // Reset on every dep change so navigating between SRs (the drawer is
+    // shared across all script ids) doesn't show stale lines or a stale
+    // terminal banner from the previously-streamed SR.
+    setEvents([]);
+    setTerminal(null);
     if (!path || !active) return;
     const controller = new AbortController();
     let cancelled = false;
