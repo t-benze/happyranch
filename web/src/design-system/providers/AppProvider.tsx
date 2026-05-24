@@ -29,10 +29,12 @@ import { realOrgsApi } from './_real-orgs';
 import {
   useRealAgentsRoutes,
   useRealKbRoutes,
+  useRealScriptsRoutes,
   useRealTalksRoutes,
   useRealTasksRoutes,
   useRealThreadRoutes,
 } from './_real-routes';
+import { realScriptsApi } from './_real-scripts';
 import { realTalksApi } from './_real-talks';
 import { realTasksApi } from './_real-tasks';
 import { realThreadsApi } from './_real-threads';
@@ -70,11 +72,13 @@ export function AppProvider({ children, client }: AppProviderProps): JSX.Element
           kb: realKbApi,
           talks: realTalksApi,
           health: realHealthApi,
+          scripts: realScriptsApi,
           useThreadRoutes: useRealThreadRoutes,
           useTasksRoutes: useRealTasksRoutes,
           useKbRoutes: useRealKbRoutes,
           useTalksRoutes: useRealTalksRoutes,
           useAgentsRoutes: useRealAgentsRoutes,
+          useScriptsRoutes: useRealScriptsRoutes,
         }}
       >
         <TooltipProvider delayDuration={300}>{children}</TooltipProvider>

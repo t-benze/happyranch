@@ -275,6 +275,45 @@ Keybindings: `N` new, `R` reply, `F` forward, `I` invite, `A` archive,
 The TUI subscribes to per-org SSE events so the inbox and the selected
 thread stay live without polling.
 
+### Script requests
+
+When an agent's executor refuses a command (e.g., a `gh` / `aws` / `stripe` /
+`sudo` invocation that needs founder-grade credentials), the agent can submit
+a script request for you to run. The agent's task self-blocks pending your
+review.
+
+```bash
+grassland scripts list                                    # default: --status pending
+grassland scripts list --status all --agent <name>        # narrow by status/agent/task
+grassland scripts show SR-019                             # see rationale, full script, output if terminal
+grassland scripts run SR-019                              # TTY-gated confirm + live SSE stream
+grassland scripts run SR-019 --cwd repos/web-app --timeout-seconds 600
+grassland scripts reject SR-019 --reason "..."            # or omit --reason to be prompted
+grassland scripts output SR-019                           # fetch the full captured output post-run
+grassland scripts output SR-019 --stream stderr --max-bytes 5000000
+```
+
+The same surface is in the web UI at `/scripts` (list with status chips,
+detail drawer with rationale + script preview, Run modal with cwd/timeout
+overrides, Reject modal, live SSE output panel). After a run completes, use
+`grassland revisit <task-id>` to unblock the agent's task — the revisited
+session sees an injected header that points it at `grassland scripts show
+SR-019` / `grassland scripts output SR-019` so it can ingest the result.
+
+Output is captured to `<runtime>/orgs/<slug>/scripts/SR-NNN.{out,err,script}`
+on disk (full output, no size cap in v1) plus a 64 KB head per stream in
+the database for fast rendering.
+
+Operational notes:
+- Scripts run inside the daemon process with `os.environ` inherited from the
+  daemon's launch shell. If you rotate credentials in your interactive shell,
+  restart the daemon so the new env is picked up.
+- `scripts run` requires a TTY. To run non-interactively, use the web UI's
+  Run modal (it has the same confirm step in a visual form).
+- If the daemon is killed mid-run, the next startup recovery scan marks any
+  orphaned `running` rows as `failed`. Output captured up to the kill point
+  is preserved on disk.
+
 ### Managing repos
 
 Agents can request repo changes through the `manage-repo` skill, or the founder can manage them directly:

@@ -15,6 +15,10 @@ def thread_inbox_topic(org_slug: str) -> str:
     return f"thread_inbox:{org_slug}"
 
 
+def script_topic(sr_id: str) -> str:
+    return f"script:{sr_id}"
+
+
 class EventBus:
     def __init__(self, history_loader: Callable[[str], list[dict]]) -> None:
         self._history_loader = history_loader

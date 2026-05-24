@@ -118,3 +118,100 @@ def test_sweep_works_without_orchestrator_arg(tmp_path):
     db.update_task("T-BC", status=TaskStatus.IN_PROGRESS)
     _sweep_on_startup(db, TaskQueue(), "test")
     assert db.get_task("T-BC").status == TaskStatus.FAILED
+
+
+def test_lifespan_recovers_orphaned_running_scripts(tmp_home, daemon_state):
+    """SR rows left in 'running' state on daemon startup are force-failed."""
+    from datetime import datetime, timezone
+
+    from fastapi.testclient import TestClient
+
+    from src.daemon.app import create_app
+    from src.models import ScriptInterpreter, ScriptRequestRecord, ScriptRequestStatus
+
+    org = daemon_state.orgs["alpha"]
+    # Seed: insert a pending SR then mark it running manually.
+    sr = ScriptRequestRecord(
+        id="SR-001",
+        task_id="TASK-001",
+        agent_name="engineering_head",
+        title="t",
+        rationale="r",
+        script_text="echo x",
+        interpreter=ScriptInterpreter.BASH,
+        created_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    )
+    org.db.insert_script_request(sr)
+    org.db._conn.execute(
+        "UPDATE script_requests SET status='running', started_at='2026-05-23T00:00:00Z' WHERE id='SR-001'"
+    )
+    org.db._conn.commit()
+
+    # Boot lifespan via TestClient context manager — startup hook fires.
+    app = create_app(daemon_state)
+    with TestClient(app):
+        # Query inside the context so the DB is still open (lifespan teardown
+        # calls close_all() on __exit__, after which the connection is gone).
+        fetched = org.db.get_script_request("SR-001")
+
+    assert fetched is not None
+    assert fetched.status == ScriptRequestStatus.FAILED
+    assert fetched.finished_at is not None
+
+
+def test_terminate_all_inflight_awaits_runner_tasks(tmp_home, daemon_state):
+    """Regression: clean shutdown must let in-flight runner tasks persist
+    terminal state BEFORE the per-org DB is closed. Without this, an SR sits
+    in `running` until the next startup recovery scan."""
+    import asyncio
+    from datetime import datetime, timezone
+
+    from src.daemon import scripts_runner
+    from src.models import ScriptInterpreter, ScriptRequestRecord, ScriptRequestStatus
+
+    org = daemon_state.orgs["alpha"]
+    sr = ScriptRequestRecord(
+        id="SR-100",
+        task_id="TASK-100",
+        agent_name="engineering_head",
+        title="t",
+        rationale="r",
+        script_text="x",
+        interpreter=ScriptInterpreter.BASH,
+        created_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    )
+    org.db.insert_script_request(sr)
+    org.db._conn.execute(
+        "UPDATE script_requests SET status='running' WHERE id='SR-100'"
+    )
+    org.db._conn.commit()
+
+    # Simulate a runner task that's still mid-flight: it sleeps briefly, then
+    # transitions the row to FAILED. terminate_all_inflight must await this.
+    async def fake_runner() -> None:
+        await asyncio.sleep(0.05)
+        org.db.transition_script_to_terminal(
+            "SR-100",
+            status=ScriptRequestStatus.FAILED,
+            exit_code=-15,
+            finished_at="2026-05-23T00:00:01Z",
+            duration_ms=50,
+            stdout_head="",
+            stderr_head="killed by shutdown",
+        )
+
+    async def run_test() -> None:
+        task = asyncio.create_task(fake_runner())
+        scripts_runner.register_runner_task("SR-100", task)
+        # No subprocesses to kill — just await the runner task.
+        await scripts_runner.terminate_all_inflight(
+            grace_seconds=0, persist_timeout_seconds=2.0,
+        )
+
+    asyncio.run(run_test())
+
+    fetched = org.db.get_script_request("SR-100")
+    assert fetched.status == ScriptRequestStatus.FAILED, (
+        "shutdown returned before the runner task persisted terminal state — "
+        "row would have stayed `running` until next startup"
+    )

@@ -273,3 +273,64 @@ export interface LearningEntry extends LearningEntrySummary {
   authored_at: string;
   updated_by: string | null;
 }
+
+// ---------------------------------------------------------------------------
+// Script requests
+// ---------------------------------------------------------------------------
+
+export type ScriptRequestStatus =
+  | 'pending'
+  | 'rejected'
+  | 'running'
+  | 'completed'
+  | 'failed';
+
+export type ScriptInterpreter = 'bash' | 'sh' | 'zsh' | 'python3';
+
+export interface ScriptRequest {
+  id: string;
+  task_id: string;
+  agent_name: string;
+  title: string;
+  rationale: string;
+  script_text: string;
+  interpreter: ScriptInterpreter;
+  cwd_hint: string | null;
+  status: ScriptRequestStatus;
+  exit_code: number | null;
+  stdout_head: string | null;
+  stderr_head: string | null;
+  stdout_path: string | null;
+  stderr_path: string | null;
+  duration_ms: number | null;
+  started_at: string | null;
+  finished_at: string | null;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
+  reject_reason: string | null;
+  cwd_resolved: string | null;
+  timeout_seconds: number;
+  created_at: string;
+}
+
+export interface ScriptListResponse {
+  scripts: ScriptRequest[];
+}
+
+export interface ScriptRunResponse {
+  id: string;
+  status: 'running';
+  started_at: string;
+  cwd_resolved: string;
+  timeout_seconds: number;
+  events_url: string;
+}
+
+export interface ScriptOutput {
+  stdout: string;
+  stderr: string;
+  truncated_stdout: boolean;
+  truncated_stderr: boolean;
+  total_stdout_bytes: number;
+  total_stderr_bytes: number;
+}

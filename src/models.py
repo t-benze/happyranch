@@ -224,3 +224,44 @@ class ThreadInvocation(BaseModel):
     session_id: str | None = None
     dispatched_task_id: str | None = None
     decline_reason: str | None = None
+
+
+class ScriptRequestStatus(StrEnum):
+    PENDING   = "pending"
+    REJECTED  = "rejected"
+    RUNNING   = "running"
+    COMPLETED = "completed"
+    FAILED    = "failed"
+
+
+class ScriptInterpreter(StrEnum):
+    BASH    = "bash"
+    SH      = "sh"
+    ZSH     = "zsh"
+    PYTHON3 = "python3"
+
+
+class ScriptRequestRecord(BaseModel):
+    id:               str
+    task_id:          str
+    agent_name:       str
+    title:            str
+    rationale:        str
+    script_text:      str
+    interpreter:      ScriptInterpreter
+    cwd_hint:         str | None = None
+    status:           ScriptRequestStatus = ScriptRequestStatus.PENDING
+    exit_code:        int | None = None
+    stdout_head:      str | None = None
+    stderr_head:      str | None = None
+    stdout_path:      str | None = None
+    stderr_path:      str | None = None
+    duration_ms:      int | None = None
+    started_at:       str | None = None
+    finished_at:      str | None = None
+    reviewed_at:      str | None = None
+    reviewed_by:      str | None = None
+    reject_reason:    str | None = None
+    cwd_resolved:     str | None = None
+    timeout_seconds:  int = 300
+    created_at:       str

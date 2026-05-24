@@ -50,6 +50,7 @@ export function ActivityTab(): JSX.Element {
               ? `/orgs/${slug ?? ''}/audit?agent=${encodeURIComponent(e.agent)}`
               : undefined
           }
+          scriptsBasePath={slug ? `/orgs/${slug}/scripts` : undefined}
         />
       ))}
     </ul>

@@ -14,6 +14,7 @@ from src.daemon.routes import (
     kb,
     orgs,
     runtime,
+    scripts,
     talks,
     tasks,
     threads,
@@ -61,11 +62,25 @@ def _start_feishu_listeners(state: DaemonState, loop) -> None:
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     import asyncio
+    import logging
+    from datetime import datetime, timezone
 
     from src.daemon.thread_queue import thread_worker_loop
 
     state: DaemonState = app.state.daemon
     ensure_workers_started(state)
+
+    # Recover any SRs left in 'running' state from a previous daemon process.
+    _now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    _logger = logging.getLogger("grassland.daemon")
+    for org in state.orgs.values():
+        recovered = org.db.recover_orphaned_running_scripts(now_iso=_now_iso)
+        if recovered:
+            _logger.warning(
+                "recovered %d orphaned SRs in org %s: %s",
+                len(recovered), org.slug, recovered,
+            )
+
     _start_feishu_listeners(state, asyncio.get_running_loop())
     thread_worker_tasks = [
         asyncio.create_task(thread_worker_loop(state, state.settings))
@@ -76,6 +91,8 @@ async def _lifespan(app: FastAPI):
     finally:
         for t in thread_worker_tasks:
             t.cancel()
+        from src.daemon.scripts_runner import terminate_all_inflight
+        await terminate_all_inflight(grace_seconds=5)
         await state.queue.stop()
         await state.close_all()
 
@@ -94,6 +111,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(kb.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(talks.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(threads.router, prefix="/api/v1/orgs/{slug}", tags=["threads"])
+    app.include_router(scripts.router, prefix="/api/v1/orgs/{slug}", tags=["scripts"])
     from src.daemon.routes import web_static
     web_static.register(app)
     return app

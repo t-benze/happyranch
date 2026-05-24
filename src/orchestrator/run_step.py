@@ -441,6 +441,45 @@ def _revisit_header_if_applicable(orch: "Orchestrator", task_id: str) -> str | N
         "new child briefs); old child task rows stay frozen."
     )
     lines.extend(_REVISIT_DISCIPLINE_LINES)
+
+    # SR summary block — list any script requests submitted by the predecessor.
+    predecessor_logs = orch._db.get_audit_logs(predecessor)
+    sr_entries = [e for e in predecessor_logs if e.get("action") == "script_submitted"]
+    if sr_entries:
+        lines.append("")
+        lines.append("This task previously submitted script requests:")
+        for e in sr_entries:
+            payload_e = e.get("payload") or {}
+            if isinstance(payload_e, str):
+                import json as _json  # noqa: PLC0415
+
+                try:
+                    payload_e = _json.loads(payload_e)
+                except Exception:
+                    payload_e = {}
+            sr_id = payload_e.get("script_request_id", "SR-?")
+            title = payload_e.get("title", "(no title)")
+            sr = orch._db.get_script_request(sr_id) if sr_id != "SR-?" else None
+            status = sr.status.value if sr else "?"
+            marker = ""
+            if sr and sr.status.value in ("pending", "running"):
+                marker = " [still pending — founder action needed]"
+            lines.append(f"  - {sr_id} ({status}) — {title}{marker}")
+        lines.append("")
+        lines.append("Read the outputs / rejection reasons before continuing:")
+        for e in sr_entries:
+            payload_e = e.get("payload") or {}
+            if isinstance(payload_e, str):
+                import json as _json  # noqa: PLC0415
+
+                try:
+                    payload_e = _json.loads(payload_e)
+                except Exception:
+                    payload_e = {}
+            sr_id = payload_e.get("script_request_id", "SR-?")
+            lines.append(f"  grassland scripts show {sr_id}")
+            lines.append(f"  grassland scripts output {sr_id}")
+
     return "\n".join(lines) + "\n\n"
 
 

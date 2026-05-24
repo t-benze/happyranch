@@ -4,6 +4,7 @@ export * as health from './health';
 export * as kb from './kb';
 export * as orgs from './orgs';
 export * as runtime from './runtime';
+export * as scripts from './scripts';
 export * as talks from './talks';
 export * as tasks from './tasks';
 export * as threads from './threads';

@@ -1085,6 +1085,263 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
     )
 
 
+def _scripts_submit_payload_from_file(path: str) -> dict:
+    """Load a scripts-submit payload from a JSON file (mirrors manage-repo / dispatch pattern)."""
+    import json as _json
+    with open(path) as f:
+        data = _json.load(f)
+    required = ("task_id", "session_id", "title", "rationale", "script", "interpreter")
+    missing = [k for k in required if not data.get(k)]
+    if missing:
+        raise ValueError(f"scripts submit file missing keys: {missing}")
+    return data
+
+
+def cmd_scripts_submit(args: argparse.Namespace) -> None:
+    """Agent callback: submit a script for founder review."""
+    if not args.org:
+        print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
+        sys.exit(1)
+    import json as _json
+    try:
+        body = _scripts_submit_payload_from_file(args.from_file)
+    except (OSError, _json.JSONDecodeError, ValueError) as exc:
+        print(f"Error reading scripts-submit file {args.from_file}: {exc}", file=sys.stderr)
+        sys.exit(2)
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    r = client.post(f"/api/v1/orgs/{args.org}/scripts/submit", json=body)
+    if not _ok(r):
+        return
+    result = r.json()
+    print(f"ok: submitted {result['id']} (status={result['status']}). Self-block your task referencing this ID.")
+
+
+def cmd_scripts_list(args: argparse.Namespace) -> None:
+    """Founder: list script requests."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    slug = resolve_org_slug(args_org=args.org, available=_fetch_available_orgs(client))
+    params: dict = {"status": args.status, "limit": args.limit}
+    if args.agent:
+        params["agent"] = args.agent
+    if args.task:
+        params["task_id"] = args.task
+    r = client.get(f"/api/v1/orgs/{slug}/scripts/", params=params)
+    if not _ok(r):
+        return
+    rows = r.json()["scripts"]
+    if not rows:
+        print("(no script requests match)")
+        return
+    print(f"{'ID':<8} {'AGENT':<20} {'TASK':<12} {'STATUS':<10} TITLE")
+    for row in rows:
+        title = row["title"][:60]
+        print(f"{row['id']:<8} {row['agent_name']:<20} {row['task_id']:<12} {row['status']:<10} {title}")
+
+
+def cmd_scripts_show(args: argparse.Namespace) -> None:
+    """Founder: show one script request."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    slug = resolve_org_slug(args_org=args.org, available=_fetch_available_orgs(client))
+    r = client.get(f"/api/v1/orgs/{slug}/scripts/{args.sr_id}")
+    if not _ok(r):
+        return
+    d = r.json()
+    print(f"{d['id']}   {d['status']}   submitted {d['created_at']}")
+    print(f"Agent:        {d['agent_name']}")
+    print(f"Task:         {d['task_id']}")
+    print(f"Interpreter:  {d['interpreter']}")
+    print(f"Cwd hint:     {d['cwd_hint'] or '(workspace root)'}")
+    print()
+    print(f"Title:        {d['title']}")
+    print()
+    print("Rationale:")
+    for line in d["rationale"].splitlines():
+        print(f"  {line}")
+    print()
+    print("Script:")
+    for line in d["script_text"].splitlines():
+        print(f"  {line}")
+    if d["status"] in ("completed", "failed"):
+        print()
+        print(f"Exit code:    {d['exit_code']}")
+        print(f"Duration:     {d['duration_ms']}ms")
+        if d["stdout_head"]:
+            print("Stdout (head):")
+            for line in d["stdout_head"].splitlines():
+                print(f"  {line}")
+        if d["stderr_head"]:
+            print("Stderr (head):")
+            for line in d["stderr_head"].splitlines():
+                print(f"  {line}")
+        print(f"Full output:  grassland scripts output {d['id']}")
+    elif d["status"] == "pending":
+        print()
+        print("Founder actions:")
+        print(f"  grassland scripts run {d['id']} [--cwd PATH] [--timeout-seconds N]")
+        print(f"  grassland scripts reject {d['id']} --reason \"...\"")
+    elif d["status"] == "rejected":
+        print()
+        print(f"Reject reason: {d['reject_reason']}")
+
+
+def cmd_scripts_reject(args: argparse.Namespace) -> None:
+    """Founder: reject a pending script request."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    slug = resolve_org_slug(args_org=args.org, available=_fetch_available_orgs(client))
+    reason = args.reason
+    if not reason:
+        print("Enter rejection reason (end with '.' on its own line):")
+        lines: list[str] = []
+        while True:
+            try:
+                line = input()
+            except EOFError:
+                break
+            if line.strip() == ".":
+                break
+            lines.append(line)
+        reason = "\n".join(lines).strip()
+    if not reason:
+        print("Error: empty reason", file=sys.stderr)
+        sys.exit(2)
+    r = client.post(f"/api/v1/orgs/{slug}/scripts/{args.sr_id}/reject", json={"reason": reason})
+    if not _ok(r):
+        return
+    print(f"ok: rejected {args.sr_id}")
+
+
+def cmd_scripts_output(args: argparse.Namespace) -> None:
+    """Founder: fetch captured output of a terminal script request."""
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    slug = resolve_org_slug(args_org=args.org, available=_fetch_available_orgs(client))
+    r = client.get(
+        f"/api/v1/orgs/{slug}/scripts/{args.sr_id}/output",
+        params={"stream": args.stream, "max_bytes": args.max_bytes},
+    )
+    if not _ok(r):
+        return
+    body = r.json()
+    if args.stream in ("stdout", "both"):
+        print("--- stdout ---")
+        print(body["stdout"], end="" if body["stdout"].endswith("\n") else "\n")
+    if args.stream in ("stderr", "both"):
+        print("--- stderr ---")
+        print(body["stderr"], end="" if body["stderr"].endswith("\n") else "\n")
+
+
+def cmd_scripts_run(args: argparse.Namespace) -> None:
+    """Founder action: run a pending script request with TTY-gated confirm + SSE stream."""
+    import json as _json
+
+    if not sys.stdin.isatty():
+        print(
+            "error: scripts run requires a TTY (interactive confirmation). "
+            "Use the web UI to run non-interactively.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    slug = resolve_org_slug(args_org=args.org, available=_fetch_available_orgs(client))
+
+    # Fetch + show.
+    r = client.get(f"/api/v1/orgs/{slug}/scripts/{args.sr_id}")
+    if not _ok(r):
+        return
+    d = r.json()
+    if d["status"] != "pending":
+        print(f"Error: SR {args.sr_id} is {d['status']}, not pending", file=sys.stderr)
+        sys.exit(1)
+    print(f"About to execute {d['id']}:")
+    print(f"  Agent:       {d['agent_name']}")
+    print(f"  Task:        {d['task_id']}")
+    print(f"  Interpreter: {d['interpreter']}")
+    cwd_display = args.cwd_override or d["cwd_hint"] or "(workspace root)"
+    print(f"  Cwd:         {cwd_display}")
+    print(f"  Timeout:     {args.timeout_seconds or d['timeout_seconds']}s")
+    print()
+    print("Script:")
+    for line in d["script_text"].splitlines():
+        print(f"  {line}")
+    print()
+    answer = input("Proceed? [y/N]: ").strip().lower()
+    if answer != "y":
+        print("Aborted.")
+        sys.exit(1)
+
+    # POST /run.
+    body: dict = {}
+    if args.cwd_override is not None:
+        body["cwd_override"] = args.cwd_override
+    if args.timeout_seconds is not None:
+        body["timeout_seconds"] = args.timeout_seconds
+    r = client.post(f"/api/v1/orgs/{slug}/scripts/{args.sr_id}/run", json=body)
+    if r.status_code != 202:
+        print(f"Error: {r.status_code} {r.text}", file=sys.stderr)
+        sys.exit(1)
+
+    # Stream SSE until terminal event. The events endpoint uses `event:` lines to
+    # distinguish stdout/stderr/terminal, so we consume raw lines via httpx directly
+    # rather than client.stream() which strips the event: prefix.
+    terminal_status = None
+    terminal_exit = None
+    etype = ""
+    edata = ""
+    events_path = f"/api/v1/orgs/{slug}/scripts/{args.sr_id}/events"
+    with client._client.stream("GET", events_path) as response:
+        response.raise_for_status()
+        for raw_line in response.iter_lines():
+            if raw_line.startswith("event: "):
+                etype = raw_line[7:].strip()
+                edata = ""
+            elif raw_line.startswith("data: "):
+                edata = raw_line[6:]
+            elif raw_line == "":
+                # blank line = end of SSE frame; dispatch
+                if etype in ("stdout", "stderr"):
+                    payload = _json.loads(edata) if edata else {}
+                    prefix = "[stdout]" if etype == "stdout" else "[stderr]"
+                    print(f"{prefix} {payload.get('line', '')}")
+                elif etype == "terminal":
+                    payload = _json.loads(edata) if edata else {}
+                    terminal_status = payload.get("status")
+                    terminal_exit = payload.get("exit_code")
+                    dur = payload.get("duration_ms") or 0
+                    print(f"[done]   exit={terminal_exit} duration={dur/1000:.1f}s")
+                    break
+                etype = ""
+                edata = ""
+
+    if terminal_status == "completed":
+        sys.exit(0 if (terminal_exit or 0) == 0 else 1)
+    sys.exit(2)
+
+
 def cmd_enrollments(args: argparse.Namespace) -> None:
     """List agent enrollment requests."""
     try:
@@ -2291,6 +2548,48 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to JSON file with dispatch payload (talk_id, brief, optional target_agent/team)",
     )
     p_dispatch.set_defaults(func=cmd_dispatch)
+
+    # grassland scripts
+    p_scripts = sub.add_parser("scripts", help="Script requests (agent → founder review)")
+    scripts_sub = p_scripts.add_subparsers(dest="scripts_cmd")
+
+    p_scripts_submit = scripts_sub.add_parser("submit", help="Agent callback: submit a script for founder review")
+    p_scripts_submit.add_argument("--from-file", dest="from_file", required=True, help="JSON payload file")
+    p_scripts_submit.add_argument("--org", help="Org slug (required for agent callbacks)")
+    p_scripts_submit.set_defaults(func=cmd_scripts_submit)
+
+    p_scripts_list = scripts_sub.add_parser("list", help="List script requests")
+    p_scripts_list.add_argument("--status", default="pending", help="comma-separated statuses, or 'all'")
+    p_scripts_list.add_argument("--agent")
+    p_scripts_list.add_argument("--task")
+    p_scripts_list.add_argument("--limit", type=int, default=50)
+    p_scripts_list.add_argument("--org")
+    p_scripts_list.set_defaults(func=cmd_scripts_list)
+
+    p_scripts_show = scripts_sub.add_parser("show", help="Show one script request")
+    p_scripts_show.add_argument("sr_id")
+    p_scripts_show.add_argument("--org")
+    p_scripts_show.set_defaults(func=cmd_scripts_show)
+
+    p_scripts_reject = scripts_sub.add_parser("reject", help="Reject a pending script request")
+    p_scripts_reject.add_argument("sr_id")
+    p_scripts_reject.add_argument("--reason", help="rejection reason (prompted if omitted)")
+    p_scripts_reject.add_argument("--org")
+    p_scripts_reject.set_defaults(func=cmd_scripts_reject)
+
+    p_scripts_output = scripts_sub.add_parser("output", help="Fetch captured output of a terminal SR")
+    p_scripts_output.add_argument("sr_id")
+    p_scripts_output.add_argument("--stream", choices=["stdout", "stderr", "both"], default="both")
+    p_scripts_output.add_argument("--max-bytes", type=int, default=1_048_576)
+    p_scripts_output.add_argument("--org")
+    p_scripts_output.set_defaults(func=cmd_scripts_output)
+
+    p_scripts_run = scripts_sub.add_parser("run", help="Run a pending script request (TTY-gated)")
+    p_scripts_run.add_argument("sr_id")
+    p_scripts_run.add_argument("--cwd", dest="cwd_override")
+    p_scripts_run.add_argument("--timeout-seconds", type=int, dest="timeout_seconds")
+    p_scripts_run.add_argument("--org")
+    p_scripts_run.set_defaults(func=cmd_scripts_run)
 
     # grassland enrollments
     p_enroll = sub.add_parser("enrollments", help="List agent enrollment requests")

@@ -10,6 +10,7 @@ import { IdBadge } from '@/design-system/patterns/IdBadge';
 import { StatusBadge } from '@/design-system/patterns/StatusBadge';
 import { Markdown } from '@/design-system/patterns/Markdown';
 import { useTask, useTaskRecall, useTasksRoutes } from '@/hooks/tasks';
+import { useScriptsList } from '@/hooks/scripts';
 import { TaskRecallTree } from './TaskRecallTree';
 import { TaskEventsLog } from './TaskEventsLog';
 import { CancelTaskDialog } from './CancelTaskDialog';
@@ -22,6 +23,7 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
   const routes = useTasksRoutes();
   const task = useTask(taskId);
   const recall = useTaskRecall(taskId);
+  const scriptsQuery = useScriptsList({ task_id: taskId, status: 'all', limit: 100 });
   const [dialog, setDialog] = useState<null | 'cancel' | 'revisit' | 'resolve'>(null);
 
   const onClose = () => navigate(routes.inbox());
@@ -85,6 +87,32 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
               Live events
             </h3>
             <TaskEventsLog taskId={taskId} />
+            {scriptsQuery.data && scriptsQuery.data.scripts.length > 0 && (
+              <section className="mt-6">
+                <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+                  Script requests from this task
+                </h3>
+                <ul className="space-y-1 text-sm">
+                  {scriptsQuery.data.scripts.map((s) => (
+                    <li key={s.id}>
+                      {slug ? (
+                        <Link
+                          to={`/orgs/${slug}/scripts/${s.id}`}
+                          className="text-accent hover:underline font-mono"
+                        >
+                          {s.id}
+                        </Link>
+                      ) : (
+                        <span className="font-mono">{s.id}</span>
+                      )}
+                      {' — '}
+                      {s.title}{' '}
+                      <span className="text-fg-muted">({s.status})</span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
           </section>
         </DrawerContent>
       </Drawer>

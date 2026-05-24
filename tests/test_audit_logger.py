@@ -283,3 +283,52 @@ def test_log_parse_hint_send_failed(db):
     assert row["action"] == "escalation_parse_hint_send_failed"
     assert "message_not_found" in row["payload"]["error"]
     assert row["payload"]["feishu_event_id"] == "evt_b"
+
+
+def test_log_script_submitted(db):
+    from src.infrastructure.audit_logger import AuditLogger
+    audit = AuditLogger(db)
+    audit.log_script_submitted(
+        task_id="TASK-001",
+        sr_id="SR-001",
+        agent="engineering_head",
+        title="x",
+        interpreter="bash",
+        cwd_hint="repos/web-app",
+        byte_size=42,
+        line_count=2,
+    )
+    logs = db.get_audit_logs("TASK-001")
+    actions = [e["action"] for e in logs]
+    assert "script_submitted" in actions
+    payload = next(e["payload"] for e in logs if e["action"] == "script_submitted")
+    # payload may be a JSON string or already-parsed dict; handle both like other tests.
+    import json
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    assert payload["script_request_id"] == "SR-001"
+    assert payload["title"] == "x"
+
+
+def test_log_script_run_completed(db):
+    from src.infrastructure.audit_logger import AuditLogger
+    audit = AuditLogger(db)
+    audit.log_script_run_completed(
+        task_id="TASK-001",
+        sr_id="SR-001",
+        exit_code=0,
+        duration_ms=1500,
+        stdout_bytes=12,
+        stderr_bytes=0,
+        truncated_stdout=False,
+        truncated_stderr=False,
+    )
+    logs = db.get_audit_logs("TASK-001")
+    import json
+    payload_entry = next(e for e in logs if e["action"] == "script_run_completed")
+    payload = payload_entry["payload"]
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    assert payload["exit_code"] == 0
+    assert payload["duration_ms"] == 1500
+    assert payload["script_request_id"] == "SR-001"

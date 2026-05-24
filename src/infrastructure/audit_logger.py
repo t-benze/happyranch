@@ -754,3 +754,114 @@ class AuditLogger:
                 "executor": executor,
             },
         )
+
+    def log_script_submitted(
+        self,
+        *,
+        task_id: str,
+        sr_id: str,
+        agent: str,
+        title: str,
+        interpreter: str,
+        cwd_hint: str | None,
+        byte_size: int,
+        line_count: int,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent=agent,
+            action="script_submitted",
+            payload={
+                "script_request_id": sr_id,
+                "title": title,
+                "interpreter": interpreter,
+                "cwd_hint": cwd_hint,
+                "byte_size": byte_size,
+                "line_count": line_count,
+            },
+        )
+
+    def log_script_rejected(
+        self, *, task_id: str, sr_id: str, reviewer: str, reason: str
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent=reviewer,
+            action="script_rejected",
+            payload={
+                "script_request_id": sr_id,
+                "reviewer": reviewer,
+                "reason": reason,
+            },
+        )
+
+    def log_script_run_started(
+        self,
+        *,
+        task_id: str,
+        sr_id: str,
+        reviewer: str,
+        cwd_resolved: str,
+        timeout_seconds: int,
+        interpreter: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent=reviewer,
+            action="script_run_started",
+            payload={
+                "script_request_id": sr_id,
+                "reviewer": reviewer,
+                "cwd_resolved": cwd_resolved,
+                "timeout_seconds": timeout_seconds,
+                "interpreter": interpreter,
+            },
+        )
+
+    def log_script_run_completed(
+        self,
+        *,
+        task_id: str,
+        sr_id: str,
+        exit_code: int,
+        duration_ms: int,
+        stdout_bytes: int,
+        stderr_bytes: int,
+        truncated_stdout: bool,
+        truncated_stderr: bool,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="founder",
+            action="script_run_completed",
+            payload={
+                "script_request_id": sr_id,
+                "exit_code": exit_code,
+                "duration_ms": duration_ms,
+                "stdout_bytes": stdout_bytes,
+                "stderr_bytes": stderr_bytes,
+                "truncated_stdout": truncated_stdout,
+                "truncated_stderr": truncated_stderr,
+            },
+        )
+
+    def log_script_run_failed(
+        self,
+        *,
+        task_id: str,
+        sr_id: str,
+        reason: str,
+        exit_code: int | None = None,
+        duration_ms: int | None = None,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="founder",
+            action="script_run_failed",
+            payload={
+                "script_request_id": sr_id,
+                "exit_code": exit_code,
+                "duration_ms": duration_ms,
+                "reason": reason,
+            },
+        )

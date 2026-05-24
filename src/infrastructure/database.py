@@ -278,6 +278,36 @@ class Database:
                 ON thread_invocations(thread_id);
             CREATE INDEX IF NOT EXISTS idx_thread_invocations_pending
                 ON thread_invocations(status) WHERE status = 'pending';
+
+            CREATE TABLE IF NOT EXISTS script_requests (
+                id                  TEXT PRIMARY KEY,
+                task_id             TEXT NOT NULL,
+                agent_name          TEXT NOT NULL,
+                title               TEXT NOT NULL,
+                rationale           TEXT NOT NULL,
+                script_text         TEXT NOT NULL,
+                interpreter         TEXT NOT NULL,
+                cwd_hint            TEXT,
+                status              TEXT NOT NULL DEFAULT 'pending',
+                exit_code           INTEGER,
+                stdout_head         TEXT,
+                stderr_head         TEXT,
+                stdout_path         TEXT,
+                stderr_path         TEXT,
+                duration_ms         INTEGER,
+                started_at          TEXT,
+                finished_at         TEXT,
+                reviewed_at         TEXT,
+                reviewed_by         TEXT,
+                reject_reason       TEXT,
+                cwd_resolved        TEXT,
+                timeout_seconds     INTEGER NOT NULL DEFAULT 300,
+                created_at          TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_script_requests_task        ON script_requests(task_id);
+            CREATE INDEX IF NOT EXISTS idx_script_requests_agent       ON script_requests(agent_name);
+            CREATE INDEX IF NOT EXISTS idx_script_requests_status      ON script_requests(status);
+            CREATE INDEX IF NOT EXISTS idx_script_requests_created_at  ON script_requests(created_at);
         """)
         # Best-effort migration for DBs created before `status` existed. SQLite
         # has no IF NOT EXISTS for ADD COLUMN; swallow the duplicate-column
@@ -1344,6 +1374,202 @@ class Database:
         )
         n = (cursor.fetchone()["m"] or 0) + 1
         return f"THR-{n:03d}"
+
+    @_synchronized
+    def next_script_request_id(self) -> str:
+        """Return the next available SR-NNN id.
+
+        Callers must hold DaemonState.db_lock across the next_script_request_id()
+        + insert_script_request() pair to avoid duplicate IDs under concurrent
+        requests (same requirement as next_task_id / next_talk_id / next_thread_id).
+        """
+        cursor = self._conn.execute(
+            "SELECT MAX(CAST(SUBSTR(id, 4) AS INTEGER)) AS m "
+            "FROM script_requests WHERE id GLOB 'SR-[0-9]*'"
+        )
+        n = (cursor.fetchone()["m"] or 0) + 1
+        return f"SR-{n:03d}"
+
+    @_synchronized
+    def insert_script_request(self, r: "ScriptRequestRecord") -> None:
+        self._conn.execute(
+            """INSERT INTO script_requests (
+                id, task_id, agent_name, title, rationale, script_text,
+                interpreter, cwd_hint, status, exit_code,
+                stdout_head, stderr_head, stdout_path, stderr_path,
+                duration_ms, started_at, finished_at,
+                reviewed_at, reviewed_by, reject_reason,
+                cwd_resolved, timeout_seconds, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                r.id, r.task_id, r.agent_name, r.title, r.rationale, r.script_text,
+                r.interpreter.value, r.cwd_hint, r.status.value, r.exit_code,
+                r.stdout_head, r.stderr_head, r.stdout_path, r.stderr_path,
+                r.duration_ms, r.started_at, r.finished_at,
+                r.reviewed_at, r.reviewed_by, r.reject_reason,
+                r.cwd_resolved, r.timeout_seconds, r.created_at,
+            ),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def get_script_request(self, sr_id: str) -> "ScriptRequestRecord | None":
+        row = self._conn.execute(
+            "SELECT * FROM script_requests WHERE id = ?", (sr_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_script_request(row)
+
+    @staticmethod
+    def _row_to_script_request(row) -> "ScriptRequestRecord":
+        from src.models import ScriptRequestRecord, ScriptRequestStatus, ScriptInterpreter
+        return ScriptRequestRecord(
+            id=row["id"],
+            task_id=row["task_id"],
+            agent_name=row["agent_name"],
+            title=row["title"],
+            rationale=row["rationale"],
+            script_text=row["script_text"],
+            interpreter=ScriptInterpreter(row["interpreter"]),
+            cwd_hint=row["cwd_hint"],
+            status=ScriptRequestStatus(row["status"]),
+            exit_code=row["exit_code"],
+            stdout_head=row["stdout_head"],
+            stderr_head=row["stderr_head"],
+            stdout_path=row["stdout_path"],
+            stderr_path=row["stderr_path"],
+            duration_ms=row["duration_ms"],
+            started_at=row["started_at"],
+            finished_at=row["finished_at"],
+            reviewed_at=row["reviewed_at"],
+            reviewed_by=row["reviewed_by"],
+            reject_reason=row["reject_reason"],
+            cwd_resolved=row["cwd_resolved"],
+            timeout_seconds=row["timeout_seconds"],
+            created_at=row["created_at"],
+        )
+
+    @_synchronized
+    def list_script_requests(
+        self,
+        *,
+        status: str | list[str] | None = None,
+        agent: str | None = None,
+        task_id: str | None = None,
+        limit: int = 50,
+    ) -> list["ScriptRequestRecord"]:
+        clauses: list[str] = []
+        params: list = []
+        if status is not None:
+            statuses = [status] if isinstance(status, str) else list(status)
+            placeholders = ",".join("?" * len(statuses))
+            clauses.append(f"status IN ({placeholders})")
+            params.extend(statuses)
+        if agent is not None:
+            clauses.append("agent_name = ?")
+            params.append(agent)
+        if task_id is not None:
+            clauses.append("task_id = ?")
+            params.append(task_id)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(int(limit))
+        rows = self._conn.execute(
+            f"SELECT * FROM script_requests {where} "
+            f"ORDER BY created_at DESC, id DESC LIMIT ?",
+            params,
+        ).fetchall()
+        return [self._row_to_script_request(r) for r in rows]
+
+    @_synchronized
+    def transition_script_to_rejected(
+        self, sr_id: str, *, reviewer: str, reason: str, reviewed_at: str
+    ) -> None:
+        cur = self._conn.execute(
+            "UPDATE script_requests "
+            "SET status='rejected', reviewed_by=?, reject_reason=?, reviewed_at=? "
+            "WHERE id=? AND status='pending'",
+            (reviewer, reason, reviewed_at, sr_id),
+        )
+        self._conn.commit()
+        if cur.rowcount == 0:
+            raise ValueError(f"not_pending: SR {sr_id} cannot be rejected")
+
+    @_synchronized
+    def transition_script_to_running(
+        self,
+        sr_id: str,
+        *,
+        reviewer: str,
+        reviewed_at: str,
+        started_at: str,
+        cwd_resolved: str,
+        timeout_seconds: int,
+        stdout_path: str,
+        stderr_path: str,
+    ) -> None:
+        cur = self._conn.execute(
+            "UPDATE script_requests SET "
+            "status='running', reviewed_by=?, reviewed_at=?, started_at=?, "
+            "cwd_resolved=?, timeout_seconds=?, stdout_path=?, stderr_path=? "
+            "WHERE id=? AND status='pending'",
+            (reviewer, reviewed_at, started_at, cwd_resolved, timeout_seconds,
+             stdout_path, stderr_path, sr_id),
+        )
+        self._conn.commit()
+        if cur.rowcount == 0:
+            raise ValueError(f"not_pending: SR {sr_id} cannot transition to running")
+
+    @_synchronized
+    def transition_script_to_terminal(
+        self,
+        sr_id: str,
+        *,
+        status: "ScriptRequestStatus",
+        exit_code: int | None,
+        finished_at: str,
+        duration_ms: int,
+        stdout_head: str | None,
+        stderr_head: str | None,
+    ) -> None:
+        if status.value not in ("completed", "failed"):
+            raise ValueError(f"invalid terminal status: {status.value}")
+        cur = self._conn.execute(
+            "UPDATE script_requests SET "
+            "status=?, exit_code=?, finished_at=?, duration_ms=?, "
+            "stdout_head=?, stderr_head=? "
+            "WHERE id=? AND status='running'",
+            (status.value, exit_code, finished_at, duration_ms,
+             stdout_head, stderr_head, sr_id),
+        )
+        self._conn.commit()
+        if cur.rowcount == 0:
+            raise ValueError(f"not_running: SR {sr_id} cannot transition to terminal")
+
+    @_synchronized
+    def recover_orphaned_running_scripts(self, *, now_iso: str) -> list[str]:
+        """Force-transition any SR left in 'running' state to 'failed'.
+
+        Called from the daemon FastAPI lifespan on startup. The subprocess
+        and its parent daemon process are gone; partial output on disk is
+        preserved but the row is marked failed so the founder UI doesn't
+        leave them in a permanent running state.
+        """
+        rows = self._conn.execute(
+            "SELECT id FROM script_requests WHERE status='running'"
+        ).fetchall()
+        ids = [r["id"] for r in rows]
+        if not ids:
+            return []
+        self._conn.executemany(
+            "UPDATE script_requests SET status='failed', finished_at=?, "
+            "duration_ms=COALESCE(duration_ms, 0), "
+            "stderr_head=COALESCE(stderr_head, '') || '\n[daemon restart killed run]' "
+            "WHERE id=?",
+            [(now_iso, sr_id) for sr_id in ids],
+        )
+        self._conn.commit()
+        return ids
 
     @_synchronized
     def insert_thread(self, t: ThreadRecord) -> None:
