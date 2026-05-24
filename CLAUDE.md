@@ -63,11 +63,12 @@ System kernel milestones — org-agnostic infrastructure. Org content (agent ros
 11. Feishu notifications — outbound push + reply-to-unblock; specs: `2026-05-08-feishu-notification-design.md`, `2026-05-12-feishu-interactive-actions-design.md`.
 12. Threads foundation — email-style multi-agent workchannels with daemon-minted invocation tokens; CLI surface + end-to-end integration coverage via `fake_claude.sh` thread-prompt routing. Spec: `2026-05-13-threads-design.md`.
 13. Threads web UI — localhost React+Tailwind SPA bundled into the FastAPI daemon, replaces the original Textual TUI. Three-layer architecture (`lib/api/` 1:1 daemon mirror → `features/<domain>/` → generic `components/`) designed to absorb future CLI domains. OpenAPI snapshot + TS coverage test pin the contract. `grassland threads` (no subcommand) points at `grassland web`; the `src/tui/` tree was deleted. Spec: `2026-05-14-web-ui-design.md`.
+14. Script requests (SR-NNN) — agent escape hatch when an executor's `allow_rules` block a command. Agent submits `{script, interpreter, cwd_hint, rationale}` via `grassland scripts submit`, self-blocks; founder reviews + runs via CLI (`grassland scripts run` with TTY-gated confirm + live SSE stream) or web (`/scripts` feature folder, run/reject modals, SSE output panel). Daemon executes with `env=dict(os.environ)` (uvloop-compatible), captures stdout/stderr to disk (`<runtime>/orgs/<slug>/scripts/SR-NNN.{out,err,script}`) with a 65 KB head cap mirrored to DB. Unblock path reuses `grassland revisit` — the revisit header lists predecessor SRs with `grassland scripts show/output` pointers. Spec: `2026-05-23-agent-script-requests-design.md`.
 
 **Open:**
 
-14. **Founder dashboard** — aggregate audit logs, escalation summaries, scorecards into a weekly view. Design: `protocol/05e-dashboard.md`.
-15. **Persistent agents** — long-running loops for runtime patterns that don't fit single-task batch execution (e.g., real-time customer-chat worker). Currently every agent session is one task → one subprocess.
+15. **Founder dashboard** — aggregate audit logs, escalation summaries, scorecards into a weekly view. Design: `protocol/05e-dashboard.md`.
+16. **Persistent agents** — long-running loops for runtime patterns that don't fit single-task batch execution (e.g., real-time customer-chat worker). Currently every agent session is one task → one subprocess.
 
 ## Directory Layout
 
@@ -97,7 +98,8 @@ System kernel milestones — org-agnostic infrastructure. Org content (agent ros
     |-- workspaces/<agent>/            # agent.yaml, CLAUDE.md|AGENTS.md, .claude/|.agents/, repos/, learnings/, task_history.md
     |-- kb/                            # per-org KB (auto-regenerated `_index.md`)
     |-- talks/                         # TALK-NNN.md
-    `-- threads/                       # THR-NNN.md
+    |-- threads/                       # THR-NNN.md
+    `-- scripts/                       # SR-NNN.{out,err,script} (full captured output + frozen script body)
 ```
 
 HTTP routes: per-org under `/api/v1/orgs/<slug>/...`; container-level under `/api/v1/runtime` and `/api/v1/orgs`. Legacy v1 (single-org flat layout) migrates in place via `grassland migrate-to-multi-org` — TTY-gated, refuses with active tasks or open talks. Even older v0 (DB-backed agent enrollments) migrates first via `grassland migrate-to-org-runtime`.
@@ -306,6 +308,24 @@ Eligible predecessor states: `failed`, `failed-cancelled` (founder-cancelled, no
 - The predecessor-link lives in TWO places: `tasks.revisit_of_task_id` column (indexed, queryable) AND a richer `audit_log` entry (`flagged`, `cascade`, `founder_note`, `prior_status`). The column is a **sideways** reference — `walk_ancestors` MUST NOT follow it, or cascade-fail will re-poison revisits via `_enqueue_parent_if_waiting`. Helpers: `Database.walk_revisit_chain` (backward) and `Database.get_direct_revisits` (forward).
 - On the new root's first orchestration step, `_revisit_header_if_applicable(orch, task_id)` prepends a 5-6 line context header pointing the manager at `grassland details` / `grassland audit` / `grassland recall` for the frozen predecessor.
 - `run_step` also auto-revisits on opaque-failure recovery; task-row `session_timeout_seconds` is copied onto every spawned revisit root.
+
+## Script requests (agent escape hatch)
+
+Per-org `script_requests` SQLite table; per-org files at `<runtime>/orgs/<slug>/scripts/SR-NNN.{out,err,script}`. Spec: `docs/superpowers/specs/2026-05-23-agent-script-requests-design.md`. Implementation: `src/daemon/routes/scripts.py` (HTTP), `src/daemon/scripts_runner.py` (subprocess + stream pumps + shutdown cleanup), `src/infrastructure/database.py` (table + state-transition methods), `src/infrastructure/audit_logger.py` (5 `log_script_*` methods).
+
+Routes under `/api/v1/orgs/{slug}/scripts/`: `POST /submit` (agent callback; auth via session-binding chain), `GET /`, `GET /{id}`, `POST /{id}/run`, `POST /{id}/reject`, `GET /{id}/output`, `GET /{id}/events` (SSE). The `submit` route is in the OpenAPI EXCLUDED set; everything else is mirrored in `web/src/lib/api/scripts.ts`.
+
+**Non-obvious invariants:**
+
+- **Agent identity is derived, not echoed** — `agent_name` on the SR row comes from `task.assigned_agent` after the session-mismatch check; the payload's `agent` field (if present) is ignored. This prevents an agent from mis-attributing an SR to another agent.
+- **Validation order matters** — `task_not_active` is checked BEFORE `session_mismatch`. A completed task has no live session, and reporting `session_mismatch` would mislead. Same discipline as `compose-as-agent`.
+- **Subprocess env must be `dict(os.environ)`** — `asyncio.create_subprocess_exec(env=os.environ, ...)` raises `TypeError: Expected dict, got _Environ` under **uvloop** (FastAPI's default in production), even though stdlib asyncio accepts the mapping. Don't revert to passing `os.environ` directly.
+- **SSE `/events` must re-poll the DB** — the `event_bus.subscribe` queue is registered inside the generator on first `__anext__`, so the runner can publish a terminal event between our initial status check and our subscription registration. The handler races the subscription against a 1s DB-poll loop; the row is authoritative.
+- **Shutdown awaits runner tasks** — `terminate_all_inflight` snapshots `_RUNNER_TASKS` after SIGTERM/SIGKILL and `asyncio.wait_for(gather(*runners), timeout=5)` so each runner can transition its SR row to terminal BEFORE per-org DBs close. Without this, rows sit in `running` until the next startup recovery scan, making dead SRs look live.
+- **Startup recovery is the safety net** — `recover_orphaned_running_scripts` runs in the lifespan startup loop for every org; it force-fails any `running` row left from a crash. Independent of, and complementary to, the shutdown-await path.
+- **Revisit header is the unblock path** — agents do NOT poll their own SR output. The agent submits + self-blocks with `report-completion status=blocked`; the founder runs the SR; the founder revisits the task; `_revisit_header_if_applicable` prepends a section listing predecessor SRs with `grassland scripts show/output SR-NNN` commands so the new agent session reads them on its own.
+- **Output capture is two-layer** — full streams to disk (no v1 size cap; spec §11 known limit), 65 KB head per stream mirrored to `stdout_head`/`stderr_head` DB columns for fast rendering. `GET /output` reads disk; the drawer + audit deep-link show DB head.
+- **CLI `scripts run` uses raw httpx, not `OpcClient.stream`** — `OpcClient.stream` strips `event:` lines and yields only data payloads; useless for the multi-event-type (stdout/stderr/terminal) SR stream. `cmd_scripts_run` accesses `client._client.stream(...)` directly to parse raw SSE frames. If this pattern repeats, promote `stream_raw` to the `OpcClient` public API.
 
 ## Feishu notifications (founder push + reply-to-unblock)
 
