@@ -11,6 +11,7 @@ import { TopBar } from '@/design-system/layouts/AppShell/TopBar';
 import { useOrgsList } from '@/hooks/orgs';
 import { OrgProvider } from '@/lib/orgSlug';
 import { AgentsPage } from '@/features/agents/AgentsPage';
+import { ScriptsPage } from '@/features/scripts/ScriptsPage';
 import { CommandPaletteHost } from '@/host/CommandPaletteHost';
 import { HelpDrawerHost } from '@/host/HelpDrawerHost';
 import { ActivityTab } from '@/features/audit/ActivityTab';
@@ -95,6 +96,8 @@ export function AppRoutes(): JSX.Element {
           </Route>
           <Route path="agents" element={<AgentsPage />} />
           <Route path="agents/:agent_name" element={<AgentsPage />} />
+          <Route path="scripts" element={<ScriptsPage />} />
+          <Route path="scripts/:sr_id" element={<ScriptsPage />} />
         </Route>
         <Route path="*" element={<NotFound />} />
       </Route>

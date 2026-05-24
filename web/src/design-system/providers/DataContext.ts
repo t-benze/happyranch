@@ -32,8 +32,11 @@ import type { kb as kbApi } from '@/lib/api';
 import type { talks as talksApi } from '@/lib/api';
 import type { audit as auditApi } from '@/lib/api';
 import type { agents as agentsApi } from '@/lib/api';
+import type { scripts as scriptsApi } from '@/lib/api';
 import type {
   KBEntry,
+  ScriptRequest,
+  ScriptListResponse,
   TalkRecord,
   TaskEvent,
   TaskRecord,
@@ -267,6 +270,34 @@ export interface AgentsRoutes {
 }
 
 // ---------------------------------------------------------------------------
+// ScriptsApi — founder-facing surface for script requests.
+// ---------------------------------------------------------------------------
+
+export type RejectScriptArgs = Parameters<typeof scriptsApi.rejectScript>[2];
+export type RejectScriptResult = Awaited<ReturnType<typeof scriptsApi.rejectScript>>;
+
+export type RunScriptArgs = Parameters<typeof scriptsApi.runScript>[2];
+export type RunScriptResult = Awaited<ReturnType<typeof scriptsApi.runScript>>;
+
+export interface ScriptsApi {
+  useScriptsList: (params?: {
+    status?: string;
+    agent?: string;
+    task_id?: string;
+    limit?: number;
+  }) => QueryLike<ScriptListResponse>;
+  useScript: (srId: string | undefined) => QueryLike<ScriptRequest>;
+  useRejectScript: () => MutationLike<{ srId: string; body: RejectScriptArgs }, RejectScriptResult>;
+  useRunScript: () => MutationLike<{ srId: string; body: RunScriptArgs }, RunScriptResult>;
+}
+
+export interface ScriptsRoutes {
+  inbox: () => string;
+  detail: (srId: string) => string;
+  inboxForOrg: (slug: string) => string;
+}
+
+// ---------------------------------------------------------------------------
 // AuditApi — read-only audit-log surface for the Audit feature page.
 // ---------------------------------------------------------------------------
 
@@ -311,6 +342,7 @@ export interface DataContextValue {
   kb: KbApi;
   talks: TalksApi;
   health: HealthApi;
+  scripts: ScriptsApi;
   /**
    * Provider-supplied React hook that returns the active feature's route
    * builders. A hook (not a plain object) so the implementation can read
@@ -321,6 +353,7 @@ export interface DataContextValue {
   useKbRoutes: () => KbRoutes;
   useTalksRoutes: () => TalksRoutes;
   useAgentsRoutes: () => AgentsRoutes;
+  useScriptsRoutes: () => ScriptsRoutes;
 }
 
 export const DataContext = createContext<DataContextValue | null>(null);

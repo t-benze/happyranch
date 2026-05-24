@@ -21,7 +21,8 @@ import { mockAuditApi } from './_mock-audit';
 import { mockHealthApi } from './_mock-health';
 import { mockKbApi, useMockKbRoutes } from './_mock-kb';
 import { mockOrgsApi } from './_mock-orgs';
-import { useMockAgentsRoutes, useMockThreadRoutes } from './_mock-routes';
+import { useMockAgentsRoutes, useMockScriptsRoutes, useMockThreadRoutes } from './_mock-routes';
+import { mockScriptsApi } from './_mock-scripts';
 import { mockTalksApi, useMockTalksRoutes } from './_mock-talks';
 import { mockTasksApi, useMockTasksRoutes } from './_mock-tasks';
 import { mockThreadsApi } from './_mock-threads';
@@ -53,11 +54,13 @@ export function PrototypeProvider({ children }: { children: ReactNode }): JSX.El
           kb: mockKbApi,
           talks: mockTalksApi,
           health: mockHealthApi,
+          scripts: mockScriptsApi,
           useThreadRoutes: useMockThreadRoutes,
           useTasksRoutes: useMockTasksRoutes,
           useKbRoutes: useMockKbRoutes,
           useTalksRoutes: useMockTalksRoutes,
           useAgentsRoutes: useMockAgentsRoutes,
+          useScriptsRoutes: useMockScriptsRoutes,
         }}
       >
         <TooltipProvider delayDuration={300}>
