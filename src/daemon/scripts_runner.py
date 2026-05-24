@@ -103,7 +103,7 @@ async def run_script(
         binary,
         "-",  # read script from stdin (bash/sh/zsh/python3 all honor this)
         cwd=cwd,
-        env=os.environ,
+        env=dict(os.environ),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
