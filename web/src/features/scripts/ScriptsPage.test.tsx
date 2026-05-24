@@ -5,6 +5,7 @@ import { describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
+import type { ScriptRequest } from '@/lib/api/types';
 
 const SLUG = 'hk-macau-tourism';
 
@@ -17,7 +18,7 @@ function mountAt(route: string) {
   return renderWithProviders(<AppRoutes />, { route });
 }
 
-const SCRIPT = {
+const SCRIPT: ScriptRequest = {
   id: 'SR-0001',
   task_id: 'TASK-0042',
   agent_name: 'engineering_head',
@@ -190,5 +191,80 @@ describe('ScriptDetailPane + RejectScriptDialog — write path', () => {
     );
     // Action bar should NOT be visible for rejected SR
     expect(screen.queryByRole('button', { name: /Reject/i })).not.toBeInTheDocument();
+  });
+});
+
+describe('OutputPanel', () => {
+  function stubDetailForStatus(script: typeof SCRIPT) {
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/scripts/`, () =>
+        HttpResponse.json({ scripts: [script] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/scripts/SR-0001`, () =>
+        HttpResponse.json(script),
+      ),
+    );
+  }
+
+  test('renders no output section for pending SR', async () => {
+    sessionStorage.setItem('grassland.token', 'tok');
+    stubDetailForStatus(SCRIPT);
+    mountAt(`/orgs/${SLUG}/scripts/SR-0001`);
+    // Wait for detail pane to load
+    await waitFor(() =>
+      expect(screen.getAllByText('Clean up stale Docker images').length).toBeGreaterThanOrEqual(1),
+    );
+    // OutputPanel returns null for pending — no "Output" heading
+    expect(screen.queryByText(/^Output$/i)).not.toBeInTheDocument();
+  });
+
+  test('renders stdout and stderr pre blocks for completed SR', async () => {
+    sessionStorage.setItem('grassland.token', 'tok');
+    const completedScript = {
+      ...SCRIPT,
+      status: 'completed' as const,
+      exit_code: 0,
+      finished_at: '2026-05-23T12:05:00Z',
+    };
+    stubDetailForStatus(completedScript);
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/scripts/SR-0001/output`, () =>
+        HttpResponse.json({
+          stdout: 'Deleted 3 images\n',
+          stderr: '',
+          truncated_stdout: false,
+          truncated_stderr: false,
+          total_stdout_bytes: 18,
+          total_stderr_bytes: 0,
+        }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/scripts/SR-0001`);
+    await waitFor(() =>
+      expect(screen.getByText('Deleted 3 images')).toBeInTheDocument(),
+    );
+    // Both stdout and stderr headings should be present
+    expect(screen.getByText(/^stdout$/i)).toBeInTheDocument();
+    expect(screen.getByText(/^stderr$/i)).toBeInTheDocument();
+    // Empty stderr renders as '(empty)'
+    expect(screen.getByText('(empty)')).toBeInTheDocument();
+  });
+
+  test('renders no output section for rejected SR', async () => {
+    sessionStorage.setItem('grassland.token', 'tok');
+    const rejectedScript = {
+      ...SCRIPT,
+      status: 'rejected' as const,
+      reject_reason: 'Not allowed',
+    };
+    stubDetailForStatus(rejectedScript);
+    mountAt(`/orgs/${SLUG}/scripts/SR-0001`);
+    await waitFor(() =>
+      expect(screen.getByText('Not allowed')).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/^Output$/i)).not.toBeInTheDocument();
   });
 });

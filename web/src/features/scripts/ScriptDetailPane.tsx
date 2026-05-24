@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import {
   Drawer,
   DrawerContent,
@@ -10,6 +10,8 @@ import { useScript, useScriptsRoutes } from '@/hooks/scripts';
 import { cn } from '@/lib/utils';
 import type { ScriptRequestStatus } from '@/lib/api/types';
 import { RejectScriptDialog } from './RejectScriptDialog';
+import { RunScriptDialog } from './RunScriptDialog';
+import { OutputPanel } from './OutputPanel';
 
 // Mirrors STATUS_CLASS from ScriptsPage — keep in sync until a shared
 // ScriptStatusBadge pattern is extracted to design-system.
@@ -45,6 +47,7 @@ export function ScriptDetailPane({ srId }: ScriptDetailPaneProps): JSX.Element {
   const routes = useScriptsRoutes();
   const query = useScript(srId);
   const [openDialog, setOpenDialog] = useState<OpenDialog>(null);
+  const { slug } = useParams<{ slug: string }>();
 
   const onClose = () => navigate(routes.inbox());
 
@@ -116,9 +119,7 @@ export function ScriptDetailPane({ srId }: ScriptDetailPaneProps): JSX.Element {
                   <div className="flex gap-3">
                     <Button
                       variant="default"
-                      disabled
-                      title="Run wiring lands in Task 29"
-                      className="opacity-50"
+                      onClick={() => setOpenDialog('run')}
                     >
                       Run
                     </Button>
@@ -141,7 +142,8 @@ export function ScriptDetailPane({ srId }: ScriptDetailPaneProps): JSX.Element {
                   </div>
                 )}
 
-                {/* 6. Output section — TODO Task 29 */}
+                {/* 6. Output panel — running / completed / failed */}
+                <OutputPanel sr={sr} slug={slug ?? ''} />
               </>
             )}
           </section>
@@ -152,6 +154,15 @@ export function ScriptDetailPane({ srId }: ScriptDetailPaneProps): JSX.Element {
       {openDialog === 'reject' && (
         <RejectScriptDialog
           srId={srId}
+          open
+          onClose={() => setOpenDialog(null)}
+        />
+      )}
+
+      {/* Run dialog — mounted outside the Drawer so z-index stacks correctly */}
+      {openDialog === 'run' && sr && (
+        <RunScriptDialog
+          sr={sr}
           open
           onClose={() => setOpenDialog(null)}
         />

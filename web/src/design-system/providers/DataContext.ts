@@ -279,6 +279,8 @@ export type RejectScriptResult = Awaited<ReturnType<typeof scriptsApi.rejectScri
 export type RunScriptArgs = Parameters<typeof scriptsApi.runScript>[2];
 export type RunScriptResult = Awaited<ReturnType<typeof scriptsApi.runScript>>;
 
+export type ScriptOutputResult = Awaited<ReturnType<typeof scriptsApi.getScriptOutput>>;
+
 export interface ScriptsApi {
   useScriptsList: (params?: {
     status?: string;
@@ -287,6 +289,7 @@ export interface ScriptsApi {
     limit?: number;
   }) => QueryLike<ScriptListResponse>;
   useScript: (srId: string | undefined) => QueryLike<ScriptRequest>;
+  useScriptOutput: (srId: string | undefined) => QueryLike<ScriptOutputResult>;
   useRejectScript: () => MutationLike<{ srId: string; body: RejectScriptArgs }, RejectScriptResult>;
   useRunScript: () => MutationLike<{ srId: string; body: RunScriptArgs }, RunScriptResult>;
 }

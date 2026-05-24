@@ -8,9 +8,10 @@ import type {
   RejectScriptResult,
   RunScriptArgs,
   RunScriptResult,
+  ScriptOutputResult,
   ScriptsApi,
 } from './DataContext';
-import type { ScriptListResponse, ScriptRequest } from '@/lib/api/types';
+import type { ScriptListResponse, ScriptOutput, ScriptRequest } from '@/lib/api/types';
 
 function useRealOrgSlug(): string {
   const { slug } = useParams<{ slug: string }>();
@@ -73,9 +74,19 @@ function useRunScript(): MutationLike<
   });
 }
 
+function useScriptOutput(srId: string | undefined): QueryLike<ScriptOutputResult> {
+  const slug = useRealOrgSlug();
+  return useQuery({
+    queryKey: ['script-output', slug, srId],
+    queryFn: () => scriptsApi.getScriptOutput(slug, srId as string),
+    enabled: !!slug && !!srId,
+  }) as QueryLike<ScriptOutput>;
+}
+
 export const realScriptsApi: ScriptsApi = {
   useScriptsList,
   useScript,
+  useScriptOutput,
   useRejectScript,
   useRunScript,
 };

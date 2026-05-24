@@ -1,4 +1,4 @@
-import type { ScriptListResponse, ScriptRequest } from '@/lib/api/types';
+import type { ScriptListResponse, ScriptOutput, ScriptRequest } from '@/lib/api/types';
 import type {
   MutationLike,
   QueryLike,
@@ -6,6 +6,7 @@ import type {
   RejectScriptResult,
   RunScriptArgs,
   RunScriptResult,
+  ScriptOutputResult,
   ScriptsApi,
 } from './DataContext';
 
@@ -22,6 +23,12 @@ export const mockScriptsApi: ScriptsApi = {
     isError: false,
     error: null,
   }),
+  useScriptOutput: (_srId: string | undefined): QueryLike<ScriptOutputResult> => ({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+    error: null,
+  }) as QueryLike<ScriptOutput>,
   useRejectScript: (): MutationLike<
     { srId: string; body: RejectScriptArgs },
     RejectScriptResult

@@ -20,6 +20,10 @@ export const useScript: ReturnType<typeof useData>['scripts']['useScript'] = (
   srId,
 ) => useData().scripts.useScript(srId);
 
+export const useScriptOutput: ReturnType<typeof useData>['scripts']['useScriptOutput'] = (
+  srId,
+) => useData().scripts.useScriptOutput(srId);
+
 // ---------------------------------------------------------------------------
 // Mutations
 // ---------------------------------------------------------------------------
