@@ -207,6 +207,29 @@ Valid recipient names = active agents in `<runtime>/orgs/<slug>/org/agents/*.md`
 
 `grassland threads reply | decline | dispatch | close-out` are **agent-side** callbacks driven by the `thread` skill inside an invocation — the founder does not run them directly.
 
+## Script requests
+
+Agents who hit a permission wall can submit a script for execution with founder-grade credentials.
+
+```bash
+# List pending script requests (optionally filter by status, agent, or task)
+scripts/grassland scripts list [--status pending|all|...] [--agent <name>] [--task <task-id>]
+
+# Show details, rationale, script body, and output if terminal
+scripts/grassland scripts show SR-NNN
+
+# TTY-gated run with live SSE stream of stdout/stderr
+scripts/grassland scripts run SR-NNN [--cwd <path>] [--timeout-seconds <int>]
+
+# Reject a request with a reason (prompts for reason if omitted)
+scripts/grassland scripts reject SR-NNN [--reason <text>]
+
+# Fetch captured output (stdout, stderr, or both)
+scripts/grassland scripts output SR-NNN [--stream stdout|stderr|both]
+```
+
+Scripts run inside the daemon process with the daemon's inherited `os.environ`. If you rotate credentials interactively, restart the daemon so the new env is picked up.
+
 ## Audit Log
 
 ```bash
