@@ -275,41 +275,6 @@ Keybindings: `N` new, `R` reply, `F` forward, `I` invite, `A` archive,
 The TUI subscribes to per-org SSE events so the inbox and the selected
 thread stay live without polling.
 
-### Script requests
-
-Agents who hit a permission wall can submit a script for you to run with
-founder-grade credentials. List pending requests:
-
-```bash
-grassland scripts list
-```
-
-Review details:
-
-```bash
-grassland scripts show SR-019
-```
-
-Run (TTY-gated):
-
-```bash
-grassland scripts run SR-019
-```
-
-Reject with a reason:
-
-```bash
-grassland scripts reject SR-019 --reason "we don't ship that change today"
-```
-
-The same surface is available in the web UI at `/scripts`. After a run
-completes, use `grassland revisit <task-id>` to unblock the agent's task with
-the captured output in context.
-
-Operational note: scripts run inside the daemon process with `os.environ`
-inherited from the daemon's launch shell. If you rotate credentials in your
-interactive shell, restart the daemon so the new env is picked up.
-
 ### Managing repos
 
 Agents can request repo changes through the `manage-repo` skill, or the founder can manage them directly:
