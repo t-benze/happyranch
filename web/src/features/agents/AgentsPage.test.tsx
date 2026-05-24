@@ -5,6 +5,7 @@ import { describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
+import type { ScriptRequest } from '@/lib/api/types';
 
 const SLUG = 'hk-macau-tourism';
 
@@ -249,5 +250,94 @@ describe('AgentsPage — pending tab', () => {
     await waitFor(() =>
       expect(rejectBody).toEqual({ reason: 'duplicate of seo_agent' }),
     );
+  });
+});
+
+describe('AgentDetailDrawer — recent script requests cross-link', () => {
+  const SR_FOR_AGENT: ScriptRequest = {
+    id: 'SR-0005',
+    task_id: 'TASK-0010',
+    agent_name: 'engineering_head',
+    title: 'Run database vacuum',
+    rationale: 'Reclaim disk space.',
+    script_text: 'vacuumdb --all',
+    interpreter: 'bash',
+    cwd_hint: null,
+    status: 'completed',
+    exit_code: 0,
+    stdout_head: null,
+    stderr_head: null,
+    stdout_path: null,
+    stderr_path: null,
+    duration_ms: 2000,
+    started_at: '2026-05-20T08:00:00Z',
+    finished_at: '2026-05-20T08:00:02Z',
+    reviewed_at: null,
+    reviewed_by: null,
+    reject_reason: null,
+    cwd_resolved: null,
+    timeout_seconds: 300,
+    created_at: '2026-05-20T07:59:00Z',
+  };
+
+  test('shows recent script requests in agent drawer when data present', async () => {
+    sessionStorage.setItem('grassland.token', 'tok');
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/agents`, () => HttpResponse.json(AGENTS_PAYLOAD)),
+      http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
+        HttpResponse.json({ tasks: [] }),
+      ),
+      http.get(
+        `/api/v1/orgs/${SLUG}/agents/engineering_head/learnings/entries/`,
+        () => HttpResponse.json({ entries: [] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/scripts/`, () =>
+        HttpResponse.json({ scripts: [SR_FOR_AGENT] }),
+      ),
+    );
+
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/agents/engineering_head`,
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText(/Recent script requests/i)).toBeInTheDocument(),
+    );
+    const link = screen.getByRole('link', { name: 'SR-0005' });
+    expect(link).toBeInTheDocument();
+    expect(link).toHaveAttribute('href', `/orgs/${SLUG}/scripts/SR-0005`);
+    expect(screen.getByText(/Run database vacuum/)).toBeInTheDocument();
+  });
+
+  test('hides recent script requests section when agent has none', async () => {
+    sessionStorage.setItem('grassland.token', 'tok');
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/agents`, () => HttpResponse.json(AGENTS_PAYLOAD)),
+      http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
+        HttpResponse.json({ tasks: [] }),
+      ),
+      http.get(
+        `/api/v1/orgs/${SLUG}/agents/engineering_head/learnings/entries/`,
+        () => HttpResponse.json({ entries: [] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/scripts/`, () =>
+        HttpResponse.json({ scripts: [] }),
+      ),
+    );
+
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/agents/engineering_head`,
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText(/executor: claude/)).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/Recent script requests/i)).not.toBeInTheDocument();
   });
 });

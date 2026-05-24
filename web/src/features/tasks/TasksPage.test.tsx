@@ -4,6 +4,7 @@ import { describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
+import type { ScriptRequest } from '@/lib/api/types';
 
 const SLUG = 'hk-macau-tourism';
 
@@ -29,6 +30,32 @@ const TASK = {
   closed_at: null,
   cancelled_at: null,
   session_timeout_seconds: null,
+};
+
+const SR: ScriptRequest = {
+  id: 'SR-0001',
+  task_id: 'TASK-0091',
+  agent_name: 'content_writer',
+  title: 'Generate sitemap',
+  rationale: 'SEO improvement.',
+  script_text: 'python3 gen_sitemap.py',
+  interpreter: 'bash',
+  cwd_hint: null,
+  status: 'completed',
+  exit_code: 0,
+  stdout_head: null,
+  stderr_head: null,
+  stdout_path: null,
+  stderr_path: null,
+  duration_ms: 800,
+  started_at: '2026-05-18T10:02:00Z',
+  finished_at: '2026-05-18T10:02:01Z',
+  reviewed_at: null,
+  reviewed_by: null,
+  reject_reason: null,
+  cwd_resolved: null,
+  timeout_seconds: 300,
+  created_at: '2026-05-18T10:01:00Z',
 };
 
 describe('TasksPage — read path', () => {
@@ -57,5 +84,63 @@ describe('TasksPage — read path', () => {
       expect(screen.getByText(/Status/i)).toBeInTheDocument();
       expect(screen.getByText(/Team/i)).toBeInTheDocument();
     });
+  });
+});
+
+describe('TaskDetailPane — script requests cross-link', () => {
+  function stubHandlers(scripts: ScriptRequest[]) {
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
+        HttpResponse.json({ tasks: [TASK] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}`, () =>
+        HttpResponse.json(TASK),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/recall`, () =>
+        HttpResponse.json({
+          task_id: TASK.task_id,
+          assigned_agent: null,
+          brief: TASK.brief,
+          status: TASK.status,
+          output_summary: null,
+          children: [],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/scripts/`, () =>
+        HttpResponse.json({ scripts }),
+      ),
+    );
+  }
+
+  test('shows script requests section when task has scripts', async () => {
+    sessionStorage.setItem('grassland.token', 'tok');
+    stubHandlers([SR]);
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+    });
+    await waitFor(() =>
+      expect(screen.getByText(/Script requests from this task/i)).toBeInTheDocument(),
+    );
+    const link = screen.getByRole('link', { name: 'SR-0001' });
+    expect(link).toBeInTheDocument();
+    expect(link).toHaveAttribute('href', `/orgs/${SLUG}/scripts/SR-0001`);
+    expect(screen.getByText(/Generate sitemap/)).toBeInTheDocument();
+    expect(screen.getByText(/completed/)).toBeInTheDocument();
+  });
+
+  test('hides script requests section when task has no scripts', async () => {
+    sessionStorage.setItem('grassland.token', 'tok');
+    stubHandlers([]);
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+    });
+    // Wait for the drawer to fully load — "Live events" section always renders.
+    await waitFor(() =>
+      expect(screen.getByText(/Live events/i)).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/Script requests from this task/i)).not.toBeInTheDocument();
   });
 });

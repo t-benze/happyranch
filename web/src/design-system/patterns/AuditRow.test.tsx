@@ -43,3 +43,106 @@ describe('AuditRow', () => {
     expect(screen.queryByText(/TASK-/)).not.toBeInTheDocument();
   });
 });
+
+describe('AuditRow — script_* actions', () => {
+  const srEntry: AuditEntry = {
+    id: 2,
+    task_id: 'TASK-42',
+    session_id: null,
+    agent: 'eng_agent',
+    action: 'script_submitted',
+    payload: {
+      script_request_id: 'SR-001',
+      title: 'Deploy to staging',
+    },
+    created_at: '2026-05-19T12:00:00Z',
+  };
+
+  test('renders SR id as a link when scriptsBasePath is provided', () => {
+    render(
+      wrap(
+        <AuditRow
+          entry={srEntry}
+          density="compact"
+          scriptsBasePath="/orgs/test-org/scripts"
+        />,
+      ),
+    );
+    const link = screen.getByRole('link', { name: 'SR-001' });
+    expect(link).toBeInTheDocument();
+    expect(link).toHaveAttribute('href', '/orgs/test-org/scripts/SR-001');
+  });
+
+  test('renders title inline for script_submitted', () => {
+    render(
+      wrap(
+        <AuditRow
+          entry={srEntry}
+          density="compact"
+          scriptsBasePath="/orgs/test-org/scripts"
+        />,
+      ),
+    );
+    expect(screen.getByText(/submitted/)).toBeInTheDocument();
+    expect(screen.getByText(/Deploy to staging/)).toBeInTheDocument();
+  });
+
+  test('renders reason inline for script_rejected', () => {
+    render(
+      wrap(
+        <AuditRow
+          entry={{
+            ...srEntry,
+            action: 'script_rejected',
+            payload: {
+              script_request_id: 'SR-002',
+              reason: 'dangerous command',
+            },
+          }}
+          density="compact"
+          scriptsBasePath="/orgs/test-org/scripts"
+        />,
+      ),
+    );
+    expect(screen.getByText(/rejected/)).toBeInTheDocument();
+    expect(screen.getByText(/dangerous command/)).toBeInTheDocument();
+  });
+
+  test('renders exit code + duration for script_run_completed', () => {
+    render(
+      wrap(
+        <AuditRow
+          entry={{
+            ...srEntry,
+            action: 'script_run_completed',
+            payload: {
+              script_request_id: 'SR-003',
+              exit_code: 0,
+              duration_ms: 1234,
+            },
+          }}
+          density="compact"
+          scriptsBasePath="/orgs/test-org/scripts"
+        />,
+      ),
+    );
+    expect(screen.getByText(/completed/)).toBeInTheDocument();
+    expect(screen.getByText(/exit=0/)).toBeInTheDocument();
+    expect(screen.getByText(/1234ms/)).toBeInTheDocument();
+  });
+
+  test('falls back to plain text for non-script actions', () => {
+    render(
+      wrap(
+        <AuditRow
+          entry={baseEntry}
+          density="compact"
+          scriptsBasePath="/orgs/test-org/scripts"
+        />,
+      ),
+    );
+    // Non-SR action: still renders action name, no SR link
+    expect(screen.getByText('completion_report')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /SR-/ })).not.toBeInTheDocument();
+  });
+});

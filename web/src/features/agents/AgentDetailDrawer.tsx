@@ -12,7 +12,8 @@
  * workspaces — we render an explanatory hint rather than a hard error so
  * the founder can still inspect tasks + scorecards for legacy agents.
  */
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import {
   Drawer,
   DrawerContent,
@@ -31,6 +32,7 @@ import {
   useAgentTasks,
 } from '@/hooks/agents';
 import { useTasksRoutes } from '@/hooks/tasks';
+import { useScriptsList } from '@/hooks/scripts';
 import { useDensity } from '@/hooks/density';
 
 interface AgentDetailDrawerProps {
@@ -39,6 +41,7 @@ interface AgentDetailDrawerProps {
 
 export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.Element {
   const navigate = useNavigate();
+  const { slug } = useParams<{ slug: string }>();
   const agentsRoutes = useAgentsRoutes();
   const taskRoutes = useTasksRoutes();
   const { density } = useDensity();
@@ -46,6 +49,7 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
   const agentsQuery = useAgentsList();
   const tasksQuery = useAgentTasks(agentName);
   const learningsQuery = useAgentLearnings(agentName);
+  const scriptsQuery = useScriptsList({ agent: agentName, status: 'all', limit: 10 });
 
   const agent = agentsQuery.data?.agents.find((a) => a.name === agentName);
   const onClose = () => navigate(agentsRoutes.inbox());
@@ -138,6 +142,33 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
               title="No learnings"
               body="This agent has not filed any learnings yet."
             />
+          )}
+
+          {scriptsQuery.data && scriptsQuery.data.scripts.length > 0 && (
+            <>
+              <h3 className="text-fg-muted mt-6 mb-2 text-xs font-medium tracking-wider uppercase">
+                Recent script requests
+              </h3>
+              <ul className="space-y-1 text-sm">
+                {scriptsQuery.data.scripts.map((s) => (
+                  <li key={s.id}>
+                    {slug ? (
+                      <Link
+                        to={`/orgs/${slug}/scripts/${s.id}`}
+                        className="text-accent hover:underline font-mono"
+                      >
+                        {s.id}
+                      </Link>
+                    ) : (
+                      <span className="font-mono">{s.id}</span>
+                    )}
+                    {' — '}
+                    {s.title}{' '}
+                    <span className="text-fg-muted">({s.status})</span>
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
         </section>
       </DrawerContent>
