@@ -1,4 +1,5 @@
 import { screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
@@ -82,5 +83,112 @@ describe('ScriptsPage — read path', () => {
     await waitFor(() => {
       expect(screen.getByText(/Status/i)).toBeInTheDocument();
     });
+  });
+});
+
+describe('ScriptDetailPane + RejectScriptDialog — write path', () => {
+  function stubDetailHandlers() {
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/scripts/`, () =>
+        HttpResponse.json({ scripts: [SCRIPT] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/scripts/SR-0001`, () =>
+        HttpResponse.json(SCRIPT),
+      ),
+    );
+  }
+
+  test('detail drawer renders title, rationale, script, and action bar for pending SR', async () => {
+    sessionStorage.setItem('grassland.token', 'tok');
+    stubDetailHandlers();
+    mountAt(`/orgs/${SLUG}/scripts/SR-0001`);
+    // Title and rationale appear in both the card and the drawer — use getAllByText
+    await waitFor(() =>
+      expect(screen.getAllByText('Clean up stale Docker images').length).toBeGreaterThanOrEqual(1),
+    );
+    expect(screen.getAllByText(/Disk usage is above 90%/i).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('docker image prune -af')).toBeInTheDocument();
+    // Action bar should be visible for pending SR
+    expect(screen.getByRole('button', { name: /Reject/i })).toBeInTheDocument();
+  });
+
+  test('RejectScriptDialog submits reason and calls POST reject endpoint', async () => {
+    sessionStorage.setItem('grassland.token', 'tok');
+    stubDetailHandlers();
+    let capturedBody: unknown = null;
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/scripts/SR-0001/reject`, async ({ request: req }) => {
+        capturedBody = await req.json();
+        return HttpResponse.json({ ...SCRIPT, status: 'rejected', reject_reason: 'Too risky' });
+      }),
+    );
+
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/scripts/SR-0001`);
+
+    // Click Reject to open dialog
+    await user.click(await screen.findByRole('button', { name: /Reject/i }));
+
+    // Dialog should open
+    await waitFor(() =>
+      expect(screen.getByRole('dialog')).toBeInTheDocument(),
+    );
+
+    // Type a reason
+    await user.type(screen.getByPlaceholderText(/Reason \(required/i), 'Too risky');
+
+    // Submit
+    await user.click(screen.getByRole('button', { name: /^Reject$/ }));
+
+    await waitFor(() => {
+      expect(capturedBody).toEqual({ reason: 'Too risky' });
+    });
+  });
+
+  test('reject button is disabled when reason is empty', async () => {
+    sessionStorage.setItem('grassland.token', 'tok');
+    stubDetailHandlers();
+
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/scripts/SR-0001`);
+
+    await user.click(await screen.findByRole('button', { name: /Reject/i }));
+
+    await waitFor(() =>
+      expect(screen.getByRole('dialog')).toBeInTheDocument(),
+    );
+
+    // The Reject submit button should be disabled when reason is empty
+    const submitBtn = screen.getByRole('button', { name: /^Reject$/ });
+    expect(submitBtn).toBeDisabled();
+  });
+
+  test('detail drawer shows reject reason section for rejected SR', async () => {
+    sessionStorage.setItem('grassland.token', 'tok');
+    const rejectedScript = {
+      ...SCRIPT,
+      status: 'rejected' as const,
+      reject_reason: 'Too risky to run',
+    };
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/scripts/`, () =>
+        HttpResponse.json({ scripts: [rejectedScript] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/scripts/SR-0001`, () =>
+        HttpResponse.json(rejectedScript),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/scripts/SR-0001`);
+    await waitFor(() =>
+      expect(screen.getByText('Too risky to run')).toBeInTheDocument(),
+    );
+    // Action bar should NOT be visible for rejected SR
+    expect(screen.queryByRole('button', { name: /Reject/i })).not.toBeInTheDocument();
   });
 });

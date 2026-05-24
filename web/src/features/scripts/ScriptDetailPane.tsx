@@ -1,15 +1,18 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Drawer,
   DrawerContent,
   DrawerTitle,
 } from '@/design-system/primitives/Drawer';
+import { Button } from '@/design-system/primitives/Button';
 import { useScript, useScriptsRoutes } from '@/hooks/scripts';
 import { cn } from '@/lib/utils';
 import type { ScriptRequestStatus } from '@/lib/api/types';
+import { RejectScriptDialog } from './RejectScriptDialog';
 
-// Mirrors STATUS_CLASS from ScriptsPage — keep in sync until Task 27 extracts
-// this to a shared pattern.
+// Mirrors STATUS_CLASS from ScriptsPage — keep in sync until a shared
+// ScriptStatusBadge pattern is extracted to design-system.
 const STATUS_CLASS: Record<ScriptRequestStatus, string> = {
   pending: 'bg-tier-yellow-tint text-status-archiving',
   running: 'bg-tier-green-tint text-status-open',
@@ -31,6 +34,8 @@ function ScriptStatusBadge({ status }: { status: ScriptRequestStatus }): JSX.Ele
   );
 }
 
+type OpenDialog = 'reject' | 'run' | null;
+
 interface ScriptDetailPaneProps {
   srId: string;
 }
@@ -39,49 +44,118 @@ export function ScriptDetailPane({ srId }: ScriptDetailPaneProps): JSX.Element {
   const navigate = useNavigate();
   const routes = useScriptsRoutes();
   const query = useScript(srId);
+  const [openDialog, setOpenDialog] = useState<OpenDialog>(null);
 
   const onClose = () => navigate(routes.inbox());
 
+  const sr = query.data;
+
   return (
-    <Drawer open onOpenChange={(o) => !o && onClose()}>
-      <DrawerContent className="flex flex-col">
-        <header className="border-border-subtle shrink-0 border-b p-4">
-          <DrawerTitle className="text-fg flex items-center gap-2 text-lg">
-            <span className="text-id-task font-mono text-sm">{srId}</span>
-            {query.data && <ScriptStatusBadge status={query.data.status} />}
-          </DrawerTitle>
-          {query.data && (
-            <p className="text-fg-muted mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-              <span>{query.data.agent_name}</span>
-              <span>· {query.data.task_id}</span>
-              <span>· {query.data.interpreter}</span>
-            </p>
-          )}
-        </header>
-        <section className="min-h-0 flex-1 overflow-y-auto p-4">
-          {query.isLoading && (
-            <p className="text-fg-muted text-sm">Loading…</p>
-          )}
-          {query.isError && (
-            <p className="text-fg-muted text-sm">Error loading {srId}.</p>
-          )}
-          {query.data && (
-            <>
-              <h2 className="text-fg mb-4 text-base font-semibold">{query.data.title}</h2>
-              <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
-                Rationale
-              </h3>
-              <p className="text-fg mb-4 whitespace-pre-wrap text-sm">{query.data.rationale}</p>
-              <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
-                Script ({query.data.interpreter})
-              </h3>
-              <pre className="bg-surface-canvas text-fg overflow-x-auto rounded p-3 text-xs whitespace-pre">
-                {query.data.script_text}
-              </pre>
-            </>
-          )}
-        </section>
-      </DrawerContent>
-    </Drawer>
+    <>
+      <Drawer open onOpenChange={(o) => !o && onClose()}>
+        <DrawerContent className="flex flex-col">
+          {/* ── Header ── */}
+          <header className="border-border-subtle shrink-0 border-b p-4">
+            <DrawerTitle className="text-fg flex items-center gap-2 text-lg">
+              <span className="text-id-task font-mono text-sm">{srId}</span>
+              {sr && <ScriptStatusBadge status={sr.status} />}
+            </DrawerTitle>
+            {sr && (
+              <p className="text-fg-muted mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                <span>{sr.agent_name}</span>
+                <span>·</span>
+                <span className="text-id-task font-mono">{sr.task_id}</span>
+                <span>·</span>
+                <span>{sr.interpreter}</span>
+                {sr.created_at && (
+                  <>
+                    <span>·</span>
+                    <span>{new Date(sr.created_at).toLocaleString()}</span>
+                  </>
+                )}
+              </p>
+            )}
+          </header>
+
+          {/* ── Body ── */}
+          <section className="min-h-0 flex-1 overflow-y-auto p-4 space-y-5">
+            {query.isLoading && (
+              <p className="text-fg-muted text-sm">Loading…</p>
+            )}
+            {query.isError && (
+              <p className="text-fg-muted text-sm">Error loading {srId}.</p>
+            )}
+            {sr && (
+              <>
+                {/* 1. Title */}
+                <h2 className="text-fg text-base font-semibold">{sr.title}</h2>
+
+                {/* 2. Rationale */}
+                <div>
+                  <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+                    Rationale
+                  </h3>
+                  <p className="text-fg text-sm whitespace-pre-wrap">{sr.rationale}</p>
+                </div>
+
+                {/* 3. Script preview */}
+                <div>
+                  <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+                    Script
+                    <span className="ml-1 normal-case">({sr.interpreter}
+                      {sr.cwd_hint ? ` · cwd: ${sr.cwd_hint}` : ''}
+                    )</span>
+                  </h3>
+                  <pre className="bg-surface-canvas text-fg overflow-x-auto rounded p-3 text-xs whitespace-pre">
+                    {sr.script_text}
+                  </pre>
+                </div>
+
+                {/* 4. Action bar — pending only */}
+                {sr.status === 'pending' && (
+                  <div className="flex gap-3">
+                    <Button
+                      variant="default"
+                      disabled
+                      title="Run wiring lands in Task 29"
+                      className="opacity-50"
+                    >
+                      Run
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      onClick={() => setOpenDialog('reject')}
+                    >
+                      Reject
+                    </Button>
+                  </div>
+                )}
+
+                {/* 5. Reject reason — rejected only */}
+                {sr.status === 'rejected' && sr.reject_reason && (
+                  <div>
+                    <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+                      Reject reason
+                    </h3>
+                    <p className="text-sm whitespace-pre-wrap">{sr.reject_reason}</p>
+                  </div>
+                )}
+
+                {/* 6. Output section — TODO Task 29 */}
+              </>
+            )}
+          </section>
+        </DrawerContent>
+      </Drawer>
+
+      {/* Reject dialog — mounted outside the Drawer so z-index stacks correctly */}
+      {openDialog === 'reject' && (
+        <RejectScriptDialog
+          srId={srId}
+          open
+          onClose={() => setOpenDialog(null)}
+        />
+      )}
+    </>
   );
 }
