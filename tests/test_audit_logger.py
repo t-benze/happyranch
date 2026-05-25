@@ -332,3 +332,89 @@ def test_log_script_run_completed(db):
     assert payload["exit_code"] == 0
     assert payload["duration_ms"] == 1500
     assert payload["script_request_id"] == "SR-001"
+
+
+def test_log_script_notify_sent_records_payload(db):
+    audit = AuditLogger(db)
+    audit.log_script_notify_sent(
+        task_id="TASK-91", sr_id="SR-019", feishu_message_id="om_abc",
+    )
+    rows = db.get_audit_logs("TASK-91")
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["action"] == "script_notify_sent"
+    assert r["agent"] == "daemon"
+    assert r["payload"]["script_request_id"] == "SR-019"
+    assert r["payload"]["feishu_message_id"] == "om_abc"
+
+
+def test_log_script_notify_failed_records_error(db):
+    audit = AuditLogger(db)
+    audit.log_script_notify_failed(
+        task_id="TASK-91", sr_id="SR-019", error="ConnectionRefused: feishu",
+    )
+    rows = db.get_audit_logs("TASK-91")
+    r = rows[0]
+    assert r["action"] == "script_notify_failed"
+    assert r["payload"]["script_request_id"] == "SR-019"
+    assert r["payload"]["error"] == "ConnectionRefused: feishu"
+
+
+def test_log_script_reply_processed_carries_decision_and_rationale(db):
+    audit = AuditLogger(db)
+    audit.log_script_reply_processed(
+        sr_id="SR-019", task_id="TASK-91",
+        decision="approve", rationale="merge-close approved",
+        feishu_event_id="evt_1",
+    )
+    rows = db.get_audit_logs("TASK-91")
+    r = rows[0]
+    assert r["action"] == "script_reply_processed"
+    assert r["agent"] == "founder"
+    assert r["payload"]["decision"] == "approve"
+    assert r["payload"]["rationale"] == "merge-close approved"
+    assert r["payload"]["script_request_id"] == "SR-019"
+    assert r["payload"]["feishu_event_id"] == "evt_1"
+
+
+def test_log_script_reply_rejected_records_reason(db):
+    audit = AuditLogger(db)
+    audit.log_script_reply_rejected(
+        sr_id="SR-019", task_id="TASK-91",
+        reason="verb_mismatch", feishu_event_id="evt_1",
+        text_preview="REVISIT please",
+    )
+    rows = db.get_audit_logs("TASK-91")
+    r = rows[0]
+    assert r["action"] == "script_reply_rejected"
+    assert r["agent"] == "daemon"
+    assert r["payload"]["reason"] == "verb_mismatch"
+    assert r["payload"]["text_preview"] == "REVISIT please"
+
+
+def test_log_script_run_result_notify_sent(db):
+    audit = AuditLogger(db)
+    audit.log_script_run_result_notify_sent(
+        sr_id="SR-019", task_id="TASK-91",
+        parent_message_id="om_root", follow_up_message_id="om_followup",
+        status="completed",
+    )
+    rows = db.get_audit_logs("TASK-91")
+    r = rows[0]
+    assert r["action"] == "script_run_result_notify_sent"
+    assert r["payload"]["parent_message_id"] == "om_root"
+    assert r["payload"]["follow_up_message_id"] == "om_followup"
+    assert r["payload"]["status"] == "completed"
+
+
+def test_log_script_run_result_notify_failed(db):
+    audit = AuditLogger(db)
+    audit.log_script_run_result_notify_failed(
+        sr_id="SR-019", task_id="TASK-91",
+        error="Timeout", status="failed",
+    )
+    rows = db.get_audit_logs("TASK-91")
+    r = rows[0]
+    assert r["action"] == "script_run_result_notify_failed"
+    assert r["payload"]["error"] == "Timeout"
+    assert r["payload"]["status"] == "failed"
