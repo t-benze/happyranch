@@ -2210,7 +2210,7 @@ class Database:
         return dict(row)
 
     @_synchronized
-    def get_open_notification_for_sr(
+    def get_latest_notification_for_sr(
         self, sr_id: str, *, kind: str,
     ) -> dict | None:
         """Look up the most-recent escalation_notifications row for an SR.
