@@ -28,6 +28,8 @@ class _Sender(Protocol):
 
 
 _HINT_PREVIEW_CAP = 200
+_SCRIPT_PREVIEW_CAP = 1500
+_RESULT_OUTPUT_PREVIEW_CAP = 500
 
 
 def _build_parse_hint_body(*, text_preview: str) -> tuple[str, list[str]]:
@@ -97,6 +99,99 @@ def _build_failure_body(
         "(Or ignore to leave it failed.)",
     ]
     return title, lines
+
+
+def _build_script_request_body(
+    *,
+    slug: str,
+    sr_id: str,
+    agent: str,
+    task_id: str,
+    title: str,
+    rationale: str,
+    script_text: str,
+    interpreter: str,
+    cwd_hint: str | None,
+) -> tuple[str, list[str]]:
+    """Body for the script-request submit push (msg_type=post)."""
+    header = f"[Grassland {slug}] {sr_id} submitted — review needed"
+    script_preview = script_text
+    if len(script_preview) > _SCRIPT_PREVIEW_CAP:
+        script_preview = (
+            script_preview[:_SCRIPT_PREVIEW_CAP]
+            + f"\n[truncated — see grassland scripts show {sr_id} for full script]"
+        )
+    lines = [
+        f"Agent:        {agent}",
+        f"Task:         {task_id}",
+        f"Interpreter:  {interpreter}",
+        f"Cwd hint:     {cwd_hint or '(workspace root)'}",
+        f"Title:        {title}",
+        "",
+        "Rationale:",
+        rationale,
+        "",
+        "Script:",
+        script_preview,
+        "",
+        "To resolve, reply in this thread with one of:",
+        "",
+        "  APPROVE",
+        "  <optional note>",
+        "",
+        "  —or—",
+        "",
+        "  REJECT",
+        "  <reason>",
+        "",
+        "You can also resolve via CLI:",
+        f"  grassland scripts show {sr_id}",
+        f"  grassland scripts run {sr_id}",
+        f"  grassland scripts reject {sr_id} --reason \"...\"",
+    ]
+    return header, lines
+
+
+def _build_script_result_body(
+    *,
+    slug: str,
+    sr_id: str,
+    status: str,
+    exit_code: int | None,
+    duration_ms: int,
+    stdout_head: str | None,
+    stderr_head: str | None,
+    reason: str | None,
+) -> tuple[str, list[str]]:
+    """Body for the terminal-result threaded reply."""
+    if status == "completed":
+        descriptor = f"completed (exit {exit_code if exit_code is not None else '?'})"
+    else:
+        descriptor = f"failed ({reason or 'unknown'})"
+    header = f"[Grassland {slug}] {sr_id} {descriptor}"
+
+    def _preview(s: str | None) -> list[str]:
+        if not s:
+            return ["(empty)"]
+        s = s.rstrip("\n")
+        if len(s) <= _RESULT_OUTPUT_PREVIEW_CAP:
+            return s.split("\n")
+        return (
+            s[:_RESULT_OUTPUT_PREVIEW_CAP].split("\n")
+            + [f"[truncated — full output in grassland scripts output {sr_id}]"]
+        )
+
+    duration_s = duration_ms / 1000.0
+    lines = [
+        f"Duration: {duration_s:.1f}s",
+        "",
+        "stdout:",
+        *_preview(stdout_head),
+        "",
+        "stderr:",
+        *_preview(stderr_head),
+    ]
+    return header, lines
 
 
 class EscalationNotifier:
