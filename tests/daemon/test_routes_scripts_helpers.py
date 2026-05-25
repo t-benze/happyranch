@@ -96,8 +96,8 @@ async def test_run_helper_transitions_to_running(scripts_test_org, monkeypatch):
     _insert_pending_sr(org)
 
     async def _fake_spawn(**kw):
-        from src.daemon.scripts_runner import RunResult
-        return RunResult(
+        from src.daemon.scripts_runner import ScriptRunResult
+        return ScriptRunResult(
             status="completed", exit_code=0, duration_ms=10,
             stdout_head="ok", stderr_head=None,
             stdout_bytes=2, stderr_bytes=0,
@@ -107,7 +107,7 @@ async def test_run_helper_transitions_to_running(scripts_test_org, monkeypatch):
     monkeypatch.setattr("src.daemon.routes.scripts._spawn_script", _fake_spawn)
 
     result = await run_script_from_notification(
-        org, sr_id="SR-001", actor="feishu-reply", founder_note="ok",
+        org, sr_id="SR-001",
     )
     assert result["status"] == "running"
     assert result["id"] == "SR-001"
@@ -118,9 +118,7 @@ async def test_run_helper_transitions_to_running(scripts_test_org, monkeypatch):
             break
         await asyncio.sleep(0.05)
     rec = org.db.get_script_request("SR-001")
-    assert rec.status in (
-        ScriptRequestStatus.COMPLETED, ScriptRequestStatus.FAILED,
-    )
+    assert rec.status == ScriptRequestStatus.COMPLETED
 
 
 @pytest.mark.asyncio
@@ -128,7 +126,7 @@ async def test_run_helper_404_when_missing(scripts_test_org):
     org = scripts_test_org
     with pytest.raises(HTTPException) as exc:
         await run_script_from_notification(
-            org, sr_id="SR-999", actor="feishu-reply", founder_note="ok",
+            org, sr_id="SR-999",
         )
     assert exc.value.status_code == 404
 
@@ -143,6 +141,6 @@ async def test_run_helper_409_when_not_pending(scripts_test_org):
     )
     with pytest.raises(HTTPException) as exc:
         await run_script_from_notification(
-            org, sr_id="SR-001", actor="feishu-reply", founder_note="ok",
+            org, sr_id="SR-001",
         )
     assert exc.value.status_code == 409

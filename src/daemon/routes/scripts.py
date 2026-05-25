@@ -272,18 +272,13 @@ def _resolve_cwd(
 
 
 async def run_script_from_notification(
-    org, *, sr_id: str, actor: str, founder_note: str,
+    org, *, sr_id: str,
 ) -> dict:
     """In-process run path used by the Feishu listener.
 
     Uses the SR's stored defaults — no cwd_override, no timeout_override.
     Returns the same 202-style dict the HTTP route returns. Raises
     HTTPException on failure with the same status/detail shape.
-
-    `actor` ("feishu-reply" or "cli") and `founder_note` (the rationale from
-    the APPROVE reply) are unused by the run itself today but kept on the
-    signature so future polish (recording the approval rationale in the audit
-    row) can land without changing the listener.
     """
     return await _run_script_core(
         org, sr_id=sr_id,
