@@ -409,6 +409,14 @@ async def _run_script_core(
             audit.log_script_run_failed(
                 task_id=record.task_id, sr_id=sr_id, reason="spawn_failed",
             )
+            parent = org.db.get_latest_notification_for_sr(sr_id, kind="script_request")
+            if parent is not None and getattr(org, "orchestrator", None) is not None:
+                org.orchestrator.notify_script_run_result(
+                    sr_id=sr_id, task_id=record.task_id,
+                    parent_message_id=parent["feishu_message_id"],
+                    status="failed", exit_code=None, duration_ms=0,
+                    stdout_head=None, stderr_head=None, reason="spawn_failed",
+                )
             return
         except Exception as exc:
             finished = _now_iso()
@@ -423,6 +431,14 @@ async def _run_script_core(
             audit.log_script_run_failed(
                 task_id=record.task_id, sr_id=sr_id, reason="internal_error",
             )
+            parent = org.db.get_latest_notification_for_sr(sr_id, kind="script_request")
+            if parent is not None and getattr(org, "orchestrator", None) is not None:
+                org.orchestrator.notify_script_run_result(
+                    sr_id=sr_id, task_id=record.task_id,
+                    parent_message_id=parent["feishu_message_id"],
+                    status="failed", exit_code=None, duration_ms=0,
+                    stdout_head=None, stderr_head=str(exc), reason="internal_error",
+                )
             return
 
         finished = _now_iso()
@@ -455,6 +471,19 @@ async def _run_script_core(
                 exit_code=result.exit_code,
                 duration_ms=result.duration_ms,
                 reason=result.reason or "unknown",
+            )
+
+        parent = org.db.get_latest_notification_for_sr(sr_id, kind="script_request")
+        if parent is not None and getattr(org, "orchestrator", None) is not None:
+            org.orchestrator.notify_script_run_result(
+                sr_id=sr_id, task_id=record.task_id,
+                parent_message_id=parent["feishu_message_id"],
+                status=result.status,
+                exit_code=result.exit_code,
+                duration_ms=result.duration_ms,
+                stdout_head=result.stdout_head,
+                stderr_head=result.stderr_head,
+                reason=result.reason,
             )
 
     from src.daemon.scripts_runner import register_runner_task

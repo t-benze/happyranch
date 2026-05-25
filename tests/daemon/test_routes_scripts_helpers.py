@@ -144,3 +144,87 @@ async def test_run_helper_409_when_not_pending(scripts_test_org):
             org, sr_id="SR-001",
         )
     assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_run_terminal_calls_notify_script_run_result_when_notification_exists(
+    scripts_test_org, monkeypatch,
+):
+    """When an SR has an open Feishu notification (kind=script_request),
+    the terminal transition triggers a notify_script_run_result call."""
+    from datetime import datetime, timedelta, timezone
+    org = scripts_test_org
+    _insert_pending_sr(org)
+
+    org.db.mint_escalation_notification(
+        feishu_message_id="om_parent", org_slug="acme", task_id="SR-001",
+        chat_id="oc_xyz",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=72),
+        kind="script_request",
+    )
+
+    captured: list[dict] = []
+    class _MockOrchestrator:
+        def notify_script_run_result(self, **kw):
+            captured.append(kw)
+    org.orchestrator = _MockOrchestrator()
+
+    async def _fake_spawn(**kw):
+        from src.daemon.scripts_runner import ScriptRunResult
+        return ScriptRunResult(
+            status="completed", exit_code=0, duration_ms=42,
+            stdout_head="hello", stderr_head=None,
+            stdout_bytes=5, stderr_bytes=0,
+            truncated_stdout=False, truncated_stderr=False,
+            reason=None,
+        )
+    monkeypatch.setattr("src.daemon.routes.scripts._spawn_script", _fake_spawn)
+
+    await run_script_from_notification(org, sr_id="SR-001")
+
+    # Wait for background runner to finish.
+    for _ in range(40):
+        if captured:
+            break
+        await asyncio.sleep(0.05)
+
+    assert len(captured) == 1, f"expected one notify call, got {len(captured)}"
+    kw = captured[0]
+    assert kw["sr_id"] == "SR-001"
+    assert kw["task_id"] == "TASK-1"
+    assert kw["parent_message_id"] == "om_parent"
+    assert kw["status"] == "completed"
+    assert kw["exit_code"] == 0
+    assert kw["stdout_head"] == "hello"
+
+
+@pytest.mark.asyncio
+async def test_run_terminal_skips_follow_up_when_no_notification(
+    scripts_test_org, monkeypatch,
+):
+    """CLI-initiated runs (no Feishu notification minted) get no follow-up."""
+    org = scripts_test_org
+    _insert_pending_sr(org)
+
+    captured: list[dict] = []
+    class _MockOrchestrator:
+        def notify_script_run_result(self, **kw):
+            captured.append(kw)
+    org.orchestrator = _MockOrchestrator()
+
+    async def _fake_spawn(**kw):
+        from src.daemon.scripts_runner import ScriptRunResult
+        return ScriptRunResult(
+            status="completed", exit_code=0, duration_ms=10,
+            stdout_head=None, stderr_head=None,
+            stdout_bytes=0, stderr_bytes=0,
+            truncated_stdout=False, truncated_stderr=False,
+            reason=None,
+        )
+    monkeypatch.setattr("src.daemon.routes.scripts._spawn_script", _fake_spawn)
+
+    await run_script_from_notification(org, sr_id="SR-001")
+    for _ in range(20):
+        await asyncio.sleep(0.05)
+
+    assert captured == []
