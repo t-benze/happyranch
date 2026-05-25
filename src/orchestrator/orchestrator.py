@@ -157,6 +157,77 @@ class Orchestrator:
         else:
             loop.create_task(coro_factory())
 
+    def notify_script_submitted(
+        self,
+        *,
+        sr_id: str,
+        agent: str,
+        task_id: str,
+        title: str,
+        rationale: str,
+        script_text: str,
+        interpreter: str,
+        cwd_hint: str | None,
+    ) -> None:
+        """Fire-and-forget push notification for an agent's script request.
+
+        Same threading model as notify_escalated / notify_failed: detect a
+        running event loop and create_task on it; otherwise spawn a daemon
+        thread that owns its own asyncio.run.
+        """
+        if self._notifier is None:
+            return
+        import asyncio
+        import threading
+        coro_factory = lambda: self._notifier.send_script_request(
+            sr_id=sr_id, agent=agent, task_id=task_id,
+            title=title, rationale=rationale, script_text=script_text,
+            interpreter=interpreter, cwd_hint=cwd_hint,
+        )
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            threading.Thread(
+                target=lambda: asyncio.run(coro_factory()),
+                daemon=True,
+            ).start()
+        else:
+            loop.create_task(coro_factory())
+
+    def notify_script_run_result(
+        self,
+        *,
+        sr_id: str,
+        task_id: str,
+        parent_message_id: str,
+        status: str,
+        exit_code: int | None,
+        duration_ms: int,
+        stdout_head: str | None,
+        stderr_head: str | None,
+        reason: str | None,
+    ) -> None:
+        """Fire-and-forget threaded reply with the SR run's terminal result."""
+        if self._notifier is None:
+            return
+        import asyncio
+        import threading
+        coro_factory = lambda: self._notifier.send_script_run_result(
+            sr_id=sr_id, task_id=task_id,
+            parent_message_id=parent_message_id,
+            status=status, exit_code=exit_code, duration_ms=duration_ms,
+            stdout_head=stdout_head, stderr_head=stderr_head, reason=reason,
+        )
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            threading.Thread(
+                target=lambda: asyncio.run(coro_factory()),
+                daemon=True,
+            ).start()
+        else:
+            loop.create_task(coro_factory())
+
     def _build_session_id(self) -> str:
         return f"sess-{uuid.uuid4().hex}"
 
