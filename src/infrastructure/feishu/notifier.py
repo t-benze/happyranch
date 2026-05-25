@@ -115,12 +115,12 @@ def _build_script_request_body(
 ) -> tuple[str, list[str]]:
     """Body for the script-request submit push (msg_type=post)."""
     header = f"[Grassland {slug}] {sr_id} submitted — review needed"
-    script_preview = script_text
-    if len(script_preview) > _SCRIPT_PREVIEW_CAP:
-        script_preview = (
-            script_preview[:_SCRIPT_PREVIEW_CAP]
-            + f"\n[truncated — see grassland scripts show {sr_id} for full script]"
-        )
+    if len(script_text) > _SCRIPT_PREVIEW_CAP:
+        script_lines = script_text[:_SCRIPT_PREVIEW_CAP].split("\n") + [
+            f"[truncated — see grassland scripts show {sr_id} for full script]"
+        ]
+    else:
+        script_lines = script_text.split("\n")
     lines = [
         f"Agent:        {agent}",
         f"Task:         {task_id}",
@@ -132,7 +132,7 @@ def _build_script_request_body(
         rationale,
         "",
         "Script:",
-        script_preview,
+        *script_lines,
         "",
         "To resolve, reply in this thread with one of:",
         "",

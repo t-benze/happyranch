@@ -122,3 +122,39 @@ def test_result_body_completed_unknown_exit_code():
         stdout_head=None, stderr_head=None, reason=None,
     )
     assert "exit ?" in title
+
+
+def test_request_body_renders_each_script_line_as_separate_element():
+    """Each script line must be its own body_lines element so Feishu renders
+    each as a separate paragraph (one paragraph per element is the established
+    convention in client.send_post_message)."""
+    _, lines = _build_script_request_body(
+        slug="acme", sr_id="SR-019", agent="a", task_id="T",
+        title="t", rationale="r",
+        script_text="set -euo pipefail\ngh pr close 247\necho done",
+        interpreter="bash", cwd_hint=None,
+    )
+    # The three script lines must appear as three separate list elements.
+    assert "set -euo pipefail" in lines
+    assert "gh pr close 247" in lines
+    assert "echo done" in lines
+    # None of them carry embedded newlines.
+    for el in lines:
+        assert "\n" not in el, f"element {el!r} contains embedded newline"
+
+
+def test_request_body_truncation_marker_is_its_own_element():
+    """When the script is truncated, the truncation footer must be a separate
+    element (not appended to the last script line)."""
+    long_script = "x" * (_SCRIPT_PREVIEW_CAP + 500)
+    _, lines = _build_script_request_body(
+        slug="acme", sr_id="SR-019", agent="a", task_id="T",
+        title="t", rationale="r", script_text=long_script,
+        interpreter="bash", cwd_hint=None,
+    )
+    # The truncation marker is a standalone element.
+    marker = f"[truncated — see grassland scripts show SR-019 for full script]"
+    assert marker in lines
+    # And again, no embedded newlines anywhere.
+    for el in lines:
+        assert "\n" not in el, f"element {el!r} contains embedded newline"
