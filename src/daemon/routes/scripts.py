@@ -153,6 +153,14 @@ async def submit_script(slug: str, body: SubmitBody, org: OrgDep) -> dict:
         line_count=body.script.count("\n") + 1,
     )
 
+    # Fire-and-forget Feishu push (no-op when notifier is unset).
+    if getattr(org, "orchestrator", None) is not None:
+        org.orchestrator.notify_script_submitted(
+            sr_id=sr_id, agent=agent, task_id=body.task_id,
+            title=title, rationale=rationale, script_text=body.script,
+            interpreter=body.interpreter, cwd_hint=cwd_hint,
+        )
+
     return {"id": sr_id, "status": "pending", "created_at": record.created_at}
 
 
@@ -163,17 +171,30 @@ class RejectBody(BaseModel):
     reason: str
 
 
-@router.post("/scripts/{sr_id}/reject")
-async def reject_script(slug: str, sr_id: str, body: RejectBody, org: OrgDep) -> dict:
+async def reject_script_from_notification(
+    org, *, sr_id: str, reason: str,
+) -> ScriptRequestRecord:
+    """In-process reject path used by the Feishu listener.
+
+    Same validation + transition + audit as POST /scripts/{sr_id}/reject,
+    minus the request-body parsing. Raises HTTPException on failure with
+    the same status/detail shape the route returns.
+    """
     record = org.db.get_script_request(sr_id)
     if record is None:
-        raise HTTPException(status_code=404, detail={"code": "unknown_script_request", "sr_id": sr_id})
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "unknown_script_request", "sr_id": sr_id},
+        )
 
-    reason = body.reason.strip()
-    if not reason:
+    reason_stripped = reason.strip()
+    if not reason_stripped:
         raise HTTPException(status_code=422, detail={"code": "empty_reason"})
-    if len(reason) > _MAX_REJECT_REASON_LEN:
-        raise HTTPException(status_code=422, detail={"code": "reason_too_long", "max": _MAX_REJECT_REASON_LEN})
+    if len(reason_stripped) > _MAX_REJECT_REASON_LEN:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "reason_too_long", "max": _MAX_REJECT_REASON_LEN},
+        )
 
     if record.status != ScriptRequestStatus.PENDING:
         raise HTTPException(
@@ -184,21 +205,43 @@ async def reject_script(slug: str, sr_id: str, body: RejectBody, org: OrgDep) ->
     reviewed_at = _now_iso()
     try:
         org.db.transition_script_to_rejected(
-            sr_id, reviewer="founder", reason=reason, reviewed_at=reviewed_at,
+            sr_id, reviewer="founder", reason=reason_stripped,
+            reviewed_at=reviewed_at,
         )
     except ValueError:
         # Race: someone else acted between our read and our write.
         raise HTTPException(status_code=409, detail={"code": "not_pending"})
 
-    audit = AuditLogger(org.db)
-    audit.log_script_rejected(
-        task_id=record.task_id,
-        sr_id=sr_id,
-        reviewer="founder",
-        reason=reason,
+    AuditLogger(org.db).log_script_rejected(
+        task_id=record.task_id, sr_id=sr_id,
+        reviewer="founder", reason=reason_stripped,
+    )
+    return org.db.get_script_request(sr_id)
+
+
+def _consume_open_feishu_notification(org, sr_id: str) -> None:
+    """Mark any open kind=script_request Feishu notification as consumed by
+    'cli-fallback'.
+
+    Matches the pattern from `grassland resolve-escalation` / `grassland revisit`
+    (see `src/daemon/routes/tasks.py`): a CLI/Web action wins the race against
+    a later Feishu reply, which would otherwise hit `not_pending` in the
+    listener and leave the row stale until reply_ttl_hours expiry.
+    """
+    row = org.db.get_latest_notification_for_sr(sr_id, kind="script_request")
+    if row is None or row["consumed_at"] is not None:
+        return
+    org.db.consume_escalation_notification(
+        row["feishu_message_id"], consumed_by="cli-fallback",
     )
 
-    updated = org.db.get_script_request(sr_id)
+
+@router.post("/scripts/{sr_id}/reject")
+async def reject_script(slug: str, sr_id: str, body: RejectBody, org: OrgDep) -> dict:
+    updated = await reject_script_from_notification(
+        org, sr_id=sr_id, reason=body.reason,
+    )
+    _consume_open_feishu_notification(org, sr_id)
     return updated.model_dump()
 
 
@@ -254,27 +297,50 @@ def _resolve_cwd(
     return workspace_root
 
 
-@router.post("/scripts/{sr_id}/run", status_code=202)
-async def run_script_route(
-    slug: str, sr_id: str, body: RunBody, org: OrgDep,
+async def run_script_from_notification(
+    org, *, sr_id: str,
 ) -> dict:
+    """In-process run path used by the Feishu listener.
+
+    Uses the SR's stored defaults — no cwd_override, no timeout_override.
+    Returns the same 202-style dict the HTTP route returns. Raises
+    HTTPException on failure with the same status/detail shape.
+    """
+    return await _run_script_core(
+        org, sr_id=sr_id,
+        cwd_override=None, timeout_override=None,
+    )
+
+
+async def _run_script_core(
+    org, *, sr_id: str,
+    cwd_override: str | None, timeout_override: int | None,
+) -> dict:
+    """Shared core for HTTP and in-process run paths."""
     record = org.db.get_script_request(sr_id)
     if record is None:
-        raise HTTPException(status_code=404, detail={"code": "unknown_script_request", "sr_id": sr_id})
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "unknown_script_request", "sr_id": sr_id},
+        )
 
     if record.status != ScriptRequestStatus.PENDING:
         raise HTTPException(
-            status_code=409, detail={"code": "not_pending", "status": record.status.value}
+            status_code=409,
+            detail={"code": "not_pending", "status": record.status.value},
         )
 
-    timeout = body.timeout_seconds if body.timeout_seconds is not None else record.timeout_seconds
+    timeout = (
+        timeout_override if timeout_override is not None
+        else record.timeout_seconds
+    )
     if timeout <= 0 or timeout > 86400:
         raise HTTPException(status_code=422, detail={"code": "invalid_timeout"})
 
     workspace_root = org.root / "workspaces" / record.agent_name
     try:
         cwd_resolved = _resolve_cwd(
-            cwd_override=body.cwd_override,
+            cwd_override=cwd_override,
             cwd_hint=record.cwd_hint,
             workspace_root=workspace_root,
         )
@@ -291,7 +357,10 @@ async def run_script_route(
     if _interpreter_binary(record.interpreter.value) is None:
         raise HTTPException(
             status_code=422,
-            detail={"code": "interpreter_unavailable", "interpreter": record.interpreter.value},
+            detail={
+                "code": "interpreter_unavailable",
+                "interpreter": record.interpreter.value,
+            },
         )
 
     # Allocate output paths under <runtime>/orgs/<slug>/scripts/.
@@ -358,6 +427,14 @@ async def run_script_route(
             audit.log_script_run_failed(
                 task_id=record.task_id, sr_id=sr_id, reason="spawn_failed",
             )
+            parent = org.db.get_latest_notification_for_sr(sr_id, kind="script_request")
+            if parent is not None and getattr(org, "orchestrator", None) is not None:
+                org.orchestrator.notify_script_run_result(
+                    sr_id=sr_id, task_id=record.task_id,
+                    parent_message_id=parent["feishu_message_id"],
+                    status="failed", exit_code=None, duration_ms=0,
+                    stdout_head=None, stderr_head=None, reason="spawn_failed",
+                )
             return
         except Exception as exc:
             finished = _now_iso()
@@ -372,6 +449,14 @@ async def run_script_route(
             audit.log_script_run_failed(
                 task_id=record.task_id, sr_id=sr_id, reason="internal_error",
             )
+            parent = org.db.get_latest_notification_for_sr(sr_id, kind="script_request")
+            if parent is not None and getattr(org, "orchestrator", None) is not None:
+                org.orchestrator.notify_script_run_result(
+                    sr_id=sr_id, task_id=record.task_id,
+                    parent_message_id=parent["feishu_message_id"],
+                    status="failed", exit_code=None, duration_ms=0,
+                    stdout_head=None, stderr_head=str(exc), reason="internal_error",
+                )
             return
 
         finished = _now_iso()
@@ -406,6 +491,19 @@ async def run_script_route(
                 reason=result.reason or "unknown",
             )
 
+        parent = org.db.get_latest_notification_for_sr(sr_id, kind="script_request")
+        if parent is not None and getattr(org, "orchestrator", None) is not None:
+            org.orchestrator.notify_script_run_result(
+                sr_id=sr_id, task_id=record.task_id,
+                parent_message_id=parent["feishu_message_id"],
+                status=result.status,
+                exit_code=result.exit_code,
+                duration_ms=result.duration_ms,
+                stdout_head=result.stdout_head,
+                stderr_head=result.stderr_head,
+                reason=result.reason,
+            )
+
     from src.daemon.scripts_runner import register_runner_task
     register_runner_task(sr_id, asyncio.create_task(_run_and_persist()))
 
@@ -415,8 +513,22 @@ async def run_script_route(
         "started_at": now,
         "cwd_resolved": str(cwd_resolved),
         "timeout_seconds": timeout,
-        "events_url": f"/api/v1/orgs/{slug}/scripts/{sr_id}/events",
+        "events_url": f"/api/v1/orgs/{org.slug}/scripts/{sr_id}/events",
     }
+
+
+@router.post("/scripts/{sr_id}/run", status_code=202)
+async def run_script_route(
+    slug: str, sr_id: str, body: RunBody, org: OrgDep,
+) -> dict:
+    result = await _run_script_core(
+        org,
+        sr_id=sr_id,
+        cwd_override=body.cwd_override,
+        timeout_override=body.timeout_seconds,
+    )
+    _consume_open_feishu_notification(org, sr_id)
+    return result
 
 
 @router.get("/scripts/{sr_id}/output")

@@ -2,6 +2,7 @@
 our outbound flow. Specifically:
 - POST /open-apis/auth/v3/tenant_access_token/internal
 - POST /open-apis/im/v1/messages?receive_id_type=...
+- POST /open-apis/im/v1/messages/{message_id}/reply  (threaded reply)
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ def make_fake_feishu() -> tuple[FastAPI, dict[str, Any]]:
     state: dict[str, Any] = {
         "token_calls": 0,
         "messages": [],
+        "thread_replies": [],
     }
     app = FastAPI()
 
@@ -43,6 +45,24 @@ def make_fake_feishu() -> tuple[FastAPI, dict[str, Any]]:
             "data": {
                 "message_id": msg_id,
                 "chat_id": body.get("receive_id"),
+                "msg_type": body.get("msg_type"),
+            },
+        }
+
+    @app.post("/open-apis/im/v1/messages/{message_id}/reply")
+    async def reply_message(message_id: str, request: Request):
+        body = await request.json()
+        reply_id = f"om_reply_{len(state['thread_replies']) + 1}"
+        state["thread_replies"].append({
+            "parent_message_id": message_id,
+            "body": body,
+            "message_id": reply_id,
+        })
+        return {
+            "code": 0,
+            "msg": "success",
+            "data": {
+                "message_id": reply_id,
                 "msg_type": body.get("msg_type"),
             },
         }

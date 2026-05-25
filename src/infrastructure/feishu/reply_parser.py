@@ -23,7 +23,7 @@ class DispatchIntent:
     brief: str
 
 
-_NO_RATIONALE = "(no rationale provided)"
+NO_RATIONALE = "(no rationale provided)"
 
 
 def extract_text_from_content(msg_type: str, content_json: str) -> str | None:
@@ -93,7 +93,7 @@ def parse_reply(text: str) -> ParseResult | None:
 
     rationale = "\n".join(lines[first_idx + 1:]).strip()
     if not rationale:
-        rationale = _NO_RATIONALE
+        rationale = NO_RATIONALE
     return ParseResult(decision=decision, rationale=rationale)
 
 

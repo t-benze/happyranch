@@ -865,3 +865,118 @@ class AuditLogger:
                 "reason": reason,
             },
         )
+
+    # --- Feishu push correlation for script requests ---
+
+    def log_script_notify_sent(
+        self, *, task_id: str, sr_id: str, feishu_message_id: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="daemon",
+            action="script_notify_sent",
+            payload={
+                "script_request_id": sr_id,
+                "feishu_message_id": feishu_message_id,
+            },
+        )
+
+    def log_script_notify_failed(
+        self, *, task_id: str, sr_id: str, error: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="daemon",
+            action="script_notify_failed",
+            payload={
+                "script_request_id": sr_id,
+                "error": error,
+            },
+        )
+
+    def log_script_reply_processed(
+        self,
+        *,
+        sr_id: str,
+        task_id: str,
+        decision: str,
+        rationale: str,
+        feishu_event_id: str | None = None,
+    ) -> None:
+        payload: dict = {
+            "script_request_id": sr_id,
+            "decision": decision,
+            "rationale": rationale,
+        }
+        if feishu_event_id is not None:
+            payload["feishu_event_id"] = feishu_event_id
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="founder",
+            action="script_reply_processed",
+            payload=payload,
+        )
+
+    def log_script_reply_rejected(
+        self,
+        *,
+        sr_id: str,
+        task_id: str,
+        reason: str,
+        feishu_event_id: str | None = None,
+        text_preview: str | None = None,
+    ) -> None:
+        payload: dict = {
+            "script_request_id": sr_id,
+            "reason": reason,
+        }
+        if feishu_event_id is not None:
+            payload["feishu_event_id"] = feishu_event_id
+        if text_preview is not None:
+            payload["text_preview"] = text_preview[:200]
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="daemon",
+            action="script_reply_rejected",
+            payload=payload,
+        )
+
+    def log_script_run_result_notify_sent(
+        self,
+        *,
+        sr_id: str,
+        task_id: str,
+        parent_message_id: str,
+        follow_up_message_id: str,
+        status: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="daemon",
+            action="script_run_result_notify_sent",
+            payload={
+                "script_request_id": sr_id,
+                "parent_message_id": parent_message_id,
+                "follow_up_message_id": follow_up_message_id,
+                "status": status,
+            },
+        )
+
+    def log_script_run_result_notify_failed(
+        self,
+        *,
+        sr_id: str,
+        task_id: str,
+        error: str,
+        status: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="daemon",
+            action="script_run_result_notify_failed",
+            payload={
+                "script_request_id": sr_id,
+                "error": error,
+                "status": status,
+            },
+        )

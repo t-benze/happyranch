@@ -28,6 +28,8 @@ class _Sender(Protocol):
 
 
 _HINT_PREVIEW_CAP = 200
+_SCRIPT_PREVIEW_CAP = 1500
+_RESULT_OUTPUT_PREVIEW_CAP = 500
 
 
 def _build_parse_hint_body(*, text_preview: str) -> tuple[str, list[str]]:
@@ -97,6 +99,99 @@ def _build_failure_body(
         "(Or ignore to leave it failed.)",
     ]
     return title, lines
+
+
+def _build_script_request_body(
+    *,
+    slug: str,
+    sr_id: str,
+    agent: str,
+    task_id: str,
+    title: str,
+    rationale: str,
+    script_text: str,
+    interpreter: str,
+    cwd_hint: str | None,
+) -> tuple[str, list[str]]:
+    """Body for the script-request submit push (msg_type=post)."""
+    header = f"[Grassland {slug}] {sr_id} submitted — review needed"
+    if len(script_text) > _SCRIPT_PREVIEW_CAP:
+        script_lines = script_text[:_SCRIPT_PREVIEW_CAP].split("\n") + [
+            f"[truncated — see grassland scripts show {sr_id} for full script]"
+        ]
+    else:
+        script_lines = script_text.split("\n")
+    lines = [
+        f"Agent:        {agent}",
+        f"Task:         {task_id}",
+        f"Interpreter:  {interpreter}",
+        f"Cwd hint:     {cwd_hint or '(workspace root)'}",
+        f"Title:        {title}",
+        "",
+        "Rationale:",
+        rationale,
+        "",
+        "Script:",
+        *script_lines,
+        "",
+        "To resolve, reply in this thread with one of:",
+        "",
+        "  APPROVE",
+        "  <optional note>",
+        "",
+        "  —or—",
+        "",
+        "  REJECT",
+        "  <reason>",
+        "",
+        "You can also resolve via CLI:",
+        f"  grassland scripts show {sr_id}",
+        f"  grassland scripts run {sr_id}",
+        f"  grassland scripts reject {sr_id} --reason \"...\"",
+    ]
+    return header, lines
+
+
+def _build_script_result_body(
+    *,
+    slug: str,
+    sr_id: str,
+    status: str,
+    exit_code: int | None,
+    duration_ms: int,
+    stdout_head: str | None,
+    stderr_head: str | None,
+    reason: str | None,
+) -> tuple[str, list[str]]:
+    """Body for the terminal-result threaded reply."""
+    if status == "completed":
+        descriptor = f"completed (exit {exit_code if exit_code is not None else '?'})"
+    else:
+        descriptor = f"failed ({reason or 'unknown'})"
+    header = f"[Grassland {slug}] {sr_id} {descriptor}"
+
+    def _preview(s: str | None) -> list[str]:
+        if not s:
+            return ["(empty)"]
+        s = s.rstrip("\n")
+        if len(s) <= _RESULT_OUTPUT_PREVIEW_CAP:
+            return s.split("\n")
+        return (
+            s[:_RESULT_OUTPUT_PREVIEW_CAP].split("\n")
+            + [f"[truncated — full output in grassland scripts output {sr_id}]"]
+        )
+
+    duration_s = duration_ms / 1000.0
+    lines = [
+        f"Duration: {duration_s:.1f}s",
+        "",
+        "stdout:",
+        *_preview(stdout_head),
+        "",
+        "stderr:",
+        *_preview(stderr_head),
+    ]
+    return header, lines
 
 
 class EscalationNotifier:
@@ -355,3 +450,103 @@ class EscalationNotifier:
             except Exception:
                 logger.exception("audit log_thread_founder_notify_failed also failed")
         return True
+
+    async def send_script_request(
+        self,
+        *,
+        sr_id: str,
+        agent: str,
+        task_id: str,
+        title: str,
+        rationale: str,
+        script_text: str,
+        interpreter: str,
+        cwd_hint: str | None,
+    ) -> None:
+        """Push a Feishu post to the founder when an agent submits SR-NNN.
+
+        Mint-after-send: the correlation row is keyed by the returned
+        feishu_message_id, so a send failure leaves no orphan row. All
+        exceptions are swallowed and audited so submit_script's caller
+        (the agent) never sees a 5xx because Feishu is down.
+        """
+        try:
+            now = datetime.now(timezone.utc)
+            header, body_lines = _build_script_request_body(
+                slug=self._slug, sr_id=sr_id, agent=agent, task_id=task_id,
+                title=title, rationale=rationale, script_text=script_text,
+                interpreter=interpreter, cwd_hint=cwd_hint,
+            )
+            message_id = self._client.send_post_message(
+                chat_id=self._config.chat_id,
+                title=header,
+                body_lines=body_lines,
+            )
+            expires = now + timedelta(hours=self._config.reply_ttl_hours)
+            self._db.mint_escalation_notification(
+                feishu_message_id=message_id,
+                org_slug=self._slug,
+                task_id=sr_id,            # SR-NNN in task_id column (matches thread_addressed)
+                chat_id=self._config.chat_id,
+                expires_at=expires,
+                kind="script_request",
+            )
+            self._audit.log_script_notify_sent(
+                task_id=task_id, sr_id=sr_id, feishu_message_id=message_id,
+            )
+        except Exception as exc:
+            logger.exception("send_script_request failed for SR %s", sr_id)
+            try:
+                self._audit.log_script_notify_failed(
+                    task_id=task_id, sr_id=sr_id,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            except Exception:
+                logger.exception("audit log_script_notify_failed also failed")
+
+    async def send_script_run_result(
+        self,
+        *,
+        sr_id: str,
+        task_id: str,
+        parent_message_id: str,
+        status: str,
+        exit_code: int | None,
+        duration_ms: int,
+        stdout_head: str | None,
+        stderr_head: str | None,
+        reason: str | None,
+    ) -> None:
+        """Post a threaded reply with the run's terminal result.
+
+        Best-effort; no DB row minted (this is a leaf — no reply expected).
+        Failures are swallowed and audited.
+        """
+        try:
+            header, body_lines = _build_script_result_body(
+                slug=self._slug, sr_id=sr_id, status=status,
+                exit_code=exit_code, duration_ms=duration_ms,
+                stdout_head=stdout_head, stderr_head=stderr_head,
+                reason=reason,
+            )
+            follow_up_id = self._client.send_thread_reply(
+                parent_message_id=parent_message_id,
+                title=header,
+                body_lines=body_lines,
+            )
+            self._audit.log_script_run_result_notify_sent(
+                sr_id=sr_id, task_id=task_id,
+                parent_message_id=parent_message_id,
+                follow_up_message_id=follow_up_id,
+                status=status,
+            )
+        except Exception as exc:
+            logger.exception("send_script_run_result failed for SR %s", sr_id)
+            try:
+                self._audit.log_script_run_result_notify_failed(
+                    sr_id=sr_id, task_id=task_id,
+                    error=f"{type(exc).__name__}: {exc}",
+                    status=status,
+                )
+            except Exception:
+                logger.exception("audit log_script_run_result_notify_failed also failed")

@@ -344,6 +344,7 @@ Per-org opt-in via `feishu_notifications` in `<runtime>/orgs/<slug>/org/config.y
 
 - `notify_on_failure: true` — failure replies; hook in `run_step.py:_notify_failure_if_eligible` gates on enabled + not cancelled + no auto-revisit spawned. Listener routes `(kind=failure, decision=revisit)` to `revisit_from_notification`.
 - `allow_dispatch: true` — top-level DISPATCH messages parsed by `parse_top_level_message(text)`; `dispatch_via_feishu` extracts the in-process helper from `submit_task` and raises `DispatchError(reason ∈ {empty_brief, unknown_team, dispatch_failed})`.
+- **Script requests** — `submit_script` route fires `notify_script_submitted` after audit; founder reply `APPROVE` → `run_script_from_notification` (stored defaults), `REJECT\n<reason>` → `reject_script_from_notification`. On terminal transition, `_run_and_persist` looks up the SR's notification via `get_latest_notification_for_sr(sr_id, kind="script_request")` and fires `notify_script_run_result` as a threaded follow-up. Notification kind: `script_request` (fourth value in `escalation_notifications.kind`); the SR-NNN id lives in the `task_id` column, same overload as `thread_addressed`. Spec: `docs/superpowers/specs/2026-05-25-feishu-script-request-notifications-design.md`.
 
 CLI fallbacks (`grassland resolve-escalation`, `grassland revisit`) consume any open notification row for the task with `consumed_by="cli-fallback"`, so a CLI-first resolution silently no-ops the later Feishu reply.
 

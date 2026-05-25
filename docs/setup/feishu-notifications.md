@@ -77,3 +77,44 @@ INFO src.daemon.feishu_listener: started Feishu event listener for org=<slug>
 Trigger an escalation (e.g. via `grassland revisit ...` to a stuck task) and
 confirm the bot posts in your chat. Reply with `APPROVE\nlooks fine` and
 confirm the task transitions to `pending`.
+
+## 7. Script requests (SR-NNN)
+
+When an agent submits a script request (via `grassland scripts submit`), the
+daemon pushes a Feishu post to the configured chat. Reply in the same thread
+to act on it:
+
+**Approve and run:**
+
+```
+APPROVE
+<optional note>
+```
+
+The daemon runs the SR with the agent-provided defaults (`cwd_hint`,
+300-second timeout). When the script terminates, the daemon posts a threaded
+reply with the exit code, duration, and head of stdout/stderr.
+
+**Reject:**
+
+```
+REJECT
+<reason>
+```
+
+The SR transitions to `rejected` with the rationale captured. No
+terminal-result follow-up is posted.
+
+**Override defaults:** Use the CLI (`grassland scripts run --cwd ...
+--timeout-seconds ...`) or the web UI — Feishu replies cannot set
+`cwd_override` or `timeout_seconds` in v1.
+
+**APPROVE shows the full script in the push body** (up to 1500 chars). Read
+it before replying. There is no "are you sure" prompt in Feishu — the
+message-body preview is the confirmation surface.
+
+Audit events for the script-request notification flow:
+`script_notify_sent`, `script_notify_failed`, `script_reply_processed`,
+`script_reply_rejected`, `script_run_result_notify_sent`,
+`script_run_result_notify_failed`. Inspect via `grassland audit --org <slug>
+--action script_*`.
