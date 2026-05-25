@@ -163,17 +163,30 @@ class RejectBody(BaseModel):
     reason: str
 
 
-@router.post("/scripts/{sr_id}/reject")
-async def reject_script(slug: str, sr_id: str, body: RejectBody, org: OrgDep) -> dict:
+async def reject_script_from_notification(
+    org, *, sr_id: str, reason: str,
+) -> ScriptRequestRecord:
+    """In-process reject path used by the Feishu listener.
+
+    Same validation + transition + audit as POST /scripts/{sr_id}/reject,
+    minus the request-body parsing. Raises HTTPException on failure with
+    the same status/detail shape the route returns.
+    """
     record = org.db.get_script_request(sr_id)
     if record is None:
-        raise HTTPException(status_code=404, detail={"code": "unknown_script_request", "sr_id": sr_id})
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "unknown_script_request", "sr_id": sr_id},
+        )
 
-    reason = body.reason.strip()
-    if not reason:
+    reason_stripped = reason.strip()
+    if not reason_stripped:
         raise HTTPException(status_code=422, detail={"code": "empty_reason"})
-    if len(reason) > _MAX_REJECT_REASON_LEN:
-        raise HTTPException(status_code=422, detail={"code": "reason_too_long", "max": _MAX_REJECT_REASON_LEN})
+    if len(reason_stripped) > _MAX_REJECT_REASON_LEN:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "reason_too_long", "max": _MAX_REJECT_REASON_LEN},
+        )
 
     if record.status != ScriptRequestStatus.PENDING:
         raise HTTPException(
@@ -184,21 +197,25 @@ async def reject_script(slug: str, sr_id: str, body: RejectBody, org: OrgDep) ->
     reviewed_at = _now_iso()
     try:
         org.db.transition_script_to_rejected(
-            sr_id, reviewer="founder", reason=reason, reviewed_at=reviewed_at,
+            sr_id, reviewer="founder", reason=reason_stripped,
+            reviewed_at=reviewed_at,
         )
     except ValueError:
         # Race: someone else acted between our read and our write.
         raise HTTPException(status_code=409, detail={"code": "not_pending"})
 
-    audit = AuditLogger(org.db)
-    audit.log_script_rejected(
-        task_id=record.task_id,
-        sr_id=sr_id,
-        reviewer="founder",
-        reason=reason,
+    AuditLogger(org.db).log_script_rejected(
+        task_id=record.task_id, sr_id=sr_id,
+        reviewer="founder", reason=reason_stripped,
     )
+    return org.db.get_script_request(sr_id)
 
-    updated = org.db.get_script_request(sr_id)
+
+@router.post("/scripts/{sr_id}/reject")
+async def reject_script(slug: str, sr_id: str, body: RejectBody, org: OrgDep) -> dict:
+    updated = await reject_script_from_notification(
+        org, sr_id=sr_id, reason=body.reason,
+    )
     return updated.model_dump()
 
 
@@ -254,27 +271,55 @@ def _resolve_cwd(
     return workspace_root
 
 
-@router.post("/scripts/{sr_id}/run", status_code=202)
-async def run_script_route(
-    slug: str, sr_id: str, body: RunBody, org: OrgDep,
+async def run_script_from_notification(
+    org, *, sr_id: str, actor: str, founder_note: str,
 ) -> dict:
+    """In-process run path used by the Feishu listener.
+
+    Uses the SR's stored defaults — no cwd_override, no timeout_override.
+    Returns the same 202-style dict the HTTP route returns. Raises
+    HTTPException on failure with the same status/detail shape.
+
+    `actor` ("feishu-reply" or "cli") and `founder_note` (the rationale from
+    the APPROVE reply) are unused by the run itself today but kept on the
+    signature so future polish (recording the approval rationale in the audit
+    row) can land without changing the listener.
+    """
+    return await _run_script_core(
+        org, sr_id=sr_id,
+        cwd_override=None, timeout_override=None,
+    )
+
+
+async def _run_script_core(
+    org, *, sr_id: str,
+    cwd_override: str | None, timeout_override: int | None,
+) -> dict:
+    """Shared core for HTTP and in-process run paths."""
     record = org.db.get_script_request(sr_id)
     if record is None:
-        raise HTTPException(status_code=404, detail={"code": "unknown_script_request", "sr_id": sr_id})
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "unknown_script_request", "sr_id": sr_id},
+        )
 
     if record.status != ScriptRequestStatus.PENDING:
         raise HTTPException(
-            status_code=409, detail={"code": "not_pending", "status": record.status.value}
+            status_code=409,
+            detail={"code": "not_pending", "status": record.status.value},
         )
 
-    timeout = body.timeout_seconds if body.timeout_seconds is not None else record.timeout_seconds
+    timeout = (
+        timeout_override if timeout_override is not None
+        else record.timeout_seconds
+    )
     if timeout <= 0 or timeout > 86400:
         raise HTTPException(status_code=422, detail={"code": "invalid_timeout"})
 
     workspace_root = org.root / "workspaces" / record.agent_name
     try:
         cwd_resolved = _resolve_cwd(
-            cwd_override=body.cwd_override,
+            cwd_override=cwd_override,
             cwd_hint=record.cwd_hint,
             workspace_root=workspace_root,
         )
@@ -291,7 +336,10 @@ async def run_script_route(
     if _interpreter_binary(record.interpreter.value) is None:
         raise HTTPException(
             status_code=422,
-            detail={"code": "interpreter_unavailable", "interpreter": record.interpreter.value},
+            detail={
+                "code": "interpreter_unavailable",
+                "interpreter": record.interpreter.value,
+            },
         )
 
     # Allocate output paths under <runtime>/orgs/<slug>/scripts/.
@@ -415,8 +463,20 @@ async def run_script_route(
         "started_at": now,
         "cwd_resolved": str(cwd_resolved),
         "timeout_seconds": timeout,
-        "events_url": f"/api/v1/orgs/{slug}/scripts/{sr_id}/events",
+        "events_url": f"/api/v1/orgs/{org.slug}/scripts/{sr_id}/events",
     }
+
+
+@router.post("/scripts/{sr_id}/run", status_code=202)
+async def run_script_route(
+    slug: str, sr_id: str, body: RunBody, org: OrgDep,
+) -> dict:
+    return await _run_script_core(
+        org,
+        sr_id=sr_id,
+        cwd_override=body.cwd_override,
+        timeout_override=body.timeout_seconds,
+    )
 
 
 @router.get("/scripts/{sr_id}/output")
