@@ -2176,9 +2176,10 @@ class Database:
         expires_at: datetime,
         kind: str = "escalation",
     ) -> None:
-        if kind not in ("escalation", "failure", "thread_addressed"):
+        if kind not in ("escalation", "failure", "thread_addressed", "script_request"):
             raise ValueError(
-                f"kind must be 'escalation', 'failure', or 'thread_addressed', got {kind!r}"
+                f"kind must be 'escalation', 'failure', 'thread_addressed', "
+                f"or 'script_request', got {kind!r}"
             )
         expires_at_str = expires_at.astimezone(timezone.utc).isoformat()
         self._conn.execute(
@@ -2207,6 +2208,28 @@ class Database:
         if row is None:
             return None
         return dict(row)
+
+    @_synchronized
+    def get_open_notification_for_sr(
+        self, sr_id: str, *, kind: str,
+    ) -> dict | None:
+        """Look up the most-recent escalation_notifications row for an SR.
+
+        Used by the terminal-result follow-up: when a Feishu-initiated script run
+        finishes, we post a threaded reply to the original push's message_id.
+        Returns consumed rows too — the APPROVE reply consumes the row, but the
+        parent message_id is still needed to thread the result post.
+        """
+        cur = self._conn.execute(
+            """SELECT feishu_message_id, org_slug, task_id, chat_id,
+                      created_at, expires_at, consumed_at, consumed_by, kind
+               FROM escalation_notifications
+               WHERE task_id = ? AND kind = ?
+               ORDER BY created_at DESC LIMIT 1""",
+            (sr_id, kind),
+        )
+        row = cur.fetchone()
+        return dict(row) if row is not None else None
 
     @_synchronized
     def consume_escalation_notification(
