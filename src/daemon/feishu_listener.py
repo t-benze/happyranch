@@ -35,6 +35,8 @@ SendConfirmFn = Callable[..., Awaitable[None]]
 SendErrorFn = Callable[..., Awaitable[None]]
 SendParseHintFn = Callable[..., Awaitable[None]]
 ResolveThreadFn = Callable[..., Awaitable[None]]
+RunScriptFn = Callable[..., Awaitable[dict]]
+RejectScriptFn = Callable[..., Awaitable[object]]
 
 
 class FeishuEventListener:
@@ -55,6 +57,8 @@ class FeishuEventListener:
         app_id: str,
         app_secret: str,
         domain: str,
+        run_script_from_notification: RunScriptFn | None = None,
+        reject_script_from_notification: RejectScriptFn | None = None,
         send_parse_hint: SendParseHintFn | None = None,
         resolve_thread_from_notification: ResolveThreadFn | None = None,
     ) -> None:
@@ -69,6 +73,8 @@ class FeishuEventListener:
         self._send_dispatch_error = send_dispatch_error
         self._send_parse_hint = send_parse_hint
         self._resolve_thread_from_notification = resolve_thread_from_notification
+        self._run_script_from_notification = run_script_from_notification
+        self._reject_script_from_notification = reject_script_from_notification
         self._allow_dispatch = allow_dispatch
         self._loop = loop
         self._app_id = app_id
@@ -302,7 +308,56 @@ class FeishuEventListener:
             _close("consumed", None)
             return
 
-        # Branch 3: verb mismatch (escalation+revisit OR failure+approve/reject)
+        # Branch 3: script_request + approve/reject
+        if kind == "script_request" and decision in ("approve", "reject"):
+            if (
+                self._run_script_from_notification is None
+                or self._reject_script_from_notification is None
+            ):
+                self._audit.log_script_reply_rejected(
+                    sr_id=task_id, task_id=task_id,
+                    reason="handler_exception", feishu_event_id=event_id,
+                )
+                _close("rejected", "handler_exception")
+                return
+            from src.infrastructure.feishu.reply_parser import _NO_RATIONALE
+            try:
+                if decision == "approve":
+                    await self._run_script_from_notification(sr_id=task_id)
+                else:  # reject
+                    rationale = parsed.rationale
+                    if not rationale or rationale == _NO_RATIONALE:
+                        rationale = "(no rationale provided via Feishu)"
+                    await self._reject_script_from_notification(
+                        sr_id=task_id, reason=rationale,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                reason_code = "handler_exception"
+                detail = getattr(exc, "detail", None)
+                if isinstance(detail, dict):
+                    code = detail.get("code")
+                    if code in ("not_pending", "cwd_missing", "interpreter_unavailable",
+                                "invalid_cwd_override", "invalid_timeout",
+                                "unknown_script_request"):
+                        reason_code = code
+                self._audit.log_script_reply_rejected(
+                    sr_id=task_id, task_id=task_id,
+                    reason=reason_code, feishu_event_id=event_id,
+                )
+                _close("rejected", reason_code)
+                return
+            self._db.consume_escalation_notification(
+                msg.root_id, consumed_by="feishu-reply",
+            )
+            self._audit.log_script_reply_processed(
+                sr_id=task_id, task_id=task_id,
+                decision=decision, rationale=parsed.rationale,
+                feishu_event_id=event_id,
+            )
+            _close("consumed", None)
+            return
+
+        # Branch 4: verb mismatch (escalation+revisit OR failure+approve/reject OR script_request+revisit)
         self._audit.log_escalation_reply_rejected(
             task_id, "verb_mismatch", feishu_event_id=event_id,
         )
@@ -459,6 +514,16 @@ def maybe_start_feishu_listener_for_org(org, state, loop) -> None:
             message_id=message_id, slug=org.slug,
         )
 
+    async def _run_script_for_listener(*, sr_id):
+        from src.daemon.routes.scripts import run_script_from_notification
+        return await run_script_from_notification(org, sr_id=sr_id)
+
+    async def _reject_script_for_listener(*, sr_id, reason):
+        from src.daemon.routes.scripts import reject_script_from_notification
+        return await reject_script_from_notification(
+            org, sr_id=sr_id, reason=reason,
+        )
+
     listener = FeishuEventListener(
         slug=org.slug,
         db=org.db,
@@ -471,6 +536,8 @@ def maybe_start_feishu_listener_for_org(org, state, loop) -> None:
         send_dispatch_error=_send_error_for_listener,
         send_parse_hint=_send_parse_hint_for_listener,
         resolve_thread_from_notification=_resolve_thread_for_listener,
+        run_script_from_notification=_run_script_for_listener,
+        reject_script_from_notification=_reject_script_for_listener,
         allow_dispatch=allow_dispatch,
         loop=loop,
         app_id=org.feishu_app_id,
