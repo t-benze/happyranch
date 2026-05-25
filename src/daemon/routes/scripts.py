@@ -219,11 +219,29 @@ async def reject_script_from_notification(
     return org.db.get_script_request(sr_id)
 
 
+def _consume_open_feishu_notification(org, sr_id: str) -> None:
+    """Mark any open kind=script_request Feishu notification as consumed by
+    'cli-fallback'.
+
+    Matches the pattern from `grassland resolve-escalation` / `grassland revisit`
+    (see `src/daemon/routes/tasks.py`): a CLI/Web action wins the race against
+    a later Feishu reply, which would otherwise hit `not_pending` in the
+    listener and leave the row stale until reply_ttl_hours expiry.
+    """
+    row = org.db.get_latest_notification_for_sr(sr_id, kind="script_request")
+    if row is None or row["consumed_at"] is not None:
+        return
+    org.db.consume_escalation_notification(
+        row["feishu_message_id"], consumed_by="cli-fallback",
+    )
+
+
 @router.post("/scripts/{sr_id}/reject")
 async def reject_script(slug: str, sr_id: str, body: RejectBody, org: OrgDep) -> dict:
     updated = await reject_script_from_notification(
         org, sr_id=sr_id, reason=body.reason,
     )
+    _consume_open_feishu_notification(org, sr_id)
     return updated.model_dump()
 
 
@@ -503,12 +521,14 @@ async def _run_script_core(
 async def run_script_route(
     slug: str, sr_id: str, body: RunBody, org: OrgDep,
 ) -> dict:
-    return await _run_script_core(
+    result = await _run_script_core(
         org,
         sr_id=sr_id,
         cwd_override=body.cwd_override,
         timeout_override=body.timeout_seconds,
     )
+    _consume_open_feishu_notification(org, sr_id)
+    return result
 
 
 @router.get("/scripts/{sr_id}/output")

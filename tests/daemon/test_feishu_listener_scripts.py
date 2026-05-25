@@ -105,6 +105,16 @@ def test_script_request_revisit_is_verb_mismatch(tmp_path):
     row = db.get_escalation_notification("om_root")
     assert row["consumed_at"] is None
 
+    # Audit row uses the script-specific action (not the generic
+    # escalation_reply_rejected) so `grassland audit --action script_*`
+    # surfaces this rejection.
+    audit_rows = db.get_audit_logs(task_id="SR-1")
+    actions = {r["action"] for r in audit_rows}
+    assert "script_reply_rejected" in actions
+    assert "escalation_reply_rejected" not in actions
+    reject_rows = [r for r in audit_rows if r["action"] == "script_reply_rejected"]
+    assert any(r["payload"]["reason"] == "verb_mismatch" for r in reject_rows)
+
 
 def test_script_request_handler_exception_unconsumes(tmp_path):
     """If the helper raises (e.g. not_pending because CLI won the race),

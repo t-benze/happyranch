@@ -208,6 +208,34 @@ def test_reject_not_pending(client_with_runtime):
     assert r.json()["detail"]["code"] == "not_pending"
 
 
+def test_reject_consumes_open_feishu_notification(client_with_runtime):
+    """When the founder rejects via CLI/Web, any open Feishu notification
+    must be marked consumed (consumed_by=cli-fallback) so a later in-thread
+    APPROVE/REJECT reply doesn't trigger a stale handler_exception loop."""
+    from datetime import datetime, timedelta, timezone
+
+    client, org = client_with_runtime
+    sr_id = _submit_pending(client, org)
+
+    # Simulate the Feishu push having minted a notification row.
+    org.db.mint_escalation_notification(
+        feishu_message_id="om_fake_push", org_slug="alpha", task_id=sr_id,
+        chat_id="oc_xyz",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=72),
+        kind="script_request",
+    )
+
+    r = client.post(
+        f"/api/v1/orgs/alpha/scripts/{sr_id}/reject",
+        json={"reason": "no longer needed"},
+    )
+    assert r.status_code == 200, r.text
+
+    row = org.db.get_escalation_notification("om_fake_push")
+    assert row["consumed_at"] is not None
+    assert row["consumed_by"] == "cli-fallback"
+
+
 def test_list_scripts_default_filter_pending(client_with_runtime):
     client, org = client_with_runtime
     sr1 = _submit_pending(client, org)
@@ -312,6 +340,56 @@ def test_run_happy_path_completes(tmp_home, daemon_state):
             time.sleep(0.1)
     assert d["status"] == "completed", d
     assert d["exit_code"] == 0
+
+
+def test_run_consumes_open_feishu_notification(tmp_home, daemon_state):
+    """A founder-triggered run via CLI/Web must consume any open
+    script_request notification as cli-fallback. Mirrors the reject path."""
+    from datetime import datetime, timedelta, timezone
+    from fastapi.testclient import TestClient
+    from src.daemon.app import create_app
+    from src.daemon import paths as paths_mod
+
+    org = daemon_state.orgs["alpha"]
+    app = create_app(daemon_state)
+
+    with TestClient(app, raise_server_exceptions=True) as client:
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+
+        task_id, sid = _make_active_session(org)
+        r = client.post(
+            "/api/v1/orgs/alpha/scripts/submit",
+            json={"task_id": task_id, "session_id": sid,
+                  "title": "echo", "rationale": "test",
+                  "script": "echo hello", "interpreter": "bash"},
+        )
+        sr_id = r.json()["id"]
+
+        # Simulate the Feishu push having minted a notification row.
+        org.db.mint_escalation_notification(
+            feishu_message_id="om_fake_run_push", org_slug="alpha",
+            task_id=sr_id, chat_id="oc_xyz",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=72),
+            kind="script_request",
+        )
+
+        ws = org.root / "workspaces" / "engineering_head"
+        ws.mkdir(parents=True, exist_ok=True)
+        r = client.post(f"/api/v1/orgs/alpha/scripts/{sr_id}/run", json={})
+        assert r.status_code == 202, r.text
+
+        # Poll until the runner finishes so the test doesn't race shutdown.
+        for _ in range(50):
+            d = client.get(f"/api/v1/orgs/alpha/scripts/{sr_id}").json()
+            if d["status"] in ("completed", "failed"):
+                break
+            time.sleep(0.1)
+
+        # Query DB inside the TestClient context — once the context exits,
+        # lifespan teardown closes the per-org connections.
+        row = org.db.get_escalation_notification("om_fake_run_push")
+        assert row["consumed_at"] is not None
+        assert row["consumed_by"] == "cli-fallback"
     assert "hello" in (d["stdout_head"] or "")
 
 

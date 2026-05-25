@@ -366,10 +366,19 @@ class FeishuEventListener:
             _close("consumed", None)
             return
 
-        # Branch 4: verb mismatch (escalation+revisit OR failure+approve/reject OR script_request+revisit)
-        self._audit.log_escalation_reply_rejected(
-            task_id, "verb_mismatch", feishu_event_id=event_id,
-        )
+        # Branch 4: verb mismatch
+        #   - escalation + revisit
+        #   - failure + approve/reject
+        #   - script_request + revisit  -> script-specific audit action
+        if kind == "script_request":
+            self._audit.log_script_reply_rejected(
+                sr_id=task_id, task_id=task_id,
+                reason="verb_mismatch", feishu_event_id=event_id,
+            )
+        else:
+            self._audit.log_escalation_reply_rejected(
+                task_id, "verb_mismatch", feishu_event_id=event_id,
+            )
         _close("rejected", "verb_mismatch")
 
     async def _handle_top_level_dispatch(self, data, msg, event_id: str, _close) -> None:
