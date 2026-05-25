@@ -108,7 +108,8 @@ def test_script_request_revisit_is_verb_mismatch(tmp_path):
 
 def test_script_request_handler_exception_unconsumes(tmp_path):
     """If the helper raises (e.g. not_pending because CLI won the race),
-    the notification stays unconsumed for cli-fallback consume."""
+    the notification stays unconsumed AND the audit row records the specific
+    detail code (not a generic handler_exception)."""
     from fastapi import HTTPException
     l, db, loop = _mk_listener(tmp_path)
     _mint(db)
@@ -118,5 +119,15 @@ def test_script_request_handler_exception_unconsumes(tmp_path):
         ),
     )
     loop.run_until_complete(l._handle_event_async(_mk_event("APPROVE")))
+
     row = db.get_escalation_notification("om_root")
     assert row["consumed_at"] is None
+
+    # Audit row carries the specific detail code, not just "handler_exception".
+    audit_rows = db.get_audit_logs(task_id="SR-1")
+    reject_rows = [r for r in audit_rows if r["action"] == "script_reply_rejected"]
+    assert reject_rows, "expected a script_reply_rejected audit row"
+    assert any(r["payload"]["reason"] == "not_pending" for r in reject_rows), (
+        "expected reason='not_pending' but got "
+        f"{[r['payload'].get('reason') for r in reject_rows]}"
+    )

@@ -38,6 +38,17 @@ ResolveThreadFn = Callable[..., Awaitable[None]]
 RunScriptFn = Callable[..., Awaitable[dict]]
 RejectScriptFn = Callable[..., Awaitable[object]]
 
+# HTTPException detail codes raised by the script helpers that we want to
+# preserve verbatim in the audit row (instead of bucketing them as the
+# generic "handler_exception"). Keep in sync with
+# src/daemon/routes/scripts.py — run_script_from_notification and
+# reject_script_from_notification are the two raisers.
+_SCRIPT_HELPER_DETAIL_CODES = frozenset({
+    "not_pending", "cwd_missing", "interpreter_unavailable",
+    "invalid_cwd_override", "invalid_timeout", "unknown_script_request",
+    "empty_reason", "reason_too_long",
+})
+
 
 class FeishuEventListener:
     def __init__(
@@ -320,13 +331,13 @@ class FeishuEventListener:
                 )
                 _close("rejected", "handler_exception")
                 return
-            from src.infrastructure.feishu.reply_parser import _NO_RATIONALE
+            from src.infrastructure.feishu.reply_parser import NO_RATIONALE
             try:
                 if decision == "approve":
                     await self._run_script_from_notification(sr_id=task_id)
                 else:  # reject
                     rationale = parsed.rationale
-                    if not rationale or rationale == _NO_RATIONALE:
+                    if not rationale or rationale == NO_RATIONALE:
                         rationale = "(no rationale provided via Feishu)"
                     await self._reject_script_from_notification(
                         sr_id=task_id, reason=rationale,
@@ -336,9 +347,7 @@ class FeishuEventListener:
                 detail = getattr(exc, "detail", None)
                 if isinstance(detail, dict):
                     code = detail.get("code")
-                    if code in ("not_pending", "cwd_missing", "interpreter_unavailable",
-                                "invalid_cwd_override", "invalid_timeout",
-                                "unknown_script_request"):
+                    if code in _SCRIPT_HELPER_DETAIL_CODES:
                         reason_code = code
                 self._audit.log_script_reply_rejected(
                     sr_id=task_id, task_id=task_id,
