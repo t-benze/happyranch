@@ -153,6 +153,14 @@ async def submit_script(slug: str, body: SubmitBody, org: OrgDep) -> dict:
         line_count=body.script.count("\n") + 1,
     )
 
+    # Fire-and-forget Feishu push (no-op when notifier is unset).
+    if getattr(org, "orchestrator", None) is not None:
+        org.orchestrator.notify_script_submitted(
+            sr_id=sr_id, agent=agent, task_id=body.task_id,
+            title=title, rationale=rationale, script_text=body.script,
+            interpreter=body.interpreter, cwd_hint=cwd_hint,
+        )
+
     return {"id": sr_id, "status": "pending", "created_at": record.created_at}
 
 

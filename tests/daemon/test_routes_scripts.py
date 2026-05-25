@@ -450,6 +450,51 @@ def test_events_unknown_sr(client_with_runtime):
     assert r.status_code == 404
 
 
+def test_submit_script_fires_notify_when_orchestrator_attached(
+    client_with_runtime, monkeypatch,
+):
+    """submit_script must schedule a Feishu notification via the org's
+    orchestrator bridge. The bridge is a no-op when no notifier is attached,
+    so we just verify the route invokes it with the right kwargs."""
+    client, org = client_with_runtime
+    task_id, sid = _make_active_session(org)
+
+    calls: list[dict] = []
+
+    def _capture(**kw):
+        calls.append(kw)
+
+    monkeypatch.setattr(org.orchestrator, "notify_script_submitted", _capture)
+
+    r = client.post(
+        "/api/v1/orgs/alpha/scripts/submit",
+        json={
+            "task_id": task_id,
+            "session_id": sid,
+            "title": "Close PR",
+            "rationale": "permission wall",
+            "script": "echo hi",
+            "interpreter": "bash",
+            "cwd_hint": None,
+        },
+    )
+    assert r.status_code == 201, r.text
+    sr_id = r.json()["id"]
+
+    assert len(calls) == 1, f"expected exactly one notify call, got {calls!r}"
+    kw = calls[0]
+    assert kw["sr_id"] == sr_id
+    assert kw["task_id"] == task_id
+    assert kw["title"] == "Close PR"
+    assert kw["rationale"] == "permission wall"
+    assert kw["script_text"] == "echo hi"
+    assert kw["interpreter"] == "bash"
+    assert kw["cwd_hint"] is None
+    # agent is derived from task.assigned_agent — _make_active_session uses
+    # "engineering_head" as the default.
+    assert kw["agent"] == "engineering_head"
+
+
 def test_events_stream_terminates_after_db_only_terminal_transition(
     tmp_home, daemon_state,
 ):
