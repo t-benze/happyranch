@@ -1,12 +1,21 @@
 """Body-builder tests for script-request Feishu push + result follow-up."""
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
+
+import pytest
+
+from src.infrastructure.audit_logger import AuditLogger
+from src.infrastructure.database import Database
 from src.infrastructure.feishu.notifier import (
+    EscalationNotifier,
     _build_script_request_body,
     _build_script_result_body,
     _SCRIPT_PREVIEW_CAP,
     _RESULT_OUTPUT_PREVIEW_CAP,
 )
+from src.orchestrator.org_config import FeishuNotificationsConfig
 
 
 def test_request_body_renders_all_fields():
@@ -158,3 +167,107 @@ def test_request_body_truncation_marker_is_its_own_element():
     # And again, no embedded newlines anywhere.
     for el in lines:
         assert "\n" not in el, f"element {el!r} contains embedded newline"
+
+
+class _FakeClient:
+    def __init__(self) -> None:
+        self.posts: list[dict] = []
+        self.thread_replies: list[dict] = []
+
+    def send_post_message(self, *, chat_id, title, body_lines):
+        self.posts.append({"chat_id": chat_id, "title": title, "body": body_lines})
+        return f"om_post_{len(self.posts)}"
+
+    def send_thread_reply(self, *, parent_message_id, title, body_lines):
+        self.thread_replies.append({
+            "parent": parent_message_id, "title": title, "body": body_lines,
+        })
+        return f"om_thread_{len(self.thread_replies)}"
+
+
+@pytest.fixture()
+def notifier_setup(tmp_path: Path):
+    db = Database(tmp_path / "grassland.db")
+    audit = AuditLogger(db)
+    client = _FakeClient()
+    cfg = FeishuNotificationsConfig(
+        provider="feishu", region="feishu", chat_id="oc_xyz",
+        app_id="cli", app_secret="x", reply_ttl_hours=72,
+    )
+    notifier = EscalationNotifier(
+        slug="acme", db=db, audit=audit, client=client, config=cfg,
+    )
+    return notifier, db, client
+
+
+def test_send_script_request_happy_path(notifier_setup):
+    notifier, db, client = notifier_setup
+    asyncio.run(notifier.send_script_request(
+        sr_id="SR-019", agent="engineering_head",
+        task_id="TASK-91", title="Close PR #247",
+        rationale="ok", script_text="echo hi",
+        interpreter="bash", cwd_hint="repos/web-app",
+    ))
+    assert len(client.posts) == 1
+    sent = client.posts[0]
+    assert "SR-019" in sent["title"]
+    assert sent["chat_id"] == "oc_xyz"
+
+    row = db.get_escalation_notification("om_post_1")
+    assert row is not None
+    assert row["kind"] == "script_request"
+    assert row["task_id"] == "SR-019"
+
+    audit_rows = db.get_audit_logs(task_id="TASK-91")
+    assert any(r["action"] == "script_notify_sent" for r in audit_rows)
+
+
+def test_send_script_request_swallows_send_failure(notifier_setup):
+    notifier, db, client = notifier_setup
+
+    def boom(**kwargs):
+        raise RuntimeError("feishu down")
+
+    client.send_post_message = boom
+    asyncio.run(notifier.send_script_request(
+        sr_id="SR-019", agent="a", task_id="TASK-91",
+        title="t", rationale="r", script_text="s",
+        interpreter="bash", cwd_hint=None,
+    ))
+    assert db.get_latest_notification_for_sr("SR-019", kind="script_request") is None
+    audit_rows = db.get_audit_logs(task_id="TASK-91")
+    assert any(r["action"] == "script_notify_failed" for r in audit_rows)
+
+
+def test_send_script_run_result_happy_path(notifier_setup):
+    notifier, db, client = notifier_setup
+    asyncio.run(notifier.send_script_run_result(
+        sr_id="SR-019", task_id="TASK-91",
+        parent_message_id="om_root_xyz",
+        status="completed", exit_code=0, duration_ms=1400,
+        stdout_head="ok", stderr_head=None, reason=None,
+    ))
+    assert len(client.thread_replies) == 1
+    reply = client.thread_replies[0]
+    assert reply["parent"] == "om_root_xyz"
+    assert "SR-019" in reply["title"]
+    assert "completed" in reply["title"]
+    audit_rows = db.get_audit_logs(task_id="TASK-91")
+    assert any(r["action"] == "script_run_result_notify_sent" for r in audit_rows)
+
+
+def test_send_script_run_result_swallows_send_failure(notifier_setup):
+    notifier, db, client = notifier_setup
+
+    def boom(**kwargs):
+        raise RuntimeError("feishu down")
+
+    client.send_thread_reply = boom
+    asyncio.run(notifier.send_script_run_result(
+        sr_id="SR-019", task_id="TASK-91",
+        parent_message_id="om_root_xyz",
+        status="failed", exit_code=None, duration_ms=0,
+        stdout_head=None, stderr_head="x", reason="timeout",
+    ))
+    audit_rows = db.get_audit_logs(task_id="TASK-91")
+    assert any(r["action"] == "script_run_result_notify_failed" for r in audit_rows)
