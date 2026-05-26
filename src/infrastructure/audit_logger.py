@@ -267,6 +267,7 @@ class AuditLogger:
         failed_task: str,
         failed_agent: str,
         cascade: list[str],
+        failure_kind: str,
         error_context: dict,
         attempt: int,
     ) -> None:
@@ -277,6 +278,13 @@ class AuditLogger:
         first-step header — and so we can count auto-revisits in the chain
         without conflating them with founder revisits when enforcing the
         per-chain cap.
+
+        ``failure_kind`` is the classified granular failure mode
+        (session_timeout / no_callback / rate_limit / executor_error /
+        agent_exception / session_failed); hoisted to top-level of the
+        payload so per-kind cap counting can read it with a single dict
+        lookup without parsing ``error_context``. See
+        ``docs/superpowers/specs/2026-05-25-session-timeout-auto-route-design.md``.
 
         ``error_context`` is the structured failure payload produced by
         ``_executor_failure_context``: mode, rc, stderr/stdout tail, etc.
@@ -291,6 +299,7 @@ class AuditLogger:
                 "failed_task": failed_task,
                 "failed_agent": failed_agent,
                 "cascade": cascade,
+                "failure_kind": failure_kind,
                 "error_context": error_context,
                 "attempt": attempt,
             },
