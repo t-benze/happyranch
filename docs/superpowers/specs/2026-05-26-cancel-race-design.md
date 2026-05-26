@@ -172,23 +172,86 @@ def _is_already_terminal(orch: "Orchestrator", task_id: str) -> bool:
     return existing is None or existing.status in TERMINAL_STATES or existing.cancelled_at is not None
 ```
 
-Then at the head of each decision branch:
+The helper is the source of truth for `_complete` / `_fail`'s Python-level idempotence — both get refactored to call it. Single source of truth replaces two near-duplicate inline guards.
+
+**Why include `cancelled_at` in the predicate even though `status` should be FAILED whenever `cancelled_at` is set**: defense in depth. `_complete`'s pre-spec comment documents the *intent* ("don't resurrect a cancelled task back to COMPLETED"), but only checks `status in TERMINAL_STATES`. If a future code path ever sets `cancelled_at` without flipping `status` (e.g., a partial-cancel for a sub-feature, a migration bug), the existing guard misses. The new predicate is correct under both invariants.
+
+### 5.3.1 Atomic CAS for the spawn-new-work branches (`delegate`, `escalate`)
+
+A Python-level `if _is_already_terminal(...): return` followed by `db.insert_task(...)` / `db.update_task(...)` is non-atomic with the cancel route's `update_task` — Codex review of PR #34 surfaced that `/cancel` can land *between* the helper's `get_task` and the subsequent write, leaving the original TASK-497 bug shape intact (cancelled parent ends up with a child + status overwritten back to `blocked(...)`).
+
+The `delegate` and `escalate` branches must therefore use SQL-level CAS, matching the existing `Database.try_claim_for_step` pattern (`database.py:805-844`). Two new methods land on `Database`:
 
 ```python
-if decision.action == "delegate":
-    if _is_already_terminal(orch, task_id):
-        return
-    # existing logic unchanged
+@_synchronized
+def try_escalate(self, task_id: str, *, reason: str) -> bool:
+    """Conditional UPDATE: transition task to BLOCKED(ESCALATED) only if
+    cancelled_at IS NULL AND status NOT IN ('completed', 'failed').
+    Returns True iff the row transitioned."""
+    cursor = self._conn.execute(
+        """UPDATE tasks
+           SET status = ?, block_kind = ?, note = ?, updated_at = ?
+           WHERE id = ?
+             AND cancelled_at IS NULL
+             AND status NOT IN ('completed', 'failed')""",
+        (TaskStatus.BLOCKED.value, BlockKind.ESCALATED.value, reason, now, task_id),
+    )
+    self._conn.commit()
+    return cursor.rowcount == 1
 
-if decision.action == "escalate":
-    if _is_already_terminal(orch, task_id):
-        return
-    # existing logic unchanged
+@_synchronized
+def try_delegate(
+    self, parent_id: str, child: TaskRecord, *, parent_note: str,
+) -> bool:
+    """Atomic: insert child + transition parent to BLOCKED(DELEGATED).
+    Both writes happen under one @_synchronized acquisition (threading.RLock),
+    the same lock the cancel route's update_task acquires."""
+    row = self._conn.execute(
+        "SELECT status, cancelled_at FROM tasks WHERE id = ?", (parent_id,)
+    ).fetchone()
+    if row is None or row["cancelled_at"] is not None or row["status"] in ("completed", "failed"):
+        return False
+    self.insert_task(child)
+    self._conn.execute(
+        """UPDATE tasks SET status = ?, block_kind = ?, note = ?, updated_at = ?
+           WHERE id = ?""",
+        (TaskStatus.BLOCKED.value, BlockKind.DELEGATED.value, parent_note, now, parent_id),
+    )
+    self._conn.commit()
+    return True
 ```
 
-`_complete` and `_fail` keep their inline checks but the predicate is unified — they get refactored to call `_is_already_terminal` too. Single source of truth.
+**Atomicity guarantee**: `@_synchronized` is the `threading.RLock` decorator already used throughout `Database`. The cancel route's `update_task` is also `@_synchronized`. So the only two interleavings are:
 
-**Why include `cancelled_at` in the predicate even though `status` should be FAILED whenever `cancelled_at` is set**: defense in depth. `_complete`'s existing comment at l.613-616 documents the *intent* ("don't resurrect a cancelled task back to COMPLETED"), but only checks `status in TERMINAL_STATES`. If a future code path ever sets `cancelled_at` without flipping `status` (e.g., a partial-cancel for a sub-feature, a migration bug), the existing guard misses. The new predicate is correct under both invariants.
+- **Cancel acquired RLock first** → cancel stamps row → `try_*` runs → SELECT (or CAS predicate) sees `cancelled_at != NULL` → returns False, no writes.
+- **`try_*` acquired RLock first** → method runs to completion (commits child + parent in one atomic window) → RLock released → cancel runs → sees parent in `BLOCKED(DELEGATED)`, transitions to FAILED, cascade-cancels the now-existing child.
+
+Either order is correct. The middle case — "cancel interleaves between SELECT and UPDATE" — is impossible because the RLock is held for the entire method body.
+
+The branches in `run_step.py` collapse to:
+
+```python
+if decision.action == "escalate":
+    reason = decision.reason or "Escalated"
+    if not db.try_escalate(task_id, reason=reason):
+        return  # cancel won the race
+    orch._audit.log_escalation(task_id, agent, reason)
+    orch.notify_escalated(...)
+    return
+
+if decision.action == "delegate":
+    # ...existing _validate_delegate, cross-team check, revision tracking...
+    child = TaskRecord(id=child_id, ..., parent_task_id=task_id, ...)
+    if not db.try_delegate(task_id, child, parent_note=f"Delegated to {agent} (child={child_id})"):
+        return  # cancel won the race; no child, no overwrite, no enqueue
+    if orch._queue is not None:
+        orch._queue.put_nowait(orch._slug, child_id)
+    return
+```
+
+The Python-level `if _is_already_terminal(orch, task_id): return` is **removed** from these branches — the CAS replaces it. Guard B's re-fetch above remains; it's an early-rejection cheap path that avoids the SQL round-trip in the common case (and keeps token-usage persistence before the drop).
+
+**What about `_complete` and `_fail`?** Lower-priority by impact: neither spawns new work. The original Python-level idempotence guards (via `_is_already_terminal`) survive on these. The residual race is "founder's note `cancelled by founder: stop` may be observable for one window before `_fail` runs and the idempotence guard catches it" — but the *intent* of the founder's cancel is preserved (status stays FAILED, cancelled_at stays set). Promoting these to CAS too would be straight-line cleanup; deferred as cost-benefit isn't load-bearing.
 
 ## 6. Interaction with auto-revisit
 
@@ -218,8 +281,11 @@ If TASK-497 had a parent (it didn't — it was a root), Guard B would skip the c
    - Assert: no child task was inserted, the parent's status / note remain in the founder-set "cancelled by founder" shape, and the token-usage row WAS persisted (token accounting must survive the drop — see §5.2).
    - **Do not** test by stamping `cancelled_at` *before* calling `run_step_impl`. That path is already covered by the l.41 entry guard and would never exercise Guard B.
 
-3. **`tests/unit/test_decision_branch_idempotence.py`** — new file:
-   - Pre-stamp task as `FAILED + cancelled_at`. Directly invoke the `delegate` and `escalate` code paths with a synthetic decision. Assert no `db.insert_task` for a child, no `db.update_task` for the parent, no queue enqueue.
+3. **Database CAS tests** (in `tests/test_database.py`):
+   - `try_escalate` happy path / cancelled-rejected / terminal-rejected / missing-task.
+   - `try_delegate` happy path (parent transitions AND child inserted in one atomic window) / cancelled-parent-rejected-AND-no-child-inserted / terminal-parent-rejected / missing-parent.
+
+4. **Atomic-race tests** in `tests/test_run_step.py`: simulate the worst-case interleaving — cancel landing between Guard B's re-fetch and the CAS write — by monkey-patching `db.try_delegate` / `db.try_escalate` to stamp `cancelled_at` immediately before delegating to the real implementation. Assert no child created, parent state preserved, queue empty.
 
 ### 8.2 Integration test
 
@@ -261,3 +327,4 @@ Each guard is independently safe to land. Recommended single PR for review coher
 - **Window between `get_task` and `insert_task_result` in `submit_completion`** is still racy in theory: the cancel route could land between the new `get_task` check and the `insert_task_result`. Guard B catches anything that slips through here. Closing the daemon-side window completely would require holding `db_lock` across both the read and the write (currently the read is outside the lock); deferred as cost-benefit doesn't justify it given Guard B.
 - **Phase 2 of `cancel_task` still clears the tracker outside `db_lock`.** Moving the clear inside Phase 1 would close another window, but the comment at `tasks.py:686-695` explicitly designs around the SIGTERM ordering. Out of scope for this spec; reasonable follow-up if a future race is found.
 - **Token usage IS persisted on cancellation drops** — explicitly NOT a limit. See §5.2. The provider charged for those tokens; `/tokens` rollups must reflect spend, not survival. (Earlier draft of this spec proposed dropping usage on cancel; that would have undercounted spend and broken the `tests/test_run_step_token_usage.py` contract — corrected after Codex review.)
+- **`_complete` and `_fail` keep their Python-level idempotence**, not the SQL-CAS upgrade applied to `delegate` / `escalate`. The residual race is observable only as "founder's `cancelled by founder` note may be momentarily overwritten before the idempotence guard's get_task catches it" — and even that window is bounded by the next-statement `if existing is None or ... in TERMINAL_STATES: return`. Neither branch spawns new work; the worst-case is a status flicker, not a corrupted tree. Promoting these to CAS would be straight-line cleanup if the audit log ever shows the flicker actually happening; until then, the cost-benefit doesn't justify it.

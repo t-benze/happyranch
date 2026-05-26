@@ -206,18 +206,18 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
         return
 
     if decision.action == "escalate":
-        # Defense-in-depth idempotence (Guard C). Guard B above should have
-        # already returned for cancelled tasks; this catches any future code
-        # path that lands here with a terminal task. See spec §5.3.
-        if _is_already_terminal(orch, task_id):
-            return
+        # Atomic CAS: transition to BLOCKED(ESCALATED) only if not cancelled
+        # or terminal. Closes the post-_is_already_terminal race (Codex P2 on
+        # PR #34) by serializing against /cancel via the Database RLock.
+        # If False: founder cancellation landed between Guard B's re-fetch and
+        # here. Drop the escalate silently — the founder's terminal state wins.
         reason = decision.reason or "Escalated"
-        db.update_task(
-            task_id,
-            status=TaskStatus.BLOCKED,
-            block_kind=BlockKind.ESCALATED,
-            note=reason,
-        )
+        if not db.try_escalate(task_id, reason=reason):
+            logger.debug(
+                "run_step %s: cancelled between re-check and escalate, dropping",
+                task_id,
+            )
+            return
         orch._audit.log_escalation(task_id, agent, reason)
         orch.notify_escalated(
             task_id=task_id, agent=agent, reason=reason,
@@ -227,14 +227,6 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
         return
 
     if decision.action == "delegate":
-        # Defense-in-depth idempotence (Guard C). Guard B above should have
-        # already returned for cancelled tasks; this catches any future code
-        # path that lands here with a terminal task. Critical for the delegate
-        # branch specifically because it spawns NEW work (insert_task + queue
-        # enqueue), making a resurrection bug here much louder than for the
-        # other branches. See spec §5.3.
-        if _is_already_terminal(orch, task_id):
-            return
         # First: hard-fail on structurally invalid delegate (no agent name or
         # missing workspace). These are unrecoverable for this step.
         err = _validate_delegate(orch, decision)
@@ -298,7 +290,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
             if worker_of_record == decision.agent:
                 db.increment_revision_count(task_id)
         child_id = db.next_task_id()
-        db.insert_task(TaskRecord(
+        child = TaskRecord(
             id=child_id,
             team=task.team,
             brief=decision.prompt or "",
@@ -306,13 +298,22 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
             parent_task_id=task_id,
             status=TaskStatus.PENDING,
             session_timeout_seconds=task.session_timeout_seconds,
-        ))
-        db.update_task(
-            task_id,
-            status=TaskStatus.BLOCKED,
-            block_kind=BlockKind.DELEGATED,
-            note=f"Delegated to {decision.agent} (child={child_id})",
         )
+        # Atomic CAS: insert child + transition parent to BLOCKED(DELEGATED)
+        # under the same RLock acquisition. Serializes against /cancel via
+        # Database RLock — closes the spawn-new-work race (Codex P1 on PR #34).
+        # If False: cancel landed between Guard B's re-fetch and here. No child
+        # was inserted, no parent overwrite, no enqueue. The founder's terminal
+        # state wins. Drop silently — the founder cancelled deliberately.
+        if not db.try_delegate(
+            task_id, child,
+            parent_note=f"Delegated to {decision.agent} (child={child_id})",
+        ):
+            logger.debug(
+                "run_step %s: cancelled between re-check and delegate, dropping",
+                task_id,
+            )
+            return
         if orch._queue is not None:
             orch._queue.put_nowait(orch._slug, child_id)
         return
