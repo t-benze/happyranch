@@ -32,7 +32,7 @@ export function ActivityTab(): JSX.Element {
     );
   }
   const sorted = [...entries].sort((a, b) =>
-    a.created_at < b.created_at ? 1 : -1,
+    a.timestamp < b.timestamp ? 1 : -1,
   );
 
   return (

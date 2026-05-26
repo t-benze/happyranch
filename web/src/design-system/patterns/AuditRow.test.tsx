@@ -12,7 +12,7 @@ const baseEntry: AuditEntry = {
   agent: 'content_writer',
   action: 'completion_report',
   payload: { status: 'completed', tokens: 1200 },
-  created_at: '2026-05-19T11:00:00Z',
+  timestamp: '2026-05-19T11:00:00Z',
 };
 
 function wrap(ui: JSX.Element): JSX.Element {
@@ -55,7 +55,7 @@ describe('AuditRow — script_* actions', () => {
       script_request_id: 'SR-001',
       title: 'Deploy to staging',
     },
-    created_at: '2026-05-19T12:00:00Z',
+    timestamp: '2026-05-19T12:00:00Z',
   };
 
   test('renders SR id as a link when scriptsBasePath is provided', () => {

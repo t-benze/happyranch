@@ -23,11 +23,11 @@ interface OpenEscalation {
 }
 
 export function foldEscalations(entries: AuditEntry[]): FoldedEscalation[] {
-  // Walk chronologically. We rely on (created_at, id) being a stable
+  // Walk chronologically. We rely on (timestamp, id) being a stable
   // chronological order even when timestamps tie.
   const sorted = [...entries].sort((a, b) => {
-    if (a.created_at !== b.created_at) {
-      return a.created_at < b.created_at ? -1 : 1;
+    if (a.timestamp !== b.timestamp) {
+      return a.timestamp < b.timestamp ? -1 : 1;
     }
     return a.id - b.id;
   });
@@ -38,7 +38,7 @@ export function foldEscalations(entries: AuditEntry[]): FoldedEscalation[] {
   for (const e of sorted) {
     if (e.action === 'escalation') {
       const row: FoldedEscalation = {
-        raised_at: e.created_at,
+        raised_at: e.timestamp,
         resolved_at: null,
         agent: e.agent,
         task_id: e.task_id,
@@ -47,7 +47,7 @@ export function foldEscalations(entries: AuditEntry[]): FoldedEscalation[] {
       open.push({
         index: folded.length - 1,
         task_id: e.task_id,
-        raised_at: e.created_at,
+        raised_at: e.timestamp,
         agent: e.agent,
       });
       continue;
@@ -59,7 +59,7 @@ export function foldEscalations(entries: AuditEntry[]): FoldedEscalation[] {
       const matchIdx = open.findIndex((o) => o.task_id === e.task_id);
       if (matchIdx === -1) continue;
       const match = open[matchIdx];
-      folded[match.index].resolved_at = e.created_at;
+      folded[match.index].resolved_at = e.timestamp;
       open.splice(matchIdx, 1);
     }
   }

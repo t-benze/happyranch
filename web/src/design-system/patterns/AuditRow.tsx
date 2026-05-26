@@ -125,7 +125,7 @@ export function AuditRow({
         )}
       >
         <span className="text-fg-muted font-mono text-xs whitespace-nowrap">
-          {formatTime(entry.created_at)}
+          {formatTime(entry.timestamp)}
         </span>
         {entry.agent && <span className="text-fg text-sm">{entry.agent}</span>}
         {isScriptAction ? (

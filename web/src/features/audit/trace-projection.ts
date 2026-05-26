@@ -56,8 +56,8 @@ export function recentTaskIds(entries: AuditEntry[]): TaskPickerRow[] {
   for (const e of entries) {
     if (!e.task_id) continue;
     const existing = map.get(e.task_id);
-    if (!existing || existing.latest < e.created_at) {
-      map.set(e.task_id, { agent: e.agent, latest: e.created_at });
+    if (!existing || existing.latest < e.timestamp) {
+      map.set(e.task_id, { agent: e.agent, latest: e.timestamp });
     }
   }
   return [...map.entries()]

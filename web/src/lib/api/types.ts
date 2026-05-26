@@ -96,7 +96,7 @@ export interface AuditEntry {
   agent: string | null;
   action: string;
   payload: Record<string, unknown>;
-  created_at: string;
+  timestamp: string;
 }
 
 /** Recall payload. With `?tree=true`, `children` is recursive; without it,

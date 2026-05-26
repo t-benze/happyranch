@@ -10,7 +10,7 @@ function sessionEnd(
   task_id: string,
   agent: string,
   payload: Record<string, unknown>,
-  created_at = '2026-05-19T10:00:00Z',
+  timestamp = '2026-05-19T10:00:00Z',
   id = Math.floor(Math.random() * 1e6),
 ): AuditEntry {
   return {
@@ -19,7 +19,7 @@ function sessionEnd(
     agent,
     action: 'session_end',
     payload,
-    created_at,
+    timestamp,
     session_id: null,
   };
 }
@@ -62,7 +62,7 @@ describe('projectCosts', () => {
         agent: 'a',
         action: 'completion_report',
         payload: { token_usage: { total: 5000 } },
-        created_at: '2026-05-19T11:00:00Z',
+        timestamp: '2026-05-19T11:00:00Z',
         session_id: null,
       },
     ];

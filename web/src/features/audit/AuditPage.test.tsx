@@ -30,7 +30,7 @@ function seedAudit() {
             agent: agent ?? 'content_writer',
             action: 'completion_report',
             payload: { status: 'completed' },
-            created_at: '2026-05-19T11:00:00Z',
+            timestamp: '2026-05-19T11:00:00Z',
           },
         ],
       });
@@ -113,7 +113,7 @@ describe('AuditPage', () => {
               agent: 'alice',
               action: 'escalation',
               payload: {},
-              created_at: '2026-05-19T10:00:00Z',
+              timestamp: '2026-05-19T10:00:00Z',
             },
             {
               id: 2,
@@ -122,7 +122,7 @@ describe('AuditPage', () => {
               agent: 'founder',
               action: 'escalation_resolved',
               payload: {},
-              created_at: '2026-05-19T10:30:00Z',
+              timestamp: '2026-05-19T10:30:00Z',
             },
           ],
         }),
