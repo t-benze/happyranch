@@ -25,6 +25,39 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[require_token()])
 
+# Terminal statuses for task-active gating. Referenced by both the cancel
+# route (l.~700) and the agent-callback routes (submit_completion, submit_progress)
+# so it lives at module scope rather than next to its first use.
+_TERMINAL_TASK_STATUSES = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED})
+
+
+def _require_task_active(task_id: str, task: TaskRecord | None) -> None:
+    """Guard A: reject agent callbacks whose task is gone, terminal, or cancelled.
+
+    Mirrors src/daemon/routes/scripts.py:64-90 validation order — existence
+    before active, both before session ownership. A cancelled task reporting
+    `session_mismatch` would mislead the agent into thinking its session was
+    bumped when its whole task was terminated.
+
+    Closes the cancel-race documented in
+    docs/superpowers/specs/2026-05-26-cancel-race-design.md §5.1.
+    """
+    if task is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "unknown_task", "task_id": task_id},
+        )
+    if task.cancelled_at is not None or task.status in _TERMINAL_TASK_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "task_not_active",
+                "task_id": task_id,
+                "status": task.status.value,
+                "cancelled": task.cancelled_at is not None,
+            },
+        )
+
 
 def _task_to_dict(t: TaskRecord) -> dict:
     # Wire convention: every other task-shaped response (submit POST, recall)
@@ -220,6 +253,8 @@ async def task_events(task_id: str, org: OrgDep):
 
 @router.post("/tasks/{task_id}/completion")
 async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> dict:
+    # Task-active gate runs BEFORE session ownership (see _require_task_active).
+    _require_task_active(task_id, org.db.get_task(task_id))
     expected = org.sessions.get_active(task_id, body.agent)
     # Reject callbacks the daemon never spawned. Both branches are 409 — the
     # tracker is the source of truth for "is this a real session". Unknown
@@ -283,6 +318,8 @@ async def submit_progress(task_id: str, body: ProgressBody, org: OrgDep) -> dict
     """
     from src.infrastructure.audit_logger import AuditLogger
 
+    # Task-active gate runs BEFORE session ownership (see _require_task_active).
+    _require_task_active(task_id, org.db.get_task(task_id))
     expected = org.sessions.get_active(task_id, body.agent)
     if expected is None:
         raise HTTPException(
@@ -409,9 +446,6 @@ class CancelBody(BaseModel):
     # rather than removed entirely because there are narrow cases (rogue-agent
     # isolation) where targeting a single node is right.
     cascade: bool = True
-
-
-_TERMINAL_TASK_STATUSES = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED})
 
 
 class RevisitBody(BaseModel):

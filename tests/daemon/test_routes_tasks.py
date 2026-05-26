@@ -354,6 +354,127 @@ def test_completion_leaves_decision_json_null_when_omitted(
     assert rows[-1]["decision_json"] is None
 
 
+def test_completion_rejects_cancelled_task(
+    tmp_home, app, daemon_state, org_state, auth_headers,
+) -> None:
+    """Guard A: a completion arriving after /cancel stamped cancelled_at must
+    be rejected with `task_not_active` BEFORE the session-tracker check, so the
+    `delegate` decision it might carry never reaches insert_task_result.
+
+    Mirrors the validation order in src/daemon/routes/scripts.py:64-90.
+    """
+    from datetime import datetime, timezone
+    from src.models import TaskStatus
+
+    sub = TestClient(app).post(
+        "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+
+    # The session was active (agent registered) before cancel landed.
+    org_state.sessions.set_active(task_id, "dev_agent", "sess-1")
+
+    # Simulate /cancel's Phase 1: status=FAILED + cancelled_at stamped + founder note.
+    now = datetime.now(timezone.utc).isoformat()
+    org_state.db.update_task(
+        task_id,
+        status=TaskStatus.FAILED,
+        block_kind=None,
+        note="cancelled by founder: stop",
+        cancelled_at=now,
+        completed_at=now,
+    )
+    # Phase 2 has NOT yet cleared the tracker — this models the exact race
+    # window where a late HTTP POST can still find the session active.
+
+    r = TestClient(app).post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
+        json={
+            "session_id": "sess-1", "agent": "dev_agent",
+            "status": "completed", "confidence": 90, "output_summary": "ok",
+            "decision": {"action": "delegate", "agent": "worker", "prompt": "do it"},
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "task_not_active"
+    assert r.json()["detail"]["cancelled"] is True
+    # Critical: the delegate decision must not have been persisted.
+    assert org_state.db.get_task_results(task_id) == []
+
+
+def test_completion_rejects_already_completed_task(
+    tmp_home, app, daemon_state, org_state, auth_headers,
+) -> None:
+    """Guard A: terminal-status check fires even without cancelled_at (e.g., a
+    completed task receiving a duplicate callback). 409 task_not_active."""
+    from src.models import TaskStatus
+
+    sub = TestClient(app).post(
+        "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    org_state.sessions.set_active(task_id, "dev_agent", "sess-1")
+    org_state.db.update_task(task_id, status=TaskStatus.COMPLETED)
+
+    r = TestClient(app).post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
+        json={
+            "session_id": "sess-1", "agent": "dev_agent",
+            "status": "completed", "confidence": 90, "output_summary": "late",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "task_not_active"
+    assert r.json()["detail"]["cancelled"] is False
+
+
+def test_completion_rejects_unknown_task_404(
+    tmp_home, app, daemon_state, org_state, auth_headers,
+) -> None:
+    """Guard A: existence check fires before session check. Matches the
+    `unknown_task` shape in src/daemon/routes/scripts.py:69-74."""
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/tasks/TASK-999/completion",
+        json={
+            "session_id": "sess-x", "agent": "dev_agent",
+            "status": "completed", "confidence": 90, "output_summary": "ok",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 404
+    assert r.json()["detail"]["code"] == "unknown_task"
+
+
+def test_progress_rejects_cancelled_task(
+    tmp_home, app, daemon_state, org_state, auth_headers,
+) -> None:
+    """Guard A applied to /progress for symmetry. A late progress beat from a
+    cancelled session is noise + symptomatic of the same race."""
+    from datetime import datetime, timezone
+    from src.models import TaskStatus
+
+    sub = TestClient(app).post(
+        "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    org_state.sessions.set_active(task_id, "dev_agent", "sess-1")
+
+    now = datetime.now(timezone.utc).isoformat()
+    org_state.db.update_task(
+        task_id, status=TaskStatus.FAILED, cancelled_at=now, completed_at=now,
+    )
+
+    r = TestClient(app).post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/progress",
+        json={"session_id": "sess-1", "agent": "dev_agent", "message": "still working"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "task_not_active"
+
+
 def test_recall_returns_task_payload(tmp_home, app, daemon_state, org_state, auth_headers) -> None:
     from src.models import TaskRecord, TaskStatus
     org_state.db.insert_task(

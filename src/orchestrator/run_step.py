@@ -132,6 +132,21 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
             token_usage=result.token_usage,
         )
 
+    # Cancel-race Guard B: /cancel can land between try_claim_for_step and
+    # subprocess exit. The l.41 entry guard only catches NEW enqueues. If we
+    # observe cancelled_at != NULL here, the report (if any) is from a
+    # cancelled tree and must not feed the decision pipeline — otherwise the
+    # `delegate` branch (no idempotence guard) will resurrect the parent and
+    # spawn a child task on a tree the founder explicitly killed.
+    # Token usage stays persisted above (provider really charged for it).
+    # See docs/superpowers/specs/2026-05-26-cancel-race-design.md §5.2.
+    refetch = db.get_task(task_id)
+    if refetch is None or refetch.cancelled_at is not None:
+        logger.debug(
+            "run_step %s: cancelled during session, dropping report", task_id,
+        )
+        return
+
     # ---- 5. Classify outcome ----
     if not result.success or report is None:
         note = _session_failed_note(result, report)
@@ -191,6 +206,11 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
         return
 
     if decision.action == "escalate":
+        # Defense-in-depth idempotence (Guard C). Guard B above should have
+        # already returned for cancelled tasks; this catches any future code
+        # path that lands here with a terminal task. See spec §5.3.
+        if _is_already_terminal(orch, task_id):
+            return
         reason = decision.reason or "Escalated"
         db.update_task(
             task_id,
@@ -207,6 +227,14 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
         return
 
     if decision.action == "delegate":
+        # Defense-in-depth idempotence (Guard C). Guard B above should have
+        # already returned for cancelled tasks; this catches any future code
+        # path that lands here with a terminal task. Critical for the delegate
+        # branch specifically because it spawns NEW work (insert_task + queue
+        # enqueue), making a resurrection bug here much louder than for the
+        # other branches. See spec §5.3.
+        if _is_already_terminal(orch, task_id):
+            return
         # First: hard-fail on structurally invalid delegate (no agent name or
         # missing workspace). These are unrecoverable for this step.
         err = _validate_delegate(orch, decision)
@@ -608,14 +636,37 @@ def _build_prior_steps_from_db(orch: "Orchestrator", task_id: str):
     return steps
 
 
+def _is_already_terminal(orch: "Orchestrator", task_id: str) -> bool:
+    """Shared idempotence predicate for the four decision branches.
+
+    Returns True when the row is gone, already terminal (COMPLETED / FAILED),
+    or cancelled — any state where a subsequent decision must not overwrite
+    the task's status, note, or spawn children.
+
+    Includes `cancelled_at` explicitly as defense in depth: today `/cancel`
+    always flips status to FAILED alongside stamping `cancelled_at`, so the
+    `status in TERMINAL_STATES` check covers the cancelled case. But if a
+    future code path ever stamps `cancelled_at` without touching status, this
+    predicate still does the right thing.
+
+    Closes the cancel-race documented in
+    docs/superpowers/specs/2026-05-26-cancel-race-design.md §5.3.
+    """
+    existing = orch._db.get_task(task_id)
+    return (
+        existing is None
+        or existing.status in TERMINAL_STATES
+        or existing.cancelled_at is not None
+    )
+
+
 def _complete(orch: "Orchestrator", task_id: str, *, note: str, artifact_dir: str | None = None) -> None:
     from datetime import datetime, timezone
     # Idempotence guard: /cancel may have already taken this task to FAILED
     # between Popen return and here. Don't resurrect a cancelled task back to
     # COMPLETED just because the subprocess happened to finish cleanly before
     # SIGTERM arrived.
-    existing = orch._db.get_task(task_id)
-    if existing is not None and existing.status in TERMINAL_STATES:
+    if _is_already_terminal(orch, task_id):
         return
     orch._db.update_task(
         task_id,
@@ -635,8 +686,7 @@ def _fail(orch: "Orchestrator", task_id: str, *, note: str) -> None:
     # the subprocess, run_step re-enters via the post-execution classifier and
     # tries to write a "session failed (rc=-15; ...)" note. That must NOT
     # overwrite the founder's "cancelled by founder: ..." note.
-    existing = orch._db.get_task(task_id)
-    if existing is not None and existing.status in TERMINAL_STATES:
+    if _is_already_terminal(orch, task_id):
         return
     orch._db.update_task(
         task_id,
