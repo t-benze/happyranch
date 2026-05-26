@@ -185,8 +185,9 @@ def test_migration_renames_table_and_rewrites_ids(tmp_path: Path) -> None:
         # 8. Audit payloads rewritten (script_id → job_id, SR- → JOB-)
         payloads = [json.loads(r[0]) for r in conn.execute(
             "SELECT payload FROM audit_log ORDER BY id")]
-        assert payloads[0]["job_id"] == "JOB-001"
-        assert "script_id" not in payloads[0]
+        assert payloads[0] == {"job_id": "JOB-001", "task_id": "TASK-010"}
+        assert payloads[1] == {"job_id": "JOB-001", "exit_code": 0}
+        assert payloads[2] == {"job_id": "JOB-002", "reason": "unsafe"}
 
         # 9. Notification kind rewritten
         notif_kinds = sorted(r[0] for r in conn.execute(
