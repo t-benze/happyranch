@@ -64,6 +64,7 @@ class Database:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._tasks_has_legacy_type_column: bool = False
+        self._migrate_jobs_table_if_needed()
         self._create_tables()
         self._detect_legacy_columns()
 
@@ -84,6 +85,103 @@ class Database:
         cursor = self._conn.execute("PRAGMA table_info(tasks)")
         columns = {row[1] for row in cursor.fetchall()}
         self._tasks_has_legacy_type_column = "type" in columns
+
+    def _migrate_jobs_table_if_needed(self) -> None:
+        """Rename legacy ``script_requests`` table to ``jobs`` and ripple the
+        rename through audit_log + escalation_notifications.
+
+        Idempotent: if ``jobs`` already exists OR ``script_requests`` does not
+        exist, this is a no-op. Must run BEFORE ``_create_tables`` so the
+        ``CREATE TABLE IF NOT EXISTS jobs`` below becomes a no-op on an
+        already-migrated DB.
+
+        See spec docs/superpowers/specs/2026-05-26-jobs-module-design.md §6.2.
+        """
+        # `executescript` does not return rows, so use a plain execute+fetchall
+        # to inspect the schema first.
+        existing = {
+            row[0]
+            for row in self._conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name IN ('script_requests', 'jobs')"
+            ).fetchall()
+        }
+        if "script_requests" not in existing or "jobs" in existing:
+            return
+
+        # Single executescript block — supports BEGIN/COMMIT explicitly and
+        # runs all statements as one transaction. SQLite 3.35+ supports DROP
+        # COLUMN; we rely on that for `timeout_seconds`.
+        self._conn.executescript(
+            """
+            BEGIN;
+            ALTER TABLE script_requests RENAME TO jobs;
+
+            ALTER TABLE jobs ADD COLUMN review_required INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE jobs ADD COLUMN persistent INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE jobs ADD COLUMN max_output_bytes INTEGER NOT NULL DEFAULT 52428800;
+            ALTER TABLE jobs ADD COLUMN stdout_bytes INTEGER;
+            ALTER TABLE jobs ADD COLUMN stderr_bytes INTEGER;
+            ALTER TABLE jobs ADD COLUMN reason TEXT;
+            ALTER TABLE jobs ADD COLUMN max_runtime_seconds INTEGER;
+
+            UPDATE jobs SET max_runtime_seconds = timeout_seconds
+             WHERE timeout_seconds IS NOT NULL;
+            ALTER TABLE jobs DROP COLUMN timeout_seconds;
+
+            -- Backfill: every legacy script_request was a founder-approved one-shot.
+            UPDATE jobs SET review_required = 1 WHERE review_required = 0;
+
+            -- Force-fail orphaned 'running' rows (daemon has clearly exited by now).
+            UPDATE jobs
+               SET status = 'failed',
+                   reason = 'daemon_crash',
+                   finished_at = COALESCE(finished_at, started_at, created_at)
+             WHERE status = 'running';
+
+            -- ID rewrite SR-NNN -> JOB-NNN.
+            UPDATE jobs SET id = 'JOB-' || SUBSTR(id, 4) WHERE id LIKE 'SR-%';
+
+            -- File-path rewrite scripts/SR- -> jobs/JOB-.
+            UPDATE jobs
+               SET stdout_path = REPLACE(REPLACE(stdout_path, '/scripts/SR-', '/jobs/JOB-'),
+                                         '/scripts/', '/jobs/')
+             WHERE stdout_path IS NOT NULL;
+            UPDATE jobs
+               SET stderr_path = REPLACE(REPLACE(stderr_path, '/scripts/SR-', '/jobs/JOB-'),
+                                         '/scripts/', '/jobs/')
+             WHERE stderr_path IS NOT NULL;
+
+            -- Ripple through cross-referencing tables.
+            UPDATE escalation_notifications
+               SET task_id = 'JOB-' || SUBSTR(task_id, 4)
+             WHERE kind = 'script_request' AND task_id LIKE 'SR-%';
+            UPDATE escalation_notifications
+               SET kind = 'job_request'
+             WHERE kind = 'script_request';
+
+            -- Audit rewrites. NB: real columns are `action` and `payload`
+            -- (NOT `kind`/`payload_json` — spec §6.2 corrected).
+            UPDATE audit_log
+               SET action = 'job_' || SUBSTR(action, 8)
+             WHERE action LIKE 'script_%';
+            UPDATE audit_log
+               SET payload = REPLACE(payload, '"script_id"', '"job_id"')
+             WHERE payload LIKE '%"script_id"%';
+            UPDATE audit_log
+               SET payload = REPLACE(payload, '"SR-', '"JOB-')
+             WHERE payload LIKE '%"SR-%';
+
+            -- Rename indexes.
+            DROP INDEX IF EXISTS idx_script_requests_task;
+            DROP INDEX IF EXISTS idx_script_requests_agent;
+            DROP INDEX IF EXISTS idx_script_requests_status;
+            DROP INDEX IF EXISTS idx_script_requests_created_at;
+            CREATE INDEX IF NOT EXISTS jobs_task_id_idx ON jobs(task_id);
+            CREATE INDEX IF NOT EXISTS jobs_status_idx  ON jobs(status);
+            COMMIT;
+            """
+        )
 
     def _create_tables(self) -> None:
         self._conn.executescript("""
@@ -279,35 +377,39 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_thread_invocations_pending
                 ON thread_invocations(status) WHERE status = 'pending';
 
-            CREATE TABLE IF NOT EXISTS script_requests (
+            CREATE TABLE IF NOT EXISTS jobs (
                 id                  TEXT PRIMARY KEY,
                 task_id             TEXT NOT NULL,
                 agent_name          TEXT NOT NULL,
                 title               TEXT NOT NULL,
-                rationale           TEXT NOT NULL,
+                rationale           TEXT,
                 script_text         TEXT NOT NULL,
                 interpreter         TEXT NOT NULL,
                 cwd_hint            TEXT,
+                review_required     INTEGER NOT NULL DEFAULT 0,
+                persistent          INTEGER NOT NULL DEFAULT 0,
+                max_runtime_seconds INTEGER,
+                max_output_bytes    INTEGER NOT NULL DEFAULT 52428800,
                 status              TEXT NOT NULL DEFAULT 'pending',
                 exit_code           INTEGER,
+                reason              TEXT,
+                duration_ms         INTEGER,
                 stdout_head         TEXT,
                 stderr_head         TEXT,
                 stdout_path         TEXT,
                 stderr_path         TEXT,
-                duration_ms         INTEGER,
+                stdout_bytes        INTEGER,
+                stderr_bytes        INTEGER,
+                cwd_resolved        TEXT,
                 started_at          TEXT,
                 finished_at         TEXT,
                 reviewed_at         TEXT,
                 reviewed_by         TEXT,
                 reject_reason       TEXT,
-                cwd_resolved        TEXT,
-                timeout_seconds     INTEGER NOT NULL DEFAULT 300,
                 created_at          TEXT NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS idx_script_requests_task        ON script_requests(task_id);
-            CREATE INDEX IF NOT EXISTS idx_script_requests_agent       ON script_requests(agent_name);
-            CREATE INDEX IF NOT EXISTS idx_script_requests_status      ON script_requests(status);
-            CREATE INDEX IF NOT EXISTS idx_script_requests_created_at  ON script_requests(created_at);
+            CREATE INDEX IF NOT EXISTS jobs_task_id_idx ON jobs(task_id);
+            CREATE INDEX IF NOT EXISTS jobs_status_idx  ON jobs(status);
         """)
         # Best-effort migration for DBs created before `status` existed. SQLite
         # has no IF NOT EXISTS for ADD COLUMN; swallow the duplicate-column
