@@ -844,6 +844,80 @@ class Database:
         return cursor.rowcount == 1
 
     @_synchronized
+    def try_escalate(self, task_id: str, *, reason: str) -> bool:
+        """Atomic CAS: transition task to BLOCKED(ESCALATED) only if it isn't
+        cancelled or already terminal.
+
+        Closes the post-_is_already_terminal race in the escalate decision
+        branch — the Python-level check + UPDATE pair was non-atomic with the
+        cancel route's UPDATE. By gating the transition with a SQL `WHERE
+        cancelled_at IS NULL AND status NOT IN (...)` predicate under the
+        Database RLock (same lock the cancel route's update_task uses), the
+        operation serializes against cancel: either cancel ran first and we
+        see cancelled_at != NULL → bail, or we ran first and cancel observes
+        BLOCKED(ESCALATED) → transitions cleanly to FAILED on its own.
+
+        Returns True iff the row transitioned.
+
+        See docs/superpowers/specs/2026-05-26-cancel-race-design.md §5.3
+        (Codex review of PR #34 surfaced the residual race).
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = self._conn.execute(
+            """UPDATE tasks
+               SET status = ?, block_kind = ?, note = ?, updated_at = ?
+               WHERE id = ?
+                 AND cancelled_at IS NULL
+                 AND status NOT IN ('completed', 'failed')""",
+            (TaskStatus.BLOCKED.value, BlockKind.ESCALATED.value, reason, now, task_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    @_synchronized
+    def try_delegate(
+        self, parent_id: str, child: TaskRecord, *, parent_note: str,
+    ) -> bool:
+        """Atomic CAS: insert child task + transition parent to BLOCKED(DELEGATED),
+        rejecting if parent is cancelled or already terminal.
+
+        Closes the spawn-new-work race documented in
+        docs/superpowers/specs/2026-05-26-cancel-race-design.md §5.3.
+        Atomicity guarantee: both the child INSERT and the parent UPDATE
+        happen under a single @_synchronized acquisition (threading.RLock,
+        reentrant). The cancel route's update_task also acquires this lock,
+        so the only two interleavings are:
+        - cancel before us: our SELECT sees cancelled_at != NULL → bail, no writes
+        - us before cancel: cancel sees parent in BLOCKED(DELEGATED), transitions
+          to FAILED, and its cascade walks our newly-inserted child for cleanup
+
+        On True: parent has transitioned and child exists.
+        On False: no DB changes were made (no orphan child, no parent overwrite).
+        """
+        cursor = self._conn.execute(
+            "SELECT status, cancelled_at FROM tasks WHERE id = ?", (parent_id,)
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return False
+        if row["cancelled_at"] is not None or row["status"] in ("completed", "failed"):
+            return False
+        # Both writes under same RLock — atomic vs cancel route.
+        # insert_task() commits, but the lock is still held until this method
+        # returns, so no other writer can interleave between insert and update.
+        self.insert_task(child)
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            """UPDATE tasks
+               SET status = ?, block_kind = ?, note = ?, updated_at = ?
+               WHERE id = ?""",
+            (TaskStatus.BLOCKED.value, BlockKind.DELEGATED.value, parent_note,
+             now, parent_id),
+        )
+        self._conn.commit()
+        return True
+
+    @_synchronized
     def increment_revision_count(self, task_id: str) -> None:
         self._conn.execute(
             "UPDATE tasks SET revision_count = revision_count + 1, updated_at = ? WHERE id = ?",

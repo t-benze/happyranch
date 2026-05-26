@@ -1288,3 +1288,236 @@ def test_revisit_header_includes_sr_summary(runtime, db):
     assert "Close PR #247" in header
     assert "grassland scripts show SR-019" in header
     assert "grassland scripts output SR-019" in header
+
+
+# ---- Cancel-race Guard B: post-_run_agent re-check ----
+# See docs/superpowers/specs/2026-05-26-cancel-race-design.md §5.2.
+
+def test_run_step_drops_delegate_when_cancelled_during_session(runtime, db, monkeypatch):
+    """Guard B: /cancel can land between try_claim_for_step and subprocess exit.
+    The l.41 entry guard only catches NEW enqueues. When `_run_agent` returns
+    with a delegate decision but the task is now cancelled, no child task may
+    be spawned and the founder-set status / note must remain intact.
+
+    This is the regression check for the TASK-497 cancel race documented in
+    docs/superpowers/specs/2026-05-26-cancel-race-design.md.
+    """
+    import json
+    from datetime import datetime, timezone
+    from src.orchestrator.orchestrator import Orchestrator
+    from src.models import TokenUsage
+
+    # Workspace must exist so _validate_delegate doesn't error out and
+    # take us through the (already-idempotent) _fail path instead of the
+    # (not-yet-guarded) delegate path we're testing.
+    (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
+
+    db.insert_task(TaskRecord(
+        id="T-RACE", brief="x", assigned_agent="engineering_head",
+    ))
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    def cancel_then_delegate(*a, **k):
+        # Simulate /cancel landing while the subprocess was running. By the
+        # time _run_agent returns, the founder has already stamped the row.
+        now = datetime.now(timezone.utc).isoformat()
+        db.update_task(
+            "T-RACE",
+            status=TaskStatus.FAILED,
+            block_kind=None,
+            note="cancelled by founder: stop",
+            cancelled_at=now,
+            completed_at=now,
+        )
+        # The EH session would have produced its decision before SIGTERM
+        # took effect; we model that by returning a delegate decision anyway.
+        result = _make_result()
+        result.token_usage = TokenUsage(
+            input_tokens=10, output_tokens=20, model="claude-opus",
+        )
+        report = _make_report(
+            output_summary=json.dumps({
+                "action": "delegate", "agent": "dev_agent", "prompt": "ship it",
+            }),
+        )
+        return result, report
+
+    monkeypatch.setattr(orch, "_run_agent", cancel_then_delegate)
+
+    orch.run_step("T-RACE")
+
+    t = db.get_task("T-RACE")
+    # Founder's terminal state preserved.
+    assert t.status == TaskStatus.FAILED
+    assert t.note == "cancelled by founder: stop"
+    assert t.cancelled_at is not None
+    # No child task spawned by the delegate decision.
+    assert db.get_children("T-RACE") == []
+    # Queue stays empty — nothing to dispatch.
+    assert orch._queue.qsize() == 0
+    # Token usage IS persisted regardless of cancel (spec §5.2 — provider
+    # really charged for the session; /tokens rollups must reflect spend).
+    usage_rows = db.list_session_token_usage(task_id="T-RACE")
+    assert len(usage_rows) == 1
+    assert usage_rows[0]["input_tokens"] == 10
+    assert usage_rows[0]["output_tokens"] == 20
+
+
+# ---- Cancel-race Guard C: shared terminal predicate ----
+# See docs/superpowers/specs/2026-05-26-cancel-race-design.md §5.3.
+
+def test_is_already_terminal_predicate(runtime, db):
+    """Single source of truth for the `done` / `delegate` / `escalate` / `_fail`
+    / `_complete` idempotence guards. Returns True for missing tasks, for
+    terminal statuses (COMPLETED, FAILED), and for cancelled rows even if their
+    status hasn't yet flipped to FAILED.
+    """
+    from datetime import datetime, timezone
+    from src.orchestrator.orchestrator import Orchestrator
+    from src.orchestrator.run_step import _is_already_terminal
+
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+
+    # Missing task → True (treat as terminal; nothing to act on).
+    assert _is_already_terminal(orch, "T-NOPE") is True
+
+    # PENDING → False.
+    db.insert_task(TaskRecord(id="T-A", brief="a"))
+    assert _is_already_terminal(orch, "T-A") is False
+
+    # IN_PROGRESS → False.
+    db.update_task("T-A", status=TaskStatus.IN_PROGRESS)
+    assert _is_already_terminal(orch, "T-A") is False
+
+    # BLOCKED → False. (Parent in blocked(delegated) is waiting on a child,
+    # not terminal; a fresh manager step is allowed.)
+    db.update_task("T-A", status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED)
+    assert _is_already_terminal(orch, "T-A") is False
+
+    # COMPLETED → True.
+    db.update_task("T-A", status=TaskStatus.COMPLETED, block_kind=None)
+    assert _is_already_terminal(orch, "T-A") is True
+
+    # FAILED → True.
+    db.insert_task(TaskRecord(id="T-B", brief="b"))
+    db.update_task("T-B", status=TaskStatus.FAILED)
+    assert _is_already_terminal(orch, "T-B") is True
+
+    # Cancelled even if status hasn't yet been flipped to FAILED — defense
+    # in depth against a future code path that stamps cancelled_at without
+    # touching status. Per spec §5.3.
+    db.insert_task(TaskRecord(id="T-C", brief="c"))
+    now = datetime.now(timezone.utc).isoformat()
+    db.update_task("T-C", status=TaskStatus.IN_PROGRESS, cancelled_at=now)
+    assert _is_already_terminal(orch, "T-C") is True
+
+
+def test_run_step_delegate_atomic_against_cancel_between_recheck_and_cas(
+    runtime, db, monkeypatch,
+):
+    """Codex P1 on PR #34: even after Guard B's re-fetch passes, /cancel can
+    land between the re-fetch and the delegate's insert+update. The atomic
+    CAS in db.try_delegate must close this window — no child created, parent
+    state preserved.
+
+    Simulated by monkey-patching db.try_delegate to invoke /cancel just before
+    its conditional UPDATE runs. This reproduces the worst-case interleaving
+    that the Python-level check-then-act would have lost.
+    """
+    import json
+    from datetime import datetime, timezone
+    from src.orchestrator.orchestrator import Orchestrator
+
+    (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
+
+    db.insert_task(TaskRecord(
+        id="T-RACE2", brief="x", assigned_agent="engineering_head",
+    ))
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    # _run_agent returns a delegate without cancelling — Guard B re-fetch
+    # will pass. The cancel races in via the monkey-patched try_delegate.
+    monkeypatch.setattr(orch, "_run_agent",
+                        lambda *a, **k: (_make_result(), _make_report(
+                            output_summary=json.dumps({
+                                "action": "delegate", "agent": "dev_agent",
+                                "prompt": "ship it",
+                            }),
+                        )))
+
+    # Wrap try_delegate so the cancel lands at the worst moment: AFTER Guard B
+    # re-checks but BEFORE the CAS write. The atomic SELECT inside try_delegate
+    # should observe the cancel and return False.
+    real_try_delegate = db.try_delegate
+    def racy_try_delegate(parent_id, child, *, parent_note):
+        # Simulate founder cancel landing just before the CAS SELECT.
+        now = datetime.now(timezone.utc).isoformat()
+        db.update_task(
+            parent_id,
+            status=TaskStatus.FAILED, block_kind=None,
+            note="cancelled by founder: stop",
+            cancelled_at=now, completed_at=now,
+        )
+        return real_try_delegate(parent_id, child, parent_note=parent_note)
+    monkeypatch.setattr(db, "try_delegate", racy_try_delegate)
+
+    orch.run_step("T-RACE2")
+
+    t = db.get_task("T-RACE2")
+    assert t.status == TaskStatus.FAILED
+    assert t.note == "cancelled by founder: stop"
+    assert t.cancelled_at is not None
+    # CRITICAL: no child created — the atomic CAS observed the cancel and bailed.
+    assert db.get_children("T-RACE2") == []
+    assert orch._queue.qsize() == 0
+
+
+def test_run_step_escalate_atomic_against_cancel_between_recheck_and_cas(
+    runtime, db, monkeypatch,
+):
+    """Codex P2 on PR #34: same race shape for the escalate branch — cancel
+    landing between Guard B and the conditional UPDATE must not resurrect a
+    cancelled row into BLOCKED(ESCALATED)."""
+    import json
+    from datetime import datetime, timezone
+    from src.orchestrator.orchestrator import Orchestrator
+
+    db.insert_task(TaskRecord(
+        id="T-ESC", brief="x", assigned_agent="engineering_head",
+    ))
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    monkeypatch.setattr(orch, "_run_agent",
+                        lambda *a, **k: (_make_result(), _make_report(
+                            output_summary=json.dumps({
+                                "action": "escalate", "reason": "blocked on creds",
+                            }),
+                        )))
+
+    real_try_escalate = db.try_escalate
+    def racy_try_escalate(task_id, *, reason):
+        now = datetime.now(timezone.utc).isoformat()
+        db.update_task(
+            task_id,
+            status=TaskStatus.FAILED, block_kind=None,
+            note="cancelled by founder: stop",
+            cancelled_at=now, completed_at=now,
+        )
+        return real_try_escalate(task_id, reason=reason)
+    monkeypatch.setattr(db, "try_escalate", racy_try_escalate)
+
+    orch.run_step("T-ESC")
+
+    t = db.get_task("T-ESC")
+    assert t.status == TaskStatus.FAILED
+    assert t.note == "cancelled by founder: stop"
+    assert t.cancelled_at is not None
+    # block_kind stays None (cancel cleared it); not BLOCKED(ESCALATED).
+    assert t.block_kind is None

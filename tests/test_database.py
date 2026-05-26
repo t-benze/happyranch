@@ -1215,3 +1215,123 @@ def test_get_latest_notification_for_sr_finds_consumed_rows(tmp_path):
     found = db.get_latest_notification_for_sr("SR-008", kind="script_request")
     assert found is not None  # consumed rows still returned for follow-up lookups
     assert found["feishu_message_id"] == "om_x"
+
+
+# ---- Cancel-race Guard C: SQL-level atomic CAS ----
+# See docs/superpowers/specs/2026-05-26-cancel-race-design.md §5.3.
+# Codex review of PR #34 surfaced that the Python-level _is_already_terminal
+# check is non-atomic with the subsequent db.update_task / db.insert_task,
+# leaving a microsecond-window race. These methods close it at the SQL layer.
+
+def test_try_escalate_succeeds_on_pending_task(db):
+    """CAS happy path: PENDING task transitions to BLOCKED(ESCALATED)."""
+    from src.models import BlockKind
+    db.insert_task(TaskRecord(id="T-1", brief="x"))
+    ok = db.try_escalate("T-1", reason="needs founder")
+    assert ok is True
+    t = db.get_task("T-1")
+    assert t.status == TaskStatus.BLOCKED
+    assert t.block_kind == BlockKind.ESCALATED
+    assert t.note == "needs founder"
+
+
+def test_try_escalate_rejects_cancelled_task(db):
+    """Atomic CAS: a task with cancelled_at set must not be transitioned
+    back to BLOCKED(ESCALATED). Closes Codex P2 race in the escalate branch."""
+    from datetime import datetime, timezone
+    db.insert_task(TaskRecord(id="T-1", brief="x"))
+    now = datetime.now(timezone.utc).isoformat()
+    db.update_task(
+        "T-1", status=TaskStatus.FAILED, cancelled_at=now, completed_at=now,
+        note="cancelled by founder",
+    )
+    ok = db.try_escalate("T-1", reason="bogus")
+    assert ok is False
+    t = db.get_task("T-1")
+    assert t.status == TaskStatus.FAILED  # unchanged
+    assert t.note == "cancelled by founder"  # unchanged
+    assert t.cancelled_at is not None
+
+
+def test_try_escalate_rejects_terminal_task(db):
+    """A COMPLETED or FAILED task must not be re-escalated even without cancel."""
+    db.insert_task(TaskRecord(id="T-1", brief="x"))
+    db.update_task("T-1", status=TaskStatus.COMPLETED, note="done")
+    ok = db.try_escalate("T-1", reason="bogus")
+    assert ok is False
+    t = db.get_task("T-1")
+    assert t.status == TaskStatus.COMPLETED
+    assert t.note == "done"
+
+
+def test_try_escalate_rejects_missing_task(db):
+    assert db.try_escalate("T-NOPE", reason="x") is False
+
+
+def test_try_delegate_succeeds_on_pending_parent(db):
+    """CAS happy path: parent transitions to BLOCKED(DELEGATED) AND child
+    is inserted in one atomic RLock acquisition."""
+    from src.models import BlockKind
+    db.insert_task(TaskRecord(id="T-PAR", brief="parent",
+                              assigned_agent="engineering_head"))
+    child = TaskRecord(
+        id="T-CHILD", brief="child work",
+        assigned_agent="dev_agent", parent_task_id="T-PAR",
+    )
+    ok = db.try_delegate("T-PAR", child, parent_note="Delegated to dev_agent (child=T-CHILD)")
+    assert ok is True
+
+    par = db.get_task("T-PAR")
+    assert par.status == TaskStatus.BLOCKED
+    assert par.block_kind == BlockKind.DELEGATED
+    assert par.note == "Delegated to dev_agent (child=T-CHILD)"
+    ch = db.get_task("T-CHILD")
+    assert ch is not None
+    assert ch.parent_task_id == "T-PAR"
+
+
+def test_try_delegate_rejects_cancelled_parent_and_inserts_no_child(db):
+    """Atomic CAS: a cancelled parent must not be transitioned back to
+    BLOCKED(DELEGATED), AND the child must not be created. This is the
+    spawn-new-work race from Codex P1 — the most important variant.
+    """
+    from datetime import datetime, timezone
+    db.insert_task(TaskRecord(id="T-PAR", brief="parent",
+                              assigned_agent="engineering_head"))
+    now = datetime.now(timezone.utc).isoformat()
+    db.update_task(
+        "T-PAR", status=TaskStatus.FAILED, cancelled_at=now, completed_at=now,
+        note="cancelled by founder",
+    )
+
+    child = TaskRecord(
+        id="T-CHILD", brief="child work",
+        assigned_agent="dev_agent", parent_task_id="T-PAR",
+    )
+    ok = db.try_delegate("T-PAR", child, parent_note="Delegated to dev_agent")
+    assert ok is False
+
+    par = db.get_task("T-PAR")
+    assert par.status == TaskStatus.FAILED  # unchanged
+    assert par.note == "cancelled by founder"  # unchanged
+    # CRITICAL: the child must NOT exist. This is the TASK-497 bug shape.
+    assert db.get_task("T-CHILD") is None
+    assert db.get_children("T-PAR") == []
+
+
+def test_try_delegate_rejects_terminal_parent(db):
+    """COMPLETED parent must not get a new child either."""
+    db.insert_task(TaskRecord(id="T-PAR", brief="parent",
+                              assigned_agent="engineering_head"))
+    db.update_task("T-PAR", status=TaskStatus.COMPLETED, note="done")
+    child = TaskRecord(id="T-CHILD", brief="x", parent_task_id="T-PAR")
+    ok = db.try_delegate("T-PAR", child, parent_note="late delegate")
+    assert ok is False
+    assert db.get_task("T-CHILD") is None
+
+
+def test_try_delegate_rejects_missing_parent(db):
+    child = TaskRecord(id="T-CHILD", brief="x", parent_task_id="T-NOPE")
+    ok = db.try_delegate("T-NOPE", child, parent_note="x")
+    assert ok is False
+    assert db.get_task("T-CHILD") is None
