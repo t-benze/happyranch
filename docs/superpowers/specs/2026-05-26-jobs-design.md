@@ -260,8 +260,30 @@ ALTER TABLE jobs ADD COLUMN max_runtime_seconds INTEGER;
 UPDATE jobs SET max_runtime_seconds = timeout_seconds WHERE timeout_seconds IS NOT NULL;
 ALTER TABLE jobs DROP COLUMN timeout_seconds;
 
+-- Any rows in 'running' at migration time are orphaned by definition: the daemon
+-- has exited (otherwise this migration wouldn't be running on startup). Force-fail
+-- them so the rest of the rewrite has only terminal-state rows to touch. The
+-- startup-recovery scan in §5.3 would do the same thing for 'jobs' rows but never
+-- sees these legacy rows because they're rewritten to JOB-* below before §5.3 runs.
+UPDATE jobs
+   SET status = 'failed',
+       reason = 'daemon_crash',
+       finished_at = COALESCE(finished_at, started_at, created_at)
+ WHERE status = 'running';
+
 -- Rename IDs in the jobs table itself
 UPDATE jobs SET id = 'JOB-' || SUBSTR(id, 4) WHERE id LIKE 'SR-%';
+
+-- Rewrite stored output paths from .../scripts/SR-NNN.{out,err} to .../jobs/JOB-NNN.{out,err}.
+-- The filesystem move below physically relocates the files; without this UPDATE, the row's
+-- stdout_path/stderr_path columns still point at the pre-rename location and GET /{id},
+-- /output, /tail all fail for migrated rows.
+UPDATE jobs
+   SET stdout_path = REPLACE(REPLACE(stdout_path, '/scripts/SR-', '/jobs/JOB-'), '/scripts/', '/jobs/')
+ WHERE stdout_path IS NOT NULL;
+UPDATE jobs
+   SET stderr_path = REPLACE(REPLACE(stderr_path, '/scripts/SR-', '/jobs/JOB-'), '/scripts/', '/jobs/')
+ WHERE stderr_path IS NOT NULL;
 
 -- Ripple ID rename through cross-referencing tables
 UPDATE escalation_notifications
@@ -306,7 +328,7 @@ for f in SR-*.out SR-*.err SR-*.script; do
 done
 ```
 
-The migration is automatic — no `grassland migrate-scripts-to-jobs` command is required because the rename is unambiguous and reversible at the schema level (we can write a backstop reverse-rename if needed, but expect not to). The migration refuses to run if any row in `script_requests` has `status='running'` — i.e., the daemon was last shut down with a job in flight. The founder must restart the daemon and let startup recovery resolve those rows before the migration can proceed (an idempotent restart cycle).
+The migration is automatic — no `grassland migrate-scripts-to-jobs` command is required because the rename is unambiguous and reversible at the schema level (we can write a backstop reverse-rename if needed, but expect not to). The migration handles `running` rows inline (force-failing them with `reason=daemon_crash` as shown above) rather than aborting and asking the founder to bounce the daemon, because the per-org startup-recovery scan in §5.3 only inspects the renamed `jobs` table — a legacy `script_requests` row in `running` would otherwise have no path to a terminal state and would block the upgrade indefinitely.
 
 ## 7. Routes
 
@@ -316,7 +338,7 @@ Per-org routes under `/api/v1/orgs/{slug}/jobs/`:
 |--|--|--|
 | `POST /submit` | session-binding (agent callback) | Submit a new job. Excluded from OpenAPI. |
 | `GET /` | bearer (founder via web/CLI) | List, with filters: `?status=pending|running|completed|failed|rejected`, `?task=TASK-NNN`, `?review_required=true|false`, `?persistent=true|false` |
-| `GET /{id}` | bearer | Detail (full row + head text) |
+| `GET /{id}` | bearer OR session-binding (agent inspects own job) | Detail (full row + head text). Agent path returns 409 `session_mismatch` for someone else's job, same shape as `/stop` and `/tail`. |
 | `POST /{id}/run` | bearer | Founder triggers run of a `pending` row. 409 if not pending. |
 | `POST /{id}/reject` | bearer | Founder rejects a `pending` row with reason. 409 if not pending. |
 | `POST /{id}/stop` | bearer OR session-binding (agent stops own job) | Kill running subprocess. 409 if not running. |
