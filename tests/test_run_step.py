@@ -610,19 +610,26 @@ def test_run_step_auto_revisit_capped_at_two(
         id="T-AR2", brief="b", assigned_agent="engineering_head",
         revisit_of_task_id="T-AR1",
     ))
-    # Mark T-AR1 and T-AR2 as auto-revisits in the audit log.
+    # Mark T-AR1 and T-AR2 as auto-revisits in the audit log. Both prior
+    # entries are the SAME kind as the new failure we'll trigger below
+    # (_make_result(success=False) with no error/rc → classifier returns
+    # "session_failed") so the per-kind cap (spec §5) is exhausted at 2.
     from src.infrastructure.audit_logger import AuditLogger
     audit = AuditLogger(db)
     audit.log_auto_revisit_of(
         task_id="T-AR1", predecessor_root="T-ORIG",
         failed_task="T-ORIG", failed_agent="engineering_head",
-        cascade=["T-ORIG"], error_context={"mode": "session_failure"},
+        cascade=["T-ORIG"],
+        failure_kind="session_failed",
+        error_context={"mode": "session_failure"},
         attempt=1,
     )
     audit.log_auto_revisit_of(
         task_id="T-AR2", predecessor_root="T-AR1",
         failed_task="T-AR1", failed_agent="engineering_head",
-        cascade=["T-AR1"], error_context={"mode": "session_failure"},
+        cascade=["T-AR1"],
+        failure_kind="session_failed",
+        error_context={"mode": "session_failure"},
         attempt=2,
     )
 
@@ -687,6 +694,7 @@ def test_run_step_auto_revisit_header_injected_on_first_step(
         task_id="T-NEW", predecessor_root="T-PAR",
         failed_task="T-CHD", failed_agent="dev_agent",
         cascade=["T-PAR", "T-CHD"],
+        failure_kind="no_callback",
         error_context={
             "mode": "session_failure", "rc": 0, "missing_callback": True,
             "stderr_tail": "", "stdout_tail": "wrote files",

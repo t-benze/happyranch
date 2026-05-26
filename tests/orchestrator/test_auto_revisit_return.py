@@ -31,7 +31,9 @@ def test_returns_true_when_spawned(tmp_path: Path):
     from src.orchestrator.run_step import _maybe_spawn_auto_revisit
     orch, failed_id, agent = _build_orch_with_task(tmp_path, "failed")
     spawned = _maybe_spawn_auto_revisit(
-        orch, failed_id, agent, error_context={"mode": "exception", "detail": "boom"},
+        orch, failed_id, agent,
+        failure_kind="agent_exception",
+        error_context={"mode": "exception", "detail": "boom"},
     )
     assert spawned is True
 
@@ -41,7 +43,9 @@ def test_returns_false_when_no_chain(tmp_path: Path):
     orch = MagicMock()
     orch._db.walk_ancestors.return_value = []  # no chain → False
     spawned = _maybe_spawn_auto_revisit(
-        orch, "TASK-X", "agent", error_context={},
+        orch, "TASK-X", "agent",
+        failure_kind="session_failed",
+        error_context={},
     )
     assert spawned is False
 
@@ -84,6 +88,7 @@ def test_returns_false_when_task_cancelled(tmp_path: Path):
 
     spawned = _maybe_spawn_auto_revisit(
         orch, "TASK-1", "manager",
+        failure_kind="executor_error",
         error_context={"mode": "session_failure", "rc": -15},
     )
     assert spawned is False
@@ -97,24 +102,39 @@ def test_returns_false_when_task_cancelled(tmp_path: Path):
 
 
 def test_returns_false_when_cap_hit(tmp_path: Path, monkeypatch):
-    from src.orchestrator import run_step
-    from src.orchestrator.run_step import _maybe_spawn_auto_revisit, _AUTO_REVISIT_CAP
+    from src.orchestrator.run_step import (
+        _AUTO_REVISIT_CAP_PER_KIND,
+        _maybe_spawn_auto_revisit,
+    )
 
     orch, failed_id, agent = _build_orch_with_task(tmp_path, "failed")
 
-    # Stub walk_revisit_chain + audit_logs to simulate cap-hit
-    fake_revisit_chain = [MagicMock(id=f"TASK-AR{i}") for i in range(_AUTO_REVISIT_CAP)]
+    # Stub walk_revisit_chain + audit_logs to simulate per-kind cap-hit:
+    # each fake predecessor carries an auto_revisit_of audit row whose payload
+    # carries the same failure_kind we're now trying to spawn for. Under the
+    # per-kind cap (spec §5) two prior same-kind entries exhaust the budget.
+    fake_revisit_chain = [
+        MagicMock(id=f"TASK-AR{i}") for i in range(_AUTO_REVISIT_CAP_PER_KIND)
+    ]
     orch._db.walk_revisit_chain = MagicMock(return_value=fake_revisit_chain)
     orch._db.get_audit_logs = MagicMock(
-        return_value=[{"action": "auto_revisit_of"}]
+        return_value=[{
+            "action": "auto_revisit_of",
+            "payload": {"failure_kind": "session_timeout"},
+        }]
     )
     orch._db.walk_ancestors = MagicMock(
-        return_value=[MagicMock(id="TASK-1", brief="x", team="engineering",
-                                assigned_agent="manager",
-                                session_timeout_seconds=None)]
+        return_value=[MagicMock(
+            id="TASK-1", brief="x", team="engineering",
+            assigned_agent="manager",
+            session_timeout_seconds=None,
+            cancelled_at=None,
+        )]
     )
 
     spawned = _maybe_spawn_auto_revisit(
-        orch, failed_id, agent, error_context={},
+        orch, failed_id, agent,
+        failure_kind="session_timeout",
+        error_context={},
     )
     assert spawned is False
