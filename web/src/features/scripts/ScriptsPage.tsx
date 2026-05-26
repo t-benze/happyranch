@@ -85,9 +85,7 @@ export function ScriptsPage(): JSX.Element {
     status: null,
   });
   const routes = useScriptsRoutes();
-  const scriptsQuery = useScriptsList(
-    filters.status ? { status: filters.status } : undefined,
-  );
+  const scriptsQuery = useScriptsList({ status: filters.status ?? 'all' });
 
   const scripts = scriptsQuery.data?.scripts ?? [];
 
