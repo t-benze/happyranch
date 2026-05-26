@@ -9,9 +9,11 @@ import {
 } from '@/design-system/primitives/Dialog';
 import { Button } from '@/design-system/primitives/Button';
 import { FormField } from '@/design-system/patterns/FormField';
+import { MentionTextarea } from '@/design-system/patterns/MentionTextarea';
 import { ApiError } from '@/lib/api';
 import { useComposeThread } from '@/hooks/threads';
 import { describeError } from './strings';
+import type { AgentSummary } from '@/lib/api/agents';
 
 interface Prefill {
   subject?: string;
@@ -27,9 +29,11 @@ interface Props {
   prefill?: Prefill;
   /** Called with the new thread_id on success. */
   onCreated: (threadId: string) => void;
+  /** Agents list used for @-mention autocomplete in the body. */
+  agents?: AgentSummary[];
 }
 
-export function NewThreadDialog({ open, onClose, prefill, onCreated }: Props): JSX.Element {
+export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = [] }: Props): JSX.Element {
   const compose = useComposeThread();
   const [subject, setSubject] = useState('');
   const [recipientsRaw, setRecipientsRaw] = useState('');
@@ -114,18 +118,13 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated }: Props): J
             />
           </FormField>
           <FormField label="Body (Markdown)" htmlFor={bodyId}>
-            <textarea
+            <MentionTextarea
               id={bodyId}
               value={body}
-              onChange={(e) => setBody(e.target.value)}
+              onChange={setBody}
+              agents={agents}
+              onSubmit={() => { submit(); }}
               rows={6}
-              className="input resize-y"
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-                  e.preventDefault();
-                  submit();
-                }
-              }}
             />
           </FormField>
           {errorMsg && <p className="text-feedback-danger text-xs">{errorMsg}</p>}

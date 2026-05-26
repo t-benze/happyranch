@@ -240,6 +240,16 @@
       "example": "<MentionAutocomplete anchor={{x:0,y:0,width:0,height:0}} matches={[]} onSelect={() => {}} onDismiss={() => {}} />"
     },
     {
+      "name": "MentionTextarea",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/MentionTextarea",
+      "variants": {},
+      "consumes": [
+        "components.textarea"
+      ],
+      "example": "<MentionTextarea value='' onChange={() => {}} agents={[]} />"
+    },
+    {
       "name": "Mermaid",
       "layer": "pattern",
       "import": "@/design-system/patterns/Mermaid",

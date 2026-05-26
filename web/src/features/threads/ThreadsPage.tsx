@@ -277,6 +277,7 @@ export function ThreadsPage(): JSX.Element {
         onClose={() => setShowNew(false)}
         prefill={newPrefill}
         onCreated={(newId) => navigate(routes.detail(newId))}
+        agents={agents}
       />
       {threadId && (
         <>
