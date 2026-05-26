@@ -166,7 +166,7 @@ def test_terminate_all_inflight_awaits_runner_tasks(tmp_home, daemon_state):
     import asyncio
     from datetime import datetime, timezone
 
-    from src.daemon import scripts_runner
+    from src.daemon import jobs_runner
     from src.models import ScriptInterpreter, ScriptRequestRecord, ScriptRequestStatus
 
     org = daemon_state.orgs["alpha"]
@@ -202,9 +202,9 @@ def test_terminate_all_inflight_awaits_runner_tasks(tmp_home, daemon_state):
 
     async def run_test() -> None:
         task = asyncio.create_task(fake_runner())
-        scripts_runner.register_runner_task("SR-100", task)
+        jobs_runner.register_runner_task("SR-100", task)
         # No subprocesses to kill — just await the runner task.
-        await scripts_runner.terminate_all_inflight(
+        await jobs_runner.terminate_all_inflight(
             grace_seconds=0, persist_timeout_seconds=2.0,
         )
 

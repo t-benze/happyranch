@@ -533,11 +533,11 @@ def maybe_start_feishu_listener_for_org(org, state, loop) -> None:
         )
 
     async def _run_script_for_listener(*, sr_id):
-        from src.daemon.routes.scripts import run_script_from_notification
+        from src.daemon.routes.jobs import run_script_from_notification
         return await run_script_from_notification(org, sr_id=sr_id)
 
     async def _reject_script_for_listener(*, sr_id, reason):
-        from src.daemon.routes.scripts import reject_script_from_notification
+        from src.daemon.routes.jobs import reject_script_from_notification
         return await reject_script_from_notification(
             org, sr_id=sr_id, reason=reason,
         )

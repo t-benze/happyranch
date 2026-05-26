@@ -167,7 +167,7 @@ def _wait_for_message(fake_state, *, timeout: float = 5.0) -> bool:
 
 
 def _fake_completed_result():
-    from src.daemon.scripts_runner import ScriptRunResult
+    from src.daemon.jobs_runner import ScriptRunResult
     return ScriptRunResult(
         status="completed", exit_code=0, duration_ms=10,
         stdout_head="hello", stderr_head="",
@@ -193,7 +193,7 @@ def test_sr_submit_approve_runs_and_posts_follow_up(
     async def _fake_spawn(**_kwargs):
         return _fake_completed_result()
     monkeypatch.setattr(
-        "src.daemon.routes.scripts._spawn_script", _fake_spawn,
+        "src.daemon.routes.jobs._spawn_script", _fake_spawn,
     )
 
     # Fire the orchestrator push bridge (fire-and-forget; spawns a daemon thread
@@ -299,7 +299,7 @@ def test_sr_submit_reject_transitions_and_posts_no_follow_up(
     async def _fake_spawn(**_kwargs):
         return _fake_completed_result()
     monkeypatch.setattr(
-        "src.daemon.routes.scripts._spawn_script", _fake_spawn,
+        "src.daemon.routes.jobs._spawn_script", _fake_spawn,
     )
 
     org.orchestrator.notify_script_submitted(

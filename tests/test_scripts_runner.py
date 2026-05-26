@@ -1,4 +1,4 @@
-"""Unit tests for src/daemon/scripts_runner.py (spec §6)."""
+"""Unit tests for src/daemon/jobs_runner.py (spec §6)."""
 from __future__ import annotations
 
 import asyncio
@@ -20,7 +20,7 @@ def tmp_paths():
 
 
 def test_run_script_captures_stdout_and_exit_zero(tmp_paths):
-    from src.daemon.scripts_runner import run_script
+    from src.daemon.jobs_runner import run_script
     tmp_paths["cwd"].mkdir()
     result = asyncio.run(run_script(
         script_text="echo hello",
@@ -38,7 +38,7 @@ def test_run_script_captures_stdout_and_exit_zero(tmp_paths):
 
 
 def test_run_script_captures_stderr_and_nonzero_exit(tmp_paths):
-    from src.daemon.scripts_runner import run_script
+    from src.daemon.jobs_runner import run_script
     tmp_paths["cwd"].mkdir()
     result = asyncio.run(run_script(
         script_text="echo oops >&2; exit 7",
@@ -55,7 +55,7 @@ def test_run_script_captures_stderr_and_nonzero_exit(tmp_paths):
 
 
 def test_run_script_publishes_line_events(tmp_paths):
-    from src.daemon.scripts_runner import run_script
+    from src.daemon.jobs_runner import run_script
     tmp_paths["cwd"].mkdir()
     events: list[dict] = []
     asyncio.run(run_script(
@@ -76,7 +76,7 @@ def test_run_script_publishes_line_events(tmp_paths):
 
 
 def test_run_script_timeout_marks_failed(tmp_paths):
-    from src.daemon.scripts_runner import run_script
+    from src.daemon.jobs_runner import run_script
     tmp_paths["cwd"].mkdir()
     result = asyncio.run(run_script(
         script_text="sleep 30",
@@ -92,7 +92,7 @@ def test_run_script_timeout_marks_failed(tmp_paths):
 
 
 def test_run_script_missing_interpreter_raises(tmp_paths):
-    from src.daemon.scripts_runner import run_script
+    from src.daemon.jobs_runner import run_script
     tmp_paths["cwd"].mkdir()
     with pytest.raises(FileNotFoundError):
         asyncio.run(run_script(
@@ -107,7 +107,7 @@ def test_run_script_missing_interpreter_raises(tmp_paths):
 
 
 def test_in_flight_registry_clears_after_run(tmp_paths):
-    from src.daemon.scripts_runner import run_script, in_flight_sr_ids
+    from src.daemon.jobs_runner import run_script, in_flight_sr_ids
     tmp_paths["cwd"].mkdir()
     asyncio.run(run_script(
         sr_id="SR-T1",

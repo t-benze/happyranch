@@ -11,10 +11,10 @@ from src.daemon.routes import (
     audit,
     auth,
     health,
+    jobs,
     kb,
     orgs,
     runtime,
-    scripts,
     talks,
     tasks,
     threads,
@@ -73,7 +73,7 @@ async def _lifespan(app: FastAPI):
     # Recover any SRs left in 'running' state from a previous daemon process.
     _now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     _logger = logging.getLogger("grassland.daemon")
-    from src.daemon.scripts_runner import migrate_filesystem_layout
+    from src.daemon.jobs_runner import migrate_filesystem_layout
     for org in state.orgs.values():
         # Rename <org_root>/scripts/ → jobs/ (and SR-* → JOB-*) BEFORE the
         # recovery scan reads any stdout_path/stderr_path. The DB-side
@@ -96,7 +96,7 @@ async def _lifespan(app: FastAPI):
     finally:
         for t in thread_worker_tasks:
             t.cancel()
-        from src.daemon.scripts_runner import terminate_all_inflight
+        from src.daemon.jobs_runner import terminate_all_inflight
         await terminate_all_inflight(grace_seconds=5)
         await state.queue.stop()
         await state.close_all()
@@ -116,7 +116,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(kb.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(talks.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(threads.router, prefix="/api/v1/orgs/{slug}", tags=["threads"])
-    app.include_router(scripts.router, prefix="/api/v1/orgs/{slug}", tags=["scripts"])
+    app.include_router(jobs.router, prefix="/api/v1/orgs/{slug}", tags=["jobs"])
     from src.daemon.routes import web_static
     web_static.register(app)
     return app

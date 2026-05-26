@@ -328,7 +328,7 @@ def test_migration_rolls_back_on_partial_failure(tmp_path: Path) -> None:
 
 def test_filesystem_migration_moves_files(tmp_path: Path) -> None:
     """The on-disk scripts/ dir must be renamed to jobs/, files renamed SR-* → JOB-*."""
-    from src.daemon.scripts_runner import migrate_filesystem_layout
+    from src.daemon.jobs_runner import migrate_filesystem_layout
 
     org_root = tmp_path / "org"
     scripts_dir = org_root / "scripts"
@@ -350,7 +350,7 @@ def test_filesystem_migration_moves_files(tmp_path: Path) -> None:
 
 def test_filesystem_migration_noop_when_jobs_dir_exists(tmp_path: Path) -> None:
     """If jobs/ already exists (post-migration restart), do nothing."""
-    from src.daemon.scripts_runner import migrate_filesystem_layout
+    from src.daemon.jobs_runner import migrate_filesystem_layout
 
     org_root = tmp_path / "org"
     jobs_dir = org_root / "jobs"
@@ -363,7 +363,7 @@ def test_filesystem_migration_noop_when_jobs_dir_exists(tmp_path: Path) -> None:
 
 def test_filesystem_migration_noop_when_neither_exists(tmp_path: Path) -> None:
     """A fresh org with neither scripts/ nor jobs/ is a no-op (jobs_runner creates as needed)."""
-    from src.daemon.scripts_runner import migrate_filesystem_layout
+    from src.daemon.jobs_runner import migrate_filesystem_layout
 
     org_root = tmp_path / "org"
     org_root.mkdir()

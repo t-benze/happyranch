@@ -13,8 +13,8 @@ from pydantic import BaseModel
 from src.daemon.auth import require_token
 from src.daemon.event_bus import script_topic
 from src.daemon.routes._org_dep import OrgDep
-from src.daemon.scripts_runner import run_script as _spawn_script
-from src.daemon.scripts_runner import _interpreter_binary
+from src.daemon.jobs_runner import run_script as _spawn_script
+from src.daemon.jobs_runner import _interpreter_binary
 from src.infrastructure.audit_logger import AuditLogger
 from src.models import (
     ScriptInterpreter,
@@ -61,7 +61,7 @@ class SubmitBody(BaseModel):
     cwd_hint: str | None = None
 
 
-@router.post("/scripts/submit", status_code=201)
+@router.post("/jobs/submit", status_code=201)
 async def submit_script(slug: str, body: SubmitBody, org: OrgDep) -> dict:
     # §5.1 validation order.
 
@@ -176,7 +176,7 @@ async def reject_script_from_notification(
 ) -> ScriptRequestRecord:
     """In-process reject path used by the Feishu listener.
 
-    Same validation + transition + audit as POST /scripts/{sr_id}/reject,
+    Same validation + transition + audit as POST /jobs/{sr_id}/reject,
     minus the request-body parsing. Raises HTTPException on failure with
     the same status/detail shape the route returns.
     """
@@ -236,7 +236,7 @@ def _consume_open_feishu_notification(org, sr_id: str) -> None:
     )
 
 
-@router.post("/scripts/{sr_id}/reject")
+@router.post("/jobs/{sr_id}/reject")
 async def reject_script(slug: str, sr_id: str, body: RejectBody, org: OrgDep) -> dict:
     updated = await reject_script_from_notification(
         org, sr_id=sr_id, reason=body.reason,
@@ -248,7 +248,7 @@ async def reject_script(slug: str, sr_id: str, body: RejectBody, org: OrgDep) ->
 _VALID_STATUSES = {"pending", "rejected", "running", "completed", "failed"}
 
 
-@router.get("/scripts/")
+@router.get("/jobs/")
 async def list_scripts(
     slug: str,
     org: OrgDep,
@@ -272,7 +272,7 @@ async def list_scripts(
     return {"scripts": [r.model_dump() for r in rows]}
 
 
-@router.get("/scripts/{sr_id}")
+@router.get("/jobs/{sr_id}")
 async def get_script(slug: str, sr_id: str, org: OrgDep) -> dict:
     record = org.db.get_script_request(sr_id)
     if record is None:
@@ -504,7 +504,7 @@ async def _run_script_core(
                 reason=result.reason,
             )
 
-    from src.daemon.scripts_runner import register_runner_task
+    from src.daemon.jobs_runner import register_runner_task
     register_runner_task(sr_id, asyncio.create_task(_run_and_persist()))
 
     return {
@@ -513,11 +513,11 @@ async def _run_script_core(
         "started_at": now,
         "cwd_resolved": str(cwd_resolved),
         "timeout_seconds": timeout,
-        "events_url": f"/api/v1/orgs/{org.slug}/scripts/{sr_id}/events",
+        "events_url": f"/api/v1/orgs/{org.slug}/jobs/{sr_id}/events",
     }
 
 
-@router.post("/scripts/{sr_id}/run", status_code=202)
+@router.post("/jobs/{sr_id}/run", status_code=202)
 async def run_script_route(
     slug: str, sr_id: str, body: RunBody, org: OrgDep,
 ) -> dict:
@@ -531,7 +531,7 @@ async def run_script_route(
     return result
 
 
-@router.get("/scripts/{sr_id}/output")
+@router.get("/jobs/{sr_id}/output")
 async def get_script_output(
     slug: str, sr_id: str, org: OrgDep,
     stream: str = "both",
@@ -589,7 +589,7 @@ def _terminal_frame_from_record(record) -> str:
     return f"event: terminal\ndata: {_json.dumps(payload)}\n\n"
 
 
-@router.get("/scripts/{sr_id}/events")
+@router.get("/jobs/{sr_id}/events")
 async def script_events_stream(slug: str, sr_id: str, org: OrgDep) -> StreamingResponse:
     record = org.db.get_script_request(sr_id)
     if record is None:
