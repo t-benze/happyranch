@@ -45,21 +45,24 @@ def _seed_legacy_scripts_db(db_path: Path) -> None:
         CREATE INDEX idx_script_requests_status ON script_requests(status);
 
         CREATE TABLE audit_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL,
-            kind TEXT NOT NULL,
-            payload_json TEXT NOT NULL
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id   TEXT NOT NULL,
+            agent     TEXT NOT NULL,
+            action    TEXT NOT NULL,
+            payload   TEXT,
+            timestamp TEXT NOT NULL
         );
 
         CREATE TABLE escalation_notifications (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            task_id TEXT NOT NULL,
-            kind TEXT NOT NULL,
-            message_id TEXT NOT NULL,
-            sent_at TEXT NOT NULL,
-            outcome TEXT,
-            consumed_by TEXT,
-            consumed_at TEXT
+            feishu_message_id TEXT PRIMARY KEY,
+            org_slug          TEXT NOT NULL,
+            task_id           TEXT NOT NULL,
+            chat_id           TEXT NOT NULL,
+            created_at        TEXT NOT NULL,
+            expires_at        TEXT NOT NULL,
+            consumed_at       TEXT,
+            consumed_by       TEXT,
+            kind              TEXT NOT NULL DEFAULT 'escalation'
         );
     """)
 
@@ -95,23 +98,27 @@ def _seed_legacy_scripts_db(db_path: Path) -> None:
     )
 
     conn.executemany(
-        "INSERT INTO audit_log (timestamp, kind, payload_json) VALUES (?,?,?)",
+        "INSERT INTO audit_log (timestamp, task_id, agent, action, payload) "
+        "VALUES (?,?,?,?,?)",
         [
-            ("2026-05-20T00:00:00Z", "script_submitted",
+            ("2026-05-20T00:00:00Z", "TASK-010", "dev_agent", "script_submitted",
              json.dumps({"script_id": "SR-001", "task_id": "TASK-010"})),
-            ("2026-05-20T00:00:01Z", "script_completed",
+            ("2026-05-20T00:00:01Z", "TASK-010", "dev_agent", "script_completed",
              json.dumps({"script_id": "SR-001", "exit_code": 0})),
-            ("2026-05-20T01:00:00Z", "script_rejected",
+            ("2026-05-20T01:00:00Z", "TASK-011", "dev_agent", "script_rejected",
              json.dumps({"script_id": "SR-002", "reason": "unsafe"})),
         ],
     )
 
     conn.executemany(
         "INSERT INTO escalation_notifications "
-        "(task_id, kind, message_id, sent_at, outcome) VALUES (?,?,?,?,?)",
+        "(feishu_message_id, org_slug, task_id, chat_id, created_at, expires_at, kind) "
+        "VALUES (?,?,?,?,?,?,?)",
         [
-            ("SR-001", "script_request", "msg-001", "2026-05-20T00:00:00Z", "approved"),
-            ("SR-002", "script_request", "msg-002", "2026-05-20T01:00:00Z", "rejected"),
+            ("msg-001", "sample", "SR-001", "chat-1",
+             "2026-05-20T00:00:00Z", "2026-05-20T01:00:00Z", "script_request"),
+            ("msg-002", "sample", "SR-002", "chat-1",
+             "2026-05-20T01:00:00Z", "2026-05-20T02:00:00Z", "script_request"),
         ],
     )
     conn.commit()
@@ -172,12 +179,12 @@ def test_migration_renames_table_and_rewrites_ids(tmp_path: Path) -> None:
 
         # 7. Audit kinds rewritten
         kinds = sorted(r[0] for r in conn.execute(
-            "SELECT DISTINCT kind FROM audit_log"))
+            "SELECT DISTINCT action FROM audit_log"))
         assert kinds == ["job_completed", "job_rejected", "job_submitted"]
 
         # 8. Audit payloads rewritten (script_id → job_id, SR- → JOB-)
         payloads = [json.loads(r[0]) for r in conn.execute(
-            "SELECT payload_json FROM audit_log ORDER BY id")]
+            "SELECT payload FROM audit_log ORDER BY id")]
         assert payloads[0]["job_id"] == "JOB-001"
         assert "script_id" not in payloads[0]
 
