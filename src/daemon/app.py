@@ -73,7 +73,12 @@ async def _lifespan(app: FastAPI):
     # Recover any SRs left in 'running' state from a previous daemon process.
     _now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     _logger = logging.getLogger("grassland.daemon")
+    from src.daemon.scripts_runner import migrate_filesystem_layout
     for org in state.orgs.values():
+        # Rename <org_root>/scripts/ → jobs/ (and SR-* → JOB-*) BEFORE the
+        # recovery scan reads any stdout_path/stderr_path. The DB-side
+        # rename already happened in Database init; this realigns disk.
+        migrate_filesystem_layout(org.root)
         recovered = org.db.recover_orphaned_running_scripts(now_iso=_now_iso)
         if recovered:
             _logger.warning(

@@ -324,3 +324,49 @@ def test_migration_rolls_back_on_partial_failure(tmp_path: Path) -> None:
         assert notif_kinds == ["script_request"]
     finally:
         conn.close()
+
+
+def test_filesystem_migration_moves_files(tmp_path: Path) -> None:
+    """The on-disk scripts/ dir must be renamed to jobs/, files renamed SR-* → JOB-*."""
+    from src.daemon.scripts_runner import migrate_filesystem_layout
+
+    org_root = tmp_path / "org"
+    scripts_dir = org_root / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (scripts_dir / "SR-001.out").write_text("stdout\n")
+    (scripts_dir / "SR-001.err").write_text("")
+    (scripts_dir / "SR-001.script").write_text("gh pr close\n")
+    (scripts_dir / "SR-002.out").write_text("nothing here")
+
+    migrate_filesystem_layout(org_root)
+
+    jobs_dir = org_root / "jobs"
+    assert jobs_dir.is_dir()
+    assert not scripts_dir.exists()
+    assert (jobs_dir / "JOB-001.out").read_text() == "stdout\n"
+    assert (jobs_dir / "JOB-001.script").read_text() == "gh pr close\n"
+    assert (jobs_dir / "JOB-002.out").read_text() == "nothing here"
+
+
+def test_filesystem_migration_noop_when_jobs_dir_exists(tmp_path: Path) -> None:
+    """If jobs/ already exists (post-migration restart), do nothing."""
+    from src.daemon.scripts_runner import migrate_filesystem_layout
+
+    org_root = tmp_path / "org"
+    jobs_dir = org_root / "jobs"
+    jobs_dir.mkdir(parents=True)
+    (jobs_dir / "JOB-001.out").write_text("already migrated\n")
+
+    migrate_filesystem_layout(org_root)
+    assert (jobs_dir / "JOB-001.out").read_text() == "already migrated\n"
+
+
+def test_filesystem_migration_noop_when_neither_exists(tmp_path: Path) -> None:
+    """A fresh org with neither scripts/ nor jobs/ is a no-op (jobs_runner creates as needed)."""
+    from src.daemon.scripts_runner import migrate_filesystem_layout
+
+    org_root = tmp_path / "org"
+    org_root.mkdir()
+    migrate_filesystem_layout(org_root)
+    # Function does not pre-create jobs/; it's lazy. So jobs/ should not exist.
+    assert not (org_root / "jobs").exists()

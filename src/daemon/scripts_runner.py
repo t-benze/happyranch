@@ -14,7 +14,34 @@ import shutil
 import signal
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
+
+
+def migrate_filesystem_layout(org_root: Path | str) -> None:
+    """Rename ``<org_root>/scripts/`` → ``<org_root>/jobs/`` and each ``SR-*``
+    file to ``JOB-*``.
+
+    Idempotent: a no-op if ``jobs/`` already exists OR if ``scripts/`` doesn't
+    exist. Called once per org at daemon startup, before any runner uses the
+    directory. Companion to the DB-side ``script_requests`` → ``jobs`` rename
+    in ``Database._migrate_jobs_table_if_needed``: without this, every historic
+    row's ``stdout_path``/``stderr_path`` (now pointing under ``jobs/``) would
+    404.
+    """
+    org_root = Path(org_root)
+    scripts_dir = org_root / "scripts"
+    jobs_dir = org_root / "jobs"
+
+    if jobs_dir.exists():
+        return  # already migrated (or fresh install with the new layout)
+    if not scripts_dir.exists():
+        return  # nothing to migrate
+
+    scripts_dir.rename(jobs_dir)
+    for entry in jobs_dir.iterdir():
+        if entry.name.startswith("SR-"):
+            entry.rename(jobs_dir / ("JOB-" + entry.name[len("SR-"):]))
 
 
 # In-flight registry; shutdown handler walks this to clean up.
