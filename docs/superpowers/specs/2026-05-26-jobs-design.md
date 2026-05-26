@@ -294,20 +294,20 @@ UPDATE escalation_notifications
    SET kind = 'job_request'
  WHERE kind = 'script_request';
 
--- Rewrite audit kinds
+-- Rewrite audit actions (the audit_log table's verb column is `action`, not `kind`)
 UPDATE audit_log
-   SET kind = 'job_' || SUBSTR(kind, 8)
- WHERE kind LIKE 'script_%';
+   SET action = 'job_' || SUBSTR(action, 8)
+ WHERE action LIKE 'script_%';
 
 -- Rewrite audit payloads that reference SR-NNN ids
--- (payload_json is opaque text; we do a string replace on the {"script_id":"SR-..."} pattern)
+-- (`payload` is opaque JSON-text; do a string replace on the {"script_id":"SR-..."} pattern)
 UPDATE audit_log
-   SET payload_json = REPLACE(payload_json, '"script_id"', '"job_id"')
- WHERE payload_json LIKE '%"script_id"%';
+   SET payload = REPLACE(payload, '"script_id"', '"job_id"')
+ WHERE payload LIKE '%"script_id"%';
 
 UPDATE audit_log
-   SET payload_json = REPLACE(payload_json, '"SR-', '"JOB-')
- WHERE payload_json LIKE '%"SR-%';
+   SET payload = REPLACE(payload, '"SR-', '"JOB-')
+ WHERE payload LIKE '%"SR-%';
 
 -- Rename indexes if any (script_requests_*)
 DROP INDEX IF EXISTS script_requests_task_id_idx;
