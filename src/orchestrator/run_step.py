@@ -846,6 +846,9 @@ def _classify_failure_kind(result, report, *, mode: str) -> str:
     return "session_failed"
 
 
+_CHAIN_HOP_LIMIT_FOR_COUNTING = 200
+
+
 def _count_prior_auto_revisits_by_kind(
     orch: "Orchestrator", root_id: str, kind: str,
 ) -> int:
@@ -856,10 +859,29 @@ def _count_prior_auto_revisits_by_kind(
     intentional human retries, not part of the auto-retry budget. Auto-revisit
     rows written before this spec shipped (no ``failure_kind`` in payload)
     are also excluded; that's mildly lenient by design — see spec §10.
+
+    Chain-walk safety: ``walk_revisit_chain`` has a defensive max-hop bound to
+    prevent runaway lineage walks. Read-path callers pass ``truncate=True``
+    to gracefully ignore the overflow, but here that would silently
+    undercount older auto-revisits past the window and let the per-kind cap
+    be exceeded on long-lived tasks (founder revisits also consume hops). We
+    walk with a larger bound and ``truncate=False``; if the chain still
+    overflows, we treat that as "cap definitively hit" — refusing to spawn
+    is the conservative answer when we cannot verify the count, and it also
+    acts as a circuit breaker against pathological revisit loops.
     """
     db = orch._db
+    from src.infrastructure.database import LineageTooDeep  # local: avoid cycle
+    try:
+        chain = db.walk_revisit_chain(
+            root_id,
+            max_hops=_CHAIN_HOP_LIMIT_FOR_COUNTING,
+            truncate=False,
+        )
+    except LineageTooDeep:
+        return _AUTO_REVISIT_CAP_PER_KIND
     count = 0
-    for r in db.walk_revisit_chain(root_id, truncate=True):
+    for r in chain:
         for entry in db.get_audit_logs(r.id):
             if entry["action"] != "auto_revisit_of":
                 continue

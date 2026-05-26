@@ -219,6 +219,9 @@ The fallback `"session_failed"` keeps existing audit/Feishu strings intact for a
 ## 8. Counting helper
 
 ```python
+_CHAIN_HOP_LIMIT_FOR_COUNTING = 200
+
+
 def _count_prior_auto_revisits_by_kind(
     orch: "Orchestrator", root_id: str, kind: str,
 ) -> int:
@@ -229,8 +232,17 @@ def _count_prior_auto_revisits_by_kind(
     intentional human retries, not part of the auto-retry budget.
     """
     db = orch._db
+    from src.infrastructure.database import LineageTooDeep
+    try:
+        chain = db.walk_revisit_chain(
+            root_id,
+            max_hops=_CHAIN_HOP_LIMIT_FOR_COUNTING,
+            truncate=False,
+        )
+    except LineageTooDeep:
+        return _AUTO_REVISIT_CAP_PER_KIND
     count = 0
-    for r in db.walk_revisit_chain(root_id, truncate=True):
+    for r in chain:
         for entry in db.get_audit_logs(r.id):
             if entry["action"] != "auto_revisit_of":
                 continue
@@ -240,7 +252,11 @@ def _count_prior_auto_revisits_by_kind(
     return count
 ```
 
-`walk_revisit_chain(root_id, truncate=True)` already returns the per-chain predecessors used by the current global cap; we reuse it as-is.
+### 8.1 Why not `walk_revisit_chain(truncate=True)`?
+
+The pre-B.1 global-cap code path used `truncate=True` to silently absorb the chain walker's 20-hop defensive limit. That was acceptable when the cap was 2 globally — a chain of 20 revisits would always already be cap-hit. Under the per-kind cap, the budget across kinds AND founder revisits can plausibly cross 20 hops on a long-lived task, and silent truncation would let older `auto_revisit_of` entries fall out of the count window — re-opening the per-kind budget that's supposed to be the contract.
+
+The fix walks with `max_hops=200` (10× headroom; plausible chains stay well under) AND `truncate=False`. If the chain still overflows, `LineageTooDeep` raises and we treat it as **cap definitively hit** — refusing to spawn is the safe answer when the count cannot be verified, AND it acts as a circuit breaker against runaway revisit-spawn loops (the same property `LineageTooDeep` was originally designed to provide).
 
 ## 9. Test plan
 

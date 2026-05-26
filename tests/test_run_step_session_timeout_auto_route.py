@@ -193,6 +193,81 @@ def test_count_prior_auto_revisits_by_kind_isolates_kinds(tmp_path: Path):
     assert _count_prior_auto_revisits_by_kind(orch, "T-R3", "rate_limit") == 0
 
 
+def test_count_walks_past_old_20_hop_truncation_window(tmp_path: Path):
+    """Codex P2 regression: the old code used walk_revisit_chain(truncate=True)
+    which silently capped at 20 hops. Founder revisits don't count against
+    the kind cap but DO consume hops, so on long-lived tasks older auto_revisit
+    entries could fall out of the count window and the per-kind cap would be
+    silently exceeded. After the fix the counter must see every same-kind
+    auto-revisit, even when the chain exceeds 20 entries."""
+    from src.orchestrator.run_step import _count_prior_auto_revisits_by_kind
+
+    db = Database(tmp_path / "g.db")
+    # Build a 25-entry chain (5 beyond the old 20-hop default).
+    # The OLDEST entry (idx 24) carries a session_timeout auto-revisit;
+    # the rest are founder revisits that consume hops without counting.
+    prev_id = None
+    for i in range(24, -1, -1):
+        tid = f"T-{i:02d}"
+        db.insert_task(TaskRecord(
+            id=tid, brief="b", assigned_agent="engineering_head",
+            status=TaskStatus.FAILED if i > 0 else TaskStatus.PENDING,
+            revisit_of_task_id=prev_id,
+        ))
+        prev_id = tid
+    # Now T-00 is the most recent; T-24 is the oldest. Hop count from T-00
+    # back to T-24 is 25, well past the old default of 20.
+    audit = AuditLogger(db)
+    # Plant ONE same-kind auto_revisit at the very oldest entry — under the
+    # old truncation it would never be seen.
+    audit.log_auto_revisit_of(
+        task_id="T-24", predecessor_root="(synthetic)",
+        failed_task="(synthetic)", failed_agent="x",
+        cascade=[], failure_kind="session_timeout",
+        error_context={}, attempt=1,
+    )
+    # Plant a same-kind row at an intermediate entry (idx 22) for good measure.
+    audit.log_auto_revisit_of(
+        task_id="T-22", predecessor_root="T-24",
+        failed_task="T-24", failed_agent="x",
+        cascade=[], failure_kind="session_timeout",
+        error_context={}, attempt=2,
+    )
+
+    orch = MagicMock()
+    orch._db = db
+    # The post-fix counter walks the full chain (max_hops=200) and sees BOTH.
+    assert _count_prior_auto_revisits_by_kind(orch, "T-00", "session_timeout") == 2
+
+
+def test_count_returns_cap_on_pathological_chain(tmp_path: Path):
+    """If the revisit chain somehow exceeds _CHAIN_HOP_LIMIT_FOR_COUNTING
+    (200), the counter must refuse to spawn (return == cap). Refusing is
+    safer than silently undercounting — the cap is the contract."""
+    from src.orchestrator.run_step import (
+        _AUTO_REVISIT_CAP_PER_KIND,
+        _count_prior_auto_revisits_by_kind,
+    )
+
+    db = MagicMock()
+    # Simulate walk_revisit_chain raising LineageTooDeep at the call site.
+    from src.infrastructure.database import LineageTooDeep
+    db.walk_revisit_chain.side_effect = LineageTooDeep("chain too deep")
+
+    orch = MagicMock()
+    orch._db = db
+
+    result = _count_prior_auto_revisits_by_kind(
+        orch, "T-DEEP", "session_timeout",
+    )
+    assert result == _AUTO_REVISIT_CAP_PER_KIND
+    # And the count was attempted with truncate=False (so the exception fired
+    # instead of being swallowed by the chain walker).
+    _, kwargs = db.walk_revisit_chain.call_args
+    assert kwargs["truncate"] is False
+    assert kwargs["max_hops"] >= 200
+
+
 def test_count_ignores_pre_spec_audit_rows_without_failure_kind(tmp_path: Path):
     """Auto-revisit rows written by pre-B.1 code have no failure_kind in
     payload — they must count as 0 against every kind. Spec §10."""
