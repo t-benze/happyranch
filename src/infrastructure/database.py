@@ -95,7 +95,7 @@ class Database:
         ``CREATE TABLE IF NOT EXISTS jobs`` below becomes a no-op on an
         already-migrated DB.
 
-        See spec docs/superpowers/specs/2026-05-26-jobs-module-design.md §6.2.
+        See spec docs/superpowers/specs/2026-05-26-jobs-design.md §6.2.
         """
         # `executescript` does not return rows, so use a plain execute+fetchall
         # to inspect the schema first.
@@ -109,79 +109,92 @@ class Database:
         if "script_requests" not in existing or "jobs" in existing:
             return
 
-        # Single executescript block — supports BEGIN/COMMIT explicitly and
-        # runs all statements as one transaction. SQLite 3.35+ supports DROP
-        # COLUMN; we rely on that for `timeout_seconds`.
-        self._conn.executescript(
-            """
-            BEGIN;
-            ALTER TABLE script_requests RENAME TO jobs;
+        # Drive the migration as one explicit transaction. `executescript`
+        # would issue an implicit COMMIT at start AND swallow rollback on
+        # mid-script failure — leaving the DB half-migrated and the
+        # idempotency check above tripping on the next startup (jobs table
+        # exists but audit/notifications still reference SR-NNN). Each
+        # statement goes through `execute` so any failure raises with the
+        # full transaction rolled back.
+        # SQLite 3.35+ supports DROP COLUMN; we rely on that for
+        # `timeout_seconds`.
+        migration_statements = [
+            "ALTER TABLE script_requests RENAME TO jobs",
 
-            ALTER TABLE jobs ADD COLUMN review_required INTEGER NOT NULL DEFAULT 0;
-            ALTER TABLE jobs ADD COLUMN persistent INTEGER NOT NULL DEFAULT 0;
-            ALTER TABLE jobs ADD COLUMN max_output_bytes INTEGER NOT NULL DEFAULT 52428800;
-            ALTER TABLE jobs ADD COLUMN stdout_bytes INTEGER;
-            ALTER TABLE jobs ADD COLUMN stderr_bytes INTEGER;
-            ALTER TABLE jobs ADD COLUMN reason TEXT;
-            ALTER TABLE jobs ADD COLUMN max_runtime_seconds INTEGER;
+            "ALTER TABLE jobs ADD COLUMN review_required INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE jobs ADD COLUMN persistent INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE jobs ADD COLUMN max_output_bytes INTEGER NOT NULL DEFAULT 52428800",
+            "ALTER TABLE jobs ADD COLUMN stdout_bytes INTEGER",
+            "ALTER TABLE jobs ADD COLUMN stderr_bytes INTEGER",
+            "ALTER TABLE jobs ADD COLUMN reason TEXT",
+            "ALTER TABLE jobs ADD COLUMN max_runtime_seconds INTEGER",
 
-            UPDATE jobs SET max_runtime_seconds = timeout_seconds
-             WHERE timeout_seconds IS NOT NULL;
-            ALTER TABLE jobs DROP COLUMN timeout_seconds;
+            "UPDATE jobs SET max_runtime_seconds = timeout_seconds"
+            " WHERE timeout_seconds IS NOT NULL",
+            "ALTER TABLE jobs DROP COLUMN timeout_seconds",
 
-            -- Backfill: every legacy script_request was a founder-approved one-shot.
-            UPDATE jobs SET review_required = 1 WHERE review_required = 0;
+            # Backfill: every legacy script_request was a founder-approved one-shot.
+            "UPDATE jobs SET review_required = 1 WHERE review_required = 0",
 
-            -- Force-fail orphaned 'running' rows (daemon has clearly exited by now).
-            UPDATE jobs
-               SET status = 'failed',
-                   reason = 'daemon_crash',
-                   finished_at = COALESCE(finished_at, started_at, created_at)
-             WHERE status = 'running';
+            # Force-fail orphaned 'running' rows (daemon has clearly exited by now).
+            "UPDATE jobs"
+            "   SET status = 'failed',"
+            "       reason = 'daemon_crash',"
+            "       finished_at = COALESCE(finished_at, started_at, created_at)"
+            " WHERE status = 'running'",
 
-            -- ID rewrite SR-NNN -> JOB-NNN.
-            UPDATE jobs SET id = 'JOB-' || SUBSTR(id, 4) WHERE id LIKE 'SR-%';
+            # ID rewrite SR-NNN -> JOB-NNN.
+            "UPDATE jobs SET id = 'JOB-' || SUBSTR(id, 4) WHERE id LIKE 'SR-%'",
 
-            -- File-path rewrite scripts/SR- -> jobs/JOB-.
-            UPDATE jobs
-               SET stdout_path = REPLACE(REPLACE(stdout_path, '/scripts/SR-', '/jobs/JOB-'),
-                                         '/scripts/', '/jobs/')
-             WHERE stdout_path IS NOT NULL;
-            UPDATE jobs
-               SET stderr_path = REPLACE(REPLACE(stderr_path, '/scripts/SR-', '/jobs/JOB-'),
-                                         '/scripts/', '/jobs/')
-             WHERE stderr_path IS NOT NULL;
+            # File-path rewrite scripts/SR- -> jobs/JOB-.
+            "UPDATE jobs"
+            "   SET stdout_path = REPLACE(REPLACE(stdout_path, '/scripts/SR-', '/jobs/JOB-'),"
+            "                             '/scripts/', '/jobs/')"
+            " WHERE stdout_path IS NOT NULL",
+            "UPDATE jobs"
+            "   SET stderr_path = REPLACE(REPLACE(stderr_path, '/scripts/SR-', '/jobs/JOB-'),"
+            "                             '/scripts/', '/jobs/')"
+            " WHERE stderr_path IS NOT NULL",
 
-            -- Ripple through cross-referencing tables.
-            UPDATE escalation_notifications
-               SET task_id = 'JOB-' || SUBSTR(task_id, 4)
-             WHERE kind = 'script_request' AND task_id LIKE 'SR-%';
-            UPDATE escalation_notifications
-               SET kind = 'job_request'
-             WHERE kind = 'script_request';
+            # Ripple through cross-referencing tables.
+            "UPDATE escalation_notifications"
+            "   SET task_id = 'JOB-' || SUBSTR(task_id, 4)"
+            " WHERE kind = 'script_request' AND task_id LIKE 'SR-%'",
+            "UPDATE escalation_notifications"
+            "   SET kind = 'job_request'"
+            " WHERE kind = 'script_request'",
 
-            -- Audit rewrites. NB: real columns are `action` and `payload`
-            -- (NOT `kind`/`payload_json` — spec §6.2 corrected).
-            UPDATE audit_log
-               SET action = 'job_' || SUBSTR(action, 8)
-             WHERE action LIKE 'script_%';
-            UPDATE audit_log
-               SET payload = REPLACE(payload, '"script_id"', '"job_id"')
-             WHERE payload LIKE '%"script_id"%';
-            UPDATE audit_log
-               SET payload = REPLACE(payload, '"SR-', '"JOB-')
-             WHERE payload LIKE '%"SR-%';
+            # Audit rewrites. NB: real columns are `action` and `payload`
+            # (NOT `kind`/`payload_json` — spec §6.2 corrected).
+            # task_id values in audit_log never contain SR-NNN — only audit
+            # payloads do (via script_id references), so the broad REPLACE
+            # on payload below is safe.
+            "UPDATE audit_log"
+            "   SET action = 'job_' || SUBSTR(action, 8)"
+            " WHERE action LIKE 'script_%'",
+            "UPDATE audit_log"
+            "   SET payload = REPLACE(payload, '\"script_id\"', '\"job_id\"')"
+            " WHERE payload LIKE '%\"script_id\"%'",
+            "UPDATE audit_log"
+            "   SET payload = REPLACE(payload, '\"SR-', '\"JOB-')"
+            " WHERE payload LIKE '%\"SR-%'",
 
-            -- Rename indexes.
-            DROP INDEX IF EXISTS idx_script_requests_task;
-            DROP INDEX IF EXISTS idx_script_requests_agent;
-            DROP INDEX IF EXISTS idx_script_requests_status;
-            DROP INDEX IF EXISTS idx_script_requests_created_at;
-            CREATE INDEX IF NOT EXISTS jobs_task_id_idx ON jobs(task_id);
-            CREATE INDEX IF NOT EXISTS jobs_status_idx  ON jobs(status);
-            COMMIT;
-            """
-        )
+            # Rename indexes.
+            "DROP INDEX IF EXISTS idx_script_requests_task",
+            "DROP INDEX IF EXISTS idx_script_requests_agent",
+            "DROP INDEX IF EXISTS idx_script_requests_status",
+            "DROP INDEX IF EXISTS idx_script_requests_created_at",
+            "CREATE INDEX IF NOT EXISTS jobs_task_id_idx ON jobs(task_id)",
+            "CREATE INDEX IF NOT EXISTS jobs_status_idx  ON jobs(status)",
+        ]
+        try:
+            self._conn.execute("BEGIN")
+            for stmt in migration_statements:
+                self._conn.execute(stmt)
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
 
     def _create_tables(self) -> None:
         self._conn.executescript("""

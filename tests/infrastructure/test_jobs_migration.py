@@ -238,3 +238,89 @@ def test_fresh_install_has_correct_defaults(tmp_path: Path) -> None:
         assert cols["persistent"][4] == "0"
     finally:
         conn.close()
+
+
+def test_migration_rolls_back_on_partial_failure(tmp_path: Path) -> None:
+    """If the migration crashes mid-way, the original schema must be intact.
+
+    Guards the atomicity invariant: ``_migrate_jobs_table_if_needed`` must
+    run inside an explicit BEGIN/COMMIT transaction that rolls back on any
+    error. A half-applied migration is the worst case — the next startup's
+    idempotency check sees the renamed ``jobs`` table and skips re-running,
+    leaving audit_log + escalation_notifications referencing dead SR-NNN ids.
+    """
+    db_path = tmp_path / "grassland.db"
+    _seed_legacy_scripts_db(db_path)
+
+    call_count = {"n": 0}
+
+    class _FailingConnProxy:
+        """Wraps a real sqlite3.Connection; ``execute`` fails after N calls.
+
+        ``sqlite3.Connection.execute`` is a read-only C attribute (can't be
+        monkey-patched), so we wrap the whole connection instead and delegate
+        every other attribute back to the real one.
+        """
+
+        def __init__(self, real_conn: sqlite3.Connection, fail_after: int) -> None:
+            self._real = real_conn
+            self._fail_after = fail_after
+
+        def execute(self, sql, *args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] > self._fail_after:
+                raise sqlite3.OperationalError(
+                    "simulated mid-migration failure"
+                )
+            return self._real.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    class FailingDatabase(Database):
+        def _migrate_jobs_table_if_needed(self) -> None:
+            real_conn = self._conn
+            self._conn = _FailingConnProxy(real_conn, fail_after=5)  # type: ignore[assignment]
+            try:
+                super()._migrate_jobs_table_if_needed()
+            finally:
+                self._conn = real_conn
+
+    with pytest.raises(sqlite3.OperationalError, match="simulated"):
+        FailingDatabase(db_path)
+
+    # Original schema intact — script_requests still exists, jobs does not.
+    conn = sqlite3.connect(str(db_path))
+    try:
+        tables = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        assert "script_requests" in tables
+        assert "jobs" not in tables
+
+        # Legacy rows untouched: 3 script_requests with original SR- ids.
+        ids = sorted(
+            r[0] for r in conn.execute("SELECT id FROM script_requests")
+        )
+        assert ids == ["SR-001", "SR-002", "SR-003"]
+
+        # Audit kinds still the legacy `script_*` form.
+        actions = sorted(
+            r[0]
+            for r in conn.execute("SELECT DISTINCT action FROM audit_log")
+        )
+        assert actions == ["script_completed", "script_rejected", "script_submitted"]
+
+        # Notifications still 'script_request' kind with SR- task_ids.
+        notif_kinds = sorted(
+            r[0]
+            for r in conn.execute(
+                "SELECT DISTINCT kind FROM escalation_notifications"
+            )
+        )
+        assert notif_kinds == ["script_request"]
+    finally:
+        conn.close()
