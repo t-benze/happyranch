@@ -105,7 +105,7 @@
   --color-tier-red:        #ef4444;
 
   /* DESIGN.md `tier.*_tint` — 14% alpha companions to the tier colors. Used by
-   * StatusBadge / TierBadge / MessageBubble.decline backgrounds. */
+   * StatusBadge / MessageBubble.decline backgrounds and other status-tinted UI. */
   --color-tier-green-tint:  rgba(46, 163, 106, 0.14);
   --color-tier-yellow-tint: rgba(202, 167, 42, 0.14);
   --color-tier-red-tint:    rgba(208, 74, 58, 0.14);

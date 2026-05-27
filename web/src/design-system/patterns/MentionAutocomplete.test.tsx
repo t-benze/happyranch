@@ -5,9 +5,9 @@ import type { AgentSummary } from '@/lib/api/agents';
 import { MentionAutocomplete } from './MentionAutocomplete';
 
 const AGENTS: AgentSummary[] = [
-  { name: 'engineering_head', team: 'engineering', role: 'manager', executor: 'claude', tier: 'green', description: null, scorecard: null, avg_confidence: null },
-  { name: 'content_writer',   team: 'content',     role: 'worker',  executor: 'claude', tier: 'green', description: null, scorecard: null, avg_confidence: null },
-  { name: 'design_lead',      team: 'design',      role: 'manager', executor: 'claude', tier: 'green', description: null, scorecard: null, avg_confidence: null },
+  { name: 'engineering_head', team: 'engineering', role: 'manager', executor: 'claude', description: null },
+  { name: 'content_writer',   team: 'content',     role: 'worker',  executor: 'claude', description: null },
+  { name: 'design_lead',      team: 'design',      role: 'manager', executor: 'claude', description: null },
 ];
 
 const ANCHOR = { x: 100, y: 100, width: 200, height: 24 };

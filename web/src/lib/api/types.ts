@@ -21,8 +21,6 @@ export type TaskStatus =
 
 export type BlockKind = 'delegated' | 'escalated';
 
-export type PerformanceTier = 'green' | 'yellow' | 'red';
-
 export type ReviewVerdict =
   | 'accept'
   | 'reject'
@@ -219,16 +217,6 @@ export interface HealthResponse {
  * the agent has no review history in the window — the founder UI renders
  * a dash rather than misleading zeros.
  */
-export interface AgentScorecard {
-  agent: string;
-  period_start: string;
-  period_end: string;
-  acceptance_rate: number;
-  revision_rate: number;
-  error_count: number;
-  tier: PerformanceTier;
-  updated_at: string;
-}
 
 export interface AgentSummary {
   name: string;
@@ -236,9 +224,6 @@ export interface AgentSummary {
   role: 'manager' | 'worker' | null;
   executor: 'claude' | 'codex' | 'opencode' | null;
   description: string | null;
-  tier: PerformanceTier;
-  scorecard: AgentScorecard | null;
-  avg_confidence: number | null;
 }
 
 export interface AgentEnrollment {

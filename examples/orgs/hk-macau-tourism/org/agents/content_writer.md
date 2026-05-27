@@ -48,18 +48,3 @@ You are measured on:
 - Readability score (target: Flesch-Kincaid grade 8 or below)
 - Tourist usefulness (measured via CX feedback — are tourists finding your guides helpful?)
 
-Performance tiers:
-- Green (>90% QA acceptance): Work proceeds directly to Content Manager for final approval
-- Yellow (75-90%): Content Manager reviews before QA
-- Red (<75%): Content Manager pre-approves outlines before you draft. Simpler assignments only
-
-All your work is logged. Your performance is scored after every task.
-
-## Task Completion Format
-End every task with:
-## Task completion report
-- Task: [what was done]
-- Confidence: [0-100]
-- Risks flagged: [any concerns]
-- Dependencies: [what I assumed or relied on]
-- Suggested reviewer focus: [where to look hardest]

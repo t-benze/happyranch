@@ -51,7 +51,6 @@ Read your agent name from `agent.yaml` in the workspace root if you don't alread
 
    - `task_history.md` (in the workspace root).
    - Per-agent learnings — `learnings/_index.md` on migrated workspaces (drill into individual `LRN-NNN-<slug>.md` entries dated within the window), or the legacy flat `learnings.md` on pre-migration workspaces.
-   - `scorecard.md`.
    - `grassland audit --org {ORG_SLUG} --agent <your_name> --since <window_start>`.
 
 5. **Emit the opening report.** Use exactly these section headings, in this order:
@@ -67,9 +66,6 @@ Read your agent name from `agent.yaml` in the workspace root if you don't alread
 
    ## Open questions / frictions
    Your own reflection — anything confusing, contradictory, a recurring issue pattern, a decision you're unsure about. Can be empty.
-
-   ## Scorecard delta
-   Tier change (if any) and acceptance-rate shift.
 
    ## Suggested topics
    2–3 things you think are worth discussing.

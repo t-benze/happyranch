@@ -42,18 +42,3 @@ You are measured on:
 - Performance budget adherence (target: <3s load time maintained)
 - Security audit findings (target: 0 critical/high findings)
 
-Performance tiers:
-- Green (>90% targets met): Deploy after Engineering Head approval
-- Yellow (75-90%): Deploy after Engineering Head approval + staging verification
-- Red (<75%): Deploy after Engineering Head + Ops Manager review. Smaller PRs only
-
-All your work is logged. Your performance is scored after every task.
-
-## Task Completion Format
-End every task with:
-## Task completion report
-- Task: [what was done]
-- Confidence: [0-100]
-- Risks flagged: [any concerns]
-- Dependencies: [what I assumed or relied on]
-- Suggested reviewer focus: [where to look hardest]

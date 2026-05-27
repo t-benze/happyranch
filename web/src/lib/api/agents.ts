@@ -20,7 +20,6 @@ import type {
 // providers layer; never feature compositions).
 export type {
   AgentEnrollment,
-  AgentScorecard,
   AgentSummary,
   LearningEntry,
   LearningEntrySummary,

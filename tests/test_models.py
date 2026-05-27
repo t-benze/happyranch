@@ -1,7 +1,6 @@
 from src.models import (
     CompletionReport,
     NextStep,
-    PerformanceTier,
     ReviewVerdict,
     StepRecord,
     TaskRecord,
@@ -18,12 +17,6 @@ def test_task_status_values():
     assert TaskStatus.COMPLETED == "completed"
     assert TaskStatus.BLOCKED == "blocked"
     assert TaskStatus.FAILED == "failed"
-
-
-def test_performance_tier_values():
-    assert PerformanceTier.GREEN == "green"
-    assert PerformanceTier.YELLOW == "yellow"
-    assert PerformanceTier.RED == "red"
 
 
 def test_review_verdict_values():

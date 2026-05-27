@@ -411,51 +411,6 @@ def cmd_details(args: argparse.Namespace) -> None:
         print(f"\nRevisited as: {', '.join(direct)}")
 
 
-def cmd_agents(args: argparse.Namespace) -> None:
-    """Show agent performance tiers."""
-    try:
-        client = OpcClient.from_env()
-    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
-        print(f"Error: {exc}")
-        sys.exit(1)
-    slug = resolve_org_slug(
-        args_org=args.org, available=_fetch_available_orgs(client),
-    )
-    r = client.get(f"/api/v1/orgs/{slug}/agents")
-    if not _ok(r):
-        return
-    entries = r.json()["agents"]
-
-    if args.agent is not None:
-        match = next((e for e in entries if e["name"] == args.agent), None)
-        if match is None:
-            known = ", ".join(e["name"] for e in entries) or "(none)"
-            print(f"Error: no agent named {args.agent!r}. Known: {known}")
-            sys.exit(1)
-        sc = match.get("scorecard")
-        print(f"{match['name']}  Tier: {match['tier']}")
-        if sc:
-            print(f"  Acceptance: {sc['acceptance_rate']:.0%}  Revision: {sc['revision_rate']:.0%}  Errors: {sc['error_count']}")
-            print(f"  Period: {_fmt_ts(sc['period_start'], date_only=True)} to {_fmt_ts(sc['period_end'], date_only=True)}")
-            print(f"  Updated: {_fmt_ts(sc['updated_at'])}")
-        else:
-            print("  No performance data yet (default tier).")
-        return
-
-    print(f"{'Agent':<22} {'Tier':<8}")
-    print("-" * 30)
-    for entry in entries:
-        print(f"{entry['name']:<22} {entry['tier']:<8}")
-    if args.detail:
-        print()
-        for entry in entries:
-            sc = entry.get("scorecard")
-            if sc:
-                print(f"{entry['name']}:")
-                print(f"  Acceptance: {sc['acceptance_rate']:.0%}  Revision: {sc['revision_rate']:.0%}  Errors: {sc['error_count']}")
-                print(f"  Period: {_fmt_ts(sc['period_start'], date_only=True)} to {_fmt_ts(sc['period_end'], date_only=True)}")
-
-
 def cmd_init_agent(args: argparse.Namespace) -> None:
     """Initialize agent workspaces by streaming progress from the daemon."""
     import json as _json
@@ -2699,14 +2654,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_tasks.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_tasks.add_argument("--limit", type=int, default=20, help="Max tasks to show")
     p_tasks.set_defaults(func=cmd_tasks)
-
-    # grassland agents
-    p_agents = sub.add_parser("agents", help="Show agent performance tiers")
-    p_agents.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
-    p_agents.add_argument("agent", nargs="?", default=None,
-                          help="Optional agent name; show that agent's scorecard only")
-    p_agents.add_argument("--detail", action="store_true", help="Show detailed scorecards")
-    p_agents.set_defaults(func=cmd_agents)
 
     # grassland audit
     p_audit = sub.add_parser("audit", help="Show filtered audit-log entries")

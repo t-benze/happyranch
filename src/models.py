@@ -21,12 +21,6 @@ class BlockKind(StrEnum):
     ESCALATED = "escalated"
 
 
-class PerformanceTier(StrEnum):
-    GREEN = "green"
-    YELLOW = "yellow"
-    RED = "red"
-
-
 class ReviewVerdict(StrEnum):
     APPROVE = "approve"
     REVISE = "revise"

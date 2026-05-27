@@ -17,18 +17,6 @@ const AGENTS_PAYLOAD = {
       role: 'manager',
       executor: 'claude',
       description: 'Owns engineering.',
-      tier: 'green',
-      scorecard: {
-        agent: 'engineering_head',
-        period_start: '2026-04-19T00:00:00Z',
-        period_end: '2026-05-19T00:00:00Z',
-        acceptance_rate: 0.94,
-        revision_rate: 0.04,
-        error_count: 1,
-        tier: 'green',
-        updated_at: '2026-05-19T00:00:00Z',
-      },
-      avg_confidence: 88,
     },
     {
       name: 'support_agent',
@@ -36,18 +24,6 @@ const AGENTS_PAYLOAD = {
       role: 'worker',
       executor: 'codex',
       description: 'Handles support.',
-      tier: 'yellow',
-      scorecard: {
-        agent: 'support_agent',
-        period_start: '2026-04-19T00:00:00Z',
-        period_end: '2026-05-19T00:00:00Z',
-        acceptance_rate: 0.82,
-        revision_rate: 0.12,
-        error_count: 4,
-        tier: 'yellow',
-        updated_at: '2026-05-19T00:00:00Z',
-      },
-      avg_confidence: 78,
     },
   ],
 };
@@ -67,31 +43,22 @@ function mountAt(route: string) {
 }
 
 describe('AgentsPage — active tab', () => {
-  test('renders scorecard and calibration tables with daemon data', async () => {
+  test('renders the agent roster with team / executor / description', async () => {
     stubBaseHandlers();
     mountAt(`/orgs/${SLUG}/agents`);
 
     await waitFor(() =>
-      expect(screen.getAllByText('engineering_head').length).toBeGreaterThan(0),
+      expect(screen.getByText('engineering_head')).toBeInTheDocument(),
     );
-
-    // Scorecard heading + agent rows + tier badge text.
-    expect(screen.getByText(/Scorecards/i)).toBeInTheDocument();
-    // engineering_head shows up in both the scorecard and calibration tables.
-    expect(screen.getAllByText('engineering_head').length).toBe(2);
-    expect(screen.getAllByText('green').length).toBeGreaterThanOrEqual(1);
-    // engineering_head acceptance (scorecards) + accuracy (calibration) both 94%.
-    expect(screen.getAllByText('94%').length).toBe(2);
-
-    // Calibration table emits avg confidence + gap (88 - 94 = -6).
-    expect(screen.getByRole('heading', { name: 'Calibration' })).toBeInTheDocument();
-    expect(screen.getByText('88%')).toBeInTheDocument(); // engineering_head avg_confidence
-    expect(screen.getByText('-6%')).toBeInTheDocument();
+    expect(screen.getByText('support_agent')).toBeInTheDocument();
+    expect(screen.getByText('engineering')).toBeInTheDocument();
+    expect(screen.getByText('cx')).toBeInTheDocument();
+    expect(screen.getByText('Owns engineering.')).toBeInTheDocument();
+    expect(screen.getByText('Handles support.')).toBeInTheDocument();
   });
 
-  test('clicking a scorecard row opens the agent detail Drawer', async () => {
+  test('clicking an agent row opens the detail drawer', async () => {
     stubBaseHandlers();
-    // Drawer fetches recent tasks + learnings — stub both.
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
         HttpResponse.json({ tasks: [] }),
@@ -105,15 +72,13 @@ describe('AgentsPage — active tab', () => {
     mountAt(`/orgs/${SLUG}/agents`);
 
     await waitFor(() =>
-      expect(screen.getAllByText('engineering_head').length).toBeGreaterThan(0),
+      expect(screen.getByText('engineering_head')).toBeInTheDocument(),
     );
 
-    // The scorecard row's name is a NavLink — click it.
-    const allLinks = screen.getAllByRole('link', { name: /engineering_head/ });
-    await user.click(allLinks[0]);
+    const link = screen.getByRole('link', { name: /engineering_head/ });
+    await user.click(link);
 
     await waitFor(() => {
-      // Drawer surfaces the executor metadata.
       expect(screen.getByText(/executor: claude/)).toBeInTheDocument();
     });
     expect(
@@ -139,9 +104,6 @@ describe('AgentsPage — route collision regression', () => {
               role: 'worker',
               executor: 'claude',
               description: 'Edge-case agent name.',
-              tier: 'green',
-              scorecard: null,
-              avg_confidence: null,
             },
           ],
         }),

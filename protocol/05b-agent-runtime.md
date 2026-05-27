@@ -32,7 +32,7 @@ agent_config:
 ### Context injection via executor bootstrap docs
 
 The orchestrator assembles each agent's context into an executor-specific bootstrap file placed in the workspace root. Claude workspaces use `CLAUDE.md`; Codex workspaces use `AGENTS.md`. This file is regenerated at the start of every session. It includes:
-- Agent system prompt (role, accountability contract, performance tiers)
+- Agent system prompt (role, accountability contract)
 - Relevant org charter sections
 - Pointer to the agent's persistent learnings file
 - Task-specific brief (the actual assignment)
@@ -116,8 +116,8 @@ Each agent accumulates its own operational learnings. The Content QA records "DS
 
 After each task, the orchestrator prompts the agent: "Based on this task, are there any new learnings to record?" Responses are appended to the learnings file. Over time, when the file gets long, the orchestrator periodically asks the agent to consolidate and prune it.
 
-**3. Performance memory (DB-only)**
-The performance tracker writes a rolling 30-day scorecard (acceptance rate, revision rate, error count, tier) to the SQLite `scorecards` table after every task. The team manager sees a tier label per worker in their decision prompt; the founder inspects details via `grassland agents [name] [--detail]`. Agents themselves do **not** see their own scorecard inside the workspace — past designs surfaced this as `scorecard.md` but the file drifted from the DB and was removed.
+**3. ~~Performance memory~~ (REMOVED 2026-05-27)**
+The 30-day rolling scorecard / tier classification was removed. The audit log (implicit `review_verdict` rows after every delegated child terminates, plus completion / failure events) is sufficient for the founder to identify which agents need attention — via `grassland audit`. The legacy `scorecards` table is no longer created on fresh DBs.
 
 ### How context gets assembled at session start
 
@@ -131,14 +131,14 @@ The orchestrator regenerates the bootstrap document in the agent's workspace wit
 5. Task-specific context (brief, prior drafts, QA feedback, etc.)
 ```
 
-The agent's persistent files (learnings, scorecard, prior work products) are already in the workspace — the bootstrap document just references them. The orchestrator also runs `git pull` on the repo clone to ensure fresh code.
+The agent's persistent files (learnings, prior work products) are already in the workspace — the bootstrap document just references them. The orchestrator also runs `git pull` on the repo clone to ensure fresh code.
 
 ### Write-back protocol
 
 After each session completes, the orchestrator:
 1. Extracts the completion report (`completion_report.json` written by the agent)
 2. Checks for new learnings and appends to the learnings file
-3. Updates the scorecard based on task outcome
+3. Writes an implicit `review_verdict` audit row for delegated work (approved / rejected) so the founder can audit per-agent outcomes via `grassland audit`
 4. Appends to `recent_tasks.md` with a summary of the task
 5. Logs everything to the audit trail (SQLite)
 6. Does NOT clean up the workspace — files persist for future sessions
@@ -160,7 +160,7 @@ The orchestrator spins up an agent session only when a task is assigned. The ses
 Task arrives in queue
     │
     ▼
-Orchestrator assembles context (system prompt, learnings, scorecard, task brief)
+Orchestrator assembles context (system prompt, learnings, task brief)
     │
     ▼
 Orchestrator spawns agent session (via configured executor)

@@ -94,7 +94,6 @@ def test_talk_skill_documents_start_procedure() -> None:
     assert "## Notable tasks" in body
     assert "## New learnings" in body
     assert "## Open questions / frictions" in body
-    assert "## Scorecard delta" in body
     assert "## Suggested topics" in body
 
 

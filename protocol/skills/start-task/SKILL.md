@@ -13,12 +13,14 @@ Parameters:
   task_id: TASK-XXX
   session_id: <uuid>
   brief: <task brief>
-  role_guidance: <role-specific instructions>
+  role_guidance: |             # optional — present only when the orchestrator
+    <role-specific overlay>     # has a per-task overlay (team-manager spawns
+                                # carry the orchestration capabilities block here)
 ```
 
 ## Steps
 
-1. **Parse parameters.** Extract `task_id`, `session_id`, `brief`, and `role_guidance` from the prompt above. Hold `session_id` in a variable for the lifetime of this session — every callback to `grassland` must include it.
+1. **Parse parameters.** Extract `task_id`, `session_id`, `brief`, and (when present) `role_guidance` from the prompt above. Hold `session_id` in a variable for the lifetime of this session — every callback to `grassland` must include it. When the `role_guidance` block is absent (typical worker spawn), treat `brief` as your complete per-task instruction.
 
 2. **Consult memory.** Before planning:
 
@@ -56,7 +58,7 @@ Parameters:
 
    If nothing matches, proceed. If something matches, treat it as authoritative unless the brief explicitly contradicts it — in which case escalate rather than silently override.
 
-4. **Plan and execute.** Treat `role_guidance` as your primary instruction. If repo writes are needed, invoke the **make-worktree** skill first.
+4. **Plan and execute.** Treat `role_guidance` as your primary instruction when present; otherwise treat `brief` as the full instruction. If repo writes are needed, invoke the **make-worktree** skill first.
 
    If the task produces a standalone document (report, plan, analysis), write its files under `artifacts/<task_id>/` in your workspace root — **not** inside any repo or worktree. Capture the relative path (e.g. `artifacts/TASK-001`) and include it as `artifact_dir` in your completion payload so future sessions can retrieve it via `grassland recall --org {ORG_SLUG} <task_id>`.
 

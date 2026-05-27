@@ -345,32 +345,34 @@ def _default_agent_for_root(orch: "Orchestrator", task) -> str:
 
 
 def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
-    """Build the capabilities prompt for a team-manager decision step, or pass
-    the brief verbatim for a worker. Prior steps are rebuilt from the DB so
-    this works identically on first pickup and on post-delegation resumption.
+    """Build the per-task `role_guidance` body — i.e., what gets indented under
+    `role_guidance: |` in the outer wrapper built by
+    ``Orchestrator._build_agent_prompt``.
 
-    For revisited roots, a one-shot context header is prepended to the
-    manager prompt on the very first orchestration step (detected via audit
-    log).
+    Workers return an empty string: their per-task instruction is the brief,
+    which the outer wrapper already renders as ``Parameters.brief``. Echoing
+    it here would duplicate the brief in every worker spawn (the wrapper
+    drops the ``role_guidance:`` line when this returns empty).
+
+    Managers return the capabilities prompt (decision schema, agent roster,
+    prior steps). For revisited roots, a one-shot context header is prepended
+    on the very first orchestration step (detected via audit log).
     """
     from src.orchestrator.capabilities import build_capabilities_prompt
     if not orch.teams.is_team_manager(agent):
-        return task.brief
+        return ""
     from src.orchestrator import prompt_loader
-    agent_names, tiers = _list_candidate_agents(orch, agent)
+    agent_names = _list_candidate_agents(orch, agent)
     agents_for_prompt = []
     for name in agent_names:
         candidate = prompt_loader.load_agent(orch._paths, name)
         desc = (candidate.description if candidate is not None else None) or name
-        tier = tiers.get(name)
         agents_for_prompt.append({
             "name": name,
             "description": desc,
-            "tier": tier.value if tier else "green",
         })
     prior_steps = _build_prior_steps_from_db(orch, task.id)
     base = build_capabilities_prompt(
-        brief=task.brief,
         agents=agents_for_prompt,
         step_number=task.orchestration_step_count + 1,  # 1-indexed for manager display
         max_steps=orch._settings.max_orchestration_steps,
@@ -389,8 +391,8 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
     return base
 
 
-def _list_candidate_agents(orch: "Orchestrator", calling_manager: str):
-    """Return (agent_names, tiers_map) — same shape as orchestrator used.
+def _list_candidate_agents(orch: "Orchestrator", calling_manager: str) -> list[str]:
+    """Return the names of workers the calling manager can delegate to.
 
     Only includes workers on the calling manager's own team that have an
     existing workspace on disk. Returns an empty list when the calling_manager
@@ -398,7 +400,7 @@ def _list_candidate_agents(orch: "Orchestrator", calling_manager: str):
     """
     caller_team = orch.teams.team_for_manager(calling_manager)
     if caller_team is None:
-        return [], {}
+        return []
     team_members = set(orch.teams.manager_for_team(caller_team).workers)
     team_members.discard(calling_manager)  # manager should not delegate to itself
 
@@ -409,8 +411,7 @@ def _list_candidate_agents(orch: "Orchestrator", calling_manager: str):
         )
     else:
         names = []
-    tiers = orch._tracker.get_all_tiers(names)
-    return names, tiers
+    return names
 
 
 # Shared discipline tail appended to both revisit headers. Addresses the
@@ -804,13 +805,12 @@ def _notify_failure_if_eligible(
 def _log_verdict_if_delegated(
     orch: "Orchestrator", task_id: str, *, success: bool,
 ) -> None:
-    """Emit the implicit manager review_verdict + refresh the worker scorecard.
+    """Emit the implicit manager review_verdict audit row for a delegated child.
 
     The team manager is the implicit reviewer of every delegated child:
     a COMPLETED child is an "approved" delegation, a FAILED child is
-    "rejected". PerformanceTracker reads these rows to compute tiers, so
-    skipping them leaves every delegated agent on stale performance data
-    (see P1 in 2026-04-20 review).
+    "rejected". Audit rows are how the founder reviews which agents need
+    attention; they are the canonical record of delegation outcomes.
     """
     task = orch._db.get_task(task_id)
     if task is None or task.parent_task_id is None:
@@ -831,7 +831,6 @@ def _log_verdict_if_delegated(
         feedback=task.note,
         reviewed_agent=agent,
     )
-    orch._tracker.update_scorecard(agent)
 
 
 def _enqueue_parent_if_waiting(

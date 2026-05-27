@@ -39,12 +39,11 @@ from src.infrastructure.learnings_store import (
     LearningsStore,
     PromotedLocked,
 )
-from src.models import PerformanceTier, TalkStatus
+from src.models import TalkStatus
 from src.orchestrator import prompt_loader
 from src.orchestrator._paths import OrgPaths
 from src.orchestrator.agent_def import AgentDef, AgentParseError
 from src.orchestrator.context_builder import ContextBuilder
-from src.orchestrator.performance_tracker import PerformanceTracker
 
 router = APIRouter(dependencies=[require_token()])
 
@@ -195,14 +194,12 @@ def _append_to_learnings_file(learnings_path: Path, agent_name: str, text: str) 
 
 @router.get("/agents")
 def list_agents(slug: str, org: OrgDep) -> dict:
-    tracker = PerformanceTracker(org.db, org.settings)
     paths = OrgPaths(root=org.root)
     ws_dir = paths.workspaces_dir
     if ws_dir.exists():
         agent_names = sorted(d.name for d in ws_dir.iterdir() if d.is_dir())
     else:
         agent_names = []
-    tiers = tracker.get_all_tiers(agent_names)
     rows = []
     for name in agent_names:
         agent_def = prompt_loader.load_agent(paths, name)
@@ -212,9 +209,6 @@ def list_agents(slug: str, org: OrgDep) -> dict:
             "role": agent_def.role if agent_def else None,
             "executor": agent_def.executor if agent_def else None,
             "description": agent_def.description if agent_def else None,
-            "tier": tiers.get(name, PerformanceTier.GREEN).value,
-            "scorecard": org.db.get_scorecard(name),
-            "avg_confidence": tracker.get_avg_confidence(name),
         })
     return {"agents": rows}
 

@@ -2,6 +2,13 @@
 
 The self-hosted dashboard for org-wide visibility, plus the recommended build sequence.
 
+> **2026-05-27 note.** The performance-tier feature was removed. Any
+> section of this doc that proposes tier-based UI (e.g. "Page 2: Agent
+> Scorecards", tier-keyed routing, calibration via acceptance-rate) is
+> obsolete and should be ignored when implementing. The audit log is the
+> canonical record of agent outcomes; see `05c-orchestrator.md` §2 for the
+> deprecation note.
+
 ---
 
 ## 1. Dashboard Purpose
