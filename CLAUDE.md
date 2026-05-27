@@ -100,7 +100,8 @@ System kernel milestones — org-agnostic infrastructure. Org content (agent ros
     |-- kb/                            # per-org KB (auto-regenerated `_index.md`)
     |-- talks/                         # TALK-NNN.md
     |-- threads/                       # THR-NNN.md
-    `-- scripts/                       # SR-NNN.{out,err,script} (full captured output + frozen script body)
+    |-- scripts/                       # SR-NNN.{out,err,script} (full captured output + frozen script body)
+    `-- assets/                        # org-shared blob store (put/list/get via `grassland assets`)
 ```
 
 HTTP routes: per-org under `/api/v1/orgs/<slug>/...`; container-level under `/api/v1/runtime` and `/api/v1/orgs`. Legacy v1 (single-org flat layout) migrates in place via `grassland migrate-to-multi-org` — TTY-gated, refuses with active tasks or open talks. Even older v0 (DB-backed agent enrollments) migrates first via `grassland migrate-to-org-runtime`.
@@ -297,6 +298,37 @@ Per-agent under `<runtime>/orgs/<slug>/workspaces/<agent>/learnings/`, one `LRN-
 - **Cross-refs** — `related_to` and `supersedes` validated against existing IDs at write time (unknown → 400); self-refs rejected. `supersedes` is the canonical evolve-a-rule primitive.
 - **Promotion** — `grassland learning promote <LRN-NNN> --kb-slug <slug>` is one-way; body becomes a 2-line pointer stub and entry locks.
 - **End-of-talk** — `end_talk` writes into the new store on migrated workspaces (synthesized slug `talk-<talk_id>-<idx>`, topic `talk-residue`); pre-migration → flat-file append.
+
+## Shared Assets (org-wide blob store)
+
+Per-org at `<runtime>/orgs/<slug>/assets/`. Flat directory of opaque files —
+persistent artifacts produced by any agent and visible to every other agent
+in the same org. Implementation: `src/infrastructure/asset_store.py` +
+`src/daemon/routes/assets.py`. CLI: `grassland assets {put,list,get}`.
+
+**Non-obvious invariants:**
+
+- **CLI-only access by design** — Codex (`workspace-write` sandbox) and
+  Opencode (bash deny-by-default) both block direct writes outside the
+  agent's workspace; only the `grassland` baseline allow-rule works across
+  all three executors. Don't add a "just `cat`/`cp` it" agent skill.
+- **Flat namespace; no nesting v1** — names match `[A-Za-z0-9._-]+`, max
+  200 chars, no leading `.`. Slash-bearing names rejected as
+  `invalid_asset_name`.
+- **Size cap is 10 MB per file** (`MAX_ASSET_BYTES`). Larger uploads → HTTP
+  413. v1 has no chunking / multipart resumption.
+- **PUT is idempotent (overwrites)** — no version history; agents are
+  expected to encode date/identity in the name if they care about
+  history. Atomic via `tempfile.mkstemp` + `os.replace` so partial writes
+  never leak.
+- **`asset_put` is audited; `list`/`get` are not** — read paths are free,
+  consistent with KB list/get and on the same rationale (no PII gradient
+  inside the asset store).
+- **Not the KB** — assets are blobs. The KB is for typed/structured
+  knowledge (frontmatter, slug, type, topic). Don't dump markdown content
+  into assets/ that should be a KB entry.
+- **Dir created at fresh-org init AND idempotently at lifespan startup**
+  for orgs that pre-date the feature. Both code paths are required.
 
 ## Revisit (founder recovery)
 
