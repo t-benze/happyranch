@@ -1500,7 +1500,7 @@ class Database:
         """
         cursor = self._conn.execute(
             "SELECT MAX(CAST(SUBSTR(id, 4) AS INTEGER)) AS m "
-            "FROM script_requests WHERE id GLOB 'SR-[0-9]*'"
+            "FROM jobs WHERE id GLOB 'SR-[0-9]*'"
         )
         n = (cursor.fetchone()["m"] or 0) + 1
         return f"SR-{n:03d}"
@@ -1508,7 +1508,7 @@ class Database:
     @_synchronized
     def insert_job(self, r: "JobRecord") -> None:
         self._conn.execute(
-            """INSERT INTO script_requests (
+            """INSERT INTO jobs (
                 id, task_id, agent_name, title, rationale, script_text,
                 interpreter, cwd_hint, status, exit_code,
                 stdout_head, stderr_head, stdout_path, stderr_path,
@@ -1530,7 +1530,7 @@ class Database:
     @_synchronized
     def get_job(self, job_id: str) -> "JobRecord | None":
         row = self._conn.execute(
-            "SELECT * FROM script_requests WHERE id = ?", (job_id,)
+            "SELECT * FROM jobs WHERE id = ?", (job_id,)
         ).fetchone()
         if row is None:
             return None
@@ -1590,7 +1590,7 @@ class Database:
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         params.append(int(limit))
         rows = self._conn.execute(
-            f"SELECT * FROM script_requests {where} "
+            f"SELECT * FROM jobs {where} "
             f"ORDER BY created_at DESC, id DESC LIMIT ?",
             params,
         ).fetchall()
@@ -1601,7 +1601,7 @@ class Database:
         self, job_id: str, *, reviewer: str, reason: str, reviewed_at: str
     ) -> None:
         cur = self._conn.execute(
-            "UPDATE script_requests "
+            "UPDATE jobs "
             "SET status='rejected', reviewed_by=?, reject_reason=?, reviewed_at=? "
             "WHERE id=? AND status='pending'",
             (reviewer, reason, reviewed_at, job_id),
@@ -1624,7 +1624,7 @@ class Database:
         stderr_path: str,
     ) -> None:
         cur = self._conn.execute(
-            "UPDATE script_requests SET "
+            "UPDATE jobs SET "
             "status='running', reviewed_by=?, reviewed_at=?, started_at=?, "
             "cwd_resolved=?, timeout_seconds=?, stdout_path=?, stderr_path=? "
             "WHERE id=? AND status='pending'",
@@ -1650,7 +1650,7 @@ class Database:
         if status.value not in ("completed", "failed"):
             raise ValueError(f"invalid terminal status: {status.value}")
         cur = self._conn.execute(
-            "UPDATE script_requests SET "
+            "UPDATE jobs SET "
             "status=?, exit_code=?, finished_at=?, duration_ms=?, "
             "stdout_head=?, stderr_head=? "
             "WHERE id=? AND status='running'",
@@ -1671,13 +1671,13 @@ class Database:
         leave them in a permanent running state.
         """
         rows = self._conn.execute(
-            "SELECT id FROM script_requests WHERE status='running'"
+            "SELECT id FROM jobs WHERE status='running'"
         ).fetchall()
         ids = [r["id"] for r in rows]
         if not ids:
             return []
         self._conn.executemany(
-            "UPDATE script_requests SET status='failed', finished_at=?, "
+            "UPDATE jobs SET status='failed', finished_at=?, "
             "duration_ms=COALESCE(duration_ms, 0), "
             "stderr_head=COALESCE(stderr_head, '') || '\n[daemon restart killed run]' "
             "WHERE id=?",
