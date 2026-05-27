@@ -32,11 +32,11 @@ import type { kb as kbApi } from '@/lib/api';
 import type { talks as talksApi } from '@/lib/api';
 import type { audit as auditApi } from '@/lib/api';
 import type { agents as agentsApi } from '@/lib/api';
-import type { scripts as scriptsApi } from '@/lib/api';
+import type { jobs as jobsApi } from '@/lib/api';
 import type {
+  JobListResponse,
+  JobRecord,
   KBEntry,
-  ScriptRequest,
-  ScriptListResponse,
   TalkRecord,
   TaskEvent,
   TaskRecord,
@@ -270,33 +270,38 @@ export interface AgentsRoutes {
 }
 
 // ---------------------------------------------------------------------------
-// ScriptsApi — founder-facing surface for script requests.
+// JobsApi — founder-facing surface for background jobs (formerly script requests).
 // ---------------------------------------------------------------------------
 
-export type RejectScriptArgs = Parameters<typeof scriptsApi.rejectScript>[2];
-export type RejectScriptResult = Awaited<ReturnType<typeof scriptsApi.rejectScript>>;
+export type RejectJobArgs = Parameters<typeof jobsApi.rejectJob>[2];
+export type RejectJobResult = Awaited<ReturnType<typeof jobsApi.rejectJob>>;
 
-export type RunScriptArgs = Parameters<typeof scriptsApi.runScript>[2];
-export type RunScriptResult = Awaited<ReturnType<typeof scriptsApi.runScript>>;
+export type RunJobArgs = Parameters<typeof jobsApi.runJob>[2];
+export type RunJobResult = Awaited<ReturnType<typeof jobsApi.runJob>>;
 
-export type ScriptOutputResult = Awaited<ReturnType<typeof scriptsApi.getScriptOutput>>;
+export type StopJobResult = Awaited<ReturnType<typeof jobsApi.stopJob>>;
 
-export interface ScriptsApi {
-  useScriptsList: (params?: {
+export type JobOutputResult = Awaited<ReturnType<typeof jobsApi.getJobOutput>>;
+
+export interface JobsApi {
+  useJobsList: (params?: {
     status?: string;
     agent?: string;
     task_id?: string;
+    review_required?: string;
+    persistent?: string;
     limit?: number;
-  }) => QueryLike<ScriptListResponse>;
-  useScript: (srId: string | undefined) => QueryLike<ScriptRequest>;
-  useScriptOutput: (srId: string | undefined) => QueryLike<ScriptOutputResult>;
-  useRejectScript: () => MutationLike<{ srId: string; body: RejectScriptArgs }, RejectScriptResult>;
-  useRunScript: () => MutationLike<{ srId: string; body: RunScriptArgs }, RunScriptResult>;
+  }) => QueryLike<JobListResponse>;
+  useJob: (jobId: string | undefined) => QueryLike<JobRecord>;
+  useJobOutput: (jobId: string | undefined) => QueryLike<JobOutputResult>;
+  useRejectJob: () => MutationLike<{ jobId: string; body: RejectJobArgs }, RejectJobResult>;
+  useRunJob: () => MutationLike<{ jobId: string; body: RunJobArgs }, RunJobResult>;
+  useStopJob: () => MutationLike<{ jobId: string }, StopJobResult>;
 }
 
-export interface ScriptsRoutes {
+export interface JobsRoutes {
   inbox: () => string;
-  detail: (srId: string) => string;
+  detail: (jobId: string) => string;
   inboxForOrg: (slug: string) => string;
 }
 
@@ -345,7 +350,7 @@ export interface DataContextValue {
   kb: KbApi;
   talks: TalksApi;
   health: HealthApi;
-  scripts: ScriptsApi;
+  jobs: JobsApi;
   /**
    * Provider-supplied React hook that returns the active feature's route
    * builders. A hook (not a plain object) so the implementation can read
@@ -356,7 +361,7 @@ export interface DataContextValue {
   useKbRoutes: () => KbRoutes;
   useTalksRoutes: () => TalksRoutes;
   useAgentsRoutes: () => AgentsRoutes;
-  useScriptsRoutes: () => ScriptsRoutes;
+  useJobsRoutes: () => JobsRoutes;
 }
 
 export const DataContext = createContext<DataContextValue | null>(null);

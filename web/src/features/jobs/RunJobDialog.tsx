@@ -11,20 +11,32 @@ import { Button } from '@/design-system/primitives/Button';
 import { FormField } from '@/design-system/patterns/FormField';
 import { Input } from '@/design-system/primitives/Input';
 import { ApiError } from '@/lib/api';
-import { useRunScript } from '@/hooks/scripts';
-import type { ScriptRequest } from '@/lib/api/types';
+import { useRunJob } from '@/hooks/jobs';
+import type { JobRecord } from '@/lib/api/types';
 
 interface Props {
-  sr: ScriptRequest;
+  job: JobRecord;
   open: boolean;
   onClose: () => void;
   onSuccess?: () => void;
 }
 
-export function RunScriptDialog({ sr, open, onClose, onSuccess }: Props): JSX.Element {
-  const run = useRunScript();
+// Initial value for the timeout field. For persistent jobs the daemon
+// accepts no cap; we expose the field as blank so the founder can leave
+// it unset (sent as no override). For bounded jobs we seed the field
+// with the job's declared cap, falling back to 300s (the daemon's default
+// for non-persistent jobs when no explicit cap is provided).
+function initialTimeout(job: JobRecord): string {
+  if (job.max_runtime_seconds !== null && job.max_runtime_seconds !== undefined) {
+    return String(job.max_runtime_seconds);
+  }
+  return job.persistent ? '' : '300';
+}
+
+export function RunJobDialog({ job, open, onClose, onSuccess }: Props): JSX.Element {
+  const run = useRunJob();
   const [cwdOverride, setCwdOverride] = useState('');
-  const [timeoutSeconds, setTimeoutSeconds] = useState(sr.timeout_seconds);
+  const [timeoutSecondsInput, setTimeoutSecondsInput] = useState(initialTimeout(job));
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const cwdId = useId();
   const timeoutId = useId();
@@ -32,17 +44,25 @@ export function RunScriptDialog({ sr, open, onClose, onSuccess }: Props): JSX.El
   useEffect(() => {
     if (!open) return;
     setCwdOverride('');
-    setTimeoutSeconds(sr.timeout_seconds);
+    setTimeoutSecondsInput(initialTimeout(job));
     setErrorMsg(null);
-  }, [open, sr.timeout_seconds]);
+  }, [open, job]);
+
+  const parsedTimeout = timeoutSecondsInput.trim() === ''
+    ? null
+    : Number(timeoutSecondsInput);
+  const timeoutInvalid =
+    parsedTimeout !== null && (!Number.isFinite(parsedTimeout) || parsedTimeout < 1);
 
   const submit = async () => {
     setErrorMsg(null);
     const body: { cwd_override?: string; timeout_seconds?: number } = {};
     if (cwdOverride.trim()) body.cwd_override = cwdOverride.trim();
-    if (timeoutSeconds !== sr.timeout_seconds) body.timeout_seconds = timeoutSeconds;
+    if (parsedTimeout !== null && parsedTimeout !== job.max_runtime_seconds) {
+      body.timeout_seconds = parsedTimeout;
+    }
     try {
-      await run.mutateAsync({ srId: sr.id, body });
+      await run.mutateAsync({ jobId: job.id, body });
       onSuccess?.();
       onClose();
     } catch (err) {
@@ -58,9 +78,9 @@ export function RunScriptDialog({ sr, open, onClose, onSuccess }: Props): JSX.El
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Run {sr.id}</DialogTitle>
+          <DialogTitle>Run {job.id}</DialogTitle>
           <DialogDescription className="sr-only">
-            Approve and run this script request. The script will execute immediately.
+            Approve and run this job. The script will execute immediately.
           </DialogDescription>
         </DialogHeader>
 
@@ -70,11 +90,11 @@ export function RunScriptDialog({ sr, open, onClose, onSuccess }: Props): JSX.El
             <p className="text-fg-muted mb-1 text-xs font-medium uppercase tracking-wider">
               Script
               <span className="ml-1 normal-case">
-                ({sr.interpreter}{sr.cwd_hint ? ` · cwd hint: ${sr.cwd_hint}` : ''})
+                ({job.interpreter}{job.cwd_hint ? ` · cwd hint: ${job.cwd_hint}` : ''})
               </span>
             </p>
             <pre className="bg-surface-canvas text-fg max-h-40 overflow-y-auto rounded p-3 text-xs whitespace-pre">
-              {sr.script_text}
+              {job.script_text}
             </pre>
           </div>
 
@@ -82,19 +102,22 @@ export function RunScriptDialog({ sr, open, onClose, onSuccess }: Props): JSX.El
             <Input
               id={cwdId}
               type="text"
-              placeholder={sr.cwd_hint ?? 'default (agent workspace)'}
+              placeholder={job.cwd_hint ?? 'default (agent workspace)'}
               value={cwdOverride}
               onChange={(e) => setCwdOverride(e.target.value)}
             />
           </FormField>
 
-          <FormField label="Timeout (seconds)" htmlFor={timeoutId}>
+          <FormField
+            label={job.persistent ? 'Timeout (seconds, blank = unbounded)' : 'Timeout (seconds)'}
+            htmlFor={timeoutId}
+          >
             <Input
               id={timeoutId}
               type="number"
               min={1}
-              value={timeoutSeconds}
-              onChange={(e) => setTimeoutSeconds(Number(e.target.value))}
+              value={timeoutSecondsInput}
+              onChange={(e) => setTimeoutSecondsInput(e.target.value)}
             />
           </FormField>
 
@@ -110,7 +133,7 @@ export function RunScriptDialog({ sr, open, onClose, onSuccess }: Props): JSX.El
           <Button
             variant="default"
             onClick={submit}
-            disabled={run.isPending || timeoutSeconds < 1}
+            disabled={run.isPending || timeoutInvalid}
           >
             {run.isPending ? 'Running…' : 'Run'}
           </Button>

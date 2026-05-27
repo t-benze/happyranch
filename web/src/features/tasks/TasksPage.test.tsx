@@ -4,7 +4,7 @@ import { describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
-import type { ScriptRequest } from '@/lib/api/types';
+import type { JobRecord } from '@/lib/api/types';
 
 const SLUG = 'hk-macau-tourism';
 
@@ -32,8 +32,8 @@ const TASK = {
   session_timeout_seconds: null,
 };
 
-const SR: ScriptRequest = {
-  id: 'SR-0001',
+const JOB: JobRecord = {
+  id: 'JOB-0001',
   task_id: 'TASK-0091',
   agent_name: 'content_writer',
   title: 'Generate sitemap',
@@ -54,7 +54,11 @@ const SR: ScriptRequest = {
   reviewed_by: null,
   reject_reason: null,
   cwd_resolved: null,
-  timeout_seconds: 300,
+  max_runtime_seconds: 300,
+  max_output_bytes: 52428800,
+  review_required: false,
+  persistent: false,
+  reason: null,
   created_at: '2026-05-18T10:01:00Z',
 };
 
@@ -87,8 +91,8 @@ describe('TasksPage — read path', () => {
   });
 });
 
-describe('TaskDetailPane — script requests cross-link', () => {
-  function stubHandlers(scripts: ScriptRequest[]) {
+describe('TaskDetailPane — jobs cross-link', () => {
+  function stubHandlers(jobs: JobRecord[]) {
     server.use(
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
@@ -109,29 +113,29 @@ describe('TaskDetailPane — script requests cross-link', () => {
           children: [],
         }),
       ),
-      http.get(`/api/v1/orgs/${SLUG}/scripts/`, () =>
-        HttpResponse.json({ scripts }),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
+        HttpResponse.json({ jobs }),
       ),
     );
   }
 
-  test('shows script requests section when task has scripts', async () => {
+  test('shows jobs section when task has jobs', async () => {
     sessionStorage.setItem('grassland.token', 'tok');
-    stubHandlers([SR]);
+    stubHandlers([JOB]);
     renderWithProviders(<AppRoutes />, {
       route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
     });
     await waitFor(() =>
-      expect(screen.getByText(/Script requests from this task/i)).toBeInTheDocument(),
+      expect(screen.getByText(/Jobs from this task/i)).toBeInTheDocument(),
     );
-    const link = screen.getByRole('link', { name: 'SR-0001' });
+    const link = screen.getByRole('link', { name: 'JOB-0001' });
     expect(link).toBeInTheDocument();
-    expect(link).toHaveAttribute('href', `/orgs/${SLUG}/scripts/SR-0001`);
+    expect(link).toHaveAttribute('href', `/orgs/${SLUG}/jobs/JOB-0001`);
     expect(screen.getByText(/Generate sitemap/)).toBeInTheDocument();
     expect(screen.getByText(/completed/)).toBeInTheDocument();
   });
 
-  test('hides script requests section when task has no scripts', async () => {
+  test('hides jobs section when task has no jobs', async () => {
     sessionStorage.setItem('grassland.token', 'tok');
     stubHandlers([]);
     renderWithProviders(<AppRoutes />, {
@@ -141,6 +145,6 @@ describe('TaskDetailPane — script requests cross-link', () => {
     await waitFor(() =>
       expect(screen.getByText(/Live events/i)).toBeInTheDocument(),
     );
-    expect(screen.queryByText(/Script requests from this task/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Jobs from this task/i)).not.toBeInTheDocument();
   });
 });

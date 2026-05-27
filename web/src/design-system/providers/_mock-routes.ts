@@ -4,7 +4,7 @@
  * Mounted by `PrototypeProvider` so compositions navigate within the
  * sandbox subtree instead of jumping to the daemon-backed routes.
  */
-import type { AgentsRoutes, ScriptsRoutes, ThreadRoutes } from './DataContext';
+import type { AgentsRoutes, JobsRoutes, ThreadRoutes } from './DataContext';
 
 const PROTOTYPE_BASE = '/__prototypes/threads-v2';
 
@@ -30,7 +30,7 @@ export function useMockAgentsRoutes(): AgentsRoutes {
   };
 }
 
-export function useMockScriptsRoutes(): ScriptsRoutes {
+export function useMockJobsRoutes(): JobsRoutes {
   return {
     inbox: () => PROTOTYPE_BASE,
     detail: () => PROTOTYPE_BASE,

@@ -20,72 +20,79 @@ export interface AuditRowProps {
   density: Density;
   taskHref?: string;
   agentHref?: string;
-  /** Base path to the SR drawer, e.g. `/orgs/slug/scripts`. Provided by
-   *  the parent when the entry action is a `script_*` action. */
-  scriptsBasePath?: string;
+  /** Base path to the job drawer, e.g. `/orgs/slug/jobs`. Provided by
+   *  the parent when the entry action is a `job_*` action. */
+  jobsBasePath?: string;
 }
 
-/** Render a human-readable one-liner for script_* audit actions.
- *  Returns null when the action is not a script action. */
-function ScriptActionSummary({
+/** Render a human-readable one-liner for job_* audit actions.
+ *  Returns null when the action is not a job action. */
+function JobActionSummary({
   entry,
-  scriptsBasePath,
+  jobsBasePath,
 }: {
   entry: AuditEntry;
-  scriptsBasePath?: string;
+  jobsBasePath?: string;
 }): JSX.Element | null {
   const { action, payload } = entry;
-  if (!action.startsWith('script_')) return null;
+  if (!action.startsWith('job_')) return null;
 
-  const srId = payload.script_request_id as string | undefined;
+  // ``script_request_id`` is the historical payload key — the audit logger
+  // still emits it after the noun rename so existing rows stay readable
+  // and downstream consumers keep working.
+  const jobId = (payload.script_request_id as string | undefined)
+    ?? (payload.job_id as string | undefined);
   const title = payload.title as string | undefined;
   const reason = payload.reason as string | undefined;
   const exitCode = payload.exit_code as number | undefined;
   const durationMs = payload.duration_ms as number | undefined;
 
-  const srLink =
-    srId && scriptsBasePath ? (
+  const jobLink =
+    jobId && jobsBasePath ? (
       <Link
-        to={`${scriptsBasePath}/${srId}`}
+        to={`${jobsBasePath}/${jobId}`}
         className="text-accent hover:underline font-mono"
         onClick={(e) => e.stopPropagation()}
       >
-        {srId}
+        {jobId}
       </Link>
     ) : (
-      <span className="font-mono">{srId ?? '?'}</span>
+      <span className="font-mono">{jobId ?? '?'}</span>
     );
 
   switch (action) {
-    case 'script_submitted':
+    case 'job_submitted':
       return (
         <span>
-          submitted {srLink}{title ? `: ${title}` : ''}
+          submitted {jobLink}{title ? `: ${title}` : ''}
         </span>
       );
-    case 'script_rejected':
+    case 'job_rejected':
       return (
         <span>
-          rejected {srLink}{reason ? ` — ${reason}` : ''}
+          rejected {jobLink}{reason ? ` — ${reason}` : ''}
         </span>
       );
-    case 'script_run_started':
-      return <span>started running {srLink}</span>;
-    case 'script_run_completed':
+    case 'job_run_started':
+    case 'job_auto_started':
+      return <span>started running {jobLink}</span>;
+    case 'job_run_completed':
       return (
         <span>
-          completed {srLink}
+          completed {jobLink}
           {(exitCode !== undefined || durationMs !== undefined) && (
             <> (exit={exitCode ?? '?'}, {durationMs ?? '?'}ms)</>
           )}
         </span>
       );
-    case 'script_run_failed':
+    case 'job_run_failed':
       return (
         <span>
-          failed {srLink}{reason ? `: ${reason}` : ''}
+          failed {jobLink}{reason ? `: ${reason}` : ''}
         </span>
       );
+    case 'job_stopped':
+      return <span>stopped {jobLink}</span>;
     default:
       return null;
   }
@@ -107,11 +114,11 @@ export function AuditRow({
   density,
   taskHref,
   agentHref,
-  scriptsBasePath,
+  jobsBasePath,
 }: AuditRowProps): JSX.Element {
   const [open, setOpen] = useState(false);
   const pad = density === 'compact' ? 'py-1' : 'py-2';
-  const isScriptAction = entry.action.startsWith('script_');
+  const isJobAction = entry.action.startsWith('job_');
   return (
     <li className="border-border-subtle border-b text-sm">
       <button
@@ -128,9 +135,9 @@ export function AuditRow({
           {formatTime(entry.timestamp)}
         </span>
         {entry.agent && <span className="text-fg text-sm">{entry.agent}</span>}
-        {isScriptAction ? (
+        {isJobAction ? (
           <span className="text-fg text-xs">
-            <ScriptActionSummary entry={entry} scriptsBasePath={scriptsBasePath} />
+            <JobActionSummary entry={entry} jobsBasePath={jobsBasePath} />
           </span>
         ) : (
           <span className="text-fg font-mono text-xs">{entry.action}</span>

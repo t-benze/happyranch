@@ -11,17 +11,17 @@ import { Button } from '@/design-system/primitives/Button';
 import { FormField } from '@/design-system/patterns/FormField';
 import { Textarea } from '@/design-system/primitives/Textarea';
 import { ApiError } from '@/lib/api';
-import { useRejectScript } from '@/hooks/scripts';
+import { useRejectJob } from '@/hooks/jobs';
 
 interface Props {
-  srId: string;
+  jobId: string;
   open: boolean;
   onClose: () => void;
   onSuccess?: () => void;
 }
 
-export function RejectScriptDialog({ srId, open, onClose, onSuccess }: Props): JSX.Element {
-  const reject = useRejectScript();
+export function RejectJobDialog({ jobId, open, onClose, onSuccess }: Props): JSX.Element {
+  const reject = useRejectJob();
   const [reason, setReason] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const reasonId = useId();
@@ -45,7 +45,7 @@ export function RejectScriptDialog({ srId, open, onClose, onSuccess }: Props): J
       return;
     }
     try {
-      await reject.mutateAsync({ srId, body: { reason: reason.trim() } });
+      await reject.mutateAsync({ jobId, body: { reason: reason.trim() } });
       onSuccess?.();
       onClose();
     } catch (err) {
@@ -61,9 +61,9 @@ export function RejectScriptDialog({ srId, open, onClose, onSuccess }: Props): J
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Reject {srId}</DialogTitle>
+          <DialogTitle>Reject {jobId}</DialogTitle>
           <DialogDescription className="sr-only">
-            Reject this script request. The requesting agent will be notified.
+            Reject this job. The requesting agent will be notified.
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-3">

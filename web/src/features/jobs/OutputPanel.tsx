@@ -1,33 +1,36 @@
 import { useEffect, useRef } from 'react';
-import { useScriptOutput } from '@/hooks/scripts';
-import { scriptEventsPath } from '@/lib/api/scripts';
-import { useScriptEventStream } from './scriptEventsHook';
-import type { ScriptRequest } from '@/lib/api/types';
+import { useJobOutput } from '@/hooks/jobs';
+import { jobEventsPath } from '@/lib/api/jobs';
+import { useJobEventStream } from './jobEventsHook';
+import type { JobRecord } from '@/lib/api/types';
 
 interface Props {
-  sr: ScriptRequest;
+  job: JobRecord;
   slug: string;
 }
 
-export function OutputPanel({ sr, slug }: Props): JSX.Element | null {
-  const isLive = sr.status === 'running';
-  const { events, terminal } = useScriptEventStream(
-    isLive ? scriptEventsPath(slug, sr.id) : null,
+export function OutputPanel({ job, slug }: Props): JSX.Element | null {
+  const isLive = job.status === 'running';
+  const { events, terminal } = useJobEventStream(
+    isLive ? jobEventsPath(slug, job.id) : null,
     isLive,
   );
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (containerRef.current) {
-      containerRef.current.scrollTo({ top: containerRef.current.scrollHeight });
+    // JSDOM omits Element.prototype.scrollTo. Guard so the test path that
+    // exercises the running drawer (Stop button) doesn't throw.
+    const el = containerRef.current;
+    if (el && typeof el.scrollTo === 'function') {
+      el.scrollTo({ top: el.scrollHeight });
     }
   }, [events.length]);
 
-  const outputQuery = useScriptOutput(
-    !isLive && (sr.status === 'completed' || sr.status === 'failed') ? sr.id : undefined,
+  const outputQuery = useJobOutput(
+    !isLive && (job.status === 'completed' || job.status === 'failed') ? job.id : undefined,
   );
 
-  if (sr.status === 'pending' || sr.status === 'rejected') return null;
+  if (job.status === 'pending' || job.status === 'rejected') return null;
 
   return (
     <section>

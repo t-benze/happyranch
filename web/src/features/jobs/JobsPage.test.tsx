@@ -5,7 +5,7 @@ import { describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
-import type { ScriptRequest } from '@/lib/api/types';
+import type { JobRecord } from '@/lib/api/types';
 
 const SLUG = 'hk-macau-tourism';
 
@@ -18,8 +18,8 @@ function mountAt(route: string) {
   return renderWithProviders(<AppRoutes />, { route });
 }
 
-const SCRIPT: ScriptRequest = {
-  id: 'SR-0001',
+const JOB: JobRecord = {
+  id: 'JOB-0001',
   task_id: 'TASK-0042',
   agent_name: 'engineering_head',
   title: 'Clean up stale Docker images',
@@ -40,95 +40,101 @@ const SCRIPT: ScriptRequest = {
   reviewed_by: null,
   reject_reason: null,
   cwd_resolved: null,
-  timeout_seconds: 300,
+  max_runtime_seconds: 300,
+  max_output_bytes: 52428800,
+  review_required: true,
+  persistent: false,
+  reason: null,
   created_at: '2026-05-23T12:00:00Z',
 };
 
-describe('ScriptsPage — read path', () => {
-  test('renders empty state when no scripts', async () => {
+describe('JobsPage — read path', () => {
+  test('renders empty state when no jobs', async () => {
     sessionStorage.setItem('grassland.token', 'tok');
     server.use(
-      http.get(`/api/v1/orgs/${SLUG}/scripts/`, () =>
-        HttpResponse.json({ scripts: [] }),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
+        HttpResponse.json({ jobs: [] }),
       ),
     );
-    mountAt(`/orgs/${SLUG}/scripts`);
+    mountAt(`/orgs/${SLUG}/jobs`);
     await waitFor(() =>
-      expect(screen.getByText(/No script requests/i)).toBeInTheDocument(),
+      expect(screen.getByText(/No jobs/i)).toBeInTheDocument(),
     );
   });
 
-  test('renders script cards when list returns data', async () => {
+  test('renders job cards when list returns data', async () => {
     sessionStorage.setItem('grassland.token', 'tok');
     server.use(
-      http.get(`/api/v1/orgs/${SLUG}/scripts/`, () =>
-        HttpResponse.json({ scripts: [SCRIPT] }),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
+        HttpResponse.json({ jobs: [JOB] }),
       ),
     );
-    mountAt(`/orgs/${SLUG}/scripts`);
+    mountAt(`/orgs/${SLUG}/jobs`);
     await waitFor(() =>
       expect(screen.getByText('Clean up stale Docker images')).toBeInTheDocument(),
     );
-    expect(screen.getByText('SR-0001')).toBeInTheDocument();
+    expect(screen.getByText('JOB-0001')).toBeInTheDocument();
     expect(screen.getByText('engineering_head')).toBeInTheDocument();
   });
 
-  test('renders filter sidebar with Status group', async () => {
+  test('renders filter sidebar with Status, Review, and Persistence groups', async () => {
     sessionStorage.setItem('grassland.token', 'tok');
     server.use(
-      http.get(`/api/v1/orgs/${SLUG}/scripts/`, () =>
-        HttpResponse.json({ scripts: [SCRIPT] }),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
+        HttpResponse.json({ jobs: [JOB] }),
       ),
     );
-    mountAt(`/orgs/${SLUG}/scripts`);
+    mountAt(`/orgs/${SLUG}/jobs`);
     await waitFor(() => {
-      expect(screen.getByText(/Status/i)).toBeInTheDocument();
+      expect(screen.getByText(/^Status$/i)).toBeInTheDocument();
+      expect(screen.getByText(/^Review$/i)).toBeInTheDocument();
+      expect(screen.getByText(/^Persistence$/i)).toBeInTheDocument();
     });
   });
 });
 
-describe('ScriptDetailPane + RejectScriptDialog — write path', () => {
+describe('JobDetailPane + RejectJobDialog — write path', () => {
   function stubDetailHandlers() {
     server.use(
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
       ),
-      http.get(`/api/v1/orgs/${SLUG}/scripts/`, () =>
-        HttpResponse.json({ scripts: [SCRIPT] }),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
+        HttpResponse.json({ jobs: [JOB] }),
       ),
-      http.get(`/api/v1/orgs/${SLUG}/scripts/SR-0001`, () =>
-        HttpResponse.json(SCRIPT),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/JOB-0001`, () =>
+        HttpResponse.json(JOB),
       ),
     );
   }
 
-  test('detail drawer renders title, rationale, script, and action bar for pending SR', async () => {
+  test('detail drawer renders title, rationale, script, and action bar for pending job', async () => {
     sessionStorage.setItem('grassland.token', 'tok');
     stubDetailHandlers();
-    mountAt(`/orgs/${SLUG}/scripts/SR-0001`);
+    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
     // Title and rationale appear in both the card and the drawer — use getAllByText
     await waitFor(() =>
       expect(screen.getAllByText('Clean up stale Docker images').length).toBeGreaterThanOrEqual(1),
     );
     expect(screen.getAllByText(/Disk usage is above 90%/i).length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('docker image prune -af')).toBeInTheDocument();
-    // Action bar should be visible for pending SR
+    // Action bar should be visible for pending job
     expect(screen.getByRole('button', { name: /Reject/i })).toBeInTheDocument();
   });
 
-  test('RejectScriptDialog submits reason and calls POST reject endpoint', async () => {
+  test('RejectJobDialog submits reason and calls POST reject endpoint', async () => {
     sessionStorage.setItem('grassland.token', 'tok');
     stubDetailHandlers();
     let capturedBody: unknown = null;
     server.use(
-      http.post(`/api/v1/orgs/${SLUG}/scripts/SR-0001/reject`, async ({ request: req }) => {
+      http.post(`/api/v1/orgs/${SLUG}/jobs/JOB-0001/reject`, async ({ request: req }) => {
         capturedBody = await req.json();
-        return HttpResponse.json({ ...SCRIPT, status: 'rejected', reject_reason: 'Too risky' });
+        return HttpResponse.json({ ...JOB, status: 'rejected', reject_reason: 'Too risky' });
       }),
     );
 
     const user = userEvent.setup();
-    mountAt(`/orgs/${SLUG}/scripts/SR-0001`);
+    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
 
     // Click Reject to open dialog
     await user.click(await screen.findByRole('button', { name: /Reject/i }));
@@ -154,7 +160,7 @@ describe('ScriptDetailPane + RejectScriptDialog — write path', () => {
     stubDetailHandlers();
 
     const user = userEvent.setup();
-    mountAt(`/orgs/${SLUG}/scripts/SR-0001`);
+    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
 
     await user.click(await screen.findByRole('button', { name: /Reject/i }));
 
@@ -167,52 +173,103 @@ describe('ScriptDetailPane + RejectScriptDialog — write path', () => {
     expect(submitBtn).toBeDisabled();
   });
 
-  test('detail drawer shows reject reason section for rejected SR', async () => {
+  test('detail drawer shows reject reason section for rejected job', async () => {
     sessionStorage.setItem('grassland.token', 'tok');
-    const rejectedScript = {
-      ...SCRIPT,
-      status: 'rejected' as const,
+    const rejectedJob: JobRecord = {
+      ...JOB,
+      status: 'rejected',
       reject_reason: 'Too risky to run',
     };
     server.use(
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
       ),
-      http.get(`/api/v1/orgs/${SLUG}/scripts/`, () =>
-        HttpResponse.json({ scripts: [rejectedScript] }),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
+        HttpResponse.json({ jobs: [rejectedJob] }),
       ),
-      http.get(`/api/v1/orgs/${SLUG}/scripts/SR-0001`, () =>
-        HttpResponse.json(rejectedScript),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/JOB-0001`, () =>
+        HttpResponse.json(rejectedJob),
       ),
     );
-    mountAt(`/orgs/${SLUG}/scripts/SR-0001`);
+    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
     await waitFor(() =>
       expect(screen.getByText('Too risky to run')).toBeInTheDocument(),
     );
-    // Action bar should NOT be visible for rejected SR
+    // Action bar should NOT be visible for rejected job
     expect(screen.queryByRole('button', { name: /Reject/i })).not.toBeInTheDocument();
   });
 });
 
-describe('OutputPanel', () => {
-  function stubDetailForStatus(script: typeof SCRIPT) {
+describe('JobDetailPane — Stop button (running job)', () => {
+  function stubRunningHandlers(job: JobRecord) {
     server.use(
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
       ),
-      http.get(`/api/v1/orgs/${SLUG}/scripts/`, () =>
-        HttpResponse.json({ scripts: [script] }),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
+        HttpResponse.json({ jobs: [job] }),
       ),
-      http.get(`/api/v1/orgs/${SLUG}/scripts/SR-0001`, () =>
-        HttpResponse.json(script),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/JOB-0001`, () =>
+        HttpResponse.json(job),
       ),
     );
   }
 
-  test('renders no output section for pending SR', async () => {
+  test('renders Stop button for running job and POSTs to /stop', async () => {
     sessionStorage.setItem('grassland.token', 'tok');
-    stubDetailForStatus(SCRIPT);
-    mountAt(`/orgs/${SLUG}/scripts/SR-0001`);
+    const runningJob: JobRecord = {
+      ...JOB,
+      status: 'running',
+      started_at: '2026-05-23T12:01:00Z',
+    };
+    stubRunningHandlers(runningJob);
+    let stopCalled = false;
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/jobs/JOB-0001/stop`, () => {
+        stopCalled = true;
+        return HttpResponse.json({ ok: true, id: 'JOB-0001' });
+      }),
+    );
+
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
+    const stopBtn = await screen.findByRole('button', { name: /^Stop$/ });
+    await user.click(stopBtn);
+    await waitFor(() => {
+      expect(stopCalled).toBe(true);
+    });
+  });
+
+  test('no Stop button when job is pending', async () => {
+    sessionStorage.setItem('grassland.token', 'tok');
+    stubRunningHandlers(JOB);
+    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
+    await waitFor(() =>
+      expect(screen.getAllByText('Clean up stale Docker images').length).toBeGreaterThanOrEqual(1),
+    );
+    expect(screen.queryByRole('button', { name: /^Stop$/ })).not.toBeInTheDocument();
+  });
+});
+
+describe('OutputPanel', () => {
+  function stubDetailForStatus(job: JobRecord) {
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
+        HttpResponse.json({ jobs: [job] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/JOB-0001`, () =>
+        HttpResponse.json(job),
+      ),
+    );
+  }
+
+  test('renders no output section for pending job', async () => {
+    sessionStorage.setItem('grassland.token', 'tok');
+    stubDetailForStatus(JOB);
+    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
     // Wait for detail pane to load
     await waitFor(() =>
       expect(screen.getAllByText('Clean up stale Docker images').length).toBeGreaterThanOrEqual(1),
@@ -221,17 +278,17 @@ describe('OutputPanel', () => {
     expect(screen.queryByText(/^Output$/i)).not.toBeInTheDocument();
   });
 
-  test('renders stdout and stderr pre blocks for completed SR', async () => {
+  test('renders stdout and stderr pre blocks for completed job', async () => {
     sessionStorage.setItem('grassland.token', 'tok');
-    const completedScript = {
-      ...SCRIPT,
-      status: 'completed' as const,
+    const completedJob: JobRecord = {
+      ...JOB,
+      status: 'completed',
       exit_code: 0,
       finished_at: '2026-05-23T12:05:00Z',
     };
-    stubDetailForStatus(completedScript);
+    stubDetailForStatus(completedJob);
     server.use(
-      http.get(`/api/v1/orgs/${SLUG}/scripts/SR-0001/output`, () =>
+      http.get(`/api/v1/orgs/${SLUG}/jobs/JOB-0001/output`, () =>
         HttpResponse.json({
           stdout: 'Deleted 3 images\n',
           stderr: '',
@@ -242,7 +299,7 @@ describe('OutputPanel', () => {
         }),
       ),
     );
-    mountAt(`/orgs/${SLUG}/scripts/SR-0001`);
+    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
     await waitFor(() =>
       expect(screen.getByText('Deleted 3 images')).toBeInTheDocument(),
     );
@@ -253,15 +310,15 @@ describe('OutputPanel', () => {
     expect(screen.getByText('(empty)')).toBeInTheDocument();
   });
 
-  test('renders no output section for rejected SR', async () => {
+  test('renders no output section for rejected job', async () => {
     sessionStorage.setItem('grassland.token', 'tok');
-    const rejectedScript = {
-      ...SCRIPT,
-      status: 'rejected' as const,
+    const rejectedJob: JobRecord = {
+      ...JOB,
+      status: 'rejected',
       reject_reason: 'Not allowed',
     };
-    stubDetailForStatus(rejectedScript);
-    mountAt(`/orgs/${SLUG}/scripts/SR-0001`);
+    stubDetailForStatus(rejectedJob);
+    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
     await waitFor(() =>
       expect(screen.getByText('Not allowed')).toBeInTheDocument(),
     );

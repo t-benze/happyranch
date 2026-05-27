@@ -32,7 +32,7 @@ import {
   useAgentTasks,
 } from '@/hooks/agents';
 import { useTasksRoutes } from '@/hooks/tasks';
-import { useScriptsList } from '@/hooks/scripts';
+import { useJobsList } from '@/hooks/jobs';
 import { useDensity } from '@/hooks/density';
 
 interface AgentDetailDrawerProps {
@@ -49,7 +49,7 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
   const agentsQuery = useAgentsList();
   const tasksQuery = useAgentTasks(agentName);
   const learningsQuery = useAgentLearnings(agentName);
-  const scriptsQuery = useScriptsList({ agent: agentName, status: 'all', limit: 10 });
+  const jobsQuery = useJobsList({ agent: agentName, status: 'all', limit: 10 });
 
   const agent = agentsQuery.data?.agents.find((a) => a.name === agentName);
   const onClose = () => navigate(agentsRoutes.inbox());
@@ -144,27 +144,27 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
             />
           )}
 
-          {scriptsQuery.data && scriptsQuery.data.scripts.length > 0 && (
+          {jobsQuery.data && jobsQuery.data.jobs.length > 0 && (
             <>
               <h3 className="text-fg-muted mt-6 mb-2 text-xs font-medium tracking-wider uppercase">
-                Recent script requests
+                Recent jobs
               </h3>
               <ul className="space-y-1 text-sm">
-                {scriptsQuery.data.scripts.map((s) => (
-                  <li key={s.id}>
+                {jobsQuery.data.jobs.map((j) => (
+                  <li key={j.id}>
                     {slug ? (
                       <Link
-                        to={`/orgs/${slug}/scripts/${s.id}`}
+                        to={`/orgs/${slug}/jobs/${j.id}`}
                         className="text-accent hover:underline font-mono"
                       >
-                        {s.id}
+                        {j.id}
                       </Link>
                     ) : (
-                      <span className="font-mono">{s.id}</span>
+                      <span className="font-mono">{j.id}</span>
                     )}
                     {' — '}
-                    {s.title}{' '}
-                    <span className="text-fg-muted">({s.status})</span>
+                    {j.title}{' '}
+                    <span className="text-fg-muted">({j.status})</span>
                   </li>
                 ))}
               </ul>
