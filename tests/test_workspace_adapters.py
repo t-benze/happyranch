@@ -382,3 +382,256 @@ def test_opencode_agents_md_warns_about_non_stop_commands(tmp_path: Path) -> Non
     content = (workspace / "AGENTS.md").read_text()
     assert "## Long-running and non-stop commands" in content
     assert "protocol/skills/jobs/SKILL.md" in content
+
+
+def _assert_task_completion_format_section(content: str) -> None:
+    """Shared assertions for the system-injected Task Completion Format
+    section. Every executor's bootstrap doc must carry this block so that
+    agents no longer have to author (and drift from) their own."""
+    # Header present
+    assert "## Task Completion Format" in content
+    # Routes the agent at the canonical source rather than restating the schema
+    assert "start-task" in content
+    assert "grassland report-completion --from-file" in content
+    # Universal prose-summary items the agent should hit
+    assert "Findings, risks, or concerns" in content
+    assert "founder decision" in content
+    assert "Follow-up" in content
+    # Manager-only `decision` block is referenced (so managers know the skill
+    # carries the delegate/done/escalate shapes — but the section itself does
+    # NOT restate the schema, the skill does).
+    assert "`decision`" in content
+
+
+def test_claude_md_includes_task_completion_format_section(tmp_path: Path) -> None:
+    """Replaces the per-agent ``## Task Completion Format`` stubs that lived
+    in agent ``.md`` files with a single system-injected section. Agents no
+    longer author (or leave dangling) this content; the system carries it
+    uniformly across every role."""
+    from src.config import Settings
+    from src.orchestrator._paths import OrgPaths
+    from src.orchestrator.workspace_adapters import ClaudeWorkspaceAdapter
+
+    paths = OrgPaths(root=tmp_path)
+    adapter = ClaudeWorkspaceAdapter(Settings(), paths, slug="demo")
+    workspace = tmp_path / "workspaces" / "dev_agent"
+    adapter.write_claude_md(workspace, "dev_agent", "You are dev_agent.")
+    content = (workspace / "CLAUDE.md").read_text()
+    _assert_task_completion_format_section(content)
+
+
+def test_codex_agents_md_includes_task_completion_format_section(tmp_path: Path) -> None:
+    from src.config import Settings
+    from src.orchestrator._paths import OrgPaths
+    from src.orchestrator.workspace_adapters import CodexWorkspaceAdapter
+
+    paths = OrgPaths(root=tmp_path)
+    adapter = CodexWorkspaceAdapter(Settings(), paths, slug="demo")
+    workspace = tmp_path / "workspaces" / "dev_agent"
+    adapter.write_agents_md(workspace, "dev_agent", "You are dev_agent.")
+    content = (workspace / "AGENTS.md").read_text()
+    _assert_task_completion_format_section(content)
+
+
+def test_opencode_agents_md_includes_task_completion_format_section(tmp_path: Path) -> None:
+    from src.config import Settings
+    from src.orchestrator._paths import OrgPaths
+    from src.orchestrator.workspace_adapters import OpencodeWorkspaceAdapter
+
+    paths = OrgPaths(root=tmp_path)
+    adapter = OpencodeWorkspaceAdapter(Settings(), paths, slug="demo")
+    workspace = tmp_path / "workspaces" / "dev_agent"
+    adapter.write_agents_md(workspace, "dev_agent", "You are dev_agent.")
+    content = (workspace / "AGENTS.md").read_text()
+    _assert_task_completion_format_section(content)
+
+
+def test_reserved_header_in_claude_agent_body_raises(tmp_path: Path) -> None:
+    """Boundary enforcement: an agent body that authors a reserved H2 header
+    must fail at bootstrap-doc write time, before any session sees the
+    duplicated section. This is the runtime guard against the Finding-B
+    regression: if a founder hand-edits an agent file or a future
+    ``manage-agent`` callback writes one with a colliding header, the next
+    workspace setup raises and tells the founder exactly which header to
+    rename.
+    """
+    from src.config import Settings
+    from src.orchestrator._paths import OrgPaths
+    from src.orchestrator.workspace_adapters import (
+        ClaudeWorkspaceAdapter,
+        ReservedHeaderInAgentBody,
+    )
+
+    paths = OrgPaths(root=tmp_path)
+    adapter = ClaudeWorkspaceAdapter(Settings(), paths, slug="demo")
+    workspace = tmp_path / "workspaces" / "dev_agent"
+    bad_body = (
+        "You are dev_agent.\n\n"
+        "## Workflow\n"
+        "Some custom workflow text that collides with the system section.\n"
+    )
+    with pytest.raises(ReservedHeaderInAgentBody) as exc:
+        adapter.write_claude_md(workspace, "dev_agent", bad_body)
+    # Error message must name the offending header so the founder can fix it
+    # without reading source.
+    assert "'Workflow'" in str(exc.value)
+    assert "dev_agent" in str(exc.value)
+
+
+def test_reserved_header_in_codex_agent_body_raises(tmp_path: Path) -> None:
+    from src.config import Settings
+    from src.orchestrator._paths import OrgPaths
+    from src.orchestrator.workspace_adapters import (
+        CodexWorkspaceAdapter,
+        ReservedHeaderInAgentBody,
+    )
+
+    paths = OrgPaths(root=tmp_path)
+    adapter = CodexWorkspaceAdapter(Settings(), paths, slug="demo")
+    workspace = tmp_path / "workspaces" / "dev_agent"
+    bad_body = (
+        "You are dev_agent.\n\n"
+        "## Knowledge Base (shared across agents)\n"
+        "Local override of the system KB section.\n"
+    )
+    with pytest.raises(ReservedHeaderInAgentBody) as exc:
+        adapter.write_agents_md(workspace, "dev_agent", bad_body)
+    assert "'Knowledge Base (shared across agents)'" in str(exc.value)
+
+
+def test_reserved_header_in_opencode_agent_body_raises(tmp_path: Path) -> None:
+    from src.config import Settings
+    from src.orchestrator._paths import OrgPaths
+    from src.orchestrator.workspace_adapters import (
+        OpencodeWorkspaceAdapter,
+        ReservedHeaderInAgentBody,
+    )
+
+    paths = OrgPaths(root=tmp_path)
+    adapter = OpencodeWorkspaceAdapter(Settings(), paths, slug="demo")
+    workspace = tmp_path / "workspaces" / "dev_agent"
+    bad_body = (
+        "You are dev_agent.\n\n"
+        "## Available Repositories\n"
+        "neihoumacau (main product repo).\n"
+    )
+    with pytest.raises(ReservedHeaderInAgentBody) as exc:
+        adapter.write_agents_md(workspace, "dev_agent", bad_body)
+    assert "'Available Repositories'" in str(exc.value)
+
+
+def test_reserved_header_validator_lists_multiple_offenders(tmp_path: Path) -> None:
+    """When an agent body has multiple reserved-header collisions, the error
+    must list ALL of them in one message so the founder fixes them in one
+    pass instead of seeing one error per session retry.
+    """
+    from src.config import Settings
+    from src.orchestrator._paths import OrgPaths
+    from src.orchestrator.workspace_adapters import (
+        ClaudeWorkspaceAdapter,
+        ReservedHeaderInAgentBody,
+    )
+
+    paths = OrgPaths(root=tmp_path)
+    adapter = ClaudeWorkspaceAdapter(Settings(), paths, slug="demo")
+    workspace = tmp_path / "workspaces" / "ui_designer"
+    bad_body = (
+        "You are ui_designer.\n\n"
+        "## Workflow\nFoo.\n\n"
+        "## Available Repositories\nBar.\n\n"
+        "## Persistent Files\nBaz.\n"
+    )
+    with pytest.raises(ReservedHeaderInAgentBody) as exc:
+        adapter.write_claude_md(workspace, "ui_designer", bad_body)
+    msg = str(exc.value)
+    assert "'Workflow'" in msg
+    assert "'Available Repositories'" in msg
+    assert "'Persistent Files'" in msg
+
+
+def test_reserved_header_validator_ignores_lookalikes(tmp_path: Path) -> None:
+    """The validator does an exact string match on the H2 text; it must not
+    flag near-misses like ``## Editorial Workflow`` (a domain-specific name
+    that legitimately lives in agent bodies — see content_manager.md).
+    """
+    from src.config import Settings
+    from src.orchestrator._paths import OrgPaths
+    from src.orchestrator.workspace_adapters import ClaudeWorkspaceAdapter
+
+    paths = OrgPaths(root=tmp_path)
+    adapter = ClaudeWorkspaceAdapter(Settings(), paths, slug="demo")
+    workspace = tmp_path / "workspaces" / "content_manager"
+    fine_body = (
+        "You are content_manager.\n\n"
+        "## Editorial Workflow\nDomain-specific editorial pipeline.\n\n"
+        "## Knowledge Base Access\nWhat I can read in the KB.\n\n"
+        "## Design Workflow\nA different kind of workflow.\n\n"
+        "## Repo Pointers\nKey files in the primary repo.\n"
+    )
+    # Should not raise.
+    adapter.write_claude_md(workspace, "content_manager", fine_body)
+    assert (workspace / "CLAUDE.md").exists()
+
+
+def test_sample_org_agent_files_have_no_reserved_header_collisions() -> None:
+    """Static regression guard: no agent file shipped in ``examples/orgs/``
+    may use a reserved H2 header. Fails CI if a new sample agent (or a
+    contributor's edit) reintroduces the Finding-B pattern.
+    """
+    import re
+    from src.orchestrator.workspace_adapters import (
+        _RESERVED_AGENT_BODY_HEADERS,
+    )
+
+    repo_root = Path(__file__).resolve().parents[1]
+    agent_files = list(
+        (repo_root / "examples" / "orgs").rglob("org/agents/*.md")
+    )
+    assert agent_files, "sanity check: expected sample-org agent files to exist"
+    h2_re = re.compile(r"^## (.+)$", re.MULTILINE)
+    violations: list[str] = []
+    for f in agent_files:
+        text = f.read_text()
+        # Strip YAML frontmatter so we only scan the body.
+        if text.startswith("---\n"):
+            end = text.find("\n---\n", 4)
+            if end != -1:
+                text = text[end + 5:]
+        for m in h2_re.finditer(text):
+            heading = m.group(1).strip()
+            if heading in _RESERVED_AGENT_BODY_HEADERS:
+                violations.append(f"{f.relative_to(repo_root)}: ## {heading}")
+    assert not violations, (
+        "sample-org agent files use reserved H2 headers (collide with "
+        "system-injected sections):\n  " + "\n  ".join(violations)
+    )
+
+
+def test_task_completion_format_does_not_inline_json_schema(tmp_path: Path) -> None:
+    """Regression guard: the section must point at the start-task skill,
+    NOT restate the JSON payload shape. Restating drifts from the skill
+    over time (worker schema, manager `decision` schema, the
+    blocked-path variant). The skill is the single source of truth.
+    """
+    from src.config import Settings
+    from src.orchestrator._paths import OrgPaths
+    from src.orchestrator.workspace_adapters import ClaudeWorkspaceAdapter
+
+    paths = OrgPaths(root=tmp_path)
+    adapter = ClaudeWorkspaceAdapter(Settings(), paths, slug="demo")
+    workspace = tmp_path / "workspaces" / "dev_agent"
+    adapter.write_claude_md(workspace, "dev_agent", "You are dev_agent.")
+    content = (workspace / "CLAUDE.md").read_text()
+    # Extract just the Task Completion Format section
+    start = content.index("## Task Completion Format")
+    after = content[start:]
+    end = after.index("\n## ", 1)  # next H2 header
+    section = after[:end]
+    # The skill is the canonical schema source — section must not duplicate
+    # field-by-field JSON. These appear in the skill but should NOT appear
+    # in the bootstrap section.
+    assert '"task_id"' not in section
+    assert '"session_id"' not in section
+    assert '"confidence"' not in section
+    assert '"summary"' not in section
+    assert '"status": "completed"' not in section

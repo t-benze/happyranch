@@ -1,7 +1,7 @@
 /**
- * AgentsPage — single-canvas surface (UI_SPEC §11). Two sub-tabs:
+ * AgentsPage — single-canvas surface. Two sub-tabs:
  *
- *   - Active: scorecard table → calibration table.
+ *   - Active: name + team + role + executor + description.
  *   - Pending: enrollment list with approve/reject actions.
  *
  * Tab state rides on a `?view=pending` search param rather than a static
@@ -11,6 +11,7 @@
  * top of the Active tab when `:agent_name` is present (and forces the
  * Active tab — a Pending list under a per-agent drawer makes no sense).
  */
+import { Link } from 'react-router-dom';
 import {
   useNavigate,
   useParams,
@@ -24,9 +25,9 @@ import {
   TabsContent,
 } from '@/design-system/primitives/Tabs';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
+import { AgentChip } from '@/design-system/patterns/AgentChip';
 import { useAgentsList, useAgentsRoutes } from '@/hooks/agents';
-import { AgentScorecardTable } from './AgentScorecardTable';
-import { AgentCalibrationTable } from './AgentCalibrationTable';
+import { useDensity } from '@/hooks/density';
 import { PendingEnrollmentsTab } from './PendingEnrollmentsTab';
 import { AgentDetailDrawer } from './AgentDetailDrawer';
 
@@ -36,6 +37,8 @@ export function AgentsPage(): JSX.Element {
   const navigate = useNavigate();
   const routes = useAgentsRoutes();
   const agentsQuery = useAgentsList();
+  const { density } = useDensity();
+  const rowPad = density === 'compact' ? 'py-1.5' : 'py-2.5';
 
   // A per-agent drawer pins the Active tab — Pending under a detail view
   // doesn't make sense as a state. The URL's `view=pending` is otherwise
@@ -57,7 +60,7 @@ export function AgentsPage(): JSX.Element {
       <header className="border-border-subtle border-b p-4">
         <PageHeader
           title="Agents"
-          meta="30-day rolling — tier, calibration, pending enrollments."
+          meta="Active roster + pending enrollments."
         />
         <Tabs value={tab} onValueChange={onTabChange} className="mt-3">
           <TabsList>
@@ -78,19 +81,45 @@ export function AgentsPage(): JSX.Element {
                 body="Run grassland agents init to bootstrap the team."
               />
             ) : (
-              <div className="space-y-6">
-                <section>
-                  <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
-                    Scorecards
-                  </h3>
-                  <AgentScorecardTable agents={agents} activeName={openAgentName} />
-                </section>
-                <section>
-                  <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
-                    Calibration
-                  </h3>
-                  <AgentCalibrationTable agents={agents} />
-                </section>
+              <div className="border-border-subtle overflow-hidden rounded-lg border">
+                <table className="w-full text-sm">
+                  <thead className="bg-surface-sunken text-fg-muted text-xs tracking-wider uppercase">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium">Agent</th>
+                      <th className="px-3 py-2 text-left font-medium">Team</th>
+                      <th className="px-3 py-2 text-left font-medium">Executor</th>
+                      <th className="px-3 py-2 text-left font-medium">Description</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {agents.map((a) => {
+                      const active = openAgentName === a.name;
+                      return (
+                        <tr
+                          key={a.name}
+                          className={`border-border-subtle border-t ${
+                            active ? 'bg-accent-muted' : 'hover:bg-surface-raised/60'
+                          }`}
+                        >
+                          <td className={`px-3 ${rowPad}`}>
+                            <Link to={routes.detail(a.name)} className="hover:underline">
+                              <AgentChip name={a.name} role={a.role ?? 'worker'} />
+                            </Link>
+                          </td>
+                          <td className={`text-fg-muted px-3 ${rowPad}`}>
+                            {a.team ?? '—'}
+                          </td>
+                          <td className={`text-fg-muted px-3 ${rowPad}`}>
+                            {a.executor ?? '—'}
+                          </td>
+                          <td className={`text-fg-muted px-3 ${rowPad}`}>
+                            {a.description ?? '—'}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             )}
           </TabsContent>

@@ -19,7 +19,7 @@ def _paths(org_state) -> OrgPaths:
     return OrgPaths(root=org_state.root)
 
 
-def test_list_agents_returns_tiers(tmp_home, app, org_state, auth_headers) -> None:
+def test_list_agents_returns_names(tmp_home, app, org_state, auth_headers) -> None:
     # Create at least one workspace so list_agents finds it
     ws = org_state.root / "workspaces" / "engineering_head"
     ws.mkdir(parents=True, exist_ok=True)
@@ -35,10 +35,10 @@ def test_list_agents_returns_full_shape(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
     """Each agent row carries the founder-UI fields: team/role/executor/
-    description, plus tier + scorecard + avg_confidence (None when no data)."""
+    description. The performance-tier feature was removed; the audit log is
+    the canonical record of agent outcomes."""
     from datetime import datetime, timezone
     from src.orchestrator.agent_def import AgentDef
-    from src.orchestrator import prompt_loader
 
     ws = org_state.root / "workspaces" / "engineering_head"
     ws.mkdir(parents=True, exist_ok=True)
@@ -72,35 +72,10 @@ def test_list_agents_returns_full_shape(
     assert eh["role"] == "manager"
     assert eh["executor"] == "claude"
     assert eh["description"] == "Owns the engineering team."
-    assert eh["tier"] == "green"  # no review history → default
-    assert eh["scorecard"] is None
-    assert eh["avg_confidence"] is None
-
-
-def test_list_agents_avg_confidence_aggregates_task_results(
-    tmp_home, app, org_state, auth_headers,
-) -> None:
-    """avg_confidence = mean of task_results.confidence_score (last 30 days)."""
-    ws = org_state.root / "workspaces" / "dev_agent"
-    ws.mkdir(parents=True, exist_ok=True)
-
-    org_state.db.insert_task_result(
-        task_id="TASK-001", agent="dev_agent", session_id="s1",
-        output_summary="ok", confidence_score=80, learnings="",
-        risks_flagged=[], duration_seconds=10, token_count=0,
-        estimated_cost=0.0,
-    )
-    org_state.db.insert_task_result(
-        task_id="TASK-002", agent="dev_agent", session_id="s2",
-        output_summary="ok", confidence_score=70, learnings="",
-        risks_flagged=[], duration_seconds=10, token_count=0,
-        estimated_cost=0.0,
-    )
-
-    r = TestClient(app).get("/api/v1/orgs/alpha/agents", headers=auth_headers)
-    assert r.status_code == 200
-    rows = {a["name"]: a for a in r.json()["agents"]}
-    assert rows["dev_agent"]["avg_confidence"] == 75.0
+    # No tier / scorecard / avg_confidence fields — tier feature removed.
+    assert "tier" not in eh
+    assert "scorecard" not in eh
+    assert "avg_confidence" not in eh
 
 
 def test_list_enrollments_returns_team_and_role(

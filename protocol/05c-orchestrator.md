@@ -1,6 +1,6 @@
 # Orchestrator: Routing, Permissions & State
 
-The application layer that drives the organization — task routing, inter-team communication, performance tiers, permissions, and the task state machine.
+The application layer that drives the organization — task routing, inter-team communication, permissions, and the task state machine.
 
 ---
 
@@ -44,11 +44,11 @@ The orchestrator is the application code that ties everything together. It spawn
 
 **4. Manages the revision loop.** When QA returns REVISE, the orchestrator tracks the revision count and either re-triggers the Content Team with feedback or escalates after max rounds.
 
-**5. Runs post-execution scoring.** After each Team run completes, the orchestrator extracts completion reports, QA verdicts, and revision history, then updates the agent scorecards. It adjusts the next Team run's configuration based on performance tiers (e.g., adding extra review steps for yellow/red agents).
+**5. Audits delegations.** After each delegated child task terminates, the orchestrator writes an implicit `review_verdict` audit row (`approved` for COMPLETED, `rejected` for FAILED). The founder reviews these via `grassland audit` to identify which agents need attention. (The legacy 30-day rolling tier classification was removed on 2026-05-27 — see §2.)
 
-**6. Assembles agent context.** Before each session, the orchestrator gathers the system prompt, learnings file, scorecard, team health, and task-specific context, then writes them into the agent's workspace in the format expected by the configured executor.
+**6. Assembles agent context.** Before each session, the orchestrator gathers the system prompt, learnings file, team health, and task-specific context, then writes them into the agent's workspace in the format expected by the configured executor.
 
-**7. Provides the founder dashboard.** Aggregates audit logs, escalation summaries, agent scorecards, and team health metrics into a weekly report.
+**7. Provides the founder dashboard.** Aggregates audit logs, escalation summaries, and team health metrics into a weekly report.
 
 ### Inter-Team communication patterns
 
@@ -70,38 +70,19 @@ The orchestrator is a Python application that:
 - Maintains state in a database (SQLite for prototype, PostgreSQL for production)
 - Runs agent sessions via the executor abstraction (not all running simultaneously)
 - Listens for escalation signals and inter-team communication
-- Persists audit logs, scorecards, and agent memory
+- Persists audit logs and agent memory
 
 ---
 
-## 2. Performance Tier Impact on Team Configuration
+## 2. ~~Performance Tier Impact on Team Configuration~~ (REMOVED)
 
-The orchestrator dynamically adjusts how Teams run based on agent performance tiers.
-
-### Green tier (>90% acceptance)
-- Standard flow: task → agent executes → next step
-- Minimal supervision from manager agent
-
-### Yellow tier (75-90%)
-- Manager agent reviews ALL output before it proceeds
-- In TeamAI terms: add an explicit `manager_review` Task after the agent's Task
-
-### Red tier (<75%)
-- Double review: supervisor + peer manager
-- In TeamAI terms: add TWO review Tasks — one for the supervising manager, one for the peer-audit manager (from a different Team, routed by the orchestrator)
-- Agent scope reduced: only assigned simpler task variants
-- Founder receives weekly performance report for this agent
-
-### How this works in practice
-The orchestrator maintains a scorecard per agent. Before kicking off a Team run, it checks relevant agent tiers and adjusts the Task chain:
-
-```
-Standard (Green):  write_content → qa_review → done
-Yellow Writer:     write_content → manager_pre_review → qa_review → done
-Red Writer:        write_content → manager_pre_review → peer_review → qa_review → done
-```
-
-The Team is instantiated with the appropriate Task list each time. This is not something TeamAI handles automatically — your orchestrator builds the Task list dynamically.
+The performance-tier feature was removed on 2026-05-27. The audit log
+(implicit `review_verdict` rows after every delegation, plus completion /
+failure events) is sufficient for the founder to identify which agents
+need attention via `grassland audit`. Tier classification on top of the
+verdicts added no behavioral enforcement in code, and the per-agent tier
+prose in agent `.md` files was not actionable (workers never saw their
+own tier; managers saw worker tiers but the tier didn't gate delegation).
 
 ---
 
@@ -217,7 +198,5 @@ The orchestrator runs a background check every 15 minutes for timed-out tasks. I
 ### Permission evolution
 
 Permissions aren't static. As the system matures:
-- Agents with sustained Green tier may earn expanded scope (orchestrator widens their permission config)
-- Red tier agents get scope *reduced* — fewer allowed directories, restricted shell access, simpler tasks only
 - Novel situations that the founder resolves become codified rules — the orchestrator updates the permission config and knowledge base so that situation is handled automatically next time
 - The founder can adjust any agent's permissions at any time via the dashboard

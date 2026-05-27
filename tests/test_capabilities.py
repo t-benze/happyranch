@@ -4,36 +4,51 @@ from src.models import StepRecord
 from src.orchestrator.capabilities import build_capabilities_prompt
 
 
-def test_prompt_includes_brief():
+def test_prompt_does_not_duplicate_brief():
+    """Regression guard: the brief lives in the outer ``Parameters.brief``
+    block built by ``Orchestrator._build_agent_prompt``. The capabilities
+    block must NOT restate it — that was the bug we fixed (worker AND manager
+    spawns both rendered the brief twice).
+    """
     prompt = build_capabilities_prompt(
-        brief="Add Alipay support for international cards",
         agents=[],
         step_number=1,
         max_steps=10,
     )
-    assert "Add Alipay support for international cards" in prompt
+    assert "Add Alipay support for international cards" not in prompt
+    # Structural assertion: no top-level "# Task" header re-emitting the brief.
+    assert "# Task" not in prompt
+    # The manager must still be told what to do (just without restating the brief).
+    assert "brief above" in prompt.lower() or "the brief" in prompt.lower()
 
 
-def test_prompt_includes_agent_tiers():
+def test_prompt_lists_available_agents_without_tier_column():
+    """The performance-tier feature was removed. The Available Agents table
+    must still list every candidate worker, but no `tier` column should
+    appear in the table header or the rows.
+    """
     agents = [
-        {"name": "dev_agent", "description": "Implements features", "tier": "yellow"},
-        {"name": "product_manager", "description": "Writes specs", "tier": "green"},
+        {"name": "dev_agent", "description": "Implements features"},
+        {"name": "product_manager", "description": "Writes specs"},
     ]
     prompt = build_capabilities_prompt(
-        brief="Fix bug",
         agents=agents,
         step_number=1,
         max_steps=10,
     )
+    # Names + descriptions render
     assert "dev_agent" in prompt
-    assert "yellow" in prompt
+    assert "Implements features" in prompt
     assert "product_manager" in prompt
-    assert "green" in prompt
+    assert "Writes specs" in prompt
+    # No tier column / no tier values in the prompt
+    assert "Tier" not in prompt
+    assert "yellow" not in prompt
+    assert "green" not in prompt
 
 
 def test_prompt_includes_step_number():
     prompt = build_capabilities_prompt(
-        brief="Explore",
         agents=[],
         step_number=3,
         max_steps=10,
@@ -53,7 +68,6 @@ def test_prompt_includes_prior_steps():
         ),
     ]
     prompt = build_capabilities_prompt(
-        brief="Add feature",
         agents=[],
         step_number=2,
         max_steps=10,
@@ -65,7 +79,6 @@ def test_prompt_includes_prior_steps():
 
 def test_prompt_no_prior_steps():
     prompt = build_capabilities_prompt(
-        brief="Explore",
         agents=[],
         step_number=1,
         max_steps=10,
@@ -75,7 +88,6 @@ def test_prompt_no_prior_steps():
 
 def test_prompt_includes_available_actions():
     prompt = build_capabilities_prompt(
-        brief="Do something",
         agents=[],
         step_number=1,
         max_steps=10,
@@ -95,7 +107,6 @@ def test_prompt_includes_constraints():
       - point the manager at the founder for out-of-scope work.
     """
     prompt = build_capabilities_prompt(
-        brief="Do something",
         agents=[],
         step_number=3,
         max_steps=10,
@@ -121,7 +132,6 @@ def test_prompt_frames_json_as_mandatory():
     — it asked for JSON in one sentence, buried among other content.
     """
     prompt = build_capabilities_prompt(
-        brief="Do something",
         agents=[],
         step_number=1,
         max_steps=10,
@@ -137,7 +147,6 @@ def test_prompt_shows_wrong_example():
     """The prompt must show a concrete 'WRONG' example of prose so EH sees
     exactly the failure mode to avoid, not just the right answer."""
     prompt = build_capabilities_prompt(
-        brief="Do something",
         agents=[],
         step_number=1,
         max_steps=10,
@@ -152,7 +161,6 @@ def test_prompt_warns_that_prose_escalates():
     the task escalates to the founder. Consequence-framing is stronger than
     "please write JSON"."""
     prompt = build_capabilities_prompt(
-        brief="Do something",
         agents=[],
         step_number=1,
         max_steps=10,

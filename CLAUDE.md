@@ -1,7 +1,7 @@
 # Project: Grassland — Multi-Agent Org Runtime
 
 ## What This Is
-Grassland is an **org-agnostic runtime** for operating a multi-agent organization supervised by a single human founder. The repo provides the system kernel (orchestrator, daemon + CLI, audit, scoring, KB, talk, revisit, escalation primitives); the *organization* it runs — charter, teams, agents, escalation rules, jurisdictions, budget authority — is loaded per-runtime from `<runtime>/orgs/<slug>/org/`.
+Grassland is an **org-agnostic runtime** for operating a multi-agent organization supervised by a single human founder. The repo provides the system kernel (orchestrator, daemon + CLI, audit, KB, talk, revisit, escalation primitives); the *organization* it runs — charter, teams, agents, escalation rules, jurisdictions, budget authority — is loaded per-runtime from `<runtime>/orgs/<slug>/org/`.
 
 A canonical sample org shipped at `examples/orgs/hk-macau-tourism/` runs a one-person tourism company serving foreign visitors to Hong Kong SAR and Macau SAR. Treat it as the reference shape when bootstrapping a new org; nothing about its specific teams, agents, or constraints is baked into the system.
 
@@ -9,7 +9,7 @@ A canonical sample org shipped at `examples/orgs/hk-macau-tourism/` runs a one-p
 - **Layer 1**: Founder (human) — sets org rules, handles escalations, reviews weekly dashboard
 - **Layer 2**: Manager agents — defined per-org in `<runtime>/orgs/<slug>/org/agents/<name>.md` with `role: manager`. Each manager owns one team listed in `teams.yaml`.
 - **Layer 3**: Worker agents — same file shape, `role: worker`. Workers are assigned to a team via `teams.yaml`.
-- **Infrastructure (org-agnostic, lives in this repo)**: orchestrator, FastAPI daemon + `grassland` CLI, audit logger, performance scoring, knowledge base, talk store, revisit primitive, escalation routing.
+- **Infrastructure (org-agnostic, lives in this repo)**: orchestrator, FastAPI daemon + `grassland` CLI, audit logger, knowledge base, talk store, revisit primitive, escalation routing.
 
 Agents operate autonomously within authority defined by their org. The system enforces structural patterns regardless of org: managers cross-audit each other (peer review), and no agent both proposes and approves consequential actions (maker-checker pattern). Org-specific authority (e.g., budget thresholds, refund limits) lives in `escalation-rules.md` and the agents' system prompts.
 
@@ -22,7 +22,7 @@ In the `protocol/` folder:
 - `00-completion-contract.md` — Universal completion-report format, manager decision schema, agent-callback list
 - `05-runtime-blueprint.md` — Index pointing to:
   - `05b-agent-runtime.md` — Executor model, memory architecture, lifecycle & scheduling
-  - `05c-orchestrator.md` — Orchestrator responsibilities, performance tiers, permissions, task state machine
+  - `05c-orchestrator.md` — Orchestrator responsibilities, permissions, task state machine
   - `05e-dashboard.md` — Dashboard layout, API endpoints, implementation order
 - `06-knowledge-base.md` — Shared KB rules
 
@@ -36,9 +36,9 @@ In the `protocol/` folder:
 - **CLI**: Thin HTTP client (`src/client/`) that talks to the daemon over localhost
 - **Web UI**: Localhost SPA bundled into the daemon (`web/` → built to `web/dist/` → served at `/`). React 18 + TypeScript strict + Tailwind 3 + TanStack Query v5 + React Router v6. Auth via the same bearer token at `~/.grassland/daemon.token`, fetched once via `GET /api/v1/auth/bootstrap` (localhost-gated). Spec: `docs/superpowers/specs/2026-05-14-web-ui-design.md`. Launch with `grassland web`.
 - **Agent workflow**: Shared workspace skills (`protocol/skills/`) — `start-task`, `make-worktree`, `manage-repo`, `manage-agent`. The orchestrator prompt references the same SOPs across all executors.
-- **Orchestrator**: Custom Python application. `run_step` is the only primitive — each invocation advances one task by one subprocess call; an async `TaskQueue` + worker pool (`src/daemon/queue.py`) drives re-enqueues across steps. The team manager drives decisions; performance scoring derives from implicit review verdicts on delegated work.
+- **Orchestrator**: Custom Python application. `run_step` is the only primitive — each invocation advances one task by one subprocess call; an async `TaskQueue` + worker pool (`src/daemon/queue.py`) drives re-enqueues across steps. The team manager drives decisions. Implicit `review_verdict` audit rows are written when a delegation terminates (approved / rejected) — the founder reviews those via `grassland audit` to identify which agents need attention.
 - **Data models**: Pydantic v2 + pydantic-settings
-- **Database**: SQLite with WAL mode, per-org under `<runtime>/orgs/<slug>/grassland.db`. Schema covers audit logs, scorecards, task state, plus per-feature tables (token usage, Feishu correlation, threads) documented in the corresponding specs under `docs/superpowers/specs/`.
+- **Database**: SQLite with WAL mode, per-org under `<runtime>/orgs/<slug>/grassland.db`. Schema covers audit logs and task state, plus per-feature tables (token usage, Feishu correlation, threads) documented in the corresponding specs under `docs/superpowers/specs/`.
 - **Feishu integration**: `lark-oapi>=1.6,<2` (official ByteDance SDK) — outbound `im.v1.message.create` via `src/infrastructure/feishu/`; inbound WS subscription to `im.message.receive_v1` via `src/daemon/feishu_listener.py`.
 - **Knowledge base**: File-backed markdown under `<runtime>/orgs/<slug>/kb/` with atomic writes, substring/tag search, `_index.md` regeneration. No vector store yet.
 - **LLM**: Provider depends on the selected executor
@@ -54,7 +54,7 @@ System kernel milestones — org-agnostic infrastructure. Org content (agent ros
 2. Audit logging — SQLite-backed semantic events; `session_end` payloads carry full `token_usage` dict.
 3. Manager-driven orchestration — `GRASSLAND_MAX_ORCHESTRATION_STEPS` (default 50) before escalation.
 4. Agent memory — persistent workspaces, per-entry `learnings/LRN-NNN-<slug>.md`, `task_history.md`. Spec: `2026-05-13-per-agent-learnings-structural-upgrade-design.md`.
-5. Performance scoring — 30-day rolling, green/yellow/red tiers.
+5. ~~Performance scoring — 30-day rolling, green/yellow/red tiers.~~ Removed 2026-05-27. The audit log (review verdicts + completion/failure events) is sufficient for the founder to identify which agents need attention; tier classification on top added no enforcement and was misleading. Reviewed via `grassland audit`.
 6. Talk flow — founder↔agent conversations with transcripts and end-of-talk learnings.
 7. Knowledge Base — per-org KB with freeform `type`; founder rulings via `grassland kb add`.
 8. Revisit primitive — spec: `2026-04-21-opc-revisit-design.md`.
@@ -69,7 +69,7 @@ System kernel milestones — org-agnostic infrastructure. Org content (agent ros
 
 **Open:**
 
-17. **Founder dashboard** — aggregate audit logs, escalation summaries, scorecards into a weekly view. Design: `protocol/05e-dashboard.md`.
+17. **Founder dashboard** — aggregate audit logs and escalation summaries into a weekly view. Design: `protocol/05e-dashboard.md`.
 18. **Persistent agents** — long-running loops for runtime patterns that don't fit single-task batch execution (e.g., real-time customer-chat worker). Currently every agent session is one task → one subprocess.
 
 ## Directory Layout
@@ -120,8 +120,6 @@ Operational settings use the `GRASSLAND_` env prefix. Runtime paths are derived 
 | `GRASSLAND_PROTOCOL_DIR` | `protocol` | Protocol docs dirname (relative to project root) |
 | `GRASSLAND_MAX_ORCHESTRATION_STEPS` | `50` | Max manager decision steps before escalation |
 | `GRASSLAND_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout — global default; see resolution below |
-| `GRASSLAND_TIER_GREEN_THRESHOLD` | `0.90` | Acceptance rate for green tier |
-| `GRASSLAND_TIER_YELLOW_THRESHOLD` | `0.75` | Acceptance rate for yellow tier |
 | `GRASSLAND_ORG_SLUG` | _(unset)_ | Default org slug for per-org CLI commands. Resolution: explicit `--org` flag > `GRASSLAND_ORG_SLUG` env > auto-infer (only if exactly one org exists) > error |
 
 ### Session timeout resolution
@@ -179,7 +177,7 @@ Both surfaces are generated from `allow_rules_for_agent(agent_name, cli=...)` in
 - Type hints on all function signatures
 - `from __future__ import annotations` in all source files
 - Pydantic v2 models for structured data, StrEnum for enumerations (agent names are plain strings — agents are discovered dynamically from `<runtime>/orgs/<slug>/org/agents/*.md`)
-- Tests for business logic (escalation rules, scoring, tier calculation)
+- Tests for business logic (escalation rules, audit-log shape)
 
 ## Org content APIs
 
@@ -274,7 +272,7 @@ Slug resolution for per-org commands: explicit `--org <slug>` > `GRASSLAND_ORG_S
 
 **Full founder-facing CLI** — tasks, agents, KB, threads, talks, audit, assets, runtime, migrations — is documented in `skills/grassland/SKILL.md` (symlinked at `~/.claude/skills/grassland`).
 
-**Agent-side callbacks** (invoked by skills inside agent sessions; do NOT invoke by hand — they falsify audit data and corrupt scorecards):
+**Agent-side callbacks** (invoked by skills inside agent sessions; do NOT invoke by hand — they falsify audit data):
 
 - `grassland report-completion` — terminal callback from the `start-task` skill
 - `grassland progress` — long-running mid-task heartbeat

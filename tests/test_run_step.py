@@ -779,7 +779,7 @@ def test_run_step_worker_completion_is_done_not_parsed_as_eh_decision(
     assert q.get_nowait() == ("test", "T-PAR")
 
 
-def test_run_step_delegated_worker_emits_review_verdict_and_scorecard(
+def test_run_step_delegated_worker_emits_review_verdict(
     runtime, db, monkeypatch,
 ):
     """P1 regression: tiers are computed from review_verdict audit rows. When
@@ -827,8 +827,6 @@ def test_run_step_delegated_worker_emits_review_verdict_and_scorecard(
     assert len(bad_verdicts) == 1
     assert bad_verdicts[0]["payload"]["verdict"] == "rejected"
     assert bad_verdicts[0]["payload"]["reviewed_agent"] == "dev_agent"
-    # Scorecard persisted for the delegated worker.
-    assert db.get_scorecard("dev_agent") is not None
 
 
 def test_run_step_root_eh_task_skips_review_verdict(runtime, db, monkeypatch):

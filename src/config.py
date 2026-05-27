@@ -36,10 +36,6 @@ class Settings(BaseSettings):
     # Orchestration loop
     max_orchestration_steps: int = 50
 
-    # Performance tier thresholds
-    tier_green_threshold: float = 0.90
-    tier_yellow_threshold: float = 0.75
-
     # Daemon
     daemon_bind_host: str = "127.0.0.1"
 

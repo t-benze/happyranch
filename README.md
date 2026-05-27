@@ -6,7 +6,7 @@ A canonical sample org shipped at `examples/orgs/hk-macau-tourism/` runs a one-p
 
 ## How It Works
 
-Grassland runs as a local **HTTP daemon** that dispatches tasks to AI agents running as coding-agent CLI sessions. The `grassland` CLI is a thin client that talks to the daemon. Each agent has a persistent workspace, a performance scorecard, and a defined role within its org. Executor selection is per-agent: agents may run on [Claude Code](https://docs.anthropic.com/en/docs/claude-code), Codex, or opencode.
+Grassland runs as a local **HTTP daemon** that dispatches tasks to AI agents running as coding-agent CLI sessions. The `grassland` CLI is a thin client that talks to the daemon. Each agent has a persistent workspace and a defined role within its org. Executor selection is per-agent: agents may run on [Claude Code](https://docs.anthropic.com/en/docs/claude-code), Codex, or opencode.
 
 A single runtime container hosts **multiple orgs** under `<runtime>/orgs/<slug>/`, each with its own DB, workspaces, KB, and talks. One daemon serves them all concurrently.
 
@@ -68,9 +68,8 @@ grassland tail TASK-001
 # Check task details (status, block_kind, note, results, audit log)
 grassland details TASK-001
 
-# List recent tasks and view performance tiers
+# List recent tasks
 grassland tasks
-grassland agents
 ```
 
 ## Multi-org operation
@@ -143,7 +142,6 @@ Every per-org command takes `--org <slug>`; container-level commands do not.
 | `grassland tail --org <slug> TASK-ID` | Stream live events for a running (or historical) task |
 | `grassland details --org <slug> TASK-ID [--full]` | Task details. `--full` skips per-step truncation. |
 | `grassland tasks --org <slug> [--limit N]` | List recent tasks (default: 20) |
-| `grassland agents --org <slug> [name] [--detail]` | Show agent performance tiers |
 | `grassland init-agent --org <slug> [name]` | Initialize agent workspaces (all or one) |
 | `grassland audit --org <slug> TASK-ID [--json]` | View audit log (or filter by `--agent`, `--action`, `--since`, `--limit`) |
 | `grassland tokens --org <slug> [--task-id X --agent Y --since DATE --limit N]` | Per-session token usage; `--by-agent` / `--by-task` for rollups |
@@ -377,8 +375,6 @@ Operational settings use the `GRASSLAND_` env prefix. Runtime paths are derived 
 | `GRASSLAND_PERMISSION_MODE` | `auto` | Claude Code permission mode |
 | `GRASSLAND_MAX_ORCHESTRATION_STEPS` | `50` | Max manager decision steps before escalation |
 | `GRASSLAND_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout (30 min) — global default; see overrides below |
-| `GRASSLAND_TIER_GREEN_THRESHOLD` | `0.90` | Acceptance rate for green tier |
-| `GRASSLAND_TIER_YELLOW_THRESHOLD` | `0.75` | Acceptance rate for yellow tier |
 | `GRASSLAND_ORG_SLUG` | _(unset)_ | Default org slug for per-org CLI commands |
 
 ### Per-Agent Configuration
@@ -509,18 +505,6 @@ The bot replies with a confirmation card containing the new task ID and an `gras
 
 **Security:** the configured `chat_id` is the trust boundary — anyone with write access to that chat can dispatch tasks and trigger revisits.
 
-## Performance Tiers
-
-Agents are scored on a rolling 30-day window based on the team manager's verdicts after delegation:
-
-| Tier | Acceptance Rate | Effect |
-|------|----------------|--------|
-| **Green** | >= 90% | Full capabilities; the manager trusts the agent |
-| **Yellow** | 75-89% | Reduced trust; the manager may add extra review |
-| **Red** | < 75% | Low trust; the manager may avoid delegating |
-
-Tier information is exposed to the manager in its capabilities prompt, so it influences delegation decisions naturally.
-
 ## Agent Workspaces
 
 Each agent runs in its own persistent workspace inside the org directory. After `grassland init-agent`, each workspace contains:
@@ -537,7 +521,7 @@ Each agent runs in its own persistent workspace inside the org directory. After 
 ## Roadmap
 
 - [ ] Inter-team communication and cross-team handoff
-- [ ] Founder dashboard (aggregated audit logs, scorecards, escalation summaries)
+- [ ] Founder dashboard (aggregated audit logs + escalation summaries)
 - [ ] Persistent agents (long-running loops for patterns that don't fit single-task batch execution, e.g., real-time customer chat)
 
 ## License

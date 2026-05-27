@@ -31,7 +31,6 @@ from src.orchestrator.executors import (
     OpencodeExecutor,
 )
 from src.orchestrator.org_config import load_org_config
-from src.orchestrator.performance_tracker import PerformanceTracker
 from src.orchestrator.teams import TeamsRegistry
 
 logger = logging.getLogger(__name__)
@@ -68,7 +67,6 @@ class Orchestrator:
         self._paths = paths
         self._slug = slug
         self._audit = AuditLogger(db)
-        self._tracker = PerformanceTracker(db, settings)
         self._teams = teams
         self._queue: "TaskQueue | None" = None  # wired by daemon
         self._sessions: "SessionTracker | None" = None  # wired by daemon
@@ -307,6 +305,14 @@ class Orchestrator:
             intro = (
                 f"You are {agent_name}. Use the start-task skill to handle this task.\n"
             )
+        # role_guidance is the per-task overlay (managers get the capabilities
+        # block; workers get nothing extra beyond the brief). Empty prompt =>
+        # omit the line entirely so workers don't see a dangling block scalar.
+        role_guidance_block = (
+            f"  role_guidance: |\n{_indent(prompt, '    ')}\n"
+            if prompt and prompt.strip()
+            else ""
+        )
         return (
             f"{intro}"
             f"\n"
@@ -314,8 +320,7 @@ class Orchestrator:
             f"  task_id: {task_id}\n"
             f"  session_id: {session_id}\n"
             f"  brief: {brief}\n"
-            f"  role_guidance: |\n"
-            f"{_indent(prompt, '    ')}\n"
+            f"{role_guidance_block}"
         )
 
     def _read_completion_from_db(
@@ -504,7 +509,11 @@ class Orchestrator:
         return result, report
 
     def _log_review_verdicts(self, task_id: str, prior_steps: list[StepRecord]) -> None:
-        """Log review verdicts for delegated agents so performance tiers stay current."""
+        """Log review verdicts for delegated agents into the audit log.
+
+        Verdicts are the canonical record of delegation outcomes — the
+        founder consults them to see which agents need attention.
+        """
         task = self._db.get_task(task_id)
         reviewer_team = task.team if task else "engineering"
         try:
@@ -522,7 +531,6 @@ class Orchestrator:
                 feedback=step.result_summary,
                 reviewed_agent=step.agent,
             )
-            self._tracker.update_scorecard(step.agent)
 
     _HISTORY_CAP = 50
     _HISTORY_HEADER = "# Task History"

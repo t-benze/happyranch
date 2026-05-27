@@ -11,7 +11,6 @@ def test_init_creates_tables(db):
     tables = db.list_tables()
     assert "tasks" in tables
     assert "audit_log" in tables
-    assert "scorecards" in tables
     assert "task_results" in tables
 
 
@@ -99,46 +98,6 @@ def test_insert_task_result(db):
     assert len(results) == 1
     assert results[0]["confidence_score"] == 85
     assert results[0]["duration_seconds"] == 120
-
-
-def test_insert_and_get_scorecard(db):
-    db.upsert_scorecard(
-        agent="dev_agent",
-        period_start="2026-03-13T00:00:00Z",
-        period_end="2026-04-13T00:00:00Z",
-        acceptance_rate=0.92,
-        revision_rate=0.08,
-        error_count=1,
-        tier="green",
-    )
-    scorecard = db.get_scorecard("dev_agent")
-    assert scorecard is not None
-    assert scorecard["acceptance_rate"] == 0.92
-    assert scorecard["tier"] == "green"
-
-
-def test_upsert_scorecard_updates_existing(db):
-    db.upsert_scorecard(
-        agent="dev_agent",
-        period_start="2026-03-13T00:00:00Z",
-        period_end="2026-04-13T00:00:00Z",
-        acceptance_rate=0.92,
-        revision_rate=0.08,
-        error_count=1,
-        tier="green",
-    )
-    db.upsert_scorecard(
-        agent="dev_agent",
-        period_start="2026-03-13T00:00:00Z",
-        period_end="2026-04-13T00:00:00Z",
-        acceptance_rate=0.70,
-        revision_rate=0.30,
-        error_count=5,
-        tier="yellow",
-    )
-    scorecard = db.get_scorecard("dev_agent")
-    assert scorecard["acceptance_rate"] == 0.70
-    assert scorecard["tier"] == "yellow"
 
 
 def test_next_task_id(db):

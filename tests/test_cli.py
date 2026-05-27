@@ -37,19 +37,6 @@ def test_tasks_with_limit():
     assert args.limit == 5
 
 
-def test_agents_subcommand():
-    parser = build_parser()
-    args = parser.parse_args(["agents"])
-    assert args.command == "agents"
-    assert args.detail is False
-
-
-def test_agents_detail():
-    parser = build_parser()
-    args = parser.parse_args(["agents", "--detail"])
-    assert args.detail is True
-
-
 def test_init_agent_subcommand():
     parser = build_parser()
     args = parser.parse_args(["init-agent"])

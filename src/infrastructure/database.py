@@ -222,18 +222,6 @@ class Database:
                 timestamp TEXT NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS scorecards (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                agent TEXT NOT NULL UNIQUE,
-                period_start TEXT NOT NULL,
-                period_end TEXT NOT NULL,
-                acceptance_rate REAL NOT NULL,
-                revision_rate REAL NOT NULL,
-                error_count INTEGER NOT NULL,
-                tier TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-
             CREATE TABLE IF NOT EXISTS task_results (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 task_id TEXT NOT NULL,
@@ -1400,38 +1388,6 @@ class Database:
         sql += " GROUP BY task_id ORDER BY task_id"
         rows = self._conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
-
-    # --- Scorecards ---
-
-    @_synchronized
-    def upsert_scorecard(
-        self,
-        agent: str,
-        period_start: str,
-        period_end: str,
-        acceptance_rate: float,
-        revision_rate: float,
-        error_count: int,
-        tier: str,
-    ) -> None:
-        now = datetime.now(timezone.utc).isoformat()
-        self._conn.execute(
-            """INSERT INTO scorecards (agent, period_start, period_end, acceptance_rate,
-               revision_rate, error_count, tier, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(agent) DO UPDATE SET
-               period_start=excluded.period_start, period_end=excluded.period_end,
-               acceptance_rate=excluded.acceptance_rate, revision_rate=excluded.revision_rate,
-               error_count=excluded.error_count, tier=excluded.tier, updated_at=excluded.updated_at""",
-            (agent, period_start, period_end, acceptance_rate, revision_rate, error_count, tier, now),
-        )
-        self._conn.commit()
-
-    @_synchronized
-    def get_scorecard(self, agent: str) -> dict | None:
-        cursor = self._conn.execute("SELECT * FROM scorecards WHERE agent = ?", (agent,))
-        row = cursor.fetchone()
-        return dict(row) if row else None
 
     # --- Agent Enrollments ---
 

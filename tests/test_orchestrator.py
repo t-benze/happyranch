@@ -103,6 +103,43 @@ def test_task_metadata_in_agent_prompt(orchestrator, test_runtime, monkeypatch):
         assert "brief: Explore payments" in prompt
         assert "session_id:" in prompt
         assert "role_guidance:" in prompt
+        # Regression guard: the brief must appear exactly once. Before the
+        # role_guidance / capabilities cleanup the brief was rendered both in
+        # ``Parameters.brief`` and at the top of the capabilities block
+        # (``# Task\n<brief>``), doubling the brief on every manager spawn.
+        assert prompt.count("Explore payments") == 1
+
+
+def test_worker_prompt_omits_role_guidance_block(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """Worker spawns receive only ``Parameters.brief`` — no ``role_guidance:``
+    line. Before the cleanup, ``run_step._build_agent_prompt`` returned
+    ``task.brief`` for workers, which the outer wrapper then re-rendered
+    under ``role_guidance: |``, duplicating the brief in every worker spawn.
+    """
+    _setup_workspaces(test_runtime)
+    task_id = orchestrator.create_task("Implement Alipay webhook")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-dev")
+
+    with patch("src.orchestrator.orchestrator.ClaudeExecutor") as MockExecutor:
+        mock_executor = MockExecutor.return_value
+        mock_executor.run.return_value = ExecutorResult(
+            success=True,
+            duration_seconds=30,
+            session_id="sess-dev",
+        )
+
+        # Worker case: inner run_step._build_agent_prompt returns "" for
+        # non-managers; _run_agent's outer wrapper must omit the line.
+        orchestrator._run_agent(task_id, "dev_agent", "")
+
+        prompt = mock_executor.run.call_args.kwargs["prompt"]
+        assert "brief: Implement Alipay webhook" in prompt
+        assert prompt.count("Implement Alipay webhook") == 1
+        assert "role_guidance:" not in prompt
+        # No dangling block-scalar marker should be left behind.
+        assert "  |\n" not in prompt
 
 
 def test_codex_agent_prompt_uses_provider_specific_wording(

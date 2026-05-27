@@ -197,6 +197,99 @@ def _non_stop_command_warning_section() -> list[str]:
     ]
 
 
+# H2 headers that the system emits into every assembled bootstrap doc.
+# An agent's ``.md`` body must NOT use any of these as a section header,
+# because the assembled prompt would then carry two sections with the
+# same heading (the agent body's section above the agent-body cutline, and
+# the system-injected section below). Confusing for the agent, and a
+# maintenance hazard: each agent file becomes a place where system content
+# can quietly drift.
+#
+# Keep this set synchronized with the ``## <Header>`` lines emitted by
+# ``_build_sections`` and the ``_*_section`` helpers above.
+_RESERVED_AGENT_BODY_HEADERS: frozenset[str] = frozenset({
+    "Available Repositories",
+    "Persistent Files",
+    "Your Learnings",
+    "Knowledge Base (shared across agents)",
+    "Shared Assets (org-wide)",
+    "Long-running and non-stop commands",
+    "Task Completion Format",
+    "Task Recall",
+    "Workflow",
+})
+
+
+class ReservedHeaderInAgentBody(ValueError):
+    """Raised when an agent's ``.md`` body uses a reserved H2 header that
+    collides with a system-injected section in the assembled bootstrap doc.
+    """
+
+
+def _assert_no_reserved_headers_in_body(agent_name: str, body: str) -> None:
+    """Block the bootstrap-doc write if the agent body collides with a
+    system-injected H2 header.
+
+    Boundary contract: the agent ``.md`` file owns who-the-agent-is content
+    (role, authority, escalation, accountability). The system owns
+    how-to-interact-with-the-orchestrator content (the headers in
+    ``_RESERVED_AGENT_BODY_HEADERS`` above). If an agent file authors one of
+    the reserved headers, the assembled CLAUDE.md / AGENTS.md will carry
+    two sections with the same name and the system's section becomes
+    duplicated, contradicted, or drifted.
+
+    Surfaced at write time so the founder sees the violation BEFORE a
+    session spawns against a broken assembled doc. Only the offending
+    agent's workspace setup fails; the rest of the org keeps running.
+    """
+    offenders: list[str] = []
+    for line in body.splitlines():
+        if line.startswith("## "):
+            heading = line[3:].strip()
+            if heading in _RESERVED_AGENT_BODY_HEADERS:
+                offenders.append(heading)
+    if offenders:
+        offenders_list = ", ".join(repr(h) for h in offenders)
+        raise ReservedHeaderInAgentBody(
+            f"agent {agent_name!r}: the agent .md body uses H2 header(s) "
+            f"{offenders_list}, which the system also emits into the "
+            f"assembled bootstrap doc. Rename or remove these headers in "
+            f"the agent file. Reserved headers are owned by the system "
+            f"(see _RESERVED_AGENT_BODY_HEADERS in workspace_adapters.py)."
+        )
+
+
+def _task_completion_format_section() -> list[str]:
+    """System-injected reminder of the completion contract.
+
+    Replaces the per-agent ``## Task Completion Format`` stubs that lived in
+    agent ``.md`` files. The canonical JSON payload shape — including the
+    manager-only ``decision`` block — lives in the ``start-task`` skill's
+    *Report completion* step (``skills/start-task/SKILL.md``) and the
+    universal spec (``protocol/00-completion-contract.md``). This section
+    keeps every agent pointed at them and lists the prose-``summary`` items
+    that apply regardless of role, so individual agent files don't have to
+    restate (and slowly drift from) the contract.
+    """
+    return [
+        "## Task Completion Format\n",
+        "Every task ends with a `grassland report-completion --from-file <path>`",
+        "callback driven by the **start-task** skill. The skill's *Report",
+        "completion* step carries the canonical JSON payload shape — fields,",
+        "the manager-only `decision` block, and the blocked-path variant.",
+        "Do **not** restate it here; consult the skill.\n",
+        "In the prose `summary` field, include:",
+        "- What was done — or, for a blocker, what is in the way.",
+        "- Findings, risks, or concerns the founder or a downstream reviewer",
+        "  should know about.",
+        "- Items that need founder decision (call them out explicitly).",
+        "- Follow-up work the next task should pick up.\n",
+        "Role-specific items your output should mention (artifact paths, PR",
+        "numbers, verdicts, tokens added, etc.) come from your role — name",
+        "them concretely; do not leave the reader to infer.\n",
+    ]
+
+
 def _format_allow_rule(prefix: str, *, cli: bool) -> str:
     """Render a Bash prefix in one of the two equivalent permission syntaxes.
 
@@ -374,6 +467,7 @@ class ClaudeWorkspaceAdapter:
         inline — CLAUDE.md just points at ``agent.yaml`` as the source of
         truth so the repo list doesn't drift between the two files.
         """
+        _assert_no_reserved_headers_in_body(agent_name, system_prompt)
         workspace.mkdir(parents=True, exist_ok=True)
         sections = self._build_sections(
             agent_name,
@@ -443,6 +537,7 @@ class ClaudeWorkspaceAdapter:
             callback_note + "\n",
             *_shared_assets_section(),
             *_non_stop_command_warning_section(),
+            *_task_completion_format_section(),
             "## Task Recall\n",
             "Past task context (brief, completion summary, artifacts) is retrievable via:",
             "```",
@@ -512,6 +607,7 @@ class CodexWorkspaceAdapter:
         only points at the **start-task** skill — it does not re-inline the
         completion contract. The skill itself is the source of truth.
         """
+        _assert_no_reserved_headers_in_body(agent_name, system_prompt)
         workspace.mkdir(parents=True, exist_ok=True)
         # Shared bootstrap sections (KB, learnings, assets) are assembled in
         # Claude's _build_sections and flow through here unchanged.

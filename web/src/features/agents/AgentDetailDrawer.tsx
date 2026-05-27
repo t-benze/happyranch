@@ -3,14 +3,14 @@
  * from the right (480px) over the active tab.
  *
  * Sections:
- *   1. Header — AgentChip, TierBadge, role + team metadata.
+ *   1. Header — AgentChip, role + team metadata.
  *   2. Metadata — executor + description.
  *   3. Recent tasks — list of TaskCards filtered by `assigned_agent`.
  *   4. Learnings — read-only list (writes are agent-callback only).
  *
  * The learnings query may 412 ("workspace_not_migrated") on pre-migration
  * workspaces — we render an explanatory hint rather than a hard error so
- * the founder can still inspect tasks + scorecards for legacy agents.
+ * the founder can still inspect tasks for legacy agents.
  */
 import { useNavigate, useParams } from 'react-router-dom';
 import { Link } from 'react-router-dom';
@@ -21,7 +21,6 @@ import {
   DrawerTitle,
 } from '@/design-system/primitives/Drawer';
 import { AgentChip } from '@/design-system/patterns/AgentChip';
-import { TierBadge } from '@/design-system/patterns/TierBadge';
 import { TaskCard } from '@/design-system/patterns/TaskCard';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { ApiError } from '@/lib/api';
@@ -65,7 +64,6 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
         <header className="border-border-subtle border-b p-4">
           <DrawerTitle className="text-fg flex items-center gap-3 text-lg">
             <AgentChip name={agentName} role={agent?.role ?? 'worker'} />
-            {agent && <TierBadge tier={agent.tier} />}
           </DrawerTitle>
           <DrawerDescription className="text-fg-muted mt-2 text-xs">
             {agent ? (

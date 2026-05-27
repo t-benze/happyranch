@@ -41,7 +41,6 @@ import { MessageBubble } from '@/design-system/patterns/MessageBubble';
 import { PageHeader } from '@/design-system/patterns/PageHeader';
 import { StatusBadge } from '@/design-system/patterns/StatusBadge';
 import { ThreadHeader } from '@/design-system/patterns/ThreadHeader';
-import { TierBadge } from '@/design-system/patterns/TierBadge';
 import registry from '@/design-system/registry.json';
 
 export const DESIGN_ROUTE_DISABLED =
@@ -79,7 +78,6 @@ const componentMap: Record<string, ReactNode> = {
   IdBadge: <IdBadge id="THR-042" kind="thread" />,
   KbdChip: <KbdChip keys={['Ctrl', 'Enter']} />,
   StatusBadge: <StatusBadge status="open" />,
-  TierBadge: <TierBadge tier="green" />,
   EmptyState: (
     <div className="border-border-default h-40 w-full max-w-md border">
       <EmptyState
