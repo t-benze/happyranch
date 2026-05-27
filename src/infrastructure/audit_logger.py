@@ -401,7 +401,7 @@ class AuditLogger:
             task_id=name,  # asset name overloads task_id (NOT NULL) — same pattern as talks/scripts
             agent=agent,
             action="asset_put",
-            payload={"name": name, "size_bytes": size_bytes, "agent": agent},
+            payload={"name": name, "size_bytes": size_bytes},
         )
 
     def log_talk_started(

@@ -465,4 +465,4 @@ def test_log_asset_put_writes_event(db) -> None:
     assert row["task_id"] == "report.pdf"  # name overloaded into task_id column
     assert row["agent"] == "dev_agent"
     assert row["action"] == "asset_put"
-    assert row["payload"] == {"name": "report.pdf", "size_bytes": 11, "agent": "dev_agent"}
+    assert row["payload"] == {"name": "report.pdf", "size_bytes": 11}
