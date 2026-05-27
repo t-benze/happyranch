@@ -363,6 +363,18 @@ async def reject_job(slug: str, job_id: str, body: RejectBody, org: OrgDep) -> d
 _VALID_STATUSES = {"pending", "rejected", "running", "completed", "failed"}
 
 
+def _parse_bool_filter(name: str, value: str | None) -> bool | None:
+    """Parse a "true"/"false" query filter; raise 422 on anything else."""
+    if value is None:
+        return None
+    if value not in ("true", "false"):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": f"invalid_{name}", "got": value},
+        )
+    return value == "true"
+
+
 @router.get("/jobs/")
 async def list_jobs(
     slug: str,
@@ -370,6 +382,8 @@ async def list_jobs(
     status: str | None = "pending",
     agent: str | None = None,
     task_id: str | None = None,
+    review_required: str | None = None,
+    persistent: str | None = None,
     limit: int = 50,
 ) -> dict:
     if limit <= 0 or limit > 200:
@@ -381,8 +395,15 @@ async def list_jobs(
         for s in status_filter:
             if s not in _VALID_STATUSES:
                 raise HTTPException(status_code=422, detail={"code": "invalid_status", "got": s})
+    review_required_b = _parse_bool_filter("review_required", review_required)
+    persistent_b = _parse_bool_filter("persistent", persistent)
     rows = org.db.list_jobs_db(
-        status=status_filter, agent=agent, task_id=task_id, limit=limit,
+        status=status_filter,
+        agent=agent,
+        task_id=task_id,
+        review_required=review_required_b,
+        persistent=persistent_b,
+        limit=limit,
     )
     return {"jobs": [r.model_dump() for r in rows]}
 

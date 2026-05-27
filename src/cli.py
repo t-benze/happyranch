@@ -1133,6 +1133,10 @@ def cmd_jobs_list(args: argparse.Namespace) -> None:
         params["agent"] = args.agent
     if args.task:
         params["task_id"] = args.task
+    if getattr(args, "review_required", None) is not None:
+        params["review_required"] = args.review_required
+    if getattr(args, "persistent", None) is not None:
+        params["persistent"] = args.persistent
     r = client.get(f"/api/v1/orgs/{slug}/jobs/", params=params)
     if not _ok(r):
         return
@@ -1340,6 +1344,76 @@ def cmd_jobs_run(args: argparse.Namespace) -> None:
     if terminal_status == "completed":
         sys.exit(0 if (terminal_exit or 0) == 0 else 1)
     sys.exit(2)
+
+
+def cmd_jobs_tail(args: argparse.Namespace) -> None:
+    """Print the tail of stdout/stderr for a job.
+
+    Founder path: uses the bearer token already attached by ``OpcClient``.
+    Agent path: pass ``--task-id`` + ``--session-id`` so the daemon's
+    dual-auth dependency lets the agent read its own job.
+    """
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    slug = resolve_org_slug(args_org=args.org, available=_fetch_available_orgs(client))
+    params: dict = {"stream": args.stream, "lines": args.lines}
+    if args.task_id and args.session_id:
+        params["task_id"] = args.task_id
+        params["session_id"] = args.session_id
+    r = client.get(f"/api/v1/orgs/{slug}/jobs/{args.job_id}/tail", params=params)
+    if not _ok(r):
+        return
+    body = r.json()
+    for line in body["lines"]:
+        print(line)
+
+
+def cmd_jobs_wait(args: argparse.Namespace) -> None:
+    """Block until the job terminates or the timeout expires.
+
+    Prints a one-line JSON object with ``status`` and ``timed_out``.
+    Same dual-auth shape as ``tail``.
+    """
+    import json as _json
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    slug = resolve_org_slug(args_org=args.org, available=_fetch_available_orgs(client))
+    params: dict = {"timeout_seconds": args.timeout_seconds}
+    if args.task_id and args.session_id:
+        params["task_id"] = args.task_id
+        params["session_id"] = args.session_id
+    r = client.post(f"/api/v1/orgs/{slug}/jobs/{args.job_id}/wait", params=params)
+    if not _ok(r):
+        return
+    body = r.json()
+    print(_json.dumps({"status": body.get("status"), "timed_out": body.get("timed_out", False)}))
+
+
+def cmd_jobs_stop(args: argparse.Namespace) -> None:
+    """Stop a running job (SIGTERM via the daemon).
+
+    Founder path: bearer token. Agent path: ``--task-id`` + ``--session-id``.
+    """
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    slug = resolve_org_slug(args_org=args.org, available=_fetch_available_orgs(client))
+    params: dict = {}
+    if args.task_id and args.session_id:
+        params["task_id"] = args.task_id
+        params["session_id"] = args.session_id
+    r = client.post(f"/api/v1/orgs/{slug}/jobs/{args.job_id}/stop", params=params)
+    if not _ok(r):
+        return
+    print(f"ok: stopped {args.job_id}")
 
 
 def cmd_enrollments(args: argparse.Namespace) -> None:
@@ -2414,6 +2488,19 @@ def _register_jobs_verbs(
     )
     p_list.add_argument("--agent")
     p_list.add_argument("--task")
+    p_list.add_argument(
+        "--review-required",
+        dest="review_required",
+        choices=("true", "false"),
+        default=None,
+        help="filter by review_required flag",
+    )
+    p_list.add_argument(
+        "--persistent",
+        choices=("true", "false"),
+        default=None,
+        help="filter by persistent flag",
+    )
     p_list.add_argument("--limit", type=int, default=50)
     p_list.add_argument("--org")
     p_list.set_defaults(func=wrap(cmd_jobs_list))
@@ -2446,6 +2533,40 @@ def _register_jobs_verbs(
     p_run.add_argument("--timeout-seconds", type=int, dest="timeout_seconds")
     p_run.add_argument("--org")
     p_run.set_defaults(func=wrap(cmd_jobs_run))
+
+    p_tail = parent.add_parser(
+        "tail", help="agent/founder: tail stdout/stderr of a job"
+    )
+    p_tail.add_argument("job_id")
+    p_tail.add_argument(
+        "--stream", choices=("stdout", "stderr"), default="stdout"
+    )
+    p_tail.add_argument("--lines", type=int, default=50)
+    p_tail.add_argument("--task-id", dest="task_id", default=None)
+    p_tail.add_argument("--session-id", dest="session_id", default=None)
+    p_tail.add_argument("--org")
+    p_tail.set_defaults(func=wrap(cmd_jobs_tail))
+
+    p_wait = parent.add_parser(
+        "wait", help="agent/founder: wait for a job to terminate"
+    )
+    p_wait.add_argument("job_id")
+    p_wait.add_argument(
+        "--timeout-seconds", type=int, dest="timeout_seconds", default=30
+    )
+    p_wait.add_argument("--task-id", dest="task_id", default=None)
+    p_wait.add_argument("--session-id", dest="session_id", default=None)
+    p_wait.add_argument("--org")
+    p_wait.set_defaults(func=wrap(cmd_jobs_wait))
+
+    p_stop = parent.add_parser(
+        "stop", help="founder/agent: stop a running job"
+    )
+    p_stop.add_argument("job_id")
+    p_stop.add_argument("--task-id", dest="task_id", default=None)
+    p_stop.add_argument("--session-id", dest="session_id", default=None)
+    p_stop.add_argument("--org")
+    p_stop.set_defaults(func=wrap(cmd_jobs_stop))
 
 
 def build_parser() -> argparse.ArgumentParser:

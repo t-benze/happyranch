@@ -1583,6 +1583,8 @@ class Database:
         status: str | list[str] | None = None,
         agent: str | None = None,
         task_id: str | None = None,
+        review_required: bool | None = None,
+        persistent: bool | None = None,
         limit: int = 50,
     ) -> list["JobRecord"]:
         clauses: list[str] = []
@@ -1598,6 +1600,12 @@ class Database:
         if task_id is not None:
             clauses.append("task_id = ?")
             params.append(task_id)
+        if review_required is not None:
+            clauses.append("review_required = ?")
+            params.append(1 if review_required else 0)
+        if persistent is not None:
+            clauses.append("persistent = ?")
+            params.append(1 if persistent else 0)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         params.append(int(limit))
         rows = self._conn.execute(

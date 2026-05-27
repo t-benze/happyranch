@@ -1142,3 +1142,100 @@ def test_wait_unknown_job(client_with_runtime):
     client, _org = client_with_runtime
     r = client.post("/api/v1/orgs/alpha/jobs/JOB-999/wait")
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# list filters — review_required, persistent (Task 17)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def jobs_mixed_fixture(client_with_runtime):
+    """Insert 4 pending jobs covering all (review_required × persistent) cells.
+
+    Returns ``(client, org, ids_by_cell)`` where ``ids_by_cell`` is a dict
+    keyed by ``(review_required: bool, persistent: bool)`` for assertion
+    convenience.
+    """
+    from src.models import JobInterpreter, JobRecord, JobStatus
+    client, org = client_with_runtime
+    ids_by_cell: dict[tuple[bool, bool], str] = {}
+    for review_required in (True, False):
+        for persistent in (True, False):
+            job_id = org.db.next_job_id()
+            record = JobRecord(
+                id=job_id,
+                task_id="TASK-001",
+                agent_name="engineering_head",
+                title=f"r={review_required} p={persistent}",
+                rationale="fixture row",
+                script_text="echo z",
+                interpreter=JobInterpreter.BASH,
+                status=JobStatus.PENDING,
+                review_required=review_required,
+                persistent=persistent,
+                created_at="2026-05-27T00:00:00Z",
+            )
+            org.db.insert_job(record)
+            ids_by_cell[(review_required, persistent)] = job_id
+    return client, org, ids_by_cell
+
+
+def test_list_filters_by_review_required(jobs_mixed_fixture):
+    """Two of the 4 fixture rows have review_required=true."""
+    client, _org, ids_by_cell = jobs_mixed_fixture
+    r = client.get(
+        "/api/v1/orgs/alpha/jobs/", params={"review_required": "true"}
+    )
+    assert r.status_code == 200, r.text
+    ids = sorted(j["id"] for j in r.json()["jobs"])
+    expected = sorted([
+        ids_by_cell[(True, True)],
+        ids_by_cell[(True, False)],
+    ])
+    assert ids == expected
+
+
+def test_list_filters_by_persistent(jobs_mixed_fixture):
+    """Two of the 4 fixture rows have persistent=false."""
+    client, _org, ids_by_cell = jobs_mixed_fixture
+    r = client.get(
+        "/api/v1/orgs/alpha/jobs/", params={"persistent": "false"}
+    )
+    assert r.status_code == 200, r.text
+    ids = sorted(j["id"] for j in r.json()["jobs"])
+    expected = sorted([
+        ids_by_cell[(True, False)],
+        ids_by_cell[(False, False)],
+    ])
+    assert ids == expected
+
+
+def test_list_filter_combined(jobs_mixed_fixture):
+    """Both filters compose with AND — only the (true, true) cell matches."""
+    client, _org, ids_by_cell = jobs_mixed_fixture
+    r = client.get(
+        "/api/v1/orgs/alpha/jobs/",
+        params={"review_required": "true", "persistent": "true"},
+    )
+    assert r.status_code == 200, r.text
+    ids = [j["id"] for j in r.json()["jobs"]]
+    assert ids == [ids_by_cell[(True, True)]]
+
+
+def test_list_filter_invalid_review_required_value_returns_422(client_with_runtime):
+    client, _org = client_with_runtime
+    r = client.get(
+        "/api/v1/orgs/alpha/jobs/", params={"review_required": "yes"}
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "invalid_review_required"
+
+
+def test_list_filter_invalid_persistent_value_returns_422(client_with_runtime):
+    client, _org = client_with_runtime
+    r = client.get(
+        "/api/v1/orgs/alpha/jobs/", params={"persistent": "1"}
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "invalid_persistent"
