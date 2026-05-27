@@ -17,6 +17,14 @@ import { CancelTaskDialog } from './CancelTaskDialog';
 import { RevisitTaskDialog } from './RevisitTaskDialog';
 import { ResolveEscalationDialog } from './ResolveEscalationDialog';
 
+const BRIEF_COLLAPSE_THRESHOLD = 600;
+
+const TERMINAL_STATUSES: ReadonlySet<string> = new Set([
+  'failed',
+  'completed',
+  'cancelled',
+]);
+
 export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
   const navigate = useNavigate();
   const { slug } = useParams<{ slug: string }>();
@@ -25,9 +33,20 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
   const recall = useTaskRecall(taskId);
   const jobsQuery = useJobsList({ task_id: taskId, status: 'all', limit: 100 });
   const [dialog, setDialog] = useState<null | 'cancel' | 'revisit' | 'resolve'>(null);
+  const [briefExpanded, setBriefExpanded] = useState(false);
 
   const onClose = () => navigate(routes.inbox());
   const isEscalated = task.data?.status === 'blocked' && task.data?.block_kind === 'escalated';
+  const isTerminal = task.data ? TERMINAL_STATUSES.has(task.data.status) : false;
+  const isFailed = task.data?.status === 'failed';
+  const note = task.data ? (task.data as { note?: unknown }).note : undefined;
+  const failureNote = isFailed && typeof note === 'string' && note ? note : null;
+  const brief = task.data?.brief ?? '';
+  const briefShouldCollapse = brief.length > BRIEF_COLLAPSE_THRESHOLD;
+  const briefPreview =
+    briefShouldCollapse && !briefExpanded
+      ? brief.slice(0, BRIEF_COLLAPSE_THRESHOLD).replace(/\s+\S*$/, '') + '…'
+      : brief;
 
   return (
     <>
@@ -46,6 +65,15 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
                 )}
               </p>
             )}
+            {failureNote && (
+              <div
+                role="alert"
+                className="bg-tier-red-tint text-status-abandoned mt-3 rounded-sm px-3 py-2 text-sm"
+              >
+                <span className="font-semibold">Failure reason:</span>{' '}
+                <span className="font-mono">{failureNote}</span>
+              </div>
+            )}
             <div className="mt-3 flex gap-2">
               {isEscalated && (
                 <Button size="sm" onClick={() => setDialog('resolve')}>Resolve…</Button>
@@ -53,7 +81,13 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
               <Button size="sm" variant="ghost" onClick={() => setDialog('revisit')}>
                 Revisit
               </Button>
-              <Button size="sm" variant="ghost" onClick={() => setDialog('cancel')}>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setDialog('cancel')}
+                disabled={isTerminal}
+                title={isTerminal ? `Cannot cancel a ${task.data?.status} task` : undefined}
+              >
                 Cancel
               </Button>
               {slug && (
@@ -72,7 +106,16 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
                 <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
                   Brief
                 </h3>
-                <Markdown body={task.data.brief} />
+                <Markdown body={briefPreview} />
+                {briefShouldCollapse && (
+                  <button
+                    type="button"
+                    onClick={() => setBriefExpanded((v) => !v)}
+                    className="text-accent mt-2 text-xs hover:underline"
+                  >
+                    {briefExpanded ? 'Show less' : `Show full brief (${brief.length} chars)`}
+                  </button>
+                )}
               </>
             )}
             <h3 className="text-fg-muted mt-6 mb-2 text-xs font-medium tracking-wider uppercase">
