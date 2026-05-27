@@ -50,6 +50,7 @@ def _seed_skeleton(org_root: Path, *, from_example: Path | None) -> None:
     (org_root / "workspaces").mkdir(exist_ok=True)
     (org_root / "kb").mkdir(exist_ok=True)
     (org_root / "talks").mkdir(exist_ok=True)
+    (org_root / "assets").mkdir(exist_ok=True)
 
 
 @router.get("/orgs")

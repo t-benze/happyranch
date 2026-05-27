@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from src.daemon.dispatcher import Dispatcher
 from src.daemon.routes import (
     agents,
+    assets,
     audit,
     auth,
     health,
@@ -74,6 +75,7 @@ async def _lifespan(app: FastAPI):
     _now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     _logger = logging.getLogger("grassland.daemon")
     for org in state.orgs.values():
+        (org.root / "assets").mkdir(exist_ok=True)
         recovered = org.db.recover_orphaned_running_scripts(now_iso=_now_iso)
         if recovered:
             _logger.warning(
@@ -112,6 +114,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(talks.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(threads.router, prefix="/api/v1/orgs/{slug}", tags=["threads"])
     app.include_router(scripts.router, prefix="/api/v1/orgs/{slug}", tags=["scripts"])
+    app.include_router(assets.router, prefix="/api/v1/orgs/{slug}", tags=["assets"])
     from src.daemon.routes import web_static
     web_static.register(app)
     return app
