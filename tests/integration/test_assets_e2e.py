@@ -1,7 +1,7 @@
 """End-to-end asset flows against a live daemon.
 
 Covers the full HTTP roundtrip:
-  PUT /assets → disk write → LIST /assets → GET /assets/{name} → audit entry.
+  POST /assets → disk write → LIST /assets → GET /assets/{name} → audit entry.
 
 The lifespan test verifies that starting the daemon with an org that has no
 ``assets/`` directory causes the daemon to create it (the startup loop in
@@ -13,6 +13,7 @@ import httpx
 import pytest
 
 from src.daemon import paths as paths_mod
+from tests.integration.conftest import DEFAULT_TEST_SLUG
 
 pytestmark = pytest.mark.integration
 
@@ -24,11 +25,10 @@ def _auth_headers() -> dict:
 def test_put_list_get_roundtrip(
     live_daemon,
     runtime,
-    tmp_path,
 ) -> None:
-    """PUT → disk → LIST → GET → audit roundtrip against the live daemon."""
+    """POST → disk → LIST → GET → audit roundtrip against the live daemon."""
     port = live_daemon
-    slug = "test"
+    slug = DEFAULT_TEST_SLUG
     base = f"http://127.0.0.1:{port}/api/v1/orgs/{slug}"
     headers = _auth_headers()
 
