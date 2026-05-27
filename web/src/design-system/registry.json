@@ -76,7 +76,7 @@
         "components.textarea",
         "components.button"
       ],
-      "example": "<Composer onSend={(md, to) => {}} helper='Cmd/Ctrl+Enter to send' agents={[]} threadId='THR-001' />"
+      "example": "<Composer onSend={(md, to) => {}} helper='Enter to send · Shift+Enter for new line' agents={[]} threadId='THR-001' />"
     },
     {
       "name": "DashboardLayout",
