@@ -324,7 +324,10 @@ in the same org. Implementation: `src/infrastructure/asset_store.py` +
   never leak.
 - **`asset_put` is audited; `list`/`get` are not** — read paths are free,
   consistent with KB list/get and on the same rationale (no PII gradient
-  inside the asset store).
+  inside the asset store). The audit row's `task_id` column stores
+  `f"asset:{name}"` (the `asset:` prefix is mandatory) so asset names like
+  `TASK-123` or `TALK-7` can never pollute the corresponding task/talk
+  scopes consumed by `Database.get_audit_logs(task_id)`.
 - **Not the KB** — assets are blobs. The KB is for typed/structured
   knowledge (frontmatter, slug, type, topic). Don't dump markdown content
   into assets/ that should be a KB entry.

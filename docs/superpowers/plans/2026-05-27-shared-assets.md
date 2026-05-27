@@ -36,7 +36,7 @@
 **Audit shape:**
 - `asset_put` event only. Payload: `{name, size_bytes}`. Reads + lists are not audited (free).
 - One new method on `AuditLogger`: `log_asset_put(name: str, size_bytes: int, agent: str)` — agent attribution lives in the `audit_log.agent` column (NOT duplicated in the payload, matching `log_talk_started` and `log_script_submitted`).
-- The `audit_log.task_id` column is `TEXT NOT NULL`. Following the same overload pattern as `log_talk_started` (uses `talk_id`) and script-request audits (uses `SR-NNN`), `log_asset_put` stores the asset `name` in the `task_id` column. There is no separate "assets" audit table.
+- The `audit_log.task_id` column is `TEXT NOT NULL`. Following the same overload pattern as `log_talk_started` (uses `talk_id`) and script-request audits (uses `SR-NNN`), `log_asset_put` stores `f"asset:{name}"` in the `task_id` column. The `asset:` prefix is **mandatory** — asset names are user-controlled and would otherwise collide with `TASK-NNN`/`TALK-NNN`/`SR-NNN` scopes consumed by `Database.get_audit_logs(task_id)`. There is no separate "assets" audit table.
 - The real `AuditLogger` writes via `self._db.insert_audit_log(task_id=..., agent=..., action=..., payload=...)`. There is no `_write` wrapper. The DB column is `action` (not `event_type`); the public reader is `Database.get_audit_logs_by_action(action: str)`.
 
 **Auth:**
@@ -428,7 +428,7 @@ self._db.insert_audit_log(
 )
 ```
 
-There is **no** `_write` helper. `audit_log.task_id` is `TEXT NOT NULL`, so org-scoped events without a task overload the column with their resource id — `log_talk_started` puts `talk_id` there; script-request audits put `SR-NNN`. For assets, we put the asset `name`.
+There is **no** `_write` helper. `audit_log.task_id` is `TEXT NOT NULL`, so org-scoped events without a task overload the column with their resource id — `log_talk_started` puts `talk_id` there; script-request audits put `SR-NNN`. For assets, we put `f"asset:{name}"` (the `asset:` prefix is mandatory to avoid collision with `TASK-NNN`/`TALK-NNN`/`SR-NNN` scopes).
 
 - [ ] **Step 2: Add failing test**
 
@@ -448,7 +448,7 @@ def test_log_asset_put_writes_event(tmp_path) -> None:
     rows = db.get_audit_logs_by_action("asset_put")
     assert len(rows) == 1
     row = rows[0]
-    assert row["task_id"] == "report.pdf"  # name overloaded into task_id column
+    assert row["task_id"] == "asset:report.pdf"  # namespaced to avoid collision with TASK-/TALK-/SR- ids
     assert row["agent"] == "dev_agent"
     assert row["action"] == "asset_put"
     assert row["payload"] == {"name": "report.pdf", "size_bytes": 11}
@@ -469,7 +469,7 @@ In `src/infrastructure/audit_logger.py`, add near the `log_talk_started` / `log_
 ```python
     def log_asset_put(self, name: str, size_bytes: int, agent: str) -> None:
         self._db.insert_audit_log(
-            task_id=name,  # asset name overloads task_id (NOT NULL) — same pattern as talks/scripts
+            task_id=f"asset:{name}",  # namespaced to avoid collision with TASK-/TALK-/SR- ids in get_audit_logs(task_id)
             agent=agent,
             action="asset_put",
             payload={"name": name, "size_bytes": size_bytes},  # agent column is the source of truth for attribution
