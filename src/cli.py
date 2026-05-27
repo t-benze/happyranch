@@ -1113,7 +1113,7 @@ def cmd_jobs_submit(args: argparse.Namespace) -> None:
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
-    r = client.post(f"/api/v1/orgs/{args.org}/scripts/submit", json=body)
+    r = client.post(f"/api/v1/orgs/{args.org}/jobs/submit", json=body)
     if not _ok(r):
         return
     result = r.json()
@@ -1133,10 +1133,10 @@ def cmd_jobs_list(args: argparse.Namespace) -> None:
         params["agent"] = args.agent
     if args.task:
         params["task_id"] = args.task
-    r = client.get(f"/api/v1/orgs/{slug}/scripts/", params=params)
+    r = client.get(f"/api/v1/orgs/{slug}/jobs/", params=params)
     if not _ok(r):
         return
-    rows = r.json()["scripts"]
+    rows = r.json()["jobs"]
     if not rows:
         print("(no script requests match)")
         return
@@ -1154,7 +1154,7 @@ def cmd_jobs_show(args: argparse.Namespace) -> None:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
     slug = resolve_org_slug(args_org=args.org, available=_fetch_available_orgs(client))
-    r = client.get(f"/api/v1/orgs/{slug}/scripts/{args.job_id}")
+    r = client.get(f"/api/v1/orgs/{slug}/jobs/{args.job_id}")
     if not _ok(r):
         return
     d = r.json()
@@ -1220,7 +1220,7 @@ def cmd_jobs_reject(args: argparse.Namespace) -> None:
     if not reason:
         print("Error: empty reason", file=sys.stderr)
         sys.exit(2)
-    r = client.post(f"/api/v1/orgs/{slug}/scripts/{args.job_id}/reject", json={"reason": reason})
+    r = client.post(f"/api/v1/orgs/{slug}/jobs/{args.job_id}/reject", json={"reason": reason})
     if not _ok(r):
         return
     print(f"ok: rejected {args.job_id}")
@@ -1235,7 +1235,7 @@ def cmd_jobs_output(args: argparse.Namespace) -> None:
         sys.exit(1)
     slug = resolve_org_slug(args_org=args.org, available=_fetch_available_orgs(client))
     r = client.get(
-        f"/api/v1/orgs/{slug}/scripts/{args.job_id}/output",
+        f"/api/v1/orgs/{slug}/jobs/{args.job_id}/output",
         params={"stream": args.stream, "max_bytes": args.max_bytes},
     )
     if not _ok(r):
@@ -1270,12 +1270,12 @@ def cmd_jobs_run(args: argparse.Namespace) -> None:
     slug = resolve_org_slug(args_org=args.org, available=_fetch_available_orgs(client))
 
     # Fetch + show.
-    r = client.get(f"/api/v1/orgs/{slug}/scripts/{args.job_id}")
+    r = client.get(f"/api/v1/orgs/{slug}/jobs/{args.job_id}")
     if not _ok(r):
         return
     d = r.json()
     if d["status"] != "pending":
-        print(f"Error: SR {args.job_id} is {d['status']}, not pending", file=sys.stderr)
+        print(f"Error: job {args.job_id} is {d['status']}, not pending", file=sys.stderr)
         sys.exit(1)
     print(f"About to execute {d['id']}:")
     print(f"  Agent:       {d['agent_name']}")
@@ -1300,7 +1300,7 @@ def cmd_jobs_run(args: argparse.Namespace) -> None:
         body["cwd_override"] = args.cwd_override
     if args.timeout_seconds is not None:
         body["timeout_seconds"] = args.timeout_seconds
-    r = client.post(f"/api/v1/orgs/{slug}/scripts/{args.job_id}/run", json=body)
+    r = client.post(f"/api/v1/orgs/{slug}/jobs/{args.job_id}/run", json=body)
     if r.status_code != 202:
         print(f"Error: {r.status_code} {r.text}", file=sys.stderr)
         sys.exit(1)
@@ -1312,7 +1312,7 @@ def cmd_jobs_run(args: argparse.Namespace) -> None:
     terminal_exit = None
     etype = ""
     edata = ""
-    events_path = f"/api/v1/orgs/{slug}/scripts/{args.job_id}/events"
+    events_path = f"/api/v1/orgs/{slug}/jobs/{args.job_id}/events"
     with client._client.stream("GET", events_path) as response:
         response.raise_for_status()
         for raw_line in response.iter_lines():

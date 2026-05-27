@@ -184,7 +184,7 @@ async def reject_job_from_notification(
     if record is None:
         raise HTTPException(
             status_code=404,
-            detail={"code": "unknown_script_request", "job_id": job_id},
+            detail={"code": "unknown_job", "job_id": job_id},
         )
 
     reason_stripped = reason.strip()
@@ -220,7 +220,7 @@ async def reject_job_from_notification(
 
 
 def _consume_open_feishu_notification(org, job_id: str) -> None:
-    """Mark any open kind=script_request Feishu notification as consumed by
+    """Mark any open kind=job_request Feishu notification as consumed by
     'cli-fallback'.
 
     Matches the pattern from `grassland resolve-escalation` / `grassland revisit`
@@ -228,7 +228,7 @@ def _consume_open_feishu_notification(org, job_id: str) -> None:
     a later Feishu reply, which would otherwise hit `not_pending` in the
     listener and leave the row stale until reply_ttl_hours expiry.
     """
-    row = org.db.get_latest_notification_for_sr(job_id, kind="script_request")
+    row = org.db.get_latest_notification_for_sr(job_id, kind="job_request")
     if row is None or row["consumed_at"] is not None:
         return
     org.db.consume_escalation_notification(
@@ -269,14 +269,14 @@ async def list_jobs(
     rows = org.db.list_jobs_db(
         status=status_filter, agent=agent, task_id=task_id, limit=limit,
     )
-    return {"scripts": [r.model_dump() for r in rows]}
+    return {"jobs": [r.model_dump() for r in rows]}
 
 
 @router.get("/jobs/{job_id}")
 async def get_job_route(slug: str, job_id: str, org: OrgDep) -> dict:
     record = org.db.get_job(job_id)
     if record is None:
-        raise HTTPException(status_code=404, detail={"code": "unknown_script_request", "job_id": job_id})
+        raise HTTPException(status_code=404, detail={"code": "unknown_job", "job_id": job_id})
     return record.model_dump()
 
 
@@ -321,7 +321,7 @@ async def _run_job_core(
     if record is None:
         raise HTTPException(
             status_code=404,
-            detail={"code": "unknown_script_request", "job_id": job_id},
+            detail={"code": "unknown_job", "job_id": job_id},
         )
 
     if record.status != JobStatus.PENDING:
@@ -363,11 +363,11 @@ async def _run_job_core(
             },
         )
 
-    # Allocate output paths under <runtime>/orgs/<slug>/scripts/.
-    scripts_dir = org.root / "scripts"
-    scripts_dir.mkdir(parents=True, exist_ok=True)
-    stdout_path = scripts_dir / f"{job_id}.out"
-    stderr_path = scripts_dir / f"{job_id}.err"
+    # Allocate output paths under <runtime>/orgs/<slug>/jobs/.
+    jobs_dir = org.root / "jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    stdout_path = jobs_dir / f"{job_id}.out"
+    stderr_path = jobs_dir / f"{job_id}.err"
     stdout_path.write_bytes(b"")
     stderr_path.write_bytes(b"")
 
@@ -427,7 +427,7 @@ async def _run_job_core(
             audit.log_job_run_failed(
                 task_id=record.task_id, job_id=job_id, reason="spawn_failed",
             )
-            parent = org.db.get_latest_notification_for_sr(job_id, kind="script_request")
+            parent = org.db.get_latest_notification_for_sr(job_id, kind="job_request")
             if parent is not None and getattr(org, "orchestrator", None) is not None:
                 org.orchestrator.notify_job_run_result(
                     job_id=job_id, task_id=record.task_id,
@@ -449,7 +449,7 @@ async def _run_job_core(
             audit.log_job_run_failed(
                 task_id=record.task_id, job_id=job_id, reason="internal_error",
             )
-            parent = org.db.get_latest_notification_for_sr(job_id, kind="script_request")
+            parent = org.db.get_latest_notification_for_sr(job_id, kind="job_request")
             if parent is not None and getattr(org, "orchestrator", None) is not None:
                 org.orchestrator.notify_job_run_result(
                     job_id=job_id, task_id=record.task_id,
@@ -491,7 +491,7 @@ async def _run_job_core(
                 reason=result.reason or "unknown",
             )
 
-        parent = org.db.get_latest_notification_for_sr(job_id, kind="script_request")
+        parent = org.db.get_latest_notification_for_sr(job_id, kind="job_request")
         if parent is not None and getattr(org, "orchestrator", None) is not None:
             org.orchestrator.notify_job_run_result(
                 job_id=job_id, task_id=record.task_id,
@@ -539,7 +539,7 @@ async def get_job_output(
 ) -> dict:
     record = org.db.get_job(job_id)
     if record is None:
-        raise HTTPException(status_code=404, detail={"code": "unknown_script_request"})
+        raise HTTPException(status_code=404, detail={"code": "unknown_job"})
     if max_bytes <= 0 or max_bytes > 10 * 1_048_576:
         raise HTTPException(status_code=422, detail={"code": "invalid_max_bytes"})
     if record.status not in (
@@ -593,7 +593,7 @@ def _terminal_frame_from_record(record) -> str:
 async def job_events_stream(slug: str, job_id: str, org: OrgDep) -> StreamingResponse:
     record = org.db.get_job(job_id)
     if record is None:
-        raise HTTPException(status_code=404, detail={"code": "unknown_script_request"})
+        raise HTTPException(status_code=404, detail={"code": "unknown_job"})
 
     async def gen():
         # If already terminal at request time, emit one terminal event and close.

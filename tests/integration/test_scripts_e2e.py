@@ -165,7 +165,7 @@ def test_sr_lifecycle_submit_run_revisit(
         timeout=5.0,
     )
     assert r.status_code == 200, r.text
-    scripts = r.json()["scripts"]
+    scripts = r.json()["jobs"]
     assert len(scripts) >= 1, f"expected ≥1 pending SR for task {task_id}, got {scripts}"
     job_id = scripts[0]["id"]
 
@@ -193,13 +193,13 @@ def test_sr_lifecycle_submit_run_revisit(
     assert r.status_code == 200, r.text
     entries = r.json()["entries"]
     actions = [e["action"] for e in entries]
-    assert "script_submitted" in actions, f"missing script_submitted in audit; actions={actions}"
-    assert "script_run_completed" in actions, (
+    assert "job_submitted" in actions, f"missing script_submitted in audit; actions={actions}"
+    assert "job_run_completed" in actions, (
         f"missing script_run_completed in audit; actions={actions}"
     )
 
     # ── 9. Confirm the SR's task_id link and job_id are correct in the audit.
-    submitted_entry = next(e for e in entries if e["action"] == "script_submitted")
+    submitted_entry = next(e for e in entries if e["action"] == "job_submitted")
     payload_raw = submitted_entry.get("payload") or {}
     if isinstance(payload_raw, str):
         payload_raw = json.loads(payload_raw)
@@ -250,5 +250,5 @@ def test_sr_lifecycle_submit_run_revisit(
     assert any(
         (e.get("payload") or {}).get("script_request_id") == job_id
         for e in entries
-        if e["action"] == "script_submitted"
+        if e["action"] == "job_submitted"
     ), f"script_submitted entry missing script_request_id={job_id!r}"

@@ -489,7 +489,7 @@ class EscalationNotifier:
                 task_id=job_id,            # SR-NNN in task_id column (matches thread_addressed)
                 chat_id=self._config.chat_id,
                 expires_at=expires,
-                kind="script_request",
+                kind="job_request",
             )
             self._audit.log_job_notify_sent(
                 task_id=task_id, job_id=job_id, feishu_message_id=message_id,

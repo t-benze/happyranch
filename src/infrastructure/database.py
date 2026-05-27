@@ -1492,18 +1492,18 @@ class Database:
 
     @_synchronized
     def next_job_id(self) -> str:
-        """Return the next available SR-NNN id.
+        """Return the next available JOB-NNN id.
 
         Callers must hold DaemonState.db_lock across the next_job_id()
         + insert_job() pair to avoid duplicate IDs under concurrent
         requests (same requirement as next_task_id / next_talk_id / next_thread_id).
         """
         cursor = self._conn.execute(
-            "SELECT MAX(CAST(SUBSTR(id, 4) AS INTEGER)) AS m "
-            "FROM jobs WHERE id GLOB 'SR-[0-9]*'"
+            "SELECT MAX(CAST(SUBSTR(id, 5) AS INTEGER)) AS m "
+            "FROM jobs WHERE id GLOB 'JOB-[0-9]*'"
         )
         n = (cursor.fetchone()["m"] or 0) + 1
-        return f"SR-{n:03d}"
+        return f"JOB-{n:03d}"
 
     @_synchronized
     def insert_job(self, r: "JobRecord") -> None:
@@ -1608,7 +1608,7 @@ class Database:
         )
         self._conn.commit()
         if cur.rowcount == 0:
-            raise ValueError(f"not_pending: SR {job_id} cannot be rejected")
+            raise ValueError(f"not_pending: job {job_id} cannot be rejected")
 
     @_synchronized
     def transition_job_to_running(
@@ -1633,7 +1633,7 @@ class Database:
         )
         self._conn.commit()
         if cur.rowcount == 0:
-            raise ValueError(f"not_pending: SR {job_id} cannot transition to running")
+            raise ValueError(f"not_pending: job {job_id} cannot transition to running")
 
     @_synchronized
     def transition_job_to_terminal(
@@ -1659,7 +1659,7 @@ class Database:
         )
         self._conn.commit()
         if cur.rowcount == 0:
-            raise ValueError(f"not_running: SR {job_id} cannot transition to terminal")
+            raise ValueError(f"not_running: job {job_id} cannot transition to terminal")
 
     @_synchronized
     def recover_orphaned_running_jobs(self, *, now_iso: str) -> list[str]:
@@ -2291,10 +2291,10 @@ class Database:
         expires_at: datetime,
         kind: str = "escalation",
     ) -> None:
-        if kind not in ("escalation", "failure", "thread_addressed", "script_request"):
+        if kind not in ("escalation", "failure", "thread_addressed", "job_request"):
             raise ValueError(
                 f"kind must be 'escalation', 'failure', 'thread_addressed', "
-                f"or 'script_request', got {kind!r}"
+                f"or 'job_request', got {kind!r}"
             )
         expires_at_str = expires_at.astimezone(timezone.utc).isoformat()
         self._conn.execute(

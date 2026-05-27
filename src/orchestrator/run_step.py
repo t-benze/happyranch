@@ -454,7 +454,7 @@ def _revisit_header_if_applicable(orch: "Orchestrator", task_id: str) -> str | N
 
     # SR summary block — list any script requests submitted by the predecessor.
     predecessor_logs = orch._db.get_audit_logs(predecessor)
-    sr_entries = [e for e in predecessor_logs if e.get("action") == "script_submitted"]
+    sr_entries = [e for e in predecessor_logs if e.get("action") == "job_submitted"]
     if sr_entries:
         lines.append("")
         lines.append("This task previously submitted script requests:")
@@ -467,9 +467,9 @@ def _revisit_header_if_applicable(orch: "Orchestrator", task_id: str) -> str | N
                     payload_e = _json.loads(payload_e)
                 except Exception:
                     payload_e = {}
-            job_id = payload_e.get("script_request_id", "SR-?")
+            job_id = payload_e.get("script_request_id", "JOB-?")
             title = payload_e.get("title", "(no title)")
-            sr = orch._db.get_job(job_id) if job_id != "SR-?" else None
+            sr = orch._db.get_job(job_id) if job_id != "JOB-?" else None
             status = sr.status.value if sr else "?"
             marker = ""
             if sr and sr.status.value in ("pending", "running"):
@@ -486,7 +486,7 @@ def _revisit_header_if_applicable(orch: "Orchestrator", task_id: str) -> str | N
                     payload_e = _json.loads(payload_e)
                 except Exception:
                     payload_e = {}
-            job_id = payload_e.get("script_request_id", "SR-?")
+            job_id = payload_e.get("script_request_id", "JOB-?")
             lines.append(f"  grassland scripts show {job_id}")
             lines.append(f"  grassland scripts output {job_id}")
 

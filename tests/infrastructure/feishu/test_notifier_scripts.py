@@ -215,11 +215,11 @@ def test_send_script_request_happy_path(notifier_setup):
 
     row = db.get_escalation_notification("om_post_1")
     assert row is not None
-    assert row["kind"] == "script_request"
+    assert row["kind"] == "job_request"
     assert row["task_id"] == "SR-019"
 
     audit_rows = db.get_audit_logs(task_id="TASK-91")
-    assert any(r["action"] == "script_notify_sent" for r in audit_rows)
+    assert any(r["action"] == "job_notify_sent" for r in audit_rows)
 
 
 def test_send_script_request_swallows_send_failure(notifier_setup):
@@ -234,9 +234,9 @@ def test_send_script_request_swallows_send_failure(notifier_setup):
         title="t", rationale="r", script_text="s",
         interpreter="bash", cwd_hint=None,
     ))
-    assert db.get_latest_notification_for_sr("SR-019", kind="script_request") is None
+    assert db.get_latest_notification_for_sr("SR-019", kind="job_request") is None
     audit_rows = db.get_audit_logs(task_id="TASK-91")
-    assert any(r["action"] == "script_notify_failed" for r in audit_rows)
+    assert any(r["action"] == "job_notify_failed" for r in audit_rows)
 
 
 def test_send_script_run_result_happy_path(notifier_setup):
@@ -253,7 +253,7 @@ def test_send_script_run_result_happy_path(notifier_setup):
     assert "SR-019" in reply["title"]
     assert "completed" in reply["title"]
     audit_rows = db.get_audit_logs(task_id="TASK-91")
-    assert any(r["action"] == "script_run_result_notify_sent" for r in audit_rows)
+    assert any(r["action"] == "job_run_result_notify_sent" for r in audit_rows)
 
 
 def test_send_script_run_result_swallows_send_failure(notifier_setup):
@@ -270,4 +270,4 @@ def test_send_script_run_result_swallows_send_failure(notifier_setup):
         stdout_head=None, stderr_head="x", reason="timeout",
     ))
     audit_rows = db.get_audit_logs(task_id="TASK-91")
-    assert any(r["action"] == "script_run_result_notify_failed" for r in audit_rows)
+    assert any(r["action"] == "job_run_result_notify_failed" for r in audit_rows)

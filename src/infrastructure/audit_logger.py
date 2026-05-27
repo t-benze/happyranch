@@ -779,7 +779,7 @@ class AuditLogger:
         self._db.insert_audit_log(
             task_id=task_id,
             agent=agent,
-            action="script_submitted",
+            action="job_submitted",
             payload={
                 "script_request_id": job_id,
                 "title": title,
@@ -796,7 +796,7 @@ class AuditLogger:
         self._db.insert_audit_log(
             task_id=task_id,
             agent=reviewer,
-            action="script_rejected",
+            action="job_rejected",
             payload={
                 "script_request_id": job_id,
                 "reviewer": reviewer,
@@ -817,7 +817,7 @@ class AuditLogger:
         self._db.insert_audit_log(
             task_id=task_id,
             agent=reviewer,
-            action="script_run_started",
+            action="job_run_started",
             payload={
                 "script_request_id": job_id,
                 "reviewer": reviewer,
@@ -842,7 +842,7 @@ class AuditLogger:
         self._db.insert_audit_log(
             task_id=task_id,
             agent="founder",
-            action="script_run_completed",
+            action="job_run_completed",
             payload={
                 "script_request_id": job_id,
                 "exit_code": exit_code,
@@ -866,7 +866,7 @@ class AuditLogger:
         self._db.insert_audit_log(
             task_id=task_id,
             agent="founder",
-            action="script_run_failed",
+            action="job_run_failed",
             payload={
                 "script_request_id": job_id,
                 "exit_code": exit_code,
@@ -883,7 +883,7 @@ class AuditLogger:
         self._db.insert_audit_log(
             task_id=task_id,
             agent="daemon",
-            action="script_notify_sent",
+            action="job_notify_sent",
             payload={
                 "script_request_id": job_id,
                 "feishu_message_id": feishu_message_id,
@@ -896,7 +896,7 @@ class AuditLogger:
         self._db.insert_audit_log(
             task_id=task_id,
             agent="daemon",
-            action="script_notify_failed",
+            action="job_notify_failed",
             payload={
                 "script_request_id": job_id,
                 "error": error,
@@ -922,7 +922,7 @@ class AuditLogger:
         self._db.insert_audit_log(
             task_id=task_id,
             agent="founder",
-            action="script_reply_processed",
+            action="job_reply_processed",
             payload=payload,
         )
 
@@ -946,7 +946,7 @@ class AuditLogger:
         self._db.insert_audit_log(
             task_id=task_id,
             agent="daemon",
-            action="script_reply_rejected",
+            action="job_reply_rejected",
             payload=payload,
         )
 
@@ -962,7 +962,7 @@ class AuditLogger:
         self._db.insert_audit_log(
             task_id=task_id,
             agent="daemon",
-            action="script_run_result_notify_sent",
+            action="job_run_result_notify_sent",
             payload={
                 "script_request_id": job_id,
                 "parent_message_id": parent_message_id,
@@ -982,7 +982,7 @@ class AuditLogger:
         self._db.insert_audit_log(
             task_id=task_id,
             agent="daemon",
-            action="script_run_result_notify_failed",
+            action="job_run_result_notify_failed",
             payload={
                 "script_request_id": job_id,
                 "error": error,

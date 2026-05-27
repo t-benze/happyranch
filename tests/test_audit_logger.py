@@ -300,8 +300,8 @@ def test_log_job_submitted(db):
     )
     logs = db.get_audit_logs("TASK-001")
     actions = [e["action"] for e in logs]
-    assert "script_submitted" in actions
-    payload = next(e["payload"] for e in logs if e["action"] == "script_submitted")
+    assert "job_submitted" in actions
+    payload = next(e["payload"] for e in logs if e["action"] == "job_submitted")
     # payload may be a JSON string or already-parsed dict; handle both like other tests.
     import json
     if isinstance(payload, str):
@@ -325,7 +325,7 @@ def test_log_job_run_completed(db):
     )
     logs = db.get_audit_logs("TASK-001")
     import json
-    payload_entry = next(e for e in logs if e["action"] == "script_run_completed")
+    payload_entry = next(e for e in logs if e["action"] == "job_run_completed")
     payload = payload_entry["payload"]
     if isinstance(payload, str):
         payload = json.loads(payload)
@@ -342,7 +342,7 @@ def test_log_job_notify_sent_records_payload(db):
     rows = db.get_audit_logs("TASK-91")
     assert len(rows) == 1
     r = rows[0]
-    assert r["action"] == "script_notify_sent"
+    assert r["action"] == "job_notify_sent"
     assert r["agent"] == "daemon"
     assert r["payload"]["script_request_id"] == "SR-019"
     assert r["payload"]["feishu_message_id"] == "om_abc"
@@ -355,7 +355,7 @@ def test_log_job_notify_failed_records_error(db):
     )
     rows = db.get_audit_logs("TASK-91")
     r = rows[0]
-    assert r["action"] == "script_notify_failed"
+    assert r["action"] == "job_notify_failed"
     assert r["payload"]["script_request_id"] == "SR-019"
     assert r["payload"]["error"] == "ConnectionRefused: feishu"
 
@@ -369,7 +369,7 @@ def test_log_job_reply_processed_carries_decision_and_rationale(db):
     )
     rows = db.get_audit_logs("TASK-91")
     r = rows[0]
-    assert r["action"] == "script_reply_processed"
+    assert r["action"] == "job_reply_processed"
     assert r["agent"] == "founder"
     assert r["payload"]["decision"] == "approve"
     assert r["payload"]["rationale"] == "merge-close approved"
@@ -386,7 +386,7 @@ def test_log_job_reply_rejected_records_reason(db):
     )
     rows = db.get_audit_logs("TASK-91")
     r = rows[0]
-    assert r["action"] == "script_reply_rejected"
+    assert r["action"] == "job_reply_rejected"
     assert r["agent"] == "daemon"
     assert r["payload"]["reason"] == "verb_mismatch"
     assert r["payload"]["text_preview"] == "REVISIT please"
@@ -436,7 +436,7 @@ def test_log_job_run_result_notify_sent(db):
     )
     rows = db.get_audit_logs("TASK-91")
     r = rows[0]
-    assert r["action"] == "script_run_result_notify_sent"
+    assert r["action"] == "job_run_result_notify_sent"
     assert r["payload"]["parent_message_id"] == "om_root"
     assert r["payload"]["follow_up_message_id"] == "om_followup"
     assert r["payload"]["status"] == "completed"
@@ -450,6 +450,6 @@ def test_log_job_run_result_notify_failed(db):
     )
     rows = db.get_audit_logs("TASK-91")
     r = rows[0]
-    assert r["action"] == "script_run_result_notify_failed"
+    assert r["action"] == "job_run_result_notify_failed"
     assert r["payload"]["error"] == "Timeout"
     assert r["payload"]["status"] == "failed"

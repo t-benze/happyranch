@@ -1162,11 +1162,11 @@ def test_mint_escalation_notification_accepts_script_request_kind(tmp_path):
         task_id="SR-007",
         chat_id="oc_xyz",
         expires_at=datetime.now(timezone.utc) + timedelta(hours=72),
-        kind="script_request",
+        kind="job_request",
     )
     row = db.get_escalation_notification("om_sr_1")
     assert row is not None
-    assert row["kind"] == "script_request"
+    assert row["kind"] == "job_request"
     assert row["task_id"] == "SR-007"
 
 
@@ -1179,15 +1179,15 @@ def test_get_latest_notification_for_sr_returns_most_recent(tmp_path):
     db.mint_escalation_notification(
         feishu_message_id="om_old", org_slug="acme", task_id="SR-007",
         chat_id="oc_xyz", expires_at=now + timedelta(hours=72),
-        kind="script_request",
+        kind="job_request",
     )
     time.sleep(0.001)
     db.mint_escalation_notification(
         feishu_message_id="om_new", org_slug="acme", task_id="SR-007",
         chat_id="oc_xyz", expires_at=now + timedelta(hours=72),
-        kind="script_request",
+        kind="job_request",
     )
-    found = db.get_latest_notification_for_sr("SR-007", kind="script_request")
+    found = db.get_latest_notification_for_sr("SR-007", kind="job_request")
     assert found is not None
     assert found["feishu_message_id"] == "om_new"
 
@@ -1195,7 +1195,7 @@ def test_get_latest_notification_for_sr_returns_most_recent(tmp_path):
 def test_get_latest_notification_for_sr_returns_none_when_missing(tmp_path):
     from src.infrastructure.database import Database
     db = Database(tmp_path / "grassland.db")
-    assert db.get_latest_notification_for_sr("SR-999", kind="script_request") is None
+    assert db.get_latest_notification_for_sr("SR-999", kind="job_request") is None
 
 
 def test_get_latest_notification_for_sr_finds_consumed_rows(tmp_path):
@@ -1209,9 +1209,9 @@ def test_get_latest_notification_for_sr_finds_consumed_rows(tmp_path):
         feishu_message_id="om_x", org_slug="acme", task_id="SR-008",
         chat_id="oc_xyz",
         expires_at=datetime.now(timezone.utc) + timedelta(hours=72),
-        kind="script_request",
+        kind="job_request",
     )
     db.consume_escalation_notification("om_x", consumed_by="feishu-reply")
-    found = db.get_latest_notification_for_sr("SR-008", kind="script_request")
+    found = db.get_latest_notification_for_sr("SR-008", kind="job_request")
     assert found is not None  # consumed rows still returned for follow-up lookups
     assert found["feishu_message_id"] == "om_x"

@@ -150,7 +150,7 @@ async def test_run_helper_409_when_not_pending(scripts_test_org):
 async def test_run_terminal_calls_notify_job_run_result_when_notification_exists(
     scripts_test_org, monkeypatch,
 ):
-    """When an SR has an open Feishu notification (kind=script_request),
+    """When an SR has an open Feishu notification (kind=job_request),
     the terminal transition triggers a notify_job_run_result call."""
     from datetime import datetime, timedelta, timezone
     org = scripts_test_org
@@ -160,7 +160,7 @@ async def test_run_terminal_calls_notify_job_run_result_when_notification_exists
         feishu_message_id="om_parent", org_slug="acme", task_id="SR-001",
         chat_id="oc_xyz",
         expires_at=datetime.now(timezone.utc) + timedelta(hours=72),
-        kind="script_request",
+        kind="job_request",
     )
 
     captured: list[dict] = []

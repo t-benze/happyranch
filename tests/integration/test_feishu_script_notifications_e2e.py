@@ -223,7 +223,7 @@ def test_sr_submit_approve_runs_and_posts_follow_up(
     # Mounted-row check: kind=script_request keyed by the message_id.
     nrow = org.db.get_escalation_notification(feishu_message_id)
     assert nrow is not None
-    assert nrow["kind"] == "script_request"
+    assert nrow["kind"] == "job_request"
     assert nrow["task_id"] == "SR-001"
     assert nrow["consumed_at"] is None
 
@@ -276,7 +276,7 @@ def test_sr_submit_approve_runs_and_posts_follow_up(
         # Audit row check (terminal result + reply processed).
         sr_audit = org.db.get_audit_logs("SR-001")
         actions = [r["action"] for r in sr_audit]
-        assert "script_reply_processed" in actions
+        assert "job_reply_processed" in actions
     finally:
         org.close()
         loop.close()
@@ -337,9 +337,9 @@ def test_sr_submit_reject_transitions_and_posts_no_follow_up(
         # script_rejected is logged against the parent task; script_reply_processed
         # against the SR id (the listener-side audit).
         task_actions = [r["action"] for r in org.db.get_audit_logs("TASK-2")]
-        assert "script_rejected" in task_actions
+        assert "job_rejected" in task_actions
         sr_actions = [r["action"] for r in org.db.get_audit_logs("SR-001")]
-        assert "script_reply_processed" in sr_actions
+        assert "job_reply_processed" in sr_actions
     finally:
         org.close()
         loop.close()

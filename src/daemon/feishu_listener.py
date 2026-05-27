@@ -45,7 +45,7 @@ RejectJobFn = Callable[..., Awaitable[object]]
 # reject_job_from_notification are the two raisers.
 _SCRIPT_HELPER_DETAIL_CODES = frozenset({
     "not_pending", "cwd_missing", "interpreter_unavailable",
-    "invalid_cwd_override", "invalid_timeout", "unknown_script_request",
+    "invalid_cwd_override", "invalid_timeout", "unknown_job",
     "empty_reason", "reason_too_long",
 })
 
@@ -319,8 +319,8 @@ class FeishuEventListener:
             _close("consumed", None)
             return
 
-        # Branch 3: script_request + approve/reject
-        if kind == "script_request" and decision in ("approve", "reject"):
+        # Branch 3: job_request + approve/reject
+        if kind == "job_request" and decision in ("approve", "reject"):
             if (
                 self._run_job_from_notification is None
                 or self._reject_job_from_notification is None
@@ -369,8 +369,8 @@ class FeishuEventListener:
         # Branch 4: verb mismatch
         #   - escalation + revisit
         #   - failure + approve/reject
-        #   - script_request + revisit  -> script-specific audit action
-        if kind == "script_request":
+        #   - job_request + revisit  -> job-specific audit action
+        if kind == "job_request":
             self._audit.log_job_reply_rejected(
                 job_id=task_id, task_id=task_id,
                 reason="verb_mismatch", feishu_event_id=event_id,

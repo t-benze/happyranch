@@ -39,7 +39,7 @@ def _mint(db: Database, job_id: str = "SR-1"):
         feishu_message_id="om_root", org_slug="acme", task_id=job_id,
         chat_id="oc_xyz",
         expires_at=datetime(2099, 1, 1, tzinfo=timezone.utc),
-        kind="script_request",
+        kind="job_request",
     )
 
 
@@ -110,9 +110,9 @@ def test_script_request_revisit_is_verb_mismatch(tmp_path):
     # surfaces this rejection.
     audit_rows = db.get_audit_logs(task_id="SR-1")
     actions = {r["action"] for r in audit_rows}
-    assert "script_reply_rejected" in actions
+    assert "job_reply_rejected" in actions
     assert "escalation_reply_rejected" not in actions
-    reject_rows = [r for r in audit_rows if r["action"] == "script_reply_rejected"]
+    reject_rows = [r for r in audit_rows if r["action"] == "job_reply_rejected"]
     assert any(r["payload"]["reason"] == "verb_mismatch" for r in reject_rows)
 
 
@@ -135,7 +135,7 @@ def test_script_request_handler_exception_unconsumes(tmp_path):
 
     # Audit row carries the specific detail code, not just "handler_exception".
     audit_rows = db.get_audit_logs(task_id="SR-1")
-    reject_rows = [r for r in audit_rows if r["action"] == "script_reply_rejected"]
+    reject_rows = [r for r in audit_rows if r["action"] == "job_reply_rejected"]
     assert reject_rows, "expected a script_reply_rejected audit row"
     assert any(r["payload"]["reason"] == "not_pending" for r in reject_rows), (
         "expected reason='not_pending' but got "
