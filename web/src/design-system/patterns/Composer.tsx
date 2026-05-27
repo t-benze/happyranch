@@ -7,9 +7,9 @@
  * keyed by (orgSlug, threadId) with a 300ms debounce. Drafts survive
  * navigation and are cleared on successful send.
  *
- * Auto-grow, @-mention autocomplete, Cmd/Ctrl+Enter live in
- * MentionTextarea so the same typing experience is reused by other
- * surfaces (e.g. NewThreadDialog).
+ * Auto-grow, @-mention autocomplete, Enter-to-send (Shift+Enter for new
+ * line) live in MentionTextarea so the same typing experience is reused
+ * by other surfaces (e.g. NewThreadDialog).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@/design-system/primitives/Button';
@@ -77,8 +77,9 @@ interface ComposerProps {
   placeholder?: string;
   /**
    * Called with the markdown and addressedTo when the user presses Send or
-   * Cmd/Ctrl+Enter. May return a Promise; if it rejects (or a sync impl
-   * throws), the draft is preserved so the user can retry without retyping.
+   * Enter (Shift+Enter inserts a newline instead). May return a Promise;
+   * if it rejects (or a sync impl throws), the draft is preserved so the
+   * user can retry without retyping.
    */
   onSend: (markdown: string, addressedTo: string[]) => unknown | Promise<unknown>;
   /** Lets a parent focus the textarea (e.g. the R keyboard shortcut). */
@@ -123,7 +124,7 @@ export function Composer({
         onSubmit={() => { submit(); }}
         disabled={disabled || pending}
         placeholder={
-          placeholder ?? (disabled ? 'Thread is closed.' : 'Write a message… Cmd/Ctrl+Enter to send.')
+          placeholder ?? (disabled ? 'Thread is closed.' : 'Write a message… Enter to send, Shift+Enter for new line.')
         }
         ariaLabel="Compose follow-up"
         registerFocus={registerFocus}
@@ -148,5 +149,5 @@ export const meta = {
   import: "@/design-system/patterns/Composer",
   variants: {},
   consumes: ["components.textarea", "components.button"],
-  example: "<Composer onSend={(md, to) => {}} helper='Cmd/Ctrl+Enter to send' agents={[]} threadId='THR-001' />",
+  example: "<Composer onSend={(md, to) => {}} helper='Enter to send · Shift+Enter for new line' agents={[]} threadId='THR-001' />",
 } as const;

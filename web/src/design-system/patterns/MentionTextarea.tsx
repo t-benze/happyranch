@@ -7,10 +7,13 @@
  * Pure props in / events out. No persistence — the caller controls
  * `value` and chooses whether to back it with state, a draft store, etc.
  *
- * `onSubmit(value, addressedTo)` fires on Cmd/Ctrl+Enter when the
- * mention popup is closed. `addressedTo` is resolved against the agents
- * list (literal `@all` is always recognized; defaults to `['@all']` when
- * no known agent is mentioned).
+ * `onSubmit(value, addressedTo)` fires on Enter (and on Cmd/Ctrl+Enter for
+ * power users used to that keybind) when the mention popup is closed.
+ * Shift+Enter inserts a literal newline. IME composition is respected —
+ * Enter while composing CJK input commits the composition without
+ * triggering submit. `addressedTo` is resolved against the agents list
+ * (literal `@all` is always recognized; defaults to `['@all']` when no
+ * known agent is mentioned).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MentionAutocomplete } from './MentionAutocomplete';
@@ -150,11 +153,18 @@ export function MentionTextarea({
         onKeyUp={refreshMention}
         onClick={refreshMention}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !popupOpen) {
-            e.preventDefault();
-            if (onSubmit && value.trim() && !disabled) {
-              onSubmit(value, resolveAddressedTo(value, agents));
-            }
+          if (e.key !== 'Enter') return;
+          // Mention popup owns Enter (selects the active match).
+          if (popupOpen) return;
+          // Shift+Enter inserts a newline.
+          if (e.shiftKey) return;
+          // IME composition: Enter commits the candidate, must not submit.
+          // Safari fires keydown for the final Enter after composition with
+          // keyCode=229; check both isComposing and the legacy keyCode.
+          if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+          e.preventDefault();
+          if (onSubmit && value.trim() && !disabled) {
+            onSubmit(value, resolveAddressedTo(value, agents));
           }
         }}
         placeholder={placeholder}

@@ -50,7 +50,7 @@ describe('Composer / drafts', () => {
     // Debounced write — wait the 300ms.
     await new Promise((r) => setTimeout(r, 320));
     expect(localStorage.getItem('grassland:draft:test-org:THR-001')).toBe('hello');
-    await user.keyboard('{Meta>}{Enter}{/Meta}');
+    await user.keyboard('{Enter}');
     expect(NOOP_SEND).toHaveBeenCalled();
     expect(localStorage.getItem('grassland:draft:test-org:THR-001')).toBeNull();
   });
@@ -72,7 +72,7 @@ describe('Composer / drafts', () => {
     await user.type(ta, 'retry-me');
     await new Promise((r) => setTimeout(r, 320));
     expect(localStorage.getItem('grassland:draft:test-org:THR-002')).toBe('retry-me');
-    await user.keyboard('{Meta>}{Enter}{/Meta}');
+    await user.keyboard('{Enter}');
     expect(failingSend).toHaveBeenCalled();
     // Draft must survive the rejection — both in localStorage and in the textarea.
     expect(localStorage.getItem('grassland:draft:test-org:THR-002')).toBe('retry-me');
@@ -131,7 +131,7 @@ describe('Composer / mentions', () => {
     await user.keyboard('{Enter}'); // selects first match: design_lead
     expect(ta.value).toBe('hi @design_lead ');
     await user.type(ta, 'please review');
-    await user.keyboard('{Meta>}{Enter}{/Meta}');
+    await user.keyboard('{Enter}');
     expect(onSend).toHaveBeenCalledWith('hi @design_lead please review', ['design_lead']);
   });
 
@@ -150,8 +150,29 @@ describe('Composer / mentions', () => {
     );
     const ta = screen.getByRole<HTMLTextAreaElement>('textbox', { name: /compose/i });
     await user.type(ta, 'plain message');
-    await user.keyboard('{Meta>}{Enter}{/Meta}');
+    await user.keyboard('{Enter}');
     expect(onSend).toHaveBeenCalledWith('plain message', ['@all']);
+  });
+
+  it('Shift+Enter inserts a newline and does not send', async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn(async () => {});
+    render(
+      <WithOrgSlug slug="test-org">
+        <Composer
+          agents={TEST_AGENTS}
+          threadId="THR-shift"
+          pending={false}
+          onSend={onSend}
+        />
+      </WithOrgSlug>,
+    );
+    const ta = screen.getByRole<HTMLTextAreaElement>('textbox', { name: /compose/i });
+    await user.type(ta, 'line one');
+    await user.keyboard('{Shift>}{Enter}{/Shift}');
+    await user.type(ta, 'line two');
+    expect(ta.value).toBe('line one\nline two');
+    expect(onSend).not.toHaveBeenCalled();
   });
 
   it('literal @all is recognized regardless of agents list', async () => {
@@ -169,7 +190,7 @@ describe('Composer / mentions', () => {
     );
     const ta = screen.getByRole<HTMLTextAreaElement>('textbox', { name: /compose/i });
     await user.type(ta, 'heads-up @all');
-    await user.keyboard('{Meta>}{Enter}{/Meta}');
+    await user.keyboard('{Enter}');
     expect(onSend).toHaveBeenCalledWith('heads-up @all', ['@all']);
   });
 });
