@@ -125,13 +125,18 @@ async def run_job(
     cwd: str,
     stdout_path: str,
     stderr_path: str,
-    timeout_seconds: int,
+    max_runtime_seconds: int | None,
     publish: Callable[[dict], None],
 ) -> JobRunResult:
     """Spawn the script, pump streams, return JobRunResult.
 
     `publish` is called with each line event and the final terminal event.
     `job_id` is used only for the in-flight registry; pass None in unit tests.
+
+    `max_runtime_seconds=None` means unbounded — the runner awaits the
+    subprocess without an ``asyncio.wait_for`` wrapper. Positive int means
+    the subprocess is SIGTERM'd (then SIGKILL'd) on expiry and the result's
+    ``reason`` is set to ``"timeout"``.
     """
     binary = _interpreter_binary(interpreter)
     if binary is None:
@@ -170,7 +175,10 @@ async def run_job(
 
     reason: str | None = None
     try:
-        await asyncio.wait_for(proc.wait(), timeout=timeout_seconds)
+        if max_runtime_seconds is None:
+            await proc.wait()
+        else:
+            await asyncio.wait_for(proc.wait(), timeout=max_runtime_seconds)
         await asyncio.gather(pump_out, pump_err)
         status = "completed"
         exit_code = proc.returncode

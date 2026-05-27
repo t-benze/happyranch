@@ -78,7 +78,7 @@ def test_insert_and_get_job(db: Database):
     assert fetched.agent_name == "engineering_head"
     assert fetched.interpreter == JobInterpreter.BASH
     assert fetched.status == JobStatus.PENDING
-    assert fetched.timeout_seconds == 300
+    assert fetched.max_runtime_seconds is None  # new default: unbounded
     assert fetched.cwd_hint == "repos/web-app"
 
 
@@ -152,14 +152,14 @@ def test_transition_to_running(db: Database):
         reviewed_at="2026-05-23T10:10:00Z",
         started_at="2026-05-23T10:10:00Z",
         cwd_resolved="/abs/path",
-        timeout_seconds=600,
+        max_runtime_seconds=600,
         stdout_path="/abs/jobs/JOB-001.out",
         stderr_path="/abs/jobs/JOB-001.err",
     )
     fetched = db.get_job("JOB-001")
     assert fetched.status == JobStatus.RUNNING
     assert fetched.cwd_resolved == "/abs/path"
-    assert fetched.timeout_seconds == 600
+    assert fetched.max_runtime_seconds == 600
     assert fetched.started_at == "2026-05-23T10:10:00Z"
 
 
@@ -168,7 +168,7 @@ def test_transition_to_terminal_completed(db: Database):
     db.transition_job_to_running(
         "JOB-001", reviewer="founder", reviewed_at="2026-05-23T10:10:00Z",
         started_at="2026-05-23T10:10:00Z", cwd_resolved="/x",
-        timeout_seconds=300, stdout_path="/x/JOB-001.out", stderr_path="/x/JOB-001.err",
+        max_runtime_seconds=300, stdout_path="/x/JOB-001.out", stderr_path="/x/JOB-001.err",
     )
     db.transition_job_to_terminal(
         "JOB-001",

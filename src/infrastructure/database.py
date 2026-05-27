@@ -1514,7 +1514,7 @@ class Database:
                 stdout_head, stderr_head, stdout_path, stderr_path,
                 duration_ms, started_at, finished_at,
                 reviewed_at, reviewed_by, reject_reason,
-                cwd_resolved, timeout_seconds, created_at
+                cwd_resolved, max_runtime_seconds, created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 r.id, r.task_id, r.agent_name, r.title, r.rationale, r.script_text,
@@ -1522,7 +1522,7 @@ class Database:
                 r.stdout_head, r.stderr_head, r.stdout_path, r.stderr_path,
                 r.duration_ms, r.started_at, r.finished_at,
                 r.reviewed_at, r.reviewed_by, r.reject_reason,
-                r.cwd_resolved, r.timeout_seconds, r.created_at,
+                r.cwd_resolved, r.max_runtime_seconds, r.created_at,
             ),
         )
         self._conn.commit()
@@ -1561,7 +1561,7 @@ class Database:
             reviewed_by=row["reviewed_by"],
             reject_reason=row["reject_reason"],
             cwd_resolved=row["cwd_resolved"],
-            timeout_seconds=row["timeout_seconds"],
+            max_runtime_seconds=row["max_runtime_seconds"],
             created_at=row["created_at"],
         )
 
@@ -1619,16 +1619,16 @@ class Database:
         reviewed_at: str,
         started_at: str,
         cwd_resolved: str,
-        timeout_seconds: int,
+        max_runtime_seconds: int | None,
         stdout_path: str,
         stderr_path: str,
     ) -> None:
         cur = self._conn.execute(
             "UPDATE jobs SET "
             "status='running', reviewed_by=?, reviewed_at=?, started_at=?, "
-            "cwd_resolved=?, timeout_seconds=?, stdout_path=?, stderr_path=? "
+            "cwd_resolved=?, max_runtime_seconds=?, stdout_path=?, stderr_path=? "
             "WHERE id=? AND status='pending'",
-            (reviewer, reviewed_at, started_at, cwd_resolved, timeout_seconds,
+            (reviewer, reviewed_at, started_at, cwd_resolved, max_runtime_seconds,
              stdout_path, stderr_path, job_id),
         )
         self._conn.commit()

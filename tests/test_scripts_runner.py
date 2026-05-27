@@ -28,7 +28,7 @@ def test_run_job_captures_stdout_and_exit_zero(tmp_paths):
         cwd=str(tmp_paths["cwd"]),
         stdout_path=str(tmp_paths["stdout"]),
         stderr_path=str(tmp_paths["stderr"]),
-        timeout_seconds=10,
+        max_runtime_seconds=10,
         publish=lambda evt: None,
     ))
     assert result.exit_code == 0
@@ -46,7 +46,7 @@ def test_run_job_captures_stderr_and_nonzero_exit(tmp_paths):
         cwd=str(tmp_paths["cwd"]),
         stdout_path=str(tmp_paths["stdout"]),
         stderr_path=str(tmp_paths["stderr"]),
-        timeout_seconds=10,
+        max_runtime_seconds=10,
         publish=lambda evt: None,
     ))
     assert result.exit_code == 7
@@ -64,7 +64,7 @@ def test_run_job_publishes_line_events(tmp_paths):
         cwd=str(tmp_paths["cwd"]),
         stdout_path=str(tmp_paths["stdout"]),
         stderr_path=str(tmp_paths["stderr"]),
-        timeout_seconds=10,
+        max_runtime_seconds=10,
         publish=lambda evt: events.append(evt),
     ))
     kinds = [(e["stream"], e["line"]) for e in events if e.get("kind") == "line"]
@@ -84,7 +84,7 @@ def test_run_job_timeout_marks_failed(tmp_paths):
         cwd=str(tmp_paths["cwd"]),
         stdout_path=str(tmp_paths["stdout"]),
         stderr_path=str(tmp_paths["stderr"]),
-        timeout_seconds=1,
+        max_runtime_seconds=1,
         publish=lambda evt: None,
     ))
     assert result.status == "failed"
@@ -101,7 +101,7 @@ def test_run_job_missing_interpreter_raises(tmp_paths):
             cwd=str(tmp_paths["cwd"]),
             stdout_path=str(tmp_paths["stdout"]),
             stderr_path=str(tmp_paths["stderr"]),
-            timeout_seconds=10,
+            max_runtime_seconds=10,
             publish=lambda evt: None,
         ))
 
@@ -116,7 +116,7 @@ def test_in_flight_registry_clears_after_run(tmp_paths):
         cwd=str(tmp_paths["cwd"]),
         stdout_path=str(tmp_paths["stdout"]),
         stderr_path=str(tmp_paths["stderr"]),
-        timeout_seconds=10,
+        max_runtime_seconds=10,
         publish=lambda evt: None,
     ))
     assert "SR-T1" not in in_flight_job_ids()

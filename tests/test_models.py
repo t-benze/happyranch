@@ -219,6 +219,6 @@ def test_script_request_record_defaults():
         created_at="2026-05-23T10:00:00Z",
     )
     assert r.status == JobStatus.PENDING
-    assert r.timeout_seconds == 300
+    assert r.max_runtime_seconds is None  # unbounded by default
     assert r.cwd_hint is None
     assert r.exit_code is None

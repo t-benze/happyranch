@@ -263,5 +263,5 @@ class JobRecord(BaseModel):
     reviewed_by:      str | None = None
     reject_reason:    str | None = None
     cwd_resolved:     str | None = None
-    timeout_seconds:  int = 300
+    max_runtime_seconds: int | None = None
     created_at:       str

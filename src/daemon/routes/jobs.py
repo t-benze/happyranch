@@ -332,9 +332,10 @@ async def _run_job_core(
 
     timeout = (
         timeout_override if timeout_override is not None
-        else record.timeout_seconds
+        else record.max_runtime_seconds
     )
-    if timeout <= 0 or timeout > 86400:
+    # `timeout=None` means unbounded — skip the positive-range validation.
+    if timeout is not None and (timeout <= 0 or timeout > 86400):
         raise HTTPException(status_code=422, detail={"code": "invalid_timeout"})
 
     workspace_root = org.root / "workspaces" / record.agent_name
@@ -379,7 +380,7 @@ async def _run_job_core(
             reviewed_at=now,
             started_at=now,
             cwd_resolved=str(cwd_resolved),
-            timeout_seconds=timeout,
+            max_runtime_seconds=timeout,
             stdout_path=str(stdout_path),
             stderr_path=str(stderr_path),
         )
@@ -411,7 +412,7 @@ async def _run_job_core(
                 cwd=str(cwd_resolved),
                 stdout_path=str(stdout_path),
                 stderr_path=str(stderr_path),
-                timeout_seconds=timeout,
+                max_runtime_seconds=timeout,
                 publish=_sync_publish,
             )
         except FileNotFoundError:
