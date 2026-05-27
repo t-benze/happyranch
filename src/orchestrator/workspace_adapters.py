@@ -156,7 +156,7 @@ def _shared_assets_section() -> list[str]:
         "grassland assets get <name> --output <local-path>",
         "```\n",
         "Naming convention: prefix with your agent name + ISO date for",
-        "traceability, e.g. `dev_agent-2026-05-27-perf-report.pdf`. Names must",
+        "traceability, e.g. `dev_agent-YYYY-MM-DD-perf-report.pdf`. Names must",
         "match `[A-Za-z0-9._-]+`, max 200 chars. Per-file size cap: 10 MB.\n",
     ]
 
@@ -476,6 +476,8 @@ class CodexWorkspaceAdapter:
         completion contract. The skill itself is the source of truth.
         """
         workspace.mkdir(parents=True, exist_ok=True)
+        # Shared bootstrap sections (KB, learnings, assets) are assembled in
+        # Claude's _build_sections and flow through here unchanged.
         sections = ClaudeWorkspaceAdapter(self._settings, self._paths, slug=self._slug)._build_sections(
             agent_name,
             system_prompt,

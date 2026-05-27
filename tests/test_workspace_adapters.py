@@ -314,6 +314,8 @@ def test_codex_agents_md_includes_shared_assets_section(tmp_path: Path) -> None:
     content = (workspace / "AGENTS.md").read_text()
     assert "## Shared Assets" in content
     assert "grassland assets put" in content
+    assert "grassland assets list" in content
+    assert "grassland assets get" in content
 
 
 def test_opencode_agents_md_includes_shared_assets_section(tmp_path: Path) -> None:
@@ -328,3 +330,5 @@ def test_opencode_agents_md_includes_shared_assets_section(tmp_path: Path) -> No
     content = (workspace / "AGENTS.md").read_text()
     assert "## Shared Assets" in content
     assert "grassland assets put" in content
+    assert "grassland assets list" in content
+    assert "grassland assets get" in content
