@@ -116,7 +116,7 @@ class OpcClient:
         Raises on non-2xx.
         """
         params: dict[str, str] = {"agent": agent}
-        if name:
+        if name is not None:
             params["name"] = name
         with local_path.open("rb") as fh:
             files = {"file": (name or local_path.name, fh, "application/octet-stream")}

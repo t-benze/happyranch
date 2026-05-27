@@ -166,7 +166,7 @@ def test_cmd_assets_list_empty(capsys) -> None:
         cmd_assets_list(args)
 
     out = capsys.readouterr().out
-    assert "no assets" in out.lower() or out.strip() == ""
+    assert out.strip() == "no assets"
 
 
 # ── cmd_assets_get ───────────────────────────────────────────────────────────
