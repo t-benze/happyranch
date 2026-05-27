@@ -1641,6 +1641,44 @@ def cmd_kb_reindex(args: argparse.Namespace) -> None:
     print("ok: reindexed")
 
 
+def cmd_assets_put(args: argparse.Namespace) -> None:
+    client = OpcClient.from_env()
+    org_slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
+    info = client.put_asset(
+        slug=org_slug,
+        local_path=args.local_path,
+        name=args.name,
+        agent=args.agent,
+    )
+    print(f"uploaded {info['name']} ({info['size_bytes']}B)")
+
+
+def cmd_assets_list(args: argparse.Namespace) -> None:
+    client = OpcClient.from_env()
+    org_slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
+    body = client.list_assets(slug=org_slug)
+    assets = body["assets"]
+    if not assets:
+        print("no assets")
+        return
+    for a in assets:
+        print(f"{a['name']}\t{a['size_bytes']}\t{a['modified_at']}")
+
+
+def cmd_assets_get(args: argparse.Namespace) -> None:
+    client = OpcClient.from_env()
+    org_slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
+    data = client.get_asset(slug=org_slug, name=args.name)
+    args.output.write_bytes(data)
+    print(f"saved {len(data)}B to {args.output}")
+
+
 def cmd_talk_start(args: argparse.Namespace) -> None:
     client = OpcClient.from_env()
     slug = resolve_org_slug(
@@ -2788,6 +2826,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_kb_reindex = kb_sub.add_parser("reindex", help="Regenerate _index.md")
     p_kb_reindex.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
     p_kb_reindex.set_defaults(func=cmd_kb_reindex)
+
+    # grassland assets ...
+    p_assets = sub.add_parser("assets", help="Org-shared asset blobs (put/list/get)")
+    assets_sub = p_assets.add_subparsers(dest="assets_cmd", required=True)
+
+    p_assets_put = assets_sub.add_parser("put", help="Upload a local file to the org's shared assets")
+    p_assets_put.add_argument("local_path", type=Path, help="Local file to upload")
+    p_assets_put.add_argument("--name", default=None, help="Override stored filename (default: local basename)")
+    p_assets_put.add_argument("--agent", required=True, help="Agent name for audit attribution")
+    p_assets_put.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
+    p_assets_put.set_defaults(func=cmd_assets_put)
+
+    p_assets_list = assets_sub.add_parser("list", help="List asset names and sizes")
+    p_assets_list.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
+    p_assets_list.set_defaults(func=cmd_assets_list)
+
+    p_assets_get = assets_sub.add_parser("get", help="Download an asset by name")
+    p_assets_get.add_argument("name", help="Asset name to download")
+    p_assets_get.add_argument("--output", type=Path, required=True, help="Local path to write the asset bytes to")
+    p_assets_get.add_argument("--org", default=None, help="Org slug (or set GRASSLAND_ORG_SLUG; auto-inferred when only one org)")
+    p_assets_get.set_defaults(func=cmd_assets_get)
 
     # grassland talk ...
     p_talk = sub.add_parser("talk", help="Founder↔agent conversation flow")

@@ -1,6 +1,7 @@
 """HTTP client used by CLI commands and agent callbacks."""
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Iterator
 
 import httpx
@@ -100,6 +101,50 @@ class OpcClient:
         r = self.get(f"/api/v1/orgs/{slug}/tokens", params=params)
         r.raise_for_status()
         return r.json()["rollup"]
+
+    def put_asset(
+        self,
+        *,
+        slug: str,
+        local_path: Path,
+        name: str | None,
+        agent: str,
+    ) -> dict:
+        """Upload a local file to the org's shared assets store.
+
+        Calls ``POST /api/v1/orgs/{slug}/assets`` with multipart form data.
+        Raises on non-2xx.
+        """
+        params: dict[str, str] = {"agent": agent}
+        if name:
+            params["name"] = name
+        with local_path.open("rb") as fh:
+            files = {"file": (name or local_path.name, fh, "application/octet-stream")}
+            r = self._client.post(
+                f"/api/v1/orgs/{slug}/assets",
+                files=files,
+                params=params,
+            )
+        r.raise_for_status()
+        return r.json()
+
+    def list_assets(self, *, slug: str) -> dict:
+        """Return the org's asset listing.
+
+        Calls ``GET /api/v1/orgs/{slug}/assets``. Raises on non-2xx.
+        """
+        r = self._client.get(f"/api/v1/orgs/{slug}/assets")
+        r.raise_for_status()
+        return r.json()
+
+    def get_asset(self, *, slug: str, name: str) -> bytes:
+        """Download an asset by name and return its raw bytes.
+
+        Calls ``GET /api/v1/orgs/{slug}/assets/{name}``. Raises on non-2xx.
+        """
+        r = self._client.get(f"/api/v1/orgs/{slug}/assets/{name}")
+        r.raise_for_status()
+        return r.content
 
     def stream(self, method: str, path: str, **kwargs) -> Iterator[str]:
         """Yield server-sent event payload lines (data: ... only)."""
