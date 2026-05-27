@@ -35,14 +35,14 @@ SendConfirmFn = Callable[..., Awaitable[None]]
 SendErrorFn = Callable[..., Awaitable[None]]
 SendParseHintFn = Callable[..., Awaitable[None]]
 ResolveThreadFn = Callable[..., Awaitable[None]]
-RunScriptFn = Callable[..., Awaitable[dict]]
-RejectScriptFn = Callable[..., Awaitable[object]]
+RunJobFn = Callable[..., Awaitable[dict]]
+RejectJobFn = Callable[..., Awaitable[object]]
 
 # HTTPException detail codes raised by the script helpers that we want to
 # preserve verbatim in the audit row (instead of bucketing them as the
 # generic "handler_exception"). Keep in sync with
-# src/daemon/routes/scripts.py — run_script_from_notification and
-# reject_script_from_notification are the two raisers.
+# src/daemon/routes/scripts.py — run_job_from_notification and
+# reject_job_from_notification are the two raisers.
 _SCRIPT_HELPER_DETAIL_CODES = frozenset({
     "not_pending", "cwd_missing", "interpreter_unavailable",
     "invalid_cwd_override", "invalid_timeout", "unknown_script_request",
@@ -68,8 +68,8 @@ class FeishuEventListener:
         app_id: str,
         app_secret: str,
         domain: str,
-        run_script_from_notification: RunScriptFn | None = None,
-        reject_script_from_notification: RejectScriptFn | None = None,
+        run_job_from_notification: RunJobFn | None = None,
+        reject_job_from_notification: RejectJobFn | None = None,
         send_parse_hint: SendParseHintFn | None = None,
         resolve_thread_from_notification: ResolveThreadFn | None = None,
     ) -> None:
@@ -84,8 +84,8 @@ class FeishuEventListener:
         self._send_dispatch_error = send_dispatch_error
         self._send_parse_hint = send_parse_hint
         self._resolve_thread_from_notification = resolve_thread_from_notification
-        self._run_script_from_notification = run_script_from_notification
-        self._reject_script_from_notification = reject_script_from_notification
+        self._run_job_from_notification = run_job_from_notification
+        self._reject_job_from_notification = reject_job_from_notification
         self._allow_dispatch = allow_dispatch
         self._loop = loop
         self._app_id = app_id
@@ -322,11 +322,11 @@ class FeishuEventListener:
         # Branch 3: script_request + approve/reject
         if kind == "script_request" and decision in ("approve", "reject"):
             if (
-                self._run_script_from_notification is None
-                or self._reject_script_from_notification is None
+                self._run_job_from_notification is None
+                or self._reject_job_from_notification is None
             ):
-                self._audit.log_script_reply_rejected(
-                    sr_id=task_id, task_id=task_id,
+                self._audit.log_job_reply_rejected(
+                    job_id=task_id, task_id=task_id,
                     reason="handler_exception", feishu_event_id=event_id,
                 )
                 _close("rejected", "handler_exception")
@@ -334,13 +334,13 @@ class FeishuEventListener:
             from src.infrastructure.feishu.reply_parser import NO_RATIONALE
             try:
                 if decision == "approve":
-                    await self._run_script_from_notification(sr_id=task_id)
+                    await self._run_job_from_notification(job_id=task_id)
                 else:  # reject
                     rationale = parsed.rationale
                     if not rationale or rationale == NO_RATIONALE:
                         rationale = "(no rationale provided via Feishu)"
-                    await self._reject_script_from_notification(
-                        sr_id=task_id, reason=rationale,
+                    await self._reject_job_from_notification(
+                        job_id=task_id, reason=rationale,
                     )
             except Exception as exc:  # noqa: BLE001
                 reason_code = "handler_exception"
@@ -349,8 +349,8 @@ class FeishuEventListener:
                     code = detail.get("code")
                     if code in _SCRIPT_HELPER_DETAIL_CODES:
                         reason_code = code
-                self._audit.log_script_reply_rejected(
-                    sr_id=task_id, task_id=task_id,
+                self._audit.log_job_reply_rejected(
+                    job_id=task_id, task_id=task_id,
                     reason=reason_code, feishu_event_id=event_id,
                 )
                 _close("rejected", reason_code)
@@ -358,8 +358,8 @@ class FeishuEventListener:
             self._db.consume_escalation_notification(
                 msg.root_id, consumed_by="feishu-reply",
             )
-            self._audit.log_script_reply_processed(
-                sr_id=task_id, task_id=task_id,
+            self._audit.log_job_reply_processed(
+                job_id=task_id, task_id=task_id,
                 decision=decision, rationale=parsed.rationale,
                 feishu_event_id=event_id,
             )
@@ -371,8 +371,8 @@ class FeishuEventListener:
         #   - failure + approve/reject
         #   - script_request + revisit  -> script-specific audit action
         if kind == "script_request":
-            self._audit.log_script_reply_rejected(
-                sr_id=task_id, task_id=task_id,
+            self._audit.log_job_reply_rejected(
+                job_id=task_id, task_id=task_id,
                 reason="verb_mismatch", feishu_event_id=event_id,
             )
         else:
@@ -532,14 +532,14 @@ def maybe_start_feishu_listener_for_org(org, state, loop) -> None:
             message_id=message_id, slug=org.slug,
         )
 
-    async def _run_script_for_listener(*, sr_id):
-        from src.daemon.routes.jobs import run_script_from_notification
-        return await run_script_from_notification(org, sr_id=sr_id)
+    async def _run_job_for_listener(*, job_id):
+        from src.daemon.routes.jobs import run_job_from_notification
+        return await run_job_from_notification(org, job_id=job_id)
 
-    async def _reject_script_for_listener(*, sr_id, reason):
-        from src.daemon.routes.jobs import reject_script_from_notification
-        return await reject_script_from_notification(
-            org, sr_id=sr_id, reason=reason,
+    async def _reject_job_for_listener(*, job_id, reason):
+        from src.daemon.routes.jobs import reject_job_from_notification
+        return await reject_job_from_notification(
+            org, job_id=job_id, reason=reason,
         )
 
     listener = FeishuEventListener(
@@ -554,8 +554,8 @@ def maybe_start_feishu_listener_for_org(org, state, loop) -> None:
         send_dispatch_error=_send_error_for_listener,
         send_parse_hint=_send_parse_hint_for_listener,
         resolve_thread_from_notification=_resolve_thread_for_listener,
-        run_script_from_notification=_run_script_for_listener,
-        reject_script_from_notification=_reject_script_for_listener,
+        run_job_from_notification=_run_job_for_listener,
+        reject_job_from_notification=_reject_job_for_listener,
         allow_dispatch=allow_dispatch,
         loop=loop,
         app_id=org.feishu_app_id,

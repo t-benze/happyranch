@@ -10,8 +10,8 @@ from src.infrastructure.audit_logger import AuditLogger
 from src.infrastructure.database import Database
 from src.infrastructure.feishu.notifier import (
     EscalationNotifier,
-    _build_script_request_body,
-    _build_script_result_body,
+    _build_job_request_body,
+    _build_job_result_body,
     _SCRIPT_PREVIEW_CAP,
     _RESULT_OUTPUT_PREVIEW_CAP,
 )
@@ -19,9 +19,9 @@ from src.orchestrator.org_config import FeishuNotificationsConfig
 
 
 def test_request_body_renders_all_fields():
-    title, lines = _build_script_request_body(
+    title, lines = _build_job_request_body(
         slug="acme",
-        sr_id="SR-019",
+        job_id="SR-019",
         agent="engineering_head",
         task_id="TASK-91",
         title="Close PR #247",
@@ -49,8 +49,8 @@ def test_request_body_renders_all_fields():
 
 
 def test_request_body_missing_cwd_hint_renders_workspace_root():
-    _, lines = _build_script_request_body(
-        slug="acme", sr_id="SR-019", agent="a", task_id="T",
+    _, lines = _build_job_request_body(
+        slug="acme", job_id="SR-019", agent="a", task_id="T",
         title="t", rationale="r", script_text="s",
         interpreter="bash", cwd_hint=None,
     )
@@ -60,8 +60,8 @@ def test_request_body_missing_cwd_hint_renders_workspace_root():
 
 def test_request_body_truncates_long_script():
     long_script = "x" * (_SCRIPT_PREVIEW_CAP + 500)
-    _, lines = _build_script_request_body(
-        slug="acme", sr_id="SR-019", agent="a", task_id="T",
+    _, lines = _build_job_request_body(
+        slug="acme", job_id="SR-019", agent="a", task_id="T",
         title="t", rationale="r", script_text=long_script,
         interpreter="bash", cwd_hint=None,
     )
@@ -72,8 +72,8 @@ def test_request_body_truncates_long_script():
 
 def test_request_body_keeps_short_script_intact():
     short = "echo hi"
-    _, lines = _build_script_request_body(
-        slug="acme", sr_id="SR-019", agent="a", task_id="T",
+    _, lines = _build_job_request_body(
+        slug="acme", job_id="SR-019", agent="a", task_id="T",
         title="t", rationale="r", script_text=short,
         interpreter="bash", cwd_hint=None,
     )
@@ -83,8 +83,8 @@ def test_request_body_keeps_short_script_intact():
 
 
 def test_result_body_completed_branch():
-    title, lines = _build_script_result_body(
-        slug="acme", sr_id="SR-019", status="completed",
+    title, lines = _build_job_result_body(
+        slug="acme", job_id="SR-019", status="completed",
         exit_code=0, duration_ms=1400,
         stdout_head="✓ Closed pull request #247\n",
         stderr_head=None, reason=None,
@@ -99,8 +99,8 @@ def test_result_body_completed_branch():
 
 
 def test_result_body_failed_branch_with_reason():
-    title, lines = _build_script_result_body(
-        slug="acme", sr_id="SR-019", status="failed",
+    title, lines = _build_job_result_body(
+        slug="acme", job_id="SR-019", status="failed",
         exit_code=None, duration_ms=300_000,
         stdout_head=None,
         stderr_head="Error: connection timed out",
@@ -115,8 +115,8 @@ def test_result_body_failed_branch_with_reason():
 
 def test_result_body_truncates_long_output():
     long_out = "line\n" * 200
-    _, lines = _build_script_result_body(
-        slug="acme", sr_id="SR-019", status="completed",
+    _, lines = _build_job_result_body(
+        slug="acme", job_id="SR-019", status="completed",
         exit_code=0, duration_ms=100,
         stdout_head=long_out, stderr_head=None, reason=None,
     )
@@ -125,8 +125,8 @@ def test_result_body_truncates_long_output():
 
 
 def test_result_body_completed_unknown_exit_code():
-    title, _ = _build_script_result_body(
-        slug="acme", sr_id="SR-019", status="completed",
+    title, _ = _build_job_result_body(
+        slug="acme", job_id="SR-019", status="completed",
         exit_code=None, duration_ms=100,
         stdout_head=None, stderr_head=None, reason=None,
     )
@@ -137,8 +137,8 @@ def test_request_body_renders_each_script_line_as_separate_element():
     """Each script line must be its own body_lines element so Feishu renders
     each as a separate paragraph (one paragraph per element is the established
     convention in client.send_post_message)."""
-    _, lines = _build_script_request_body(
-        slug="acme", sr_id="SR-019", agent="a", task_id="T",
+    _, lines = _build_job_request_body(
+        slug="acme", job_id="SR-019", agent="a", task_id="T",
         title="t", rationale="r",
         script_text="set -euo pipefail\ngh pr close 247\necho done",
         interpreter="bash", cwd_hint=None,
@@ -156,8 +156,8 @@ def test_request_body_truncation_marker_is_its_own_element():
     """When the script is truncated, the truncation footer must be a separate
     element (not appended to the last script line)."""
     long_script = "x" * (_SCRIPT_PREVIEW_CAP + 500)
-    _, lines = _build_script_request_body(
-        slug="acme", sr_id="SR-019", agent="a", task_id="T",
+    _, lines = _build_job_request_body(
+        slug="acme", job_id="SR-019", agent="a", task_id="T",
         title="t", rationale="r", script_text=long_script,
         interpreter="bash", cwd_hint=None,
     )
@@ -202,8 +202,8 @@ def notifier_setup(tmp_path: Path):
 
 def test_send_script_request_happy_path(notifier_setup):
     notifier, db, client = notifier_setup
-    asyncio.run(notifier.send_script_request(
-        sr_id="SR-019", agent="engineering_head",
+    asyncio.run(notifier.send_job_request(
+        job_id="SR-019", agent="engineering_head",
         task_id="TASK-91", title="Close PR #247",
         rationale="ok", script_text="echo hi",
         interpreter="bash", cwd_hint="repos/web-app",
@@ -229,8 +229,8 @@ def test_send_script_request_swallows_send_failure(notifier_setup):
         raise RuntimeError("feishu down")
 
     client.send_post_message = boom
-    asyncio.run(notifier.send_script_request(
-        sr_id="SR-019", agent="a", task_id="TASK-91",
+    asyncio.run(notifier.send_job_request(
+        job_id="SR-019", agent="a", task_id="TASK-91",
         title="t", rationale="r", script_text="s",
         interpreter="bash", cwd_hint=None,
     ))
@@ -241,8 +241,8 @@ def test_send_script_request_swallows_send_failure(notifier_setup):
 
 def test_send_script_run_result_happy_path(notifier_setup):
     notifier, db, client = notifier_setup
-    asyncio.run(notifier.send_script_run_result(
-        sr_id="SR-019", task_id="TASK-91",
+    asyncio.run(notifier.send_job_run_result(
+        job_id="SR-019", task_id="TASK-91",
         parent_message_id="om_root_xyz",
         status="completed", exit_code=0, duration_ms=1400,
         stdout_head="ok", stderr_head=None, reason=None,
@@ -263,8 +263,8 @@ def test_send_script_run_result_swallows_send_failure(notifier_setup):
         raise RuntimeError("feishu down")
 
     client.send_thread_reply = boom
-    asyncio.run(notifier.send_script_run_result(
-        sr_id="SR-019", task_id="TASK-91",
+    asyncio.run(notifier.send_job_run_result(
+        job_id="SR-019", task_id="TASK-91",
         parent_message_id="om_root_xyz",
         status="failed", exit_code=None, duration_ms=0,
         stdout_head=None, stderr_head="x", reason="timeout",

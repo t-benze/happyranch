@@ -96,13 +96,13 @@ def _build_org(root, test_settings):
     return org
 
 
-def _seed_task_and_sr(org, *, task_id: str, sr_id: str):
+def _seed_task_and_sr(org, *, task_id: str, job_id: str):
     """Insert an active task assigned to dev_agent + a pending SR row."""
     from datetime import datetime, timezone
     from src.models import (
-        ScriptInterpreter,
-        ScriptRequestRecord,
-        ScriptRequestStatus,
+        JobInterpreter,
+        JobRecord,
+        JobStatus,
         TaskRecord,
         TaskStatus,
     )
@@ -113,13 +113,13 @@ def _seed_task_and_sr(org, *, task_id: str, sr_id: str):
         assigned_agent="dev_agent",
         status=TaskStatus.IN_PROGRESS,
     ))
-    org.db.insert_script_request(ScriptRequestRecord(
-        id=sr_id, task_id=task_id, agent_name="dev_agent",
+    org.db.insert_job(JobRecord(
+        id=job_id, task_id=task_id, agent_name="dev_agent",
         title="echo hi", rationale="smoke test",
         script_text="echo hello-from-sr",
-        interpreter=ScriptInterpreter.BASH,
+        interpreter=JobInterpreter.BASH,
         cwd_hint=None,
-        status=ScriptRequestStatus.PENDING,
+        status=JobStatus.PENDING,
         created_at=datetime.now(timezone.utc).isoformat(),
     ))
 
@@ -167,8 +167,8 @@ def _wait_for_message(fake_state, *, timeout: float = 5.0) -> bool:
 
 
 def _fake_completed_result():
-    from src.daemon.jobs_runner import ScriptRunResult
-    return ScriptRunResult(
+    from src.daemon.jobs_runner import JobRunResult
+    return JobRunResult(
         status="completed", exit_code=0, duration_ms=10,
         stdout_head="hello", stderr_head="",
         stdout_bytes=5, stderr_bytes=0,
@@ -187,19 +187,19 @@ def test_sr_submit_approve_runs_and_posts_follow_up(
     monkeypatch.setitem(org_state_mod._REGION_TO_DOMAIN, "feishu", base_url)
 
     org = _build_org(tmp_path / "orgs" / "test", test_settings)
-    _seed_task_and_sr(org, task_id="TASK-1", sr_id="SR-001")
+    _seed_task_and_sr(org, task_id="TASK-1", job_id="SR-001")
 
     # Stub out subprocess spawn — we don't want to execute arbitrary shell here.
     async def _fake_spawn(**_kwargs):
         return _fake_completed_result()
     monkeypatch.setattr(
-        "src.daemon.routes.jobs._spawn_script", _fake_spawn,
+        "src.daemon.routes.jobs._spawn_job", _fake_spawn,
     )
 
     # Fire the orchestrator push bridge (fire-and-forget; spawns a daemon thread
     # because we're calling from sync test context with no running loop).
-    org.orchestrator.notify_script_submitted(
-        sr_id="SR-001", agent="dev_agent", task_id="TASK-1",
+    org.orchestrator.notify_job_submitted(
+        job_id="SR-001", agent="dev_agent", task_id="TASK-1",
         title="echo hi", rationale="smoke test",
         script_text="echo hello-from-sr",
         interpreter="bash", cwd_hint=None,
@@ -233,24 +233,24 @@ def test_sr_submit_approve_runs_and_posts_follow_up(
         event = _make_event(root_id=feishu_message_id, text="APPROVE\nlgtm")
         loop.run_until_complete(org.feishu_listener._handle_event_async(event))
 
-        # The listener has invoked run_script_from_notification, which
+        # The listener has invoked run_job_from_notification, which
         # spawned the _run_and_persist runner task on this loop. Drive the
         # loop until the SR row reaches a terminal status.
         def _terminal():
-            row = org.db.get_script_request("SR-001")
+            row = org.db.get_job("SR-001")
             return row is not None and row.status.value in ("completed", "failed", "rejected")
 
         assert _drive_until(loop, _terminal, timeout=5.0), (
             f"SR did not reach terminal status; "
-            f"current={org.db.get_script_request('SR-001').status.value}"
+            f"current={org.db.get_job('SR-001').status.value}"
         )
 
-        sr = org.db.get_script_request("SR-001")
+        sr = org.db.get_job("SR-001")
         assert sr.status.value == "completed"
         assert sr.exit_code == 0
         assert sr.stdout_head == "hello"
 
-        # Drain the follow-up notify_script_run_result task — created on
+        # Drain the follow-up notify_job_run_result task — created on
         # this loop via loop.create_task(...).
         assert _drive_until(
             loop, lambda: len(fake_state["thread_replies"]) >= 1, timeout=5.0,
@@ -292,18 +292,18 @@ def test_sr_submit_reject_transitions_and_posts_no_follow_up(
     monkeypatch.setitem(org_state_mod._REGION_TO_DOMAIN, "feishu", base_url)
 
     org = _build_org(tmp_path / "orgs" / "test", test_settings)
-    _seed_task_and_sr(org, task_id="TASK-2", sr_id="SR-001")
+    _seed_task_and_sr(org, task_id="TASK-2", job_id="SR-001")
 
     # Belt-and-suspenders: even if reject path accidentally runs the script,
     # don't let it actually fork a subprocess.
     async def _fake_spawn(**_kwargs):
         return _fake_completed_result()
     monkeypatch.setattr(
-        "src.daemon.routes.jobs._spawn_script", _fake_spawn,
+        "src.daemon.routes.jobs._spawn_job", _fake_spawn,
     )
 
-    org.orchestrator.notify_script_submitted(
-        sr_id="SR-001", agent="dev_agent", task_id="TASK-2",
+    org.orchestrator.notify_job_submitted(
+        job_id="SR-001", agent="dev_agent", task_id="TASK-2",
         title="echo hi", rationale="smoke test",
         script_text="echo hello-from-sr",
         interpreter="bash", cwd_hint=None,
@@ -319,7 +319,7 @@ def test_sr_submit_reject_transitions_and_posts_no_follow_up(
         loop.run_until_complete(org.feishu_listener._handle_event_async(event))
 
         # Reject is synchronous — the row should be rejected immediately.
-        sr = org.db.get_script_request("SR-001")
+        sr = org.db.get_job("SR-001")
         assert sr.status.value == "rejected"
         assert sr.reject_reason == "not needed"
 

@@ -226,7 +226,7 @@ class ThreadInvocation(BaseModel):
     decline_reason: str | None = None
 
 
-class ScriptRequestStatus(StrEnum):
+class JobStatus(StrEnum):
     PENDING   = "pending"
     REJECTED  = "rejected"
     RUNNING   = "running"
@@ -234,23 +234,23 @@ class ScriptRequestStatus(StrEnum):
     FAILED    = "failed"
 
 
-class ScriptInterpreter(StrEnum):
+class JobInterpreter(StrEnum):
     BASH    = "bash"
     SH      = "sh"
     ZSH     = "zsh"
     PYTHON3 = "python3"
 
 
-class ScriptRequestRecord(BaseModel):
+class JobRecord(BaseModel):
     id:               str
     task_id:          str
     agent_name:       str
     title:            str
     rationale:        str
     script_text:      str
-    interpreter:      ScriptInterpreter
+    interpreter:      JobInterpreter
     cwd_hint:         str | None = None
-    status:           ScriptRequestStatus = ScriptRequestStatus.PENDING
+    status:           JobStatus = JobStatus.PENDING
     exit_code:        int | None = None
     stdout_head:      str | None = None
     stderr_head:      str | None = None

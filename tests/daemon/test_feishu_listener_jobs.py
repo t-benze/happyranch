@@ -28,15 +28,15 @@ def _mk_listener(tmp_path: Path):
         send_dispatch_error=AsyncMock(),
         allow_dispatch=False,
         loop=loop, app_id="x", app_secret="x", domain="feishu",
-        run_script_from_notification=AsyncMock(return_value={"id": "SR-1", "status": "running"}),
-        reject_script_from_notification=AsyncMock(),
+        run_job_from_notification=AsyncMock(return_value={"id": "SR-1", "status": "running"}),
+        reject_job_from_notification=AsyncMock(),
     )
     return listener, db, loop
 
 
-def _mint(db: Database, sr_id: str = "SR-1"):
+def _mint(db: Database, job_id: str = "SR-1"):
     db.mint_escalation_notification(
-        feishu_message_id="om_root", org_slug="acme", task_id=sr_id,
+        feishu_message_id="om_root", org_slug="acme", task_id=job_id,
         chat_id="oc_xyz",
         expires_at=datetime(2099, 1, 1, tzinfo=timezone.utc),
         kind="script_request",
@@ -63,9 +63,9 @@ def test_script_request_approve_routes_to_run_helper(tmp_path):
     _mint(db)
     loop.run_until_complete(l._handle_event_async(_mk_event("APPROVE\nlgtm")))
 
-    l._run_script_from_notification.assert_called_once()
-    kwargs = l._run_script_from_notification.call_args.kwargs
-    assert kwargs["sr_id"] == "SR-1"
+    l._run_job_from_notification.assert_called_once()
+    kwargs = l._run_job_from_notification.call_args.kwargs
+    assert kwargs["job_id"] == "SR-1"
 
     row = db.get_escalation_notification("om_root")
     assert row["consumed_at"] is not None
@@ -77,9 +77,9 @@ def test_script_request_reject_routes_to_reject_helper(tmp_path):
     _mint(db)
     loop.run_until_complete(l._handle_event_async(_mk_event("REJECT\nnot a fit")))
 
-    l._reject_script_from_notification.assert_called_once()
-    kwargs = l._reject_script_from_notification.call_args.kwargs
-    assert kwargs["sr_id"] == "SR-1"
+    l._reject_job_from_notification.assert_called_once()
+    kwargs = l._reject_job_from_notification.call_args.kwargs
+    assert kwargs["job_id"] == "SR-1"
     assert kwargs["reason"] == "not a fit"
 
     row = db.get_escalation_notification("om_root")
@@ -91,7 +91,7 @@ def test_script_request_reject_with_empty_body_uses_fallback_reason(tmp_path):
     _mint(db)
     loop.run_until_complete(l._handle_event_async(_mk_event("REJECT")))
 
-    kwargs = l._reject_script_from_notification.call_args.kwargs
+    kwargs = l._reject_job_from_notification.call_args.kwargs
     assert kwargs["reason"] == "(no rationale provided via Feishu)"
 
 
@@ -100,8 +100,8 @@ def test_script_request_revisit_is_verb_mismatch(tmp_path):
     _mint(db)
     loop.run_until_complete(l._handle_event_async(_mk_event("REVISIT\nplease")))
 
-    l._run_script_from_notification.assert_not_called()
-    l._reject_script_from_notification.assert_not_called()
+    l._run_job_from_notification.assert_not_called()
+    l._reject_job_from_notification.assert_not_called()
     row = db.get_escalation_notification("om_root")
     assert row["consumed_at"] is None
 
@@ -123,7 +123,7 @@ def test_script_request_handler_exception_unconsumes(tmp_path):
     from fastapi import HTTPException
     l, db, loop = _mk_listener(tmp_path)
     _mint(db)
-    l._run_script_from_notification = AsyncMock(
+    l._run_job_from_notification = AsyncMock(
         side_effect=HTTPException(
             status_code=409, detail={"code": "not_pending", "status": "rejected"},
         ),

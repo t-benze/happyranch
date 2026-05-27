@@ -1491,11 +1491,11 @@ class Database:
         return f"THR-{n:03d}"
 
     @_synchronized
-    def next_script_request_id(self) -> str:
+    def next_job_id(self) -> str:
         """Return the next available SR-NNN id.
 
-        Callers must hold DaemonState.db_lock across the next_script_request_id()
-        + insert_script_request() pair to avoid duplicate IDs under concurrent
+        Callers must hold DaemonState.db_lock across the next_job_id()
+        + insert_job() pair to avoid duplicate IDs under concurrent
         requests (same requirement as next_task_id / next_talk_id / next_thread_id).
         """
         cursor = self._conn.execute(
@@ -1506,7 +1506,7 @@ class Database:
         return f"SR-{n:03d}"
 
     @_synchronized
-    def insert_script_request(self, r: "ScriptRequestRecord") -> None:
+    def insert_job(self, r: "JobRecord") -> None:
         self._conn.execute(
             """INSERT INTO script_requests (
                 id, task_id, agent_name, title, rationale, script_text,
@@ -1528,27 +1528,27 @@ class Database:
         self._conn.commit()
 
     @_synchronized
-    def get_script_request(self, sr_id: str) -> "ScriptRequestRecord | None":
+    def get_job(self, job_id: str) -> "JobRecord | None":
         row = self._conn.execute(
-            "SELECT * FROM script_requests WHERE id = ?", (sr_id,)
+            "SELECT * FROM script_requests WHERE id = ?", (job_id,)
         ).fetchone()
         if row is None:
             return None
-        return self._row_to_script_request(row)
+        return self._row_to_job(row)
 
     @staticmethod
-    def _row_to_script_request(row) -> "ScriptRequestRecord":
-        from src.models import ScriptRequestRecord, ScriptRequestStatus, ScriptInterpreter
-        return ScriptRequestRecord(
+    def _row_to_job(row) -> "JobRecord":
+        from src.models import JobRecord, JobStatus, JobInterpreter
+        return JobRecord(
             id=row["id"],
             task_id=row["task_id"],
             agent_name=row["agent_name"],
             title=row["title"],
             rationale=row["rationale"],
             script_text=row["script_text"],
-            interpreter=ScriptInterpreter(row["interpreter"]),
+            interpreter=JobInterpreter(row["interpreter"]),
             cwd_hint=row["cwd_hint"],
-            status=ScriptRequestStatus(row["status"]),
+            status=JobStatus(row["status"]),
             exit_code=row["exit_code"],
             stdout_head=row["stdout_head"],
             stderr_head=row["stderr_head"],
@@ -1566,14 +1566,14 @@ class Database:
         )
 
     @_synchronized
-    def list_script_requests(
+    def list_jobs_db(
         self,
         *,
         status: str | list[str] | None = None,
         agent: str | None = None,
         task_id: str | None = None,
         limit: int = 50,
-    ) -> list["ScriptRequestRecord"]:
+    ) -> list["JobRecord"]:
         clauses: list[str] = []
         params: list = []
         if status is not None:
@@ -1594,26 +1594,26 @@ class Database:
             f"ORDER BY created_at DESC, id DESC LIMIT ?",
             params,
         ).fetchall()
-        return [self._row_to_script_request(r) for r in rows]
+        return [self._row_to_job(r) for r in rows]
 
     @_synchronized
-    def transition_script_to_rejected(
-        self, sr_id: str, *, reviewer: str, reason: str, reviewed_at: str
+    def transition_job_to_rejected(
+        self, job_id: str, *, reviewer: str, reason: str, reviewed_at: str
     ) -> None:
         cur = self._conn.execute(
             "UPDATE script_requests "
             "SET status='rejected', reviewed_by=?, reject_reason=?, reviewed_at=? "
             "WHERE id=? AND status='pending'",
-            (reviewer, reason, reviewed_at, sr_id),
+            (reviewer, reason, reviewed_at, job_id),
         )
         self._conn.commit()
         if cur.rowcount == 0:
-            raise ValueError(f"not_pending: SR {sr_id} cannot be rejected")
+            raise ValueError(f"not_pending: SR {job_id} cannot be rejected")
 
     @_synchronized
-    def transition_script_to_running(
+    def transition_job_to_running(
         self,
-        sr_id: str,
+        job_id: str,
         *,
         reviewer: str,
         reviewed_at: str,
@@ -1629,18 +1629,18 @@ class Database:
             "cwd_resolved=?, timeout_seconds=?, stdout_path=?, stderr_path=? "
             "WHERE id=? AND status='pending'",
             (reviewer, reviewed_at, started_at, cwd_resolved, timeout_seconds,
-             stdout_path, stderr_path, sr_id),
+             stdout_path, stderr_path, job_id),
         )
         self._conn.commit()
         if cur.rowcount == 0:
-            raise ValueError(f"not_pending: SR {sr_id} cannot transition to running")
+            raise ValueError(f"not_pending: SR {job_id} cannot transition to running")
 
     @_synchronized
-    def transition_script_to_terminal(
+    def transition_job_to_terminal(
         self,
-        sr_id: str,
+        job_id: str,
         *,
-        status: "ScriptRequestStatus",
+        status: "JobStatus",
         exit_code: int | None,
         finished_at: str,
         duration_ms: int,
@@ -1655,14 +1655,14 @@ class Database:
             "stdout_head=?, stderr_head=? "
             "WHERE id=? AND status='running'",
             (status.value, exit_code, finished_at, duration_ms,
-             stdout_head, stderr_head, sr_id),
+             stdout_head, stderr_head, job_id),
         )
         self._conn.commit()
         if cur.rowcount == 0:
-            raise ValueError(f"not_running: SR {sr_id} cannot transition to terminal")
+            raise ValueError(f"not_running: SR {job_id} cannot transition to terminal")
 
     @_synchronized
-    def recover_orphaned_running_scripts(self, *, now_iso: str) -> list[str]:
+    def recover_orphaned_running_jobs(self, *, now_iso: str) -> list[str]:
         """Force-transition any SR left in 'running' state to 'failed'.
 
         Called from the daemon FastAPI lifespan on startup. The subprocess
@@ -1681,7 +1681,7 @@ class Database:
             "duration_ms=COALESCE(duration_ms, 0), "
             "stderr_head=COALESCE(stderr_head, '') || '\n[daemon restart killed run]' "
             "WHERE id=?",
-            [(now_iso, sr_id) for sr_id in ids],
+            [(now_iso, job_id) for job_id in ids],
         )
         self._conn.commit()
         return ids
@@ -2326,7 +2326,7 @@ class Database:
 
     @_synchronized
     def get_latest_notification_for_sr(
-        self, sr_id: str, *, kind: str,
+        self, job_id: str, *, kind: str,
     ) -> dict | None:
         """Look up the most-recent escalation_notifications row for an SR.
 
@@ -2341,7 +2341,7 @@ class Database:
                FROM escalation_notifications
                WHERE task_id = ? AND kind = ?
                ORDER BY created_at DESC LIMIT 1""",
-            (sr_id, kind),
+            (job_id, kind),
         )
         row = cur.fetchone()
         return dict(row) if row is not None else None

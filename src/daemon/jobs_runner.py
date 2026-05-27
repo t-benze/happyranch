@@ -56,10 +56,10 @@ _RUNNER_TASKS: dict[str, asyncio.Task] = {}
 _HEAD_CAP_BYTES = 65536  # spec §3.1, §6.2
 
 
-def register_runner_task(sr_id: str, task: asyncio.Task) -> None:
+def register_runner_task(job_id: str, task: asyncio.Task) -> None:
     """Register a background _run_and_persist task so shutdown can await it."""
-    _RUNNER_TASKS[sr_id] = task
-    task.add_done_callback(lambda _t: _RUNNER_TASKS.pop(sr_id, None))
+    _RUNNER_TASKS[job_id] = task
+    task.add_done_callback(lambda _t: _RUNNER_TASKS.pop(job_id, None))
 
 
 def _interpreter_binary(interpreter: str) -> str | None:
@@ -71,7 +71,7 @@ def _now_iso() -> str:
 
 
 @dataclass
-class ScriptRunResult:
+class JobRunResult:
     status: str           # "completed" | "failed"
     exit_code: int | None
     duration_ms: int
@@ -117,9 +117,9 @@ async def _pump_stream(
             publish({"kind": "line", "stream": label, "line": text, "ts": _now_iso()})
 
 
-async def run_script(
+async def run_job(
     *,
-    sr_id: str | None = None,
+    job_id: str | None = None,
     script_text: str,
     interpreter: str,
     cwd: str,
@@ -127,11 +127,11 @@ async def run_script(
     stderr_path: str,
     timeout_seconds: int,
     publish: Callable[[dict], None],
-) -> ScriptRunResult:
-    """Spawn the script, pump streams, return ScriptRunResult.
+) -> JobRunResult:
+    """Spawn the script, pump streams, return JobRunResult.
 
     `publish` is called with each line event and the final terminal event.
-    `sr_id` is used only for the in-flight registry; pass None in unit tests.
+    `job_id` is used only for the in-flight registry; pass None in unit tests.
     """
     binary = _interpreter_binary(interpreter)
     if binary is None:
@@ -148,8 +148,8 @@ async def run_script(
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
     )
-    if sr_id is not None:
-        _INFLIGHT[sr_id] = proc
+    if job_id is not None:
+        _INFLIGHT[job_id] = proc
 
     proc.stdin.write(script_text.encode("utf-8"))
     proc.stdin.close()
@@ -199,8 +199,8 @@ async def run_script(
         status = "failed"
         exit_code = proc.returncode
     finally:
-        if sr_id is not None:
-            _INFLIGHT.pop(sr_id, None)
+        if job_id is not None:
+            _INFLIGHT.pop(job_id, None)
 
     finished = datetime.now(timezone.utc)
     duration_ms = int((finished - started).total_seconds() * 1000)
@@ -210,7 +210,7 @@ async def run_script(
     stdout_head_str = b"".join(stdout_head).decode("utf-8", errors="replace") + head_marker_stdout.decode()
     stderr_head_str = b"".join(stderr_head).decode("utf-8", errors="replace") + head_marker_stderr.decode()
 
-    result = ScriptRunResult(
+    result = JobRunResult(
         status=status,
         exit_code=exit_code,
         duration_ms=duration_ms,
@@ -234,7 +234,7 @@ async def run_script(
     return result
 
 
-def in_flight_sr_ids() -> list[str]:
+def in_flight_job_ids() -> list[str]:
     return list(_INFLIGHT.keys())
 
 
@@ -251,14 +251,14 @@ async def terminate_all_inflight(
     in the meantime.
     """
     procs = list(_INFLIGHT.items())
-    for sr_id, proc in procs:
+    for job_id, proc in procs:
         try:
             os.killpg(proc.pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
     if procs:
         await asyncio.sleep(grace_seconds)
-        for sr_id, proc in procs:
+        for job_id, proc in procs:
             if proc.returncode is None:
                 try:
                     os.killpg(proc.pid, signal.SIGKILL)

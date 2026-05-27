@@ -11,15 +11,15 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from src.daemon.auth import require_token
-from src.daemon.event_bus import script_topic
+from src.daemon.event_bus import job_topic
 from src.daemon.routes._org_dep import OrgDep
-from src.daemon.jobs_runner import run_script as _spawn_script
+from src.daemon.jobs_runner import run_job as _spawn_job
 from src.daemon.jobs_runner import _interpreter_binary
 from src.infrastructure.audit_logger import AuditLogger
 from src.models import (
-    ScriptInterpreter,
-    ScriptRequestRecord,
-    ScriptRequestStatus,
+    JobInterpreter,
+    JobRecord,
+    JobStatus,
 )
 
 router = APIRouter(dependencies=[require_token()])
@@ -62,7 +62,7 @@ class SubmitBody(BaseModel):
 
 
 @router.post("/jobs/submit", status_code=201)
-async def submit_script(slug: str, body: SubmitBody, org: OrgDep) -> dict:
+async def submit_job(slug: str, body: SubmitBody, org: OrgDep) -> dict:
     # §5.1 validation order.
 
     # 1. Task exists.
@@ -126,25 +126,25 @@ async def submit_script(slug: str, body: SubmitBody, org: OrgDep) -> dict:
 
     # Effect: allocate id, insert row, audit.
     async with org.db_lock:
-        sr_id = org.db.next_script_request_id()
-        record = ScriptRequestRecord(
-            id=sr_id,
+        job_id = org.db.next_job_id()
+        record = JobRecord(
+            id=job_id,
             task_id=body.task_id,
             agent_name=agent,
             title=title,
             rationale=rationale,
             script_text=body.script,
-            interpreter=ScriptInterpreter(body.interpreter),
+            interpreter=JobInterpreter(body.interpreter),
             cwd_hint=cwd_hint,
-            status=ScriptRequestStatus.PENDING,
+            status=JobStatus.PENDING,
             created_at=_now_iso(),
         )
-        org.db.insert_script_request(record)
+        org.db.insert_job(record)
 
     audit = AuditLogger(org.db)
-    audit.log_script_submitted(
+    audit.log_job_submitted(
         task_id=body.task_id,
-        sr_id=sr_id,
+        job_id=job_id,
         agent=agent,
         title=title,
         interpreter=body.interpreter,
@@ -155,13 +155,13 @@ async def submit_script(slug: str, body: SubmitBody, org: OrgDep) -> dict:
 
     # Fire-and-forget Feishu push (no-op when notifier is unset).
     if getattr(org, "orchestrator", None) is not None:
-        org.orchestrator.notify_script_submitted(
-            sr_id=sr_id, agent=agent, task_id=body.task_id,
+        org.orchestrator.notify_job_submitted(
+            job_id=job_id, agent=agent, task_id=body.task_id,
             title=title, rationale=rationale, script_text=body.script,
             interpreter=body.interpreter, cwd_hint=cwd_hint,
         )
 
-    return {"id": sr_id, "status": "pending", "created_at": record.created_at}
+    return {"id": job_id, "status": "pending", "created_at": record.created_at}
 
 
 _MAX_REJECT_REASON_LEN = 1000
@@ -171,20 +171,20 @@ class RejectBody(BaseModel):
     reason: str
 
 
-async def reject_script_from_notification(
-    org, *, sr_id: str, reason: str,
-) -> ScriptRequestRecord:
+async def reject_job_from_notification(
+    org, *, job_id: str, reason: str,
+) -> JobRecord:
     """In-process reject path used by the Feishu listener.
 
-    Same validation + transition + audit as POST /jobs/{sr_id}/reject,
+    Same validation + transition + audit as POST /jobs/{job_id}/reject,
     minus the request-body parsing. Raises HTTPException on failure with
     the same status/detail shape the route returns.
     """
-    record = org.db.get_script_request(sr_id)
+    record = org.db.get_job(job_id)
     if record is None:
         raise HTTPException(
             status_code=404,
-            detail={"code": "unknown_script_request", "sr_id": sr_id},
+            detail={"code": "unknown_script_request", "job_id": job_id},
         )
 
     reason_stripped = reason.strip()
@@ -196,7 +196,7 @@ async def reject_script_from_notification(
             detail={"code": "reason_too_long", "max": _MAX_REJECT_REASON_LEN},
         )
 
-    if record.status != ScriptRequestStatus.PENDING:
+    if record.status != JobStatus.PENDING:
         raise HTTPException(
             status_code=409,
             detail={"code": "not_pending", "status": record.status.value},
@@ -204,22 +204,22 @@ async def reject_script_from_notification(
 
     reviewed_at = _now_iso()
     try:
-        org.db.transition_script_to_rejected(
-            sr_id, reviewer="founder", reason=reason_stripped,
+        org.db.transition_job_to_rejected(
+            job_id, reviewer="founder", reason=reason_stripped,
             reviewed_at=reviewed_at,
         )
     except ValueError:
         # Race: someone else acted between our read and our write.
         raise HTTPException(status_code=409, detail={"code": "not_pending"})
 
-    AuditLogger(org.db).log_script_rejected(
-        task_id=record.task_id, sr_id=sr_id,
+    AuditLogger(org.db).log_job_rejected(
+        task_id=record.task_id, job_id=job_id,
         reviewer="founder", reason=reason_stripped,
     )
-    return org.db.get_script_request(sr_id)
+    return org.db.get_job(job_id)
 
 
-def _consume_open_feishu_notification(org, sr_id: str) -> None:
+def _consume_open_feishu_notification(org, job_id: str) -> None:
     """Mark any open kind=script_request Feishu notification as consumed by
     'cli-fallback'.
 
@@ -228,7 +228,7 @@ def _consume_open_feishu_notification(org, sr_id: str) -> None:
     a later Feishu reply, which would otherwise hit `not_pending` in the
     listener and leave the row stale until reply_ttl_hours expiry.
     """
-    row = org.db.get_latest_notification_for_sr(sr_id, kind="script_request")
+    row = org.db.get_latest_notification_for_sr(job_id, kind="script_request")
     if row is None or row["consumed_at"] is not None:
         return
     org.db.consume_escalation_notification(
@@ -236,12 +236,12 @@ def _consume_open_feishu_notification(org, sr_id: str) -> None:
     )
 
 
-@router.post("/jobs/{sr_id}/reject")
-async def reject_script(slug: str, sr_id: str, body: RejectBody, org: OrgDep) -> dict:
-    updated = await reject_script_from_notification(
-        org, sr_id=sr_id, reason=body.reason,
+@router.post("/jobs/{job_id}/reject")
+async def reject_job(slug: str, job_id: str, body: RejectBody, org: OrgDep) -> dict:
+    updated = await reject_job_from_notification(
+        org, job_id=job_id, reason=body.reason,
     )
-    _consume_open_feishu_notification(org, sr_id)
+    _consume_open_feishu_notification(org, job_id)
     return updated.model_dump()
 
 
@@ -249,7 +249,7 @@ _VALID_STATUSES = {"pending", "rejected", "running", "completed", "failed"}
 
 
 @router.get("/jobs/")
-async def list_scripts(
+async def list_jobs(
     slug: str,
     org: OrgDep,
     status: str | None = "pending",
@@ -266,17 +266,17 @@ async def list_scripts(
         for s in status_filter:
             if s not in _VALID_STATUSES:
                 raise HTTPException(status_code=422, detail={"code": "invalid_status", "got": s})
-    rows = org.db.list_script_requests(
+    rows = org.db.list_jobs_db(
         status=status_filter, agent=agent, task_id=task_id, limit=limit,
     )
     return {"scripts": [r.model_dump() for r in rows]}
 
 
-@router.get("/jobs/{sr_id}")
-async def get_script(slug: str, sr_id: str, org: OrgDep) -> dict:
-    record = org.db.get_script_request(sr_id)
+@router.get("/jobs/{job_id}")
+async def get_job_route(slug: str, job_id: str, org: OrgDep) -> dict:
+    record = org.db.get_job(job_id)
     if record is None:
-        raise HTTPException(status_code=404, detail={"code": "unknown_script_request", "sr_id": sr_id})
+        raise HTTPException(status_code=404, detail={"code": "unknown_script_request", "job_id": job_id})
     return record.model_dump()
 
 
@@ -297,8 +297,8 @@ def _resolve_cwd(
     return workspace_root
 
 
-async def run_script_from_notification(
-    org, *, sr_id: str,
+async def run_job_from_notification(
+    org, *, job_id: str,
 ) -> dict:
     """In-process run path used by the Feishu listener.
 
@@ -306,25 +306,25 @@ async def run_script_from_notification(
     Returns the same 202-style dict the HTTP route returns. Raises
     HTTPException on failure with the same status/detail shape.
     """
-    return await _run_script_core(
-        org, sr_id=sr_id,
+    return await _run_job_core(
+        org, job_id=job_id,
         cwd_override=None, timeout_override=None,
     )
 
 
-async def _run_script_core(
-    org, *, sr_id: str,
+async def _run_job_core(
+    org, *, job_id: str,
     cwd_override: str | None, timeout_override: int | None,
 ) -> dict:
     """Shared core for HTTP and in-process run paths."""
-    record = org.db.get_script_request(sr_id)
+    record = org.db.get_job(job_id)
     if record is None:
         raise HTTPException(
             status_code=404,
-            detail={"code": "unknown_script_request", "sr_id": sr_id},
+            detail={"code": "unknown_script_request", "job_id": job_id},
         )
 
-    if record.status != ScriptRequestStatus.PENDING:
+    if record.status != JobStatus.PENDING:
         raise HTTPException(
             status_code=409,
             detail={"code": "not_pending", "status": record.status.value},
@@ -366,15 +366,15 @@ async def _run_script_core(
     # Allocate output paths under <runtime>/orgs/<slug>/scripts/.
     scripts_dir = org.root / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
-    stdout_path = scripts_dir / f"{sr_id}.out"
-    stderr_path = scripts_dir / f"{sr_id}.err"
+    stdout_path = scripts_dir / f"{job_id}.out"
+    stderr_path = scripts_dir / f"{job_id}.err"
     stdout_path.write_bytes(b"")
     stderr_path.write_bytes(b"")
 
     now = _now_iso()
     try:
-        org.db.transition_script_to_running(
-            sr_id,
+        org.db.transition_job_to_running(
+            job_id,
             reviewer="founder",
             reviewed_at=now,
             started_at=now,
@@ -387,8 +387,8 @@ async def _run_script_core(
         raise HTTPException(status_code=409, detail={"code": "not_pending"})
 
     audit = AuditLogger(org.db)
-    audit.log_script_run_started(
-        task_id=record.task_id, sr_id=sr_id, reviewer="founder",
+    audit.log_job_run_started(
+        task_id=record.task_id, job_id=job_id, reviewer="founder",
         cwd_resolved=str(cwd_resolved),
         timeout_seconds=timeout,
         interpreter=record.interpreter.value,
@@ -400,12 +400,12 @@ async def _run_script_core(
 
         def _sync_publish(evt: dict) -> None:
             asyncio.run_coroutine_threadsafe(
-                org.event_bus.publish(script_topic(sr_id), evt), loop
+                org.event_bus.publish(job_topic(job_id), evt), loop
             )
 
         try:
-            result = await _spawn_script(
-                sr_id=sr_id,
+            result = await _spawn_job(
+                job_id=job_id,
                 script_text=record.script_text,
                 interpreter=record.interpreter.value,
                 cwd=str(cwd_resolved),
@@ -417,20 +417,20 @@ async def _run_script_core(
         except FileNotFoundError:
             finished = _now_iso()
             try:
-                org.db.transition_script_to_terminal(
-                    sr_id, status=ScriptRequestStatus.FAILED,
+                org.db.transition_job_to_terminal(
+                    job_id, status=JobStatus.FAILED,
                     exit_code=None, finished_at=finished, duration_ms=0,
                     stdout_head=None, stderr_head=None,
                 )
             except ValueError:
                 pass
-            audit.log_script_run_failed(
-                task_id=record.task_id, sr_id=sr_id, reason="spawn_failed",
+            audit.log_job_run_failed(
+                task_id=record.task_id, job_id=job_id, reason="spawn_failed",
             )
-            parent = org.db.get_latest_notification_for_sr(sr_id, kind="script_request")
+            parent = org.db.get_latest_notification_for_sr(job_id, kind="script_request")
             if parent is not None and getattr(org, "orchestrator", None) is not None:
-                org.orchestrator.notify_script_run_result(
-                    sr_id=sr_id, task_id=record.task_id,
+                org.orchestrator.notify_job_run_result(
+                    job_id=job_id, task_id=record.task_id,
                     parent_message_id=parent["feishu_message_id"],
                     status="failed", exit_code=None, duration_ms=0,
                     stdout_head=None, stderr_head=None, reason="spawn_failed",
@@ -439,20 +439,20 @@ async def _run_script_core(
         except Exception as exc:
             finished = _now_iso()
             try:
-                org.db.transition_script_to_terminal(
-                    sr_id, status=ScriptRequestStatus.FAILED,
+                org.db.transition_job_to_terminal(
+                    job_id, status=JobStatus.FAILED,
                     exit_code=None, finished_at=finished, duration_ms=0,
                     stdout_head=None, stderr_head=str(exc),
                 )
             except ValueError:
                 pass
-            audit.log_script_run_failed(
-                task_id=record.task_id, sr_id=sr_id, reason="internal_error",
+            audit.log_job_run_failed(
+                task_id=record.task_id, job_id=job_id, reason="internal_error",
             )
-            parent = org.db.get_latest_notification_for_sr(sr_id, kind="script_request")
+            parent = org.db.get_latest_notification_for_sr(job_id, kind="script_request")
             if parent is not None and getattr(org, "orchestrator", None) is not None:
-                org.orchestrator.notify_script_run_result(
-                    sr_id=sr_id, task_id=record.task_id,
+                org.orchestrator.notify_job_run_result(
+                    job_id=job_id, task_id=record.task_id,
                     parent_message_id=parent["feishu_message_id"],
                     status="failed", exit_code=None, duration_ms=0,
                     stdout_head=None, stderr_head=str(exc), reason="internal_error",
@@ -461,9 +461,9 @@ async def _run_script_core(
 
         finished = _now_iso()
         try:
-            org.db.transition_script_to_terminal(
-                sr_id,
-                status=ScriptRequestStatus(result.status),
+            org.db.transition_job_to_terminal(
+                job_id,
+                status=JobStatus(result.status),
                 exit_code=result.exit_code,
                 finished_at=finished,
                 duration_ms=result.duration_ms,
@@ -474,8 +474,8 @@ async def _run_script_core(
             return
 
         if result.status == "completed":
-            audit.log_script_run_completed(
-                task_id=record.task_id, sr_id=sr_id,
+            audit.log_job_run_completed(
+                task_id=record.task_id, job_id=job_id,
                 exit_code=result.exit_code or 0,
                 duration_ms=result.duration_ms,
                 stdout_bytes=result.stdout_bytes,
@@ -484,17 +484,17 @@ async def _run_script_core(
                 truncated_stderr=result.truncated_stderr,
             )
         else:
-            audit.log_script_run_failed(
-                task_id=record.task_id, sr_id=sr_id,
+            audit.log_job_run_failed(
+                task_id=record.task_id, job_id=job_id,
                 exit_code=result.exit_code,
                 duration_ms=result.duration_ms,
                 reason=result.reason or "unknown",
             )
 
-        parent = org.db.get_latest_notification_for_sr(sr_id, kind="script_request")
+        parent = org.db.get_latest_notification_for_sr(job_id, kind="script_request")
         if parent is not None and getattr(org, "orchestrator", None) is not None:
-            org.orchestrator.notify_script_run_result(
-                sr_id=sr_id, task_id=record.task_id,
+            org.orchestrator.notify_job_run_result(
+                job_id=job_id, task_id=record.task_id,
                 parent_message_id=parent["feishu_message_id"],
                 status=result.status,
                 exit_code=result.exit_code,
@@ -505,47 +505,47 @@ async def _run_script_core(
             )
 
     from src.daemon.jobs_runner import register_runner_task
-    register_runner_task(sr_id, asyncio.create_task(_run_and_persist()))
+    register_runner_task(job_id, asyncio.create_task(_run_and_persist()))
 
     return {
-        "id": sr_id,
+        "id": job_id,
         "status": "running",
         "started_at": now,
         "cwd_resolved": str(cwd_resolved),
         "timeout_seconds": timeout,
-        "events_url": f"/api/v1/orgs/{org.slug}/jobs/{sr_id}/events",
+        "events_url": f"/api/v1/orgs/{org.slug}/jobs/{job_id}/events",
     }
 
 
-@router.post("/jobs/{sr_id}/run", status_code=202)
-async def run_script_route(
-    slug: str, sr_id: str, body: RunBody, org: OrgDep,
+@router.post("/jobs/{job_id}/run", status_code=202)
+async def run_job_route(
+    slug: str, job_id: str, body: RunBody, org: OrgDep,
 ) -> dict:
-    result = await _run_script_core(
+    result = await _run_job_core(
         org,
-        sr_id=sr_id,
+        job_id=job_id,
         cwd_override=body.cwd_override,
         timeout_override=body.timeout_seconds,
     )
-    _consume_open_feishu_notification(org, sr_id)
+    _consume_open_feishu_notification(org, job_id)
     return result
 
 
-@router.get("/jobs/{sr_id}/output")
-async def get_script_output(
-    slug: str, sr_id: str, org: OrgDep,
+@router.get("/jobs/{job_id}/output")
+async def get_job_output(
+    slug: str, job_id: str, org: OrgDep,
     stream: str = "both",
     max_bytes: int = 1_048_576,
 ) -> dict:
-    record = org.db.get_script_request(sr_id)
+    record = org.db.get_job(job_id)
     if record is None:
         raise HTTPException(status_code=404, detail={"code": "unknown_script_request"})
     if max_bytes <= 0 or max_bytes > 10 * 1_048_576:
         raise HTTPException(status_code=422, detail={"code": "invalid_max_bytes"})
     if record.status not in (
-        ScriptRequestStatus.COMPLETED,
-        ScriptRequestStatus.FAILED,
-        ScriptRequestStatus.REJECTED,
+        JobStatus.COMPLETED,
+        JobStatus.FAILED,
+        JobStatus.REJECTED,
     ):
         raise HTTPException(status_code=409, detail={"code": "not_terminal", "status": record.status.value})
     if stream not in ("stdout", "stderr", "both"):
@@ -574,9 +574,9 @@ async def get_script_output(
 
 
 _TERMINAL_SR_STATUSES = (
-    ScriptRequestStatus.COMPLETED,
-    ScriptRequestStatus.FAILED,
-    ScriptRequestStatus.REJECTED,
+    JobStatus.COMPLETED,
+    JobStatus.FAILED,
+    JobStatus.REJECTED,
 )
 
 
@@ -589,9 +589,9 @@ def _terminal_frame_from_record(record) -> str:
     return f"event: terminal\ndata: {_json.dumps(payload)}\n\n"
 
 
-@router.get("/jobs/{sr_id}/events")
-async def script_events_stream(slug: str, sr_id: str, org: OrgDep) -> StreamingResponse:
-    record = org.db.get_script_request(sr_id)
+@router.get("/jobs/{job_id}/events")
+async def job_events_stream(slug: str, job_id: str, org: OrgDep) -> StreamingResponse:
+    record = org.db.get_job(job_id)
     if record is None:
         raise HTTPException(status_code=404, detail={"code": "unknown_script_request"})
 
@@ -606,14 +606,14 @@ async def script_events_stream(slug: str, sr_id: str, org: OrgDep) -> StreamingR
         # on the first __anext__), the runner can publish a terminal event and
         # we'd miss it — hanging until disconnect. Mitigate by waking up
         # periodically to re-poll the DB; the row is the authoritative source.
-        sub_iter = org.event_bus.subscribe(script_topic(sr_id)).__aiter__()
+        sub_iter = org.event_bus.subscribe(job_topic(job_id)).__aiter__()
         next_task: asyncio.Task | None = asyncio.create_task(sub_iter.__anext__())
         try:
             while True:
                 done, _pending = await asyncio.wait({next_task}, timeout=1.0)
                 if not done:
                     # Timeout: re-check DB in case we raced past a terminal publish.
-                    rec_now = org.db.get_script_request(sr_id)
+                    rec_now = org.db.get_job(job_id)
                     if rec_now is None:
                         return
                     if rec_now.status in _TERMINAL_SR_STATUSES:

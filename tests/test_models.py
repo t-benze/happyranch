@@ -190,35 +190,35 @@ def test_talk_record_defaults():
 
 
 def test_script_request_status_values():
-    from src.models import ScriptRequestStatus
-    assert ScriptRequestStatus.PENDING == "pending"
-    assert ScriptRequestStatus.REJECTED == "rejected"
-    assert ScriptRequestStatus.RUNNING == "running"
-    assert ScriptRequestStatus.COMPLETED == "completed"
-    assert ScriptRequestStatus.FAILED == "failed"
+    from src.models import JobStatus
+    assert JobStatus.PENDING == "pending"
+    assert JobStatus.REJECTED == "rejected"
+    assert JobStatus.RUNNING == "running"
+    assert JobStatus.COMPLETED == "completed"
+    assert JobStatus.FAILED == "failed"
 
 
 def test_script_interpreter_values():
-    from src.models import ScriptInterpreter
-    assert ScriptInterpreter.BASH == "bash"
-    assert ScriptInterpreter.SH == "sh"
-    assert ScriptInterpreter.ZSH == "zsh"
-    assert ScriptInterpreter.PYTHON3 == "python3"
+    from src.models import JobInterpreter
+    assert JobInterpreter.BASH == "bash"
+    assert JobInterpreter.SH == "sh"
+    assert JobInterpreter.ZSH == "zsh"
+    assert JobInterpreter.PYTHON3 == "python3"
 
 
 def test_script_request_record_defaults():
-    from src.models import ScriptRequestRecord, ScriptRequestStatus, ScriptInterpreter
-    r = ScriptRequestRecord(
+    from src.models import JobRecord, JobStatus, JobInterpreter
+    r = JobRecord(
         id="SR-001",
         task_id="TASK-001",
         agent_name="engineering_head",
         title="x",
         rationale="y",
         script_text="echo hi",
-        interpreter=ScriptInterpreter.BASH,
+        interpreter=JobInterpreter.BASH,
         created_at="2026-05-23T10:00:00Z",
     )
-    assert r.status == ScriptRequestStatus.PENDING
+    assert r.status == JobStatus.PENDING
     assert r.timeout_seconds == 300
     assert r.cwd_hint is None
     assert r.exit_code is None

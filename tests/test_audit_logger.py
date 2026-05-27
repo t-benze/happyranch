@@ -285,12 +285,12 @@ def test_log_parse_hint_send_failed(db):
     assert row["payload"]["feishu_event_id"] == "evt_b"
 
 
-def test_log_script_submitted(db):
+def test_log_job_submitted(db):
     from src.infrastructure.audit_logger import AuditLogger
     audit = AuditLogger(db)
-    audit.log_script_submitted(
+    audit.log_job_submitted(
         task_id="TASK-001",
-        sr_id="SR-001",
+        job_id="SR-001",
         agent="engineering_head",
         title="x",
         interpreter="bash",
@@ -310,12 +310,12 @@ def test_log_script_submitted(db):
     assert payload["title"] == "x"
 
 
-def test_log_script_run_completed(db):
+def test_log_job_run_completed(db):
     from src.infrastructure.audit_logger import AuditLogger
     audit = AuditLogger(db)
-    audit.log_script_run_completed(
+    audit.log_job_run_completed(
         task_id="TASK-001",
-        sr_id="SR-001",
+        job_id="SR-001",
         exit_code=0,
         duration_ms=1500,
         stdout_bytes=12,
@@ -334,10 +334,10 @@ def test_log_script_run_completed(db):
     assert payload["script_request_id"] == "SR-001"
 
 
-def test_log_script_notify_sent_records_payload(db):
+def test_log_job_notify_sent_records_payload(db):
     audit = AuditLogger(db)
-    audit.log_script_notify_sent(
-        task_id="TASK-91", sr_id="SR-019", feishu_message_id="om_abc",
+    audit.log_job_notify_sent(
+        task_id="TASK-91", job_id="SR-019", feishu_message_id="om_abc",
     )
     rows = db.get_audit_logs("TASK-91")
     assert len(rows) == 1
@@ -348,10 +348,10 @@ def test_log_script_notify_sent_records_payload(db):
     assert r["payload"]["feishu_message_id"] == "om_abc"
 
 
-def test_log_script_notify_failed_records_error(db):
+def test_log_job_notify_failed_records_error(db):
     audit = AuditLogger(db)
-    audit.log_script_notify_failed(
-        task_id="TASK-91", sr_id="SR-019", error="ConnectionRefused: feishu",
+    audit.log_job_notify_failed(
+        task_id="TASK-91", job_id="SR-019", error="ConnectionRefused: feishu",
     )
     rows = db.get_audit_logs("TASK-91")
     r = rows[0]
@@ -360,10 +360,10 @@ def test_log_script_notify_failed_records_error(db):
     assert r["payload"]["error"] == "ConnectionRefused: feishu"
 
 
-def test_log_script_reply_processed_carries_decision_and_rationale(db):
+def test_log_job_reply_processed_carries_decision_and_rationale(db):
     audit = AuditLogger(db)
-    audit.log_script_reply_processed(
-        sr_id="SR-019", task_id="TASK-91",
+    audit.log_job_reply_processed(
+        job_id="SR-019", task_id="TASK-91",
         decision="approve", rationale="merge-close approved",
         feishu_event_id="evt_1",
     )
@@ -377,10 +377,10 @@ def test_log_script_reply_processed_carries_decision_and_rationale(db):
     assert r["payload"]["feishu_event_id"] == "evt_1"
 
 
-def test_log_script_reply_rejected_records_reason(db):
+def test_log_job_reply_rejected_records_reason(db):
     audit = AuditLogger(db)
-    audit.log_script_reply_rejected(
-        sr_id="SR-019", task_id="TASK-91",
+    audit.log_job_reply_rejected(
+        job_id="SR-019", task_id="TASK-91",
         reason="verb_mismatch", feishu_event_id="evt_1",
         text_preview="REVISIT please",
     )
@@ -392,11 +392,11 @@ def test_log_script_reply_rejected_records_reason(db):
     assert r["payload"]["text_preview"] == "REVISIT please"
 
 
-def test_log_script_reply_rejected_truncates_long_text(db):
+def test_log_job_reply_rejected_truncates_long_text(db):
     audit = AuditLogger(db)
     long_text = "x" * 500
-    audit.log_script_reply_rejected(
-        sr_id="SR-019", task_id="TASK-91",
+    audit.log_job_reply_rejected(
+        job_id="SR-019", task_id="TASK-91",
         reason="bad_decision", text_preview=long_text,
     )
     preview = db.get_audit_logs("TASK-91")[0]["payload"]["text_preview"]
@@ -404,10 +404,10 @@ def test_log_script_reply_rejected_truncates_long_text(db):
     assert preview == "x" * 200
 
 
-def test_log_script_reply_processed_omits_feishu_event_id_when_absent(db):
+def test_log_job_reply_processed_omits_feishu_event_id_when_absent(db):
     audit = AuditLogger(db)
-    audit.log_script_reply_processed(
-        sr_id="SR-019", task_id="TASK-91",
+    audit.log_job_reply_processed(
+        job_id="SR-019", task_id="TASK-91",
         decision="approve", rationale="merge-close approved",
     )
     payload = db.get_audit_logs("TASK-91")[0]["payload"]
@@ -415,10 +415,10 @@ def test_log_script_reply_processed_omits_feishu_event_id_when_absent(db):
     assert payload["decision"] == "approve"
 
 
-def test_log_script_reply_rejected_omits_optional_fields_when_absent(db):
+def test_log_job_reply_rejected_omits_optional_fields_when_absent(db):
     audit = AuditLogger(db)
-    audit.log_script_reply_rejected(
-        sr_id="SR-019", task_id="TASK-91",
+    audit.log_job_reply_rejected(
+        job_id="SR-019", task_id="TASK-91",
         reason="verb_mismatch",
     )
     payload = db.get_audit_logs("TASK-91")[0]["payload"]
@@ -427,10 +427,10 @@ def test_log_script_reply_rejected_omits_optional_fields_when_absent(db):
     assert payload["reason"] == "verb_mismatch"
 
 
-def test_log_script_run_result_notify_sent(db):
+def test_log_job_run_result_notify_sent(db):
     audit = AuditLogger(db)
-    audit.log_script_run_result_notify_sent(
-        sr_id="SR-019", task_id="TASK-91",
+    audit.log_job_run_result_notify_sent(
+        job_id="SR-019", task_id="TASK-91",
         parent_message_id="om_root", follow_up_message_id="om_followup",
         status="completed",
     )
@@ -442,10 +442,10 @@ def test_log_script_run_result_notify_sent(db):
     assert r["payload"]["status"] == "completed"
 
 
-def test_log_script_run_result_notify_failed(db):
+def test_log_job_run_result_notify_failed(db):
     audit = AuditLogger(db)
-    audit.log_script_run_result_notify_failed(
-        sr_id="SR-019", task_id="TASK-91",
+    audit.log_job_run_result_notify_failed(
+        job_id="SR-019", task_id="TASK-91",
         error="Timeout", status="failed",
     )
     rows = db.get_audit_logs("TASK-91")

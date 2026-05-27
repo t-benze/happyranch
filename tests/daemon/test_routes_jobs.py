@@ -144,7 +144,7 @@ def test_submit_invalid_cwd_hint_dotdot(client_with_runtime):
     assert r.json()["detail"]["code"] == "invalid_cwd_hint"
 
 
-def test_submit_script_too_large(client_with_runtime):
+def test_submit_job_too_large(client_with_runtime):
     client, org = client_with_runtime
     task_id, sid = _make_active_session(org)
     big = "x" * 65537
@@ -173,9 +173,9 @@ def _submit_pending(client, org) -> str:
 
 def test_reject_happy_path(client_with_runtime):
     client, org = client_with_runtime
-    sr_id = _submit_pending(client, org)
+    job_id = _submit_pending(client, org)
     r = client.post(
-        f"/api/v1/orgs/alpha/scripts/{sr_id}/reject",
+        f"/api/v1/orgs/alpha/scripts/{job_id}/reject",
         json={"reason": "too risky in prod"},
     )
     assert r.status_code == 200, r.text
@@ -185,9 +185,9 @@ def test_reject_happy_path(client_with_runtime):
 
 def test_reject_empty_reason(client_with_runtime):
     client, org = client_with_runtime
-    sr_id = _submit_pending(client, org)
+    job_id = _submit_pending(client, org)
     r = client.post(
-        f"/api/v1/orgs/alpha/scripts/{sr_id}/reject", json={"reason": "  "}
+        f"/api/v1/orgs/alpha/scripts/{job_id}/reject", json={"reason": "  "}
     )
     assert r.status_code == 422
     assert r.json()["detail"]["code"] == "empty_reason"
@@ -201,9 +201,9 @@ def test_reject_unknown_sr(client_with_runtime):
 
 def test_reject_not_pending(client_with_runtime):
     client, org = client_with_runtime
-    sr_id = _submit_pending(client, org)
-    client.post(f"/api/v1/orgs/alpha/scripts/{sr_id}/reject", json={"reason": "x"})
-    r = client.post(f"/api/v1/orgs/alpha/scripts/{sr_id}/reject", json={"reason": "y"})
+    job_id = _submit_pending(client, org)
+    client.post(f"/api/v1/orgs/alpha/scripts/{job_id}/reject", json={"reason": "x"})
+    r = client.post(f"/api/v1/orgs/alpha/scripts/{job_id}/reject", json={"reason": "y"})
     assert r.status_code == 409
     assert r.json()["detail"]["code"] == "not_pending"
 
@@ -215,18 +215,18 @@ def test_reject_consumes_open_feishu_notification(client_with_runtime):
     from datetime import datetime, timedelta, timezone
 
     client, org = client_with_runtime
-    sr_id = _submit_pending(client, org)
+    job_id = _submit_pending(client, org)
 
     # Simulate the Feishu push having minted a notification row.
     org.db.mint_escalation_notification(
-        feishu_message_id="om_fake_push", org_slug="alpha", task_id=sr_id,
+        feishu_message_id="om_fake_push", org_slug="alpha", task_id=job_id,
         chat_id="oc_xyz",
         expires_at=datetime.now(timezone.utc) + timedelta(hours=72),
         kind="script_request",
     )
 
     r = client.post(
-        f"/api/v1/orgs/alpha/scripts/{sr_id}/reject",
+        f"/api/v1/orgs/alpha/scripts/{job_id}/reject",
         json={"reason": "no longer needed"},
     )
     assert r.status_code == 200, r.text
@@ -236,7 +236,7 @@ def test_reject_consumes_open_feishu_notification(client_with_runtime):
     assert row["consumed_by"] == "cli-fallback"
 
 
-def test_list_scripts_default_filter_pending(client_with_runtime):
+def test_list_jobs_default_filter_pending(client_with_runtime):
     client, org = client_with_runtime
     sr1 = _submit_pending(client, org)
     sr2 = _submit_pending(client, org)
@@ -248,7 +248,7 @@ def test_list_scripts_default_filter_pending(client_with_runtime):
     assert sr1 not in ids
 
 
-def test_list_scripts_status_all(client_with_runtime):
+def test_list_jobs_status_all(client_with_runtime):
     client, org = client_with_runtime
     sr1 = _submit_pending(client, org)
     client.post(f"/api/v1/orgs/alpha/scripts/{sr1}/reject", json={"reason": "x"})
@@ -266,11 +266,11 @@ def test_get_script_detail(client_with_runtime):
         json={"task_id": task_id, "session_id": sid,
               "title": "title-x", "rationale": "y", "script": "echo 1", "interpreter": "bash"},
     )
-    sr_id = r.json()["id"]
-    r = client.get(f"/api/v1/orgs/alpha/scripts/{sr_id}")
+    job_id = r.json()["id"]
+    r = client.get(f"/api/v1/orgs/alpha/scripts/{job_id}")
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["id"] == sr_id
+    assert body["id"] == job_id
     assert body["title"] == "title-x"
     assert body["script_text"] == "echo 1"
 
@@ -281,14 +281,14 @@ def test_get_script_detail_404(client_with_runtime):
     assert r.status_code == 404
 
 
-def test_list_scripts_invalid_status(client_with_runtime):
+def test_list_jobs_invalid_status(client_with_runtime):
     client, _org = client_with_runtime
     r = client.get("/api/v1/orgs/alpha/scripts/?status=bogus")
     assert r.status_code == 422
     assert r.json()["detail"]["code"] == "invalid_status"
 
 
-def test_list_scripts_invalid_limit(client_with_runtime):
+def test_list_jobs_invalid_limit(client_with_runtime):
     client, _org = client_with_runtime
     r = client.get("/api/v1/orgs/alpha/scripts/?limit=0")
     assert r.status_code == 422
@@ -322,19 +322,19 @@ def test_run_happy_path_completes(tmp_home, daemon_state):
                   "title": "echo", "rationale": "test",
                   "script": "echo hello", "interpreter": "bash"},
         )
-        sr_id = r.json()["id"]
+        job_id = r.json()["id"]
         # Ensure workspace dir exists (cwd defaults to workspaces/<agent>/).
         ws = org.root / "workspaces" / "engineering_head"
         ws.mkdir(parents=True, exist_ok=True)
-        r = client.post(f"/api/v1/orgs/alpha/scripts/{sr_id}/run", json={})
+        r = client.post(f"/api/v1/orgs/alpha/scripts/{job_id}/run", json={})
         assert r.status_code == 202, r.text
         body = r.json()
         assert body["status"] == "running"
-        assert body["events_url"].endswith(f"/scripts/{sr_id}/events")
+        assert body["events_url"].endswith(f"/scripts/{job_id}/events")
 
         # Poll for terminal state (max ~5s).
         for _ in range(50):
-            d = client.get(f"/api/v1/orgs/alpha/scripts/{sr_id}").json()
+            d = client.get(f"/api/v1/orgs/alpha/scripts/{job_id}").json()
             if d["status"] in ("completed", "failed"):
                 break
             time.sleep(0.1)
@@ -363,24 +363,24 @@ def test_run_consumes_open_feishu_notification(tmp_home, daemon_state):
                   "title": "echo", "rationale": "test",
                   "script": "echo hello", "interpreter": "bash"},
         )
-        sr_id = r.json()["id"]
+        job_id = r.json()["id"]
 
         # Simulate the Feishu push having minted a notification row.
         org.db.mint_escalation_notification(
             feishu_message_id="om_fake_run_push", org_slug="alpha",
-            task_id=sr_id, chat_id="oc_xyz",
+            task_id=job_id, chat_id="oc_xyz",
             expires_at=datetime.now(timezone.utc) + timedelta(hours=72),
             kind="script_request",
         )
 
         ws = org.root / "workspaces" / "engineering_head"
         ws.mkdir(parents=True, exist_ok=True)
-        r = client.post(f"/api/v1/orgs/alpha/scripts/{sr_id}/run", json={})
+        r = client.post(f"/api/v1/orgs/alpha/scripts/{job_id}/run", json={})
         assert r.status_code == 202, r.text
 
         # Poll until the runner finishes so the test doesn't race shutdown.
         for _ in range(50):
-            d = client.get(f"/api/v1/orgs/alpha/scripts/{sr_id}").json()
+            d = client.get(f"/api/v1/orgs/alpha/scripts/{job_id}").json()
             if d["status"] in ("completed", "failed"):
                 break
             time.sleep(0.1)
@@ -395,26 +395,26 @@ def test_run_consumes_open_feishu_notification(tmp_home, daemon_state):
 
 def test_run_not_pending(client_with_runtime):
     client, org = client_with_runtime
-    sr_id = _submit_pending(client, org)
-    client.post(f"/api/v1/orgs/alpha/scripts/{sr_id}/reject", json={"reason": "x"})
-    r = client.post(f"/api/v1/orgs/alpha/scripts/{sr_id}/run", json={})
+    job_id = _submit_pending(client, org)
+    client.post(f"/api/v1/orgs/alpha/scripts/{job_id}/reject", json={"reason": "x"})
+    r = client.post(f"/api/v1/orgs/alpha/scripts/{job_id}/run", json={})
     assert r.status_code == 409
     assert r.json()["detail"]["code"] == "not_pending"
 
 
 def test_run_invalid_timeout(client_with_runtime):
     client, org = client_with_runtime
-    sr_id = _submit_pending(client, org)
-    r = client.post(f"/api/v1/orgs/alpha/scripts/{sr_id}/run", json={"timeout_seconds": 0})
+    job_id = _submit_pending(client, org)
+    r = client.post(f"/api/v1/orgs/alpha/scripts/{job_id}/run", json={"timeout_seconds": 0})
     assert r.status_code == 422
     assert r.json()["detail"]["code"] == "invalid_timeout"
 
 
 def test_run_cwd_override_missing(client_with_runtime):
     client, org = client_with_runtime
-    sr_id = _submit_pending(client, org)
+    job_id = _submit_pending(client, org)
     r = client.post(
-        f"/api/v1/orgs/alpha/scripts/{sr_id}/run",
+        f"/api/v1/orgs/alpha/scripts/{job_id}/run",
         json={"cwd_override": "/this/path/does/not/exist"},
     )
     # Either 422 (invalid_cwd_override) or 409 (cwd_missing) is acceptable;
@@ -442,16 +442,16 @@ def test_output_after_run(tmp_home, daemon_state):
                   "title": "x", "rationale": "y",
                   "script": "echo abc; echo def >&2", "interpreter": "bash"},
         )
-        sr_id = r.json()["id"]
+        job_id = r.json()["id"]
         ws = org.root / "workspaces" / "engineering_head"
         ws.mkdir(parents=True, exist_ok=True)
-        client.post(f"/api/v1/orgs/alpha/scripts/{sr_id}/run", json={})
+        client.post(f"/api/v1/orgs/alpha/scripts/{job_id}/run", json={})
         for _ in range(50):
-            d = client.get(f"/api/v1/orgs/alpha/scripts/{sr_id}").json()
+            d = client.get(f"/api/v1/orgs/alpha/scripts/{job_id}").json()
             if d["status"] in ("completed", "failed"):
                 break
             time.sleep(0.1)
-        r = client.get(f"/api/v1/orgs/alpha/scripts/{sr_id}/output")
+        r = client.get(f"/api/v1/orgs/alpha/scripts/{job_id}/output")
     assert r.status_code == 200, r.text
     body = r.json()
     assert "abc" in body["stdout"]
@@ -463,8 +463,8 @@ def test_output_after_run(tmp_home, daemon_state):
 def test_output_pending_409(client_with_runtime):
     """Output endpoint refuses to read non-terminal SRs."""
     client, org = client_with_runtime
-    sr_id = _submit_pending(client, org)
-    r = client.get(f"/api/v1/orgs/alpha/scripts/{sr_id}/output")
+    job_id = _submit_pending(client, org)
+    r = client.get(f"/api/v1/orgs/alpha/scripts/{job_id}/output")
     assert r.status_code == 409
     assert r.json()["detail"]["code"] == "not_terminal"
 
@@ -477,8 +477,8 @@ def test_output_unknown_sr(client_with_runtime):
 
 def test_output_invalid_max_bytes(client_with_runtime):
     client, org = client_with_runtime
-    sr_id = _submit_pending(client, org)
-    r = client.get(f"/api/v1/orgs/alpha/scripts/{sr_id}/output?max_bytes=0")
+    job_id = _submit_pending(client, org)
+    r = client.get(f"/api/v1/orgs/alpha/scripts/{job_id}/output?max_bytes=0")
     # Either 422 invalid_max_bytes OR 409 not_terminal — accept either since
     # we're testing the validation gate before terminal-state check is fine.
     assert r.status_code in (409, 422)
@@ -503,16 +503,16 @@ def test_events_terminal_after_completed(tmp_home, daemon_state):
                   "title": "x", "rationale": "y",
                   "script": "echo hi", "interpreter": "bash"},
         )
-        sr_id = r.json()["id"]
+        job_id = r.json()["id"]
         ws = org.root / "workspaces" / "engineering_head"
         ws.mkdir(parents=True, exist_ok=True)
-        client.post(f"/api/v1/orgs/alpha/scripts/{sr_id}/run", json={})
+        client.post(f"/api/v1/orgs/alpha/scripts/{job_id}/run", json={})
         for _ in range(50):
-            if client.get(f"/api/v1/orgs/alpha/scripts/{sr_id}").json()["status"] in ("completed", "failed"):
+            if client.get(f"/api/v1/orgs/alpha/scripts/{job_id}").json()["status"] in ("completed", "failed"):
                 break
             time.sleep(0.1)
         # Now connect to /events — should immediately get a terminal event.
-        with client.stream("GET", f"/api/v1/orgs/alpha/scripts/{sr_id}/events") as resp:
+        with client.stream("GET", f"/api/v1/orgs/alpha/scripts/{job_id}/events") as resp:
             assert resp.status_code == 200
             data = b""
             for chunk in resp.iter_bytes():
@@ -528,10 +528,10 @@ def test_events_unknown_sr(client_with_runtime):
     assert r.status_code == 404
 
 
-def test_submit_script_fires_notify_when_orchestrator_attached(
+def test_submit_job_fires_notify_when_orchestrator_attached(
     client_with_runtime, monkeypatch,
 ):
-    """submit_script must schedule a Feishu notification via the org's
+    """submit_job must schedule a Feishu notification via the org's
     orchestrator bridge. The bridge is a no-op when no notifier is attached,
     so we just verify the route invokes it with the right kwargs."""
     client, org = client_with_runtime
@@ -542,7 +542,7 @@ def test_submit_script_fires_notify_when_orchestrator_attached(
     def _capture(**kw):
         calls.append(kw)
 
-    monkeypatch.setattr(org.orchestrator, "notify_script_submitted", _capture)
+    monkeypatch.setattr(org.orchestrator, "notify_job_submitted", _capture)
 
     r = client.post(
         "/api/v1/orgs/alpha/scripts/submit",
@@ -557,11 +557,11 @@ def test_submit_script_fires_notify_when_orchestrator_attached(
         },
     )
     assert r.status_code == 201, r.text
-    sr_id = r.json()["id"]
+    job_id = r.json()["id"]
 
     assert len(calls) == 1, f"expected exactly one notify call, got {calls!r}"
     kw = calls[0]
-    assert kw["sr_id"] == sr_id
+    assert kw["job_id"] == job_id
     assert kw["task_id"] == task_id
     assert kw["title"] == "Close PR"
     assert kw["rationale"] == "permission wall"
@@ -605,13 +605,13 @@ def test_events_stream_terminates_after_db_only_terminal_transition(
                   "title": "x", "rationale": "y",
                   "script": "echo hi", "interpreter": "bash"},
         )
-        sr_id = r.json()["id"]
+        job_id = r.json()["id"]
 
         # Pre-flip to `running` so /events takes the subscribe-and-poll path
         # (not the early-terminal short-circuit).
         org.db._conn.execute(
             "UPDATE script_requests SET status='running', started_at='2026-05-23T00:00:00Z' "
-            "WHERE id=?", (sr_id,),
+            "WHERE id=?", (job_id,),
         )
         org.db._conn.commit()
 
@@ -622,7 +622,7 @@ def test_events_stream_terminates_after_db_only_terminal_transition(
             org.db._conn.execute(
                 "UPDATE script_requests SET status='completed', exit_code=0, "
                 "finished_at='2026-05-23T00:00:01Z', duration_ms=100 WHERE id=?",
-                (sr_id,),
+                (job_id,),
             )
             org.db._conn.commit()
 
@@ -631,7 +631,7 @@ def test_events_stream_terminates_after_db_only_terminal_transition(
 
         # Open the stream and iterate. Poll cadence is 1s, so the terminal
         # frame should arrive within ~1.5s of the DB flip = ~1.75s total.
-        with client.stream("GET", f"/api/v1/orgs/alpha/scripts/{sr_id}/events") as resp:
+        with client.stream("GET", f"/api/v1/orgs/alpha/scripts/{job_id}/events") as resp:
             assert resp.status_code == 200
             data = b""
             deadline = _t.time() + 5.0

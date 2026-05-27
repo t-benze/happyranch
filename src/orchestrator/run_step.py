@@ -467,14 +467,14 @@ def _revisit_header_if_applicable(orch: "Orchestrator", task_id: str) -> str | N
                     payload_e = _json.loads(payload_e)
                 except Exception:
                     payload_e = {}
-            sr_id = payload_e.get("script_request_id", "SR-?")
+            job_id = payload_e.get("script_request_id", "SR-?")
             title = payload_e.get("title", "(no title)")
-            sr = orch._db.get_script_request(sr_id) if sr_id != "SR-?" else None
+            sr = orch._db.get_job(job_id) if job_id != "SR-?" else None
             status = sr.status.value if sr else "?"
             marker = ""
             if sr and sr.status.value in ("pending", "running"):
                 marker = " [still pending — founder action needed]"
-            lines.append(f"  - {sr_id} ({status}) — {title}{marker}")
+            lines.append(f"  - {job_id} ({status}) — {title}{marker}")
         lines.append("")
         lines.append("Read the outputs / rejection reasons before continuing:")
         for e in sr_entries:
@@ -486,9 +486,9 @@ def _revisit_header_if_applicable(orch: "Orchestrator", task_id: str) -> str | N
                     payload_e = _json.loads(payload_e)
                 except Exception:
                     payload_e = {}
-            sr_id = payload_e.get("script_request_id", "SR-?")
-            lines.append(f"  grassland scripts show {sr_id}")
-            lines.append(f"  grassland scripts output {sr_id}")
+            job_id = payload_e.get("script_request_id", "SR-?")
+            lines.append(f"  grassland scripts show {job_id}")
+            lines.append(f"  grassland scripts output {job_id}")
 
     return "\n".join(lines) + "\n\n"
 

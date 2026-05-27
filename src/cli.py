@@ -1085,7 +1085,7 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
     )
 
 
-def _scripts_submit_payload_from_file(path: str) -> dict:
+def _jobs_submit_payload_from_file(path: str) -> dict:
     """Load a scripts-submit payload from a JSON file (mirrors manage-repo / dispatch pattern)."""
     import json as _json
     with open(path) as f:
@@ -1097,14 +1097,14 @@ def _scripts_submit_payload_from_file(path: str) -> dict:
     return data
 
 
-def cmd_scripts_submit(args: argparse.Namespace) -> None:
+def cmd_jobs_submit(args: argparse.Namespace) -> None:
     """Agent callback: submit a script for founder review."""
     if not args.org:
         print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
         sys.exit(1)
     import json as _json
     try:
-        body = _scripts_submit_payload_from_file(args.from_file)
+        body = _jobs_submit_payload_from_file(args.from_file)
     except (OSError, _json.JSONDecodeError, ValueError) as exc:
         print(f"Error reading scripts-submit file {args.from_file}: {exc}", file=sys.stderr)
         sys.exit(2)
@@ -1120,7 +1120,7 @@ def cmd_scripts_submit(args: argparse.Namespace) -> None:
     print(f"ok: submitted {result['id']} (status={result['status']}). Self-block your task referencing this ID.")
 
 
-def cmd_scripts_list(args: argparse.Namespace) -> None:
+def cmd_jobs_list(args: argparse.Namespace) -> None:
     """Founder: list script requests."""
     try:
         client = OpcClient.from_env()
@@ -1146,7 +1146,7 @@ def cmd_scripts_list(args: argparse.Namespace) -> None:
         print(f"{row['id']:<8} {row['agent_name']:<20} {row['task_id']:<12} {row['status']:<10} {title}")
 
 
-def cmd_scripts_show(args: argparse.Namespace) -> None:
+def cmd_jobs_show(args: argparse.Namespace) -> None:
     """Founder: show one script request."""
     try:
         client = OpcClient.from_env()
@@ -1154,7 +1154,7 @@ def cmd_scripts_show(args: argparse.Namespace) -> None:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
     slug = resolve_org_slug(args_org=args.org, available=_fetch_available_orgs(client))
-    r = client.get(f"/api/v1/orgs/{slug}/scripts/{args.sr_id}")
+    r = client.get(f"/api/v1/orgs/{slug}/scripts/{args.job_id}")
     if not _ok(r):
         return
     d = r.json()
@@ -1196,7 +1196,7 @@ def cmd_scripts_show(args: argparse.Namespace) -> None:
         print(f"Reject reason: {d['reject_reason']}")
 
 
-def cmd_scripts_reject(args: argparse.Namespace) -> None:
+def cmd_jobs_reject(args: argparse.Namespace) -> None:
     """Founder: reject a pending script request."""
     try:
         client = OpcClient.from_env()
@@ -1220,13 +1220,13 @@ def cmd_scripts_reject(args: argparse.Namespace) -> None:
     if not reason:
         print("Error: empty reason", file=sys.stderr)
         sys.exit(2)
-    r = client.post(f"/api/v1/orgs/{slug}/scripts/{args.sr_id}/reject", json={"reason": reason})
+    r = client.post(f"/api/v1/orgs/{slug}/scripts/{args.job_id}/reject", json={"reason": reason})
     if not _ok(r):
         return
-    print(f"ok: rejected {args.sr_id}")
+    print(f"ok: rejected {args.job_id}")
 
 
-def cmd_scripts_output(args: argparse.Namespace) -> None:
+def cmd_jobs_output(args: argparse.Namespace) -> None:
     """Founder: fetch captured output of a terminal script request."""
     try:
         client = OpcClient.from_env()
@@ -1235,7 +1235,7 @@ def cmd_scripts_output(args: argparse.Namespace) -> None:
         sys.exit(1)
     slug = resolve_org_slug(args_org=args.org, available=_fetch_available_orgs(client))
     r = client.get(
-        f"/api/v1/orgs/{slug}/scripts/{args.sr_id}/output",
+        f"/api/v1/orgs/{slug}/scripts/{args.job_id}/output",
         params={"stream": args.stream, "max_bytes": args.max_bytes},
     )
     if not _ok(r):
@@ -1249,7 +1249,7 @@ def cmd_scripts_output(args: argparse.Namespace) -> None:
         print(body["stderr"], end="" if body["stderr"].endswith("\n") else "\n")
 
 
-def cmd_scripts_run(args: argparse.Namespace) -> None:
+def cmd_jobs_run(args: argparse.Namespace) -> None:
     """Founder action: run a pending script request with TTY-gated confirm + SSE stream."""
     import json as _json
 
@@ -1270,12 +1270,12 @@ def cmd_scripts_run(args: argparse.Namespace) -> None:
     slug = resolve_org_slug(args_org=args.org, available=_fetch_available_orgs(client))
 
     # Fetch + show.
-    r = client.get(f"/api/v1/orgs/{slug}/scripts/{args.sr_id}")
+    r = client.get(f"/api/v1/orgs/{slug}/scripts/{args.job_id}")
     if not _ok(r):
         return
     d = r.json()
     if d["status"] != "pending":
-        print(f"Error: SR {args.sr_id} is {d['status']}, not pending", file=sys.stderr)
+        print(f"Error: SR {args.job_id} is {d['status']}, not pending", file=sys.stderr)
         sys.exit(1)
     print(f"About to execute {d['id']}:")
     print(f"  Agent:       {d['agent_name']}")
@@ -1300,7 +1300,7 @@ def cmd_scripts_run(args: argparse.Namespace) -> None:
         body["cwd_override"] = args.cwd_override
     if args.timeout_seconds is not None:
         body["timeout_seconds"] = args.timeout_seconds
-    r = client.post(f"/api/v1/orgs/{slug}/scripts/{args.sr_id}/run", json=body)
+    r = client.post(f"/api/v1/orgs/{slug}/scripts/{args.job_id}/run", json=body)
     if r.status_code != 202:
         print(f"Error: {r.status_code} {r.text}", file=sys.stderr)
         sys.exit(1)
@@ -1312,7 +1312,7 @@ def cmd_scripts_run(args: argparse.Namespace) -> None:
     terminal_exit = None
     etype = ""
     edata = ""
-    events_path = f"/api/v1/orgs/{slug}/scripts/{args.sr_id}/events"
+    events_path = f"/api/v1/orgs/{slug}/scripts/{args.job_id}/events"
     with client._client.stream("GET", events_path) as response:
         response.raise_for_status()
         for raw_line in response.iter_lines():
@@ -2556,7 +2556,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_scripts_submit = scripts_sub.add_parser("submit", help="Agent callback: submit a script for founder review")
     p_scripts_submit.add_argument("--from-file", dest="from_file", required=True, help="JSON payload file")
     p_scripts_submit.add_argument("--org", help="Org slug (required for agent callbacks)")
-    p_scripts_submit.set_defaults(func=cmd_scripts_submit)
+    p_scripts_submit.set_defaults(func=cmd_jobs_submit)
 
     p_scripts_list = scripts_sub.add_parser("list", help="List script requests")
     p_scripts_list.add_argument("--status", default="pending", help="comma-separated statuses, or 'all'")
@@ -2564,32 +2564,32 @@ def build_parser() -> argparse.ArgumentParser:
     p_scripts_list.add_argument("--task")
     p_scripts_list.add_argument("--limit", type=int, default=50)
     p_scripts_list.add_argument("--org")
-    p_scripts_list.set_defaults(func=cmd_scripts_list)
+    p_scripts_list.set_defaults(func=cmd_jobs_list)
 
     p_scripts_show = scripts_sub.add_parser("show", help="Show one script request")
-    p_scripts_show.add_argument("sr_id")
+    p_scripts_show.add_argument("job_id")
     p_scripts_show.add_argument("--org")
-    p_scripts_show.set_defaults(func=cmd_scripts_show)
+    p_scripts_show.set_defaults(func=cmd_jobs_show)
 
     p_scripts_reject = scripts_sub.add_parser("reject", help="Reject a pending script request")
-    p_scripts_reject.add_argument("sr_id")
+    p_scripts_reject.add_argument("job_id")
     p_scripts_reject.add_argument("--reason", help="rejection reason (prompted if omitted)")
     p_scripts_reject.add_argument("--org")
-    p_scripts_reject.set_defaults(func=cmd_scripts_reject)
+    p_scripts_reject.set_defaults(func=cmd_jobs_reject)
 
     p_scripts_output = scripts_sub.add_parser("output", help="Fetch captured output of a terminal SR")
-    p_scripts_output.add_argument("sr_id")
+    p_scripts_output.add_argument("job_id")
     p_scripts_output.add_argument("--stream", choices=["stdout", "stderr", "both"], default="both")
     p_scripts_output.add_argument("--max-bytes", type=int, default=1_048_576)
     p_scripts_output.add_argument("--org")
-    p_scripts_output.set_defaults(func=cmd_scripts_output)
+    p_scripts_output.set_defaults(func=cmd_jobs_output)
 
     p_scripts_run = scripts_sub.add_parser("run", help="Run a pending script request (TTY-gated)")
-    p_scripts_run.add_argument("sr_id")
+    p_scripts_run.add_argument("job_id")
     p_scripts_run.add_argument("--cwd", dest="cwd_override")
     p_scripts_run.add_argument("--timeout-seconds", type=int, dest="timeout_seconds")
     p_scripts_run.add_argument("--org")
-    p_scripts_run.set_defaults(func=cmd_scripts_run)
+    p_scripts_run.set_defaults(func=cmd_jobs_run)
 
     # grassland enrollments
     p_enroll = sub.add_parser("enrollments", help="List agent enrollment requests")

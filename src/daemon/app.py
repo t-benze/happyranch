@@ -79,7 +79,7 @@ async def _lifespan(app: FastAPI):
         # recovery scan reads any stdout_path/stderr_path. The DB-side
         # rename already happened in Database init; this realigns disk.
         migrate_filesystem_layout(org.root)
-        recovered = org.db.recover_orphaned_running_scripts(now_iso=_now_iso)
+        recovered = org.db.recover_orphaned_running_jobs(now_iso=_now_iso)
         if recovered:
             _logger.warning(
                 "recovered %d orphaned SRs in org %s: %s",
