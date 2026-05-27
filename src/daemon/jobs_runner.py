@@ -249,6 +249,8 @@ async def run_job(
         #    `proc.wait()` hangs forever, even after the child is reaped.
         for fd in (1, 2):  # stdout, stderr
             try:
+                # touches asyncio internal: proc._transport is BaseSubprocessTransport;
+                # get_pipe_transport(fd) is documented but Process._transport isn't.
                 t = proc._transport.get_pipe_transport(fd)
                 if t is not None:
                     t.close()
@@ -311,7 +313,7 @@ async def run_job(
         watcher.cancel()
         try:
             await watcher
-        except (asyncio.CancelledError, Exception):
+        except asyncio.CancelledError:
             pass
         if job_id is not None:
             _INFLIGHT.pop(job_id, None)

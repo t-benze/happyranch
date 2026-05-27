@@ -73,6 +73,7 @@ async def test_run_job_kills_on_output_cap(tmp_path: Path) -> None:
 
     assert result.status == "failed"
     assert result.reason == "output_cap"
-    # Stdout file may contain more than 10K — pump drains in-flight bytes — but the
-    # event-trigger fired well before 200K.
-    assert out.stat().st_size < 200_000
+    # Cap is 10_000 bytes. OS pipe buffer + in-flight chunks may push the actual
+    # on-disk size somewhat over the cap, but should remain well under the 200K
+    # the script would have written without the cap.
+    assert out.stat().st_size < 100_000
