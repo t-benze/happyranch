@@ -36,3 +36,7 @@ class OrgPaths:
     @property
     def db_path(self) -> Path:
         return self.root / "grassland.db"
+
+    @property
+    def assets_dir(self) -> Path:
+        return self.root / "assets"

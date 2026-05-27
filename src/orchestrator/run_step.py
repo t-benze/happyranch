@@ -132,6 +132,21 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
             token_usage=result.token_usage,
         )
 
+    # Cancel-race Guard B: /cancel can land between try_claim_for_step and
+    # subprocess exit. The l.41 entry guard only catches NEW enqueues. If we
+    # observe cancelled_at != NULL here, the report (if any) is from a
+    # cancelled tree and must not feed the decision pipeline — otherwise the
+    # `delegate` branch (no idempotence guard) will resurrect the parent and
+    # spawn a child task on a tree the founder explicitly killed.
+    # Token usage stays persisted above (provider really charged for it).
+    # See docs/superpowers/specs/2026-05-26-cancel-race-design.md §5.2.
+    refetch = db.get_task(task_id)
+    if refetch is None or refetch.cancelled_at is not None:
+        logger.debug(
+            "run_step %s: cancelled during session, dropping report", task_id,
+        )
+        return
+
     # ---- 5. Classify outcome ----
     if not result.success or report is None:
         note = _session_failed_note(result, report)
@@ -191,13 +206,18 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
         return
 
     if decision.action == "escalate":
+        # Atomic CAS: transition to BLOCKED(ESCALATED) only if not cancelled
+        # or terminal. Closes the post-_is_already_terminal race (Codex P2 on
+        # PR #34) by serializing against /cancel via the Database RLock.
+        # If False: founder cancellation landed between Guard B's re-fetch and
+        # here. Drop the escalate silently — the founder's terminal state wins.
         reason = decision.reason or "Escalated"
-        db.update_task(
-            task_id,
-            status=TaskStatus.BLOCKED,
-            block_kind=BlockKind.ESCALATED,
-            note=reason,
-        )
+        if not db.try_escalate(task_id, reason=reason):
+            logger.debug(
+                "run_step %s: cancelled between re-check and escalate, dropping",
+                task_id,
+            )
+            return
         orch._audit.log_escalation(task_id, agent, reason)
         orch.notify_escalated(
             task_id=task_id, agent=agent, reason=reason,
@@ -270,7 +290,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
             if worker_of_record == decision.agent:
                 db.increment_revision_count(task_id)
         child_id = db.next_task_id()
-        db.insert_task(TaskRecord(
+        child = TaskRecord(
             id=child_id,
             team=task.team,
             brief=decision.prompt or "",
@@ -278,13 +298,22 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
             parent_task_id=task_id,
             status=TaskStatus.PENDING,
             session_timeout_seconds=task.session_timeout_seconds,
-        ))
-        db.update_task(
-            task_id,
-            status=TaskStatus.BLOCKED,
-            block_kind=BlockKind.DELEGATED,
-            note=f"Delegated to {decision.agent} (child={child_id})",
         )
+        # Atomic CAS: insert child + transition parent to BLOCKED(DELEGATED)
+        # under the same RLock acquisition. Serializes against /cancel via
+        # Database RLock — closes the spawn-new-work race (Codex P1 on PR #34).
+        # If False: cancel landed between Guard B's re-fetch and here. No child
+        # was inserted, no parent overwrite, no enqueue. The founder's terminal
+        # state wins. Drop silently — the founder cancelled deliberately.
+        if not db.try_delegate(
+            task_id, child,
+            parent_note=f"Delegated to {decision.agent} (child={child_id})",
+        ):
+            logger.debug(
+                "run_step %s: cancelled between re-check and delegate, dropping",
+                task_id,
+            )
+            return
         if orch._queue is not None:
             orch._queue.put_nowait(orch._slug, child_id)
         return
@@ -608,14 +637,37 @@ def _build_prior_steps_from_db(orch: "Orchestrator", task_id: str):
     return steps
 
 
+def _is_already_terminal(orch: "Orchestrator", task_id: str) -> bool:
+    """Shared idempotence predicate for the four decision branches.
+
+    Returns True when the row is gone, already terminal (COMPLETED / FAILED),
+    or cancelled — any state where a subsequent decision must not overwrite
+    the task's status, note, or spawn children.
+
+    Includes `cancelled_at` explicitly as defense in depth: today `/cancel`
+    always flips status to FAILED alongside stamping `cancelled_at`, so the
+    `status in TERMINAL_STATES` check covers the cancelled case. But if a
+    future code path ever stamps `cancelled_at` without touching status, this
+    predicate still does the right thing.
+
+    Closes the cancel-race documented in
+    docs/superpowers/specs/2026-05-26-cancel-race-design.md §5.3.
+    """
+    existing = orch._db.get_task(task_id)
+    return (
+        existing is None
+        or existing.status in TERMINAL_STATES
+        or existing.cancelled_at is not None
+    )
+
+
 def _complete(orch: "Orchestrator", task_id: str, *, note: str, artifact_dir: str | None = None) -> None:
     from datetime import datetime, timezone
     # Idempotence guard: /cancel may have already taken this task to FAILED
     # between Popen return and here. Don't resurrect a cancelled task back to
     # COMPLETED just because the subprocess happened to finish cleanly before
     # SIGTERM arrived.
-    existing = orch._db.get_task(task_id)
-    if existing is not None and existing.status in TERMINAL_STATES:
+    if _is_already_terminal(orch, task_id):
         return
     orch._db.update_task(
         task_id,
@@ -636,8 +688,7 @@ def _fail(orch: "Orchestrator", task_id: str, *, note: str) -> None:
     # the subprocess, run_step re-enters via the post-execution classifier and
     # tries to write a "session failed (rc=-15; ...)" note. That must NOT
     # overwrite the founder's "cancelled by founder: ..." note.
-    existing = orch._db.get_task(task_id)
-    if existing is not None and existing.status in TERMINAL_STATES:
+    if _is_already_terminal(orch, task_id):
         return
     orch._db.update_task(
         task_id,

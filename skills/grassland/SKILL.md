@@ -149,6 +149,23 @@ scripts/grassland kb reindex
 
 `kb add` / `kb update` payload files use YAML frontmatter (`slug`, `title`, `type`, `topic`, optional `tags`, `source_task`) followed by a markdown body. There is no separate `kb precedent` subcommand any longer — founder rulings flow through plain `kb add` with `source_task: <task-id>` in the frontmatter so the link back to the escalation is preserved.
 
+## Shared Assets
+
+Org-wide blob store at `<runtime>/orgs/<slug>/assets/`. Flat directory (no nesting in v1) for persistent artifacts produced by agents — reports, exports, screenshots, PDFs. Files survive across tasks and are visible to every agent in the org.
+
+```bash
+scripts/grassland assets put <local-path> --agent <you> [--name <name>] [--org <slug>]
+scripts/grassland assets list [--org <slug>]
+scripts/grassland assets get <name> --output <local-path> [--org <slug>]
+```
+
+- Names match `[A-Za-z0-9._-]+`, max 200 chars; slash-bearing names rejected.
+- Size cap: 10 MB per file. Larger uploads return HTTP 413.
+- `put` is idempotent (overwrites by default). No version history.
+- `put` is audited (`action="asset_put"`); `list` and `get` are not.
+- All access goes through `grassland` — direct filesystem writes don't work uniformly across Claude/Codex/Opencode executors (sandboxes block writes outside the agent workspace).
+- Not the KB. KB is for typed knowledge (slug + frontmatter); assets are opaque blobs.
+
 ## Founder Escalation Resolution
 
 ```bash

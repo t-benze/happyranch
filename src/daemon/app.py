@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from src.daemon.dispatcher import Dispatcher
 from src.daemon.routes import (
     agents,
+    assets,
     audit,
     auth,
     health,
@@ -21,6 +22,7 @@ from src.daemon.routes import (
     tokens,
 )
 from src.daemon.state import DaemonState
+from src.orchestrator._paths import OrgPaths
 
 
 def _attach_org_runtime_wiring(state: DaemonState) -> None:
@@ -70,7 +72,7 @@ async def _lifespan(app: FastAPI):
     state: DaemonState = app.state.daemon
     ensure_workers_started(state)
 
-    # Recover any SRs left in 'running' state from a previous daemon process.
+    # Recover any jobs left in 'running' state from a previous daemon process.
     _now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     _logger = logging.getLogger("grassland.daemon")
     from src.daemon.jobs_runner import migrate_filesystem_layout
@@ -79,10 +81,11 @@ async def _lifespan(app: FastAPI):
         # recovery scan reads any stdout_path/stderr_path. The DB-side
         # rename already happened in Database init; this realigns disk.
         migrate_filesystem_layout(org.root)
+        OrgPaths(org.root).assets_dir.mkdir(exist_ok=True)
         recovered = org.db.recover_orphaned_running_jobs(now_iso=_now_iso)
         if recovered:
             _logger.warning(
-                "recovered %d orphaned SRs in org %s: %s",
+                "recovered %d orphaned jobs in org %s: %s",
                 len(recovered), org.slug, recovered,
             )
 
@@ -118,6 +121,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(threads.router, prefix="/api/v1/orgs/{slug}", tags=["threads"])
     app.include_router(jobs.router, prefix="/api/v1/orgs/{slug}", tags=["jobs"])
     app.include_router(jobs.dual_router, prefix="/api/v1/orgs/{slug}", tags=["jobs"])
+    app.include_router(assets.router, prefix="/api/v1/orgs/{slug}", tags=["assets"])
     from src.daemon.routes import web_static
     web_static.register(app)
     return app
