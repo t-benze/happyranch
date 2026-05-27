@@ -264,4 +264,8 @@ class JobRecord(BaseModel):
     reject_reason:    str | None = None
     cwd_resolved:     str | None = None
     max_runtime_seconds: int | None = None
+    # Per-stream output-size cap (bytes). Either stdout OR stderr crossing
+    # this triggers SIGKILL with reason="output_cap". 50 MiB default matches
+    # the column default in the jobs table schema.
+    max_output_bytes: int = 52428800
     created_at:       str

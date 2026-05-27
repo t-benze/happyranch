@@ -413,6 +413,7 @@ async def _run_job_core(
                 stdout_path=str(stdout_path),
                 stderr_path=str(stderr_path),
                 max_runtime_seconds=timeout,
+                max_output_bytes=record.max_output_bytes,
                 publish=_sync_publish,
             )
         except FileNotFoundError:

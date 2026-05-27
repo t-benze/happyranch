@@ -51,3 +51,28 @@ async def test_run_job_with_explicit_timeout_kills_runaway(tmp_path: Path) -> No
 
     assert result.status == "failed"
     assert result.reason == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_run_job_kills_on_output_cap(tmp_path: Path) -> None:
+    """When stdout exceeds max_output_bytes, the runner SIGKILLs and reports output_cap."""
+    out = tmp_path / "out.log"
+    err = tmp_path / "err.log"
+    result = await run_job(
+        job_id="JOB-T3",
+        # Print 200 KB of 'A's, then sleep. Output should exceed 10 KB cap quickly.
+        script_text="python3 -c 'import sys; sys.stdout.write(\"A\" * 200_000); sys.stdout.flush(); import time; time.sleep(30)'\n",
+        interpreter="bash",
+        cwd=str(tmp_path),
+        stdout_path=str(out),
+        stderr_path=str(err),
+        max_runtime_seconds=None,
+        max_output_bytes=10_000,
+        publish=lambda e: None,
+    )
+
+    assert result.status == "failed"
+    assert result.reason == "output_cap"
+    # Stdout file may contain more than 10K — pump drains in-flight bytes — but the
+    # event-trigger fired well before 200K.
+    assert out.stat().st_size < 200_000

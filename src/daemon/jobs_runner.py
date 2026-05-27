@@ -84,6 +84,9 @@ class JobRunResult:
     reason: str | None = None   # populated only when status == "failed"
 
 
+_READ_CHUNK_BYTES = 8192
+
+
 async def _pump_stream(
     stream: asyncio.StreamReader,
     label: str,
@@ -92,29 +95,75 @@ async def _pump_stream(
     head_buf: list[bytes],
     head_capped: list[bool],
     byte_counter: list[int],
+    max_bytes: int | None = None,
+    cap_event: asyncio.Event | None = None,
 ) -> None:
-    """Append bytes to disk, fan out line events, fill head buffer until cap."""
+    """Append bytes to disk, fan out line events, fill head buffer until cap.
+
+    Reads in chunks (not by line) so the byte counter advances regardless of
+    whether the source process emits newlines — a server writing a 200 KB
+    progress bar without flushing newlines must still trip the output cap.
+    Line events are emitted by buffering chunks and splitting on `\\n`; a
+    trailing partial line is flushed on EOF.
+
+    When ``max_bytes`` is set and the running ``byte_counter`` for this stream
+    crosses it, fire ``cap_event`` so the outer ``run_job`` coroutine can
+    SIGKILL the process group. The pump keeps draining bytes already in
+    flight — the on-disk file may exceed ``max_bytes`` by a small margin
+    bounded by what's already in the OS pipe buffer at signal time.
+    """
+    line_buf = bytearray()
     with open(out_path, "ab", buffering=0) as f:
         while True:
-            line = await stream.readline()
-            if not line:
+            chunk = await stream.read(_READ_CHUNK_BYTES)
+            if not chunk:
+                # EOF — flush any trailing partial line as its own event.
+                if line_buf:
+                    _emit_line(bytes(line_buf), label, publish)
+                    line_buf.clear()
                 return
-            f.write(line)
-            byte_counter[0] += len(line)
+            f.write(chunk)
+            byte_counter[0] += len(chunk)
+            if (
+                max_bytes is not None
+                and cap_event is not None
+                and byte_counter[0] >= max_bytes
+                and not cap_event.is_set()
+            ):
+                cap_event.set()
+                # Stop pumping immediately: backpressure the writer so the
+                # OS pipe buffer fills, then SIGKILL (fired by the watcher)
+                # closes the pipe before more bytes flow. Without this, on
+                # platforms with large pipe buffers the writer can stream a
+                # full payload through us between cap detection and SIGKILL.
+                return
             if not head_capped[0]:
                 head_so_far = sum(len(b) for b in head_buf)
                 room = _HEAD_CAP_BYTES - head_so_far
-                if len(line) <= room:
-                    head_buf.append(line)
+                if len(chunk) <= room:
+                    head_buf.append(chunk)
                 else:
                     if room > 0:
-                        head_buf.append(line[:room])
+                        head_buf.append(chunk[:room])
                     head_capped[0] = True
-            try:
-                text = line.decode("utf-8", errors="replace").rstrip("\n")
-            except Exception:
-                text = "<binary>"
-            publish({"kind": "line", "stream": label, "line": text, "ts": _now_iso()})
+            # Split chunk on newlines to keep emitting line events for normal
+            # well-behaved streams. Carry any partial trailing line forward.
+            line_buf.extend(chunk)
+            while True:
+                nl = line_buf.find(b"\n")
+                if nl < 0:
+                    break
+                line = bytes(line_buf[: nl + 1])
+                del line_buf[: nl + 1]
+                _emit_line(line, label, publish)
+
+
+def _emit_line(line: bytes, label: str, publish: Callable[[dict], None]) -> None:
+    try:
+        text = line.decode("utf-8", errors="replace").rstrip("\n")
+    except Exception:
+        text = "<binary>"
+    publish({"kind": "line", "stream": label, "line": text, "ts": _now_iso()})
 
 
 async def run_job(
@@ -127,6 +176,7 @@ async def run_job(
     stderr_path: str,
     max_runtime_seconds: int | None,
     publish: Callable[[dict], None],
+    max_output_bytes: int | None = None,
 ) -> JobRunResult:
     """Spawn the script, pump streams, return JobRunResult.
 
@@ -137,6 +187,13 @@ async def run_job(
     subprocess without an ``asyncio.wait_for`` wrapper. Positive int means
     the subprocess is SIGTERM'd (then SIGKILL'd) on expiry and the result's
     ``reason`` is set to ``"timeout"``.
+
+    `max_output_bytes=None` means unbounded per stream. Positive int means
+    either stream exceeding the threshold triggers an immediate SIGKILL of
+    the process group; result is ``status="failed", reason="output_cap"``.
+    Timeout precedence: if both could apply, ``"timeout"`` wins because the
+    timeout branch sets ``reason`` first and the output_cap branch only
+    overwrites a still-None reason.
     """
     binary = _interpreter_binary(interpreter)
     if binary is None:
@@ -166,12 +223,43 @@ async def run_job(
     stdout_bytes = [0]
     stderr_bytes = [0]
 
+    # Shared cap event — set by EITHER pump when its per-stream byte counter
+    # crosses max_output_bytes. The watcher coroutine awaits it and SIGKILLs.
+    cap_event = asyncio.Event()
+
     pump_out = asyncio.create_task(_pump_stream(
-        proc.stdout, "stdout", stdout_path, publish, stdout_head, stdout_capped, stdout_bytes
+        proc.stdout, "stdout", stdout_path, publish, stdout_head, stdout_capped, stdout_bytes,
+        max_bytes=max_output_bytes, cap_event=cap_event,
     ))
     pump_err = asyncio.create_task(_pump_stream(
-        proc.stderr, "stderr", stderr_path, publish, stderr_head, stderr_capped, stderr_bytes
+        proc.stderr, "stderr", stderr_path, publish, stderr_head, stderr_capped, stderr_bytes,
+        max_bytes=max_output_bytes, cap_event=cap_event,
     ))
+
+    async def _watch_cap() -> None:
+        await cap_event.wait()
+        # Close the stdout/stderr read transports BEFORE SIGKILL. Two reasons:
+        # 1. The writer gets SIGPIPE on its next write — stops pumping data
+        #    into the pipe between our cap-detection and SIGKILL. Without
+        #    this, on macOS the writer can flush its full payload (e.g. a
+        #    200 KB single `write()`) through us during the kill race.
+        # 2. asyncio's `proc.wait()` only resolves once the SubprocessTransport
+        #    has torn down — which requires the pipe transports to close. If
+        #    we leave bytes unread in stdout, the pipe stays open and
+        #    `proc.wait()` hangs forever, even after the child is reaped.
+        for fd in (1, 2):  # stdout, stderr
+            try:
+                t = proc._transport.get_pipe_transport(fd)
+                if t is not None:
+                    t.close()
+            except Exception:
+                pass
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    watcher = asyncio.create_task(_watch_cap())
 
     reason: str | None = None
     try:
@@ -179,8 +267,21 @@ async def run_job(
             await proc.wait()
         else:
             await asyncio.wait_for(proc.wait(), timeout=max_runtime_seconds)
-        await asyncio.gather(pump_out, pump_err)
-        status = "completed"
+        # After SIGKILL the OS closes the child's stdio pipes promptly, so
+        # the gather() resolves quickly. The 5s safety wait_for guards
+        # against pathological pumps blocked on disk.
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(pump_out, pump_err, return_exceptions=True),
+                timeout=5,
+            )
+        except asyncio.TimeoutError:
+            pass
+        if cap_event.is_set():
+            status = "failed"
+            reason = "output_cap"
+        else:
+            status = "completed"
         exit_code = proc.returncode
     except asyncio.TimeoutError:
         reason = "timeout"
@@ -207,6 +308,11 @@ async def run_job(
         status = "failed"
         exit_code = proc.returncode
     finally:
+        watcher.cancel()
+        try:
+            await watcher
+        except (asyncio.CancelledError, Exception):
+            pass
         if job_id is not None:
             _INFLIGHT.pop(job_id, None)
 
