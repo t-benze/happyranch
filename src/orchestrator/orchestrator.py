@@ -157,10 +157,10 @@ class Orchestrator:
         else:
             loop.create_task(coro_factory())
 
-    def notify_script_submitted(
+    def notify_job_submitted(
         self,
         *,
-        sr_id: str,
+        job_id: str,
         agent: str,
         task_id: str,
         title: str,
@@ -179,8 +179,8 @@ class Orchestrator:
             return
         import asyncio
         import threading
-        coro_factory = lambda: self._notifier.send_script_request(
-            sr_id=sr_id, agent=agent, task_id=task_id,
+        coro_factory = lambda: self._notifier.send_job_request(
+            job_id=job_id, agent=agent, task_id=task_id,
             title=title, rationale=rationale, script_text=script_text,
             interpreter=interpreter, cwd_hint=cwd_hint,
         )
@@ -194,10 +194,10 @@ class Orchestrator:
         else:
             loop.create_task(coro_factory())
 
-    def notify_script_run_result(
+    def notify_job_run_result(
         self,
         *,
-        sr_id: str,
+        job_id: str,
         task_id: str,
         parent_message_id: str,
         status: str,
@@ -212,8 +212,8 @@ class Orchestrator:
             return
         import asyncio
         import threading
-        coro_factory = lambda: self._notifier.send_script_run_result(
-            sr_id=sr_id, task_id=task_id,
+        coro_factory = lambda: self._notifier.send_job_run_result(
+            job_id=job_id, task_id=task_id,
             parent_message_id=parent_message_id,
             status=status, exit_code=exit_code, duration_ms=duration_ms,
             stdout_head=stdout_head, stderr_head=stderr_head, reason=reason,

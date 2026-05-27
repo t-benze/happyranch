@@ -101,10 +101,10 @@ def _build_failure_body(
     return title, lines
 
 
-def _build_script_request_body(
+def _build_job_request_body(
     *,
     slug: str,
-    sr_id: str,
+    job_id: str,
     agent: str,
     task_id: str,
     title: str,
@@ -114,10 +114,10 @@ def _build_script_request_body(
     cwd_hint: str | None,
 ) -> tuple[str, list[str]]:
     """Body for the script-request submit push (msg_type=post)."""
-    header = f"[Grassland {slug}] {sr_id} submitted — review needed"
+    header = f"[Grassland {slug}] {job_id} submitted — review needed"
     if len(script_text) > _SCRIPT_PREVIEW_CAP:
         script_lines = script_text[:_SCRIPT_PREVIEW_CAP].split("\n") + [
-            f"[truncated — see grassland scripts show {sr_id} for full script]"
+            f"[truncated — see grassland scripts show {job_id} for full script]"
         ]
     else:
         script_lines = script_text.split("\n")
@@ -145,17 +145,17 @@ def _build_script_request_body(
         "  <reason>",
         "",
         "You can also resolve via CLI:",
-        f"  grassland scripts show {sr_id}",
-        f"  grassland scripts run {sr_id}",
-        f"  grassland scripts reject {sr_id} --reason \"...\"",
+        f"  grassland scripts show {job_id}",
+        f"  grassland scripts run {job_id}",
+        f"  grassland scripts reject {job_id} --reason \"...\"",
     ]
     return header, lines
 
 
-def _build_script_result_body(
+def _build_job_result_body(
     *,
     slug: str,
-    sr_id: str,
+    job_id: str,
     status: str,
     exit_code: int | None,
     duration_ms: int,
@@ -168,7 +168,7 @@ def _build_script_result_body(
         descriptor = f"completed (exit {exit_code if exit_code is not None else '?'})"
     else:
         descriptor = f"failed ({reason or 'unknown'})"
-    header = f"[Grassland {slug}] {sr_id} {descriptor}"
+    header = f"[Grassland {slug}] {job_id} {descriptor}"
 
     def _preview(s: str | None) -> list[str]:
         if not s:
@@ -178,7 +178,7 @@ def _build_script_result_body(
             return s.split("\n")
         return (
             s[:_RESULT_OUTPUT_PREVIEW_CAP].split("\n")
-            + [f"[truncated — full output in grassland scripts output {sr_id}]"]
+            + [f"[truncated — full output in grassland scripts output {job_id}]"]
         )
 
     duration_s = duration_ms / 1000.0
@@ -451,10 +451,10 @@ class EscalationNotifier:
                 logger.exception("audit log_thread_founder_notify_failed also failed")
         return True
 
-    async def send_script_request(
+    async def send_job_request(
         self,
         *,
-        sr_id: str,
+        job_id: str,
         agent: str,
         task_id: str,
         title: str,
@@ -467,13 +467,13 @@ class EscalationNotifier:
 
         Mint-after-send: the correlation row is keyed by the returned
         feishu_message_id, so a send failure leaves no orphan row. All
-        exceptions are swallowed and audited so submit_script's caller
+        exceptions are swallowed and audited so submit_job's caller
         (the agent) never sees a 5xx because Feishu is down.
         """
         try:
             now = datetime.now(timezone.utc)
-            header, body_lines = _build_script_request_body(
-                slug=self._slug, sr_id=sr_id, agent=agent, task_id=task_id,
+            header, body_lines = _build_job_request_body(
+                slug=self._slug, job_id=job_id, agent=agent, task_id=task_id,
                 title=title, rationale=rationale, script_text=script_text,
                 interpreter=interpreter, cwd_hint=cwd_hint,
             )
@@ -486,28 +486,28 @@ class EscalationNotifier:
             self._db.mint_escalation_notification(
                 feishu_message_id=message_id,
                 org_slug=self._slug,
-                task_id=sr_id,            # SR-NNN in task_id column (matches thread_addressed)
+                task_id=job_id,            # SR-NNN in task_id column (matches thread_addressed)
                 chat_id=self._config.chat_id,
                 expires_at=expires,
-                kind="script_request",
+                kind="job_request",
             )
-            self._audit.log_script_notify_sent(
-                task_id=task_id, sr_id=sr_id, feishu_message_id=message_id,
+            self._audit.log_job_notify_sent(
+                task_id=task_id, job_id=job_id, feishu_message_id=message_id,
             )
         except Exception as exc:
-            logger.exception("send_script_request failed for SR %s", sr_id)
+            logger.exception("send_job_request failed for SR %s", job_id)
             try:
-                self._audit.log_script_notify_failed(
-                    task_id=task_id, sr_id=sr_id,
+                self._audit.log_job_notify_failed(
+                    task_id=task_id, job_id=job_id,
                     error=f"{type(exc).__name__}: {exc}",
                 )
             except Exception:
-                logger.exception("audit log_script_notify_failed also failed")
+                logger.exception("audit log_job_notify_failed also failed")
 
-    async def send_script_run_result(
+    async def send_job_run_result(
         self,
         *,
-        sr_id: str,
+        job_id: str,
         task_id: str,
         parent_message_id: str,
         status: str,
@@ -523,8 +523,8 @@ class EscalationNotifier:
         Failures are swallowed and audited.
         """
         try:
-            header, body_lines = _build_script_result_body(
-                slug=self._slug, sr_id=sr_id, status=status,
+            header, body_lines = _build_job_result_body(
+                slug=self._slug, job_id=job_id, status=status,
                 exit_code=exit_code, duration_ms=duration_ms,
                 stdout_head=stdout_head, stderr_head=stderr_head,
                 reason=reason,
@@ -534,19 +534,19 @@ class EscalationNotifier:
                 title=header,
                 body_lines=body_lines,
             )
-            self._audit.log_script_run_result_notify_sent(
-                sr_id=sr_id, task_id=task_id,
+            self._audit.log_job_run_result_notify_sent(
+                job_id=job_id, task_id=task_id,
                 parent_message_id=parent_message_id,
                 follow_up_message_id=follow_up_id,
                 status=status,
             )
         except Exception as exc:
-            logger.exception("send_script_run_result failed for SR %s", sr_id)
+            logger.exception("send_job_run_result failed for SR %s", job_id)
             try:
-                self._audit.log_script_run_result_notify_failed(
-                    sr_id=sr_id, task_id=task_id,
+                self._audit.log_job_run_result_notify_failed(
+                    job_id=job_id, task_id=task_id,
                     error=f"{type(exc).__name__}: {exc}",
                     status=status,
                 )
             except Exception:
-                logger.exception("audit log_script_run_result_notify_failed also failed")
+                logger.exception("audit log_job_run_result_notify_failed also failed")

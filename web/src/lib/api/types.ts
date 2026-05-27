@@ -275,28 +275,28 @@ export interface LearningEntry extends LearningEntrySummary {
 }
 
 // ---------------------------------------------------------------------------
-// Script requests
+// Jobs (formerly "script requests")
 // ---------------------------------------------------------------------------
 
-export type ScriptRequestStatus =
+export type JobStatus =
   | 'pending'
   | 'rejected'
   | 'running'
   | 'completed'
   | 'failed';
 
-export type ScriptInterpreter = 'bash' | 'sh' | 'zsh' | 'python3';
+export type JobInterpreter = 'bash' | 'sh' | 'zsh' | 'python3';
 
-export interface ScriptRequest {
+export interface JobRecord {
   id: string;
   task_id: string;
   agent_name: string;
   title: string;
   rationale: string;
   script_text: string;
-  interpreter: ScriptInterpreter;
+  interpreter: JobInterpreter;
   cwd_hint: string | null;
-  status: ScriptRequestStatus;
+  status: JobStatus;
   exit_code: number | null;
   stdout_head: string | null;
   stderr_head: string | null;
@@ -309,15 +309,19 @@ export interface ScriptRequest {
   reviewed_by: string | null;
   reject_reason: string | null;
   cwd_resolved: string | null;
-  timeout_seconds: number;
+  max_runtime_seconds: number | null;
+  max_output_bytes: number | null;
+  review_required: boolean;
+  persistent: boolean;
+  reason: string | null;
   created_at: string;
 }
 
-export interface ScriptListResponse {
-  scripts: ScriptRequest[];
+export interface JobListResponse {
+  jobs: JobRecord[];
 }
 
-export interface ScriptRunResponse {
+export interface JobRunResponse {
   id: string;
   status: 'running';
   started_at: string;
@@ -326,7 +330,7 @@ export interface ScriptRunResponse {
   events_url: string;
 }
 
-export interface ScriptOutput {
+export interface JobOutput {
   stdout: string;
   stderr: string;
   truncated_stdout: boolean;
@@ -334,3 +338,23 @@ export interface ScriptOutput {
   total_stdout_bytes: number;
   total_stderr_bytes: number;
 }
+
+export interface JobTailResponse {
+  stream: 'stdout' | 'stderr';
+  lines: string[];
+}
+
+export interface JobStopResponse {
+  ok: boolean;
+  id: string;
+  already_terminal?: boolean;
+}
+
+/**
+ * Wait response is `JobRecord | {timed_out: true}` — when the timeout fires
+ * the daemon returns only `{timed_out: true}`; on terminal transition it
+ * returns the full record merged with `{timed_out: false}`.
+ */
+export type JobWaitResponse =
+  | (JobRecord & { timed_out: false })
+  | { timed_out: true };

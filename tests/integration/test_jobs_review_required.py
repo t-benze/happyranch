@@ -1,20 +1,19 @@
-"""End-to-end SR lifecycle: agent submits, founder runs, founder revisits.
+"""End-to-end review-required job lifecycle: agent submits, founder runs, founder revisits.
 
 Covers the full happy path:
   1. Dispatch a task to engineering_head.
-  2. Fake agent submits a script request (via grassland scripts submit) and
-     self-blocks (report-completion status=blocked → task becomes FAILED).
-  3. Founder lists pending SRs, runs the SR via POST /scripts/{id}/run.
-  4. SR reaches completed + exit_code==0.
-  5. Audit log for the task contains script_submitted + script_run_completed.
+  2. Fake agent submits a review_required=true job (via grassland jobs submit)
+     and self-blocks (report-completion status=blocked → task becomes FAILED).
+  3. Founder lists pending jobs, runs the job via POST /jobs/{id}/run.
+  4. Job reaches completed + exit_code==0.
+  5. Audit log for the task contains job_submitted + job_run_completed.
   6. Founder revisits the failed task; the new root's audit entry links back
-     to the predecessor, which had the SR — confirming the revisit chain.
+     to the predecessor, which had the job — confirming the revisit chain.
 """
 from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
 from textwrap import dedent
 
 import httpx
@@ -53,32 +52,32 @@ def _wait_for_task_status(
     )
 
 
-def _wait_for_sr_terminal(
+def _wait_for_job_terminal(
     base: str,
-    sr_id: str,
+    job_id: str,
     *,
     timeout: float = 20.0,
 ) -> dict:
-    """Poll GET /scripts/{sr_id} until the SR is completed or failed."""
+    """Poll GET /jobs/{job_id} until the job is completed or failed."""
     deadline = time.monotonic() + timeout
     d: dict = {}
     while time.monotonic() < deadline:
-        r = httpx.get(f"{base}/scripts/{sr_id}", headers=_auth_headers(), timeout=5.0)
+        r = httpx.get(f"{base}/jobs/{job_id}", headers=_auth_headers(), timeout=5.0)
         d = r.json()
         if d.get("status") in ("completed", "failed"):
             return d
         time.sleep(0.1)
     raise AssertionError(
-        f"SR {sr_id} did not reach terminal within {timeout}s; last={d}"
+        f"job {job_id} did not reach terminal within {timeout}s; last={d}"
     )
 
 
-def test_sr_lifecycle_submit_run_revisit(
+def test_review_required_job_lifecycle_submit_run_revisit(
     live_daemon,
     runtime,
     fake_claude_plan_env,
 ):
-    """Agent submits SR → self-blocks → founder runs → revisit surfaces SR."""
+    """Agent submits review-required job → self-blocks → founder runs → revisit surfaces job."""
     port = live_daemon
     base = f"http://127.0.0.1:{port}/api/v1/orgs/{DEFAULT_TEST_SLUG}"
     headers = _auth_headers()
@@ -86,7 +85,7 @@ def test_sr_lifecycle_submit_run_revisit(
     # ── 1. Seed the agent workspace (required for WorkspaceNotInitialized guard)
     seed_workspace(runtime, "engineering_head")
 
-    # ── 2. Write the FAKE_CLAUDE_PLAN that submits an SR and self-blocks.
+    # ── 2. Write the FAKE_CLAUDE_PLAN that submits a review-required job and self-blocks.
     #
     # The plan receives: $1=task_id $2=session_id $3=agent $4=org_slug
     #
@@ -102,30 +101,31 @@ def test_sr_lifecycle_submit_run_revisit(
         org_slug="$4"
 
         # Write the submit payload to a temp file.
-        payload="/tmp/sr-e2e-payload-$$.json"
+        payload="/tmp/job-e2e-payload-$$.json"
         printf '{
           "task_id": "%s",
           "session_id": "%s",
           "title": "touch e2e sentinel",
           "rationale": "integration test needs founder approval",
-          "script": "touch /tmp/grassland-sr-e2e-sentinel",
-          "interpreter": "bash"
+          "script": "touch /tmp/grassland-job-e2e-sentinel",
+          "interpreter": "bash",
+          "review_required": true
         }' "$task_id" "$session_id" > "$payload"
 
-        # Submit the SR (agent callback).
-        grassland scripts submit --from-file "$payload" --org "$org_slug" \\
-            > /tmp/sr-e2e-submit-$$.log 2>&1
+        # Submit the job (agent callback).
+        grassland jobs submit --from-file "$payload" --org "$org_slug" \\
+            > /tmp/job-e2e-submit-$$.log 2>&1
 
-        # Extract SR id from submit output, e.g. "ok: submitted SR-1 (status=pending)."
-        sr_id=$(grep -oE 'SR-[0-9]+' /tmp/sr-e2e-submit-$$.log | head -1)
-        if [[ -z "$sr_id" ]]; then
-            echo "ERROR: could not parse SR id from submit output" >&2
-            cat /tmp/sr-e2e-submit-$$.log >&2
+        # Extract job id from submit output, e.g. "ok: submitted JOB-001 (status=pending)."
+        job_id=$(grep -oE 'JOB-[0-9]+' /tmp/job-e2e-submit-$$.log | head -1)
+        if [[ -z "$job_id" ]]; then
+            echo "ERROR: could not parse JOB id from submit output" >&2
+            cat /tmp/job-e2e-submit-$$.log >&2
             exit 1
         fi
 
         # Self-block: tell the orchestrator we are waiting on the founder.
-        report="/tmp/sr-e2e-completion-$$.json"
+        report="/tmp/job-e2e-completion-$$.json"
         printf '{
           "task_id": "%s",
           "session_id": "%s",
@@ -136,7 +136,7 @@ def test_sr_lifecycle_submit_run_revisit(
           "risks_flagged": [],
           "dependencies": [],
           "suggested_reviewer_focus": []
-        }' "$task_id" "$session_id" "$agent" "$sr_id" > "$report"
+        }' "$task_id" "$session_id" "$agent" "$job_id" > "$report"
 
         grassland report-completion --from-file "$report" --org "$org_slug"
     """))
@@ -157,33 +157,34 @@ def test_sr_lifecycle_submit_run_revisit(
     body = _wait_for_task_status(base, task_id, terminal=("failed",), timeout=30.0)
     assert body["task"]["status"] == "failed", body["task"]
 
-    # ── 5. Find the pending SR submitted by the agent.
+    # ── 5. Find the pending job submitted by the agent.
     r = httpx.get(
-        f"{base}/scripts/",
+        f"{base}/jobs/",
         params={"status": "pending", "task_id": task_id},
         headers=headers,
         timeout=5.0,
     )
     assert r.status_code == 200, r.text
-    scripts = r.json()["scripts"]
-    assert len(scripts) >= 1, f"expected ≥1 pending SR for task {task_id}, got {scripts}"
-    sr_id = scripts[0]["id"]
+    jobs = r.json()["jobs"]
+    assert len(jobs) >= 1, f"expected >=1 pending job for task {task_id}, got {jobs}"
+    job_id = jobs[0]["id"]
+    assert job_id.startswith("JOB-"), f"expected JOB- prefix, got {job_id!r}"
 
-    # ── 6. Founder approves + runs the SR.
+    # ── 6. Founder approves + runs the job.
     r = httpx.post(
-        f"{base}/scripts/{sr_id}/run",
+        f"{base}/jobs/{job_id}/run",
         json={"timeout_seconds": 10},
         headers=headers,
         timeout=5.0,
     )
     assert r.status_code == 202, r.text
 
-    # ── 7. Wait for the SR to reach a terminal state.
-    sr_detail = _wait_for_sr_terminal(base, sr_id, timeout=20.0)
-    assert sr_detail["status"] == "completed", sr_detail
-    assert sr_detail["exit_code"] == 0, sr_detail
+    # ── 7. Wait for the job to reach a terminal state.
+    job_detail = _wait_for_job_terminal(base, job_id, timeout=20.0)
+    assert job_detail["status"] == "completed", job_detail
+    assert job_detail["exit_code"] == 0, job_detail
 
-    # ── 8. Audit log contains script_submitted + script_run_completed.
+    # ── 8. Audit log contains job_submitted + job_run_completed.
     r = httpx.get(
         f"{base}/audit",
         params={"task_id": task_id},
@@ -193,24 +194,24 @@ def test_sr_lifecycle_submit_run_revisit(
     assert r.status_code == 200, r.text
     entries = r.json()["entries"]
     actions = [e["action"] for e in entries]
-    assert "script_submitted" in actions, f"missing script_submitted in audit; actions={actions}"
-    assert "script_run_completed" in actions, (
-        f"missing script_run_completed in audit; actions={actions}"
+    assert "job_submitted" in actions, f"missing job_submitted in audit; actions={actions}"
+    assert "job_run_completed" in actions, (
+        f"missing job_run_completed in audit; actions={actions}"
     )
 
-    # ── 9. Confirm the SR's task_id link and sr_id are correct in the audit.
-    submitted_entry = next(e for e in entries if e["action"] == "script_submitted")
+    # ── 9. Confirm the job's task_id link and job_id are correct in the audit.
+    submitted_entry = next(e for e in entries if e["action"] == "job_submitted")
     payload_raw = submitted_entry.get("payload") or {}
     if isinstance(payload_raw, str):
         payload_raw = json.loads(payload_raw)
-    assert payload_raw.get("script_request_id") == sr_id, (
-        f"audit script_submitted.script_request_id mismatch: {payload_raw}"
+    assert payload_raw.get("script_request_id") == job_id, (
+        f"audit job_submitted.script_request_id mismatch: {payload_raw}"
     )
 
     # ── 10. Founder revisits the failed task.
     r = httpx.post(
         f"{base}/tasks/{task_id}/revisit",
-        json={"founder_note": "script ran — rerun with output context"},
+        json={"founder_note": "job ran — rerun with output context"},
         headers=headers,
         timeout=10.0,
     )
@@ -242,13 +243,10 @@ def test_sr_lifecycle_submit_run_revisit(
         f"revisit_of.predecessor_root={predecessor_root!r} expected {task_id!r}"
     )
 
-    # ── 12. Confirm the SR id appears in the predecessor's audit log
+    # ── 12. Confirm the job id appears in the predecessor's audit log
     #        (cross-check that _revisit_header_if_applicable can find it).
-    #        We already know script_submitted is in actions (step 8), but let's
-    #        also verify the sr_id field is present so the revisit header build
-    #        will surface it correctly at orchestration time.
     assert any(
-        (e.get("payload") or {}).get("script_request_id") == sr_id
+        (e.get("payload") or {}).get("script_request_id") == job_id
         for e in entries
-        if e["action"] == "script_submitted"
-    ), f"script_submitted entry missing script_request_id={sr_id!r}"
+        if e["action"] == "job_submitted"
+    ), f"job_submitted entry missing script_request_id={job_id!r}"

@@ -87,6 +87,6 @@ def test_terminal_types_include_new_events():
     assert "task_complete" in _TERMINAL_TYPES
 
 
-def test_script_topic_format():
-    from src.daemon.event_bus import script_topic
-    assert script_topic("SR-019") == "script:SR-019"
+def test_job_topic_format():
+    from src.daemon.event_bus import job_topic
+    assert job_topic("JOB-019") == "job:JOB-019"

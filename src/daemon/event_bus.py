@@ -15,8 +15,8 @@ def thread_inbox_topic(org_slug: str) -> str:
     return f"thread_inbox:{org_slug}"
 
 
-def script_topic(sr_id: str) -> str:
-    return f"script:{sr_id}"
+def job_topic(job_id: str) -> str:
+    return f"job:{job_id}"
 
 
 class EventBus:

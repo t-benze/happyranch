@@ -111,7 +111,7 @@ export function TopBar(): JSX.Element {
         <NavTab to={agentsHref} enabled={agentsHref !== '#'}>
           Agents
         </NavTab>
-        <NavTab {...placeholderTab('scripts')}>Scripts</NavTab>
+        <NavTab {...placeholderTab('jobs')}>Jobs</NavTab>
       </nav>
       <div className="ml-auto flex items-center gap-1">
         <DensityToggle />

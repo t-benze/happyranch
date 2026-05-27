@@ -44,42 +44,43 @@ describe('AuditRow', () => {
   });
 });
 
-describe('AuditRow — script_* actions', () => {
-  const srEntry: AuditEntry = {
+describe('AuditRow — job_* actions', () => {
+  const jobEntry: AuditEntry = {
     id: 2,
     task_id: 'TASK-42',
     session_id: null,
     agent: 'eng_agent',
-    action: 'script_submitted',
+    action: 'job_submitted',
     payload: {
-      script_request_id: 'SR-001',
+      // Audit-logger still emits the historical key for back-compat.
+      script_request_id: 'JOB-001',
       title: 'Deploy to staging',
     },
     timestamp: '2026-05-19T12:00:00Z',
   };
 
-  test('renders SR id as a link when scriptsBasePath is provided', () => {
+  test('renders job id as a link when jobsBasePath is provided', () => {
     render(
       wrap(
         <AuditRow
-          entry={srEntry}
+          entry={jobEntry}
           density="compact"
-          scriptsBasePath="/orgs/test-org/scripts"
+          jobsBasePath="/orgs/test-org/jobs"
         />,
       ),
     );
-    const link = screen.getByRole('link', { name: 'SR-001' });
+    const link = screen.getByRole('link', { name: 'JOB-001' });
     expect(link).toBeInTheDocument();
-    expect(link).toHaveAttribute('href', '/orgs/test-org/scripts/SR-001');
+    expect(link).toHaveAttribute('href', '/orgs/test-org/jobs/JOB-001');
   });
 
-  test('renders title inline for script_submitted', () => {
+  test('renders title inline for job_submitted', () => {
     render(
       wrap(
         <AuditRow
-          entry={srEntry}
+          entry={jobEntry}
           density="compact"
-          scriptsBasePath="/orgs/test-org/scripts"
+          jobsBasePath="/orgs/test-org/jobs"
         />,
       ),
     );
@@ -87,20 +88,20 @@ describe('AuditRow — script_* actions', () => {
     expect(screen.getByText(/Deploy to staging/)).toBeInTheDocument();
   });
 
-  test('renders reason inline for script_rejected', () => {
+  test('renders reason inline for job_rejected', () => {
     render(
       wrap(
         <AuditRow
           entry={{
-            ...srEntry,
-            action: 'script_rejected',
+            ...jobEntry,
+            action: 'job_rejected',
             payload: {
-              script_request_id: 'SR-002',
+              script_request_id: 'JOB-002',
               reason: 'dangerous command',
             },
           }}
           density="compact"
-          scriptsBasePath="/orgs/test-org/scripts"
+          jobsBasePath="/orgs/test-org/jobs"
         />,
       ),
     );
@@ -108,21 +109,21 @@ describe('AuditRow — script_* actions', () => {
     expect(screen.getByText(/dangerous command/)).toBeInTheDocument();
   });
 
-  test('renders exit code + duration for script_run_completed', () => {
+  test('renders exit code + duration for job_run_completed', () => {
     render(
       wrap(
         <AuditRow
           entry={{
-            ...srEntry,
-            action: 'script_run_completed',
+            ...jobEntry,
+            action: 'job_run_completed',
             payload: {
-              script_request_id: 'SR-003',
+              script_request_id: 'JOB-003',
               exit_code: 0,
               duration_ms: 1234,
             },
           }}
           density="compact"
-          scriptsBasePath="/orgs/test-org/scripts"
+          jobsBasePath="/orgs/test-org/jobs"
         />,
       ),
     );
@@ -131,18 +132,18 @@ describe('AuditRow — script_* actions', () => {
     expect(screen.getByText(/1234ms/)).toBeInTheDocument();
   });
 
-  test('falls back to plain text for non-script actions', () => {
+  test('falls back to plain text for non-job actions', () => {
     render(
       wrap(
         <AuditRow
           entry={baseEntry}
           density="compact"
-          scriptsBasePath="/orgs/test-org/scripts"
+          jobsBasePath="/orgs/test-org/jobs"
         />,
       ),
     );
-    // Non-SR action: still renders action name, no SR link
+    // Non-job action: still renders action name, no job link
     expect(screen.getByText('completion_report')).toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: /SR-/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /JOB-/ })).not.toBeInTheDocument();
   });
 });

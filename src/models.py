@@ -226,7 +226,7 @@ class ThreadInvocation(BaseModel):
     decline_reason: str | None = None
 
 
-class ScriptRequestStatus(StrEnum):
+class JobStatus(StrEnum):
     PENDING   = "pending"
     REJECTED  = "rejected"
     RUNNING   = "running"
@@ -234,23 +234,23 @@ class ScriptRequestStatus(StrEnum):
     FAILED    = "failed"
 
 
-class ScriptInterpreter(StrEnum):
+class JobInterpreter(StrEnum):
     BASH    = "bash"
     SH      = "sh"
     ZSH     = "zsh"
     PYTHON3 = "python3"
 
 
-class ScriptRequestRecord(BaseModel):
+class JobRecord(BaseModel):
     id:               str
     task_id:          str
     agent_name:       str
     title:            str
     rationale:        str
     script_text:      str
-    interpreter:      ScriptInterpreter
+    interpreter:      JobInterpreter
     cwd_hint:         str | None = None
-    status:           ScriptRequestStatus = ScriptRequestStatus.PENDING
+    status:           JobStatus = JobStatus.PENDING
     exit_code:        int | None = None
     stdout_head:      str | None = None
     stderr_head:      str | None = None
@@ -263,5 +263,22 @@ class ScriptRequestRecord(BaseModel):
     reviewed_by:      str | None = None
     reject_reason:    str | None = None
     cwd_resolved:     str | None = None
-    timeout_seconds:  int = 300
+    max_runtime_seconds: int | None = None
+    # Per-stream output-size cap (bytes). Either stdout OR stderr crossing
+    # this triggers SIGKILL with reason="output_cap". 50 MiB default matches
+    # the column default in the jobs table schema.
+    max_output_bytes: int | None = 52428800
+    # Founder-review gate. True → row inserted as `pending`, awaits explicit
+    # /run or Feishu APPROVE. False (default) → auto-run inline at /submit.
+    review_required:  bool = False
+    # Long-running flag. True → no default runtime cap (unbounded unless an
+    # explicit max_runtime_seconds is provided), killed only by /stop or the
+    # task-terminal kill hook. False (default) → 300s default cap when no
+    # explicit override is provided.
+    persistent:       bool = False
+    # Terminal-status reason — populated by the runner when status='failed'.
+    # Examples: "timeout", "output_cap", "founder_stop", "agent_stop",
+    # "task_ended", "spawn_failed", "internal_error", "daemon_crash".
+    # NULL when status='completed' or the job hasn't reached terminal yet.
+    reason:           str | None = None
     created_at:       str

@@ -6,7 +6,7 @@ import {
 import { getToken } from '@/lib/auth';
 import { API_PREFIX } from '@/lib/api/client';
 
-export interface ScriptEvent {
+export interface JobEvent {
   kind: 'stdout' | 'stderr' | 'terminal';
   line?: string;
   status?: string;
@@ -15,17 +15,17 @@ export interface ScriptEvent {
   reason?: string | null;
 }
 
-export function useScriptEventStream(
+export function useJobEventStream(
   path: string | null,
   active: boolean,
-): { events: ScriptEvent[]; terminal: ScriptEvent | null } {
-  const [events, setEvents] = useState<ScriptEvent[]>([]);
-  const [terminal, setTerminal] = useState<ScriptEvent | null>(null);
+): { events: JobEvent[]; terminal: JobEvent | null } {
+  const [events, setEvents] = useState<JobEvent[]>([]);
+  const [terminal, setTerminal] = useState<JobEvent | null>(null);
 
   useEffect(() => {
-    // Reset on every dep change so navigating between SRs (the drawer is
-    // shared across all script ids) doesn't show stale lines or a stale
-    // terminal banner from the previously-streamed SR.
+    // Reset on every dep change so navigating between jobs (the drawer is
+    // shared across all job ids) doesn't show stale lines or a stale
+    // terminal banner from the previously-streamed job.
     setEvents([]);
     setTerminal(null);
     if (!path || !active) return;

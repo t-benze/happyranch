@@ -772,11 +772,11 @@ class AuditLogger:
             },
         )
 
-    def log_script_submitted(
+    def log_job_submitted(
         self,
         *,
         task_id: str,
-        sr_id: str,
+        job_id: str,
         agent: str,
         title: str,
         interpreter: str,
@@ -787,9 +787,9 @@ class AuditLogger:
         self._db.insert_audit_log(
             task_id=task_id,
             agent=agent,
-            action="script_submitted",
+            action="job_submitted",
             payload={
-                "script_request_id": sr_id,
+                "script_request_id": job_id,
                 "title": title,
                 "interpreter": interpreter,
                 "cwd_hint": cwd_hint,
@@ -798,25 +798,25 @@ class AuditLogger:
             },
         )
 
-    def log_script_rejected(
-        self, *, task_id: str, sr_id: str, reviewer: str, reason: str
+    def log_job_rejected(
+        self, *, task_id: str, job_id: str, reviewer: str, reason: str
     ) -> None:
         self._db.insert_audit_log(
             task_id=task_id,
             agent=reviewer,
-            action="script_rejected",
+            action="job_rejected",
             payload={
-                "script_request_id": sr_id,
+                "script_request_id": job_id,
                 "reviewer": reviewer,
                 "reason": reason,
             },
         )
 
-    def log_script_run_started(
+    def log_job_run_started(
         self,
         *,
         task_id: str,
-        sr_id: str,
+        job_id: str,
         reviewer: str,
         cwd_resolved: str,
         timeout_seconds: int,
@@ -825,9 +825,9 @@ class AuditLogger:
         self._db.insert_audit_log(
             task_id=task_id,
             agent=reviewer,
-            action="script_run_started",
+            action="job_run_started",
             payload={
-                "script_request_id": sr_id,
+                "script_request_id": job_id,
                 "reviewer": reviewer,
                 "cwd_resolved": cwd_resolved,
                 "timeout_seconds": timeout_seconds,
@@ -835,11 +835,42 @@ class AuditLogger:
             },
         )
 
-    def log_script_run_completed(
+    def log_job_auto_started(
         self,
         *,
         task_id: str,
-        sr_id: str,
+        job_id: str,
+        agent: str,
+        cwd_resolved: str,
+        timeout_seconds: int | None,
+        interpreter: str,
+        persistent: bool,
+    ) -> None:
+        """Agent-triggered auto-run path (review_required=False).
+
+        Distinct action kind from ``job_run_started`` (founder-triggered) so
+        audit log readers can tell apart the two run-initiation paths. The
+        ``agent`` here is the requesting worker, not a founder reviewer.
+        """
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent=agent,
+            action="job_auto_started",
+            payload={
+                "script_request_id": job_id,
+                "agent": agent,
+                "cwd_resolved": cwd_resolved,
+                "timeout_seconds": timeout_seconds,
+                "interpreter": interpreter,
+                "persistent": persistent,
+            },
+        )
+
+    def log_job_run_completed(
+        self,
+        *,
+        task_id: str,
+        job_id: str,
         exit_code: int,
         duration_ms: int,
         stdout_bytes: int,
@@ -850,9 +881,9 @@ class AuditLogger:
         self._db.insert_audit_log(
             task_id=task_id,
             agent="founder",
-            action="script_run_completed",
+            action="job_run_completed",
             payload={
-                "script_request_id": sr_id,
+                "script_request_id": job_id,
                 "exit_code": exit_code,
                 "duration_ms": duration_ms,
                 "stdout_bytes": stdout_bytes,
@@ -862,11 +893,11 @@ class AuditLogger:
             },
         )
 
-    def log_script_run_failed(
+    def log_job_run_failed(
         self,
         *,
         task_id: str,
-        sr_id: str,
+        job_id: str,
         reason: str,
         exit_code: int | None = None,
         duration_ms: int | None = None,
@@ -874,54 +905,76 @@ class AuditLogger:
         self._db.insert_audit_log(
             task_id=task_id,
             agent="founder",
-            action="script_run_failed",
+            action="job_run_failed",
             payload={
-                "script_request_id": sr_id,
+                "script_request_id": job_id,
                 "exit_code": exit_code,
                 "duration_ms": duration_ms,
                 "reason": reason,
             },
         )
 
+    def log_job_stopped(
+        self, *, job_id: str, task_id: str, stopped_by: str,
+    ) -> None:
+        """Caller-triggered stop of a running job.
+
+        ``stopped_by`` is ``"founder"`` (bearer-auth /stop) or ``"agent"``
+        (session-bound /stop). The actual terminal transition still flows
+        through the runner's normal exit path (``job_run_failed`` with
+        ``reason="founder_stop"`` / ``"agent_stop"`` via
+        ``_KILL_REASON_OVERRIDE``); this audit row records who pressed the
+        button, separately from the runner's own bookkeeping.
+        """
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent=stopped_by,
+            action="job_stopped",
+            payload={
+                "script_request_id": job_id,
+                "stopped_by": stopped_by,
+            },
+        )
+
     # --- Feishu push correlation for script requests ---
 
-    def log_script_notify_sent(
-        self, *, task_id: str, sr_id: str, feishu_message_id: str,
+    def log_job_notify_sent(
+        self, *, task_id: str, job_id: str, feishu_message_id: str,
     ) -> None:
         self._db.insert_audit_log(
             task_id=task_id,
             agent="daemon",
-            action="script_notify_sent",
+            action="job_notify_sent",
             payload={
-                "script_request_id": sr_id,
+                "script_request_id": job_id,
                 "feishu_message_id": feishu_message_id,
             },
         )
 
-    def log_script_notify_failed(
-        self, *, task_id: str, sr_id: str, error: str,
+    def log_job_notify_failed(
+        self, *, task_id: str, job_id: str, error: str,
     ) -> None:
         self._db.insert_audit_log(
             task_id=task_id,
             agent="daemon",
-            action="script_notify_failed",
+            action="job_notify_failed",
             payload={
-                "script_request_id": sr_id,
+                "script_request_id": job_id,
                 "error": error,
             },
         )
 
-    def log_script_reply_processed(
+    def log_job_reply_processed(
         self,
         *,
-        sr_id: str,
+        job_id: str,
         task_id: str,
         decision: str,
         rationale: str,
         feishu_event_id: str | None = None,
     ) -> None:
         payload: dict = {
-            "script_request_id": sr_id,
+            "script_request_id": job_id,
             "decision": decision,
             "rationale": rationale,
         }
@@ -930,21 +983,21 @@ class AuditLogger:
         self._db.insert_audit_log(
             task_id=task_id,
             agent="founder",
-            action="script_reply_processed",
+            action="job_reply_processed",
             payload=payload,
         )
 
-    def log_script_reply_rejected(
+    def log_job_reply_rejected(
         self,
         *,
-        sr_id: str,
+        job_id: str,
         task_id: str,
         reason: str,
         feishu_event_id: str | None = None,
         text_preview: str | None = None,
     ) -> None:
         payload: dict = {
-            "script_request_id": sr_id,
+            "script_request_id": job_id,
             "reason": reason,
         }
         if feishu_event_id is not None:
@@ -954,14 +1007,14 @@ class AuditLogger:
         self._db.insert_audit_log(
             task_id=task_id,
             agent="daemon",
-            action="script_reply_rejected",
+            action="job_reply_rejected",
             payload=payload,
         )
 
-    def log_script_run_result_notify_sent(
+    def log_job_run_result_notify_sent(
         self,
         *,
-        sr_id: str,
+        job_id: str,
         task_id: str,
         parent_message_id: str,
         follow_up_message_id: str,
@@ -970,19 +1023,19 @@ class AuditLogger:
         self._db.insert_audit_log(
             task_id=task_id,
             agent="daemon",
-            action="script_run_result_notify_sent",
+            action="job_run_result_notify_sent",
             payload={
-                "script_request_id": sr_id,
+                "script_request_id": job_id,
                 "parent_message_id": parent_message_id,
                 "follow_up_message_id": follow_up_message_id,
                 "status": status,
             },
         )
 
-    def log_script_run_result_notify_failed(
+    def log_job_run_result_notify_failed(
         self,
         *,
-        sr_id: str,
+        job_id: str,
         task_id: str,
         error: str,
         status: str,
@@ -990,9 +1043,9 @@ class AuditLogger:
         self._db.insert_audit_log(
             task_id=task_id,
             agent="daemon",
-            action="script_run_result_notify_failed",
+            action="job_run_result_notify_failed",
             payload={
-                "script_request_id": sr_id,
+                "script_request_id": job_id,
                 "error": error,
                 "status": status,
             },

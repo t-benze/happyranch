@@ -33,62 +33,62 @@ def _make_orchestrator(tmp_path: Path):
     return orch
 
 
-def test_notify_script_submitted_noop_when_notifier_unset(tmp_path):
+def test_notify_job_submitted_noop_when_notifier_unset(tmp_path):
     orch = _make_orchestrator(tmp_path)
-    orch.notify_script_submitted(
-        sr_id="SR-1", agent="a", task_id="TASK-1",
+    orch.notify_job_submitted(
+        job_id="SR-1", agent="a", task_id="TASK-1",
         title="t", rationale="r", script_text="s",
         interpreter="bash", cwd_hint=None,
     )
 
 
-def test_notify_script_submitted_runs_in_thread_when_no_loop(tmp_path):
+def test_notify_job_submitted_runs_in_thread_when_no_loop(tmp_path):
     orch = _make_orchestrator(tmp_path)
     captured: list[dict] = []
     done = threading.Event()
 
     class _FakeNotifier:
-        async def send_script_request(self, **kw):
+        async def send_job_request(self, **kw):
             captured.append(kw)
             done.set()
 
     orch.attach_notifier(_FakeNotifier())
-    orch.notify_script_submitted(
-        sr_id="SR-1", agent="a", task_id="TASK-1",
+    orch.notify_job_submitted(
+        job_id="SR-1", agent="a", task_id="TASK-1",
         title="t", rationale="r", script_text="s",
         interpreter="bash", cwd_hint="x",
     )
-    assert done.wait(timeout=2.0), "send_script_request was not invoked"
+    assert done.wait(timeout=2.0), "send_job_request was not invoked"
     assert captured == [{
-        "sr_id": "SR-1", "agent": "a", "task_id": "TASK-1",
+        "job_id": "SR-1", "agent": "a", "task_id": "TASK-1",
         "title": "t", "rationale": "r", "script_text": "s",
         "interpreter": "bash", "cwd_hint": "x",
     }]
 
 
-def test_notify_script_run_result_noop_when_notifier_unset(tmp_path):
+def test_notify_job_run_result_noop_when_notifier_unset(tmp_path):
     orch = _make_orchestrator(tmp_path)
-    orch.notify_script_run_result(
-        sr_id="SR-1", task_id="TASK-1",
+    orch.notify_job_run_result(
+        job_id="SR-1", task_id="TASK-1",
         parent_message_id="om_x",
         status="completed", exit_code=0, duration_ms=100,
         stdout_head=None, stderr_head=None, reason=None,
     )
 
 
-def test_notify_script_run_result_runs_in_thread_when_no_loop(tmp_path):
+def test_notify_job_run_result_runs_in_thread_when_no_loop(tmp_path):
     orch = _make_orchestrator(tmp_path)
     captured: list[dict] = []
     done = threading.Event()
 
     class _FakeNotifier:
-        async def send_script_run_result(self, **kw):
+        async def send_job_run_result(self, **kw):
             captured.append(kw)
             done.set()
 
     orch.attach_notifier(_FakeNotifier())
-    orch.notify_script_run_result(
-        sr_id="SR-1", task_id="TASK-1",
+    orch.notify_job_run_result(
+        job_id="SR-1", task_id="TASK-1",
         parent_message_id="om_x",
         status="completed", exit_code=0, duration_ms=100,
         stdout_head="ok", stderr_head=None, reason=None,

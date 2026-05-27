@@ -120,30 +120,30 @@ def test_sweep_works_without_orchestrator_arg(tmp_path):
     assert db.get_task("T-BC").status == TaskStatus.FAILED
 
 
-def test_lifespan_recovers_orphaned_running_scripts(tmp_home, daemon_state):
-    """SR rows left in 'running' state on daemon startup are force-failed."""
+def test_lifespan_recovers_orphaned_running_jobs(tmp_home, daemon_state):
+    """Job rows left in 'running' state on daemon startup are force-failed."""
     from datetime import datetime, timezone
 
     from fastapi.testclient import TestClient
 
     from src.daemon.app import create_app
-    from src.models import ScriptInterpreter, ScriptRequestRecord, ScriptRequestStatus
+    from src.models import JobInterpreter, JobRecord, JobStatus
 
     org = daemon_state.orgs["alpha"]
-    # Seed: insert a pending SR then mark it running manually.
-    sr = ScriptRequestRecord(
-        id="SR-001",
+    # Seed: insert a pending job then mark it running manually.
+    job = JobRecord(
+        id="JOB-001",
         task_id="TASK-001",
         agent_name="engineering_head",
         title="t",
         rationale="r",
         script_text="echo x",
-        interpreter=ScriptInterpreter.BASH,
+        interpreter=JobInterpreter.BASH,
         created_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     )
-    org.db.insert_script_request(sr)
+    org.db.insert_job(job)
     org.db._conn.execute(
-        "UPDATE script_requests SET status='running', started_at='2026-05-23T00:00:00Z' WHERE id='SR-001'"
+        "UPDATE jobs SET status='running', started_at='2026-05-23T00:00:00Z' WHERE id='JOB-001'"
     )
     org.db._conn.commit()
 
@@ -152,37 +152,40 @@ def test_lifespan_recovers_orphaned_running_scripts(tmp_home, daemon_state):
     with TestClient(app):
         # Query inside the context so the DB is still open (lifespan teardown
         # calls close_all() on __exit__, after which the connection is gone).
-        fetched = org.db.get_script_request("SR-001")
+        fetched = org.db.get_job("JOB-001")
 
     assert fetched is not None
-    assert fetched.status == ScriptRequestStatus.FAILED
+    assert fetched.status == JobStatus.FAILED
     assert fetched.finished_at is not None
+    # Recovery must distinguish a crash-orphan from a normal failure so the
+    # founder UX and audit story preserve the cause.
+    assert fetched.reason == "daemon_crash"
 
 
 def test_terminate_all_inflight_awaits_runner_tasks(tmp_home, daemon_state):
     """Regression: clean shutdown must let in-flight runner tasks persist
-    terminal state BEFORE the per-org DB is closed. Without this, an SR sits
+    terminal state BEFORE the per-org DB is closed. Without this, a job sits
     in `running` until the next startup recovery scan."""
     import asyncio
     from datetime import datetime, timezone
 
-    from src.daemon import scripts_runner
-    from src.models import ScriptInterpreter, ScriptRequestRecord, ScriptRequestStatus
+    from src.daemon import jobs_runner
+    from src.models import JobInterpreter, JobRecord, JobStatus
 
     org = daemon_state.orgs["alpha"]
-    sr = ScriptRequestRecord(
-        id="SR-100",
+    job = JobRecord(
+        id="JOB-100",
         task_id="TASK-100",
         agent_name="engineering_head",
         title="t",
         rationale="r",
         script_text="x",
-        interpreter=ScriptInterpreter.BASH,
+        interpreter=JobInterpreter.BASH,
         created_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     )
-    org.db.insert_script_request(sr)
+    org.db.insert_job(job)
     org.db._conn.execute(
-        "UPDATE script_requests SET status='running' WHERE id='SR-100'"
+        "UPDATE jobs SET status='running' WHERE id='JOB-100'"
     )
     org.db._conn.commit()
 
@@ -190,9 +193,9 @@ def test_terminate_all_inflight_awaits_runner_tasks(tmp_home, daemon_state):
     # transitions the row to FAILED. terminate_all_inflight must await this.
     async def fake_runner() -> None:
         await asyncio.sleep(0.05)
-        org.db.transition_script_to_terminal(
-            "SR-100",
-            status=ScriptRequestStatus.FAILED,
+        org.db.transition_job_to_terminal(
+            "JOB-100",
+            status=JobStatus.FAILED,
             exit_code=-15,
             finished_at="2026-05-23T00:00:01Z",
             duration_ms=50,
@@ -202,16 +205,16 @@ def test_terminate_all_inflight_awaits_runner_tasks(tmp_home, daemon_state):
 
     async def run_test() -> None:
         task = asyncio.create_task(fake_runner())
-        scripts_runner.register_runner_task("SR-100", task)
+        jobs_runner.register_runner_task("JOB-100", task)
         # No subprocesses to kill — just await the runner task.
-        await scripts_runner.terminate_all_inflight(
+        await jobs_runner.terminate_all_inflight(
             grace_seconds=0, persist_timeout_seconds=2.0,
         )
 
     asyncio.run(run_test())
 
-    fetched = org.db.get_script_request("SR-100")
-    assert fetched.status == ScriptRequestStatus.FAILED, (
+    fetched = org.db.get_job("JOB-100")
+    assert fetched.status == JobStatus.FAILED, (
         "shutdown returned before the runner task persisted terminal state — "
         "row would have stayed `running` until next startup"
     )

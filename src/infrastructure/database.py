@@ -64,6 +64,7 @@ class Database:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._tasks_has_legacy_type_column: bool = False
+        self._migrate_jobs_table_if_needed()
         self._create_tables()
         self._detect_legacy_columns()
 
@@ -84,6 +85,116 @@ class Database:
         cursor = self._conn.execute("PRAGMA table_info(tasks)")
         columns = {row[1] for row in cursor.fetchall()}
         self._tasks_has_legacy_type_column = "type" in columns
+
+    def _migrate_jobs_table_if_needed(self) -> None:
+        """Rename legacy ``script_requests`` table to ``jobs`` and ripple the
+        rename through audit_log + escalation_notifications.
+
+        Idempotent: if ``jobs`` already exists OR ``script_requests`` does not
+        exist, this is a no-op. Must run BEFORE ``_create_tables`` so the
+        ``CREATE TABLE IF NOT EXISTS jobs`` below becomes a no-op on an
+        already-migrated DB.
+
+        See spec docs/superpowers/specs/2026-05-26-jobs-design.md §6.2.
+        """
+        # `executescript` does not return rows, so use a plain execute+fetchall
+        # to inspect the schema first.
+        existing = {
+            row[0]
+            for row in self._conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name IN ('script_requests', 'jobs')"
+            ).fetchall()
+        }
+        if "script_requests" not in existing or "jobs" in existing:
+            return
+
+        # Drive the migration as one explicit transaction. `executescript`
+        # would issue an implicit COMMIT at start AND swallow rollback on
+        # mid-script failure — leaving the DB half-migrated and the
+        # idempotency check above tripping on the next startup (jobs table
+        # exists but audit/notifications still reference SR-NNN). Each
+        # statement goes through `execute` so any failure raises with the
+        # full transaction rolled back.
+        # SQLite 3.35+ supports DROP COLUMN; we rely on that for
+        # `timeout_seconds`.
+        migration_statements = [
+            "ALTER TABLE script_requests RENAME TO jobs",
+
+            "ALTER TABLE jobs ADD COLUMN review_required INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE jobs ADD COLUMN persistent INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE jobs ADD COLUMN max_output_bytes INTEGER NOT NULL DEFAULT 52428800",
+            "ALTER TABLE jobs ADD COLUMN stdout_bytes INTEGER",
+            "ALTER TABLE jobs ADD COLUMN stderr_bytes INTEGER",
+            "ALTER TABLE jobs ADD COLUMN reason TEXT",
+            "ALTER TABLE jobs ADD COLUMN max_runtime_seconds INTEGER",
+
+            "UPDATE jobs SET max_runtime_seconds = timeout_seconds"
+            " WHERE timeout_seconds IS NOT NULL",
+            "ALTER TABLE jobs DROP COLUMN timeout_seconds",
+
+            # Backfill: every legacy script_request was a founder-approved one-shot.
+            "UPDATE jobs SET review_required = 1 WHERE review_required = 0",
+
+            # Force-fail orphaned 'running' rows (daemon has clearly exited by now).
+            "UPDATE jobs"
+            "   SET status = 'failed',"
+            "       reason = 'daemon_crash',"
+            "       finished_at = COALESCE(finished_at, started_at, created_at)"
+            " WHERE status = 'running'",
+
+            # ID rewrite SR-NNN -> JOB-NNN.
+            "UPDATE jobs SET id = 'JOB-' || SUBSTR(id, 4) WHERE id LIKE 'SR-%'",
+
+            # File-path rewrite scripts/SR- -> jobs/JOB-.
+            "UPDATE jobs"
+            "   SET stdout_path = REPLACE(REPLACE(stdout_path, '/scripts/SR-', '/jobs/JOB-'),"
+            "                             '/scripts/', '/jobs/')"
+            " WHERE stdout_path IS NOT NULL",
+            "UPDATE jobs"
+            "   SET stderr_path = REPLACE(REPLACE(stderr_path, '/scripts/SR-', '/jobs/JOB-'),"
+            "                             '/scripts/', '/jobs/')"
+            " WHERE stderr_path IS NOT NULL",
+
+            # Ripple through cross-referencing tables.
+            "UPDATE escalation_notifications"
+            "   SET task_id = 'JOB-' || SUBSTR(task_id, 4)"
+            " WHERE kind = 'script_request' AND task_id LIKE 'SR-%'",
+            "UPDATE escalation_notifications"
+            "   SET kind = 'job_request'"
+            " WHERE kind = 'script_request'",
+
+            # Audit rewrites. NB: real columns are `action` and `payload`
+            # (NOT `kind`/`payload_json` — spec §6.2 corrected).
+            # task_id values in audit_log never contain SR-NNN — only audit
+            # payloads do (via script_id references), so the broad REPLACE
+            # on payload below is safe.
+            "UPDATE audit_log"
+            "   SET action = 'job_' || SUBSTR(action, 8)"
+            " WHERE action LIKE 'script_%'",
+            "UPDATE audit_log"
+            "   SET payload = REPLACE(payload, '\"script_id\"', '\"job_id\"')"
+            " WHERE payload LIKE '%\"script_id\"%'",
+            "UPDATE audit_log"
+            "   SET payload = REPLACE(payload, '\"SR-', '\"JOB-')"
+            " WHERE payload LIKE '%\"SR-%'",
+
+            # Rename indexes.
+            "DROP INDEX IF EXISTS idx_script_requests_task",
+            "DROP INDEX IF EXISTS idx_script_requests_agent",
+            "DROP INDEX IF EXISTS idx_script_requests_status",
+            "DROP INDEX IF EXISTS idx_script_requests_created_at",
+            "CREATE INDEX IF NOT EXISTS jobs_task_id_idx ON jobs(task_id)",
+            "CREATE INDEX IF NOT EXISTS jobs_status_idx  ON jobs(status)",
+        ]
+        try:
+            self._conn.execute("BEGIN")
+            for stmt in migration_statements:
+                self._conn.execute(stmt)
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
 
     def _create_tables(self) -> None:
         self._conn.executescript("""
@@ -279,35 +390,39 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_thread_invocations_pending
                 ON thread_invocations(status) WHERE status = 'pending';
 
-            CREATE TABLE IF NOT EXISTS script_requests (
+            CREATE TABLE IF NOT EXISTS jobs (
                 id                  TEXT PRIMARY KEY,
                 task_id             TEXT NOT NULL,
                 agent_name          TEXT NOT NULL,
                 title               TEXT NOT NULL,
-                rationale           TEXT NOT NULL,
+                rationale           TEXT,
                 script_text         TEXT NOT NULL,
                 interpreter         TEXT NOT NULL,
                 cwd_hint            TEXT,
+                review_required     INTEGER NOT NULL DEFAULT 0,
+                persistent          INTEGER NOT NULL DEFAULT 0,
+                max_runtime_seconds INTEGER,
+                max_output_bytes    INTEGER NOT NULL DEFAULT 52428800,
                 status              TEXT NOT NULL DEFAULT 'pending',
                 exit_code           INTEGER,
+                reason              TEXT,
+                duration_ms         INTEGER,
                 stdout_head         TEXT,
                 stderr_head         TEXT,
                 stdout_path         TEXT,
                 stderr_path         TEXT,
-                duration_ms         INTEGER,
+                stdout_bytes        INTEGER,
+                stderr_bytes        INTEGER,
+                cwd_resolved        TEXT,
                 started_at          TEXT,
                 finished_at         TEXT,
                 reviewed_at         TEXT,
                 reviewed_by         TEXT,
                 reject_reason       TEXT,
-                cwd_resolved        TEXT,
-                timeout_seconds     INTEGER NOT NULL DEFAULT 300,
                 created_at          TEXT NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS idx_script_requests_task        ON script_requests(task_id);
-            CREATE INDEX IF NOT EXISTS idx_script_requests_agent       ON script_requests(agent_name);
-            CREATE INDEX IF NOT EXISTS idx_script_requests_status      ON script_requests(status);
-            CREATE INDEX IF NOT EXISTS idx_script_requests_created_at  ON script_requests(created_at);
+            CREATE INDEX IF NOT EXISTS jobs_task_id_idx ON jobs(task_id);
+            CREATE INDEX IF NOT EXISTS jobs_status_idx  ON jobs(status);
         """)
         # Best-effort migration for DBs created before `status` existed. SQLite
         # has no IF NOT EXISTS for ADD COLUMN; swallow the duplicate-column
@@ -1450,64 +1565,71 @@ class Database:
         return f"THR-{n:03d}"
 
     @_synchronized
-    def next_script_request_id(self) -> str:
-        """Return the next available SR-NNN id.
+    def next_job_id(self) -> str:
+        """Return the next available JOB-NNN id.
 
-        Callers must hold DaemonState.db_lock across the next_script_request_id()
-        + insert_script_request() pair to avoid duplicate IDs under concurrent
+        Callers must hold DaemonState.db_lock across the next_job_id()
+        + insert_job() pair to avoid duplicate IDs under concurrent
         requests (same requirement as next_task_id / next_talk_id / next_thread_id).
         """
         cursor = self._conn.execute(
-            "SELECT MAX(CAST(SUBSTR(id, 4) AS INTEGER)) AS m "
-            "FROM script_requests WHERE id GLOB 'SR-[0-9]*'"
+            "SELECT MAX(CAST(SUBSTR(id, 5) AS INTEGER)) AS m "
+            "FROM jobs WHERE id GLOB 'JOB-[0-9]*'"
         )
         n = (cursor.fetchone()["m"] or 0) + 1
-        return f"SR-{n:03d}"
+        return f"JOB-{n:03d}"
 
     @_synchronized
-    def insert_script_request(self, r: "ScriptRequestRecord") -> None:
+    def insert_job(self, r: "JobRecord") -> None:
         self._conn.execute(
-            """INSERT INTO script_requests (
+            """INSERT INTO jobs (
                 id, task_id, agent_name, title, rationale, script_text,
                 interpreter, cwd_hint, status, exit_code,
                 stdout_head, stderr_head, stdout_path, stderr_path,
                 duration_ms, started_at, finished_at,
                 reviewed_at, reviewed_by, reject_reason,
-                cwd_resolved, timeout_seconds, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                cwd_resolved, max_runtime_seconds, max_output_bytes,
+                review_required, persistent, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 r.id, r.task_id, r.agent_name, r.title, r.rationale, r.script_text,
                 r.interpreter.value, r.cwd_hint, r.status.value, r.exit_code,
                 r.stdout_head, r.stderr_head, r.stdout_path, r.stderr_path,
                 r.duration_ms, r.started_at, r.finished_at,
                 r.reviewed_at, r.reviewed_by, r.reject_reason,
-                r.cwd_resolved, r.timeout_seconds, r.created_at,
+                r.cwd_resolved, r.max_runtime_seconds, r.max_output_bytes,
+                int(r.review_required), int(r.persistent), r.created_at,
             ),
         )
         self._conn.commit()
 
     @_synchronized
-    def get_script_request(self, sr_id: str) -> "ScriptRequestRecord | None":
+    def get_job(self, job_id: str) -> "JobRecord | None":
         row = self._conn.execute(
-            "SELECT * FROM script_requests WHERE id = ?", (sr_id,)
+            "SELECT * FROM jobs WHERE id = ?", (job_id,)
         ).fetchone()
         if row is None:
             return None
-        return self._row_to_script_request(row)
+        return self._row_to_job(row)
 
     @staticmethod
-    def _row_to_script_request(row) -> "ScriptRequestRecord":
-        from src.models import ScriptRequestRecord, ScriptRequestStatus, ScriptInterpreter
-        return ScriptRequestRecord(
+    def _row_to_job(row) -> "JobRecord":
+        from src.models import JobRecord, JobStatus, JobInterpreter
+        # ``reason`` may be missing on rows from pre-migration installs that
+        # never hit a terminal transition with the new schema — use defensive
+        # key access via SQLite's Row mapping interface.
+        keys = row.keys() if hasattr(row, "keys") else ()
+        reason = row["reason"] if "reason" in keys else None
+        return JobRecord(
             id=row["id"],
             task_id=row["task_id"],
             agent_name=row["agent_name"],
             title=row["title"],
             rationale=row["rationale"],
             script_text=row["script_text"],
-            interpreter=ScriptInterpreter(row["interpreter"]),
+            interpreter=JobInterpreter(row["interpreter"]),
             cwd_hint=row["cwd_hint"],
-            status=ScriptRequestStatus(row["status"]),
+            status=JobStatus(row["status"]),
             exit_code=row["exit_code"],
             stdout_head=row["stdout_head"],
             stderr_head=row["stderr_head"],
@@ -1520,19 +1642,25 @@ class Database:
             reviewed_by=row["reviewed_by"],
             reject_reason=row["reject_reason"],
             cwd_resolved=row["cwd_resolved"],
-            timeout_seconds=row["timeout_seconds"],
+            max_runtime_seconds=row["max_runtime_seconds"],
+            max_output_bytes=row["max_output_bytes"],
+            review_required=bool(row["review_required"]),
+            persistent=bool(row["persistent"]),
+            reason=reason,
             created_at=row["created_at"],
         )
 
     @_synchronized
-    def list_script_requests(
+    def list_jobs_db(
         self,
         *,
         status: str | list[str] | None = None,
         agent: str | None = None,
         task_id: str | None = None,
+        review_required: bool | None = None,
+        persistent: bool | None = None,
         limit: int = 50,
-    ) -> list["ScriptRequestRecord"]:
+    ) -> list["JobRecord"]:
         clauses: list[str] = []
         params: list = []
         if status is not None:
@@ -1546,82 +1674,89 @@ class Database:
         if task_id is not None:
             clauses.append("task_id = ?")
             params.append(task_id)
+        if review_required is not None:
+            clauses.append("review_required = ?")
+            params.append(1 if review_required else 0)
+        if persistent is not None:
+            clauses.append("persistent = ?")
+            params.append(1 if persistent else 0)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         params.append(int(limit))
         rows = self._conn.execute(
-            f"SELECT * FROM script_requests {where} "
+            f"SELECT * FROM jobs {where} "
             f"ORDER BY created_at DESC, id DESC LIMIT ?",
             params,
         ).fetchall()
-        return [self._row_to_script_request(r) for r in rows]
+        return [self._row_to_job(r) for r in rows]
 
     @_synchronized
-    def transition_script_to_rejected(
-        self, sr_id: str, *, reviewer: str, reason: str, reviewed_at: str
+    def transition_job_to_rejected(
+        self, job_id: str, *, reviewer: str, reason: str, reviewed_at: str
     ) -> None:
         cur = self._conn.execute(
-            "UPDATE script_requests "
+            "UPDATE jobs "
             "SET status='rejected', reviewed_by=?, reject_reason=?, reviewed_at=? "
             "WHERE id=? AND status='pending'",
-            (reviewer, reason, reviewed_at, sr_id),
+            (reviewer, reason, reviewed_at, job_id),
         )
         self._conn.commit()
         if cur.rowcount == 0:
-            raise ValueError(f"not_pending: SR {sr_id} cannot be rejected")
+            raise ValueError(f"not_pending: job {job_id} cannot be rejected")
 
     @_synchronized
-    def transition_script_to_running(
+    def transition_job_to_running(
         self,
-        sr_id: str,
+        job_id: str,
         *,
         reviewer: str,
         reviewed_at: str,
         started_at: str,
         cwd_resolved: str,
-        timeout_seconds: int,
+        max_runtime_seconds: int | None,
         stdout_path: str,
         stderr_path: str,
     ) -> None:
         cur = self._conn.execute(
-            "UPDATE script_requests SET "
+            "UPDATE jobs SET "
             "status='running', reviewed_by=?, reviewed_at=?, started_at=?, "
-            "cwd_resolved=?, timeout_seconds=?, stdout_path=?, stderr_path=? "
+            "cwd_resolved=?, max_runtime_seconds=?, stdout_path=?, stderr_path=? "
             "WHERE id=? AND status='pending'",
-            (reviewer, reviewed_at, started_at, cwd_resolved, timeout_seconds,
-             stdout_path, stderr_path, sr_id),
+            (reviewer, reviewed_at, started_at, cwd_resolved, max_runtime_seconds,
+             stdout_path, stderr_path, job_id),
         )
         self._conn.commit()
         if cur.rowcount == 0:
-            raise ValueError(f"not_pending: SR {sr_id} cannot transition to running")
+            raise ValueError(f"not_pending: job {job_id} cannot transition to running")
 
     @_synchronized
-    def transition_script_to_terminal(
+    def transition_job_to_terminal(
         self,
-        sr_id: str,
+        job_id: str,
         *,
-        status: "ScriptRequestStatus",
+        status: "JobStatus",
         exit_code: int | None,
         finished_at: str,
         duration_ms: int,
         stdout_head: str | None,
         stderr_head: str | None,
+        reason: str | None = None,
     ) -> None:
         if status.value not in ("completed", "failed"):
             raise ValueError(f"invalid terminal status: {status.value}")
         cur = self._conn.execute(
-            "UPDATE script_requests SET "
+            "UPDATE jobs SET "
             "status=?, exit_code=?, finished_at=?, duration_ms=?, "
-            "stdout_head=?, stderr_head=? "
+            "stdout_head=?, stderr_head=?, reason=? "
             "WHERE id=? AND status='running'",
             (status.value, exit_code, finished_at, duration_ms,
-             stdout_head, stderr_head, sr_id),
+             stdout_head, stderr_head, reason, job_id),
         )
         self._conn.commit()
         if cur.rowcount == 0:
-            raise ValueError(f"not_running: SR {sr_id} cannot transition to terminal")
+            raise ValueError(f"not_running: job {job_id} cannot transition to terminal")
 
     @_synchronized
-    def recover_orphaned_running_scripts(self, *, now_iso: str) -> list[str]:
+    def recover_orphaned_running_jobs(self, *, now_iso: str) -> list[str]:
         """Force-transition any SR left in 'running' state to 'failed'.
 
         Called from the daemon FastAPI lifespan on startup. The subprocess
@@ -1630,17 +1765,17 @@ class Database:
         leave them in a permanent running state.
         """
         rows = self._conn.execute(
-            "SELECT id FROM script_requests WHERE status='running'"
+            "SELECT id FROM jobs WHERE status='running'"
         ).fetchall()
         ids = [r["id"] for r in rows]
         if not ids:
             return []
         self._conn.executemany(
-            "UPDATE script_requests SET status='failed', finished_at=?, "
+            "UPDATE jobs SET status='failed', reason='daemon_crash', finished_at=?, "
             "duration_ms=COALESCE(duration_ms, 0), "
             "stderr_head=COALESCE(stderr_head, '') || '\n[daemon restart killed run]' "
             "WHERE id=?",
-            [(now_iso, sr_id) for sr_id in ids],
+            [(now_iso, job_id) for job_id in ids],
         )
         self._conn.commit()
         return ids
@@ -2250,10 +2385,10 @@ class Database:
         expires_at: datetime,
         kind: str = "escalation",
     ) -> None:
-        if kind not in ("escalation", "failure", "thread_addressed", "script_request"):
+        if kind not in ("escalation", "failure", "thread_addressed", "job_request"):
             raise ValueError(
                 f"kind must be 'escalation', 'failure', 'thread_addressed', "
-                f"or 'script_request', got {kind!r}"
+                f"or 'job_request', got {kind!r}"
             )
         expires_at_str = expires_at.astimezone(timezone.utc).isoformat()
         self._conn.execute(
@@ -2285,7 +2420,7 @@ class Database:
 
     @_synchronized
     def get_latest_notification_for_sr(
-        self, sr_id: str, *, kind: str,
+        self, job_id: str, *, kind: str,
     ) -> dict | None:
         """Look up the most-recent escalation_notifications row for an SR.
 
@@ -2300,7 +2435,7 @@ class Database:
                FROM escalation_notifications
                WHERE task_id = ? AND kind = ?
                ORDER BY created_at DESC LIMIT 1""",
-            (sr_id, kind),
+            (job_id, kind),
         )
         row = cur.fetchone()
         return dict(row) if row is not None else None

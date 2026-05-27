@@ -524,6 +524,294 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/jobs/": {
+      "GET": {
+        "params": [
+          [
+            "agent",
+            "query"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "limit",
+            "query"
+          ],
+          [
+            "persistent",
+            "query"
+          ],
+          [
+            "review_required",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "status",
+            "query"
+          ],
+          [
+            "task_id",
+            "query"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/jobs/submit": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "201",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/jobs/{job_id}": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "job_id",
+            "path"
+          ],
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "task_id",
+            "query"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/jobs/{job_id}/events": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "job_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/jobs/{job_id}/output": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "job_id",
+            "path"
+          ],
+          [
+            "max_bytes",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "stream",
+            "query"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/jobs/{job_id}/reject": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "job_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/jobs/{job_id}/run": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "job_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "202",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/jobs/{job_id}/stop": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "job_id",
+            "path"
+          ],
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "task_id",
+            "query"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/jobs/{job_id}/tail": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "job_id",
+            "path"
+          ],
+          [
+            "lines",
+            "query"
+          ],
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "stream",
+            "query"
+          ],
+          [
+            "task_id",
+            "query"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/jobs/{job_id}/wait": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "job_id",
+            "path"
+          ],
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "task_id",
+            "query"
+          ],
+          [
+            "timeout_seconds",
+            "query"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/kb": {
       "GET": {
         "params": [
@@ -680,176 +968,6 @@
         ],
         "responses": [
           "200",
-          "422"
-        ]
-      }
-    },
-    "/api/v1/orgs/{slug}/scripts/": {
-      "GET": {
-        "params": [
-          [
-            "agent",
-            "query"
-          ],
-          [
-            "authorization",
-            "header"
-          ],
-          [
-            "limit",
-            "query"
-          ],
-          [
-            "slug",
-            "path"
-          ],
-          [
-            "status",
-            "query"
-          ],
-          [
-            "task_id",
-            "query"
-          ]
-        ],
-        "responses": [
-          "200",
-          "422"
-        ]
-      }
-    },
-    "/api/v1/orgs/{slug}/scripts/submit": {
-      "POST": {
-        "params": [
-          [
-            "authorization",
-            "header"
-          ],
-          [
-            "slug",
-            "path"
-          ]
-        ],
-        "responses": [
-          "201",
-          "422"
-        ]
-      }
-    },
-    "/api/v1/orgs/{slug}/scripts/{sr_id}": {
-      "GET": {
-        "params": [
-          [
-            "authorization",
-            "header"
-          ],
-          [
-            "slug",
-            "path"
-          ],
-          [
-            "sr_id",
-            "path"
-          ]
-        ],
-        "responses": [
-          "200",
-          "422"
-        ]
-      }
-    },
-    "/api/v1/orgs/{slug}/scripts/{sr_id}/events": {
-      "GET": {
-        "params": [
-          [
-            "authorization",
-            "header"
-          ],
-          [
-            "slug",
-            "path"
-          ],
-          [
-            "sr_id",
-            "path"
-          ]
-        ],
-        "responses": [
-          "200",
-          "422"
-        ]
-      }
-    },
-    "/api/v1/orgs/{slug}/scripts/{sr_id}/output": {
-      "GET": {
-        "params": [
-          [
-            "authorization",
-            "header"
-          ],
-          [
-            "max_bytes",
-            "query"
-          ],
-          [
-            "slug",
-            "path"
-          ],
-          [
-            "sr_id",
-            "path"
-          ],
-          [
-            "stream",
-            "query"
-          ]
-        ],
-        "responses": [
-          "200",
-          "422"
-        ]
-      }
-    },
-    "/api/v1/orgs/{slug}/scripts/{sr_id}/reject": {
-      "POST": {
-        "params": [
-          [
-            "authorization",
-            "header"
-          ],
-          [
-            "slug",
-            "path"
-          ],
-          [
-            "sr_id",
-            "path"
-          ]
-        ],
-        "responses": [
-          "200",
-          "422"
-        ]
-      }
-    },
-    "/api/v1/orgs/{slug}/scripts/{sr_id}/run": {
-      "POST": {
-        "params": [
-          [
-            "authorization",
-            "header"
-          ],
-          [
-            "slug",
-            "path"
-          ],
-          [
-            "sr_id",
-            "path"
-          ]
-        ],
-        "responses": [
-          "202",
           "422"
         ]
       }

@@ -1212,9 +1212,9 @@ def test_revisit_header_includes_sr_summary(runtime, db):
 
     from src.infrastructure.audit_logger import AuditLogger
     from src.models import (
-        ScriptInterpreter,
-        ScriptRequestRecord,
-        ScriptRequestStatus,
+        JobInterpreter,
+        JobRecord,
+        JobStatus,
         TaskRecord,
         TaskStatus,
     )
@@ -1239,24 +1239,24 @@ def test_revisit_header_includes_sr_summary(runtime, db):
     db.insert_task(revisit)
 
     # Seed an SR submitted by the predecessor.
-    sr = ScriptRequestRecord(
+    sr = JobRecord(
         id="SR-019",
         task_id="TASK-001",
         agent_name="engineering_head",
         title="Close PR #247 with approval comment",
         rationale="r",
         script_text="echo x",
-        interpreter=ScriptInterpreter.BASH,
-        status=ScriptRequestStatus.COMPLETED,
+        interpreter=JobInterpreter.BASH,
+        status=JobStatus.COMPLETED,
         created_at=now,
     )
-    db.insert_script_request(sr)
+    db.insert_job(sr)
 
     # Audit: script_submitted on predecessor, revisit_of on revisit.
     audit = AuditLogger(db)
-    audit.log_script_submitted(
+    audit.log_job_submitted(
         task_id="TASK-001",
-        sr_id="SR-019",
+        job_id="SR-019",
         agent="engineering_head",
         title="Close PR #247 with approval comment",
         interpreter="bash",
@@ -1286,8 +1286,8 @@ def test_revisit_header_includes_sr_summary(runtime, db):
     assert header is not None
     assert "SR-019" in header
     assert "Close PR #247" in header
-    assert "grassland scripts show SR-019" in header
-    assert "grassland scripts output SR-019" in header
+    assert "grassland jobs show SR-019" in header
+    assert "grassland jobs output SR-019" in header
 
 
 # ---- Cancel-race Guard B: post-_run_agent re-check ----
