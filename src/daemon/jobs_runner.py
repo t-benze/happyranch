@@ -53,6 +53,15 @@ _INFLIGHT: dict[str, asyncio.subprocess.Process] = {}
 # in-flight SR stays `running` until the next daemon startup recovery scan.
 _RUNNER_TASKS: dict[str, asyncio.Task] = {}
 
+# External-kill reason override: when ``terminate_jobs_for_task`` SIGTERMs a
+# job's subprocess, it deposits the kill reason here. ``run_job`` pops the
+# entry just before constructing ``JobRunResult`` so the row reports the
+# external trigger (e.g., ``"task_ended"``) instead of the executor's local
+# view (a generic non-zero rc → no reason). Single-process daemon → a plain
+# module dict is fine; the ``pop`` in the runner is critical to avoid stale
+# entries persisting across job ids.
+_KILL_REASON_OVERRIDE: dict[str, str] = {}
+
 _HEAD_CAP_BYTES = 65536  # spec §3.1, §6.2
 
 
@@ -326,6 +335,17 @@ async def run_job(
     stdout_head_str = b"".join(stdout_head).decode("utf-8", errors="replace") + head_marker_stdout.decode()
     stderr_head_str = b"".join(stderr_head).decode("utf-8", errors="replace") + head_marker_stderr.decode()
 
+    # External-kill override (e.g., terminate_jobs_for_task on task-terminal
+    # transition). The override wins over the executor's local rc-based view:
+    # we got SIGKILL'd from outside, the "reason" lives outside this scope.
+    # ``pop`` is critical — leaving the entry would mis-attribute a future
+    # JOB id reusing the same in-process dict.
+    if job_id is not None:
+        override = _KILL_REASON_OVERRIDE.pop(job_id, None)
+        if override is not None:
+            status = "failed"
+            reason = override
+
     result = JobRunResult(
         status=status,
         exit_code=exit_code,
@@ -352,6 +372,49 @@ async def run_job(
 
 def in_flight_job_ids() -> list[str]:
     return list(_INFLIGHT.keys())
+
+
+async def terminate_jobs_for_task(
+    task_id: str,
+    *,
+    inflight_to_task: dict[str, str] | None = None,
+    grace_seconds: float = 5.0,
+) -> list[str]:
+    """Kill every in-flight job whose owning task_id matches.
+
+    ``inflight_to_task`` is a mapping JOB-NNN → TASK-NNN provided by the caller
+    (the orchestrator builds it by scanning the per-org ``jobs`` table for
+    rows in ``status='running'``). Deposits ``"task_ended"`` into
+    ``_KILL_REASON_OVERRIDE`` BEFORE the signal so the runner reads the
+    override on its way to constructing ``JobRunResult`` — the row reports the
+    external trigger rather than a bare ``rc=-15``.
+
+    SIGTERM → 5s grace → SIGKILL on any survivor. Returns the list of JOB-NNN
+    ids that were targeted (not the survivors).
+    """
+    inflight_to_task = inflight_to_task or {}
+    targets = [
+        (job_id, proc)
+        for job_id, proc in _INFLIGHT.items()
+        if inflight_to_task.get(job_id) == task_id
+    ]
+    if not targets:
+        return []
+    for job_id, _ in targets:
+        _KILL_REASON_OVERRIDE[job_id] = "task_ended"
+    for _, proc in targets:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    await asyncio.sleep(grace_seconds)
+    for _, proc in targets:
+        if proc.returncode is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    return [job_id for job_id, _ in targets]
 
 
 async def terminate_all_inflight(

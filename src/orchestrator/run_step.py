@@ -627,6 +627,7 @@ def _complete(orch: "Orchestrator", task_id: str, *, note: str, artifact_dir: st
     )
     _log_verdict_if_delegated(orch, task_id, success=True)
     orch._update_task_history(task_id)
+    _kill_jobs_for_terminating_task(orch, task_id)
 
 
 def _fail(orch: "Orchestrator", task_id: str, *, note: str) -> None:
@@ -647,6 +648,65 @@ def _fail(orch: "Orchestrator", task_id: str, *, note: str) -> None:
     )
     _log_verdict_if_delegated(orch, task_id, success=False)
     orch._update_task_history(task_id)
+    _kill_jobs_for_terminating_task(orch, task_id)
+
+
+def _kill_jobs_for_terminating_task(orch: "Orchestrator", task_id: str) -> None:
+    """Fire-and-forget: kill all in-flight persistent jobs owned by ``task_id``.
+
+    Called from ``_complete`` and ``_fail`` whenever a task transitions to a
+    terminal state. The kill runs out-of-band so task-row progression never
+    blocks on job cleanup (5s SIGTERM grace + SIGKILL).
+
+    The DB row update for the killed jobs is a backstop in case the runner's
+    own bookkeeping (via ``_KILL_REASON_OVERRIDE``) doesn't get to commit —
+    e.g., the run_step thread exits before the runner coroutine finishes its
+    final UPDATE. With persistent jobs the runner is its own background task
+    and should complete normally; this path matters mostly during shutdown
+    races. We use the same loop-detection / daemon-thread fallback as
+    ``Orchestrator.notify_failed`` because ``run_step`` runs on a thread-pool
+    worker with no event loop of its own.
+    """
+    db = orch._db
+    rows = db._conn.execute(
+        "SELECT id, task_id FROM jobs WHERE status='running'"
+    ).fetchall()
+    inflight_map = {row["id"]: row["task_id"] for row in rows}
+    if not any(v == task_id for v in inflight_map.values()):
+        return
+
+    from datetime import datetime, timezone
+
+    import asyncio
+    import threading
+
+    from src.daemon.jobs_runner import terminate_jobs_for_task
+
+    async def _kill_and_backstop() -> None:
+        await terminate_jobs_for_task(task_id, inflight_to_task=inflight_map)
+        # Backstop DB update — guarded by status='running' so we don't trample
+        # the runner's own terminal write if it got there first.
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        for row_id, row_task in inflight_map.items():
+            if row_task == task_id:
+                db._conn.execute(
+                    "UPDATE jobs SET status='failed', reason='task_ended', "
+                    "finished_at=? WHERE id=? AND status='running'",
+                    (now, row_id),
+                )
+        db._conn.commit()
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # No event loop — run_step thread-pool worker. Spawn a daemon thread
+        # that owns its own loop.
+        threading.Thread(
+            target=lambda: asyncio.run(_kill_and_backstop()),
+            daemon=True,
+        ).start()
+    else:
+        loop.create_task(_kill_and_backstop())
 
 
 def _notify_failure_if_eligible(

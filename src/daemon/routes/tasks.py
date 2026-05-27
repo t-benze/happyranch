@@ -335,7 +335,10 @@ async def resolve_escalation_in_process(
     """
     from src.infrastructure.audit_logger import AuditLogger
     from src.models import BlockKind, TaskStatus
-    from src.orchestrator.run_step import _enqueue_parent_if_waiting
+    from src.orchestrator.run_step import (
+        _enqueue_parent_if_waiting,
+        _kill_jobs_for_terminating_task,
+    )
 
     if not rationale.strip():
         raise HTTPException(status_code=400, detail={"code": "rationale_required"})
@@ -385,6 +388,8 @@ async def resolve_escalation_in_process(
         # just pass it through; ``_enqueue_parent_if_waiting`` calls _fail
         # on the parent on FAILED siblings.
         _enqueue_parent_if_waiting(org.orchestrator, task_id)
+        # Reject is terminal — kill any persistent jobs this task owns.
+        _kill_jobs_for_terminating_task(org.orchestrator, task_id)
     return new_status.value
 
 
@@ -695,6 +700,7 @@ async def cancel_task(
     other half of the race lock.
     """
     from src.infrastructure.audit_logger import AuditLogger
+    from src.orchestrator.run_step import _kill_jobs_for_terminating_task
 
     root = org.db.get_task(task_id)
     if root is None:
@@ -772,6 +778,11 @@ async def cancel_task(
             "outcome": "cancelled",
             "task_id": tid,
         })
+
+    # Phase 4: kill persistent jobs owned by any cancelled task. Fire-and-
+    # forget so the route response isn't blocked on the 5s SIGTERM grace.
+    for tid in to_cancel:
+        _kill_jobs_for_terminating_task(org.orchestrator, tid)
 
     return {
         "ok": True,

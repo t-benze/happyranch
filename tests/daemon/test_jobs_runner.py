@@ -1,6 +1,7 @@
 """Unit tests for src/daemon/jobs_runner.py — max_runtime_seconds semantics."""
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -77,3 +78,35 @@ async def test_run_job_kills_on_output_cap(tmp_path: Path) -> None:
     # on-disk size somewhat over the cap, but should remain well under the 200K
     # the script would have written without the cap.
     assert out.stat().st_size < 100_000
+
+
+@pytest.mark.asyncio
+async def test_terminate_jobs_for_task_kills_inflight(tmp_path: Path) -> None:
+    """In-flight subprocesses for task_id get SIGTERM → SIGKILL; row transitions to failed."""
+    from src.daemon import jobs_runner
+
+    out = tmp_path / "out.log"
+    err = tmp_path / "err.log"
+
+    run_task = asyncio.create_task(jobs_runner.run_job(
+        job_id="JOB-K1",
+        script_text="sleep 30\n",
+        interpreter="bash",
+        cwd=str(tmp_path),
+        stdout_path=str(out),
+        stderr_path=str(err),
+        max_runtime_seconds=None,
+        max_output_bytes=1024,
+        publish=lambda e: None,
+    ))
+    # Give the subprocess a moment to register in _INFLIGHT.
+    await asyncio.sleep(0.3)
+
+    killed = await jobs_runner.terminate_jobs_for_task(
+        "TASK-X", inflight_to_task={"JOB-K1": "TASK-X"}
+    )
+    assert "JOB-K1" in killed
+
+    result = await run_task
+    assert result.status == "failed"
+    assert result.reason == "task_ended"
