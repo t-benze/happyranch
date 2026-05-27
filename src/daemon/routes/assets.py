@@ -14,7 +14,6 @@ from src.daemon.routes._org_dep import OrgDep
 from src.infrastructure.asset_store import (
     MAX_ASSET_BYTES,
     AssetStore,
-    AssetTooLarge,
     InvalidAssetName,
 )
 from src.infrastructure.audit_logger import AuditLogger
@@ -35,7 +34,7 @@ async def put_asset(
     name: str | None = Query(None),
     agent: str = Query(...),
 ) -> dict:
-    content = await file.read()
+    content = await file.read(MAX_ASSET_BYTES + 1)
     if len(content) > MAX_ASSET_BYTES:
         raise HTTPException(
             status_code=413,
@@ -52,11 +51,6 @@ async def put_asset(
         raise HTTPException(
             status_code=400,
             detail={"code": "invalid_asset_name", "name": effective_name, "message": str(exc)},
-        ) from exc
-    except AssetTooLarge as exc:
-        raise HTTPException(
-            status_code=413,
-            detail={"code": "asset_too_large", "max_bytes": MAX_ASSET_BYTES},
         ) from exc
 
     # Construct AuditLogger on demand — matches the routes/talks.py pattern.
