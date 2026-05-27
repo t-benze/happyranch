@@ -36,7 +36,48 @@ def test_list_orgs_returns_loaded(tmp_path: Path, auth) -> None:
     client = TestClient(create_app(state))
     r = client.get("/api/v1/orgs", headers=auth)
     assert r.status_code == 200
-    assert sorted(o["slug"] for o in r.json()["orgs"]) == ["alpha", "beta"]
+    body = r.json()
+    assert sorted(o["slug"] for o in body["orgs"]) == ["alpha", "beta"]
+    assert body["broken"] == []
+
+
+def test_list_orgs_surfaces_broken_orgs(tmp_path: Path, auth) -> None:
+    """A drifted org appears under 'broken' so the founder isn't left guessing."""
+    from datetime import datetime, timezone
+    from src.orchestrator._paths import OrgPaths
+    from src.orchestrator.agent_def import AgentDef, render_agent_text
+
+    rt = RuntimeDir.init(tmp_path / "rt")
+    _seed_org(rt.orgs_dir / "alpha")
+    broken_root = rt.orgs_dir / "broken"
+    _seed_org(broken_root)
+    (broken_root / "org" / "agents").mkdir()
+    manager = AgentDef(
+        name="solo_manager",
+        team="missing_team",
+        role="manager",
+        executor="claude",
+        allow_rules=(),
+        repos={},
+        enrolled_by="founder",
+        enrolled_at_task=None,
+        enrolled_at=datetime(2026, 5, 27, tzinfo=timezone.utc),
+        system_prompt="You are solo.\n",
+        description="Solo",
+    )
+    (OrgPaths(root=broken_root).agents_dir / "solo_manager.md").write_text(
+        render_agent_text(manager),
+    )
+
+    state = DaemonState.from_runtime(rt, Settings())
+    client = TestClient(create_app(state))
+    r = client.get("/api/v1/orgs", headers=auth)
+    assert r.status_code == 200
+    body = r.json()
+    assert [o["slug"] for o in body["orgs"]] == ["alpha"]
+    assert len(body["broken"]) == 1
+    assert body["broken"][0]["slug"] == "broken"
+    assert "missing_team" in body["broken"][0]["error"]
 
 
 def test_init_org_creates_skeleton_and_loads(tmp_path: Path, auth) -> None:

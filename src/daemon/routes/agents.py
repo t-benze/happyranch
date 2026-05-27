@@ -561,6 +561,22 @@ async def approve_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
             raise HTTPException(status_code=409, detail=f"agent is approved, not pending")
         raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
 
+    # Refuse to promote an agent whose declared team isn't registered.
+    # For workers, manage-agent enroll already added the team — this is
+    # defense in depth against hand-edited pending files. For managers,
+    # this is the primary guard: bootstrap managers must have their team
+    # wired in teams.yaml first, never the other way around.
+    if org.teams is None or pending.team not in org.teams.teams():
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "team_not_registered",
+                "agent": agent_name,
+                "team": pending.team,
+                "fix": "add the team to teams.yaml first, then approve",
+            },
+        )
+
     try:
         agent_def = prompt_loader.approve_agent(paths, agent_name)
     except FileExistsError:

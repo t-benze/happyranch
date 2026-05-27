@@ -30,6 +30,7 @@ from src.orchestrator.org_config import (
     OrgConfig,
     load_org_config,
 )
+from src.orchestrator.org_validation import validate_team_membership
 from src.orchestrator.teams import TeamsRegistry
 
 logger = logging.getLogger(__name__)
@@ -103,6 +104,11 @@ class OrgState:
         paths = OrgPaths(root=root)
         db = Database(paths.db_path)
         teams = TeamsRegistry.load(root)
+        # Refuse to attach if agent files and teams.yaml disagree. Raises
+        # OrgConsistencyError on drift; DaemonState.from_runtime catches
+        # per-org so one broken org cannot crash daemon startup, while
+        # add_org propagates so explicit founder actions fail loudly.
+        validate_team_membership(paths, teams)
         orchestrator = Orchestrator(
             db=db,
             settings=settings,

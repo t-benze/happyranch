@@ -6,7 +6,13 @@ export interface OrgSummary {
   root: string;
 }
 
-export const listOrgs = (): Promise<{ orgs: OrgSummary[] }> => request('/orgs');
+export interface BrokenOrg {
+  slug: string;
+  error: string;
+}
+
+export const listOrgs = (): Promise<{ orgs: OrgSummary[]; broken: BrokenOrg[] }> =>
+  request('/orgs');
 
 export const createOrg = (body: {
   slug: string;

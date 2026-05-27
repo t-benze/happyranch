@@ -63,6 +63,10 @@ async def list_orgs(request: Request) -> dict:
             {"slug": slug, "root": str(org.root)}
             for slug, org in sorted(state.orgs.items())
         ],
+        "broken": [
+            {"slug": slug, "error": error}
+            for slug, error in sorted(state.broken_orgs.items())
+        ],
     }
 
 

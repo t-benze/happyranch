@@ -1473,6 +1473,46 @@ def test_approve_agent_moves_file(
     assert prompt_loader.load_pending_agent(_paths(org_state), "seo_agent") is None
 
 
+def test_approve_agent_refuses_unknown_team(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """A pending agent whose team isn't in teams.yaml must not be promoted.
+
+    Defense in depth against hand-edited pending files. The normal
+    manage-agent enroll path already adds the team alongside the pending
+    write, so this only triggers for out-of-band file writes.
+    """
+    from src.orchestrator import prompt_loader
+    from src.orchestrator.agent_def import AgentDef
+    from datetime import datetime, timezone
+
+    agent = AgentDef(
+        name="stranger",
+        team="not_a_real_team",
+        role="worker",
+        executor="claude",
+        allow_rules=(),
+        repos={},
+        enrolled_by="engineering_head",
+        enrolled_at_task=_EH_TASK,
+        enrolled_at=datetime.now(timezone.utc),
+        system_prompt="You are a stranger.\n",
+    )
+    prompt_loader.write_pending_agent(_paths(org_state), agent)
+
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/stranger/approve",
+        headers=auth_headers,
+    )
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert detail["code"] == "team_not_registered"
+    assert detail["team"] == "not_a_real_team"
+    # Pending file is untouched on refusal.
+    assert prompt_loader.load_pending_agent(_paths(org_state), "stranger") is not None
+    assert prompt_loader.load_agent(_paths(org_state), "stranger") is None
+
+
 def test_reject_agent_unlinks_file(
     tmp_home, app, org_state, auth_headers,
 ) -> None:

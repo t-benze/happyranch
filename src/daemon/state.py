@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from src.config import Settings
 from src.daemon.org_state import OrgState
 from src.daemon.queue import TaskQueue
+from src.orchestrator.org_validation import OrgConsistencyError
 from src.runtime import RuntimeDir
+
+logger = logging.getLogger(__name__)
 
 
 class ThreadFinalizerRegistry:
@@ -50,6 +54,11 @@ class DaemonState:
     runtime: RuntimeDir | None
     settings: Settings
     orgs: dict[str, OrgState] = field(default_factory=dict)
+    # Orgs whose folder is on disk but failed to attach (typically an
+    # OrgConsistencyError from validate_team_membership). Surfaced via
+    # GET /orgs so the founder isn't left guessing why an org went
+    # missing after a restart.
+    broken_orgs: dict[str, str] = field(default_factory=dict)
     queue: TaskQueue = field(default_factory=TaskQueue)
     orgs_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     thread_finalizers: ThreadFinalizerRegistry = field(default_factory=ThreadFinalizerRegistry)
@@ -62,7 +71,15 @@ class DaemonState:
     def from_runtime(cls, runtime: RuntimeDir, settings: Settings) -> "DaemonState":
         state = cls(runtime=runtime, settings=settings)
         for slug, root in runtime.iter_org_roots():
-            org = OrgState.load(slug=slug, root=root, settings=settings)
+            try:
+                org = OrgState.load(slug=slug, root=root, settings=settings)
+            except OrgConsistencyError as exc:
+                # One broken org must not crash the daemon. Record the
+                # error for GET /orgs and skip; the folder stays intact
+                # on disk so the founder can fix teams.yaml and restart.
+                state.broken_orgs[slug] = str(exc)
+                logger.error("org %r failed consistency check: %s", slug, exc)
+                continue
             # Attach the global queue + per-org sessions so the orchestrator can
             # re-enqueue tasks (e.g. parent wake-up after a child resolves).
             # The lifespan wiring also does this, but `from_runtime` is used by
@@ -95,10 +112,14 @@ class DaemonState:
                 return self.orgs[slug]
             assert self.runtime is not None
             root = self.runtime.orgs_dir / slug
+            # OrgConsistencyError propagates — add_org is an explicit
+            # action (init / unload+reload) and must fail loudly so the
+            # founder sees the reason at the HTTP layer.
             org = OrgState.load(slug=slug, root=root, settings=self.settings)
             org.orchestrator.attach_queue(self.queue)
             org.orchestrator.attach_sessions(org.sessions)
             self.orgs[slug] = org
+            self.broken_orgs.pop(slug, None)
             # Start the Feishu listener if the new org has full config.
             # When called from a lifespan/route context there's a running loop;
             # outside of one (e.g. unit tests bypassing the FastAPI lifespan)

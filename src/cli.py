@@ -145,8 +145,17 @@ def cmd_orgs(args: argparse.Namespace) -> None:
     r = client.get("/api/v1/orgs")
     if not _ok(r):
         return
-    for org in r.json()["orgs"]:
+    body = r.json()
+    for org in body["orgs"]:
         print(f"  {org['slug']:30s}  {org['root']}")
+    broken = body.get("broken") or []
+    if broken:
+        print("\nBroken (folder on disk, failed to attach):")
+        for org in broken:
+            error = org["error"].splitlines()[0]
+            print(f"  {org['slug']:30s}  {error}")
+            for line in org["error"].splitlines()[1:]:
+                print(f"  {' ' * 30}  {line}")
 
 
 def cmd_orgs_init(args: argparse.Namespace) -> None:

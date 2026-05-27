@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from src.config import Settings
 from src.daemon.org_state import OrgState
+from src.orchestrator import prompt_loader
+from src.orchestrator._paths import OrgPaths
+from src.orchestrator.agent_def import AgentDef, render_agent_text
+from src.orchestrator.org_validation import OrgConsistencyError
 
 
 def _seed_org(org_root: Path) -> None:
@@ -57,3 +62,28 @@ def test_org_state_close_releases_db(tmp_path: Path) -> None:
     org.close()
     with pytest.raises(Exception):
         org.db.next_task_id()
+
+
+def test_org_state_load_refuses_on_team_drift(tmp_path: Path) -> None:
+    """OrgState.load must raise when an active agent declares an unknown team."""
+    org_root = tmp_path / "rt" / "orgs" / "family"
+    _seed_org(org_root)
+    paths = OrgPaths(root=org_root)
+    manager = AgentDef(
+        name="family_manager",
+        team="family_operations",
+        role="manager",
+        executor="claude",
+        allow_rules=(),
+        repos={},
+        enrolled_by="founder",
+        enrolled_at_task=None,
+        enrolled_at=datetime(2026, 5, 27, tzinfo=timezone.utc),
+        system_prompt="You are the Family Manager.\n",
+        description="Manages family ops",
+    )
+    (paths.agents_dir / "family_manager.md").write_text(render_agent_text(manager))
+
+    with pytest.raises(OrgConsistencyError) as exc_info:
+        OrgState.load(slug="family", root=org_root, settings=Settings())
+    assert "family_operations" in str(exc_info.value)
