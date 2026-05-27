@@ -332,3 +332,53 @@ def test_opencode_agents_md_includes_shared_assets_section(tmp_path: Path) -> No
     assert "grassland assets put" in content
     assert "grassland assets list" in content
     assert "grassland assets get" in content
+
+
+def test_claude_md_warns_about_non_stop_commands(tmp_path: Path) -> None:
+    """Bootstrap must steer agents off synchronous bash for non-returning commands."""
+    from src.config import Settings
+    from src.orchestrator._paths import OrgPaths
+    from src.orchestrator.workspace_adapters import ClaudeWorkspaceAdapter
+
+    paths = OrgPaths(root=tmp_path)
+    adapter = ClaudeWorkspaceAdapter(Settings(), paths, slug="demo")
+    workspace = tmp_path / "workspaces" / "dev_agent"
+    adapter.write_claude_md(workspace, "dev_agent", "You are dev_agent.")
+    content = (workspace / "CLAUDE.md").read_text()
+    assert "## Long-running and non-stop commands" in content
+    # Lists at least the canonical signals
+    assert "npm run dev" in content
+    assert "tail -f" in content
+    # Points at the jobs skill (the actual remediation path)
+    assert "protocol/skills/jobs/SKILL.md" in content
+    # Mentions the flags so the agent knows what to fill on the submit form
+    assert "persistent" in content
+    assert "review_required" in content
+
+
+def test_codex_agents_md_warns_about_non_stop_commands(tmp_path: Path) -> None:
+    from src.config import Settings
+    from src.orchestrator._paths import OrgPaths
+    from src.orchestrator.workspace_adapters import CodexWorkspaceAdapter
+
+    paths = OrgPaths(root=tmp_path)
+    adapter = CodexWorkspaceAdapter(Settings(), paths, slug="demo")
+    workspace = tmp_path / "workspaces" / "dev_agent"
+    adapter.write_agents_md(workspace, "dev_agent", "You are dev_agent.")
+    content = (workspace / "AGENTS.md").read_text()
+    assert "## Long-running and non-stop commands" in content
+    assert "protocol/skills/jobs/SKILL.md" in content
+
+
+def test_opencode_agents_md_warns_about_non_stop_commands(tmp_path: Path) -> None:
+    from src.config import Settings
+    from src.orchestrator._paths import OrgPaths
+    from src.orchestrator.workspace_adapters import OpencodeWorkspaceAdapter
+
+    paths = OrgPaths(root=tmp_path)
+    adapter = OpencodeWorkspaceAdapter(Settings(), paths, slug="demo")
+    workspace = tmp_path / "workspaces" / "dev_agent"
+    adapter.write_agents_md(workspace, "dev_agent", "You are dev_agent.")
+    content = (workspace / "AGENTS.md").read_text()
+    assert "## Long-running and non-stop commands" in content
+    assert "protocol/skills/jobs/SKILL.md" in content

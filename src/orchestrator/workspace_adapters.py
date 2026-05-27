@@ -161,6 +161,42 @@ def _shared_assets_section() -> list[str]:
     ]
 
 
+def _non_stop_command_warning_section() -> list[str]:
+    """Persistent warning: never run a non-returning command synchronously.
+
+    A `bash` tool call that doesn't return blocks the session until the
+    executor's wall-clock timeout fires (default 1800s). The orchestrator
+    then auto-revisits up to twice per failure kind, burning multiple
+    session budgets on a command that was never going to exit. The session
+    completes no useful work in the meantime.
+
+    The remedy is the `jobs` skill: the daemon spawns the subprocess
+    out-of-process, the agent's session continues, and the agent polls
+    `grassland jobs tail|wait|stop` for status.
+    """
+    return [
+        "## Long-running and non-stop commands\n",
+        "**Never** run a command synchronously via `bash` if it doesn't return on its",
+        "own. Examples that will block your session until the wall-clock timeout",
+        "kills it (and waste at least one full session budget):\n",
+        "- Dev servers: `npm run dev`, `python -m http.server`, `cargo watch`",
+        "- Log/file watchers: `tail -f`, `fswatch`, `entr`",
+        "- Polling loops: `while true; do …; sleep N; done`",
+        "- Long builds you don't need to wait on: full-image Docker builds, large",
+        "  cross-compile runs, multi-hour migrations",
+        "- Anything that needs founder credentials your `allow_rules` block",
+        "  (`aws`, `stripe`, `ssh`, `sudo`, blocked `gh` verbs)\n",
+        "Submit a **job** instead — the daemon runs the subprocess, your session",
+        "continues, and you check on it with `grassland jobs tail|wait|stop` when",
+        "ready. See the **jobs** skill (`protocol/skills/jobs/SKILL.md`; available",
+        "to you under your workspace's skills directory) for the form fields, the",
+        "two policy flags (`review_required`, `persistent`), and how to self-block",
+        "when founder review is required.\n",
+        "If you're uncertain whether a command will return, submit it as a job",
+        "with `persistent: true` — cheaper to be wrong than to lose a session.\n",
+    ]
+
+
 def _format_allow_rule(prefix: str, *, cli: bool) -> str:
     """Render a Bash prefix in one of the two equivalent permission syntaxes.
 
@@ -406,6 +442,7 @@ class ClaudeWorkspaceAdapter:
             "freeform label (e.g. `reference`, `ruling`, `sop`) used for grouping.",
             callback_note + "\n",
             *_shared_assets_section(),
+            *_non_stop_command_warning_section(),
             "## Task Recall\n",
             "Past task context (brief, completion summary, artifacts) is retrievable via:",
             "```",
