@@ -1,6 +1,7 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useJobOutput } from '@/hooks/jobs';
-import { jobEventsPath } from '@/lib/api/jobs';
+import { jobEventsPath, tailJob } from '@/lib/api/jobs';
 import { useJobEventStream } from './jobEventsHook';
 import type { JobRecord } from '@/lib/api/types';
 
@@ -9,12 +10,33 @@ interface Props {
   slug: string;
 }
 
+const TAIL_LINES = 200;
+
 export function OutputPanel({ job, slug }: Props): JSX.Element | null {
   const isLive = job.status === 'running';
+  const qc = useQueryClient();
+
+  // Seed: when the drawer opens on an already-running job, the /events stream
+  // only delivers lines produced AFTER subscription. Without a one-time /tail
+  // pull, earlier stdout/stderr is invisible — exactly the output a debugger
+  // would want. Fetch once on mount of the live drawer, then merge with the
+  // live events below.
+  const seedQuery = useQuery({
+    queryKey: ['job-tail-seed', slug, job.id],
+    queryFn: () =>
+      Promise.all([
+        tailJob(slug, job.id, { stream: 'stdout', lines: TAIL_LINES }),
+        tailJob(slug, job.id, { stream: 'stderr', lines: TAIL_LINES }),
+      ]).then(([out, err]) => ({ stdout: out.lines, stderr: err.lines })),
+    enabled: isLive,
+    staleTime: Infinity, // one-shot seed; never refetch automatically
+  });
+
   const { events, terminal } = useJobEventStream(
     isLive ? jobEventsPath(slug, job.id) : null,
     isLive,
   );
+
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -24,11 +46,33 @@ export function OutputPanel({ job, slug }: Props): JSX.Element | null {
     if (el && typeof el.scrollTo === 'function') {
       el.scrollTo({ top: el.scrollHeight });
     }
-  }, [events.length]);
+  }, [events.length, seedQuery.data]);
+
+  // When the SSE stream reports terminal, the row in the DB has flipped to
+  // terminal too. Invalidate the cached job record so the drawer's header,
+  // action bar, and (after this remount) the terminal-output fetch reflect
+  // the new state without the user reloading.
+  useEffect(() => {
+    if (terminal) {
+      qc.invalidateQueries({ queryKey: ['job', slug, job.id] });
+      qc.invalidateQueries({ queryKey: ['jobs', slug] });
+    }
+  }, [terminal, qc, slug, job.id]);
 
   const outputQuery = useJobOutput(
     !isLive && (job.status === 'completed' || job.status === 'failed') ? job.id : undefined,
   );
+
+  // Merge seed lines (oldest first, stdout then stderr — best-effort ordering
+  // since we don't have interleaved timestamps from /tail) with the live SSE
+  // events.
+  const seedLines = useMemo(() => {
+    if (!seedQuery.data) return [] as { kind: 'stdout' | 'stderr'; line: string }[];
+    return [
+      ...seedQuery.data.stdout.map((line) => ({ kind: 'stdout' as const, line })),
+      ...seedQuery.data.stderr.map((line) => ({ kind: 'stderr' as const, line })),
+    ];
+  }, [seedQuery.data]);
 
   if (job.status === 'pending' || job.status === 'rejected') return null;
 
@@ -43,11 +87,16 @@ export function OutputPanel({ job, slug }: Props): JSX.Element | null {
           ref={containerRef}
           className="bg-surface-canvas h-64 overflow-y-auto rounded p-3 font-mono text-xs whitespace-pre-wrap"
         >
-          {events.length === 0 && !terminal && (
+          {seedLines.length === 0 && events.length === 0 && !terminal && (
             <span className="text-fg-muted">Waiting for output…</span>
           )}
+          {seedLines.map((e, i) => (
+            <div key={`seed-${i}`} className={e.kind === 'stderr' ? 'text-fg-danger' : ''}>
+              {e.line}
+            </div>
+          ))}
           {events.map((e, i) => (
-            <div key={i} className={e.kind === 'stderr' ? 'text-fg-danger' : ''}>
+            <div key={`live-${i}`} className={e.kind === 'stderr' ? 'text-fg-danger' : ''}>
               {e.line}
             </div>
           ))}

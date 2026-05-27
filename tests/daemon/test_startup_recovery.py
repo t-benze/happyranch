@@ -157,6 +157,9 @@ def test_lifespan_recovers_orphaned_running_jobs(tmp_home, daemon_state):
     assert fetched is not None
     assert fetched.status == JobStatus.FAILED
     assert fetched.finished_at is not None
+    # Recovery must distinguish a crash-orphan from a normal failure so the
+    # founder UX and audit story preserve the cause.
+    assert fetched.reason == "daemon_crash"
 
 
 def test_terminate_all_inflight_awaits_runner_tasks(tmp_home, daemon_state):

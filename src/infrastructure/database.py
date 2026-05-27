@@ -1697,7 +1697,7 @@ class Database:
         if not ids:
             return []
         self._conn.executemany(
-            "UPDATE jobs SET status='failed', finished_at=?, "
+            "UPDATE jobs SET status='failed', reason='daemon_crash', finished_at=?, "
             "duration_ms=COALESCE(duration_ms, 0), "
             "stderr_head=COALESCE(stderr_head, '') || '\n[daemon restart killed run]' "
             "WHERE id=?",

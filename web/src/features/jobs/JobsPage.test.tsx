@@ -212,6 +212,12 @@ describe('JobDetailPane — Stop button (running job)', () => {
       http.get(`/api/v1/orgs/${SLUG}/jobs/JOB-0001`, () =>
         HttpResponse.json(job),
       ),
+      // OutputPanel seeds the live view by pulling /tail once on mount.
+      http.get(`/api/v1/orgs/${SLUG}/jobs/JOB-0001/tail`, ({ request }) => {
+        const url = new URL(request.url);
+        const stream = url.searchParams.get('stream') ?? 'stdout';
+        return HttpResponse.json({ stream, lines: [] });
+      }),
     );
   }
 
@@ -237,6 +243,37 @@ describe('JobDetailPane — Stop button (running job)', () => {
     await user.click(stopBtn);
     await waitFor(() => {
       expect(stopCalled).toBe(true);
+    });
+  });
+
+  test('live drawer seeds output from /tail on mount', async () => {
+    sessionStorage.setItem('grassland.token', 'tok');
+    const runningJob: JobRecord = {
+      ...JOB,
+      status: 'running',
+      started_at: '2026-05-23T12:01:00Z',
+    };
+    stubRunningHandlers(runningJob);
+    // Override the default empty /tail handler with one that returns prior lines.
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/jobs/JOB-0001/tail`, ({ request }) => {
+        const url = new URL(request.url);
+        const stream = url.searchParams.get('stream') ?? 'stdout';
+        return HttpResponse.json({
+          stream,
+          lines:
+            stream === 'stdout'
+              ? ['boot line 1', 'boot line 2']
+              : ['warning line'],
+        });
+      }),
+    );
+
+    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
+    await waitFor(() => {
+      expect(screen.getByText('boot line 1')).toBeInTheDocument();
+      expect(screen.getByText('boot line 2')).toBeInTheDocument();
+      expect(screen.getByText('warning line')).toBeInTheDocument();
     });
   });
 
