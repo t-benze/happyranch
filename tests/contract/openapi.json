@@ -422,6 +422,70 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/assets": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      },
+      "POST": {
+        "params": [
+          [
+            "agent",
+            "query"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "name",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/assets/{name}": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "name",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/audit": {
       "GET": {
         "params": [
