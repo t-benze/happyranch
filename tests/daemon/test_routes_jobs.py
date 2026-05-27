@@ -1239,3 +1239,100 @@ def test_list_filter_invalid_persistent_value_returns_422(client_with_runtime):
     )
     assert r.status_code == 422
     assert r.json()["detail"]["code"] == "invalid_persistent"
+
+
+# ---------------------------------------------------------------------------
+# Task 19: Feishu notification gating — only review_required=True triggers
+# notify_job_submitted. Auto-run path (default) must stay silent so the
+# founder isn't pinged for every routine agent command.
+# ---------------------------------------------------------------------------
+
+
+def test_auto_run_job_does_not_send_feishu_notification(
+    tmp_home, daemon_state, monkeypatch,
+):
+    """review_required=False (default) → no notify_job_submitted call.
+
+    Uses TestClient as a context manager so the auto-run path's background
+    task can drain inside the lifespan, mirroring other auto-run tests.
+    """
+    from fastapi.testclient import TestClient
+    from src.daemon.app import create_app
+    from src.daemon import paths as paths_mod
+
+    org = daemon_state.orgs["alpha"]
+    app = create_app(daemon_state)
+
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        org.orchestrator,
+        "notify_job_submitted",
+        lambda **kw: calls.append(kw),
+    )
+
+    with TestClient(app, raise_server_exceptions=True) as client:
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+
+        task_id, sid = _make_active_session(org)
+        ws = org.root / "workspaces" / "engineering_head"
+        ws.mkdir(parents=True, exist_ok=True)
+
+        r = client.post(
+            "/api/v1/orgs/alpha/jobs/submit",
+            json={
+                "task_id": task_id,
+                "session_id": sid,
+                "title": "dev",
+                "script": "echo hi\n",
+                "interpreter": "bash",
+                "review_required": False,
+            },
+        )
+        assert r.status_code == 201, r.text
+        # Poll to terminal so the runner unwinds cleanly inside the lifespan.
+        for _ in range(50):
+            d = client.get(f"/api/v1/orgs/alpha/jobs/{r.json()['id']}").json()
+            if d["status"] in ("completed", "failed"):
+                break
+            time.sleep(0.1)
+
+    # No Feishu call was made on the auto-run path.
+    assert calls == [], f"expected zero notify calls, got {calls!r}"
+
+
+def test_review_required_job_sends_feishu_notification(
+    client_with_runtime, monkeypatch,
+):
+    """review_required=True → exactly one notify_job_submitted call.
+
+    Locks the kind="job_request" contract by exercising the real
+    EscalationNotifier so the kind argument it passes to its Feishu send is
+    visible to the test. The actual Feishu send is monkeypatched out.
+    """
+    client, org = client_with_runtime
+    task_id, sid = _make_active_session(org)
+
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        org.orchestrator,
+        "notify_job_submitted",
+        lambda **kw: calls.append({"kind": "job_request", **kw}),
+    )
+
+    r = client.post(
+        "/api/v1/orgs/alpha/jobs/submit",
+        json={
+            "task_id": task_id,
+            "session_id": sid,
+            "title": "close PR",
+            "script": "gh pr close 1\n",
+            "interpreter": "bash",
+            "rationale": "needs founder creds",
+            "review_required": True,
+        },
+    )
+    assert r.status_code == 201, r.text
+
+    # Exactly one notify call, tagged with kind="job_request".
+    assert len(calls) == 1, f"expected exactly one notify call, got {calls!r}"
+    assert calls[0]["kind"] == "job_request"
