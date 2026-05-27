@@ -91,13 +91,16 @@ const INCLUDED_PATHS = new Set<string>([
   'POST /api/v1/orgs/{slug}/threads/{thread_id}/extend',
   'POST /api/v1/orgs/{slug}/threads/{thread_id}/archive',
   'POST /api/v1/orgs/{slug}/threads/{thread_id}/abandon',
-  // scripts — founder-facing
-  'GET /api/v1/orgs/{slug}/scripts/',
-  'GET /api/v1/orgs/{slug}/scripts/{sr_id}',
-  'POST /api/v1/orgs/{slug}/scripts/{sr_id}/run',
-  'POST /api/v1/orgs/{slug}/scripts/{sr_id}/reject',
-  'GET /api/v1/orgs/{slug}/scripts/{sr_id}/output',
-  'GET /api/v1/orgs/{slug}/scripts/{sr_id}/events',
+  // jobs — founder-facing
+  'GET /api/v1/orgs/{slug}/jobs/',
+  'GET /api/v1/orgs/{slug}/jobs/{job_id}',
+  'POST /api/v1/orgs/{slug}/jobs/{job_id}/run',
+  'POST /api/v1/orgs/{slug}/jobs/{job_id}/reject',
+  'GET /api/v1/orgs/{slug}/jobs/{job_id}/output',
+  'GET /api/v1/orgs/{slug}/jobs/{job_id}/events',
+  'GET /api/v1/orgs/{slug}/jobs/{job_id}/tail',
+  'POST /api/v1/orgs/{slug}/jobs/{job_id}/wait',
+  'POST /api/v1/orgs/{slug}/jobs/{job_id}/stop',
   // agents — founder-facing (enrollment + read-only learnings)
   'GET /api/v1/orgs/{slug}/agents',
   'POST /api/v1/orgs/{slug}/agents/init',
@@ -135,8 +138,8 @@ const EXCLUDED_PATHS = new Map<string, string>([
   ['POST /api/v1/orgs/{slug}/threads/{thread_id}/close-out', 'agent invocation token only'],
   // agent-initiated thread compose (agent callback — not exercised from the Web UI)
   ['POST /api/v1/orgs/{slug}/threads/compose-as-agent', 'agent callback — not exercised from the Web UI'],
-  // scripts agent callback
-  ['POST /api/v1/orgs/{slug}/scripts/submit', 'agent callback (matches /report-completion pattern)'],
+  // jobs agent callback
+  ['POST /api/v1/orgs/{slug}/jobs/submit', 'agent callback (matches /report-completion pattern)'],
 ]);
 
 describe('openapi coverage', () => {
