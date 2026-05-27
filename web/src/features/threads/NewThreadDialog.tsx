@@ -13,6 +13,7 @@ import { MentionTextarea } from '@/design-system/patterns/MentionTextarea';
 import { ApiError } from '@/lib/api';
 import { useComposeThread } from '@/hooks/threads';
 import { describeError } from './strings';
+import { RecipientsInput } from './RecipientsInput';
 import type { AgentSummary } from '@/lib/api/agents';
 
 interface Prefill {
@@ -108,13 +109,12 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
             label="Recipients (comma-separated agent names)"
             htmlFor={recipientsId}
           >
-            <input
+            <RecipientsInput
               id={recipientsId}
-              type="text"
               value={recipientsRaw}
-              onChange={(e) => setRecipientsRaw(e.target.value)}
+              onChange={setRecipientsRaw}
+              agents={agents}
               placeholder="agent_a, agent_b"
-              className="input"
             />
           </FormField>
           <FormField label="Body (Markdown)" htmlFor={bodyId}>

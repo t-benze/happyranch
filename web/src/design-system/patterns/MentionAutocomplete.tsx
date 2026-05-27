@@ -12,6 +12,7 @@
  * is a pure renderer of a pre-filtered list.
  */
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { AgentSummary } from '@/lib/api/agents';
 
 export interface MentionAutocompleteProps {
@@ -57,7 +58,12 @@ export function MentionAutocomplete({
     zIndex: 1000,
   };
 
-  return (
+  // Portal to document.body. Without this, an ancestor `transform`
+  // (e.g. Radix Dialog's centering translate) becomes the containing
+  // block for our `position: fixed` and the popup lands relative to
+  // the dialog instead of the viewport. Portalling escapes the
+  // transformed ancestor and restores viewport-relative coords.
+  return createPortal(
     <div
       role="listbox"
       aria-label="Mention agents"
@@ -80,7 +86,8 @@ export function MentionAutocomplete({
           {a.team && <span className="text-text-muted ml-2">{a.team}</span>}
         </button>
       ))}
-    </div>
+    </div>,
+    document.body,
   );
 }
 
