@@ -65,11 +65,12 @@ System kernel milestones — org-agnostic infrastructure. Org content (agent ros
 13. Threads web UI — localhost React+Tailwind SPA bundled into the FastAPI daemon, replaces the original Textual TUI. Three-layer architecture (`lib/api/` 1:1 daemon mirror → `features/<domain>/` → generic `components/`) designed to absorb future CLI domains. OpenAPI snapshot + TS coverage test pin the contract. `grassland threads` (no subcommand) points at `grassland web`; the `src/tui/` tree was deleted. Spec: `2026-05-14-web-ui-design.md`.
 14. Script requests (SR-NNN) — agent escape hatch when an executor's `allow_rules` block a command. Agent submits `{script, interpreter, cwd_hint, rationale}` via `grassland scripts submit`, self-blocks; founder reviews + runs via CLI (`grassland scripts run` with TTY-gated confirm + live SSE stream) or web (`/scripts` feature folder, run/reject modals, SSE output panel). Daemon executes with `env=dict(os.environ)` (uvloop-compatible), captures stdout/stderr to disk (`<runtime>/orgs/<slug>/scripts/SR-NNN.{out,err,script}`) with a 65 KB head cap mirrored to DB. Unblock path reuses `grassland revisit` — the revisit header lists predecessor SRs with `grassland scripts show/output` pointers. Spec: `2026-05-23-agent-script-requests-design.md`.
 15. Session-timeout auto-route — classify executor failures by kind (`session_timeout`, `no_callback`, `rate_limit`, `executor_error`, `agent_exception`, `session_failed` fallback) in `run_step._classify_failure_kind`. Per-kind auto-revisit cap (`_AUTO_REVISIT_CAP_PER_KIND = 2`) replaces the prior global cap — same-kind exhaustion at 2, different kinds have independent budgets. Cascade-fail Feishu notifications are suppressed when a root auto-revisit covers the lineage (the cascade still cascade-fails ancestors for state correctness; only the founder ping is dropped). `failure_kind` is hoisted to top-level of the `auto_revisit_of` audit payload for per-kind counting + AUTO-REVISIT-CONTEXT header rendering. Spec: `2026-05-25-session-timeout-auto-route-design.md`. Founder-ratified at TALK-037.
+16. Shared Assets — org-wide flat blob store for persistent agent artifacts (reports, exports, screenshots). `grassland assets {put,list,get}` CLI; daemon routes under `/api/v1/orgs/{slug}/assets`; audited puts; CLI-only design works uniformly across Claude/Codex/Opencode. Plan: `docs/superpowers/plans/2026-05-27-shared-assets.md`.
 
 **Open:**
 
-16. **Founder dashboard** — aggregate audit logs, escalation summaries, scorecards into a weekly view. Design: `protocol/05e-dashboard.md`.
-17. **Persistent agents** — long-running loops for runtime patterns that don't fit single-task batch execution (e.g., real-time customer-chat worker). Currently every agent session is one task → one subprocess.
+17. **Founder dashboard** — aggregate audit logs, escalation summaries, scorecards into a weekly view. Design: `protocol/05e-dashboard.md`.
+18. **Persistent agents** — long-running loops for runtime patterns that don't fit single-task batch execution (e.g., real-time customer-chat worker). Currently every agent session is one task → one subprocess.
 
 ## Directory Layout
 
@@ -100,7 +101,8 @@ System kernel milestones — org-agnostic infrastructure. Org content (agent ros
     |-- kb/                            # per-org KB (auto-regenerated `_index.md`)
     |-- talks/                         # TALK-NNN.md
     |-- threads/                       # THR-NNN.md
-    `-- scripts/                       # SR-NNN.{out,err,script} (full captured output + frozen script body)
+    |-- scripts/                       # SR-NNN.{out,err,script} (full captured output + frozen script body)
+    `-- assets/                        # org-shared blob store (put/list/get via `grassland assets`)
 ```
 
 HTTP routes: per-org under `/api/v1/orgs/<slug>/...`; container-level under `/api/v1/runtime` and `/api/v1/orgs`. Legacy v1 (single-org flat layout) migrates in place via `grassland migrate-to-multi-org` — TTY-gated, refuses with active tasks or open talks. Even older v0 (DB-backed agent enrollments) migrates first via `grassland migrate-to-org-runtime`.
@@ -270,7 +272,7 @@ grassland web [--no-open]        # open the SPA in the default browser
 
 Slug resolution for per-org commands: explicit `--org <slug>` > `GRASSLAND_ORG_SLUG` env > auto-infer (only when the container has exactly one org) > error. Container-level commands (`grassland init`, `grassland use`, `grassland orgs ...`, `grassland migrate-to-multi-org`) take no `--org`.
 
-**Full founder-facing CLI** — tasks, agents, KB, threads, talks, audit, runtime, migrations — is documented in `skills/grassland/SKILL.md` (symlinked at `~/.claude/skills/grassland`).
+**Full founder-facing CLI** — tasks, agents, KB, threads, talks, audit, assets, runtime, migrations — is documented in `skills/grassland/SKILL.md` (symlinked at `~/.claude/skills/grassland`).
 
 **Agent-side callbacks** (invoked by skills inside agent sessions; do NOT invoke by hand — they falsify audit data and corrupt scorecards):
 
@@ -297,6 +299,40 @@ Per-agent under `<runtime>/orgs/<slug>/workspaces/<agent>/learnings/`, one `LRN-
 - **Cross-refs** — `related_to` and `supersedes` validated against existing IDs at write time (unknown → 400); self-refs rejected. `supersedes` is the canonical evolve-a-rule primitive.
 - **Promotion** — `grassland learning promote <LRN-NNN> --kb-slug <slug>` is one-way; body becomes a 2-line pointer stub and entry locks.
 - **End-of-talk** — `end_talk` writes into the new store on migrated workspaces (synthesized slug `talk-<talk_id>-<idx>`, topic `talk-residue`); pre-migration → flat-file append.
+
+## Shared Assets (org-wide blob store)
+
+Per-org at `<runtime>/orgs/<slug>/assets/`. Flat directory of opaque files —
+persistent artifacts produced by any agent and visible to every other agent
+in the same org. Implementation: `src/infrastructure/asset_store.py` +
+`src/daemon/routes/assets.py`. CLI: `grassland assets {put,list,get}`.
+
+**Non-obvious invariants:**
+
+- **CLI-only access by design** — Codex (`workspace-write` sandbox) and
+  Opencode (bash deny-by-default) both block direct writes outside the
+  agent's workspace; only the `grassland` baseline allow-rule works across
+  all three executors. Don't add a "just `cat`/`cp` it" agent skill.
+- **Flat namespace; no nesting v1** — names match `[A-Za-z0-9._-]+`, max
+  200 chars, no leading `.`. Slash-bearing names rejected as
+  `invalid_asset_name`.
+- **Size cap is 10 MB per file** (`MAX_ASSET_BYTES`). Larger uploads → HTTP
+  413. v1 has no chunking / multipart resumption.
+- **PUT is idempotent (overwrites)** — no version history; agents are
+  expected to encode date/identity in the name if they care about
+  history. Atomic via `tempfile.mkstemp` + `os.replace` so partial writes
+  never leak.
+- **`asset_put` is audited; `list`/`get` are not** — read paths are free,
+  consistent with KB list/get and on the same rationale (no PII gradient
+  inside the asset store). The audit row's `task_id` column stores
+  `f"asset:{name}"` (the `asset:` prefix is mandatory) so asset names like
+  `TASK-123` or `TALK-7` can never pollute the corresponding task/talk
+  scopes consumed by `Database.get_audit_logs(task_id)`.
+- **Not the KB** — assets are blobs. The KB is for typed/structured
+  knowledge (frontmatter, slug, type, topic). Don't dump markdown content
+  into assets/ that should be a KB entry.
+- **Dir created at fresh-org init AND idempotently at lifespan startup**
+  for orgs that pre-date the feature. Both code paths are required.
 
 ## Revisit (founder recovery)
 

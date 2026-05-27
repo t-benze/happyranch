@@ -71,6 +71,9 @@ def runtime(runtime_container: Path) -> Path:
         "    manager: content_manager\n"
         "    workers: [content_writer, content_qa, seo_agent]\n"
     )
+    # NOTE: assets/ is intentionally NOT created here.
+    # tests/integration/test_assets_e2e.py::test_lifespan_creates_assets_dir_for_existing_org
+    # depends on this absence to exercise the daemon's startup mkdir. Do not add it.
     return org_root
 
 

@@ -453,3 +453,40 @@ def test_log_script_run_result_notify_failed(db):
     assert r["action"] == "script_run_result_notify_failed"
     assert r["payload"]["error"] == "Timeout"
     assert r["payload"]["status"] == "failed"
+
+
+def test_log_asset_put_writes_event(db) -> None:
+    logger = AuditLogger(db)
+    logger.log_asset_put(name="report.pdf", size_bytes=11, agent="dev_agent")
+
+    rows = db.get_audit_logs_by_action("asset_put")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["task_id"] == "asset:report.pdf"  # namespaced to avoid collision with TASK-/TALK-/SR- ids
+    assert row["agent"] == "dev_agent"
+    assert row["action"] == "asset_put"
+    assert row["payload"] == {"name": "report.pdf", "size_bytes": 11}
+
+
+def test_log_asset_put_does_not_collide_with_task_id(tmp_path) -> None:
+    """Asset names like 'TASK-123' must NOT pollute task-scoped audit history."""
+    from src.infrastructure.database import Database
+    from src.infrastructure.audit_logger import AuditLogger
+
+    db = Database(tmp_path / "test.db")
+    logger = AuditLogger(db)
+
+    # Write a session_start row for a real task
+    logger.log_session_start("TASK-123", "dev_agent", "/some/workspace")
+    # Upload an asset whose name collides with the task id
+    logger.log_asset_put(name="TASK-123", size_bytes=42, agent="dev_agent")
+
+    # get_audit_logs("TASK-123") must return ONLY the task's row, not the asset
+    rows = db.get_audit_logs("TASK-123")
+    actions = [r["action"] for r in rows]
+    assert actions == ["session_start"]
+
+    # The asset audit is under the namespaced scope
+    asset_rows = db.get_audit_logs("asset:TASK-123")
+    assert len(asset_rows) == 1
+    assert asset_rows[0]["action"] == "asset_put"
