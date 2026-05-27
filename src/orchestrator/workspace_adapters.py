@@ -135,6 +135,32 @@ def _learnings_bootstrap_section(workspace: Path) -> list[str]:
     ]
 
 
+def _shared_assets_section() -> list[str]:
+    return [
+        "## Shared Assets (org-wide)\n",
+        "Path: `<runtime>/orgs/<slug>/assets/`. Drop persistent artifacts your work",
+        "produces — generated reports, exports, screenshots, PDFs, images. Files",
+        "here survive across tasks and are visible to every agent in this org.\n",
+        "Use cases: a generated PDF report another agent needs to attach to a",
+        "customer reply; a CSV export the founder will want to review; a screenshot",
+        "captured during QA that the bug-triage agent should see.\n",
+        "**Not** the KB. KB is for durable cross-agent *knowledge* (rules,",
+        "references, founder rulings). Assets are for *files and binary artifacts*.",
+        "Don't put scratch work here — use your workspace `repos/`, learning",
+        "entries, or task artifacts for transient state.\n",
+        "All access is via `grassland`. Direct filesystem reads/writes won't work",
+        "uniformly across executors — use the CLI:\n",
+        "```",
+        "grassland assets put <local-path> --agent <you> [--name <name>]",
+        "grassland assets list",
+        "grassland assets get <name> --output <local-path>",
+        "```\n",
+        "Naming convention: prefix with your agent name + ISO date for",
+        "traceability, e.g. `dev_agent-2026-05-27-perf-report.pdf`. Names must",
+        "match `[A-Za-z0-9._-]+`, max 200 chars. Per-file size cap: 10 MB.\n",
+    ]
+
+
 def _format_allow_rule(prefix: str, *, cli: bool) -> str:
     """Render a Bash prefix in one of the two equivalent permission syntaxes.
 
@@ -379,6 +405,7 @@ class ClaudeWorkspaceAdapter:
             "optional `tags`, `source_task`) followed by a markdown body. `type` is a",
             "freeform label (e.g. `reference`, `ruling`, `sop`) used for grouping.",
             callback_note + "\n",
+            *_shared_assets_section(),
             "## Task Recall\n",
             "Past task context (brief, completion summary, artifacts) is retrievable via:",
             "```",

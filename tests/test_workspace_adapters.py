@@ -283,3 +283,48 @@ def test_codex_agents_md_does_not_inline_completion_contract(test_settings, tmp_
     assert '"decision"' not in body
     assert "delegate" not in body
     assert "escalate" not in body
+
+
+def test_claude_md_includes_shared_assets_section(tmp_path: Path) -> None:
+    # Adjust adapter construction to match the existing test fixtures.
+    from src.config import Settings
+    from src.orchestrator._paths import OrgPaths
+    from src.orchestrator.workspace_adapters import ClaudeWorkspaceAdapter
+
+    paths = OrgPaths(root=tmp_path)
+    adapter = ClaudeWorkspaceAdapter(Settings(), paths, slug="demo")
+    workspace = tmp_path / "workspaces" / "dev_agent"
+    adapter.write_claude_md(workspace, "dev_agent", "You are dev_agent.")
+    content = (workspace / "CLAUDE.md").read_text()
+    assert "## Shared Assets" in content
+    assert "grassland assets put" in content
+    assert "grassland assets list" in content
+    assert "grassland assets get" in content
+
+
+def test_codex_agents_md_includes_shared_assets_section(tmp_path: Path) -> None:
+    from src.config import Settings
+    from src.orchestrator._paths import OrgPaths
+    from src.orchestrator.workspace_adapters import CodexWorkspaceAdapter
+
+    paths = OrgPaths(root=tmp_path)
+    adapter = CodexWorkspaceAdapter(Settings(), paths, slug="demo")
+    workspace = tmp_path / "workspaces" / "dev_agent"
+    adapter.write_agents_md(workspace, "dev_agent", "You are dev_agent.")
+    content = (workspace / "AGENTS.md").read_text()
+    assert "## Shared Assets" in content
+    assert "grassland assets put" in content
+
+
+def test_opencode_agents_md_includes_shared_assets_section(tmp_path: Path) -> None:
+    from src.config import Settings
+    from src.orchestrator._paths import OrgPaths
+    from src.orchestrator.workspace_adapters import OpencodeWorkspaceAdapter
+
+    paths = OrgPaths(root=tmp_path)
+    adapter = OpencodeWorkspaceAdapter(Settings(), paths, slug="demo")
+    workspace = tmp_path / "workspaces" / "dev_agent"
+    adapter.write_agents_md(workspace, "dev_agent", "You are dev_agent.")
+    content = (workspace / "AGENTS.md").read_text()
+    assert "## Shared Assets" in content
+    assert "grassland assets put" in content
