@@ -790,3 +790,355 @@ def test_submit_review_required_true_enqueues_pending(client_with_runtime):
     job = client.get(f"/api/v1/orgs/alpha/jobs/{job_id}").json()
     assert job["status"] == "pending"
     assert job["review_required"] is True
+
+
+# ---------------------------------------------------------------------------
+# Tasks 12-15: dual-auth GET /{id}, GET /{id}/tail, POST /{id}/stop, POST /{id}/wait
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def client_no_bearer(tmp_home, daemon_state):
+    """TestClient without the Authorization header pre-attached.
+
+    Used by the dual-auth-route tests that exercise the agent code path
+    (session-binding instead of bearer).
+    """
+    from fastapi.testclient import TestClient
+    from src.daemon.app import create_app
+    app = create_app(daemon_state)
+    return TestClient(app)
+
+
+def _submit_pending_for_session(client, org, task_id: str, sid: str) -> str:
+    r = client.post(
+        "/api/v1/orgs/alpha/jobs/submit",
+        json={"task_id": task_id, "session_id": sid,
+              "title": "t", "rationale": "r",
+              "script": "echo z", "interpreter": "bash",
+              "review_required": True},
+    )
+    assert r.status_code == 201, r.text
+    return r.json()["id"]
+
+
+# --- Task 12: dual-auth GET /{id} ---
+
+def test_get_job_session_binding_own_job(client_with_runtime, client_no_bearer):
+    """Agent without bearer can read its own job via (task_id, session_id)."""
+    client, org = client_with_runtime  # bearer client to set up the row
+    task_id, sid = _make_active_session(org)
+    job_id = _submit_pending_for_session(client, org, task_id, sid)
+
+    r = client_no_bearer.get(
+        f"/api/v1/orgs/alpha/jobs/{job_id}",
+        params={"task_id": task_id, "session_id": sid},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["id"] == job_id
+
+
+def test_get_job_session_mismatch_returns_409(
+    client_with_runtime, client_no_bearer,
+):
+    """Agent A cannot read agent B's job by passing A's own session-binding."""
+    client, org = client_with_runtime
+    # Agent B owns the job.
+    task_b, sid_b = _make_active_session(org, agent="content_manager")
+    job_id = _submit_pending_for_session(client, org, task_b, sid_b)
+    # Agent A has an active session but doesn't own this job.
+    task_a, sid_a = _make_active_session(org, agent="engineering_head")
+
+    r = client_no_bearer.get(
+        f"/api/v1/orgs/alpha/jobs/{job_id}",
+        params={"task_id": task_a, "session_id": sid_a},
+    )
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "session_mismatch"
+
+
+def test_get_job_no_bearer_no_session_returns_409(
+    client_with_runtime, client_no_bearer,
+):
+    client, org = client_with_runtime
+    task_id, sid = _make_active_session(org)
+    job_id = _submit_pending_for_session(client, org, task_id, sid)
+
+    r = client_no_bearer.get(f"/api/v1/orgs/alpha/jobs/{job_id}")
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "session_mismatch"
+
+
+def test_get_job_bearer_still_works(client_with_runtime):
+    """Founder bearer auth keeps working (regression for the route move)."""
+    client, org = client_with_runtime
+    task_id, sid = _make_active_session(org)
+    job_id = _submit_pending_for_session(client, org, task_id, sid)
+
+    r = client.get(f"/api/v1/orgs/alpha/jobs/{job_id}")
+    assert r.status_code == 200, r.text
+    assert r.json()["id"] == job_id
+
+
+# --- Task 13: GET /{id}/tail ---
+
+def test_tail_returns_last_n_lines(tmp_home, daemon_state):
+    """Tail returns the last N lines from the stdout file."""
+    from fastapi.testclient import TestClient
+    from src.daemon.app import create_app
+    from src.daemon import paths as paths_mod
+
+    org = daemon_state.orgs["alpha"]
+    app = create_app(daemon_state)
+    with TestClient(app) as client:
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+
+        task_id, sid = _make_active_session(org)
+        ws = org.root / "workspaces" / "engineering_head"
+        ws.mkdir(parents=True, exist_ok=True)
+        # Submit + run a script that emits 20 lines.
+        script = "for i in $(seq 1 20); do echo line-$i; done"
+        r = client.post(
+            "/api/v1/orgs/alpha/jobs/submit",
+            json={"task_id": task_id, "session_id": sid,
+                  "title": "tail-test", "rationale": "y",
+                  "script": script, "interpreter": "bash",
+                  "review_required": True},
+        )
+        job_id = r.json()["id"]
+        client.post(f"/api/v1/orgs/alpha/jobs/{job_id}/run", json={})
+        for _ in range(50):
+            d = client.get(f"/api/v1/orgs/alpha/jobs/{job_id}").json()
+            if d["status"] in ("completed", "failed"):
+                break
+            time.sleep(0.1)
+
+        r = client.get(
+            f"/api/v1/orgs/alpha/jobs/{job_id}/tail",
+            params={"stream": "stdout", "lines": 10},
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["stream"] == "stdout"
+    assert len(body["lines"]) == 10
+    # Last 10 of 20 → line-11 through line-20.
+    assert body["lines"][0] == "line-11"
+    assert body["lines"][-1] == "line-20"
+
+
+def test_tail_invalid_stream(client_with_runtime):
+    client, org = client_with_runtime
+    job_id = _submit_pending(client, org)
+    r = client.get(
+        f"/api/v1/orgs/alpha/jobs/{job_id}/tail",
+        params={"stream": "bogus"},
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "invalid_stream"
+
+
+def test_tail_invalid_lines(client_with_runtime):
+    client, org = client_with_runtime
+    job_id = _submit_pending(client, org)
+    r = client.get(
+        f"/api/v1/orgs/alpha/jobs/{job_id}/tail",
+        params={"lines": 0},
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "invalid_lines"
+
+
+def test_tail_unknown_job(client_with_runtime):
+    client, _org = client_with_runtime
+    r = client.get("/api/v1/orgs/alpha/jobs/JOB-999/tail")
+    assert r.status_code == 404
+
+
+def test_tail_no_file_yet_returns_empty(client_with_runtime):
+    """A pending job has no stdout_path → empty list, not a 404."""
+    client, org = client_with_runtime
+    job_id = _submit_pending(client, org)
+    r = client.get(f"/api/v1/orgs/alpha/jobs/{job_id}/tail")
+    assert r.status_code == 200
+    assert r.json() == {"stream": "stdout", "lines": []}
+
+
+# --- Task 14: POST /{id}/stop ---
+
+def test_stop_returns_409_when_not_running(client_with_runtime):
+    client, org = client_with_runtime
+    job_id = _submit_pending(client, org)  # status=pending
+    r = client.post(f"/api/v1/orgs/alpha/jobs/{job_id}/stop")
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "not_running"
+
+
+def test_stop_unknown_job(client_with_runtime):
+    client, _org = client_with_runtime
+    r = client.post("/api/v1/orgs/alpha/jobs/JOB-999/stop")
+    assert r.status_code == 404
+
+
+def test_stop_kills_running_job(tmp_home, daemon_state):
+    """SIGTERM a running job; the row transitions to failed with reason=founder_stop."""
+    from fastapi.testclient import TestClient
+    from src.daemon.app import create_app
+    from src.daemon import paths as paths_mod
+
+    org = daemon_state.orgs["alpha"]
+    app = create_app(daemon_state)
+    with TestClient(app) as client:
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+
+        task_id, sid = _make_active_session(org)
+        ws = org.root / "workspaces" / "engineering_head"
+        ws.mkdir(parents=True, exist_ok=True)
+        r = client.post(
+            "/api/v1/orgs/alpha/jobs/submit",
+            json={"task_id": task_id, "session_id": sid,
+                  "title": "long-runner", "rationale": "y",
+                  "script": "sleep 30", "interpreter": "bash",
+                  "review_required": True},
+        )
+        job_id = r.json()["id"]
+        client.post(f"/api/v1/orgs/alpha/jobs/{job_id}/run", json={})
+        # Wait until it's actually running.
+        for _ in range(50):
+            d = client.get(f"/api/v1/orgs/alpha/jobs/{job_id}").json()
+            if d["status"] == "running":
+                break
+            time.sleep(0.1)
+        assert d["status"] == "running", d
+
+        r = client.post(f"/api/v1/orgs/alpha/jobs/{job_id}/stop")
+        assert r.status_code == 200, r.text
+
+        # Poll until terminal.
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            d = client.get(f"/api/v1/orgs/alpha/jobs/{job_id}").json()
+            if d["status"] != "running":
+                break
+            time.sleep(0.1)
+    assert d["status"] == "failed", d
+    assert d["reason"] == "founder_stop"
+
+
+# --- Task 15: POST /{id}/wait ---
+
+def test_wait_returns_when_terminal_already(client_with_runtime):
+    """A job that's already terminal returns immediately with timed_out=False."""
+    client, org = client_with_runtime
+    job_id = _submit_pending(client, org)
+    # Reject it → terminal.
+    client.post(f"/api/v1/orgs/alpha/jobs/{job_id}/reject", json={"reason": "x"})
+
+    r = client.post(
+        f"/api/v1/orgs/alpha/jobs/{job_id}/wait",
+        params={"timeout_seconds": 5},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "rejected"
+    assert body["timed_out"] is False
+
+
+def test_wait_returns_when_runner_finishes(tmp_home, daemon_state):
+    """Spawn a quick-exit job and verify /wait unblocks on the terminal event."""
+    from fastapi.testclient import TestClient
+    from src.daemon.app import create_app
+    from src.daemon import paths as paths_mod
+
+    org = daemon_state.orgs["alpha"]
+    app = create_app(daemon_state)
+    with TestClient(app) as client:
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+
+        task_id, sid = _make_active_session(org)
+        ws = org.root / "workspaces" / "engineering_head"
+        ws.mkdir(parents=True, exist_ok=True)
+        r = client.post(
+            "/api/v1/orgs/alpha/jobs/submit",
+            json={"task_id": task_id, "session_id": sid,
+                  "title": "quick", "rationale": "y",
+                  "script": "sleep 0.3; echo done", "interpreter": "bash",
+                  "review_required": True},
+        )
+        job_id = r.json()["id"]
+        client.post(f"/api/v1/orgs/alpha/jobs/{job_id}/run", json={})
+
+        r = client.post(
+            f"/api/v1/orgs/alpha/jobs/{job_id}/wait",
+            params={"timeout_seconds": 5},
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] in ("completed", "failed")
+    assert body["timed_out"] is False
+
+
+def test_wait_returns_timeout_status(tmp_home, daemon_state):
+    """A still-running job past the wait deadline → timed_out=True, status=running."""
+    from fastapi.testclient import TestClient
+    from src.daemon.app import create_app
+    from src.daemon import paths as paths_mod
+
+    org = daemon_state.orgs["alpha"]
+    app = create_app(daemon_state)
+    with TestClient(app) as client:
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+
+        task_id, sid = _make_active_session(org)
+        ws = org.root / "workspaces" / "engineering_head"
+        ws.mkdir(parents=True, exist_ok=True)
+        r = client.post(
+            "/api/v1/orgs/alpha/jobs/submit",
+            json={"task_id": task_id, "session_id": sid,
+                  "title": "long", "rationale": "y",
+                  "script": "sleep 30", "interpreter": "bash",
+                  "review_required": True},
+        )
+        job_id = r.json()["id"]
+        client.post(f"/api/v1/orgs/alpha/jobs/{job_id}/run", json={})
+        # Wait until it's actually running (and the runner is past the
+        # subscribe race window) before /wait, so the test exercises the
+        # real timeout path, not the early-terminal branch.
+        for _ in range(50):
+            d = client.get(f"/api/v1/orgs/alpha/jobs/{job_id}").json()
+            if d["status"] == "running":
+                break
+            time.sleep(0.1)
+
+        r = client.post(
+            f"/api/v1/orgs/alpha/jobs/{job_id}/wait",
+            params={"timeout_seconds": 1},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["status"] == "running"
+        assert body["timed_out"] is True
+
+        # Kill the long-runner so the test doesn't race shutdown.
+        client.post(f"/api/v1/orgs/alpha/jobs/{job_id}/stop")
+        for _ in range(50):
+            d = client.get(f"/api/v1/orgs/alpha/jobs/{job_id}").json()
+            if d["status"] != "running":
+                break
+            time.sleep(0.1)
+
+
+def test_wait_invalid_timeout(client_with_runtime):
+    client, org = client_with_runtime
+    job_id = _submit_pending(client, org)
+    r = client.post(
+        f"/api/v1/orgs/alpha/jobs/{job_id}/wait",
+        params={"timeout_seconds": 0},
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "invalid_timeout"
+
+
+def test_wait_unknown_job(client_with_runtime):
+    client, _org = client_with_runtime
+    r = client.post("/api/v1/orgs/alpha/jobs/JOB-999/wait")
+    assert r.status_code == 404

@@ -276,4 +276,9 @@ class JobRecord(BaseModel):
     # task-terminal kill hook. False (default) → 300s default cap when no
     # explicit override is provided.
     persistent:       bool = False
+    # Terminal-status reason — populated by the runner when status='failed'.
+    # Examples: "timeout", "output_cap", "founder_stop", "agent_stop",
+    # "task_ended", "spawn_failed", "internal_error", "daemon_crash".
+    # NULL when status='completed' or the job hasn't reached terminal yet.
+    reason:           str | None = None
     created_at:       str

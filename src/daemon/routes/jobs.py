@@ -3,14 +3,15 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from src.daemon.auth import require_token
+from src.daemon.auth import optional_bearer, require_token
 from src.daemon.event_bus import job_topic
 from src.daemon.routes._org_dep import OrgDep
 from src.daemon.jobs_runner import run_job as _spawn_job
@@ -22,7 +23,58 @@ from src.models import (
     JobStatus,
 )
 
+# Two routers mounted at the same prefix. ``router`` carries the bearer-only
+# routes (founder-facing surface); ``dual_router`` carries routes that accept
+# either a bearer (founder) OR a valid session-binding (agent reading/acting
+# on its own job).
 router = APIRouter(dependencies=[require_token()])
+dual_router = APIRouter()
+
+
+_TERMINAL_SR_STATUSES = (
+    JobStatus.COMPLETED,
+    JobStatus.FAILED,
+    JobStatus.REJECTED,
+)
+
+
+def _enforce_session_or_bearer(
+    record: JobRecord,
+    *,
+    has_bearer: bool,
+    task_id: str | None,
+    session_id: str | None,
+    org,
+) -> None:
+    """Authorize a dual-auth call against a JobRecord.
+
+    Founder path: ``has_bearer=True`` → allow.
+
+    Agent path: ``has_bearer=False`` → require both ``task_id`` AND
+    ``session_id`` query params; verify that the task is owned by the same
+    agent that owns ``record`` AND that ``session_id`` matches the active
+    session for that (task, agent) pair.
+
+    On any mismatch raises ``HTTPException(409, {"code": "session_mismatch"})``.
+    A bearer-less caller that omits the session params gets the same 409 —
+    one shared error class for "you didn't prove you can read this row".
+    """
+    if has_bearer:
+        return
+    if not task_id or not session_id:
+        raise HTTPException(
+            status_code=409, detail={"code": "session_mismatch"},
+        )
+    task = org.db.get_task(task_id)
+    if task is None or task.assigned_agent != record.agent_name:
+        raise HTTPException(
+            status_code=409, detail={"code": "session_mismatch"},
+        )
+    expected = org.sessions.get_active(task_id, record.agent_name)
+    if expected is None or expected != session_id:
+        raise HTTPException(
+            status_code=409, detail={"code": "session_mismatch"},
+        )
 
 _MAX_SCRIPT_BYTES = 65536
 _MAX_TITLE_LEN = 200
@@ -335,12 +387,192 @@ async def list_jobs(
     return {"jobs": [r.model_dump() for r in rows]}
 
 
-@router.get("/jobs/{job_id}")
-async def get_job_route(slug: str, job_id: str, org: OrgDep) -> dict:
+@dual_router.get("/jobs/{job_id}")
+async def get_job_route(
+    slug: str, job_id: str, org: OrgDep,
+    task_id: str | None = None,
+    session_id: str | None = None,
+    has_bearer: bool = optional_bearer(),
+) -> dict:
     record = org.db.get_job(job_id)
     if record is None:
         raise HTTPException(status_code=404, detail={"code": "unknown_job", "job_id": job_id})
+    _enforce_session_or_bearer(
+        record, has_bearer=has_bearer,
+        task_id=task_id, session_id=session_id, org=org,
+    )
     return record.model_dump()
+
+
+@dual_router.get("/jobs/{job_id}/tail")
+async def tail_job(
+    slug: str, job_id: str, org: OrgDep,
+    stream: str = "stdout",
+    lines: int = 50,
+    task_id: str | None = None,
+    session_id: str | None = None,
+    has_bearer: bool = optional_bearer(),
+) -> dict:
+    """Return the last N lines of stdout or stderr from the on-disk file.
+
+    Dual-auth (bearer OR session-binding). Works for running jobs and for
+    terminal ones — readers can tail a completed job's final output the
+    same way they peek at a still-running one.
+    """
+    if stream not in ("stdout", "stderr"):
+        raise HTTPException(status_code=422, detail={"code": "invalid_stream"})
+    if lines <= 0 or lines > 10_000:
+        raise HTTPException(status_code=422, detail={"code": "invalid_lines"})
+    record = org.db.get_job(job_id)
+    if record is None:
+        raise HTTPException(
+            status_code=404, detail={"code": "unknown_job", "job_id": job_id},
+        )
+    _enforce_session_or_bearer(
+        record, has_bearer=has_bearer,
+        task_id=task_id, session_id=session_id, org=org,
+    )
+    path = record.stdout_path if stream == "stdout" else record.stderr_path
+    if not path or not Path(path).exists():
+        return {"stream": stream, "lines": []}
+    # deque(iter, maxlen=N) is O(file_size) but constant memory — fine for
+    # the 10k-line cap. For multi-GB log files the right move would be a
+    # backwards block-read; out of scope for v1.
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        tail_lines = deque(f, maxlen=lines)
+    return {
+        "stream": stream,
+        "lines": [line.rstrip("\n") for line in tail_lines],
+    }
+
+
+@dual_router.post("/jobs/{job_id}/stop")
+async def stop_job(
+    slug: str, job_id: str, org: OrgDep,
+    task_id: str | None = None,
+    session_id: str | None = None,
+    has_bearer: bool = optional_bearer(),
+) -> dict:
+    """SIGTERM a running job. Founder via bearer OR agent via session-binding.
+
+    The actual terminal state transition flows through the runner's normal
+    exit path. We deposit ``founder_stop``/``agent_stop`` into
+    ``_KILL_REASON_OVERRIDE`` so the row reports who pressed the button.
+    """
+    record = org.db.get_job(job_id)
+    if record is None:
+        raise HTTPException(
+            status_code=404, detail={"code": "unknown_job", "job_id": job_id},
+        )
+    if record.status != JobStatus.RUNNING:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "not_running", "status": record.status.value},
+        )
+    _enforce_session_or_bearer(
+        record, has_bearer=has_bearer,
+        task_id=task_id, session_id=session_id, org=org,
+    )
+    stopped_by = "founder" if has_bearer else "agent"
+
+    # Local import to avoid pulling jobs_runner internals into the module
+    # surface every time this file is imported.
+    from src.daemon.jobs_runner import _INFLIGHT, _KILL_REASON_OVERRIDE
+    import os
+    import signal
+
+    proc = _INFLIGHT.get(job_id)
+    if proc is None:
+        # Status said running but no inflight entry — terminal transition is
+        # in flight on the runner. Audit nothing; return a benign ok so the
+        # caller doesn't loop.
+        return {"ok": True, "id": job_id, "already_terminal": True}
+    _KILL_REASON_OVERRIDE[job_id] = f"{stopped_by}_stop"
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    AuditLogger(org.db).log_job_stopped(
+        job_id=job_id, task_id=record.task_id, stopped_by=stopped_by,
+    )
+    return {"ok": True, "id": job_id}
+
+
+@dual_router.post("/jobs/{job_id}/wait")
+async def wait_job(
+    slug: str, job_id: str, org: OrgDep,
+    timeout_seconds: int = 30,
+    task_id: str | None = None,
+    session_id: str | None = None,
+    has_bearer: bool = optional_bearer(),
+) -> dict:
+    """Long-poll until the job reaches a terminal state or the timeout fires.
+
+    Returns ``record.model_dump() | {"timed_out": bool}``. ``timed_out=True``
+    means the row was still ``running`` when the timeout fired; callers
+    typically loop with another /wait.
+    """
+    if timeout_seconds <= 0 or timeout_seconds > 300:
+        raise HTTPException(status_code=422, detail={"code": "invalid_timeout"})
+    record = org.db.get_job(job_id)
+    if record is None:
+        raise HTTPException(
+            status_code=404, detail={"code": "unknown_job", "job_id": job_id},
+        )
+    _enforce_session_or_bearer(
+        record, has_bearer=has_bearer,
+        task_id=task_id, session_id=session_id, org=org,
+    )
+    if record.status in _TERMINAL_SR_STATUSES:
+        return record.model_dump() | {"timed_out": False}
+
+    # Subscribe to the runner's terminal publish; race against the timeout.
+    # Mirrors the SSE handler's race-window mitigation: the runner can
+    # publish a terminal event between our DB check and our subscribe
+    # registration, so we ALSO re-poll the DB on each loop iteration.
+    sub_iter = org.event_bus.subscribe(job_topic(job_id)).__aiter__()
+    next_task: asyncio.Task | None = asyncio.create_task(sub_iter.__anext__())
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    try:
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                break
+            # Wake every ~1s to re-poll the DB even if no event arrives.
+            wait_for = min(remaining, 1.0)
+            done, _pending = await asyncio.wait({next_task}, timeout=wait_for)
+            if not done:
+                rec_now = org.db.get_job(job_id)
+                if rec_now is None:
+                    break
+                if rec_now.status in _TERMINAL_SR_STATUSES:
+                    return rec_now.model_dump() | {"timed_out": False}
+                continue
+            try:
+                evt = next_task.result()
+            except StopAsyncIteration:
+                break
+            next_task = None
+            if evt.get("kind") == "terminal":
+                rec_now = org.db.get_job(job_id) or record
+                return rec_now.model_dump() | {"timed_out": False}
+            next_task = asyncio.create_task(sub_iter.__anext__())
+    finally:
+        if next_task is not None and not next_task.done():
+            next_task.cancel()
+            try:
+                await next_task
+            except (asyncio.CancelledError, StopAsyncIteration, Exception):
+                pass
+
+    rec_final = org.db.get_job(job_id)
+    if rec_final is None:
+        # Shouldn't happen — the row existed at the top of the handler.
+        raise HTTPException(
+            status_code=404, detail={"code": "unknown_job", "job_id": job_id},
+        )
+    timed_out = rec_final.status not in _TERMINAL_SR_STATUSES
+    return rec_final.model_dump() | {"timed_out": timed_out}
 
 
 class RunBody(BaseModel):
@@ -513,6 +745,7 @@ async def _run_job_core(
                     job_id, status=JobStatus.FAILED,
                     exit_code=None, finished_at=finished, duration_ms=0,
                     stdout_head=None, stderr_head=None,
+                    reason="spawn_failed",
                 )
             except ValueError:
                 pass
@@ -535,6 +768,7 @@ async def _run_job_core(
                     job_id, status=JobStatus.FAILED,
                     exit_code=None, finished_at=finished, duration_ms=0,
                     stdout_head=None, stderr_head=str(exc),
+                    reason="internal_error",
                 )
             except ValueError:
                 pass
@@ -561,6 +795,7 @@ async def _run_job_core(
                 duration_ms=result.duration_ms,
                 stdout_head=result.stdout_head,
                 stderr_head=result.stderr_head,
+                reason=result.reason,
             )
         except ValueError:
             return
@@ -663,13 +898,6 @@ async def get_job_output(
         "total_stdout_bytes": out_total,
         "total_stderr_bytes": err_total,
     }
-
-
-_TERMINAL_SR_STATUSES = (
-    JobStatus.COMPLETED,
-    JobStatus.FAILED,
-    JobStatus.REJECTED,
-)
 
 
 def _terminal_frame_from_record(record) -> str:

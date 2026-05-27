@@ -1541,6 +1541,11 @@ class Database:
     @staticmethod
     def _row_to_job(row) -> "JobRecord":
         from src.models import JobRecord, JobStatus, JobInterpreter
+        # ``reason`` may be missing on rows from pre-migration installs that
+        # never hit a terminal transition with the new schema — use defensive
+        # key access via SQLite's Row mapping interface.
+        keys = row.keys() if hasattr(row, "keys") else ()
+        reason = row["reason"] if "reason" in keys else None
         return JobRecord(
             id=row["id"],
             task_id=row["task_id"],
@@ -1567,6 +1572,7 @@ class Database:
             max_output_bytes=row["max_output_bytes"],
             review_required=bool(row["review_required"]),
             persistent=bool(row["persistent"]),
+            reason=reason,
             created_at=row["created_at"],
         )
 
@@ -1651,16 +1657,17 @@ class Database:
         duration_ms: int,
         stdout_head: str | None,
         stderr_head: str | None,
+        reason: str | None = None,
     ) -> None:
         if status.value not in ("completed", "failed"):
             raise ValueError(f"invalid terminal status: {status.value}")
         cur = self._conn.execute(
             "UPDATE jobs SET "
             "status=?, exit_code=?, finished_at=?, duration_ms=?, "
-            "stdout_head=?, stderr_head=? "
+            "stdout_head=?, stderr_head=?, reason=? "
             "WHERE id=? AND status='running'",
             (status.value, exit_code, finished_at, duration_ms,
-             stdout_head, stderr_head, job_id),
+             stdout_head, stderr_head, reason, job_id),
         )
         self._conn.commit()
         if cur.rowcount == 0:

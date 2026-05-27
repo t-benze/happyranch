@@ -906,6 +906,28 @@ class AuditLogger:
             },
         )
 
+    def log_job_stopped(
+        self, *, job_id: str, task_id: str, stopped_by: str,
+    ) -> None:
+        """Caller-triggered stop of a running job.
+
+        ``stopped_by`` is ``"founder"`` (bearer-auth /stop) or ``"agent"``
+        (session-bound /stop). The actual terminal transition still flows
+        through the runner's normal exit path (``job_run_failed`` with
+        ``reason="founder_stop"`` / ``"agent_stop"`` via
+        ``_KILL_REASON_OVERRIDE``); this audit row records who pressed the
+        button, separately from the runner's own bookkeeping.
+        """
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent=stopped_by,
+            action="job_stopped",
+            payload={
+                "script_request_id": job_id,
+                "stopped_by": stopped_by,
+            },
+        )
+
     # --- Feishu push correlation for script requests ---
 
     def log_job_notify_sent(
