@@ -1286,5 +1286,5 @@ def test_revisit_header_includes_sr_summary(runtime, db):
     assert header is not None
     assert "SR-019" in header
     assert "Close PR #247" in header
-    assert "grassland scripts show SR-019" in header
-    assert "grassland scripts output SR-019" in header
+    assert "grassland jobs show SR-019" in header
+    assert "grassland jobs output SR-019" in header
