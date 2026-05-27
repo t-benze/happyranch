@@ -1514,15 +1514,17 @@ class Database:
                 stdout_head, stderr_head, stdout_path, stderr_path,
                 duration_ms, started_at, finished_at,
                 reviewed_at, reviewed_by, reject_reason,
-                cwd_resolved, max_runtime_seconds, max_output_bytes, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                cwd_resolved, max_runtime_seconds, max_output_bytes,
+                review_required, persistent, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 r.id, r.task_id, r.agent_name, r.title, r.rationale, r.script_text,
                 r.interpreter.value, r.cwd_hint, r.status.value, r.exit_code,
                 r.stdout_head, r.stderr_head, r.stdout_path, r.stderr_path,
                 r.duration_ms, r.started_at, r.finished_at,
                 r.reviewed_at, r.reviewed_by, r.reject_reason,
-                r.cwd_resolved, r.max_runtime_seconds, r.max_output_bytes, r.created_at,
+                r.cwd_resolved, r.max_runtime_seconds, r.max_output_bytes,
+                int(r.review_required), int(r.persistent), r.created_at,
             ),
         )
         self._conn.commit()
@@ -1563,6 +1565,8 @@ class Database:
             cwd_resolved=row["cwd_resolved"],
             max_runtime_seconds=row["max_runtime_seconds"],
             max_output_bytes=row["max_output_bytes"],
+            review_required=bool(row["review_required"]),
+            persistent=bool(row["persistent"]),
             created_at=row["created_at"],
         )
 

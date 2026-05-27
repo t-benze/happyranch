@@ -827,6 +827,37 @@ class AuditLogger:
             },
         )
 
+    def log_job_auto_started(
+        self,
+        *,
+        task_id: str,
+        job_id: str,
+        agent: str,
+        cwd_resolved: str,
+        timeout_seconds: int | None,
+        interpreter: str,
+        persistent: bool,
+    ) -> None:
+        """Agent-triggered auto-run path (review_required=False).
+
+        Distinct action kind from ``job_run_started`` (founder-triggered) so
+        audit log readers can tell apart the two run-initiation paths. The
+        ``agent`` here is the requesting worker, not a founder reviewer.
+        """
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent=agent,
+            action="job_auto_started",
+            payload={
+                "script_request_id": job_id,
+                "agent": agent,
+                "cwd_resolved": cwd_resolved,
+                "timeout_seconds": timeout_seconds,
+                "interpreter": interpreter,
+                "persistent": persistent,
+            },
+        )
+
     def log_job_run_completed(
         self,
         *,

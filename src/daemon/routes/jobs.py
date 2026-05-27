@@ -55,10 +55,26 @@ class SubmitBody(BaseModel):
     task_id: str
     session_id: str
     title: str
-    rationale: str
+    # Rationale is required ONLY when review_required=True. Default empty so
+    # agent-side auto-run callers can omit it. When review_required=True the
+    # handler enforces a non-blank value (400 rationale_required).
+    rationale: str = ""
     script: str
     interpreter: str
     cwd_hint: str | None = None
+    # Founder-review gate (default False = auto-run inline).
+    review_required: bool = False
+    # Long-running flag (default False = 300s default runtime cap).
+    persistent: bool = False
+    # Optional explicit runtime cap; None falls back to the persistent-aware
+    # default (300s when persistent=False, unbounded when persistent=True).
+    max_runtime_seconds: int | None = None
+
+
+# Default runtime cap (seconds) for non-persistent auto-run jobs when the
+# caller didn't pass an explicit max_runtime_seconds. Persistent jobs default
+# to unbounded (None) until the founder /stop or task-terminal kill.
+_DEFAULT_BOUNDED_RUNTIME_SECONDS = 300
 
 
 @router.post("/jobs/submit", status_code=201)
@@ -99,10 +115,14 @@ async def submit_job(slug: str, body: SubmitBody, org: OrgDep) -> dict:
             detail={"code": "title_too_long", "max": _MAX_TITLE_LEN},
         )
 
-    # 5. Rationale.
+    # 5. Rationale: required ONLY when founder review is requested.
+    #    On the auto-run path we accept blank rationale (the agent didn't need
+    #    to talk the founder through anything — it's just running its own work).
     rationale = body.rationale.strip()
-    if not rationale:
-        raise HTTPException(status_code=422, detail={"code": "empty_rationale"})
+    if body.review_required and not rationale:
+        raise HTTPException(
+            status_code=400, detail={"code": "rationale_required"},
+        )
 
     # 6. Script size (check before stripping to catch payloads that are only whitespace).
     if len(body.script.encode("utf-8")) > _MAX_SCRIPT_BYTES:
@@ -124,6 +144,20 @@ async def submit_job(slug: str, body: SubmitBody, org: OrgDep) -> dict:
     # 8. cwd_hint shape (resolves under workspace root — existence not checked here).
     cwd_hint = _validate_cwd_hint(body.cwd_hint)
 
+    # 9. Resolve effective max_runtime_seconds.
+    #    Explicit override always wins; otherwise persistent → unbounded (None),
+    #    non-persistent → _DEFAULT_BOUNDED_RUNTIME_SECONDS.
+    if body.max_runtime_seconds is not None:
+        effective_max_runtime: int | None = body.max_runtime_seconds
+        if effective_max_runtime <= 0 or effective_max_runtime > 86400:
+            raise HTTPException(
+                status_code=422, detail={"code": "invalid_timeout"},
+            )
+    elif body.persistent:
+        effective_max_runtime = None
+    else:
+        effective_max_runtime = _DEFAULT_BOUNDED_RUNTIME_SECONDS
+
     # Effect: allocate id, insert row, audit.
     async with org.db_lock:
         job_id = org.db.next_job_id()
@@ -137,6 +171,9 @@ async def submit_job(slug: str, body: SubmitBody, org: OrgDep) -> dict:
             interpreter=JobInterpreter(body.interpreter),
             cwd_hint=cwd_hint,
             status=JobStatus.PENDING,
+            review_required=body.review_required,
+            persistent=body.persistent,
+            max_runtime_seconds=effective_max_runtime,
             created_at=_now_iso(),
         )
         org.db.insert_job(record)
@@ -153,15 +190,41 @@ async def submit_job(slug: str, body: SubmitBody, org: OrgDep) -> dict:
         line_count=body.script.count("\n") + 1,
     )
 
-    # Fire-and-forget Feishu push (no-op when notifier is unset).
-    if getattr(org, "orchestrator", None) is not None:
-        org.orchestrator.notify_job_submitted(
-            job_id=job_id, agent=agent, task_id=body.task_id,
-            title=title, rationale=rationale, script_text=body.script,
-            interpreter=body.interpreter, cwd_hint=cwd_hint,
-        )
+    # Founder-review path: leave pending, push to Feishu, return.
+    if body.review_required:
+        if getattr(org, "orchestrator", None) is not None:
+            org.orchestrator.notify_job_submitted(
+                job_id=job_id, agent=agent, task_id=body.task_id,
+                title=title, rationale=rationale, script_text=body.script,
+                interpreter=body.interpreter, cwd_hint=cwd_hint,
+            )
+        return {"id": job_id, "status": "pending", "created_at": record.created_at}
 
-    return {"id": job_id, "status": "pending", "created_at": record.created_at}
+    # Auto-run path: dispatch the runner immediately. _run_job_core already
+    # handles validation (cwd, interpreter, transition_to_running) + spawns
+    # the background task. We pass trigger="agent" so it logs the right
+    # audit action (job_auto_started, not job_run_started).
+    try:
+        run_result = await _run_job_core(
+            org, job_id=job_id,
+            cwd_override=None, timeout_override=None,
+            trigger="agent", trigger_actor=agent,
+        )
+    except HTTPException:
+        # cwd_missing / interpreter_unavailable / invalid_cwd_override —
+        # surface to the caller; the row stays pending so the founder
+        # could /run it manually later if appropriate.
+        raise
+
+    return {
+        "id": job_id,
+        "status": run_result["status"],
+        "created_at": record.created_at,
+        "started_at": run_result.get("started_at"),
+        "cwd_resolved": run_result.get("cwd_resolved"),
+        "timeout_seconds": run_result.get("timeout_seconds"),
+        "events_url": run_result.get("events_url"),
+    }
 
 
 _MAX_REJECT_REASON_LEN = 1000
@@ -315,8 +378,19 @@ async def run_job_from_notification(
 async def _run_job_core(
     org, *, job_id: str,
     cwd_override: str | None, timeout_override: int | None,
+    trigger: str = "founder",
+    trigger_actor: str | None = None,
 ) -> dict:
-    """Shared core for HTTP and in-process run paths."""
+    """Shared core for HTTP and in-process run paths.
+
+    ``trigger`` picks the audit action and the ``reviewed_by`` value:
+
+    - ``"founder"`` (default) — the founder /run path. Logs job_run_started
+      and stamps ``reviewed_by="founder"`` on the row.
+    - ``"agent"`` — the auto-run-at-submit path. Logs job_auto_started with
+      the agent's name, stamps ``reviewed_by=<agent>`` so audit traces stay
+      coherent. ``trigger_actor`` is required when trigger="agent".
+    """
     record = org.db.get_job(job_id)
     if record is None:
         raise HTTPException(
@@ -337,6 +411,13 @@ async def _run_job_core(
     # `timeout=None` means unbounded — skip the positive-range validation.
     if timeout is not None and (timeout <= 0 or timeout > 86400):
         raise HTTPException(status_code=422, detail={"code": "invalid_timeout"})
+
+    if trigger == "agent":
+        if trigger_actor is None:
+            raise ValueError("trigger_actor required when trigger='agent'")
+        reviewer = trigger_actor
+    else:
+        reviewer = "founder"
 
     workspace_root = org.root / "workspaces" / record.agent_name
     try:
@@ -376,7 +457,7 @@ async def _run_job_core(
     try:
         org.db.transition_job_to_running(
             job_id,
-            reviewer="founder",
+            reviewer=reviewer,
             reviewed_at=now,
             started_at=now,
             cwd_resolved=str(cwd_resolved),
@@ -388,12 +469,21 @@ async def _run_job_core(
         raise HTTPException(status_code=409, detail={"code": "not_pending"})
 
     audit = AuditLogger(org.db)
-    audit.log_job_run_started(
-        task_id=record.task_id, job_id=job_id, reviewer="founder",
-        cwd_resolved=str(cwd_resolved),
-        timeout_seconds=timeout,
-        interpreter=record.interpreter.value,
-    )
+    if trigger == "agent":
+        audit.log_job_auto_started(
+            task_id=record.task_id, job_id=job_id, agent=reviewer,
+            cwd_resolved=str(cwd_resolved),
+            timeout_seconds=timeout,
+            interpreter=record.interpreter.value,
+            persistent=record.persistent,
+        )
+    else:
+        audit.log_job_run_started(
+            task_id=record.task_id, job_id=job_id, reviewer=reviewer,
+            cwd_resolved=str(cwd_resolved),
+            timeout_seconds=timeout,
+            interpreter=record.interpreter.value,
+        )
 
     # Spawn the runner outside the request lifecycle.
     async def _run_and_persist() -> None:

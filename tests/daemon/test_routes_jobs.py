@@ -82,6 +82,7 @@ def test_submit_session_mismatch(client_with_runtime):
 
 
 def test_submit_happy_path(client_with_runtime):
+    """Founder-review path — review_required=True keeps the row pending."""
     client, org = client_with_runtime
     task_id, sid = _make_active_session(org)
     r = client.post(
@@ -93,11 +94,12 @@ def test_submit_happy_path(client_with_runtime):
             "rationale": "needs founder gh scope",
             "script": "gh pr close 247",
             "interpreter": "bash",
+            "review_required": True,
         },
     )
     assert r.status_code == 201, r.text
     body = r.json()
-    assert body["id"].startswith("SR-")
+    assert body["id"].startswith("JOB-")
     assert body["status"] == "pending"
 
 
@@ -160,12 +162,17 @@ def test_submit_job_too_large(client_with_runtime):
 
 
 def _submit_pending(client, org) -> str:
-    """Helper: submit one pending SR and return its id."""
+    """Helper: submit one pending job and return its id.
+
+    Sets review_required=True so the row lands in `pending` (the founder-review
+    path). Without the flag, the default is auto-run.
+    """
     task_id, sid = _make_active_session(org)
     r = client.post(
         "/api/v1/orgs/alpha/jobs/submit",
         json={"task_id": task_id, "session_id": sid,
-              "title": "t", "rationale": "r", "script": "echo z", "interpreter": "bash"},
+              "title": "t", "rationale": "r", "script": "echo z",
+              "interpreter": "bash", "review_required": True},
     )
     assert r.status_code == 201, r.text
     return r.json()["id"]
@@ -264,7 +271,8 @@ def test_get_script_detail(client_with_runtime):
     r = client.post(
         "/api/v1/orgs/alpha/jobs/submit",
         json={"task_id": task_id, "session_id": sid,
-              "title": "title-x", "rationale": "y", "script": "echo 1", "interpreter": "bash"},
+              "title": "title-x", "rationale": "y", "script": "echo 1",
+              "interpreter": "bash", "review_required": True},
     )
     job_id = r.json()["id"]
     r = client.get(f"/api/v1/orgs/alpha/jobs/{job_id}")
@@ -320,7 +328,8 @@ def test_run_happy_path_completes(tmp_home, daemon_state):
             "/api/v1/orgs/alpha/jobs/submit",
             json={"task_id": task_id, "session_id": sid,
                   "title": "echo", "rationale": "test",
-                  "script": "echo hello", "interpreter": "bash"},
+                  "script": "echo hello", "interpreter": "bash",
+                  "review_required": True},
         )
         job_id = r.json()["id"]
         # Ensure workspace dir exists (cwd defaults to workspaces/<agent>/).
@@ -361,7 +370,8 @@ def test_run_consumes_open_feishu_notification(tmp_home, daemon_state):
             "/api/v1/orgs/alpha/jobs/submit",
             json={"task_id": task_id, "session_id": sid,
                   "title": "echo", "rationale": "test",
-                  "script": "echo hello", "interpreter": "bash"},
+                  "script": "echo hello", "interpreter": "bash",
+                  "review_required": True},
         )
         job_id = r.json()["id"]
 
@@ -440,7 +450,8 @@ def test_output_after_run(tmp_home, daemon_state):
             "/api/v1/orgs/alpha/jobs/submit",
             json={"task_id": task_id, "session_id": sid,
                   "title": "x", "rationale": "y",
-                  "script": "echo abc; echo def >&2", "interpreter": "bash"},
+                  "script": "echo abc; echo def >&2", "interpreter": "bash",
+                  "review_required": True},
         )
         job_id = r.json()["id"]
         ws = org.root / "workspaces" / "engineering_head"
@@ -501,7 +512,8 @@ def test_events_terminal_after_completed(tmp_home, daemon_state):
             "/api/v1/orgs/alpha/jobs/submit",
             json={"task_id": task_id, "session_id": sid,
                   "title": "x", "rationale": "y",
-                  "script": "echo hi", "interpreter": "bash"},
+                  "script": "echo hi", "interpreter": "bash",
+                  "review_required": True},
         )
         job_id = r.json()["id"]
         ws = org.root / "workspaces" / "engineering_head"
@@ -554,6 +566,7 @@ def test_submit_job_fires_notify_when_orchestrator_attached(
             "script": "echo hi",
             "interpreter": "bash",
             "cwd_hint": None,
+            "review_required": True,
         },
     )
     assert r.status_code == 201, r.text
@@ -603,14 +616,15 @@ def test_events_stream_terminates_after_db_only_terminal_transition(
             "/api/v1/orgs/alpha/jobs/submit",
             json={"task_id": task_id, "session_id": sid,
                   "title": "x", "rationale": "y",
-                  "script": "echo hi", "interpreter": "bash"},
+                  "script": "echo hi", "interpreter": "bash",
+                  "review_required": True},
         )
         job_id = r.json()["id"]
 
         # Pre-flip to `running` so /events takes the subscribe-and-poll path
         # (not the early-terminal short-circuit).
         org.db._conn.execute(
-            "UPDATE script_requests SET status='running', started_at='2026-05-23T00:00:00Z' "
+            "UPDATE jobs SET status='running', started_at='2026-05-23T00:00:00Z' "
             "WHERE id=?", (job_id,),
         )
         org.db._conn.commit()
@@ -620,7 +634,7 @@ def test_events_stream_terminates_after_db_only_terminal_transition(
         def flip_terminal() -> None:
             _t.sleep(0.25)
             org.db._conn.execute(
-                "UPDATE script_requests SET status='completed', exit_code=0, "
+                "UPDATE jobs SET status='completed', exit_code=0, "
                 "finished_at='2026-05-23T00:00:01Z', duration_ms=100 WHERE id=?",
                 (job_id,),
             )
@@ -647,3 +661,132 @@ def test_events_stream_terminates_after_db_only_terminal_transition(
             f"timed out waiting for terminal frame "
             f"(poll-recovery never fired; got {len(data)} bytes)"
         )
+
+
+# ---------------------------------------------------------------------------
+# Task 11: review_required / persistent flags on /submit
+# ---------------------------------------------------------------------------
+
+
+def test_submit_defaults_to_review_required_false_persistent_false(
+    tmp_home, daemon_state,
+):
+    """Default behavior: both flags absent → auto-run, bounded (300s default)."""
+    from fastapi.testclient import TestClient
+    from src.daemon.app import create_app
+    from src.daemon import paths as paths_mod
+
+    org = daemon_state.orgs["alpha"]
+    app = create_app(daemon_state)
+
+    with TestClient(app, raise_server_exceptions=True) as client:
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+
+        task_id, sid = _make_active_session(org)
+        ws = org.root / "workspaces" / "engineering_head"
+        ws.mkdir(parents=True, exist_ok=True)
+
+        r = client.post(
+            "/api/v1/orgs/alpha/jobs/submit",
+            json={
+                "task_id": task_id, "session_id": sid,
+                "title": "echo test", "rationale": "n/a",
+                "script": "echo hi\n", "interpreter": "bash",
+            },
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        # Defaults are review_required=False, persistent=False → auto-run.
+        assert body["status"] != "pending"
+        job = client.get(f"/api/v1/orgs/alpha/jobs/{body['id']}").json()
+        assert job["review_required"] is False
+        assert job["persistent"] is False
+        # Poll to terminal so the runner unwinds cleanly inside the lifespan.
+        for _ in range(50):
+            d = client.get(f"/api/v1/orgs/alpha/jobs/{body['id']}").json()
+            if d["status"] in ("completed", "failed"):
+                break
+            time.sleep(0.1)
+
+
+def test_submit_with_review_required_true_requires_rationale(client_with_runtime):
+    """review_required=True with blank rationale → 400 rationale_required."""
+    client, org = client_with_runtime
+    task_id, sid = _make_active_session(org)
+    r = client.post(
+        "/api/v1/orgs/alpha/jobs/submit",
+        json={
+            "task_id": task_id, "session_id": sid,
+            "title": "close PR",
+            "rationale": "   ",  # whitespace only — should be rejected
+            "script": "gh pr close 1\n", "interpreter": "bash",
+            "review_required": True,
+        },
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["code"] == "rationale_required"
+
+
+def test_submit_with_persistent_true_runs_unbounded(tmp_home, daemon_state):
+    """persistent=True with no explicit max_runtime_seconds → unbounded (None).
+
+    Uses a short-lived script so the test doesn't have to manually kill an
+    inflight subprocess. The invariant under test is the *recorded*
+    ``max_runtime_seconds`` on the row — None means the runner was started
+    without a timeout cap.
+    """
+    from fastapi.testclient import TestClient
+    from src.daemon.app import create_app
+    from src.daemon import paths as paths_mod
+
+    org = daemon_state.orgs["alpha"]
+    app = create_app(daemon_state)
+
+    with TestClient(app, raise_server_exceptions=True) as client:
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+
+        task_id, sid = _make_active_session(org)
+        ws = org.root / "workspaces" / "engineering_head"
+        ws.mkdir(parents=True, exist_ok=True)
+
+        r = client.post(
+            "/api/v1/orgs/alpha/jobs/submit",
+            json={
+                "task_id": task_id, "session_id": sid,
+                "title": "dev server", "rationale": "n/a",
+                "script": "echo persistent\n", "interpreter": "bash",
+                "persistent": True,
+            },
+        )
+        assert r.status_code == 201, r.text
+        job_id = r.json()["id"]
+        job = client.get(f"/api/v1/orgs/alpha/jobs/{job_id}").json()
+        assert job["persistent"] is True
+        assert job["max_runtime_seconds"] is None
+        # Poll for terminal so the runner unwinds cleanly inside the lifespan.
+        for _ in range(50):
+            d = client.get(f"/api/v1/orgs/alpha/jobs/{job_id}").json()
+            if d["status"] in ("completed", "failed"):
+                break
+            time.sleep(0.1)
+
+
+def test_submit_review_required_true_enqueues_pending(client_with_runtime):
+    """review_required=True with valid rationale → status=pending (no auto-run)."""
+    client, org = client_with_runtime
+    task_id, sid = _make_active_session(org)
+    r = client.post(
+        "/api/v1/orgs/alpha/jobs/submit",
+        json={
+            "task_id": task_id, "session_id": sid,
+            "title": "close PR",
+            "rationale": "needs founder creds",
+            "script": "gh pr close 1\n", "interpreter": "bash",
+            "review_required": True,
+        },
+    )
+    assert r.status_code == 201, r.text
+    job_id = r.json()["id"]
+    job = client.get(f"/api/v1/orgs/alpha/jobs/{job_id}").json()
+    assert job["status"] == "pending"
+    assert job["review_required"] is True

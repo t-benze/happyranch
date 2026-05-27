@@ -268,4 +268,12 @@ class JobRecord(BaseModel):
     # this triggers SIGKILL with reason="output_cap". 50 MiB default matches
     # the column default in the jobs table schema.
     max_output_bytes: int | None = 52428800
+    # Founder-review gate. True → row inserted as `pending`, awaits explicit
+    # /run or Feishu APPROVE. False (default) → auto-run inline at /submit.
+    review_required:  bool = False
+    # Long-running flag. True → no default runtime cap (unbounded unless an
+    # explicit max_runtime_seconds is provided), killed only by /stop or the
+    # task-terminal kill hook. False (default) → 300s default cap when no
+    # explicit override is provided.
+    persistent:       bool = False
     created_at:       str
