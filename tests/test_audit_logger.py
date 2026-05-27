@@ -453,3 +453,16 @@ def test_log_script_run_result_notify_failed(db):
     assert r["action"] == "script_run_result_notify_failed"
     assert r["payload"]["error"] == "Timeout"
     assert r["payload"]["status"] == "failed"
+
+
+def test_log_asset_put_writes_event(db) -> None:
+    logger = AuditLogger(db)
+    logger.log_asset_put(name="report.pdf", size_bytes=11, agent="dev_agent")
+
+    rows = db.get_audit_logs_by_action("asset_put")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["task_id"] == "report.pdf"  # name overloaded into task_id column
+    assert row["agent"] == "dev_agent"
+    assert row["action"] == "asset_put"
+    assert row["payload"] == {"name": "report.pdf", "size_bytes": 11, "agent": "dev_agent"}

@@ -396,6 +396,14 @@ class AuditLogger:
     # generic "scope id" and store the talk id (TALK-NNN). Readers that filter
     # by talk id pass it in place of task_id.
 
+    def log_asset_put(self, name: str, size_bytes: int, agent: str) -> None:
+        self._db.insert_audit_log(
+            task_id=name,  # asset name overloads task_id (NOT NULL) — same pattern as talks/scripts
+            agent=agent,
+            action="asset_put",
+            payload={"name": name, "size_bytes": size_bytes, "agent": agent},
+        )
+
     def log_talk_started(
         self, talk_id: str, agent_name: str, resumed_from: str | None,
     ) -> None:
