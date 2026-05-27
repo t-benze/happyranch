@@ -1,6 +1,7 @@
 /**
  * Drawer primitive — Radix Dialog-backed slide-in from the right.
- * 480px wide, non-modal-feel (page stays visible behind thin scrim).
+ * Responsive width: 45vw, clamped to [480px, 720px]. Non-modal feel
+ * (page stays visible behind thin scrim).
  *
  * Usage:
  *   <Drawer open={open} onOpenChange={onClose}>
@@ -30,7 +31,7 @@ export const DrawerContent = React.forwardRef<
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
-        'fixed right-0 top-0 z-50 flex h-full w-[480px] flex-col',
+        'fixed right-0 top-0 z-50 flex h-full w-[clamp(480px,45vw,720px)] flex-col',
         'bg-surface-raised border-l border-border-subtle shadow-xl',
         'data-[state=open]:animate-in data-[state=closed]:animate-out',
         'data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right',
