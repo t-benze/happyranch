@@ -452,12 +452,12 @@ def _revisit_header_if_applicable(orch: "Orchestrator", task_id: str) -> str | N
     )
     lines.extend(_REVISIT_DISCIPLINE_LINES)
 
-    # SR summary block — list any script requests submitted by the predecessor.
+    # JOB summary block — list any jobs submitted by the predecessor.
     predecessor_logs = orch._db.get_audit_logs(predecessor)
     sr_entries = [e for e in predecessor_logs if e.get("action") == "job_submitted"]
     if sr_entries:
         lines.append("")
-        lines.append("This task previously submitted script requests:")
+        lines.append("This task previously submitted jobs:")
         for e in sr_entries:
             payload_e = e.get("payload") or {}
             if isinstance(payload_e, str):
@@ -487,8 +487,8 @@ def _revisit_header_if_applicable(orch: "Orchestrator", task_id: str) -> str | N
                 except Exception:
                     payload_e = {}
             job_id = payload_e.get("script_request_id", "JOB-?")
-            lines.append(f"  grassland scripts show {job_id}")
-            lines.append(f"  grassland scripts output {job_id}")
+            lines.append(f"  grassland jobs show {job_id}")
+            lines.append(f"  grassland jobs output {job_id}")
 
     return "\n".join(lines) + "\n\n"
 

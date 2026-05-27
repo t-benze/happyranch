@@ -2374,6 +2374,80 @@ def cmd_migrate_to_multi_org(args: argparse.Namespace) -> None:
 # ── parser ───────────────────────────────────────────────────
 
 
+def _register_jobs_verbs(
+    parent: argparse._SubParsersAction, *, deprecated: bool
+) -> None:
+    """Register every `jobs`/`scripts` verb under the given subparser.
+
+    When ``deprecated=True``, each verb's handler is wrapped to print a
+    one-line deprecation warning to stderr before delegating to the real
+    `cmd_jobs_*` function. The same arg shape is registered on both
+    parsers so the shim accepts an identical CLI surface.
+    """
+
+    def wrap(handler):
+        if not deprecated:
+            return handler
+
+        def _wrapped(args: argparse.Namespace) -> None:
+            print(
+                "[deprecated] `grassland scripts` is renamed to `grassland jobs` "
+                "— alias removed in next release.",
+                file=sys.stderr,
+            )
+            handler(args)
+
+        return _wrapped
+
+    p_submit = parent.add_parser(
+        "submit", help="Agent callback: submit a job for execution or founder review"
+    )
+    p_submit.add_argument(
+        "--from-file", dest="from_file", required=True, help="JSON payload file"
+    )
+    p_submit.add_argument("--org", help="Org slug (required for agent callbacks)")
+    p_submit.set_defaults(func=wrap(cmd_jobs_submit))
+
+    p_list = parent.add_parser("list", help="List jobs")
+    p_list.add_argument(
+        "--status", default="pending", help="comma-separated statuses, or 'all'"
+    )
+    p_list.add_argument("--agent")
+    p_list.add_argument("--task")
+    p_list.add_argument("--limit", type=int, default=50)
+    p_list.add_argument("--org")
+    p_list.set_defaults(func=wrap(cmd_jobs_list))
+
+    p_show = parent.add_parser("show", help="Show one job")
+    p_show.add_argument("job_id")
+    p_show.add_argument("--org")
+    p_show.set_defaults(func=wrap(cmd_jobs_show))
+
+    p_reject = parent.add_parser("reject", help="Reject a pending job")
+    p_reject.add_argument("job_id")
+    p_reject.add_argument("--reason", help="rejection reason (prompted if omitted)")
+    p_reject.add_argument("--org")
+    p_reject.set_defaults(func=wrap(cmd_jobs_reject))
+
+    p_output = parent.add_parser(
+        "output", help="Fetch captured output of a terminal job"
+    )
+    p_output.add_argument("job_id")
+    p_output.add_argument(
+        "--stream", choices=["stdout", "stderr", "both"], default="both"
+    )
+    p_output.add_argument("--max-bytes", type=int, default=1_048_576)
+    p_output.add_argument("--org")
+    p_output.set_defaults(func=wrap(cmd_jobs_output))
+
+    p_run = parent.add_parser("run", help="Run a pending job (TTY-gated)")
+    p_run.add_argument("job_id")
+    p_run.add_argument("--cwd", dest="cwd_override")
+    p_run.add_argument("--timeout-seconds", type=int, dest="timeout_seconds")
+    p_run.add_argument("--org")
+    p_run.set_defaults(func=wrap(cmd_jobs_run))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="grassland",
@@ -2549,47 +2623,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_dispatch.set_defaults(func=cmd_dispatch)
 
-    # grassland scripts
-    p_scripts = sub.add_parser("scripts", help="Script requests (agent → founder review)")
+    # grassland jobs (with `scripts` deprecation shim)
+    p_jobs = sub.add_parser("jobs", help="Jobs (agent → founder review / background work)")
+    jobs_sub = p_jobs.add_subparsers(dest="jobs_cmd")
+    _register_jobs_verbs(jobs_sub, deprecated=False)
+
+    p_scripts = sub.add_parser(
+        "scripts",
+        help="[deprecated] renamed to `jobs`; use `grassland jobs <verb>`",
+    )
     scripts_sub = p_scripts.add_subparsers(dest="scripts_cmd")
-
-    p_scripts_submit = scripts_sub.add_parser("submit", help="Agent callback: submit a script for founder review")
-    p_scripts_submit.add_argument("--from-file", dest="from_file", required=True, help="JSON payload file")
-    p_scripts_submit.add_argument("--org", help="Org slug (required for agent callbacks)")
-    p_scripts_submit.set_defaults(func=cmd_jobs_submit)
-
-    p_scripts_list = scripts_sub.add_parser("list", help="List script requests")
-    p_scripts_list.add_argument("--status", default="pending", help="comma-separated statuses, or 'all'")
-    p_scripts_list.add_argument("--agent")
-    p_scripts_list.add_argument("--task")
-    p_scripts_list.add_argument("--limit", type=int, default=50)
-    p_scripts_list.add_argument("--org")
-    p_scripts_list.set_defaults(func=cmd_jobs_list)
-
-    p_scripts_show = scripts_sub.add_parser("show", help="Show one script request")
-    p_scripts_show.add_argument("job_id")
-    p_scripts_show.add_argument("--org")
-    p_scripts_show.set_defaults(func=cmd_jobs_show)
-
-    p_scripts_reject = scripts_sub.add_parser("reject", help="Reject a pending script request")
-    p_scripts_reject.add_argument("job_id")
-    p_scripts_reject.add_argument("--reason", help="rejection reason (prompted if omitted)")
-    p_scripts_reject.add_argument("--org")
-    p_scripts_reject.set_defaults(func=cmd_jobs_reject)
-
-    p_scripts_output = scripts_sub.add_parser("output", help="Fetch captured output of a terminal SR")
-    p_scripts_output.add_argument("job_id")
-    p_scripts_output.add_argument("--stream", choices=["stdout", "stderr", "both"], default="both")
-    p_scripts_output.add_argument("--max-bytes", type=int, default=1_048_576)
-    p_scripts_output.add_argument("--org")
-    p_scripts_output.set_defaults(func=cmd_jobs_output)
-
-    p_scripts_run = scripts_sub.add_parser("run", help="Run a pending script request (TTY-gated)")
-    p_scripts_run.add_argument("job_id")
-    p_scripts_run.add_argument("--cwd", dest="cwd_override")
-    p_scripts_run.add_argument("--timeout-seconds", type=int, dest="timeout_seconds")
-    p_scripts_run.add_argument("--org")
-    p_scripts_run.set_defaults(func=cmd_jobs_run)
+    _register_jobs_verbs(scripts_sub, deprecated=True)
 
     # grassland enrollments
     p_enroll = sub.add_parser("enrollments", help="List agent enrollment requests")
