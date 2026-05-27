@@ -65,11 +65,12 @@ System kernel milestones — org-agnostic infrastructure. Org content (agent ros
 13. Threads web UI — localhost React+Tailwind SPA bundled into the FastAPI daemon, replaces the original Textual TUI. Three-layer architecture (`lib/api/` 1:1 daemon mirror → `features/<domain>/` → generic `components/`) designed to absorb future CLI domains. OpenAPI snapshot + TS coverage test pin the contract. `grassland threads` (no subcommand) points at `grassland web`; the `src/tui/` tree was deleted. Spec: `2026-05-14-web-ui-design.md`.
 14. Script requests (SR-NNN) — agent escape hatch when an executor's `allow_rules` block a command. Agent submits `{script, interpreter, cwd_hint, rationale}` via `grassland scripts submit`, self-blocks; founder reviews + runs via CLI (`grassland scripts run` with TTY-gated confirm + live SSE stream) or web (`/scripts` feature folder, run/reject modals, SSE output panel). Daemon executes with `env=dict(os.environ)` (uvloop-compatible), captures stdout/stderr to disk (`<runtime>/orgs/<slug>/scripts/SR-NNN.{out,err,script}`) with a 65 KB head cap mirrored to DB. Unblock path reuses `grassland revisit` — the revisit header lists predecessor SRs with `grassland scripts show/output` pointers. Spec: `2026-05-23-agent-script-requests-design.md`.
 15. Session-timeout auto-route — classify executor failures by kind (`session_timeout`, `no_callback`, `rate_limit`, `executor_error`, `agent_exception`, `session_failed` fallback) in `run_step._classify_failure_kind`. Per-kind auto-revisit cap (`_AUTO_REVISIT_CAP_PER_KIND = 2`) replaces the prior global cap — same-kind exhaustion at 2, different kinds have independent budgets. Cascade-fail Feishu notifications are suppressed when a root auto-revisit covers the lineage (the cascade still cascade-fails ancestors for state correctness; only the founder ping is dropped). `failure_kind` is hoisted to top-level of the `auto_revisit_of` audit payload for per-kind counting + AUTO-REVISIT-CONTEXT header rendering. Spec: `2026-05-25-session-timeout-auto-route-design.md`. Founder-ratified at TALK-037.
+16. Shared Assets — org-wide flat blob store for persistent agent artifacts (reports, exports, screenshots). `grassland assets {put,list,get}` CLI; daemon routes under `/api/v1/orgs/{slug}/assets`; audited puts; CLI-only design works uniformly across Claude/Codex/Opencode. Plan: `docs/superpowers/plans/2026-05-27-shared-assets.md`.
 
 **Open:**
 
-16. **Founder dashboard** — aggregate audit logs, escalation summaries, scorecards into a weekly view. Design: `protocol/05e-dashboard.md`.
-17. **Persistent agents** — long-running loops for runtime patterns that don't fit single-task batch execution (e.g., real-time customer-chat worker). Currently every agent session is one task → one subprocess.
+17. **Founder dashboard** — aggregate audit logs, escalation summaries, scorecards into a weekly view. Design: `protocol/05e-dashboard.md`.
+18. **Persistent agents** — long-running loops for runtime patterns that don't fit single-task batch execution (e.g., real-time customer-chat worker). Currently every agent session is one task → one subprocess.
 
 ## Directory Layout
 
@@ -271,7 +272,7 @@ grassland web [--no-open]        # open the SPA in the default browser
 
 Slug resolution for per-org commands: explicit `--org <slug>` > `GRASSLAND_ORG_SLUG` env > auto-infer (only when the container has exactly one org) > error. Container-level commands (`grassland init`, `grassland use`, `grassland orgs ...`, `grassland migrate-to-multi-org`) take no `--org`.
 
-**Full founder-facing CLI** — tasks, agents, KB, threads, talks, audit, runtime, migrations — is documented in `skills/grassland/SKILL.md` (symlinked at `~/.claude/skills/grassland`).
+**Full founder-facing CLI** — tasks, agents, KB, threads, talks, audit, assets, runtime, migrations — is documented in `skills/grassland/SKILL.md` (symlinked at `~/.claude/skills/grassland`).
 
 **Agent-side callbacks** (invoked by skills inside agent sessions; do NOT invoke by hand — they falsify audit data and corrupt scorecards):
 

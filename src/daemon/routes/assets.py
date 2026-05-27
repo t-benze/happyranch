@@ -17,13 +17,14 @@ from src.infrastructure.asset_store import (
     InvalidAssetName,
 )
 from src.infrastructure.audit_logger import AuditLogger
+from src.orchestrator._paths import OrgPaths
 
 # Token-required for every endpoint — matches kb/tasks/talks/scripts routers.
 router = APIRouter(dependencies=[require_token()])
 
 
 def _store(org: OrgState) -> AssetStore:
-    return AssetStore(org.root / "assets")
+    return AssetStore(OrgPaths(org.root).assets_dir)
 
 
 @router.post("/assets")

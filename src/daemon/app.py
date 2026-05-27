@@ -22,6 +22,7 @@ from src.daemon.routes import (
     tokens,
 )
 from src.daemon.state import DaemonState
+from src.orchestrator._paths import OrgPaths
 
 
 def _attach_org_runtime_wiring(state: DaemonState) -> None:
@@ -75,7 +76,7 @@ async def _lifespan(app: FastAPI):
     _now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     _logger = logging.getLogger("grassland.daemon")
     for org in state.orgs.values():
-        (org.root / "assets").mkdir(exist_ok=True)
+        OrgPaths(org.root).assets_dir.mkdir(exist_ok=True)
         recovered = org.db.recover_orphaned_running_scripts(now_iso=_now_iso)
         if recovered:
             _logger.warning(
