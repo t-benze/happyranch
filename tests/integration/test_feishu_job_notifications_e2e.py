@@ -1,7 +1,7 @@
-"""End-to-end SR Feishu notification round-trip: agent submits a script
-request, founder receives the push via Feishu, replies APPROVE/REJECT to
-that message, and the listener routes to run/reject — with a threaded
-follow-up message posted on terminal completion.
+"""End-to-end job-request Feishu notification round-trip: agent submits a
+review-required job, founder receives the push via Feishu, replies
+APPROVE/REJECT to that message, and the listener routes to run/reject —
+with a threaded follow-up message posted on terminal completion.
 
 Mirrors the shape of ``test_feishu_failure_revisit_e2e.py`` and exercises
 the full submit-push-act-result loop without spawning real subprocesses
@@ -96,8 +96,8 @@ def _build_org(root, test_settings):
     return org
 
 
-def _seed_task_and_sr(org, *, task_id: str, job_id: str):
-    """Insert an active task assigned to dev_agent + a pending SR row."""
+def _seed_task_and_job(org, *, task_id: str, job_id: str):
+    """Insert an active task assigned to dev_agent + a pending job row."""
     from datetime import datetime, timezone
     from src.models import (
         JobInterpreter,
@@ -177,17 +177,17 @@ def _fake_completed_result():
     )
 
 
-def test_sr_submit_approve_runs_and_posts_follow_up(
+def test_job_submit_approve_runs_and_posts_follow_up(
     fake_feishu, tmp_path, test_settings, monkeypatch,
 ):
-    """APPROVE branch: SR transitions completed and a threaded follow-up arrives."""
+    """APPROVE branch: job transitions completed and a threaded follow-up arrives."""
     base_url, fake_state = fake_feishu
 
     import src.daemon.org_state as org_state_mod
     monkeypatch.setitem(org_state_mod._REGION_TO_DOMAIN, "feishu", base_url)
 
     org = _build_org(tmp_path / "orgs" / "test", test_settings)
-    _seed_task_and_sr(org, task_id="TASK-1", job_id="SR-001")
+    _seed_task_and_job(org, task_id="TASK-1", job_id="JOB-001")
 
     # Stub out subprocess spawn — we don't want to execute arbitrary shell here.
     async def _fake_spawn(**_kwargs):
@@ -199,7 +199,7 @@ def test_sr_submit_approve_runs_and_posts_follow_up(
     # Fire the orchestrator push bridge (fire-and-forget; spawns a daemon thread
     # because we're calling from sync test context with no running loop).
     org.orchestrator.notify_job_submitted(
-        job_id="SR-001", agent="dev_agent", task_id="TASK-1",
+        job_id="JOB-001", agent="dev_agent", task_id="TASK-1",
         title="echo hi", rationale="smoke test",
         script_text="echo hello-from-sr",
         interpreter="bash", cwd_hint=None,
@@ -211,7 +211,7 @@ def test_sr_submit_approve_runs_and_posts_follow_up(
     payload = json.loads(push["body"]["content"])
 
     # Title / body sanity check.
-    assert "SR-001" in payload["zh_cn"]["title"]
+    assert "JOB-001" in payload["zh_cn"]["title"]
     assert "submitted" in payload["zh_cn"]["title"]
     body_text = " ".join(
         seg["text"] for line in payload["zh_cn"]["content"] for seg in line
@@ -220,11 +220,11 @@ def test_sr_submit_approve_runs_and_posts_follow_up(
     assert "echo hi" in body_text  # title appears in body
     assert "echo hello-from-sr" in body_text  # script preview
 
-    # Mounted-row check: kind=script_request keyed by the message_id.
+    # Mounted-row check: kind=job_request keyed by the message_id.
     nrow = org.db.get_escalation_notification(feishu_message_id)
     assert nrow is not None
     assert nrow["kind"] == "job_request"
-    assert nrow["task_id"] == "SR-001"
+    assert nrow["task_id"] == "JOB-001"
     assert nrow["consumed_at"] is None
 
     # Now drive the listener with an APPROVE reply.
@@ -235,20 +235,20 @@ def test_sr_submit_approve_runs_and_posts_follow_up(
 
         # The listener has invoked run_job_from_notification, which
         # spawned the _run_and_persist runner task on this loop. Drive the
-        # loop until the SR row reaches a terminal status.
+        # loop until the job row reaches a terminal status.
         def _terminal():
-            row = org.db.get_job("SR-001")
+            row = org.db.get_job("JOB-001")
             return row is not None and row.status.value in ("completed", "failed", "rejected")
 
         assert _drive_until(loop, _terminal, timeout=5.0), (
-            f"SR did not reach terminal status; "
-            f"current={org.db.get_job('SR-001').status.value}"
+            f"job did not reach terminal status; "
+            f"current={org.db.get_job('JOB-001').status.value}"
         )
 
-        sr = org.db.get_job("SR-001")
-        assert sr.status.value == "completed"
-        assert sr.exit_code == 0
-        assert sr.stdout_head == "hello"
+        job = org.db.get_job("JOB-001")
+        assert job.status.value == "completed"
+        assert job.exit_code == 0
+        assert job.stdout_head == "hello"
 
         # Drain the follow-up notify_job_run_result task — created on
         # this loop via loop.create_task(...).
@@ -263,9 +263,9 @@ def test_sr_submit_approve_runs_and_posts_follow_up(
         reply_text = " ".join(
             seg["text"] for line in reply_payload["zh_cn"]["content"] for seg in line
         )
-        # The reply title says "completed"; body should mention the SR and stdout head.
+        # The reply title says "completed"; body should mention the job and stdout head.
         assert "completed" in reply_payload["zh_cn"]["title"]
-        assert "SR-001" in reply_payload["zh_cn"]["title"]
+        assert "JOB-001" in reply_payload["zh_cn"]["title"]
         assert "hello" in reply_text
 
         # Notification consumed.
@@ -274,25 +274,25 @@ def test_sr_submit_approve_runs_and_posts_follow_up(
         assert nrow_after["consumed_by"] == "feishu-reply"
 
         # Audit row check (terminal result + reply processed).
-        sr_audit = org.db.get_audit_logs("SR-001")
-        actions = [r["action"] for r in sr_audit]
+        job_audit = org.db.get_audit_logs("JOB-001")
+        actions = [r["action"] for r in job_audit]
         assert "job_reply_processed" in actions
     finally:
         org.close()
         loop.close()
 
 
-def test_sr_submit_reject_transitions_and_posts_no_follow_up(
+def test_job_submit_reject_transitions_and_posts_no_follow_up(
     fake_feishu, tmp_path, test_settings, monkeypatch,
 ):
-    """REJECT branch: SR transitions to rejected, no terminal-result follow-up."""
+    """REJECT branch: job transitions to rejected, no terminal-result follow-up."""
     base_url, fake_state = fake_feishu
 
     import src.daemon.org_state as org_state_mod
     monkeypatch.setitem(org_state_mod._REGION_TO_DOMAIN, "feishu", base_url)
 
     org = _build_org(tmp_path / "orgs" / "test", test_settings)
-    _seed_task_and_sr(org, task_id="TASK-2", job_id="SR-001")
+    _seed_task_and_job(org, task_id="TASK-2", job_id="JOB-001")
 
     # Belt-and-suspenders: even if reject path accidentally runs the script,
     # don't let it actually fork a subprocess.
@@ -303,7 +303,7 @@ def test_sr_submit_reject_transitions_and_posts_no_follow_up(
     )
 
     org.orchestrator.notify_job_submitted(
-        job_id="SR-001", agent="dev_agent", task_id="TASK-2",
+        job_id="JOB-001", agent="dev_agent", task_id="TASK-2",
         title="echo hi", rationale="smoke test",
         script_text="echo hello-from-sr",
         interpreter="bash", cwd_hint=None,
@@ -319,9 +319,9 @@ def test_sr_submit_reject_transitions_and_posts_no_follow_up(
         loop.run_until_complete(org.feishu_listener._handle_event_async(event))
 
         # Reject is synchronous — the row should be rejected immediately.
-        sr = org.db.get_job("SR-001")
-        assert sr.status.value == "rejected"
-        assert sr.reject_reason == "not needed"
+        job = org.db.get_job("JOB-001")
+        assert job.status.value == "rejected"
+        assert job.reject_reason == "not needed"
 
         nrow_after = org.db.get_escalation_notification(feishu_message_id)
         assert nrow_after["consumed_at"] is not None
@@ -334,12 +334,12 @@ def test_sr_submit_reject_transitions_and_posts_no_follow_up(
             f"unexpected follow-up after reject: {fake_state['thread_replies']}"
         )
 
-        # script_rejected is logged against the parent task; script_reply_processed
-        # against the SR id (the listener-side audit).
+        # job_rejected is logged against the parent task; job_reply_processed
+        # against the job id (the listener-side audit).
         task_actions = [r["action"] for r in org.db.get_audit_logs("TASK-2")]
         assert "job_rejected" in task_actions
-        sr_actions = [r["action"] for r in org.db.get_audit_logs("SR-001")]
-        assert "job_reply_processed" in sr_actions
+        job_actions = [r["action"] for r in org.db.get_audit_logs("JOB-001")]
+        assert "job_reply_processed" in job_actions
     finally:
         org.close()
         loop.close()
