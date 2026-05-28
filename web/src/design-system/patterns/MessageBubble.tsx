@@ -10,6 +10,7 @@
  *
  * Pure prop-driven. Markdown rendering is delegated to react-markdown.
  */
+import React from 'react';
 import { AgentChip } from './AgentChip';
 import { Markdown } from './Markdown';
 
@@ -29,7 +30,7 @@ interface MessageBubbleProps {
   /** Used for `decline` variant. */
   declineReason?: string | null;
   /** Used for `system` variant — a pre-rendered one-line description. */
-  systemDescription?: string;
+  systemDescription?: React.ReactNode;
 }
 
 function fmtTs(iso: string): string {

@@ -7,7 +7,7 @@
  * @/design-system/patterns/. The `?` HelpDrawer is owned globally by
  * `HelpDrawerHost` mounted in AppShell, not by this page.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/design-system/primitives/Button';
 import { Input } from '@/design-system/primitives/Input';
@@ -395,7 +395,7 @@ function DetailColumn({
         }
       />
       <div className="flex-1 overflow-hidden">
-        <MessageTranscript messages={messages} loading={messagesLoading} />
+        <MessageTranscript messages={messages} loading={messagesLoading} slug={slug} />
       </div>
       <footer className="border-border-default bg-surface-sunken border-t p-3">
         {composer}
@@ -407,9 +407,11 @@ function DetailColumn({
 interface TranscriptProps {
   messages: ThreadMessage[];
   loading: boolean;
+  /** Active org slug — used to build cross-surface task links in system messages. */
+  slug?: string;
 }
 
-function MessageTranscript({ messages, loading }: TranscriptProps): JSX.Element {
+function MessageTranscript({ messages, loading, slug }: TranscriptProps): JSX.Element {
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -437,7 +439,7 @@ function MessageTranscript({ messages, loading }: TranscriptProps): JSX.Element 
           timestamp={m.created_at}
           body={m.body_markdown}
           declineReason={m.decline_reason}
-          systemDescription={m.kind === 'system' ? describeSystem(m.system_payload) : undefined}
+          systemDescription={m.kind === 'system' ? describeSystem(m.system_payload, slug) : undefined}
         />
       ))}
       <div ref={endRef} />
@@ -452,13 +454,18 @@ function messageVariant(m: ThreadMessage): MessageVariant {
   return 'worker';
 }
 
-function describeSystem(payload: Record<string, unknown> | null): string {
+function describeSystem(payload: Record<string, unknown> | null, slug?: string): React.ReactNode {
   if (!payload) return 'system event';
-  const ev = String(payload.event ?? '');
-  switch (ev) {
+  // Real API payloads use kind_tag; mock/legacy payloads use event.
+  const tag = String(payload.kind_tag ?? payload.event ?? '');
+  switch (tag) {
     case 'invited':
       return `invited ${payload.agent}`;
+    case 'participant_added':
+      return `added ${payload.agent_name}`;
     case 'extended':
+      return `turn cap raised to ${payload.new_cap}`;
+    case 'turn_cap_extended':
       return `turn cap raised to ${payload.new_cap}`;
     case 'archive_requested':
       return 'archive requested';
@@ -466,7 +473,44 @@ function describeSystem(payload: Record<string, unknown> | null): string {
       return 'archived';
     case 'abandoned':
       return `abandoned${payload.reason ? `: ${payload.reason}` : ''}`;
+    case 'task_dispatched': {
+      const taskId = String(payload.task_id ?? '');
+      const taskLink = slug && taskId
+        ? <Link to={`/orgs/${slug}/tasks/${taskId}`} className="underline">{taskId}</Link>
+        : taskId;
+      return <>dispatched {taskLink}</>;
+    }
+    case 'task_completed': {
+      const taskId = String(payload.task_id ?? '');
+      const taskLink = slug && taskId
+        ? <Link to={`/orgs/${slug}/tasks/${taskId}`} className="underline">{taskId}</Link>
+        : taskId;
+      const summary = payload.final_output_summary
+        ? String(payload.final_output_summary).slice(0, 240)
+        : null;
+      return (
+        <>
+          task {taskLink} completed{summary ? ` · ${summary}` : ''}
+        </>
+      );
+    }
+    case 'task_failed': {
+      const taskId = String(payload.task_id ?? '');
+      const taskLink = slug && taskId
+        ? <Link to={`/orgs/${slug}/tasks/${taskId}`} className="underline">{taskId}</Link>
+        : taskId;
+      const chainLength = typeof payload.revisit_chain_length === 'number' ? payload.revisit_chain_length : 1;
+      const revisitSuffix = chainLength > 1
+        ? ` · after ${chainLength - 1} ${chainLength - 1 === 1 ? 'revisit' : 'revisits'}`
+        : '';
+      const cancelledSuffix = payload.cancelled ? ' · founder-cancelled' : '';
+      return (
+        <>
+          task {taskLink} failed{cancelledSuffix}{revisitSuffix}
+        </>
+      );
+    }
     default:
-      return ev || JSON.stringify(payload);
+      return tag || JSON.stringify(payload);
   }
 }
