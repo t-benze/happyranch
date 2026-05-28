@@ -234,6 +234,49 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
     orch._log_step_result(task_id, result, report)
 
     if report.status == "blocked":
+        if report.waiting_on_job_ids:
+            # Spec §5.3: block-on-jobs branch. In-place transition, NOT _fail.
+            import json as _json
+            deduped = sorted(set(report.waiting_on_job_ids))
+            # Defensive re-validation: a job could have been deleted between the
+            # route POST and run_step_impl consuming the report (extremely
+            # unlikely; jobs are write-once + terminal-frozen). Degrade gracefully.
+            for jid in deduped:
+                if db.get_job_status(jid) is None:
+                    note = f"self-blocked but job {jid} not found"
+                    _fail(orch, task_id, note=note)
+                    _enqueue_parent_if_waiting(orch, task_id)
+                    _notify_failure_if_eligible(
+                        orch, task_id, failure_kind="self_blocked",
+                        failure_note=note, auto_revisit_spawned=False,
+                        last_summary=report.output_summary or "",
+                    )
+                    _maybe_post_thread_followup(
+                        orch, task_id,
+                        status=TaskStatus.FAILED, auto_revisit_spawned=False,
+                    )
+                    return
+            db.update_task(
+                task_id,
+                status=TaskStatus.BLOCKED,
+                block_kind=BlockKind.BLOCKED_ON_JOB,
+                blocked_on_job_ids=_json.dumps(deduped),
+                note=report.output_summary,
+            )
+            orch._audit.log_task_blocked_on_jobs(
+                task_id=task_id, agent=agent,
+                blocking_job_ids=deduped,
+                output_summary_excerpt=(report.output_summary or "")[:200],
+            )
+            # Immediate predicate check (caller B). Spec §5.6: runs HERE, after
+            # the agent session has already been cleared by submit_completion.
+            # No session race.
+            _maybe_resume_blocked_task(
+                orch, task_id,
+                trigger="block_submit", triggering_job_id=None,
+            )
+            return
+        # Existing escalated path (waiting_on_job_ids empty).
         note = f"self-blocked: {report.output_summary}"
         _fail(orch, task_id, note=note)
         _enqueue_parent_if_waiting(orch, task_id)

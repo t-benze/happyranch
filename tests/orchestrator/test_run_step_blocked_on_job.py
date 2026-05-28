@@ -26,6 +26,10 @@ def db_and_orch():
         orch._queue = MagicMock()
         orch._slug = "org-a"
         orch.teams = MagicMock(is_team_manager=MagicMock(return_value=False))
+        # Prevent load_org_config from hanging via yaml.safe_load(MagicMock) in
+        # Python 3.13. Setting exists()=False makes load_org_config return an
+        # empty OrgConfig immediately (feishu_notifications=None → gate exits).
+        orch._paths.org_config_path.exists.return_value = False
         yield db, orch
 
 
@@ -168,3 +172,115 @@ def test_no_audit_when_entry_state_is_pending(db_and_orch):
     rows = db.get_audit_logs("TASK-1")
     resumed = [r for r in rows if r["action"] == "task_resumed_from_jobs"]
     assert len(resumed) == 0
+
+
+from src.models import CompletionReport
+
+
+def test_block_on_jobs_branch_transitions_in_place(db_and_orch):
+    """report.status=blocked + non-empty waiting_on_job_ids → row goes to
+    BLOCKED+BLOCKED_ON_JOB (NOT _fail)."""
+    db, orch = db_and_orch
+    db.insert_task(TaskRecord(
+        id="TASK-1", team="engineering", brief="t",
+        status=TaskStatus.PENDING, parent_task_id=None,
+        assigned_agent="engineering_worker",
+    ))
+    _insert_job(db, "JOB-1", "running")
+
+    fake_result = MagicMock()
+    fake_result.token_usage = None  # skip insert_session_token_usage
+    fake_report = CompletionReport(
+        task_id="TASK-1", agent="engineering_worker", status="blocked",
+        confidence=0, output_summary="Waiting on migration",
+        waiting_on_job_ids=["JOB-1"],
+    )
+    orch._run_agent.return_value = (fake_result, fake_report)
+    run_step_impl(orch, "TASK-1")
+
+    after = db.get_task("TASK-1")
+    assert after.status == TaskStatus.BLOCKED
+    assert after.block_kind == BlockKind.BLOCKED_ON_JOB
+    assert after.blocked_on_job_ids == '["JOB-1"]'
+
+    rows = db.get_audit_logs("TASK-1")
+    blocked_audits = [r for r in rows if r["action"] == "task_blocked_on_jobs"]
+    assert len(blocked_audits) == 1
+
+
+def test_block_on_jobs_immediate_resume_when_jobs_already_terminal(db_and_orch):
+    """Submit-time race: block submitted but all jobs already done → helper
+    enqueues immediately."""
+    db, orch = db_and_orch
+    db.insert_task(TaskRecord(
+        id="TASK-1", team="engineering", brief="t",
+        status=TaskStatus.PENDING, parent_task_id=None,
+        assigned_agent="engineering_worker",
+    ))
+    _insert_job(db, "JOB-1", "completed")
+
+    fake_result = MagicMock()
+    fake_result.token_usage = None  # skip insert_session_token_usage
+    fake_report = CompletionReport(
+        task_id="TASK-1", agent="engineering_worker", status="blocked",
+        confidence=0, output_summary="Waiting on migration",
+        waiting_on_job_ids=["JOB-1"],
+    )
+    orch._run_agent.return_value = (fake_result, fake_report)
+    run_step_impl(orch, "TASK-1")
+
+    # Helper should have enqueued via orch._queue.enqueue
+    orch._queue.enqueue.assert_called_once_with(
+        "org-a", "TASK-1",
+        metadata={"trigger": "block_submit", "triggering_job_id": None},
+    )
+
+
+def test_block_on_jobs_with_missing_job_falls_back_to_fail(db_and_orch):
+    """If a JOB id in waiting_on_job_ids doesn't exist (deleted between route
+    and worker pickup), degrade to existing _fail path."""
+    db, orch = db_and_orch
+    db.insert_task(TaskRecord(
+        id="TASK-1", team="engineering", brief="t",
+        status=TaskStatus.PENDING, parent_task_id=None,
+        assigned_agent="engineering_worker",
+    ))
+    # NOTE: no JOB-999 inserted
+
+    fake_result = MagicMock()
+    fake_result.token_usage = None  # skip insert_session_token_usage
+    fake_report = CompletionReport(
+        task_id="TASK-1", agent="engineering_worker", status="blocked",
+        confidence=0, output_summary="Waiting",
+        waiting_on_job_ids=["JOB-999"],
+    )
+    orch._run_agent.return_value = (fake_result, fake_report)
+    run_step_impl(orch, "TASK-1")
+
+    after = db.get_task("TASK-1")
+    assert after.status == TaskStatus.FAILED  # _fail path
+    assert "JOB-999 not found" in (after.note or "")
+
+
+def test_existing_blocked_escalated_path_preserved(db_and_orch):
+    """Blocked report with EMPTY waiting_on_job_ids → existing _fail path runs."""
+    db, orch = db_and_orch
+    db.insert_task(TaskRecord(
+        id="TASK-1", team="engineering", brief="t",
+        status=TaskStatus.PENDING, parent_task_id=None,
+        assigned_agent="engineering_worker",
+    ))
+
+    fake_result = MagicMock()
+    fake_result.token_usage = None  # skip insert_session_token_usage
+    fake_report = CompletionReport(
+        task_id="TASK-1", agent="engineering_worker", status="blocked",
+        confidence=0, output_summary="self-escalated to founder",
+        waiting_on_job_ids=[],  # empty — existing path
+    )
+    orch._run_agent.return_value = (fake_result, fake_report)
+    run_step_impl(orch, "TASK-1")
+
+    after = db.get_task("TASK-1")
+    assert after.status == TaskStatus.FAILED  # _fail path
+    assert "self-blocked" in (after.note or "")
