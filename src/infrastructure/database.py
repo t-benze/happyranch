@@ -2083,6 +2083,29 @@ class Database:
         return [self._row_to_invocation(r) for r in cursor.fetchall()]
 
     @_synchronized
+    def count_pending_turn_obligations(self, thread_id: str) -> int:
+        """Pending invocations that will increment turns_used when consumed.
+
+        REPLY, BOOTSTRAP, TASK_FOLLOWUP count. CLOSE_OUT is excluded
+        (per threads spec §5.10.1). Single-source helper for both the
+        send/compose projection in routes/threads.py and the auto-extend
+        projection in _maybe_post_thread_followup.
+        """
+        counted = {
+            ThreadInvocationPurpose.REPLY.value,
+            ThreadInvocationPurpose.BOOTSTRAP.value,
+            ThreadInvocationPurpose.TASK_FOLLOWUP.value,
+        }
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM thread_invocations "
+            "WHERE thread_id = ? AND status = ? AND purpose IN ({})".format(
+                ",".join("?" * len(counted))
+            ),
+            (thread_id, ThreadInvocationStatus.PENDING.value, *counted),
+        ).fetchone()
+        return int(row["n"])
+
+    @_synchronized
     def reap_pending_invocations(
         self,
         thread_id: str,

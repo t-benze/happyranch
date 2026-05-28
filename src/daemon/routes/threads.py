@@ -668,21 +668,6 @@ def _validate_invocation_token(
     return inv
 
 
-def _pending_reply_load(org, thread_id: str) -> int:
-    """Count pending REPLY and BOOTSTRAP invocations on a thread.
-
-    These obligations will increment turns_used when they land (or auto-
-    decline). CLOSE_OUT invocations are excluded — they don't count toward
-    turns_used per spec §5.10.1.
-    """
-    from src.models import ThreadInvocationStatus as _TIS
-    pending = org.db.list_thread_invocations(thread_id, status=_TIS.PENDING)
-    return sum(
-        1 for inv in pending
-        if inv.purpose in {ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP}
-    )
-
-
 def _verify_addressed(org, *, thread_id: str, seq: int, speaker: str) -> None:
     m = org.db.get_thread_message_by_seq(thread_id, seq)
     if m is None:
@@ -986,7 +971,7 @@ async def _send_thread_message_inprocess(
         ) from exc
     addressed = _resolve_addressed_agents(addressed_to, participants)
 
-    pending_load = _pending_reply_load(org, thread_id)
+    pending_load = org.db.count_pending_turn_obligations(thread_id)
     projected = t.turns_used + pending_load + len(addressed)
     if projected > t.turn_cap:
         raise _SendThreadError(
@@ -1092,7 +1077,7 @@ async def invite_thread_endpoint(
     if agent_def is None or not workspace_exists:
         raise HTTPException(status_code=404, detail={"code": "unknown_agent"})
 
-    pending_load = _pending_reply_load(org, thread_id)
+    pending_load = org.db.count_pending_turn_obligations(thread_id)
     projected = t.turns_used + pending_load + 1
     if projected > t.turn_cap:
         raise HTTPException(
