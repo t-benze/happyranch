@@ -121,9 +121,13 @@ def _build_job_request_body(
         ]
     else:
         script_lines = script_text.split("\n")
+    # ``task_id`` here is the JobRecord's scope id and can be either a
+    # TASK-NNN (task-path submission) or a TALK-NNN (talk-path submission).
+    # Render the right label so the founder isn't confused by "Task: TALK-007".
+    scope_label = "Talk" if task_id.startswith("TALK-") else "Task"
     lines = [
         f"Agent:        {agent}",
-        f"Task:         {task_id}",
+        f"{scope_label}:         {task_id}",
         f"Interpreter:  {interpreter}",
         f"Cwd hint:     {cwd_hint or '(workspace root)'}",
         f"Title:        {title}",

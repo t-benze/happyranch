@@ -9,7 +9,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from src.daemon.auth import optional_bearer, require_token
 from src.daemon.event_bus import job_topic
@@ -21,6 +21,7 @@ from src.models import (
     JobInterpreter,
     JobRecord,
     JobStatus,
+    TalkStatus,
 )
 
 # Two routers mounted at the same prefix. ``router`` carries the bearer-only
@@ -44,27 +45,52 @@ def _enforce_session_or_bearer(
     has_bearer: bool,
     task_id: str | None,
     session_id: str | None,
+    talk_id: str | None = None,
     org,
 ) -> None:
     """Authorize a dual-auth call against a JobRecord.
 
     Founder path: ``has_bearer=True`` → allow.
 
-    Agent path: ``has_bearer=False`` → require both ``task_id`` AND
-    ``session_id`` query params; verify that the task is owned by the same
-    agent that owns ``record`` AND that ``session_id`` matches the active
-    session for that (task, agent) pair.
+    Agent path: ``has_bearer=False`` → exactly one of two bindings:
+      - ``task_id`` + ``session_id``: verify the task is owned by the same
+        agent as ``record`` AND ``session_id`` matches the active session
+        for that (task, agent) pair.
+      - ``talk_id``: verify the talk exists, is OPEN, and its ``agent_name``
+        equals ``record.agent_name`` — the agent is talking to the founder
+        and acting on its own job.
 
     On any mismatch raises ``HTTPException(409, {"code": "session_mismatch"})``.
-    A bearer-less caller that omits the session params gets the same 409 —
-    one shared error class for "you didn't prove you can read this row".
+    A bearer-less caller that supplies neither binding (or supplies both) gets
+    the same 409 — one shared error class for "you didn't prove you can read
+    this row".
     """
     if has_bearer:
         return
-    if not task_id or not session_id:
+
+    has_task_binding = bool(task_id) and bool(session_id)
+    has_talk_binding = bool(talk_id)
+
+    # Reject mixed / partial bindings up front. (Pydantic-level mutual
+    # exclusion only applies to /submit because the query-string params here
+    # aren't a model.)
+    if has_task_binding == has_talk_binding:
         raise HTTPException(
             status_code=409, detail={"code": "session_mismatch"},
         )
+
+    if has_talk_binding:
+        talk = org.db.get_talk(talk_id)
+        if (
+            talk is None
+            or talk.status != TalkStatus.OPEN
+            or talk.agent_name != record.agent_name
+        ):
+            raise HTTPException(
+                status_code=409, detail={"code": "session_mismatch"},
+            )
+        return
+
     task = org.db.get_task(task_id)
     if task is None or task.assigned_agent != record.agent_name:
         raise HTTPException(
@@ -104,8 +130,13 @@ def _validate_cwd_hint(cwd_hint: str | None) -> str | None:
 
 
 class SubmitBody(BaseModel):
-    task_id: str
-    session_id: str
+    # Two mutually-exclusive auth paths (mirrors manage-agent / threads.compose):
+    # - Task path: supply task_id + session_id from an active session.
+    # - Talk path: supply talk_id alone from the open talk the agent is in.
+    # The model_validator below rejects partial / dual / missing bindings.
+    task_id: str | None = None
+    session_id: str | None = None
+    talk_id: str | None = None
     title: str
     # Rationale is required ONLY when review_required=True. Default empty so
     # agent-side auto-run callers can omit it. When review_required=True the
@@ -122,6 +153,19 @@ class SubmitBody(BaseModel):
     # default (300s when persistent=False, unbounded when persistent=True).
     max_runtime_seconds: int | None = None
 
+    @model_validator(mode="after")
+    def _exactly_one_auth_path(self) -> "SubmitBody":
+        task_path = self.task_id is not None and self.session_id is not None
+        partial_task = (self.task_id is not None) != (self.session_id is not None)
+        talk_path = self.talk_id is not None
+        if partial_task:
+            raise ValueError("task_id and session_id must be supplied together")
+        if task_path and talk_path:
+            raise ValueError("supply either (task_id + session_id) or talk_id, not both")
+        if not task_path and not talk_path:
+            raise ValueError("supply either (task_id + session_id) or talk_id")
+        return self
+
 
 # Default runtime cap (seconds) for non-persistent auto-run jobs when the
 # caller didn't pass an explicit max_runtime_seconds. Persistent jobs default
@@ -131,31 +175,63 @@ _DEFAULT_BOUNDED_RUNTIME_SECONDS = 300
 
 @router.post("/jobs/submit", status_code=201)
 async def submit_job(slug: str, body: SubmitBody, org: OrgDep) -> dict:
-    # §5.1 validation order.
+    # §5.1 validation order. Two auth paths (mutually exclusive — enforced by
+    # SubmitBody._exactly_one_auth_path):
+    #
+    # - Task path  → derive agent from task.assigned_agent + verify active session
+    # - Talk path  → derive agent from talk.agent_name + require talk OPEN
+    #
+    # ``scope_id`` is the audit-scope id this job belongs to. On the task path
+    # it's the TASK-NNN; on the talk path it's the TALK-NNN. It's stored on
+    # ``JobRecord.task_id`` (overloaded — same pattern as audit_log.task_id)
+    # so every downstream audit / Feishu call already passes the right scope
+    # without extra plumbing.
 
-    # 1. Task exists.
-    task = org.db.get_task(body.task_id)
-    if task is None:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": "unknown_task", "task_id": body.task_id},
-        )
+    if body.talk_id is not None:
+        # Talk path. Steps 1–3 collapse: the talk is the auth subject; no
+        # SessionTracker lookup needed.
+        talk = org.db.get_talk(body.talk_id)
+        if talk is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "unknown_talk", "talk_id": body.talk_id},
+            )
+        if talk.status != TalkStatus.OPEN:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "talk_not_open", "status": talk.status.value},
+            )
+        agent = talk.agent_name
+        scope_id = body.talk_id
+    else:
+        # Task path. The SubmitBody validator guarantees both task_id and
+        # session_id are present when talk_id is None.
+        assert body.task_id is not None and body.session_id is not None
 
-    # 2. Task status active (BEFORE session — completed tasks have no live session).
-    if task.status.value not in ("pending", "in_progress"):
-        raise HTTPException(
-            status_code=400,
-            detail={"code": "task_not_active", "status": task.status.value},
-        )
+        # 1. Task exists.
+        task = org.db.get_task(body.task_id)
+        if task is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "unknown_task", "task_id": body.task_id},
+            )
 
-    # 3. Session ownership.
-    agent = task.assigned_agent
-    active_sid = org.sessions.get_active(body.task_id, agent)
-    if active_sid is None or active_sid != body.session_id:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "session_mismatch", "active": active_sid, "got": body.session_id},
-        )
+        # 2. Task status active (BEFORE session — completed tasks have no live session).
+        if task.status.value not in ("pending", "in_progress"):
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "task_not_active", "status": task.status.value},
+            )
+
+        # 3. Session ownership.
+        agent = task.assigned_agent
+        active_sid = org.sessions.get_active(body.task_id, agent)
+        if active_sid is None or active_sid != body.session_id:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "session_mismatch", "active": active_sid, "got": body.session_id},
+            )
+        scope_id = body.task_id
 
     # 4. Title.
     title = body.title.strip()
@@ -215,7 +291,8 @@ async def submit_job(slug: str, body: SubmitBody, org: OrgDep) -> dict:
         job_id = org.db.next_job_id()
         record = JobRecord(
             id=job_id,
-            task_id=body.task_id,
+            task_id=scope_id,
+            submitted_from_talk_id=body.talk_id,
             agent_name=agent,
             title=title,
             rationale=rationale,
@@ -232,7 +309,7 @@ async def submit_job(slug: str, body: SubmitBody, org: OrgDep) -> dict:
 
     audit = AuditLogger(org.db)
     audit.log_job_submitted(
-        task_id=body.task_id,
+        task_id=scope_id,
         job_id=job_id,
         agent=agent,
         title=title,
@@ -246,7 +323,7 @@ async def submit_job(slug: str, body: SubmitBody, org: OrgDep) -> dict:
     if body.review_required:
         if getattr(org, "orchestrator", None) is not None:
             org.orchestrator.notify_job_submitted(
-                job_id=job_id, agent=agent, task_id=body.task_id,
+                job_id=job_id, agent=agent, task_id=scope_id,
                 title=title, rationale=rationale, script_text=body.script,
                 interpreter=body.interpreter, cwd_hint=cwd_hint,
             )
@@ -413,6 +490,7 @@ async def get_job_route(
     slug: str, job_id: str, org: OrgDep,
     task_id: str | None = None,
     session_id: str | None = None,
+    talk_id: str | None = None,
     has_bearer: bool = optional_bearer(),
 ) -> dict:
     record = org.db.get_job(job_id)
@@ -420,7 +498,7 @@ async def get_job_route(
         raise HTTPException(status_code=404, detail={"code": "unknown_job", "job_id": job_id})
     _enforce_session_or_bearer(
         record, has_bearer=has_bearer,
-        task_id=task_id, session_id=session_id, org=org,
+        task_id=task_id, session_id=session_id, talk_id=talk_id, org=org,
     )
     return record.model_dump()
 
@@ -432,6 +510,7 @@ async def tail_job(
     lines: int = 50,
     task_id: str | None = None,
     session_id: str | None = None,
+    talk_id: str | None = None,
     has_bearer: bool = optional_bearer(),
 ) -> dict:
     """Return the last N lines of stdout or stderr from the on-disk file.
@@ -451,7 +530,7 @@ async def tail_job(
         )
     _enforce_session_or_bearer(
         record, has_bearer=has_bearer,
-        task_id=task_id, session_id=session_id, org=org,
+        task_id=task_id, session_id=session_id, talk_id=talk_id, org=org,
     )
     path = record.stdout_path if stream == "stdout" else record.stderr_path
     if not path or not Path(path).exists():
@@ -472,6 +551,7 @@ async def stop_job(
     slug: str, job_id: str, org: OrgDep,
     task_id: str | None = None,
     session_id: str | None = None,
+    talk_id: str | None = None,
     has_bearer: bool = optional_bearer(),
 ) -> dict:
     """SIGTERM a running job. Founder via bearer OR agent via session-binding.
@@ -492,7 +572,7 @@ async def stop_job(
         )
     _enforce_session_or_bearer(
         record, has_bearer=has_bearer,
-        task_id=task_id, session_id=session_id, org=org,
+        task_id=task_id, session_id=session_id, talk_id=talk_id, org=org,
     )
     stopped_by = "founder" if has_bearer else "agent"
 
@@ -525,6 +605,7 @@ async def wait_job(
     timeout_seconds: int = 30,
     task_id: str | None = None,
     session_id: str | None = None,
+    talk_id: str | None = None,
     has_bearer: bool = optional_bearer(),
 ) -> dict:
     """Long-poll until the job reaches a terminal state or the timeout fires.
@@ -542,7 +623,7 @@ async def wait_job(
         )
     _enforce_session_or_bearer(
         record, has_bearer=has_bearer,
-        task_id=task_id, session_id=session_id, org=org,
+        task_id=task_id, session_id=session_id, talk_id=talk_id, org=org,
     )
     if record.status in _TERMINAL_SR_STATUSES:
         return record.model_dump() | {"timed_out": False}

@@ -1336,3 +1336,261 @@ def test_review_required_job_sends_feishu_notification(
     # Exactly one notify call, tagged with kind="job_request".
     assert len(calls) == 1, f"expected exactly one notify call, got {calls!r}"
     assert calls[0]["kind"] == "job_request"
+
+
+# --------------------------------------------------------------------------
+# Talk-path submission (POST /jobs/submit with talk_id instead of task_id+session_id).
+# Mirrors the talk-path patterns in manage-agent and threads.compose.
+# --------------------------------------------------------------------------
+
+
+def _open_talk(client, agent: str = "engineering_head") -> str:
+    """Open a fresh talk for *agent* and return its TALK-NNN id."""
+    r = client.post(
+        "/api/v1/orgs/alpha/talks", json={"agent_name": agent},
+    )
+    assert r.status_code == 200, r.text
+    return r.json()["talk_id"]
+
+
+def test_submit_talk_path_happy(client_with_runtime):
+    """Talk-path submission lands in pending with submitted_from_talk_id set."""
+    client, org = client_with_runtime
+    talk_id = _open_talk(client)
+    r = client.post(
+        "/api/v1/orgs/alpha/jobs/submit",
+        json={
+            "talk_id": talk_id,
+            "title": "Close PR #247 (from talk)",
+            "rationale": "founder asked me to in the talk",
+            "script": "gh pr close 247",
+            "interpreter": "bash",
+            "review_required": True,
+        },
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    job_id = body["id"]
+    assert job_id.startswith("JOB-")
+    assert body["status"] == "pending"
+
+    record = org.db.get_job(job_id)
+    assert record is not None
+    assert record.submitted_from_talk_id == talk_id
+    # scope id (task_id column) is overloaded to hold the talk id
+    assert record.task_id == talk_id
+    assert record.agent_name == "engineering_head"
+
+
+def test_submit_unknown_talk(client_with_runtime):
+    client, _org = client_with_runtime
+    r = client.post(
+        "/api/v1/orgs/alpha/jobs/submit",
+        json={
+            "talk_id": "TALK-999",
+            "title": "x", "rationale": "y", "script": "echo hi", "interpreter": "bash",
+        },
+    )
+    assert r.status_code == 404
+    assert r.json()["detail"]["code"] == "unknown_talk"
+
+
+def test_submit_talk_not_open(client_with_runtime):
+    """Abandoned talks reject submissions with 400 talk_not_open."""
+    client, _org = client_with_runtime
+    talk_id = _open_talk(client)
+    r = client.post(
+        f"/api/v1/orgs/alpha/talks/{talk_id}/abandon",
+        json={"reason": "ending"},
+    )
+    assert r.status_code == 200, r.text
+
+    r = client.post(
+        "/api/v1/orgs/alpha/jobs/submit",
+        json={
+            "talk_id": talk_id,
+            "title": "x", "rationale": "y", "script": "echo hi", "interpreter": "bash",
+        },
+    )
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert detail["code"] == "talk_not_open"
+    assert detail["status"] == "abandoned"
+
+
+def test_submit_dual_binding_rejected(client_with_runtime):
+    """Supplying both task_id+session_id AND talk_id → 422 from validator."""
+    client, org = client_with_runtime
+    task_id, sid = _make_active_session(org)
+    talk_id = _open_talk(client)
+    r = client.post(
+        "/api/v1/orgs/alpha/jobs/submit",
+        json={
+            "task_id": task_id, "session_id": sid, "talk_id": talk_id,
+            "title": "x", "rationale": "y", "script": "echo hi", "interpreter": "bash",
+        },
+    )
+    assert r.status_code == 422
+    # Pydantic v2 surfaces the validator error message in the response detail.
+    assert "either" in str(r.json()).lower()
+
+
+def test_submit_neither_binding_rejected(client_with_runtime):
+    """Supplying neither task+session nor talk → 422 from validator."""
+    client, _org = client_with_runtime
+    r = client.post(
+        "/api/v1/orgs/alpha/jobs/submit",
+        json={
+            "title": "x", "rationale": "y", "script": "echo hi", "interpreter": "bash",
+        },
+    )
+    assert r.status_code == 422
+
+
+def test_submit_partial_task_binding_rejected(client_with_runtime):
+    """task_id without session_id (or vice versa) → 422 from validator."""
+    client, _org = client_with_runtime
+    r = client.post(
+        "/api/v1/orgs/alpha/jobs/submit",
+        json={
+            "task_id": "TASK-001",
+            "title": "x", "rationale": "y", "script": "echo hi", "interpreter": "bash",
+        },
+    )
+    assert r.status_code == 422
+
+
+def test_submit_talk_path_audit_scope_is_talk_id(client_with_runtime):
+    """job_submitted audit row's task_id column carries the TALK-NNN scope.
+
+    Mirrors manage-agent / asset_put audit-overloading. Lets the founder run
+    `grassland audit TALK-NNN` and see the job submission events without
+    needing a separate query path.
+    """
+    client, org = client_with_runtime
+    talk_id = _open_talk(client)
+    r = client.post(
+        "/api/v1/orgs/alpha/jobs/submit",
+        json={
+            "talk_id": talk_id,
+            "title": "x", "rationale": "y", "script": "echo z",
+            "interpreter": "bash", "review_required": True,
+        },
+    )
+    assert r.status_code == 201, r.text
+
+    rows = org.db.get_audit_logs(task_id=talk_id)
+    actions = [r["action"] for r in rows]
+    assert "job_submitted" in actions, actions
+
+
+def test_submit_talk_path_notify_uses_talk_scope(client_with_runtime, monkeypatch):
+    """review_required talk-path submit pushes Feishu with task_id=TALK-NNN."""
+    client, org = client_with_runtime
+    talk_id = _open_talk(client)
+
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        org.orchestrator,
+        "notify_job_submitted",
+        lambda **kw: calls.append(kw),
+    )
+
+    r = client.post(
+        "/api/v1/orgs/alpha/jobs/submit",
+        json={
+            "talk_id": talk_id,
+            "title": "x", "rationale": "y", "script": "echo z",
+            "interpreter": "bash", "review_required": True,
+        },
+    )
+    assert r.status_code == 201, r.text
+    assert len(calls) == 1
+    assert calls[0]["task_id"] == talk_id
+    assert calls[0]["agent"] == "engineering_head"
+
+
+def _submit_pending_via_talk(client) -> tuple[str, str]:
+    """Open a talk, submit a review_required job, return (talk_id, job_id)."""
+    talk_id = _open_talk(client)
+    r = client.post(
+        "/api/v1/orgs/alpha/jobs/submit",
+        json={
+            "talk_id": talk_id,
+            "title": "t", "rationale": "r", "script": "echo z",
+            "interpreter": "bash", "review_required": True,
+        },
+    )
+    assert r.status_code == 201, r.text
+    return talk_id, r.json()["id"]
+
+
+def test_get_job_talk_path_auth(client_with_runtime):
+    """Agent in talk can GET its own job via talk_id auth (no bearer)."""
+    client, _org = client_with_runtime
+    talk_id, job_id = _submit_pending_via_talk(client)
+
+    # Strip the test fixture's auto-attached bearer so we exercise the
+    # agent path, not the founder path.
+    no_auth = client.__class__(client.app)
+    r = no_auth.get(
+        f"/api/v1/orgs/alpha/jobs/{job_id}",
+        params={"talk_id": talk_id},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["id"] == job_id
+
+
+def test_get_job_talk_path_wrong_agent_rejected(client_with_runtime):
+    """Talk for a different agent → 409 session_mismatch."""
+    client, _org = client_with_runtime
+    talk_id, job_id = _submit_pending_via_talk(client)
+
+    # Open a second talk for a different agent (content_manager).
+    other_talk = _open_talk(client, agent="content_manager")
+
+    no_auth = client.__class__(client.app)
+    r = no_auth.get(
+        f"/api/v1/orgs/alpha/jobs/{job_id}",
+        params={"talk_id": other_talk},
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "session_mismatch"
+
+
+def test_get_job_talk_path_closed_talk_rejected(client_with_runtime):
+    """A talk that's been abandoned no longer authorizes the agent."""
+    client, _org = client_with_runtime
+    talk_id, job_id = _submit_pending_via_talk(client)
+    r = client.post(
+        f"/api/v1/orgs/alpha/talks/{talk_id}/abandon",
+        json={"reason": "done"},
+    )
+    assert r.status_code == 200, r.text
+
+    no_auth = client.__class__(client.app)
+    r = no_auth.get(
+        f"/api/v1/orgs/alpha/jobs/{job_id}",
+        params={"talk_id": talk_id},
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "session_mismatch"
+
+
+def test_get_job_dual_binding_rejected(client_with_runtime):
+    """Supplying BOTH task+session AND talk_id (no bearer) → 409.
+
+    The submit-route validator catches dual bindings via pydantic; the
+    dual-router endpoints check it inline in _enforce_session_or_bearer.
+    """
+    client, org = client_with_runtime
+    talk_id, job_id = _submit_pending_via_talk(client)
+    task_id, sid = _make_active_session(org)
+
+    no_auth = client.__class__(client.app)
+    r = no_auth.get(
+        f"/api/v1/orgs/alpha/jobs/{job_id}",
+        params={"task_id": task_id, "session_id": sid, "talk_id": talk_id},
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "session_mismatch"

@@ -604,6 +604,10 @@
             "path"
           ],
           [
+            "talk_id",
+            "query"
+          ],
+          [
             "task_id",
             "query"
           ]
@@ -730,6 +734,10 @@
             "path"
           ],
           [
+            "talk_id",
+            "query"
+          ],
+          [
             "task_id",
             "query"
           ]
@@ -768,6 +776,10 @@
             "query"
           ],
           [
+            "talk_id",
+            "query"
+          ],
+          [
             "task_id",
             "query"
           ]
@@ -796,6 +808,10 @@
           [
             "slug",
             "path"
+          ],
+          [
+            "talk_id",
+            "query"
           ],
           [
             "task_id",

@@ -379,35 +379,36 @@ class Database:
                 ON thread_invocations(status) WHERE status = 'pending';
 
             CREATE TABLE IF NOT EXISTS jobs (
-                id                  TEXT PRIMARY KEY,
-                task_id             TEXT NOT NULL,
-                agent_name          TEXT NOT NULL,
-                title               TEXT NOT NULL,
-                rationale           TEXT,
-                script_text         TEXT NOT NULL,
-                interpreter         TEXT NOT NULL,
-                cwd_hint            TEXT,
-                review_required     INTEGER NOT NULL DEFAULT 0,
-                persistent          INTEGER NOT NULL DEFAULT 0,
-                max_runtime_seconds INTEGER,
-                max_output_bytes    INTEGER NOT NULL DEFAULT 52428800,
-                status              TEXT NOT NULL DEFAULT 'pending',
-                exit_code           INTEGER,
-                reason              TEXT,
-                duration_ms         INTEGER,
-                stdout_head         TEXT,
-                stderr_head         TEXT,
-                stdout_path         TEXT,
-                stderr_path         TEXT,
-                stdout_bytes        INTEGER,
-                stderr_bytes        INTEGER,
-                cwd_resolved        TEXT,
-                started_at          TEXT,
-                finished_at         TEXT,
-                reviewed_at         TEXT,
-                reviewed_by         TEXT,
-                reject_reason       TEXT,
-                created_at          TEXT NOT NULL
+                id                       TEXT PRIMARY KEY,
+                task_id                  TEXT NOT NULL,
+                agent_name               TEXT NOT NULL,
+                title                    TEXT NOT NULL,
+                rationale                TEXT,
+                script_text              TEXT NOT NULL,
+                interpreter              TEXT NOT NULL,
+                cwd_hint                 TEXT,
+                review_required          INTEGER NOT NULL DEFAULT 0,
+                persistent               INTEGER NOT NULL DEFAULT 0,
+                max_runtime_seconds      INTEGER,
+                max_output_bytes         INTEGER NOT NULL DEFAULT 52428800,
+                status                   TEXT NOT NULL DEFAULT 'pending',
+                exit_code                INTEGER,
+                reason                   TEXT,
+                duration_ms              INTEGER,
+                stdout_head              TEXT,
+                stderr_head              TEXT,
+                stdout_path              TEXT,
+                stderr_path              TEXT,
+                stdout_bytes             INTEGER,
+                stderr_bytes             INTEGER,
+                cwd_resolved             TEXT,
+                started_at               TEXT,
+                finished_at              TEXT,
+                reviewed_at              TEXT,
+                reviewed_by              TEXT,
+                reject_reason            TEXT,
+                created_at               TEXT NOT NULL,
+                submitted_from_talk_id   TEXT
             );
             CREATE INDEX IF NOT EXISTS jobs_task_id_idx ON jobs(task_id);
             CREATE INDEX IF NOT EXISTS jobs_status_idx  ON jobs(status);
@@ -441,6 +442,11 @@ class Database:
             # crew → team rename (SQLite >= 3.25). Idempotent: fails on
             # DBs where the column is already `team` or already renamed.
             "ALTER TABLE tasks RENAME COLUMN crew TO team",
+            # Talk-originated jobs (mirrors tasks.dispatched_from_talk_id).
+            # When set, the job was submitted via the talk-path; jobs.task_id
+            # then holds the TALK-NNN scope id (consistent with audit_log's
+            # task_id overloading) rather than a real TASK-NNN.
+            "ALTER TABLE jobs ADD COLUMN submitted_from_talk_id TEXT",
         ):
             try:
                 self._conn.execute(ddl)
@@ -1545,8 +1551,9 @@ class Database:
                 duration_ms, started_at, finished_at,
                 reviewed_at, reviewed_by, reject_reason,
                 cwd_resolved, max_runtime_seconds, max_output_bytes,
-                review_required, persistent, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                review_required, persistent, created_at,
+                submitted_from_talk_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 r.id, r.task_id, r.agent_name, r.title, r.rationale, r.script_text,
                 r.interpreter.value, r.cwd_hint, r.status.value, r.exit_code,
@@ -1555,6 +1562,7 @@ class Database:
                 r.reviewed_at, r.reviewed_by, r.reject_reason,
                 r.cwd_resolved, r.max_runtime_seconds, r.max_output_bytes,
                 int(r.review_required), int(r.persistent), r.created_at,
+                r.submitted_from_talk_id,
             ),
         )
         self._conn.commit()
@@ -1576,6 +1584,12 @@ class Database:
         # key access via SQLite's Row mapping interface.
         keys = row.keys() if hasattr(row, "keys") else ()
         reason = row["reason"] if "reason" in keys else None
+        # submitted_from_talk_id was added after the jobs table shipped — read
+        # defensively so a pre-migration row (or a test fixture that bypasses
+        # the migration) doesn't blow up.
+        submitted_from_talk_id = (
+            row["submitted_from_talk_id"] if "submitted_from_talk_id" in keys else None
+        )
         return JobRecord(
             id=row["id"],
             task_id=row["task_id"],
@@ -1604,6 +1618,7 @@ class Database:
             persistent=bool(row["persistent"]),
             reason=reason,
             created_at=row["created_at"],
+            submitted_from_talk_id=submitted_from_talk_id,
         )
 
     @_synchronized

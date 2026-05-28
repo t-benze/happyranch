@@ -124,6 +124,13 @@ The `--from-file` pattern matches `grassland report-completion`, `grassland mana
   via the talk-path payload (`--talk-id` on `grassland threads compose`).
   See the `thread` skill. Record the thread_id in your
   `transcript_markdown` so the founder has a record at talk-end.
+- **Exception:** Submitting a job is allowed via the talk-path payload
+  (`talk_id` in the JSON for `grassland jobs submit --from-file`,
+  `--talk-id` on `grassland jobs tail|wait|stop|show`). See the `jobs`
+  skill. Use this when the founder asks you mid-talk to run something
+  you don't have the permissions for (`review_required=true`) or a long
+  background task (`persistent=true`). Record the JOB-NNN id in your
+  `transcript_markdown` so the founder has a record at talk-end.
 - Don't call `grassland talk end` without a summary + transcript. An empty payload is useless on recall.
 - Don't write learnings you've already written — the daemon appends verbatim, so duplicates will clutter `learnings.md`.
 - Don't treat KB entries as a catch-all for in-talk notes. KB is for durable, cross-agent-relevant knowledge. Everything else is a per-agent learning.

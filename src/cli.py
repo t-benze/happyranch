@@ -1050,14 +1050,39 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
 
 
 def _jobs_submit_payload_from_file(path: str) -> dict:
-    """Load a scripts-submit payload from a JSON file (mirrors manage-repo / dispatch pattern)."""
+    """Load a jobs-submit payload from a JSON file (mirrors manage-repo / dispatch pattern).
+
+    Two mutually-exclusive auth paths (same shape as manage-agent / threads compose):
+
+    - Task path: ``task_id`` + ``session_id`` from an active task session.
+    - Talk path: ``talk_id`` alone, from the open talk the agent is in.
+
+    The daemon enforces this again on the wire via SubmitBody's validator —
+    we mirror it here so the CLI fails fast with a useful message instead of
+    a generic 422 from the server.
+    """
     import json as _json
     with open(path) as f:
         data = _json.load(f)
-    required = ("task_id", "session_id", "title", "rationale", "script", "interpreter")
-    missing = [k for k in required if not data.get(k)]
+    base_required = ("title", "rationale", "script", "interpreter")
+    missing = [k for k in base_required if not data.get(k)]
     if missing:
-        raise ValueError(f"scripts submit file missing keys: {missing}")
+        raise ValueError(f"jobs submit file missing keys: {missing}")
+    has_task = bool(data.get("task_id"))
+    has_session = bool(data.get("session_id"))
+    has_talk = bool(data.get("talk_id"))
+    if has_task != has_session:
+        raise ValueError(
+            "jobs submit file: task_id and session_id must be supplied together"
+        )
+    if has_task and has_talk:
+        raise ValueError(
+            "jobs submit file: supply either (task_id + session_id) or talk_id, not both"
+        )
+    if not has_task and not has_talk:
+        raise ValueError(
+            "jobs submit file: supply either (task_id + session_id) or talk_id"
+        )
     return data
 
 
@@ -1128,7 +1153,11 @@ def cmd_jobs_show(args: argparse.Namespace) -> None:
     d = r.json()
     print(f"{d['id']}   {d['status']}   submitted {d['created_at']}")
     print(f"Agent:        {d['agent_name']}")
-    print(f"Task:         {d['task_id']}")
+    # task_id is overloaded as scope_id — TASK-NNN for task-path submissions,
+    # TALK-NNN for talk-path. Render the matching label so founders aren't
+    # confused by "Task: TALK-007".
+    scope_label = "Talk" if str(d["task_id"]).startswith("TALK-") else "Task"
+    print(f"{scope_label}:         {d['task_id']}")
     print(f"Interpreter:  {d['interpreter']}")
     print(f"Cwd hint:     {d['cwd_hint'] or '(workspace root)'}")
     print()
@@ -1314,8 +1343,9 @@ def cmd_jobs_tail(args: argparse.Namespace) -> None:
     """Print the tail of stdout/stderr for a job.
 
     Founder path: uses the bearer token already attached by ``OpcClient``.
-    Agent path: pass ``--task-id`` + ``--session-id`` so the daemon's
-    dual-auth dependency lets the agent read its own job.
+    Agent paths (dual-auth):
+      - Task path: ``--task-id`` + ``--session-id``.
+      - Talk path: ``--talk-id`` from inside an open talk.
     """
     try:
         client = OpcClient.from_env()
@@ -1327,6 +1357,8 @@ def cmd_jobs_tail(args: argparse.Namespace) -> None:
     if args.task_id and args.session_id:
         params["task_id"] = args.task_id
         params["session_id"] = args.session_id
+    if getattr(args, "talk_id", None):
+        params["talk_id"] = args.talk_id
     r = client.get(f"/api/v1/orgs/{slug}/jobs/{args.job_id}/tail", params=params)
     if not _ok(r):
         return
@@ -1339,7 +1371,7 @@ def cmd_jobs_wait(args: argparse.Namespace) -> None:
     """Block until the job terminates or the timeout expires.
 
     Prints a one-line JSON object with ``status`` and ``timed_out``.
-    Same dual-auth shape as ``tail``.
+    Same dual-auth shape as ``tail`` (task path or talk path).
     """
     import json as _json
     try:
@@ -1352,6 +1384,8 @@ def cmd_jobs_wait(args: argparse.Namespace) -> None:
     if args.task_id and args.session_id:
         params["task_id"] = args.task_id
         params["session_id"] = args.session_id
+    if getattr(args, "talk_id", None):
+        params["talk_id"] = args.talk_id
     r = client.post(f"/api/v1/orgs/{slug}/jobs/{args.job_id}/wait", params=params)
     if not _ok(r):
         return
@@ -1362,7 +1396,9 @@ def cmd_jobs_wait(args: argparse.Namespace) -> None:
 def cmd_jobs_stop(args: argparse.Namespace) -> None:
     """Stop a running job (SIGTERM via the daemon).
 
-    Founder path: bearer token. Agent path: ``--task-id`` + ``--session-id``.
+    Founder path: bearer token. Agent paths (dual-auth):
+      - Task path: ``--task-id`` + ``--session-id``.
+      - Talk path: ``--talk-id`` from inside an open talk.
     """
     try:
         client = OpcClient.from_env()
@@ -1374,6 +1410,8 @@ def cmd_jobs_stop(args: argparse.Namespace) -> None:
     if args.task_id and args.session_id:
         params["task_id"] = args.task_id
         params["session_id"] = args.session_id
+    if getattr(args, "talk_id", None):
+        params["talk_id"] = args.talk_id
     r = client.post(f"/api/v1/orgs/{slug}/jobs/{args.job_id}/stop", params=params)
     if not _ok(r):
         return
@@ -2546,6 +2584,10 @@ def _register_jobs_verbs(
     p_tail.add_argument("--lines", type=int, default=50)
     p_tail.add_argument("--task-id", dest="task_id", default=None)
     p_tail.add_argument("--session-id", dest="session_id", default=None)
+    p_tail.add_argument(
+        "--talk-id", dest="talk_id", default=None,
+        help="Open talk id (talk-path auth, mutually exclusive with --task-id/--session-id)",
+    )
     p_tail.add_argument("--org")
     p_tail.set_defaults(func=wrap(cmd_jobs_tail))
 
@@ -2558,6 +2600,10 @@ def _register_jobs_verbs(
     )
     p_wait.add_argument("--task-id", dest="task_id", default=None)
     p_wait.add_argument("--session-id", dest="session_id", default=None)
+    p_wait.add_argument(
+        "--talk-id", dest="talk_id", default=None,
+        help="Open talk id (talk-path auth, mutually exclusive with --task-id/--session-id)",
+    )
     p_wait.add_argument("--org")
     p_wait.set_defaults(func=wrap(cmd_jobs_wait))
 
@@ -2567,6 +2613,10 @@ def _register_jobs_verbs(
     p_stop.add_argument("job_id")
     p_stop.add_argument("--task-id", dest="task_id", default=None)
     p_stop.add_argument("--session-id", dest="session_id", default=None)
+    p_stop.add_argument(
+        "--talk-id", dest="talk_id", default=None,
+        help="Open talk id (talk-path auth, mutually exclusive with --task-id/--session-id)",
+    )
     p_stop.add_argument("--org")
     p_stop.set_defaults(func=wrap(cmd_jobs_stop))
 
