@@ -60,3 +60,30 @@ def test_blocked_on_job_ids_round_trips_through_update_and_read():
         assert loaded.status == TaskStatus.BLOCKED
         assert loaded.block_kind == BlockKind.BLOCKED_ON_JOB
         assert loaded.blocked_on_job_ids == '["JOB-12", "JOB-13"]'
+
+
+def test_get_job_status_terminal_and_running():
+    """get_job_status returns the jobs.status string, or None if unknown."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "test.db"
+        db = Database(db_path)
+        # Insert two jobs directly. The jobs table is part of the per-org schema.
+        # Use raw SQL since this is a DB-layer test.
+        conn = db._conn
+        conn.execute(
+            "INSERT INTO jobs (id, task_id, agent_name, title, script_text, "
+            "interpreter, status, created_at) VALUES "
+            "('JOB-001', 'TASK-001', 'agent', 't', 's', 'bash', 'completed', "
+            "'2026-05-28T00:00:00')"
+        )
+        conn.execute(
+            "INSERT INTO jobs (id, task_id, agent_name, title, script_text, "
+            "interpreter, status, created_at) VALUES "
+            "('JOB-002', 'TASK-001', 'agent', 't', 's', 'bash', 'running', "
+            "'2026-05-28T00:00:00')"
+        )
+        conn.commit()
+
+        assert db.get_job_status("JOB-001") == "completed"
+        assert db.get_job_status("JOB-002") == "running"
+        assert db.get_job_status("JOB-999") is None

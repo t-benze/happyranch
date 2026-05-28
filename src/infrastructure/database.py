@@ -1613,6 +1613,18 @@ class Database:
         )
 
     @_synchronized
+    def get_job_status(self, job_id: str) -> str | None:
+        """Return jobs.status for the given job id, or None if not present.
+
+        Used by the blocked-on-job predicate-check in _maybe_resume_blocked_task
+        and by run_step_impl's entry-state branch (spec §5.1, §5.4).
+        """
+        row = self._conn.execute(
+            "SELECT status FROM jobs WHERE id = ?", (job_id,)
+        ).fetchone()
+        return row["status"] if row is not None else None
+
+    @_synchronized
     def list_jobs_db(
         self,
         *,
