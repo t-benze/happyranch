@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 # Helper to seed an approved agent in the alpha org.
 
 
-def _seed_agent(org_state, name: str, *, team: str = "engineering") -> None:
+def _seed_agent(org_state, name: str, *, team: str = "engineering", role: str = "worker") -> None:
     """Create the agent's pending file and workspace dir.
 
     The compose endpoint validates: `prompt_loader.load_agent(...)` is not None
@@ -18,7 +18,7 @@ def _seed_agent(org_state, name: str, *, team: str = "engineering") -> None:
         "---\n"
         f"name: {name}\n"
         f"team: {team}\n"
-        "role: worker\n"
+        f"role: {role}\n"
         "executor: claude\n"
         "description: test agent\n"
         "---\n"
@@ -284,7 +284,50 @@ def test_worker_cannot_dispatch_to_other_agent(tmp_home, app, org_state, auth_he
         headers=auth_headers,
     )
     assert resp.status_code == 403
-    assert resp.json()["detail"]["code"] == "worker_must_self_dispatch"
+    assert resp.json()["detail"]["code"] == "thread_dispatch_must_be_self"
+
+
+def test_manager_cannot_dispatch_to_team_worker(tmp_home, app, org_state, auth_headers):
+    """The manager exemption from the self-dispatch rule is removed.
+
+    A manager attempting to thread-dispatch a worker in their own team is
+    rejected with thread_dispatch_must_be_self. Fix for THR-010 (founder
+    diagnosis 2026-05-28): managers must self-dispatch a phase root and
+    delegate internally via the manager-decision loop.
+    """
+    client = TestClient(app)
+    _seed_agent(org_state, "engineering_head", role="manager")
+    _seed_agent(org_state, "dev_agent")
+    tid, token = _start_thread(client, org_state, auth_headers, recipient="engineering_head")
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/dispatch",
+        json={"thread_id": tid, "invocation_token": token,
+              "dispatcher": "engineering_head", "target_agent": "dev_agent",
+              "brief": "do x"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 403
+    detail = resp.json()["detail"]
+    assert detail["code"] == "thread_dispatch_must_be_self"
+    assert detail["dispatcher"] == "engineering_head"
+    assert detail["requested_target"] == "dev_agent"
+    assert "compose" in detail["hint"].lower()
+
+
+def test_manager_self_dispatch_from_thread_succeeds(tmp_home, app, org_state, auth_headers):
+    """Manager dispatching with target_agent omitted (or set to self) is allowed."""
+    client = TestClient(app)
+    _seed_agent(org_state, "engineering_head", role="manager")
+    tid, token = _start_thread(client, org_state, auth_headers, recipient="engineering_head")
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/dispatch",
+        json={"thread_id": tid, "invocation_token": token,
+              "dispatcher": "engineering_head",
+              "brief": "drive web-app v1 phase"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["assigned_agent"] == "engineering_head"
 
 
 def test_dispatch_twice_on_same_token_rejected(tmp_home, app, org_state, auth_headers):

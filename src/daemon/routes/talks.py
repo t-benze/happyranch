@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from src.daemon.auth import require_token
 from src.daemon.org_state import OrgState
+from src.daemon.routes._doctrine import SELF_DISPATCH_HINT
 from src.daemon.routes._org_dep import OrgDep
 from src.daemon.routes.agents import _append_to_learnings_file
 from src.daemon.runner import enqueue_task
@@ -304,38 +305,25 @@ async def dispatch_task(
             raise HTTPException(
                 status_code=403,
                 detail={
-                    "code": "cross_team_dispatch_forbidden",
+                    "code": "talk_dispatch_team_override_forbidden",
                     "dispatcher_team": dispatcher_team,
                     "requested_team": effective_team,
+                    "hint": SELF_DISPATCH_HINT,
                 },
             )
 
-        # 5. Resolve effective_target + role-based assignment rule.
+        # 5. Self-only dispatch rule (managers and workers alike).
         effective_target = body.target_agent if body.target_agent is not None else dispatcher
-        if not is_manager and effective_target != dispatcher:
+        if effective_target != dispatcher:
             raise HTTPException(
                 status_code=403,
                 detail={
-                    "code": "worker_must_self_dispatch",
+                    "code": "talk_dispatch_must_be_self",
                     "dispatcher": dispatcher,
                     "requested_target": effective_target,
+                    "hint": SELF_DISPATCH_HINT,
                 },
             )
-        if is_manager:
-            team_meta = org.teams.manager_for_team(dispatcher_team)
-            in_team = (
-                effective_target == team_meta.name
-                or effective_target in team_meta.workers
-            )
-            if not in_team:
-                raise HTTPException(
-                    status_code=403,
-                    detail={
-                        "code": "target_not_in_team",
-                        "team": dispatcher_team,
-                        "requested_target": effective_target,
-                    },
-                )
 
     # 6. Target agent is active (file under <runtime>/org/agents/) AND has a workspace.
     agent_def = prompt_loader.load_agent(OrgPaths(root=org.root), effective_target)

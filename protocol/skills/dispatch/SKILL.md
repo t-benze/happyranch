@@ -5,6 +5,10 @@ description: Dispatch a new task to the orchestrator from inside an open talk. W
 
 # dispatch
 
+> **Self-only from thread / talk:** Inside a thread or talk turn, this command
+> may only target yourself. See `protocol/skills/thread/SKILL.md` for the
+> doctrine and `grassland threads compose` for cross-agent work.
+
 Inside an OPEN talk, you can submit a new root task to the orchestrator without ending the talk. The founder is co-present in the talk; their authority is what the dispatch borrows. Use this when something actionable surfaces in conversation that you and the founder agree should become a task.
 
 ## When to use

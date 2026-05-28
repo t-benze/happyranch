@@ -134,3 +134,31 @@ The `--from-file` pattern matches `grassland report-completion`, `grassland mana
 - Don't call `grassland talk end` without a summary + transcript. An empty payload is useless on recall.
 - Don't write learnings you've already written — the daemon appends verbatim, so duplicates will clutter `learnings.md`.
 - Don't treat KB entries as a catch-all for in-talk notes. KB is for durable, cross-agent-relevant knowledge. Everything else is a per-agent learning.
+
+## Dispatch from a talk is self-only
+
+When you are participating in a talk, `grassland dispatch` (the talk-path
+agent callback that carries a `talk_id` in its payload) may only target
+**yourself**. The runtime rejects any other target with
+`talk_dispatch_must_be_self`.
+
+This is intentional. Talks are 1:1 founder ↔ agent conversations for
+discovery, decision capture, and quick coordination. Iterative work that
+needs to span multiple agents belongs in a task tree (via self-dispatch +
+internal delegation if you are a manager) or in a thread (cross-team
+coordination).
+
+### Patterns
+
+- **You want to do task-shaped work yourself:** self-dispatch from the talk
+  (omit `target_agent`, or set it to your own name). The resulting task
+  runs in its own tree and a TASK_FOLLOWUP turn lets you report back into
+  the talk.
+
+- **You want to loop another agent in:** end the talk and open a thread
+  via `grassland threads compose --to <other-agent>`. Talks cannot
+  cross-dispatch to anyone other than the talk's own agent.
+
+If you see `talk_dispatch_must_be_self` in an error envelope: you tried to
+push work onto another agent from inside a talk. Either self-dispatch and
+own the work, or open a thread for cross-agent coordination.

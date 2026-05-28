@@ -377,6 +377,48 @@ When a task dispatched from a thread reaches its true terminal state, `_maybe_po
 - **PENDING-task cancellation has its own hook in `cancel_task`.** The RUNNING-task path is covered transitively (SIGTERM → rc=-15 → `run_step` Site B), but PENDING tasks never enter `run_step`. The cancel route captures `prior_statuses` during its BFS walk and fires the helper only for tasks that were `PENDING` before the cancel update, avoiding a double-fire on RUNNING tasks.
 - **Cross-thread enqueue.** The thread queue is bound to the daemon's main asyncio loop; `run_step` runs on a worker thread. Bridging is via `asyncio.run_coroutine_threadsafe(queue.put(job), main_loop)`. The orchestrator picks up the loop reference at lifespan startup through `attach_thread_queue(thread_queue, main_loop)`; if either is unset (test orchestrators without daemon context), the helper audits `thread_followup_skipped(reason=enqueue_unavailable)` and the minted invocation stays PENDING.
 
+## Thread / talk dispatch self-only rule
+
+Both `/threads/{id}/dispatch` and `/talks/{id}/dispatch` reject any call
+where `effective_target != dispatcher`. The doctrine is "threads/talks are
+coordination surfaces; iterative work lives in task trees." Spec:
+`docs/superpowers/specs/2026-05-28-thread-talk-self-dispatch-only-design.md`.
+
+**Non-obvious invariants:**
+
+- The rule applies uniformly to managers AND workers. Pre-2026-05-28
+  history: workers were already restricted (`worker_must_self_dispatch`);
+  managers were exempted. THR-010 surfaced the exemption as a footgun. The
+  new code collapses both paths into a single check.
+- `target_not_in_team` (manager branch) is unreachable under the new rule
+  and has been removed from `routes/threads.py` and `routes/talks.py`. Do
+  not re-introduce it under a different name — the self-only check
+  supersedes it.
+- The `body.team` override check is retained but renamed:
+  `cross_team_dispatch_forbidden` → `thread_dispatch_team_override_forbidden`
+  / `talk_dispatch_team_override_forbidden`. Still reachable because
+  `body.team` is independent of `body.target_agent` — a self-dispatching
+  caller can still send a foreign team and get rejected.
+- Error codes were renamed: `worker_must_self_dispatch` →
+  `thread_dispatch_must_be_self` / `talk_dispatch_must_be_self`.
+- Grandfathered tasks (rows with `dispatched_from_thread_id` predating
+  2026-05-28 that target a different agent) continue to function: the
+  followup hook still fires on their terminals. The route guard only gates
+  new dispatch calls.
+- The `task_dispatched` audit row's `dispatcher_role` field still records
+  the dispatcher's actual role at dispatch time (manager vs worker) —
+  under the new rule that role describes both dispatcher and target, since
+  they are now always the same agent.
+- The doctrine is system-prompt-injected into every agent's bootstrap doc
+  via `_thread_talk_dispatch_doctrine_section()` in
+  `src/orchestrator/workspace_adapters.py`. The reserved header
+  `"Thread and Talk Dispatch are Self-Only"` is registered in
+  `_RESERVED_AGENT_BODY_HEADERS` so an agent `.md` body cannot author a
+  colliding section. This supersedes any per-org KB entry — adding one is
+  unnecessary noise.
+- The shared hint string lives at `src/daemon/routes/_doctrine.py`
+  (`SELF_DISPATCH_HINT`). Both routes import it; keep wording in sync.
+
 ## Jobs (founder-approved + agent-autonomous)
 
 Per-org `jobs` SQLite table; per-org files at `<runtime>/orgs/<slug>/jobs/JOB-NNN.{out,err,script}`. Spec: `docs/superpowers/specs/2026-05-26-jobs-design.md`. Implementation: `src/daemon/routes/jobs.py` (HTTP), `src/daemon/jobs_runner.py` (subprocess + stream pumps + shutdown cleanup), `src/infrastructure/database.py` (table + state-transition methods), `src/infrastructure/audit_logger.py` (`log_job_*` methods).
