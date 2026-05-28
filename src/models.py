@@ -43,6 +43,7 @@ class TaskRecord(BaseModel):
     dispatched_from_talk_id: str | None = None
     dispatched_from_thread_id: str | None = None
     block_kind: BlockKind | None = None
+    blocked_on_job_ids: str | None = None
     note: str | None = None
     final_artifact_dir: str | None = None
     orchestration_step_count: int = 0

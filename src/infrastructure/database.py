@@ -686,6 +686,7 @@ class Database:
             dispatched_from_talk_id=row["dispatched_from_talk_id"],
             dispatched_from_thread_id=row["dispatched_from_thread_id"],
             block_kind=row["block_kind"],
+            blocked_on_job_ids=row["blocked_on_job_ids"],
             note=row["note"],
             orchestration_step_count=row["orchestration_step_count"] or 0,
             final_artifact_dir=row["final_artifact_dir"],
@@ -726,6 +727,7 @@ class Database:
                 dispatched_from_talk_id=row["dispatched_from_talk_id"],
                 dispatched_from_thread_id=row["dispatched_from_thread_id"],
                 block_kind=row["block_kind"],
+                blocked_on_job_ids=row["blocked_on_job_ids"],
                 note=row["note"],
                 orchestration_step_count=row["orchestration_step_count"] or 0,
                 final_artifact_dir=row["final_artifact_dir"],
@@ -872,6 +874,7 @@ class Database:
                 dispatched_from_talk_id=row["dispatched_from_talk_id"],
                 dispatched_from_thread_id=row["dispatched_from_thread_id"],
                 block_kind=row["block_kind"],
+                blocked_on_job_ids=row["blocked_on_job_ids"],
                 note=row["note"],
                 orchestration_step_count=row["orchestration_step_count"] or 0,
                 final_artifact_dir=row["final_artifact_dir"],
@@ -886,7 +889,7 @@ class Database:
     def update_task(self, task_id: str, **fields: object) -> None:
         allowed = {
             "status", "assigned_agent", "revision_count", "completed_at",
-            "block_kind", "note", "orchestration_step_count",
+            "block_kind", "blocked_on_job_ids", "note", "orchestration_step_count",
             "final_artifact_dir", "cancelled_at", "last_heartbeat",
         }
         # NOTE: filter on membership, not on None-ness — block_kind must be

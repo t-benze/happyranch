@@ -33,3 +33,30 @@ def test_migration_is_idempotent():
         db_path = Path(tmp) / "test.db"
         Database(db_path)  # first init creates column
         Database(db_path)  # second open should swallow "duplicate column"
+
+
+def test_blocked_on_job_ids_round_trips_through_update_and_read():
+    """update_task can set blocked_on_job_ids; get_task reads it back."""
+    import json
+
+    from src.models import TaskStatus
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "test.db"
+        db = Database(db_path)
+        from src.models import TaskRecord
+        task = TaskRecord(
+            id="TASK-001", team="engineering", brief="t",
+            status=TaskStatus.IN_PROGRESS, parent_task_id=None,
+        )
+        db.insert_task(task)
+        db.update_task(
+            "TASK-001",
+            status=TaskStatus.BLOCKED,
+            block_kind=BlockKind.BLOCKED_ON_JOB,
+            blocked_on_job_ids=json.dumps(["JOB-12", "JOB-13"]),
+        )
+        loaded = db.get_task("TASK-001")
+        assert loaded.status == TaskStatus.BLOCKED
+        assert loaded.block_kind == BlockKind.BLOCKED_ON_JOB
+        assert loaded.blocked_on_job_ids == '["JOB-12", "JOB-13"]'
