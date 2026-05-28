@@ -81,3 +81,10 @@ def test_count_pending_turn_obligations_excludes_non_pending(tmp_path):
 
     # Count should now be 3 (one REPLY + two BOOTSTRAP).
     assert db.count_pending_turn_obligations("THR-001") == 3
+
+
+# ---------------------------------------------------------------------------
+# Task 3 — TASK_FOLLOWUP admitted by reply/decline; dispatch stays restricted
+# (route-level tests live in tests/daemon/test_threads_routes.py where the
+#  daemon fixtures tmp_home / app / org_state / auth_headers are declared)
+# ---------------------------------------------------------------------------

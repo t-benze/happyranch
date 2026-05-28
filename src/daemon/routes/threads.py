@@ -698,7 +698,11 @@ async def reply_thread_endpoint(
     _validate_invocation_token(
         org, token=body.invocation_token,
         expected_agent=body.speaker, expected_thread_id=thread_id,
-        require_purposes=[ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP],
+        require_purposes=[
+            ThreadInvocationPurpose.REPLY,
+            ThreadInvocationPurpose.BOOTSTRAP,
+            ThreadInvocationPurpose.TASK_FOLLOWUP,
+        ],
     )
     if not org.db.is_thread_participant(thread_id, body.speaker):
         raise HTTPException(status_code=403, detail={"code": "not_participant"})
@@ -755,7 +759,11 @@ async def decline_thread_endpoint(
     _validate_invocation_token(
         org, token=body.invocation_token,
         expected_agent=body.speaker, expected_thread_id=thread_id,
-        require_purposes=[ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP],
+        require_purposes=[
+            ThreadInvocationPurpose.REPLY,
+            ThreadInvocationPurpose.BOOTSTRAP,
+            ThreadInvocationPurpose.TASK_FOLLOWUP,
+        ],
     )
     if not org.db.is_thread_participant(thread_id, body.speaker):
         raise HTTPException(status_code=403, detail={"code": "not_participant"})

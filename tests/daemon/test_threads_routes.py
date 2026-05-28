@@ -746,3 +746,80 @@ def test_invite_rejects_when_pending_plus_one_exceeds_cap(tmp_home, app, org_sta
     assert resp.status_code == 429
     assert resp.json()["detail"]["code"] == "turn_cap_exceeded"
     assert resp.json()["detail"]["pending"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Task 3 — TASK_FOLLOWUP admitted by reply/decline; dispatch stays restricted
+# ---------------------------------------------------------------------------
+
+
+def _open_thread_with_followup_token(client, org_state, auth_headers, *, recipient="dev_agent"):
+    """Create a thread, then mint a TASK_FOLLOWUP invocation for the recipient.
+
+    Returns (thread_id, followup_token, seq_of_compose_msg).
+    """
+    from src.models import ThreadInvocationPurpose
+    _seed_agent(org_state, recipient)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={
+            "subject": "s",
+            "recipients": [recipient],
+            "body_markdown": "hi",
+            "addressed_to": ["@all"],
+        },
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    seq = org_state.db.list_thread_messages(tid)[0].seq
+    token = org_state.db.mint_thread_invocation(
+        thread_id=tid,
+        agent_name=recipient,
+        triggering_seq=seq,
+        purpose=ThreadInvocationPurpose.TASK_FOLLOWUP,
+    ).invocation_token
+    return tid, token, seq
+
+
+def test_reply_admits_task_followup_purpose(tmp_home, app, org_state, auth_headers):
+    """A TASK_FOLLOWUP invocation token must be accepted by the reply endpoint."""
+    client = TestClient(app)
+    tid, token, seq = _open_thread_with_followup_token(client, org_state, auth_headers)
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/reply",
+        json={
+            "thread_id": tid,
+            "invocation_token": token,
+            "speaker": "dev_agent",
+            "body_markdown": "task completed, here is the result",
+            "in_response_to_seq": seq,
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["kind"] == "message"
+
+
+def test_dispatch_rejects_task_followup_purpose(tmp_home, app, org_state, auth_headers):
+    """Spec §6.4: a TASK_FOLLOWUP turn may NOT be used to dispatch new tasks.
+
+    Dispatch stays restricted to {REPLY, BOOTSTRAP} only.
+    _validate_invocation_token raises 400 with code "wrong_invocation_purpose"
+    when the purpose is not in require_purposes.
+    """
+    client = TestClient(app)
+    tid, token, _seq = _open_thread_with_followup_token(client, org_state, auth_headers)
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/dispatch",
+        json={
+            "thread_id": tid,
+            "invocation_token": token,
+            "dispatcher": "dev_agent",
+            "brief": "do something else",
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"]["code"] == "wrong_invocation_purpose"
