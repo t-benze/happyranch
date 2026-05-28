@@ -101,3 +101,70 @@ def test_step1_skips_when_blocked_on_job_ids_unparseable(db_and_orch):
 
     after = db.get_task("TASK-1")
     assert after.status == TaskStatus.BLOCKED
+
+
+def test_cas_win_writes_task_resumed_from_jobs_audit_row(db_and_orch):
+    """After step-1 admits and step-3 CAS wins, an audit row exists carrying
+    the trigger/triggering_job_id from the metadata parameter."""
+    db, orch = db_and_orch
+    _insert_blocked_on_jobs(db, "TASK-1", ["JOB-1", "JOB-2"])
+    _insert_job(db, "JOB-1", "completed")
+    _insert_job(db, "JOB-2", "failed")
+    db.update_task("TASK-1", assigned_agent="engineering_worker")
+
+    # Mock the agent invocation site so step-4 short-circuits (task goes FAILED
+    # via the exception handler — audit hook fires before _run_agent is called).
+    orch._run_agent.side_effect = RuntimeError("stop here")
+
+    run_step_impl(orch, "TASK-1", metadata={
+        "trigger": "job_terminal", "triggering_job_id": "JOB-2",
+    })
+
+    rows = db.get_audit_logs("TASK-1")
+    resumed = [r for r in rows if r["action"] == "task_resumed_from_jobs"]
+    assert len(resumed) == 1
+    payload = resumed[0]["payload"]
+    assert payload["trigger"] == "job_terminal"
+    assert payload["triggering_job_id"] == "JOB-2"
+    assert payload["blocking_job_ids"] == ["JOB-1", "JOB-2"]
+    assert payload["job_outcomes"] == {"JOB-1": "completed", "JOB-2": "failed"}
+
+
+def test_cas_win_writes_audit_with_unknown_trigger_when_metadata_missing(db_and_orch):
+    """If no metadata was attached (manual revisit re-entry, defensive case),
+    audit row still fires with trigger='unknown'."""
+    db, orch = db_and_orch
+    _insert_blocked_on_jobs(db, "TASK-1", ["JOB-1"])
+    _insert_job(db, "JOB-1", "completed")
+    db.update_task("TASK-1", assigned_agent="engineering_worker")
+
+    orch._run_agent.side_effect = RuntimeError("stop here")
+
+    run_step_impl(orch, "TASK-1", metadata=None)
+
+    rows = db.get_audit_logs("TASK-1")
+    resumed = [r for r in rows if r["action"] == "task_resumed_from_jobs"]
+    assert len(resumed) == 1
+    payload = resumed[0]["payload"]
+    assert payload["trigger"] == "unknown"
+    assert payload["triggering_job_id"] is None
+
+
+def test_no_audit_when_entry_state_is_pending(db_and_orch):
+    """When run_step_impl runs against a PENDING task (not resumed), no
+    task_resumed_from_jobs audit row should fire — only the new-resume path
+    triggers this audit."""
+    db, orch = db_and_orch
+    db.insert_task(TaskRecord(
+        id="TASK-1", team="engineering", brief="t",
+        status=TaskStatus.PENDING, parent_task_id=None,
+        assigned_agent="engineering_worker",
+    ))
+
+    orch._run_agent.side_effect = RuntimeError("stop here")
+
+    run_step_impl(orch, "TASK-1", metadata=None)
+
+    rows = db.get_audit_logs("TASK-1")
+    resumed = [r for r in rows if r["action"] == "task_resumed_from_jobs"]
+    assert len(resumed) == 0

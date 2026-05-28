@@ -116,6 +116,27 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         )
         return
 
+    # Spec §5.2: write task_resumed_from_jobs audit row immediately after the
+    # CAS wins on a BLOCKED+BLOCKED_ON_JOB → IN_PROGRESS transition. The
+    # prompt-build at step 4 reads this row to inject BLOCKED-JOBS-RESULTS.
+    if (task.status == TaskStatus.BLOCKED
+            and task.block_kind == BlockKind.BLOCKED_ON_JOB):
+        import json as _json
+        try:
+            job_ids = _json.loads(task.blocked_on_job_ids or "[]")
+        except _json.JSONDecodeError:
+            job_ids = []
+        job_outcomes = {jid: (db.get_job_status(jid) or "unknown")
+                        for jid in job_ids}
+        md = metadata or {}
+        orch._audit.log_task_resumed_from_jobs(
+            task_id=task_id,
+            blocking_job_ids=job_ids,
+            trigger=md.get("trigger", "unknown"),
+            triggering_job_id=md.get("triggering_job_id"),
+            job_outcomes=job_outcomes,
+        )
+
     # ---- 4. Run the agent subprocess ----
     agent = task.assigned_agent or _default_agent_for_root(orch, task)
     if task.assigned_agent is None:
