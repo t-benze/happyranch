@@ -95,28 +95,31 @@ The two flags are independent. All four combinations are valid:
 
 3. Output is `ok: submitted JOB-NNN ...`. Keep the JOB-NNN id.
 
-## After submitting
+## After submitting — waiting on jobs
 
-**If `review_required=true`** *(task path)*: the job is `pending`. You can't proceed until the founder reviews. Self-block your task with `report-completion status=blocked` referencing the JOB-NNN. The founder will run it and use `grassland revisit <task-id>` to bring you back with the output available via the revisit header.
+When you need to wait for jobs to finish before proceeding (either
+`review_required=true` waiting for founder approval, or `review_required=false`
+jobs you can't move forward without), submit your block via `report-completion`
+with `status=blocked` and `waiting_on_job_ids` populated:
 
-**If `review_required=true`** *(talk path)*: the job is `pending`. You have no task to self-block — just tell the founder in the talk that JOB-NNN was submitted and is waiting on their review, then continue the conversation. The founder gets a Feishu push and the same audit trail; they'll `APPROVE`/`REJECT` (Feishu) or run `grassland jobs run JOB-NNN` / `reject` (CLI) on their own time.
-
-**If `review_required=false`:** the job is `running`. Continue your work. Check on the job with:
-
-- `grassland jobs tail JOB-NNN` — see recent output.
-- `grassland jobs wait JOB-NNN --timeout-seconds 30` — block until terminal or timeout.
-- `grassland jobs show JOB-NNN` — full status snapshot.
-- `grassland jobs stop JOB-NNN` — kill it (useful if you're done with the dev server).
-
-Pass your auth binding on any of these so the daemon authorizes the call:
-
-```bash
-# Task path
-grassland jobs tail JOB-NNN --task-id TASK-091 --session-id <your active session_id>
-
-# Talk path (inside an open talk)
-grassland jobs tail JOB-NNN --talk-id TALK-007
+```json
+{
+  "status": "blocked",
+  "confidence": 0,
+  "output_summary": "Waiting for JOB-12 and JOB-13 before I can verify the migration ran cleanly.",
+  "waiting_on_job_ids": ["JOB-12", "JOB-13"]
+}
 ```
+
+The system resumes your task automatically once **every** listed job reaches a
+terminal state (`completed`, `failed`, or `rejected`). When you resume, your
+bootstrap doc will include a `BLOCKED-JOBS-RESULTS` section listing each job's
+status and `grassland jobs show JOB-NNN` / `grassland jobs output JOB-NNN`
+commands to fetch full output. **You don't poll.**
+
+If you need to stay in-session for a fast `review_required=false` job, the
+existing `grassland jobs wait JOB-NNN --timeout-seconds 30` pattern still works.
+Prefer block-and-resume for any wait long enough to risk session timeout.
 
 ## Cleanup
 
