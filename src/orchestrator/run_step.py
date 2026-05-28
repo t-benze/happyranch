@@ -116,6 +116,10 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
             orch, task_id, failure_kind=failure_kind,
             failure_note=note, auto_revisit_spawned=spawned,
         )
+        _maybe_post_thread_followup(
+            orch, task_id,
+            status=TaskStatus.FAILED, auto_revisit_spawned=spawned,
+        )
         return
 
     # Persist token usage for this session, regardless of session outcome.
@@ -145,6 +149,16 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
         logger.debug(
             "run_step %s: cancelled during session, dropping report", task_id,
         )
+        # IN_PROGRESS cancellation: the cancel route sent SIGTERM and set
+        # cancelled_at BEFORE run_step reached Site B, so Site B never runs.
+        # Fire the followup here instead.  Disjoint with the cancel route's
+        # Phase 1b (which fires for PENDING/BLOCKED only — tasks that had no
+        # live subprocess at cancel time), so no double-fire risk.
+        if refetch is not None:
+            _maybe_post_thread_followup(
+                orch, task_id,
+                status=TaskStatus.FAILED, auto_revisit_spawned=False,
+            )
         return
 
     # ---- 5. Classify outcome ----
@@ -166,6 +180,10 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
             orch, task_id, failure_kind=failure_kind,
             failure_note=note, auto_revisit_spawned=spawned,
         )
+        _maybe_post_thread_followup(
+            orch, task_id,
+            status=TaskStatus.FAILED, auto_revisit_spawned=spawned,
+        )
         return
 
     orch._log_step_result(task_id, result, report)
@@ -178,6 +196,10 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
             orch, task_id, failure_kind="self_blocked",
             failure_note=note, auto_revisit_spawned=False,
             last_summary=report.output_summary or "",
+        )
+        _maybe_post_thread_followup(
+            orch, task_id,
+            status=TaskStatus.FAILED, auto_revisit_spawned=False,
         )
         return
 
@@ -203,6 +225,10 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
             artifact_dir=report.artifact_dir,
         )
         _enqueue_parent_if_waiting(orch, task_id)
+        _maybe_post_thread_followup(
+            orch, task_id,
+            status=TaskStatus.COMPLETED, auto_revisit_spawned=False,
+        )
         return
 
     if decision.action == "escalate":
@@ -237,6 +263,10 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
             _notify_failure_if_eligible(
                 orch, task_id, failure_kind="invalid_delegate",
                 failure_note=note, auto_revisit_spawned=False,
+            )
+            _maybe_post_thread_followup(
+                orch, task_id,
+                status=TaskStatus.FAILED, auto_revisit_spawned=False,
             )
             return
         # Cross-team delegation guard: a manager may only delegate to workers
@@ -325,6 +355,10 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
     _notify_failure_if_eligible(
         orch, task_id, failure_kind="unknown_action",
         failure_note=note, auto_revisit_spawned=False,
+    )
+    _maybe_post_thread_followup(
+        orch, task_id,
+        status=TaskStatus.FAILED, auto_revisit_spawned=False,
     )
 
 
@@ -887,6 +921,10 @@ def _enqueue_parent_if_waiting(
             failure_note=note,
             auto_revisit_spawned=root_auto_revisit_spawned,
         )
+        _maybe_post_thread_followup(
+            orch, parent.id,
+            status=TaskStatus.FAILED, auto_revisit_spawned=root_auto_revisit_spawned,
+        )
         return
 
     queue = getattr(orch, "_queue", None)
@@ -1113,6 +1151,203 @@ def _maybe_spawn_auto_revisit(
     if queue is not None:
         queue.put_nowait(orch._slug, new_id)
     return True
+
+
+def _maybe_post_thread_followup(
+    orch: "Orchestrator",
+    task_id: str,
+    *,
+    status: TaskStatus,
+    auto_revisit_spawned: bool,
+) -> None:
+    """Post a task-followup system message + mint a re-invocation for the dispatcher.
+
+    Fire predicate (spec §4):
+      - status == COMPLETED                                → always fire
+      - status == FAILED and not auto_revisit_spawned      → true terminal, fire
+      - status == FAILED and auto_revisit_spawned          → no-op (revisit chain
+                                                             will call this helper
+                                                             again at its terminal)
+
+    Only root tasks fire. Child terminals cascade-fail through the parent,
+    which re-enters this helper there. The originating thread is found by
+    walking ``walk_revisit_chain`` backward to the earliest predecessor and
+    reading ``dispatched_from_thread_id`` off that row.
+
+    Spec: docs/superpowers/specs/2026-05-28-thread-task-followup-design.md §4-§6
+    """
+    import json as _json
+
+    # Predicate gate — first pass using caller's claim (cheap early-out).
+    if status == TaskStatus.FAILED and auto_revisit_spawned:
+        return
+    if status not in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+        return
+
+    db = orch._db
+    audit = orch._audit
+    terminal_task = db.get_task(task_id)
+    if terminal_task is None:
+        return
+
+    # Re-read the persisted status. Site D's caller passes COMPLETED, but
+    # /cancel may have raced past Guard B and flipped the row to
+    # failed+cancelled_at; _complete() short-circuits in that race, leaving
+    # the row at FAILED. Trust the DB, not the caller's claim.
+    actual_status = terminal_task.status
+    if actual_status not in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+        # Row isn't terminal yet — caller raced ahead of the DB write.
+        # Bail; the eventual real terminal will re-enter this helper.
+        return
+    if actual_status == TaskStatus.FAILED and auto_revisit_spawned:
+        return
+
+    # Only root tasks fire. Children are handled at their parent's terminal site.
+    if terminal_task.parent_task_id is not None:
+        return
+
+    # Find the original dispatched root via the revisit chain.
+    # walk_revisit_chain returns [task, predecessor, ..., original].
+    # Use a larger hop bound (200) consistent with _count_prior_auto_revisits_by_kind,
+    # and handle LineageTooDeep defensively rather than crashing and silently
+    # discarding the followup without any audit trail.
+    from src.infrastructure.database import LineageTooDeep  # local: avoid cycle
+    try:
+        chain = db.walk_revisit_chain(task_id, max_hops=200)
+    except LineageTooDeep:
+        audit.log_thread_followup_skipped(
+            "(unresolved)", original_task_id=task_id, terminal_task_id=task_id,
+            reason="chain_too_deep",
+        )
+        return
+    original = chain[-1] if chain else terminal_task
+    thread_id = original.dispatched_from_thread_id
+    if thread_id is None:
+        # Not a thread-dispatched chain; silent no-op (no audit).
+        return
+
+    # Thread-state guard.
+    thread = db.get_thread(thread_id)
+    if thread is None:
+        audit.log_thread_followup_skipped(
+            thread_id, original_task_id=original.id, terminal_task_id=task_id,
+            reason="thread_not_open", thread_status="missing",
+            task_status=status.value,
+        )
+        return
+    from src.models import ThreadStatus as _ThreadStatus
+    if thread.status is not _ThreadStatus.OPEN:
+        audit.log_thread_followup_skipped(
+            thread_id, original_task_id=original.id, terminal_task_id=task_id,
+            reason="thread_not_open",
+            thread_status=thread.status.value,
+            task_status=status.value,
+        )
+        return
+
+    # Dispatcher identity: read from the thread_dispatch audit row on the
+    # ORIGINAL task (revisit roots don't have their own dispatch row).
+    dispatch_rows = [
+        r for r in db.get_audit_logs(thread_id)
+        if r["action"] == "thread_dispatch"
+        and _payload_dict(r).get("task_id") == original.id
+    ]
+    if not dispatch_rows:
+        audit.log_thread_followup_skipped(
+            thread_id, original_task_id=original.id, terminal_task_id=task_id,
+            reason="dispatcher_unresolved",
+        )
+        return
+    dispatcher = _payload_dict(dispatch_rows[0])["dispatcher"]
+
+    # Build system payload using DB-actual status (not the caller's claim) so
+    # a cancel race at Site D doesn't emit task_completed for a FAILED row.
+    kind_tag = "task_completed" if actual_status == TaskStatus.COMPLETED else "task_failed"
+    system_payload = {
+        "kind_tag": kind_tag,
+        "task_id": task_id,
+        "original_task_id": original.id,
+        "root_task_id": original.id,
+        "status": actual_status.value,
+        "final_output_summary": terminal_task.note or "",
+        "final_artifact_dir": terminal_task.final_artifact_dir,
+        "cancelled": terminal_task.cancelled_at is not None,
+        "revisit_chain_length": len(chain) if chain else 1,
+    }
+
+    # Append system message (separate from the atomic cap+mint below — the
+    # system message ordering relative to concurrent system messages is not
+    # part of the atomicity invariant we're protecting).
+    from src.models import ThreadMessageKind as _TMK, ThreadInvocationPurpose as _TIP
+    sys_seq = db.append_thread_message(
+        thread_id=thread_id, speaker=dispatcher,
+        kind=_TMK.SYSTEM,
+        system_payload=system_payload,
+    )
+
+    # Atomic cap-projection + conditional bump + mint.  Closes the TOCTOU race
+    # where two concurrent root completions on the same thread both read the
+    # same pending count, both skip the bump, both mint, and leave the thread
+    # with more obligations than turn_cap.  The @_synchronized RLock on
+    # mint_followup_invocation_with_cap_extend serializes all three steps.
+    inv, new_cap = db.mint_followup_invocation_with_cap_extend(
+        thread_id=thread_id,
+        agent_name=dispatcher,
+        triggering_seq=sys_seq,
+    )
+    if new_cap is not None:
+        audit.log_thread_turn_cap_auto_extended(
+            thread_id, original_task_id=original.id,
+            reason="task_followup", new_cap=new_cap,
+        )
+    audit.log_thread_task_followup_enqueued(
+        thread_id, original_task_id=original.id, terminal_task_id=task_id,
+        dispatcher=dispatcher, invocation_token=inv.invocation_token,
+    )
+
+    # Enqueue onto the org's thread queue. The queue is bound to the daemon's
+    # main event loop, but run_step runs on a worker thread, so we cross the
+    # loop boundary via run_coroutine_threadsafe — same pattern as
+    # `_start_feishu_listeners` uses for cross-thread async bridging.
+    import asyncio as _asyncio
+    from src.daemon.thread_queue import ThreadJob as _ThreadJob
+    thread_queue = getattr(orch, "_thread_queue", None)
+    main_loop = getattr(orch, "_main_loop", None)
+    if thread_queue is not None and main_loop is not None:
+        try:
+            _asyncio.run_coroutine_threadsafe(
+                thread_queue.put(_ThreadJob(
+                    org_slug=orch._slug,
+                    invocation_token=inv.invocation_token,
+                )),
+                main_loop,
+            )
+        except Exception as exc:
+            audit.log_thread_followup_skipped(
+                thread_id, original_task_id=original.id, terminal_task_id=task_id,
+                reason="enqueue_failed", detail=str(exc),
+            )
+    else:
+        # Defence: queue or loop not yet wired (e.g., test orchestrator constructed
+        # without daemon context). Invocation stays PENDING; audit so the
+        # operator can detect it if needed. In production this path is never
+        # taken because _lifespan always calls _attach_thread_queue_wiring before
+        # the first task step runs.
+        audit.log_thread_followup_skipped(
+            thread_id, original_task_id=original.id, terminal_task_id=task_id,
+            reason="enqueue_unavailable",
+        )
+
+
+def _payload_dict(row: dict) -> dict:
+    """Coerce an audit row's ``payload`` field to a dict."""
+    import json as _json
+    p = row.get("payload")
+    if p is None:
+        return {}
+    if isinstance(p, dict):
+        return p
+    return _json.loads(p)
 
 
 def _session_failed_note(result, report) -> str:

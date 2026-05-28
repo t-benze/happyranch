@@ -35,8 +35,36 @@ def build_forward_body_from_thread(*, source_id: str, messages: list[ThreadMessa
         elif m.kind is ThreadMessageKind.DECLINE:
             rendered.append(f"> ({m.speaker} declined: {m.decline_reason})")
         elif m.kind is ThreadMessageKind.SYSTEM:
-            tag = (m.system_payload or {}).get("kind_tag", "system")
-            rendered.append(f"> (system: {tag})")
+            payload = m.system_payload or {}
+            tag = payload.get("kind_tag", "system")
+            if tag == "task_completed":
+                tid = payload.get("task_id")
+                orig = payload.get("original_task_id")
+                label = f"Task {tid} completed" + (
+                    f" (chain root {orig})" if orig and orig != tid else ""
+                )
+                summary = (payload.get("final_output_summary") or "").strip()
+                if summary:
+                    label += f": {summary[:240]}"
+                rendered.append(f"> (system: {label})")
+            elif tag == "task_failed":
+                tid = payload.get("task_id")
+                orig = payload.get("original_task_id")
+                label = f"Task {tid} failed" + (
+                    f" (chain root {orig})" if orig and orig != tid else ""
+                )
+                annotations: list[str] = []
+                if payload.get("cancelled"):
+                    annotations.append("founder-cancelled")
+                chain_len = payload.get("revisit_chain_length", 1)
+                if chain_len and chain_len > 1:
+                    n = chain_len - 1
+                    annotations.append(f"after {n} {'revisit' if n == 1 else 'revisits'}")
+                if annotations:
+                    label += "; " + "; ".join(annotations)
+                rendered.append(f"> (system: {label})")
+            else:
+                rendered.append(f"> (system: {tag})")
     quoted = "\n".join(rendered)
     truncated = _truncate(quoted)
     return "\n".join(quoted_lines + [truncated, "", "---", ""])

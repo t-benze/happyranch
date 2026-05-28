@@ -99,6 +99,47 @@ describe('ThreadsPage — read path', () => {
   });
 });
 
+describe('ThreadsPage — system message rendering', () => {
+  test('renders task_completed system message with task id and summary', async () => {
+    sessionStorage.setItem('grassland.token', 'tok');
+    setupThreadWithMessages('THR-010', [
+      mkSystemMessage(1, 'agent_a', {
+        kind_tag: 'task_completed',
+        task_id: 'TASK-007',
+        status: 'completed',
+        final_output_summary: 'PDF uploaded',
+        cancelled: false,
+        revisit_chain_length: 1,
+      }),
+    ]);
+    mountAt(`/orgs/${SLUG}/threads/THR-010`);
+    await waitFor(() => {
+      expect(screen.getByText(/TASK-007/)).toBeInTheDocument();
+      expect(screen.getByText(/PDF uploaded/)).toBeInTheDocument();
+    });
+  });
+
+  test('renders task_failed system message with cancelled and revisit annotations', async () => {
+    sessionStorage.setItem('grassland.token', 'tok');
+    setupThreadWithMessages('THR-011', [
+      mkSystemMessage(1, 'agent_a', {
+        kind_tag: 'task_failed',
+        task_id: 'TASK-031',
+        status: 'failed',
+        final_output_summary: '',
+        cancelled: true,
+        revisit_chain_length: 3,
+      }),
+    ]);
+    mountAt(`/orgs/${SLUG}/threads/THR-011`);
+    await waitFor(() => {
+      expect(screen.getByText(/TASK-031/)).toBeInTheDocument();
+      expect(screen.getByText(/founder-cancelled/)).toBeInTheDocument();
+      expect(screen.getByText(/2 revisits/)).toBeInTheDocument();
+    });
+  });
+});
+
 function mkThread(id: string, subject: string) {
   return {
     thread_id: id,
@@ -132,4 +173,44 @@ function mkMessage(
     system_payload: kind === 'system' ? { event: body } : null,
     created_at: '2026-05-14T00:00:00Z',
   };
+}
+
+function mkSystemMessage(seq: number, speaker: string, payload: Record<string, unknown>) {
+  return {
+    seq,
+    speaker,
+    kind: 'system' as const,
+    body_markdown: null,
+    addressed_to: null,
+    decline_reason: null,
+    system_payload: payload,
+    created_at: '2026-05-14T00:00:00Z',
+  };
+}
+
+function setupThreadWithMessages(
+  threadId: string,
+  messages: ReturnType<typeof mkMessage | typeof mkSystemMessage>[],
+) {
+  server.use(
+    http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
+      HttpResponse.json({ threads: [mkThread(threadId, 'Test thread')] }),
+    ),
+    http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
+      HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+    ),
+    http.get(`/api/v1/orgs/${SLUG}/threads/${threadId}`, () =>
+      HttpResponse.json({
+        ...mkThread(threadId, 'Test thread'),
+        participants: ['agent_a'],
+        messages,
+      }),
+    ),
+    http.get(`/api/v1/orgs/${SLUG}/threads/${threadId}/messages`, () =>
+      HttpResponse.json({ messages }),
+    ),
+    http.get(`/api/v1/orgs/${SLUG}/threads/${threadId}/tail`, () =>
+      HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+    ),
+  );
 }

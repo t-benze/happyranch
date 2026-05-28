@@ -56,11 +56,24 @@ def _purpose_note(
     triggering_seq: int,
     addressed_to: list[str] | None,
     invoked_agent: str,
+    triggering_message: "ThreadMessage | None" = None,
 ) -> str:
     if purpose == "bootstrap":
         return "The founder has added you to this thread"
     if purpose == "close_out":
         return "This thread is being archived; provide a close-out"
+    if purpose == "task_followup":
+        payload = (triggering_message.system_payload or {}) if triggering_message else {}
+        task_id = payload.get("task_id", "?")
+        status = payload.get("status", "?")
+        return (
+            f"Task {task_id} that you dispatched from this thread reached "
+            f"`{status}`. Compose a follow-up reply with the result (pull "
+            f"details via `grassland details {task_id}`), or decline if "
+            f"there is nothing substantive to add. Dispatching a new task "
+            f"from this turn is not allowed; mention any new action in the "
+            f"reply and let the founder loop in."
+        )
     # purpose == "reply"
     addr = addressed_to or []
     if addr == ["@all"]:
@@ -88,7 +101,10 @@ def build_thread_prompt(
         f"Forwarded from {thread.forwarded_from_id}."
         if thread.forwarded_from_id else ""
     )
-    note = _purpose_note(purpose, triggering_seq, addressed_to, invoked_agent)
+    note = _purpose_note(
+        purpose, triggering_seq, addressed_to, invoked_agent,
+        triggering_message=triggering,
+    )
     return (
         f"You are participating in thread {thread.id}: \"{thread.subject}\".\n\n"
         f"Participants: {parts_str}.\n"

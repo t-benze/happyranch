@@ -2083,6 +2083,29 @@ class Database:
         return [self._row_to_invocation(r) for r in cursor.fetchall()]
 
     @_synchronized
+    def count_pending_turn_obligations(self, thread_id: str) -> int:
+        """Pending invocations that will increment turns_used when consumed.
+
+        REPLY, BOOTSTRAP, TASK_FOLLOWUP count. CLOSE_OUT is excluded
+        (per threads spec §5.10.1). Single-source helper for both the
+        send/compose projection in routes/threads.py and the auto-extend
+        projection in _maybe_post_thread_followup.
+        """
+        counted = (
+            ThreadInvocationPurpose.REPLY.value,
+            ThreadInvocationPurpose.BOOTSTRAP.value,
+            ThreadInvocationPurpose.TASK_FOLLOWUP.value,
+        )
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM thread_invocations "
+            "WHERE thread_id = ? AND status = ? AND purpose IN ({})".format(
+                ",".join("?" * len(counted))
+            ),
+            (thread_id, ThreadInvocationStatus.PENDING.value, *counted),
+        ).fetchone()
+        return int(row["n"])
+
+    @_synchronized
     def reap_pending_invocations(
         self,
         thread_id: str,
@@ -2174,6 +2197,97 @@ class Database:
             (new_cap, thread_id),
         )
         self._conn.commit()
+
+    @_synchronized
+    def bump_thread_turn_cap(self, thread_id: str, *, delta: int = 1) -> int:
+        """Atomically increment turn_cap by ``delta`` and return the new value.
+
+        Used by the task-followup hook to make room for the system-triggered
+        re-invocation when the projected turn count would exceed the current
+        cap.  Each bump is audited at the call site via
+        log_thread_turn_cap_auto_extended.
+        """
+        cursor = self._conn.execute(
+            "UPDATE threads SET turn_cap = turn_cap + ? WHERE id = ? "
+            "RETURNING turn_cap",
+            (delta, thread_id),
+        )
+        row = cursor.fetchone()
+        self._conn.commit()
+        if row is None:
+            raise KeyError(f"thread {thread_id} not found")
+        return int(row["turn_cap"])
+
+    @_synchronized
+    def mint_followup_invocation_with_cap_extend(
+        self,
+        thread_id: str,
+        *,
+        agent_name: str,
+        triggering_seq: int,
+        cap_delta_if_over: int = 1,
+    ) -> "tuple[ThreadInvocation, int | None]":
+        """Atomically mint a TASK_FOLLOWUP invocation, auto-extending turn_cap
+        by ``cap_delta_if_over`` if the projection (turns_used + pending + 1)
+        would exceed the current cap.
+
+        Returns (minted_invocation, new_cap_if_bumped_else_None).
+
+        Closes the TOCTOU race where two concurrent root-task completions on the
+        same thread both observe pending=N, both skip the bump, both mint, and
+        leave the thread with more counted obligations than turn_cap permits.
+        The @_synchronized lock on this method (backed by threading.RLock)
+        serializes the read-compare-bump-mint sequence.
+
+        Because Database._lock is an RLock (re-entrant), calling
+        self.mint_thread_invocation from within this @_synchronized method is
+        safe — the same thread can re-acquire the lock without deadlock.
+        """
+        # Read thread state under the @_synchronized lock.
+        cur = self._conn.execute(
+            "SELECT turns_used, turn_cap FROM threads WHERE id = ?",
+            (thread_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise KeyError(f"thread {thread_id} not found")
+        turns_used = int(row["turns_used"])
+        turn_cap = int(row["turn_cap"])
+
+        counted = (
+            ThreadInvocationPurpose.REPLY.value,
+            ThreadInvocationPurpose.BOOTSTRAP.value,
+            ThreadInvocationPurpose.TASK_FOLLOWUP.value,
+        )
+        cur = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM thread_invocations "
+            "WHERE thread_id = ? AND status = ? AND purpose IN ({})".format(
+                ",".join("?" * len(counted))
+            ),
+            (thread_id, ThreadInvocationStatus.PENDING.value, *counted),
+        )
+        pending = int(cur.fetchone()["n"])
+
+        projected = turns_used + pending + 1
+        new_cap: int | None = None
+        if projected > turn_cap:
+            self._conn.execute(
+                "UPDATE threads SET turn_cap = turn_cap + ? WHERE id = ?",
+                (cap_delta_if_over, thread_id),
+            )
+            new_cap = turn_cap + cap_delta_if_over
+
+        # Delegate to mint_thread_invocation — safe because RLock is re-entrant.
+        inv = self.mint_thread_invocation(
+            thread_id=thread_id,
+            agent_name=agent_name,
+            triggering_seq=triggering_seq,
+            purpose=ThreadInvocationPurpose.TASK_FOLLOWUP,
+        )
+        # No separate commit needed: mint_thread_invocation commits inside its
+        # own @_synchronized acquisition. The cap UPDATE above is committed by
+        # mint_thread_invocation's commit (SQLite commits all pending changes).
+        return inv, new_cap
 
     @_synchronized
     def add_thread_kb_slug(self, thread_id: str, slug: str) -> None:

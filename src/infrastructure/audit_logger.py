@@ -673,6 +673,67 @@ class AuditLogger:
             },
         )
 
+    def log_thread_task_followup_enqueued(
+        self,
+        thread_id: str,
+        *,
+        original_task_id: str,
+        terminal_task_id: str,
+        dispatcher: str,
+        invocation_token: str,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=terminal_task_id,
+            agent=dispatcher,
+            action="thread_task_followup_enqueued",
+            payload={
+                "thread_id": thread_id,
+                "original_task_id": original_task_id,
+                "dispatcher": dispatcher,
+                "invocation_token_prefix": invocation_token[:8],
+            },
+        )
+
+    def log_thread_followup_skipped(
+        self,
+        thread_id: str,
+        *,
+        original_task_id: str,
+        terminal_task_id: str,
+        reason: str,
+        **extra,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=terminal_task_id,
+            agent="orchestrator",
+            action="thread_followup_skipped",
+            payload={
+                "thread_id": thread_id,
+                "original_task_id": original_task_id,
+                "reason": reason,
+                **extra,
+            },
+        )
+
+    def log_thread_turn_cap_auto_extended(
+        self,
+        thread_id: str,
+        *,
+        original_task_id: str,
+        reason: str,
+        new_cap: int,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=original_task_id,
+            agent="orchestrator",
+            action="thread_turn_cap_auto_extended",
+            payload={
+                "thread_id": thread_id,
+                "reason": reason,
+                "new_cap": new_cap,
+            },
+        )
+
     def log_thread_archive_requested(
         self,
         thread_id: str,

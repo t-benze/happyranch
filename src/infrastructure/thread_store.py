@@ -95,6 +95,33 @@ def render_transcript_body(messages: list) -> str:
                 rendered = f"system: dispatched {tid} to {tgt}" + (
                     f" — {brief}" if brief else ""
                 )
+            elif tag == "task_completed":
+                tid = payload.get("task_id")
+                orig = payload.get("original_task_id")
+                rendered = f"**Task {tid} completed**" + (
+                    f" (chain root {orig})" if orig and orig != tid else ""
+                )
+                summary = (payload.get("final_output_summary") or "").strip()
+                if summary:
+                    rendered += f" · {summary[:240]}"
+                artifact = payload.get("final_artifact_dir")
+                if artifact:
+                    rendered += f" · `{artifact}`"
+            elif tag == "task_failed":
+                tid = payload.get("task_id")
+                orig = payload.get("original_task_id")
+                rendered = f"**Task {tid} failed**" + (
+                    f" (chain root {orig})" if orig and orig != tid else ""
+                )
+                annotations: list[str] = []
+                if payload.get("cancelled"):
+                    annotations.append("founder-cancelled")
+                chain_len = payload.get("revisit_chain_length", 1)
+                if chain_len and chain_len > 1:
+                    n = chain_len - 1
+                    annotations.append(f"after {n} {'revisit' if n == 1 else 'revisits'}")
+                if annotations:
+                    rendered += " · " + "; ".join(annotations)
             elif tag == "turn_cap_extended":
                 rendered = (
                     f"system: turn cap extended from {payload.get('prior_cap')} "

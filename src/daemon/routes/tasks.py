@@ -747,8 +747,10 @@ async def cancel_task(
 
     # BFS subtree walk (cascade=True) or single-task (cascade=False). Only
     # non-terminal rows are collected — anything already COMPLETED/FAILED
-    # stays untouched.
+    # stays untouched.  Also capture prior statuses so Phase 1 can route
+    # PENDING-only followup calls without a second DB round-trip.
     to_cancel: list[str] = []
+    prior_statuses: dict[str, TaskStatus] = {}
     stack = [task_id]
     while stack:
         tid = stack.pop()
@@ -756,6 +758,7 @@ async def cancel_task(
         if t is None or t.status in _TERMINAL_TASK_STATUSES:
             continue
         to_cancel.append(tid)
+        prior_statuses[tid] = t.status
         if body.cascade:
             stack.extend(org.db.get_children(tid))
 
@@ -781,6 +784,27 @@ async def cancel_task(
                 pids_to_kill.append((tid, agent, pid))
             audit.log_task_cancelled(
                 task_id=tid, rationale=rationale, cascade=body.cascade,
+            )
+
+    # Phase 1b: fire thread followup for PENDING and BLOCKED tasks.
+    #
+    # Two-site coverage (disjoint conditions, no double-fire risk):
+    #   • PENDING + BLOCKED → cancel route owns the followup here, because these
+    #     tasks have no live subprocess — SIGTERM is never sent so run_step never
+    #     runs and the cancel-race guard in run_step never triggers.
+    #   • IN_PROGRESS → cancel route sends SIGTERM (Phase 2 below); the
+    #     subprocess eventually exits with rc=-15; run_step's cancel-race guard
+    #     (``refetch.cancelled_at is not None → return``) fires _before_ Site B,
+    #     so run_step's cancel-race guard fires the helper there instead.
+    #
+    # The disjoint condition ensures we never fire twice for the same task.
+    _CANCEL_ROUTE_FIRES_FOR = {TaskStatus.PENDING, TaskStatus.BLOCKED}
+    from src.orchestrator.run_step import _maybe_post_thread_followup
+    for tid in to_cancel:
+        if prior_statuses.get(tid) in _CANCEL_ROUTE_FIRES_FOR:
+            _maybe_post_thread_followup(
+                org.orchestrator, tid,
+                status=TaskStatus.FAILED, auto_revisit_spawned=False,
             )
 
     # Phase 2: deliver SIGTERM to any live subprocesses attached to cancelled
