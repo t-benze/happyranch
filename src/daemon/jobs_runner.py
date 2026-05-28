@@ -15,7 +15,10 @@ import signal
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from src.orchestrator.orchestrator import Orchestrator
 
 
 def migrate_filesystem_layout(org_root: Path | str) -> None:
@@ -63,6 +66,74 @@ _RUNNER_TASKS: dict[str, asyncio.Task] = {}
 _KILL_REASON_OVERRIDE: dict[str, str] = {}
 
 _HEAD_CAP_BYTES = 65536  # spec §3.1, §6.2
+
+# ---------------------------------------------------------------------------
+# Job-terminal → resume-blocked-task bridge
+# ---------------------------------------------------------------------------
+# ``fire_resume_check_for_job`` is called from ``_run_and_persist`` (and from
+# ``reject_job_from_notification``) after the terminal status has been
+# committed to the DB.  Both call sites run on the daemon's main asyncio event
+# loop, so the call is direct (no ``run_coroutine_threadsafe`` needed).
+#
+# The module-level ``attach_jobs_resume_main_loop`` wiring function is kept
+# symmetric with ``Orchestrator.attach_thread_queue`` — a future caller that
+# runs on a worker thread would use ``_RESUME_MAIN_LOOP`` to bridge across.
+# For the current call sites it is informational / unused at runtime.
+# ---------------------------------------------------------------------------
+
+_RESUME_MAIN_LOOP: asyncio.AbstractEventLoop | None = None
+_ORCH_RESOLVER: "Callable[[str], Orchestrator | None] | None" = None
+
+
+def attach_jobs_resume_main_loop(
+    loop: asyncio.AbstractEventLoop,
+    orch_resolver: "Callable[[str], Orchestrator | None]",
+) -> None:
+    """Bind the daemon's main loop + an org-slug → Orchestrator resolver.
+
+    Called once from ``app.py``'s lifespan startup after orchestrators are
+    wired up.  Mirrors ``_attach_thread_queue_wiring`` / ``attach_thread_queue``
+    in decoupling the runner from the daemon state.
+    """
+    global _RESUME_MAIN_LOOP, _ORCH_RESOLVER
+    _RESUME_MAIN_LOOP = loop
+    _ORCH_RESOLVER = orch_resolver
+
+
+def fire_resume_check_for_job(org: "object", job_id: str) -> None:
+    """Check whether any task blocked on *job_id* can now be resumed.
+
+    Calls ``_maybe_resume_blocked_task`` for every BLOCKED_ON_JOB task whose
+    ``blocked_on_job_ids`` list contains *job_id*.
+
+    Called synchronously from ``_run_and_persist`` and
+    ``reject_job_from_notification`` after the terminal DB commit, both of
+    which run on the daemon's main asyncio event loop.
+
+    Safe to call even when no orchestrator is attached (e.g., in tests that
+    don't wire a full daemon); silently no-ops in that case.
+    """
+    orch = getattr(org, "orchestrator", None)
+    if orch is None:
+        return
+    db = getattr(orch, "_db", None)
+    if db is None:
+        return
+    from src.orchestrator.run_step import _maybe_resume_blocked_task
+
+    rows = db._conn.execute(
+        "SELECT id FROM tasks "
+        "WHERE status = 'blocked' "
+        "AND block_kind = 'blocked_on_job' "
+        "AND blocked_on_job_ids LIKE ?",
+        (f'%"{job_id}"%',),
+    ).fetchall()
+    for row in rows:
+        _maybe_resume_blocked_task(
+            orch, row["id"],
+            trigger="job_terminal",
+            triggering_job_id=job_id,
+        )
 
 
 def register_runner_task(job_id: str, task: asyncio.Task) -> None:

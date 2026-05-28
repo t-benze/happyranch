@@ -104,6 +104,11 @@ async def _lifespan(app: FastAPI):
     _main_loop = asyncio.get_running_loop()
     _attach_thread_queue_wiring(state, _main_loop)
     _start_feishu_listeners(state, _main_loop)
+    from src.daemon.jobs_runner import attach_jobs_resume_main_loop as _wire_jobs
+    _wire_jobs(
+        _main_loop,
+        lambda slug: state.orgs[slug].orchestrator if slug in state.orgs else None,
+    )
     thread_worker_tasks = [
         asyncio.create_task(thread_worker_loop(state, state.settings))
         for _ in range(4)
