@@ -161,6 +161,48 @@ def _shared_assets_section() -> list[str]:
     ]
 
 
+def _thread_talk_dispatch_doctrine_section() -> list[str]:
+    """System-injected doctrine: dispatch from a thread or talk is self-only.
+
+    Surfaces the structural rule enforced at `/threads/{id}/dispatch` and
+    `/talks/{id}/dispatch` so every agent reads it at bootstrap rather than
+    discovering it via a 403 response. The rule itself is mechanical (route
+    rejects `effective_target != dispatcher` with `*_dispatch_must_be_self`);
+    this section is the *why* and the recommended pattern. Spec:
+    `docs/superpowers/specs/2026-05-28-thread-talk-self-dispatch-only-design.md`.
+
+    Keep the prose tight — every agent in every org reads this on every
+    session. If this grows past ~25 lines it has become docs, not a prompt.
+    """
+    return [
+        "## Thread and Talk Dispatch are Self-Only\n",
+        "When you are inside a **thread invocation** (reply / bootstrap) or a",
+        "**talk**, the runtime only lets you dispatch tasks to **yourself**. Any",
+        "attempt to target another agent returns 403 with",
+        "`thread_dispatch_must_be_self` or `talk_dispatch_must_be_self`.\n",
+        "This is the doctrine the rule encodes:",
+        "- **Threads and talks** exist for founder-visible coordination and",
+        "  cross-team handoffs. They are messaging surfaces.",
+        "- **Task trees** exist for iterative work. Managers drive sub-tasks",
+        "  through the manager-decision loop; workers do bounded work and",
+        "  report back. They are execution surfaces.\n",
+        "When you need to do task-shaped work from inside a thread or talk:",
+        "- **Self-dispatch a root task.** Omit `target_agent` (or set it to",
+        "  your own name). If you are a manager and the work has multiple",
+        "  steps, the manager-decision loop handles internal sub-task",
+        "  spawning on its own. The thread sees a single `task_completed`",
+        "  system message at the end and a single TASK_FOLLOWUP turn where",
+        "  you report back.",
+        "- **Do not** thread-dispatch another agent. Instead, open or extend",
+        "  a thread with `grassland threads compose --to <other-agent>` and",
+        "  let them decide whether to take the work on. Cross-team handoffs",
+        "  always route through compose, not dispatch.\n",
+        "If you find yourself wanting to dispatch a SECOND task from the same",
+        "thread, that is the signal that you should have dispatched a single",
+        "self-managed root the first time.\n",
+    ]
+
+
 def _non_stop_command_warning_section() -> list[str]:
     """Persistent warning: never run a non-returning command synchronously.
 
@@ -213,6 +255,7 @@ _RESERVED_AGENT_BODY_HEADERS: frozenset[str] = frozenset({
     "Your Learnings",
     "Knowledge Base (shared across agents)",
     "Shared Assets (org-wide)",
+    "Thread and Talk Dispatch are Self-Only",
     "Long-running and non-stop commands",
     "Task Completion Format",
     "Task Recall",
@@ -536,6 +579,7 @@ class ClaudeWorkspaceAdapter:
             "freeform label (e.g. `reference`, `ruling`, `sop`) used for grouping.",
             callback_note + "\n",
             *_shared_assets_section(),
+            *_thread_talk_dispatch_doctrine_section(),
             *_non_stop_command_warning_section(),
             *_task_completion_format_section(),
             "## Task Recall\n",

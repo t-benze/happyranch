@@ -384,6 +384,61 @@ def test_opencode_agents_md_warns_about_non_stop_commands(tmp_path: Path) -> Non
     assert "protocol/skills/jobs/SKILL.md" in content
 
 
+def test_claude_md_includes_thread_talk_dispatch_doctrine(tmp_path: Path) -> None:
+    """Every agent's bootstrap doc must carry the self-only dispatch doctrine.
+
+    The route enforces the rule mechanically (returns 403 with
+    thread_dispatch_must_be_self / talk_dispatch_must_be_self); this prompt
+    section is the *why* and the recommended pattern, surfaced before the
+    agent encounters the rejection.
+    """
+    from src.config import Settings
+    from src.orchestrator._paths import OrgPaths
+    from src.orchestrator.workspace_adapters import ClaudeWorkspaceAdapter
+
+    paths = OrgPaths(root=tmp_path)
+    adapter = ClaudeWorkspaceAdapter(Settings(), paths, slug="demo")
+    workspace = tmp_path / "workspaces" / "dev_agent"
+    adapter.write_claude_md(workspace, "dev_agent", "You are dev_agent.")
+    content = (workspace / "CLAUDE.md").read_text()
+    assert "## Thread and Talk Dispatch are Self-Only" in content
+    # Both rejection codes named — agents hitting a 403 can grep for either.
+    assert "thread_dispatch_must_be_self" in content
+    assert "talk_dispatch_must_be_self" in content
+    # The recommended alternative path: compose for cross-agent work.
+    assert "grassland threads compose" in content
+
+
+def test_codex_agents_md_includes_thread_talk_dispatch_doctrine(tmp_path: Path) -> None:
+    from src.config import Settings
+    from src.orchestrator._paths import OrgPaths
+    from src.orchestrator.workspace_adapters import CodexWorkspaceAdapter
+
+    paths = OrgPaths(root=tmp_path)
+    adapter = CodexWorkspaceAdapter(Settings(), paths, slug="demo")
+    workspace = tmp_path / "workspaces" / "dev_agent"
+    adapter.write_agents_md(workspace, "dev_agent", "You are dev_agent.")
+    content = (workspace / "AGENTS.md").read_text()
+    assert "## Thread and Talk Dispatch are Self-Only" in content
+    assert "thread_dispatch_must_be_self" in content
+    assert "talk_dispatch_must_be_self" in content
+
+
+def test_opencode_agents_md_includes_thread_talk_dispatch_doctrine(tmp_path: Path) -> None:
+    from src.config import Settings
+    from src.orchestrator._paths import OrgPaths
+    from src.orchestrator.workspace_adapters import OpencodeWorkspaceAdapter
+
+    paths = OrgPaths(root=tmp_path)
+    adapter = OpencodeWorkspaceAdapter(Settings(), paths, slug="demo")
+    workspace = tmp_path / "workspaces" / "dev_agent"
+    adapter.write_agents_md(workspace, "dev_agent", "You are dev_agent.")
+    content = (workspace / "AGENTS.md").read_text()
+    assert "## Thread and Talk Dispatch are Self-Only" in content
+    assert "thread_dispatch_must_be_self" in content
+    assert "talk_dispatch_must_be_self" in content
+
+
 def _assert_task_completion_format_section(content: str) -> None:
     """Shared assertions for the system-injected Task Completion Format
     section. Every executor's bootstrap doc must carry this block so that
