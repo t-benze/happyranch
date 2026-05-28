@@ -87,3 +87,29 @@ def test_get_job_status_terminal_and_running():
         assert db.get_job_status("JOB-001") == "completed"
         assert db.get_job_status("JOB-002") == "running"
         assert db.get_job_status("JOB-999") is None
+
+
+def test_list_tasks_blocked_on_jobs_filters_correctly():
+    """Returns only ids of BLOCKED+BLOCKED_ON_JOB tasks; excludes other blocked."""
+    from src.models import TaskRecord, TaskStatus
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "test.db"
+        db = Database(db_path)
+
+        # Three tasks: one blocked-on-job, one blocked-escalated, one in_progress.
+        for tid, status, bk, jids in (
+            ("TASK-A", TaskStatus.BLOCKED, BlockKind.BLOCKED_ON_JOB, '["JOB-1"]'),
+            ("TASK-B", TaskStatus.BLOCKED, BlockKind.ESCALATED,     None),
+            ("TASK-C", TaskStatus.IN_PROGRESS, None,                None),
+        ):
+            db.insert_task(TaskRecord(
+                id=tid, team="engineering", brief="t",
+                status=status, parent_task_id=None,
+            ))
+            if bk is not None:
+                db.update_task(tid, status=status, block_kind=bk,
+                              blocked_on_job_ids=jids)
+
+        result = db.list_tasks_blocked_on_jobs()
+        assert set(result) == {"TASK-A"}

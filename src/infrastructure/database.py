@@ -1069,6 +1069,19 @@ class Database:
         )
         return [row["id"] for row in cursor.fetchall()]
 
+    @_synchronized
+    def list_tasks_blocked_on_jobs(self) -> list[str]:
+        """Return ids of tasks currently in BLOCKED + BLOCKED_ON_JOB state.
+
+        Used by startup recovery (spec §5.7) to re-evaluate the predicate after
+        `recover_orphaned_running_jobs` force-fails any leftovers.
+        """
+        rows = self._conn.execute(
+            "SELECT id FROM tasks WHERE status = ? AND block_kind = ?",
+            (TaskStatus.BLOCKED.value, BlockKind.BLOCKED_ON_JOB.value),
+        ).fetchall()
+        return [row["id"] for row in rows]
+
     # --- Audit Log ---
 
     @_synchronized
