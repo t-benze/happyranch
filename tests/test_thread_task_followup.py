@@ -678,6 +678,145 @@ def test_completed_thread_dispatched_task_fires_followup_via_complete(orch_with_
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# P1 — Cancel race at Site D: helper must use DB-actual status, not caller's
+# ---------------------------------------------------------------------------
+
+
+def test_site_d_cancel_race_fires_task_failed_not_completed(orch_with_db):
+    """If /cancel lands between Guard B and _complete(), Site D's caller still
+    passes status=COMPLETED, but the persisted row is FAILED+cancelled_at.
+    The helper must read DB-actual status, not the caller's claim, and emit
+    task_failed accordingly."""
+    from src.orchestrator.run_step import _maybe_post_thread_followup
+    from datetime import datetime, timezone
+
+    orch = orch_with_db
+    _seed_dispatched_root(orch)
+    # Simulate the race: /cancel flipped the row to FAILED+cancelled_at,
+    # _complete() short-circuited so the COMPLETED write never happened.
+    orch._db.update_task(
+        "TASK-1",
+        status=TaskStatus.FAILED,
+        cancelled_at=datetime.now(timezone.utc).isoformat(),
+    )
+    # Site D's caller still passes COMPLETED (it doesn't know about the race).
+    _maybe_post_thread_followup(
+        orch, "TASK-1",
+        status=TaskStatus.COMPLETED, auto_revisit_spawned=False,
+    )
+    invs = orch._db.list_thread_invocations("THR-1")
+    followups = [i for i in invs if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP]
+    assert len(followups) == 1, "helper must still fire (FAILED is a terminal requiring followup)"
+    # The system message must reflect the ACTUAL DB status (failed), not the
+    # caller's claim (completed).
+    msgs = orch._db.list_thread_messages("THR-1")
+    system_msgs = [
+        m for m in msgs
+        if m.kind == ThreadMessageKind.SYSTEM
+        and (m.system_payload or {}).get("kind_tag") in ("task_completed", "task_failed")
+    ]
+    assert len(system_msgs) == 1
+    payload = system_msgs[0].system_payload or {}
+    assert payload["kind_tag"] == "task_failed", (
+        f"expected task_failed from DB-actual status, got: {payload['kind_tag']!r}"
+    )
+    assert payload["status"] == "failed", (
+        f"expected status='failed', got: {payload['status']!r}"
+    )
+    assert payload.get("cancelled") is True
+
+
+# ---------------------------------------------------------------------------
+# P2 — Atomic turn-cap projection + mint
+# ---------------------------------------------------------------------------
+
+
+def test_mint_followup_with_cap_extend_bumps_when_projection_over(tmp_path):
+    db = _fresh_db(tmp_path)
+    db.insert_thread(ThreadRecord(id="THR-1", subject="t", turn_cap=1, turns_used=1))
+    db.add_thread_participant("THR-1", "alice", added_by="founder")
+    seq = db.append_thread_message(
+        thread_id="THR-1", speaker="alice", kind=ThreadMessageKind.SYSTEM,
+        system_payload={"kind_tag": "task_completed"},
+    )
+    # turns_used=1, pending=0, projected=1+0+1=2 > turn_cap=1 → must bump.
+    inv, new_cap = db.mint_followup_invocation_with_cap_extend(
+        thread_id="THR-1", agent_name="alice", triggering_seq=seq,
+    )
+    assert new_cap == 2
+    refetched = db.get_thread("THR-1")
+    assert refetched.turn_cap == 2
+    assert inv.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP
+
+
+def test_mint_followup_with_cap_extend_no_bump_when_within_cap(tmp_path):
+    db = _fresh_db(tmp_path)
+    db.insert_thread(ThreadRecord(id="THR-1", subject="t", turn_cap=500, turns_used=0))
+    db.add_thread_participant("THR-1", "alice", added_by="founder")
+    seq = db.append_thread_message(
+        thread_id="THR-1", speaker="alice", kind=ThreadMessageKind.SYSTEM,
+        system_payload={"kind_tag": "task_completed"},
+    )
+    # turns_used=0, pending=0, projected=0+0+1=1 <= turn_cap=500 → no bump.
+    inv, new_cap = db.mint_followup_invocation_with_cap_extend(
+        thread_id="THR-1", agent_name="alice", triggering_seq=seq,
+    )
+    assert new_cap is None
+    refetched = db.get_thread("THR-1")
+    assert refetched.turn_cap == 500
+    assert inv.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP
+
+
+def test_two_concurrent_mints_dont_exceed_cap(tmp_path):
+    """Under @_synchronized the two mints serialize, so each observes the
+    other's pending mint when computing the projection, and cap ends at 2
+    (one bump per call) rather than the racy outcome of 1 bump total."""
+    import threading
+
+    db = _fresh_db(tmp_path)
+    db.insert_thread(ThreadRecord(id="THR-1", subject="t", turn_cap=0, turns_used=0))
+    db.add_thread_participant("THR-1", "alice", added_by="founder")
+    seq1 = db.append_thread_message(
+        thread_id="THR-1", speaker="alice", kind=ThreadMessageKind.SYSTEM,
+        system_payload={"kind_tag": "task_completed"},
+    )
+    seq2 = db.append_thread_message(
+        thread_id="THR-1", speaker="alice", kind=ThreadMessageKind.SYSTEM,
+        system_payload={"kind_tag": "task_completed"},
+    )
+    results: list = []
+    errors: list = []
+
+    def worker(s: int) -> None:
+        try:
+            results.append(
+                db.mint_followup_invocation_with_cap_extend(
+                    thread_id="THR-1", agent_name="alice", triggering_seq=s,
+                )
+            )
+        except Exception as exc:
+            errors.append(exc)
+
+    t1 = threading.Thread(target=worker, args=(seq1,))
+    t2 = threading.Thread(target=worker, args=(seq2,))
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert not errors, f"unexpected errors: {errors}"
+    assert len(results) == 2
+
+    refetched = db.get_thread("THR-1")
+    # Both mints must have landed; the cap must reflect both bumps (2).
+    assert refetched.turn_cap == 2, (
+        f"expected cap=2 (one bump per mint), got {refetched.turn_cap}"
+    )
+    pending = db.count_pending_turn_obligations("THR-1")
+    assert pending == 2
+
+
 def test_cancel_pending_thread_dispatched_task_fires_followup(orch_with_thread_queue):
     """A PENDING task cancelled via the cancel path must fire a followup.
 

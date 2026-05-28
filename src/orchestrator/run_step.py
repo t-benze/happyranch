@@ -1178,7 +1178,7 @@ def _maybe_post_thread_followup(
     """
     import json as _json
 
-    # Predicate gate.
+    # Predicate gate — first pass using caller's claim (cheap early-out).
     if status == TaskStatus.FAILED and auto_revisit_spawned:
         return
     if status not in (TaskStatus.COMPLETED, TaskStatus.FAILED):
@@ -1188,6 +1188,18 @@ def _maybe_post_thread_followup(
     audit = orch._audit
     terminal_task = db.get_task(task_id)
     if terminal_task is None:
+        return
+
+    # Re-read the persisted status. Site D's caller passes COMPLETED, but
+    # /cancel may have raced past Guard B and flipped the row to
+    # failed+cancelled_at; _complete() short-circuits in that race, leaving
+    # the row at FAILED. Trust the DB, not the caller's claim.
+    actual_status = terminal_task.status
+    if actual_status not in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+        # Row isn't terminal yet — caller raced ahead of the DB write.
+        # Bail; the eventual real terminal will re-enter this helper.
+        return
+    if actual_status == TaskStatus.FAILED and auto_revisit_spawned:
         return
 
     # Only root tasks fire. Children are handled at their parent's terminal site.
@@ -1248,42 +1260,46 @@ def _maybe_post_thread_followup(
         return
     dispatcher = _payload_dict(dispatch_rows[0])["dispatcher"]
 
-    # Build system payload.
-    kind_tag = "task_completed" if status == TaskStatus.COMPLETED else "task_failed"
+    # Build system payload using DB-actual status (not the caller's claim) so
+    # a cancel race at Site D doesn't emit task_completed for a FAILED row.
+    kind_tag = "task_completed" if actual_status == TaskStatus.COMPLETED else "task_failed"
     system_payload = {
         "kind_tag": kind_tag,
         "task_id": task_id,
         "original_task_id": original.id,
         "root_task_id": original.id,
-        "status": status.value,
+        "status": actual_status.value,
         "final_output_summary": terminal_task.note or "",
         "final_artifact_dir": terminal_task.final_artifact_dir,
         "cancelled": terminal_task.cancelled_at is not None,
         "revisit_chain_length": len(chain) if chain else 1,
     }
 
-    # Turn-cap projection + auto-extend.
-    pending = db.count_pending_turn_obligations(thread_id)
-    projected = thread.turns_used + pending + 1
-    if projected > thread.turn_cap:
-        new_cap = db.bump_thread_turn_cap(thread_id, delta=1)
-        audit.log_thread_turn_cap_auto_extended(
-            thread_id, original_task_id=original.id,
-            reason="task_followup", new_cap=new_cap,
-        )
-
-    # Append system message + mint invocation.
+    # Append system message (separate from the atomic cap+mint below — the
+    # system message ordering relative to concurrent system messages is not
+    # part of the atomicity invariant we're protecting).
     from src.models import ThreadMessageKind as _TMK, ThreadInvocationPurpose as _TIP
     sys_seq = db.append_thread_message(
         thread_id=thread_id, speaker=dispatcher,
         kind=_TMK.SYSTEM,
         system_payload=system_payload,
     )
-    inv = db.mint_thread_invocation(
-        thread_id=thread_id, agent_name=dispatcher,
+
+    # Atomic cap-projection + conditional bump + mint.  Closes the TOCTOU race
+    # where two concurrent root completions on the same thread both read the
+    # same pending count, both skip the bump, both mint, and leave the thread
+    # with more obligations than turn_cap.  The @_synchronized RLock on
+    # mint_followup_invocation_with_cap_extend serializes all three steps.
+    inv, new_cap = db.mint_followup_invocation_with_cap_extend(
+        thread_id=thread_id,
+        agent_name=dispatcher,
         triggering_seq=sys_seq,
-        purpose=_TIP.TASK_FOLLOWUP,
     )
+    if new_cap is not None:
+        audit.log_thread_turn_cap_auto_extended(
+            thread_id, original_task_id=original.id,
+            reason="task_followup", new_cap=new_cap,
+        )
     audit.log_thread_task_followup_enqueued(
         thread_id, original_task_id=original.id, terminal_task_id=task_id,
         dispatcher=dispatcher, invocation_token=inv.invocation_token,
