@@ -276,15 +276,16 @@ def test_manager_self_dispatch_from_talk_succeeds(client_with_runtime):
 
 def test_dispatch_unknown_agent_when_workspace_missing(client_with_runtime):
     client, state = client_with_runtime
-    # Manager talk so role check passes; target agent has enrollment but no workspace.
-    _seed_workspace(state, "engineering_head")
+    # Agent has an agent file (so team resolution succeeds) but no workspace dir.
+    # Under the self-only rule the dispatcher IS the effective target, so the
+    # workspace-missing check is hit on a self-dispatch.
     _seed_workspace(state, "dev_agent", with_dir=False)
     # No workspace dir created on disk.
 
-    talk_id = open_talk_for(client, "engineering_head")
+    talk_id = open_talk_for(client, "dev_agent")
     r = client.post(
         f"/api/v1/orgs/alpha/talks/{talk_id}/dispatch",
-        json={"brief": "x", "target_agent": "dev_agent"},
+        json={"brief": "x"},
     )
     assert r.status_code == 404
     detail = r.json()["detail"]
