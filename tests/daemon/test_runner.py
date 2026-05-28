@@ -24,7 +24,7 @@ def test_enqueue_task_pushes_tuple(tmp_path: Path) -> None:
     _seed_org(rt.orgs_dir / "alpha")
     state = DaemonState.from_runtime(rt, Settings())
     enqueue_task(state, "alpha", "TASK-001")
-    assert state.queue._queue.get_nowait() == ("alpha", "TASK-001")
+    assert state.queue._queue.get_nowait() == ("alpha", "TASK-001", None)
 
 
 def test_enqueue_task_idle_raises(tmp_path: Path) -> None:

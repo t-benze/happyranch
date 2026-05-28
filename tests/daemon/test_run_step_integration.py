@@ -51,8 +51,8 @@ class _LocalDispatcher:
     def __init__(self, orch: Orchestrator) -> None:
         self._orch = orch
 
-    def run_step(self, slug: str, task_id: str) -> None:
-        self._orch.run_step(task_id)
+    def run_step(self, slug: str, task_id: str, metadata: dict | None = None) -> None:
+        self._orch.run_step(task_id, metadata=metadata)
 
     def heartbeat(self, slug: str, task_id: str) -> None:
         # No-op — heartbeat liveness isn't exercised by these tests.

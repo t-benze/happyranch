@@ -729,7 +729,7 @@ def test_resolve_escalation_approve_resumes_task(client_with_runtime):
     assert t.block_kind is None
     # Self re-enqueued so the manager picks it up next; queue carries
     # (slug, task_id) tuples in the multi-org layout.
-    assert daemon.queue._queue.get_nowait() == ("alpha", "T-1")
+    assert daemon.queue._queue.get_nowait() == ("alpha", "T-1", None)
 
 
 def test_resolve_escalation_reject_transitions_to_failed(client_with_runtime):
@@ -800,7 +800,7 @@ def test_resolve_escalation_approve_reenqueues_child_not_parent(client_with_runt
     # Approve re-enqueues the child itself (resumes the work). Parent stays
     # blocked(DELEGATED) and will be woken when the child next reaches a
     # true terminal — no immediate parent wake here.
-    assert daemon.queue._queue.get_nowait() == ("alpha", "T-CHD")
+    assert daemon.queue._queue.get_nowait() == ("alpha", "T-CHD", None)
     assert daemon.queue._queue.empty()
     par = state.db.get_task("T-PAR")
     assert par.status == TaskStatus.BLOCKED

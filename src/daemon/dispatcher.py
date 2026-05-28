@@ -21,7 +21,7 @@ class Dispatcher:
     def __init__(self, state: DaemonState) -> None:
         self._state = state
 
-    def run_step(self, slug: str, task_id: str) -> None:
+    def run_step(self, slug: str, task_id: str, metadata: dict | None = None) -> None:
         try:
             org = self._state.get_org(slug)
         except KeyError:
@@ -32,7 +32,7 @@ class Dispatcher:
                 task_id,
             )
             return
-        org.orchestrator.run_step(task_id)
+        org.orchestrator.run_step(task_id, metadata=metadata)
 
     def heartbeat(self, slug: str, task_id: str) -> None:
         """Stamp ``tasks.last_heartbeat`` on the per-org DB.

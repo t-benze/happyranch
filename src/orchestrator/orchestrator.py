@@ -73,6 +73,11 @@ class Orchestrator:
         self._notifier = None  # wired by daemon
         self._thread_queue = None  # wired by daemon (ThreadQueue)
         self._main_loop = None    # wired by daemon (asyncio event loop for cross-thread enqueues)
+        # Metadata stash: keyed by task_id, populated by run_step when the
+        # queue carries a metadata dict (e.g. trigger context from a job
+        # terminal event).  Consumed by run_step_impl at CAS-win; always
+        # popped in the finally block regardless of whether it was consumed.
+        self._pending_resume_metadata: dict[str, dict] = {}
 
     @property
     def teams(self) -> TeamsRegistry:
@@ -377,14 +382,27 @@ class Orchestrator:
         logger.info("Created task %s: %s", task_id, brief)
         return task_id
 
-    def run_step(self, task_id: str) -> None:
+    def run_step(self, task_id: str, metadata: dict | None = None) -> None:
         """Advance a task one agent-subprocess worth.
 
         Contract: task MUST be PENDING or BLOCKED(DELEGATED)-with-all-children-
         terminal. Anything else is a stale enqueue and is silently ignored.
+
+        ``metadata`` is an optional trigger-context dict forwarded from the
+        queue (e.g. ``{"trigger": "job_terminal", "triggering_job_id": "JOB-5"}``).
+        It is stashed in ``_pending_resume_metadata`` for consumption by
+        ``run_step_impl`` at CAS-win (Task 11), then popped unconditionally in
+        the finally block so stale entries never leak across re-enqueues.
         """
-        from src.orchestrator.run_step import run_step_impl
-        run_step_impl(self, task_id)
+        if metadata is not None:
+            self._pending_resume_metadata[task_id] = metadata
+        try:
+            from src.orchestrator.run_step import run_step_impl
+            run_step_impl(self, task_id)
+        finally:
+            # Always pop — if run_step_impl didn't consume it (e.g., predicate
+            # not satisfied this pickup), it's stale for the next pickup.
+            self._pending_resume_metadata.pop(task_id, None)
 
     def _parse_next_step(self, report: CompletionReport | None) -> NextStep:
         """Parse the team manager's decision from its completion report.
