@@ -633,6 +633,12 @@ def _completion_payload_from_file(path: str) -> tuple[str, dict]:
     # the orchestrator parses it via the NextStep pydantic model.
     if data.get("decision") is not None:
         body["decision"] = data["decision"]
+    # Agents self-blocking on jobs pass `waiting_on_job_ids` so the daemon's
+    # block-on-jobs branch (run_step's self-blocked handler) transitions the
+    # task to BLOCKED+BLOCKED_ON_JOB instead of the legacy self-escalate path.
+    # Absence is the default; only forward when explicitly present.
+    if data.get("waiting_on_job_ids"):
+        body["waiting_on_job_ids"] = data["waiting_on_job_ids"]
     return data["task_id"], body
 
 

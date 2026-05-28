@@ -519,6 +519,45 @@ def test_completion_payload_from_file_omits_decision_when_absent(tmp_path):
     assert "decision" not in body
 
 
+def test_completion_payload_from_file_passes_waiting_on_job_ids_through(tmp_path):
+    """Agents self-blocking on jobs include `waiting_on_job_ids` in the JSON
+    payload. The CLI must forward the list verbatim to the daemon body — without
+    it, the daemon-side block-on-jobs branch never sees the list and the task
+    falls through to the legacy self-escalate path."""
+    import json as _json
+    from src.cli import _completion_payload_from_file
+
+    path = tmp_path / "blocked.json"
+    path.write_text(_json.dumps({
+        "task_id": "TASK-001",
+        "session_id": "sess-1",
+        "agent": "dev_agent",
+        "status": "blocked",
+        "confidence": 0,
+        "summary": "Waiting on JOB-12 and JOB-13",
+        "waiting_on_job_ids": ["JOB-12", "JOB-13"],
+    }))
+    _, body = _completion_payload_from_file(str(path))
+    assert body["waiting_on_job_ids"] == ["JOB-12", "JOB-13"]
+
+
+def test_completion_payload_from_file_omits_waiting_on_job_ids_when_absent(tmp_path):
+    """When the agent doesn't include `waiting_on_job_ids`, the CLI must NOT
+    inject an empty list — absence vs. empty list is a meaningful distinction
+    on the daemon side (empty list bumps to the legacy self-escalate path
+    silently; absence is the default for non-blocked completions)."""
+    import json as _json
+    from src.cli import _completion_payload_from_file
+
+    path = tmp_path / "w.json"
+    path.write_text(_json.dumps({
+        "task_id": "T", "session_id": "s", "agent": "dev_agent",
+        "status": "completed", "summary": "done",
+    }))
+    _, body = _completion_payload_from_file(str(path))
+    assert "waiting_on_job_ids" not in body
+
+
 def test_report_completion_parser_accepts_from_file_alone():
     """With --from-file, none of --task-id/--session-id/... are required.
     --org IS required for agent callbacks (see test_report_completion_parser_requires_org)."""
