@@ -636,8 +636,11 @@ def _completion_payload_from_file(path: str) -> tuple[str, dict]:
     # Agents self-blocking on jobs pass `waiting_on_job_ids` so the daemon's
     # block-on-jobs branch (run_step's self-blocked handler) transitions the
     # task to BLOCKED+BLOCKED_ON_JOB instead of the legacy self-escalate path.
-    # Absence is the default; only forward when explicitly present.
-    if data.get("waiting_on_job_ids"):
+    # Forward when explicitly present (membership check, NOT truthiness) so
+    # the daemon sees an explicit `[]` and can reject it with the documented
+    # 400 empty_waiting_on_job_ids — otherwise a malformed payload silently
+    # bypasses the block-on-jobs contract.
+    if "waiting_on_job_ids" in data:
         body["waiting_on_job_ids"] = data["waiting_on_job_ids"]
     return data["task_id"], body
 

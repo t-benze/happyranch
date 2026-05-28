@@ -281,8 +281,17 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "session_mismatch", "active": expected, "got": body.session_id},
         )
-    # Spec §6.2: validate waiting_on_job_ids if present.
-    if body.waiting_on_job_ids:
+    # Spec §6.2: validate waiting_on_job_ids if EXPLICITLY present. We check
+    # model_fields_set rather than truthiness so we can distinguish "client
+    # omitted the field" (legacy escalate path, no validation) from "client
+    # explicitly sent []" (malformed payload — reject with 400). The truthy
+    # guard collapses both cases, silently bypassing the contract.
+    if "waiting_on_job_ids" in body.model_fields_set:
+        if not body.waiting_on_job_ids:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "empty_waiting_on_job_ids"},
+            )
         if body.status != "blocked":
             raise HTTPException(
                 status_code=400,
@@ -292,11 +301,6 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
                 },
             )
         deduped = sorted(set(body.waiting_on_job_ids))
-        if not deduped:
-            raise HTTPException(
-                status_code=400,
-                detail={"code": "empty_waiting_on_job_ids"},
-            )
         for jid in deduped:
             owner = org.db.get_job_owner_task_id(jid)
             if owner is None:

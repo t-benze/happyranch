@@ -195,7 +195,8 @@ def test_waiting_on_job_ids_round_trips_via_db(client_with_runtime):
 
 
 def test_completion_blocked_without_waiting_on_job_ids_still_works(client_with_runtime):
-    """status=blocked with empty waiting_on_job_ids (normal block) is unaffected."""
+    """status=blocked with the field ABSENT (not explicit []) is the legacy
+    self-escalate path and stays unaffected by the new validation."""
     client, org = client_with_runtime
     task_id, session_id = _make_active_task(org)
 
@@ -210,6 +211,54 @@ def test_completion_blocked_without_waiting_on_job_ids_still_works(client_with_r
         },
     )
     assert resp.status_code == 200
+
+
+def test_completion_blocked_with_explicit_empty_list_returns_400(client_with_runtime):
+    """status=blocked + EXPLICIT waiting_on_job_ids=[] is malformed — the agent
+    set the field but didn't supply ids. Return 400 empty_waiting_on_job_ids
+    instead of silently falling through to the legacy escalate path (which
+    would mask the bug in the agent's JSON construction)."""
+    client, org = client_with_runtime
+    task_id, session_id = _make_active_task(org)
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
+        json={
+            "session_id": session_id,
+            "agent": "dev_agent",
+            "status": "blocked",
+            "confidence": 0,
+            "output_summary": "waiting",
+            "waiting_on_job_ids": [],
+        },
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["code"] == "empty_waiting_on_job_ids"
+
+
+def test_completion_completed_with_explicit_empty_list_returns_400(client_with_runtime):
+    """status=completed + EXPLICIT waiting_on_job_ids=[] is also malformed —
+    the agent shouldn't be setting the field on a completed report. Reject
+    with the same 400 empty_waiting_on_job_ids; the empty-list check fires
+    before the status check (a non-blocked status with an empty list is the
+    most surprising case to debug — the explicit-empty signal beats
+    waiting_on_job_ids_requires_blocked since the list is empty)."""
+    client, org = client_with_runtime
+    task_id, session_id = _make_active_task(org)
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
+        json={
+            "session_id": session_id,
+            "agent": "dev_agent",
+            "status": "completed",
+            "confidence": 80,
+            "output_summary": "done",
+            "waiting_on_job_ids": [],
+        },
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["code"] == "empty_waiting_on_job_ids"
 
 
 def test_completion_multiple_valid_jobs_accepted(client_with_runtime):

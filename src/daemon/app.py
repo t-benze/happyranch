@@ -100,16 +100,6 @@ async def _lifespan(app: FastAPI):
                 "recovered %d orphaned jobs in org %s: %s",
                 len(recovered), org.slug, recovered,
             )
-        # Spec §5.7: re-evaluate predicate for blocked-on-job tasks. Catches
-        # the case where a job's terminal happened during a crash window —
-        # the job is now terminal but caller A (jobs_runner hook) never fired
-        # because the daemon was down.
-        from src.orchestrator.run_step import _maybe_resume_blocked_task
-        for _task_id in org.db.list_tasks_blocked_on_jobs():
-            _maybe_resume_blocked_task(
-                org.orchestrator, _task_id,
-                trigger="startup_recovery", triggering_job_id=None,
-            )
 
     _main_loop = asyncio.get_running_loop()
     _attach_thread_queue_wiring(state, _main_loop)
@@ -119,6 +109,22 @@ async def _lifespan(app: FastAPI):
         _main_loop,
         lambda slug: state.orgs[slug].orchestrator if slug in state.orgs else None,
     )
+
+    # Spec §5.7: re-evaluate predicate for blocked-on-job tasks. Catches the
+    # case where a job's terminal happened during a crash window — the job is
+    # now terminal but caller A (jobs_runner hook) never fired because the
+    # daemon was down. Runs AFTER _attach_thread_queue_wiring so resumed
+    # tasks that complete fast (sub-second) still have a wired thread queue
+    # when their _maybe_post_thread_followup fires — otherwise the followup
+    # audits enqueue_unavailable and the thread loses its task-completed
+    # message.
+    from src.orchestrator.run_step import _maybe_resume_blocked_task
+    for org in state.orgs.values():
+        for _task_id in org.db.list_tasks_blocked_on_jobs():
+            _maybe_resume_blocked_task(
+                org.orchestrator, _task_id,
+                trigger="startup_recovery", triggering_job_id=None,
+            )
     thread_worker_tasks = [
         asyncio.create_task(thread_worker_loop(state, state.settings))
         for _ in range(4)
