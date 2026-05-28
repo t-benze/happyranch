@@ -367,6 +367,7 @@ class Orchestrator:
             dependencies=[],
             suggested_reviewer_focus=[],
             artifact_dir=row.get("artifact_dir"),
+            waiting_on_job_ids=row.get("waiting_on_job_ids") or [],
         )
 
     def create_task(self, brief: str, team: str = "engineering") -> str:

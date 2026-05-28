@@ -489,6 +489,10 @@ class Database:
             # Job-blocking link: spec §3.1. JSON array of JOB-NNN IDs that must
             # complete before this task can proceed. NULL means unblocked.
             "ALTER TABLE tasks ADD COLUMN blocked_on_job_ids TEXT",
+            # Completion-report job-wait list: JSON array of JOB-NNN IDs the
+            # agent asked to block on. Persisted alongside the task_result row
+            # so run_step can read it back via _read_completion_from_db.
+            "ALTER TABLE task_results ADD COLUMN waiting_on_job_ids TEXT",
         ):
             try:
                 self._conn.execute(ddl)
@@ -1206,13 +1210,14 @@ class Database:
         estimated_cost: float | None = None,
         artifact_dir: str | None = None,
         decision_json: str | None = None,
+        waiting_on_job_ids: list[str] | None = None,
     ) -> None:
         self._conn.execute(
             """INSERT INTO task_results
                (task_id, agent, session_id, status, output_summary, decision_json,
                 confidence_score, learnings, risks_flagged, duration_seconds,
-                token_count, estimated_cost, artifact_dir, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                token_count, estimated_cost, artifact_dir, waiting_on_job_ids, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task_id,
                 agent,
@@ -1227,6 +1232,7 @@ class Database:
                 token_count,
                 estimated_cost,
                 artifact_dir,
+                json.dumps(waiting_on_job_ids) if waiting_on_job_ids is not None else None,
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
@@ -1243,6 +1249,8 @@ class Database:
             d = dict(row)
             if d.get("risks_flagged"):
                 d["risks_flagged"] = json.loads(d["risks_flagged"])
+            if d.get("waiting_on_job_ids"):
+                d["waiting_on_job_ids"] = json.loads(d["waiting_on_job_ids"])
             result.append(d)
         return result
 
@@ -1263,6 +1271,8 @@ class Database:
             d = dict(row)
             if d.get("risks_flagged"):
                 d["risks_flagged"] = json.loads(d["risks_flagged"])
+            if d.get("waiting_on_job_ids"):
+                d["waiting_on_job_ids"] = json.loads(d["waiting_on_job_ids"])
             result.append(d)
         return result
 
@@ -1282,6 +1292,8 @@ class Database:
         d = dict(row)
         if d.get("risks_flagged"):
             d["risks_flagged"] = json.loads(d["risks_flagged"])
+        if d.get("waiting_on_job_ids"):
+            d["waiting_on_job_ids"] = json.loads(d["waiting_on_job_ids"])
         return d
 
     # --- Session Token Usage ---
@@ -1636,6 +1648,18 @@ class Database:
             "SELECT status FROM jobs WHERE id = ?", (job_id,)
         ).fetchone()
         return row["status"] if row is not None else None
+
+    @_synchronized
+    def get_job_owner_task_id(self, job_id: str) -> str | None:
+        """Return jobs.task_id for the given job id, or None if not present.
+
+        Used by the completion-route validation to verify that the agent
+        submitting a blocked completion actually owns the referenced jobs.
+        """
+        row = self._conn.execute(
+            "SELECT task_id FROM jobs WHERE id = ?", (job_id,)
+        ).fetchone()
+        return row["task_id"] if row is not None else None
 
     @_synchronized
     def list_jobs_db(
