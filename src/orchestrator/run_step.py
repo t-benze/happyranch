@@ -116,6 +116,10 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
             orch, task_id, failure_kind=failure_kind,
             failure_note=note, auto_revisit_spawned=spawned,
         )
+        _maybe_post_thread_followup(
+            orch, task_id,
+            status=TaskStatus.FAILED, auto_revisit_spawned=spawned,
+        )
         return
 
     # Persist token usage for this session, regardless of session outcome.
@@ -166,6 +170,10 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
             orch, task_id, failure_kind=failure_kind,
             failure_note=note, auto_revisit_spawned=spawned,
         )
+        _maybe_post_thread_followup(
+            orch, task_id,
+            status=TaskStatus.FAILED, auto_revisit_spawned=spawned,
+        )
         return
 
     orch._log_step_result(task_id, result, report)
@@ -178,6 +186,10 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
             orch, task_id, failure_kind="self_blocked",
             failure_note=note, auto_revisit_spawned=False,
             last_summary=report.output_summary or "",
+        )
+        _maybe_post_thread_followup(
+            orch, task_id,
+            status=TaskStatus.FAILED, auto_revisit_spawned=False,
         )
         return
 
@@ -203,6 +215,10 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
             artifact_dir=report.artifact_dir,
         )
         _enqueue_parent_if_waiting(orch, task_id)
+        _maybe_post_thread_followup(
+            orch, task_id,
+            status=TaskStatus.COMPLETED, auto_revisit_spawned=False,
+        )
         return
 
     if decision.action == "escalate":
@@ -237,6 +253,10 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
             _notify_failure_if_eligible(
                 orch, task_id, failure_kind="invalid_delegate",
                 failure_note=note, auto_revisit_spawned=False,
+            )
+            _maybe_post_thread_followup(
+                orch, task_id,
+                status=TaskStatus.FAILED, auto_revisit_spawned=False,
             )
             return
         # Cross-team delegation guard: a manager may only delegate to workers
@@ -325,6 +345,10 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
     _notify_failure_if_eligible(
         orch, task_id, failure_kind="unknown_action",
         failure_note=note, auto_revisit_spawned=False,
+    )
+    _maybe_post_thread_followup(
+        orch, task_id,
+        status=TaskStatus.FAILED, auto_revisit_spawned=False,
     )
 
 
@@ -886,6 +910,10 @@ def _enqueue_parent_if_waiting(
             orch, parent.id, failure_kind="cascade_fail",
             failure_note=note,
             auto_revisit_spawned=root_auto_revisit_spawned,
+        )
+        _maybe_post_thread_followup(
+            orch, parent.id,
+            status=TaskStatus.FAILED, auto_revisit_spawned=root_auto_revisit_spawned,
         )
         return
 

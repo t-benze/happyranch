@@ -598,3 +598,15 @@ def test_no_thread_queue_wired_writes_enqueue_unavailable_audit(orch_with_db):
     skipped = [r for r in audit_rows if r["action"] == "thread_followup_skipped"]
     assert skipped, "expected thread_followup_skipped audit row"
     assert _payload(skipped[0])["reason"] == "enqueue_unavailable"
+
+
+def test_completed_thread_dispatched_task_fires_followup_via_complete(orch_with_db):
+    """End-to-end at the _complete + helper interaction: COMPLETED root → followup minted."""
+    orch = orch_with_db
+    _seed_dispatched_root(orch)
+    from src.orchestrator.run_step import _complete, _maybe_post_thread_followup
+    _complete(orch, "TASK-1", note="done", artifact_dir=None)
+    _maybe_post_thread_followup(orch, "TASK-1",
+                                status=TaskStatus.COMPLETED, auto_revisit_spawned=False)
+    invs = orch._db.list_thread_invocations("THR-1")
+    assert sum(1 for i in invs if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP) == 1
