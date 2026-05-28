@@ -234,6 +234,7 @@ class CompletionBody(BaseModel):
     dependencies: list[str] = []
     suggested_reviewer_focus: list[str] = []
     artifact_dir: str | None = None
+    waiting_on_job_ids: list[str] = []
 
 
 @router.get("/tasks/{task_id}/events")

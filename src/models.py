@@ -84,6 +84,7 @@ class CompletionReport(BaseModel):
     dependencies: list[str] = Field(default_factory=list)
     suggested_reviewer_focus: list[str] = Field(default_factory=list)
     artifact_dir: str | None = None
+    waiting_on_job_ids: list[str] = Field(default_factory=list)
 
 
 class TaskStep(BaseModel):
