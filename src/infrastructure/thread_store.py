@@ -103,10 +103,10 @@ def render_transcript_body(messages: list) -> str:
                 )
                 summary = (payload.get("final_output_summary") or "").strip()
                 if summary:
-                    rendered += f"\n{summary[:240]}"
+                    rendered += f" · {summary[:240]}"
                 artifact = payload.get("final_artifact_dir")
                 if artifact:
-                    rendered += f"\n`{artifact}`"
+                    rendered += f" · `{artifact}`"
             elif tag == "task_failed":
                 tid = payload.get("task_id")
                 orig = payload.get("original_task_id")
@@ -121,7 +121,7 @@ def render_transcript_body(messages: list) -> str:
                     n = chain_len - 1
                     annotations.append(f"after {n} {'revisit' if n == 1 else 'revisits'}")
                 if annotations:
-                    rendered += "; " + "; ".join(annotations)
+                    rendered += " · " + "; ".join(annotations)
             elif tag == "turn_cap_extended":
                 rendered = (
                     f"system: turn cap extended from {payload.get('prior_cap')} "

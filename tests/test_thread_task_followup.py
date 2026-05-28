@@ -227,3 +227,45 @@ def test_thread_forward_renders_task_completed_and_failed():
         source_id="THR-1", messages=[msg_failed], subject="test thread"
     )
     assert "TASK-031" in out_failed
+
+
+def test_thread_store_task_completed_blockquote_wraps_all_lines():
+    """Every rendered line of the system message must be inside the blockquote (start with '> ')."""
+    from src.infrastructure.thread_store import render_transcript_body
+    from src.models import ThreadMessage, ThreadMessageKind
+    from datetime import datetime, timezone
+
+    msg = ThreadMessage(
+        thread_id="THR-1", seq=1, speaker="alice",
+        kind=ThreadMessageKind.SYSTEM,
+        system_payload={
+            "kind_tag": "task_completed",
+            "task_id": "TASK-7", "original_task_id": "TASK-7",
+            "status": "completed",
+            "final_output_summary": "PDF uploaded",
+            "final_artifact_dir": "/reports/TASK-7/",
+            "cancelled": False, "revisit_chain_length": 1,
+        },
+        created_at=datetime(2026, 5, 28, tzinfo=timezone.utc),
+    )
+    out = render_transcript_body([msg])
+    # Extract lines after the message header and before the blank line.
+    # The system message content lines should all start with "> ".
+    lines = out.splitlines()
+    # Find the message header and the blockquote lines that follow
+    blockquote_lines = []
+    in_system_block = False
+    for line in lines:
+        if line.startswith("## Message"):
+            in_system_block = True
+            continue
+        if in_system_block:
+            if not line.strip():  # blank line marks end of block
+                break
+            blockquote_lines.append(line)
+
+    # All blockquote lines should start with "> "
+    assert blockquote_lines, "Expected to find blockquote lines in output"
+    assert all(l.startswith("> ") for l in blockquote_lines), (
+        f"Lines escaping blockquote: {[l for l in blockquote_lines if not l.startswith('> ')]!r}"
+    )
