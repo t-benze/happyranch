@@ -2199,6 +2199,26 @@ class Database:
         self._conn.commit()
 
     @_synchronized
+    def bump_thread_turn_cap(self, thread_id: str, *, delta: int = 1) -> int:
+        """Atomically increment turn_cap by ``delta`` and return the new value.
+
+        Used by the task-followup hook to make room for the system-triggered
+        re-invocation when the projected turn count would exceed the current
+        cap.  Each bump is audited at the call site via
+        log_thread_turn_cap_auto_extended.
+        """
+        cursor = self._conn.execute(
+            "UPDATE threads SET turn_cap = turn_cap + ? WHERE id = ? "
+            "RETURNING turn_cap",
+            (delta, thread_id),
+        )
+        row = cursor.fetchone()
+        self._conn.commit()
+        if row is None:
+            raise KeyError(f"thread {thread_id} not found")
+        return int(row["turn_cap"])
+
+    @_synchronized
     def add_thread_kb_slug(self, thread_id: str, slug: str) -> None:
         cursor = self._conn.execute(
             "SELECT new_kb_slugs_json FROM threads WHERE id = ?", (thread_id,)

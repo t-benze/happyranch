@@ -269,3 +269,74 @@ def test_thread_store_task_completed_blockquote_wraps_all_lines():
     assert all(l.startswith("> ") for l in blockquote_lines), (
         f"Lines escaping blockquote: {[l for l in blockquote_lines if not l.startswith('> ')]!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 6 — bump_thread_turn_cap + audit helpers
+# ---------------------------------------------------------------------------
+
+
+def test_bump_thread_turn_cap_increments_and_returns_new_cap(tmp_path):
+    db = _fresh_db(tmp_path)
+    db.insert_thread(ThreadRecord(id="THR-1", subject="t", turn_cap=500))
+    new_cap = db.bump_thread_turn_cap("THR-1", delta=1)
+    assert new_cap == 501
+    refetched = db.get_thread("THR-1")
+    assert refetched.turn_cap == 501
+
+
+def test_bump_thread_turn_cap_unknown_thread_raises(tmp_path):
+    db = _fresh_db(tmp_path)
+    import pytest
+    with pytest.raises(Exception):  # KeyError or sqlite error; either is fine
+        db.bump_thread_turn_cap("THR-MISSING", delta=1)
+
+
+def test_log_thread_task_followup_enqueued_writes_audit_row(tmp_path):
+    db = _fresh_db(tmp_path)
+    from src.infrastructure.audit_logger import AuditLogger
+    audit = AuditLogger(db)
+    audit.log_thread_task_followup_enqueued(
+        thread_id="THR-1", original_task_id="TASK-1", terminal_task_id="TASK-7",
+        dispatcher="alice", invocation_token="abcdefgh12345678",
+    )
+    rows = db.get_audit_logs("TASK-7")
+    assert any(r["action"] == "thread_task_followup_enqueued" for r in rows)
+    row = next(r for r in rows if r["action"] == "thread_task_followup_enqueued")
+    payload = row["payload"] if isinstance(row["payload"], dict) else __import__("json").loads(row["payload"])
+    assert payload["thread_id"] == "THR-1"
+    assert payload["original_task_id"] == "TASK-1"
+    assert payload["dispatcher"] == "alice"
+    assert payload["invocation_token_prefix"] == "abcdefgh"  # truncated to 8
+
+
+def test_log_thread_followup_skipped_writes_reason_and_extras(tmp_path):
+    db = _fresh_db(tmp_path)
+    from src.infrastructure.audit_logger import AuditLogger
+    audit = AuditLogger(db)
+    audit.log_thread_followup_skipped(
+        thread_id="THR-1", original_task_id="TASK-1", terminal_task_id="TASK-1",
+        reason="thread_not_open", thread_status="archived", task_status="completed",
+    )
+    rows = db.get_audit_logs("TASK-1")
+    row = next(r for r in rows if r["action"] == "thread_followup_skipped")
+    payload = row["payload"] if isinstance(row["payload"], dict) else __import__("json").loads(row["payload"])
+    assert payload["reason"] == "thread_not_open"
+    assert payload["thread_status"] == "archived"
+    assert payload["task_status"] == "completed"
+
+
+def test_log_thread_turn_cap_auto_extended_writes_new_cap(tmp_path):
+    db = _fresh_db(tmp_path)
+    from src.infrastructure.audit_logger import AuditLogger
+    audit = AuditLogger(db)
+    audit.log_thread_turn_cap_auto_extended(
+        thread_id="THR-1", original_task_id="TASK-1",
+        reason="task_followup", new_cap=501,
+    )
+    rows = db.get_audit_logs("TASK-1")
+    row = next(r for r in rows if r["action"] == "thread_turn_cap_auto_extended")
+    payload = row["payload"] if isinstance(row["payload"], dict) else __import__("json").loads(row["payload"])
+    assert payload["thread_id"] == "THR-1"
+    assert payload["reason"] == "task_followup"
+    assert payload["new_cap"] == 501
