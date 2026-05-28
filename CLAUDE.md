@@ -66,11 +66,12 @@ System kernel milestones — org-agnostic infrastructure. Org content (agent ros
 14. Jobs (founder-approved + agent-autonomous) — JOB-NNN — agent submits a job with `review_required` and `persistent` flags. `review_required=true` enqueues for founder review; `false` auto-runs immediately. `persistent=true` means unbounded runtime (killed on task terminal or explicit stop); `false` means default 300s timeout. Runner module at `src/daemon/jobs_runner.py`, route module at `src/daemon/routes/jobs.py`, agent skill at `protocol/skills/jobs/SKILL.md`. Spec: `docs/superpowers/specs/2026-05-26-jobs-design.md`.
 15. Session-timeout auto-route — classify executor failures by kind (`session_timeout`, `no_callback`, `rate_limit`, `executor_error`, `agent_exception`, `session_failed` fallback) in `run_step._classify_failure_kind`. Per-kind auto-revisit cap (`_AUTO_REVISIT_CAP_PER_KIND = 2`) replaces the prior global cap — same-kind exhaustion at 2, different kinds have independent budgets. Cascade-fail Feishu notifications are suppressed when a root auto-revisit covers the lineage (the cascade still cascade-fails ancestors for state correctness; only the founder ping is dropped). `failure_kind` is hoisted to top-level of the `auto_revisit_of` audit payload for per-kind counting + AUTO-REVISIT-CONTEXT header rendering. Spec: `2026-05-25-session-timeout-auto-route-design.md`. Founder-ratified at TALK-037.
 16. Shared Assets — org-wide flat blob store for persistent agent artifacts (reports, exports, screenshots). `grassland assets {put,list,get}` CLI; daemon routes under `/api/v1/orgs/{slug}/assets`; audited puts; CLI-only design works uniformly across Claude/Codex/Opencode. Plan: `docs/superpowers/plans/2026-05-27-shared-assets.md`.
+17. **Task blocked-by-job** — agent self-blocks with `waiting_on_job_ids: ["JOB-NNN", ...]` in the `report-completion` payload; system auto-resumes the task when every listed job is terminal. Per-org `tasks.blocked_on_job_ids` JSON column + new `block_kind=blocked_on_job` value + three resume callers (jobs-runner terminal hook, in-place block branch in run_step, startup recovery scan). Spec: `docs/superpowers/specs/2026-05-28-task-blocked-by-job-design.md`.
 
 **Open:**
 
-17. **Founder dashboard** — aggregate audit logs and escalation summaries into a weekly view. Design: `protocol/05e-dashboard.md`.
-18. **Persistent agents** — long-running loops for runtime patterns that don't fit single-task batch execution (e.g., real-time customer-chat worker). Currently every agent session is one task → one subprocess.
+18. **Founder dashboard** — aggregate audit logs and escalation summaries into a weekly view. Design: `protocol/05e-dashboard.md`.
+19. **Persistent agents** — long-running loops for runtime patterns that don't fit single-task batch execution (e.g., real-time customer-chat worker). Currently every agent session is one task → one subprocess.
 
 ## Directory Layout
 
@@ -189,7 +190,7 @@ Both surfaces are generated from `allow_rules_for_agent(agent_name, cli=...)` in
 
 ## Task status vocabularies
 
-Agents self-report `status="completed"|"blocked"` via `grassland report-completion` (the worker's view of its session). The orchestrator-owned `TaskStatus` lives on the `tasks` row and is distinct: `{pending, in_progress, blocked, completed, failed}` based on orchestration classification, with `block_kind` (`delegated` | `escalated`) specifying the reason.
+Agents self-report `status="completed"|"blocked"` via `grassland report-completion` (the worker's view of its session). The orchestrator-owned `TaskStatus` lives on the `tasks` row and is distinct: `{pending, in_progress, blocked, completed, failed}` based on orchestration classification, with `block_kind` (`delegated` | `escalated` | `blocked_on_job`) specifying the reason.
 
 ## Manager decision contract
 
@@ -396,6 +397,29 @@ Routes under `/api/v1/orgs/{slug}/jobs/`: `POST /submit` (agent callback; auth v
 - **CLI `jobs run` uses raw httpx, not `OpcClient.stream`** — `OpcClient.stream` strips `event:` lines and yields only data payloads; useless for the multi-event-type (stdout/stderr/terminal) job stream. `cmd_jobs_run` accesses `client._client.stream(...)` directly to parse raw SSE frames. If this pattern repeats, promote `stream_raw` to the `OpcClient` public API.
 - **`review_required` and `persistent` are honor-system on submit** — the daemon does not introspect the script against `allow_rules`. Misclassification is recoverable via founder stop + audit + talk + learning. Do NOT add daemon-side validation here without re-litigating the design tradeoff in the spec.
 - **Task-terminal kill uses `_KILL_REASON_OVERRIDE` to signal `reason='task_ended'`** — the override dict is read inside `run_job` after the kill happens. If you add more kill paths, set the override BEFORE sending the signal so the runner sees it on the next bookkeeping pass.
+- **Auto-resume on terminal supersedes founder revisit for blocked-on-job tasks.** The original spec (§2) listed "no task wakes itself" as a non-goal; the 2026-05-28 task-blocked-by-job design reverses that. Agents now self-block with `waiting_on_job_ids` and resume automatically. The `grassland revisit` path remains valid as a founder-driven override (e.g., "give up on JOB-X, start over").
+
+## Task blocked-by-job (system auto-resumes from job terminals)
+
+Per-org `tasks.blocked_on_job_ids` (JSON text column) + new `BlockKind.BLOCKED_ON_JOB`. Spec: `docs/superpowers/specs/2026-05-28-task-blocked-by-job-design.md`. Implementation across `src/orchestrator/run_step.py` (entry-state branch + block-on-jobs branch in self-blocked handler + CAS-win audit + read-only `_maybe_resume_blocked_task` helper + `_blocked_jobs_resume_header_if_applicable`), `src/daemon/jobs_runner.py` (caller A bridge via `fire_resume_check_for_job`), and `src/daemon/app.py` (caller C startup recovery scan).
+
+**Non-obvious invariants:**
+
+- **State transitions are owned by `run_step_impl`, NOT the route or the helper.** The route only validates + persists the report. `_maybe_resume_blocked_task` is read-only — predicate-check + enqueue. The in-place transition `IN_PROGRESS → BLOCKED+BLOCKED_ON_JOB` happens in the self-blocked handler at `run_step.py:191-ish`. The reverse transition `BLOCKED+BLOCKED_ON_JOB → IN_PROGRESS` happens via the existing CAS `try_claim_for_step` at step 3 after the entry-state branch at step 1 admits the task. No new state-mutation primitives were introduced.
+
+- **`metadata` is a function parameter, NOT shared state.** Earlier draft used a `_pending_resume_metadata: dict[str, dict]` on Orchestrator; that pattern races under concurrent triggers (3 worker threads). The metadata `{trigger, triggering_job_id}` is now threaded through `TaskQueue.enqueue(metadata=...)` → `dispatcher.run_step` → `Orchestrator.run_step(task_id, metadata)` → `run_step_impl(orch, task_id, metadata)` as a function-local parameter. Don't reintroduce a stash.
+
+- **Three resume callers must remain symmetric.** Caller A (jobs-runner terminal hook) fires AFTER the job's status is committed to the DB — both spawn_failed/internal_error/normal-terminal branches of `_run_and_persist` in `routes/jobs.py` and the rejection path in `reject_job_from_notification`. Caller B (immediate predicate check in `run_step_impl`'s block-on-jobs branch) closes the submit-time race where a fast `review_required=false` job finishes between job-submit and block-submit. Caller C (startup recovery in lifespan) runs after `recover_orphaned_running_jobs` force-fails any orphans. All three call `_maybe_resume_blocked_task` (read-only); only the CAS at step 3 of `run_step_impl` flips state.
+
+- **The LIKE pattern `'%"JOB-NNN"%'` is suffix-anchored intentionally.** Caller A's lookup query uses `WHERE blocked_on_job_ids LIKE ?` with the JOB id wrapped in quotes so `JOB-1` does not match `JOB-12`. Don't strip the quotes.
+
+- **Resume-header consumption is idempotent via the audit log.** `_blocked_jobs_resume_header_if_applicable` renders the BLOCKED-JOBS-RESULTS header iff the most recent `task_resumed_from_jobs` audit row is newer than the most recent `orchestration_step` row for that task. After the resumed step runs, its own `orchestration_step` audit row supersedes the resume row, so the next step's prompt-build skips the header. No "header consumed" column needed.
+
+- **Predicate is ALL-terminal, not ANY-terminal.** A task blocked on JOB-A + JOB-B + JOB-C resumes only when every one of them is in `{completed, failed, rejected}`. The `triggering_job_id` in the audit payload is the one whose terminal closed the predicate (typically the last to finish).
+
+- **`waiting_on_job_ids=[]` is rejected at the route.** A blocked completion with an empty list returns `400 empty_waiting_on_job_ids`. The flow is "blocked + non-empty list" or "blocked + empty list = legacy self-escalate path"; the explicit-empty case is a client bug.
+
+- **`blocked_on_job_ids` is NOT copied onto revisit roots.** A manual founder revisit (`grassland revisit`) spawns a fresh root with `blocked_on_job_ids=NULL` — the founder is overriding the wait, so propagating it would defeat the purpose. Backward read via `walk_revisit_chain` is the contract for any future "the predecessor was blocked on these jobs" surfacing.
 
 ## Feishu notifications (founder push + reply-to-unblock)
 
