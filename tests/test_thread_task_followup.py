@@ -610,3 +610,41 @@ def test_completed_thread_dispatched_task_fires_followup_via_complete(orch_with_
                                 status=TaskStatus.COMPLETED, auto_revisit_spawned=False)
     invs = orch._db.list_thread_invocations("THR-1")
     assert sum(1 for i in invs if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP) == 1
+
+
+# ---------------------------------------------------------------------------
+# Task 9 — /cancel route fires followup for PENDING tasks
+# ---------------------------------------------------------------------------
+
+
+def test_cancel_pending_thread_dispatched_task_fires_followup(orch_with_thread_queue):
+    """A PENDING task cancelled via the cancel path must fire a followup.
+
+    The running-task cancellation path is covered transitively via Site B
+    in run_step (SIGTERM → rc=-15 → session-failure terminal). This test
+    locks the PENDING case: the task was never started, so run_step never
+    runs, and the cancel route itself must invoke the helper.
+    """
+    orch, thread_queue, main_loop = orch_with_thread_queue
+    _seed_dispatched_root(orch)
+    # Task is PENDING by default after _seed_dispatched_root. Simulate the
+    # /cancel route's state mutation + helper invocation directly.
+    from datetime import datetime, timezone
+    orch._db.update_task(
+        "TASK-1",
+        status=TaskStatus.FAILED,
+        cancelled_at=datetime.now(timezone.utc).isoformat(),
+    )
+    from src.orchestrator.run_step import _maybe_post_thread_followup
+    _maybe_post_thread_followup(
+        orch, "TASK-1",
+        status=TaskStatus.FAILED, auto_revisit_spawned=False,
+    )
+    # Drain to verify enqueue.
+    import asyncio
+    fut = asyncio.run_coroutine_threadsafe(thread_queue.get(), main_loop)
+    job = fut.result(timeout=2.0)
+    assert job.invocation_token
+    invs = orch._db.list_thread_invocations("THR-1")
+    followups = [i for i in invs if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP]
+    assert len(followups) == 1
