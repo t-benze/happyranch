@@ -142,7 +142,7 @@ def test_task_status_has_five_values():
 
 def test_block_kind_has_delegated_and_escalated():
     from src.models import BlockKind
-    assert {b.value for b in BlockKind} == {"delegated", "escalated"}
+    assert {b.value for b in BlockKind} == {"delegated", "escalated", "blocked_on_job"}
 
 
 def test_task_record_has_new_columns():
