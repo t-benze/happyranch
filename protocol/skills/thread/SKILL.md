@@ -94,6 +94,37 @@ Dispatching does NOT end the turn — you MUST still issue a reply or decline
 afterwards to release the invocation token. If you exit without either, the
 daemon will auto-decline on your behalf with reason="no_callback".
 
+## Dispatch from a thread is self-only
+
+When you are participating in a thread (REPLY / BOOTSTRAP turn), `grassland
+threads dispatch` may only target **yourself**. The runtime rejects any other
+target with `thread_dispatch_must_be_self`.
+
+This is intentional. Threads exist for founder-visible coordination and
+cross-team handoffs. Iterative work (review → revise → re-review, fan-out
+to multiple sub-tasks) belongs inside a task tree, where the manager-decision
+loop handles delegation natively.
+
+### Patterns
+
+- **Phase work in your own team:** self-dispatch a root task with a phase
+  brief. If you are a manager, your manager-decision loop drives delegation
+  to workers internally. The thread sees one `task_completed` /
+  `task_failed` system message and one TASK_FOLLOWUP turn at the end.
+
+- **Loop in another agent in your team:** use `grassland threads compose
+  --to <agent>` or `grassland threads invite`. They receive a thread
+  invocation (BOOTSTRAP or REPLY) and decide what to do with it.
+
+- **Cross-team handoff:** use `grassland threads compose --to
+  <other-team-manager>` — possibly opening a new thread for the cross-team
+  subject. Their manager receives a BOOTSTRAP turn and self-dispatches if
+  they take the work on.
+
+If you see `thread_dispatch_must_be_self` (or `talk_dispatch_must_be_self`)
+in an error envelope: you tried to push work onto another agent from inside
+a thread or talk. Re-route via compose, or self-dispatch and own the phase.
+
 ## Task-followup turn
 
 You may be invoked with the prompt-header line:
