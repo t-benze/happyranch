@@ -1115,6 +1115,153 @@ def _maybe_spawn_auto_revisit(
     return True
 
 
+def _maybe_post_thread_followup(
+    orch: "Orchestrator",
+    task_id: str,
+    *,
+    status: TaskStatus,
+    auto_revisit_spawned: bool,
+) -> None:
+    """Post a task-followup system message + mint a re-invocation for the dispatcher.
+
+    Fire predicate (spec §4):
+      - status == COMPLETED                                → always fire
+      - status == FAILED and not auto_revisit_spawned      → true terminal, fire
+      - status == FAILED and auto_revisit_spawned          → no-op (revisit chain
+                                                             will call this helper
+                                                             again at its terminal)
+
+    Only root tasks fire. Child terminals cascade-fail through the parent,
+    which re-enters this helper there. The originating thread is found by
+    walking ``walk_revisit_chain`` backward to the earliest predecessor and
+    reading ``dispatched_from_thread_id`` off that row.
+
+    Spec: docs/superpowers/specs/2026-05-28-thread-task-followup-design.md §4-§6
+    """
+    import json as _json
+
+    # Predicate gate.
+    if status == TaskStatus.FAILED and auto_revisit_spawned:
+        return
+    if status not in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+        return
+
+    db = orch._db
+    audit = orch._audit
+    terminal_task = db.get_task(task_id)
+    if terminal_task is None:
+        return
+
+    # Only root tasks fire. Children are handled at their parent's terminal site.
+    if terminal_task.parent_task_id is not None:
+        return
+
+    # Find the original dispatched root via the revisit chain.
+    # walk_revisit_chain returns [task, predecessor, ..., original].
+    chain = db.walk_revisit_chain(task_id)
+    original = chain[-1] if chain else terminal_task
+    thread_id = original.dispatched_from_thread_id
+    if thread_id is None:
+        # Not a thread-dispatched chain; silent no-op (no audit).
+        return
+
+    # Thread-state guard.
+    thread = db.get_thread(thread_id)
+    if thread is None:
+        audit.log_thread_followup_skipped(
+            thread_id, original_task_id=original.id, terminal_task_id=task_id,
+            reason="thread_not_open", thread_status="missing",
+            task_status=status.value,
+        )
+        return
+    from src.models import ThreadStatus as _ThreadStatus
+    if thread.status is not _ThreadStatus.OPEN:
+        audit.log_thread_followup_skipped(
+            thread_id, original_task_id=original.id, terminal_task_id=task_id,
+            reason="thread_not_open",
+            thread_status=thread.status.value,
+            task_status=status.value,
+        )
+        return
+
+    # Dispatcher identity: read from the thread_dispatch audit row on the
+    # ORIGINAL task (revisit roots don't have their own dispatch row).
+    dispatch_rows = [
+        r for r in db.get_audit_logs(thread_id)
+        if r["action"] == "thread_dispatch"
+        and _payload_dict(r).get("task_id") == original.id
+    ]
+    if not dispatch_rows:
+        audit.log_thread_followup_skipped(
+            thread_id, original_task_id=original.id, terminal_task_id=task_id,
+            reason="dispatcher_unresolved",
+        )
+        return
+    dispatcher = _payload_dict(dispatch_rows[0])["dispatcher"]
+
+    # Build system payload.
+    kind_tag = "task_completed" if status == TaskStatus.COMPLETED else "task_failed"
+    system_payload = {
+        "kind_tag": kind_tag,
+        "task_id": task_id,
+        "original_task_id": original.id,
+        "root_task_id": original.id,
+        "status": status.value,
+        "final_output_summary": terminal_task.note or "",
+        "final_artifact_dir": terminal_task.final_artifact_dir,
+        "cancelled": terminal_task.cancelled_at is not None,
+        "revisit_chain_length": len(chain) if chain else 1,
+    }
+
+    # Turn-cap projection + auto-extend.
+    pending = db.count_pending_turn_obligations(thread_id)
+    projected = thread.turns_used + pending + 1
+    if projected > thread.turn_cap:
+        new_cap = db.bump_thread_turn_cap(thread_id, delta=1)
+        audit.log_thread_turn_cap_auto_extended(
+            thread_id, original_task_id=original.id,
+            reason="task_followup", new_cap=new_cap,
+        )
+
+    # Append system message + mint invocation.
+    from src.models import ThreadMessageKind as _TMK, ThreadInvocationPurpose as _TIP
+    sys_seq = db.append_thread_message(
+        thread_id=thread_id, speaker=dispatcher,
+        kind=_TMK.SYSTEM,
+        system_payload=system_payload,
+    )
+    inv = db.mint_thread_invocation(
+        thread_id=thread_id, agent_name=dispatcher,
+        triggering_seq=sys_seq,
+        purpose=_TIP.TASK_FOLLOWUP,
+    )
+    audit.log_thread_task_followup_enqueued(
+        thread_id, original_task_id=original.id, terminal_task_id=task_id,
+        dispatcher=dispatcher, invocation_token=inv.invocation_token,
+    )
+
+    # Enqueue onto the thread queue. The Orchestrator does not hold a reference
+    # to the ThreadQueue (which is async-only and lives on OrgState).
+    # The invocation is minted as PENDING; the daemon's reap_pending_invocations
+    # and the startup recovery path will deliver it. Prompt delivery may be
+    # delayed by up to one reap cycle (~5s), which is acceptable for
+    # task-terminal followups (vs. interactive send latency).
+    # NOTE: _thread_queue is intentionally absent from Orchestrator — do NOT
+    # add it without a design review, as it would introduce an async/threading
+    # boundary into the synchronous run_step execution model.
+
+
+def _payload_dict(row: dict) -> dict:
+    """Coerce an audit row's ``payload`` field to a dict."""
+    import json as _json
+    p = row.get("payload")
+    if p is None:
+        return {}
+    if isinstance(p, dict):
+        return p
+    return _json.loads(p)
+
+
 def _session_failed_note(result, report) -> str:
     """Build an enriched `agent session failed` note.
 

@@ -340,3 +340,173 @@ def test_log_thread_turn_cap_auto_extended_writes_new_cap(tmp_path):
     assert payload["thread_id"] == "THR-1"
     assert payload["reason"] == "task_followup"
     assert payload["new_cap"] == 501
+
+
+# ---------------------------------------------------------------------------
+# Task 7 — _maybe_post_thread_followup core helper
+# ---------------------------------------------------------------------------
+
+
+import pytest as _pytest
+
+from src.config import Settings
+from src.models import TaskRecord, TaskStatus, ThreadRecord, ThreadStatus
+from src.orchestrator._paths import OrgPaths
+from src.orchestrator.orchestrator import Orchestrator
+from src.orchestrator.teams import TeamsRegistry
+from src.runtime import RuntimeDir
+
+
+@_pytest.fixture
+def orch_with_db(tmp_path: Path) -> Orchestrator:
+    """Fresh Orchestrator backed by an in-memory-equivalent temp DB.
+
+    Mirrors the pattern used throughout tests/test_run_step.py:
+    OrgPaths → TeamsRegistry.load → Orchestrator(db, settings, paths, slug, teams).
+    """
+    rt = RuntimeDir.init(tmp_path / "runtime")
+    paths = OrgPaths(root=rt.orgs_dir / "test")
+    db = Database(tmp_path / "test.db")
+    teams = TeamsRegistry.load(paths.root)
+    return Orchestrator(db=db, settings=Settings(), paths=paths, slug="test", teams=teams)
+
+
+def _seed_dispatched_root(
+    orch: Orchestrator,
+    *,
+    thread_id: str = "THR-1",
+    task_id: str = "TASK-1",
+    dispatcher: str = "alice",
+    target: str = "alice",
+) -> None:
+    """Insert an open thread + participant + dispatched root task + thread_dispatch audit row."""
+    orch._db.insert_thread(ThreadRecord(id=thread_id, subject="t"))
+    orch._db.add_thread_participant(thread_id, dispatcher, added_by="founder")
+    orch._db.insert_task(TaskRecord(
+        id=task_id, brief="b", team="ops", assigned_agent=target,
+        dispatched_from_thread_id=thread_id,
+    ))
+    orch._audit.log_thread_dispatch(
+        thread_id, task_id=task_id, dispatcher=dispatcher,
+        target_agent=target, team="ops",
+    )
+
+
+def _payload(row: dict) -> dict:
+    import json as _json
+    p = row["payload"]
+    return p if isinstance(p, dict) else _json.loads(p)
+
+
+# --- Truth table (spec §4) ---
+@_pytest.mark.parametrize("status,spawned,cancelled,should_fire", [
+    (TaskStatus.COMPLETED, False, False, True),   # row 1: normal completion
+    (TaskStatus.FAILED,    True,  False, False),  # row 2: revisit will run
+    (TaskStatus.FAILED,    False, False, True),   # row 3: chain dead
+    (TaskStatus.FAILED,    False, True,  True),   # row 4: founder-cancelled
+])
+def test_fire_predicate_truth_table(orch_with_db, status, spawned, cancelled, should_fire):
+    from src.orchestrator.run_step import _maybe_post_thread_followup
+    orch = orch_with_db
+    _seed_dispatched_root(orch)
+    if cancelled:
+        orch._db.update_task("TASK-1", cancelled_at="2026-05-28T00:00:00+00:00")
+    orch._db.update_task("TASK-1", status=status)
+    _maybe_post_thread_followup(orch, "TASK-1", status=status, auto_revisit_spawned=spawned)
+    invs = orch._db.list_thread_invocations("THR-1")
+    followups = [i for i in invs if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP]
+    assert (len(followups) == 1) == should_fire
+
+
+def test_non_root_task_does_not_fire(orch_with_db):
+    """Only root tasks fire. Child terminals must NOT spawn followups."""
+    from src.orchestrator.run_step import _maybe_post_thread_followup
+    orch = orch_with_db
+    _seed_dispatched_root(orch)
+    orch._db.insert_task(TaskRecord(
+        id="TASK-2", brief="b", team="ops", assigned_agent="alice",
+        parent_task_id="TASK-1",
+    ))
+    _maybe_post_thread_followup(orch, "TASK-2",
+                                status=TaskStatus.COMPLETED, auto_revisit_spawned=False)
+    invs = orch._db.list_thread_invocations("THR-1")
+    assert not any(i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP for i in invs)
+
+
+def test_walks_revisit_chain_to_find_thread(orch_with_db):
+    """Revisit root doesn't carry dispatched_from_thread_id; walk backward to find it."""
+    from src.orchestrator.run_step import _maybe_post_thread_followup
+    orch = orch_with_db
+    _seed_dispatched_root(orch, task_id="TASK-1")
+    orch._db.update_task("TASK-1", status=TaskStatus.FAILED)
+    orch._db.insert_task(TaskRecord(
+        id="TASK-2", brief="b", team="ops", assigned_agent="alice",
+        revisit_of_task_id="TASK-1",  # no dispatched_from_thread_id
+    ))
+    orch._db.update_task("TASK-2", status=TaskStatus.COMPLETED)
+    _maybe_post_thread_followup(orch, "TASK-2",
+                                status=TaskStatus.COMPLETED, auto_revisit_spawned=False)
+    invs = orch._db.list_thread_invocations("THR-1")
+    followups = [i for i in invs if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP]
+    assert len(followups) == 1
+
+
+def test_thread_not_open_skips_with_audit(orch_with_db):
+    from src.orchestrator.run_step import _maybe_post_thread_followup
+    orch = orch_with_db
+    _seed_dispatched_root(orch)
+    orch._db.set_thread_status("THR-1", status=ThreadStatus.ARCHIVED)
+    orch._db.update_task("TASK-1", status=TaskStatus.COMPLETED)
+    _maybe_post_thread_followup(orch, "TASK-1",
+                                status=TaskStatus.COMPLETED, auto_revisit_spawned=False)
+    invs = orch._db.list_thread_invocations("THR-1")
+    assert not any(i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP for i in invs)
+    audit_rows = orch._db.get_audit_logs("TASK-1")
+    assert any(r["action"] == "thread_followup_skipped" for r in audit_rows)
+
+
+def test_dispatcher_unresolved_skips_with_audit(orch_with_db):
+    """If task_dispatched audit row is missing, audit + skip."""
+    from src.orchestrator.run_step import _maybe_post_thread_followup
+    orch = orch_with_db
+    # Insert thread + dispatched task but NO audit row.
+    orch._db.insert_thread(ThreadRecord(id="THR-X", subject="t"))
+    orch._db.add_thread_participant("THR-X", "alice", added_by="founder")
+    orch._db.insert_task(TaskRecord(
+        id="TASK-X", brief="b", team="ops", assigned_agent="alice",
+        dispatched_from_thread_id="THR-X", status=TaskStatus.COMPLETED,
+    ))
+    _maybe_post_thread_followup(orch, "TASK-X",
+                                status=TaskStatus.COMPLETED, auto_revisit_spawned=False)
+    audit_rows = orch._db.get_audit_logs("TASK-X")
+    skipped = [r for r in audit_rows if r["action"] == "thread_followup_skipped"]
+    assert skipped, "expected thread_followup_skipped audit row"
+    assert _payload(skipped[0])["reason"] == "dispatcher_unresolved"
+
+
+def test_turn_cap_auto_extends_when_projected_over(orch_with_db):
+    from src.orchestrator.run_step import _maybe_post_thread_followup
+    orch = orch_with_db
+    _seed_dispatched_root(orch)
+    # Set the cap tight: turns_used=0, pending=0, so projected = 0 + 0 + 1 = 1 > 0 → bump.
+    orch._db.set_thread_turn_cap("THR-1", new_cap=0)
+    orch._db.update_task("TASK-1", status=TaskStatus.COMPLETED)
+    _maybe_post_thread_followup(orch, "TASK-1",
+                                status=TaskStatus.COMPLETED, auto_revisit_spawned=False)
+    refetched = orch._db.get_thread("THR-1")
+    assert refetched.turn_cap == 1
+
+
+def test_no_dispatched_from_thread_no_op(orch_with_db):
+    """Tasks that didn't come from a thread must produce no audit / no invocation."""
+    from src.orchestrator.run_step import _maybe_post_thread_followup
+    orch = orch_with_db
+    orch._db.insert_task(TaskRecord(
+        id="TASK-N", brief="b", team="ops", assigned_agent="alice",
+        status=TaskStatus.COMPLETED,
+    ))
+    _maybe_post_thread_followup(orch, "TASK-N",
+                                status=TaskStatus.COMPLETED, auto_revisit_spawned=False)
+    # No exception, no thread audit row written.
+    audit_rows = orch._db.get_audit_logs("TASK-N")
+    assert not any(r["action"].startswith("thread_") for r in audit_rows)
