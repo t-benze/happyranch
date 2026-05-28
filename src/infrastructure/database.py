@@ -2091,11 +2091,11 @@ class Database:
         send/compose projection in routes/threads.py and the auto-extend
         projection in _maybe_post_thread_followup.
         """
-        counted = {
+        counted = (
             ThreadInvocationPurpose.REPLY.value,
             ThreadInvocationPurpose.BOOTSTRAP.value,
             ThreadInvocationPurpose.TASK_FOLLOWUP.value,
-        }
+        )
         row = self._conn.execute(
             "SELECT COUNT(*) AS n FROM thread_invocations "
             "WHERE thread_id = ? AND status = ? AND purpose IN ({})".format(
