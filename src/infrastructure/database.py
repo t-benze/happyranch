@@ -486,6 +486,9 @@ class Database:
             # via `grassland revisit --session-timeout-seconds`; inherited from
             # parent on delegate and from predecessor root on revisit.
             "ALTER TABLE tasks ADD COLUMN session_timeout_seconds INTEGER",
+            # Job-blocking link: spec §3.1. JSON array of JOB-NNN IDs that must
+            # complete before this task can proceed. NULL means unblocked.
+            "ALTER TABLE tasks ADD COLUMN blocked_on_job_ids TEXT",
         ):
             try:
                 self._conn.execute(ddl)
