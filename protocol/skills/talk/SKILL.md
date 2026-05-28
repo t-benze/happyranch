@@ -137,8 +137,9 @@ The `--from-file` pattern matches `grassland report-completion`, `grassland mana
 
 ## Dispatch from a talk is self-only
 
-When you are participating in a talk, `grassland talks dispatch` may only
-target **yourself**. The runtime rejects any other target with
+When you are participating in a talk, `grassland dispatch` (the talk-path
+agent callback that carries a `talk_id` in its payload) may only target
+**yourself**. The runtime rejects any other target with
 `talk_dispatch_must_be_self`.
 
 This is intentional. Talks are 1:1 founder ↔ agent conversations for
