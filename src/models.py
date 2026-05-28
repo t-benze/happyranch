@@ -19,6 +19,7 @@ class TaskStatus(StrEnum):
 class BlockKind(StrEnum):
     DELEGATED = "delegated"
     ESCALATED = "escalated"
+    BLOCKED_ON_JOB = "blocked_on_job"
 
 
 class ReviewVerdict(StrEnum):
