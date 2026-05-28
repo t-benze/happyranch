@@ -10,7 +10,7 @@ import pytest
 from src.infrastructure.audit_logger import AuditLogger
 from src.infrastructure.database import Database
 from src.models import BlockKind, TaskRecord, TaskStatus
-from src.orchestrator.run_step import run_step_impl
+from src.orchestrator.run_step import run_step_impl, _blocked_jobs_resume_header_if_applicable
 
 
 @pytest.fixture
@@ -284,3 +284,60 @@ def test_existing_blocked_escalated_path_preserved(db_and_orch):
     after = db.get_task("TASK-1")
     assert after.status == TaskStatus.FAILED  # _fail path
     assert "self-blocked" in (after.note or "")
+
+
+def test_resume_header_rendered_after_audit_row(db_and_orch):
+    """If a task_resumed_from_jobs audit row exists newer than the most
+    recent orchestration_step row, header is rendered."""
+    db, orch = db_and_orch
+    db.insert_task(TaskRecord(
+        id="TASK-1", team="engineering", brief="t",
+        status=TaskStatus.IN_PROGRESS, parent_task_id=None,
+    ))
+    _insert_job(db, "JOB-1", "completed")
+    orch._audit.log_task_resumed_from_jobs(
+        task_id="TASK-1",
+        blocking_job_ids=["JOB-1"],
+        trigger="job_terminal",
+        triggering_job_id="JOB-1",
+        job_outcomes={"JOB-1": "completed"},
+    )
+
+    header = _blocked_jobs_resume_header_if_applicable(orch, "TASK-1")
+    assert header is not None
+    assert "BLOCKED-JOBS-RESULTS" in header
+    assert "JOB-1" in header
+    assert "completed" in header
+    assert "grassland jobs show JOB-1" in header
+
+
+def test_resume_header_skipped_after_step_runs(db_and_orch):
+    """Once an orchestration_step row exists newer than the audit row, the
+    header stops rendering."""
+    db, orch = db_and_orch
+    db.insert_task(TaskRecord(
+        id="TASK-1", team="engineering", brief="t",
+        status=TaskStatus.IN_PROGRESS, parent_task_id=None,
+    ))
+    _insert_job(db, "JOB-1", "completed")
+    orch._audit.log_task_resumed_from_jobs(
+        task_id="TASK-1",
+        blocking_job_ids=["JOB-1"],
+        trigger="job_terminal",
+        triggering_job_id="JOB-1",
+        job_outcomes={"JOB-1": "completed"},
+    )
+    orch._audit.log_orchestration_step("TASK-1", 1, {"action": "done"})
+
+    header = _blocked_jobs_resume_header_if_applicable(orch, "TASK-1")
+    assert header is None
+
+
+def test_resume_header_none_when_no_audit_row(db_and_orch):
+    db, orch = db_and_orch
+    db.insert_task(TaskRecord(
+        id="TASK-1", team="engineering", brief="t",
+        status=TaskStatus.IN_PROGRESS, parent_task_id=None,
+    ))
+    header = _blocked_jobs_resume_header_if_applicable(orch, "TASK-1")
+    assert header is None

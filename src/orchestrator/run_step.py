@@ -505,6 +505,9 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
     revisit = _revisit_header_if_applicable(orch, task.id)
     if revisit is not None:
         headers.append(revisit)
+    resume_header = _blocked_jobs_resume_header_if_applicable(orch, task.id)
+    if resume_header is not None:
+        headers.append(resume_header)
     resolved = _resolved_escalation_header_if_applicable(orch, task.id)
     if resolved is not None:
         headers.append(resolved)
@@ -698,6 +701,63 @@ def _auto_revisit_header(payload: dict) -> str:
         "decomposition is needed). Decide accordingly.",
     ]
     lines.extend(_REVISIT_DISCIPLINE_LINES)
+    return "\n".join(lines) + "\n\n"
+
+
+def _blocked_jobs_resume_header_if_applicable(
+    orch: "Orchestrator", task_id: str,
+) -> str | None:
+    """Return a BLOCKED-JOBS-RESULTS header on the first agent step after a
+    task resumes from a job-block, otherwise None.
+
+    Trigger: the most recent `task_resumed_from_jobs` audit entry for this task
+    has a higher row id than the most recent `orchestration_step` entry —
+    i.e. the jobs are terminal AND the agent hasn't run yet. Audit `id` is
+    autoincrement, so id-ordering is equivalent to chronological ordering.
+    Once the agent produces its first decision after resume,
+    `log_orchestration_step` writes a row with a higher id and this helper
+    returns None on every subsequent call.
+
+    Spec: §6.4.
+    """
+    import json as _json  # noqa: PLC0415
+
+    logs = orch._db.get_audit_logs(task_id)
+    last_resumed = None
+    last_step = None
+    for entry in logs:
+        action = entry["action"]
+        if action == "task_resumed_from_jobs":
+            last_resumed = entry
+        elif action == "orchestration_step":
+            last_step = entry
+    if last_resumed is None:
+        return None
+    if last_step is not None and last_step["id"] > last_resumed["id"]:
+        return None
+
+    payload = last_resumed["payload"] or {}
+    if isinstance(payload, str):
+        try:
+            payload = _json.loads(payload)
+        except Exception:
+            payload = {}
+    job_ids: list[str] = payload.get("blocking_job_ids", [])
+    outcomes: dict[str, str] = payload.get("job_outcomes", {})
+
+    lines: list[str] = [
+        "=== BLOCKED-JOBS-RESULTS (system) ===",
+        f"You self-blocked on {', '.join(job_ids)}. They are now terminal:",
+        "",
+    ]
+    for jid in job_ids:
+        status = outcomes.get(jid, "unknown")
+        lines.append(f"  {jid}  {status}")
+        lines.append(f"          → grassland jobs show {jid}")
+        lines.append(f"          → grassland jobs output {jid}")
+    lines.append("")
+    lines.append("Re-read your task brief; decide whether to proceed, retry, or escalate.")
+    lines.append("======================================")
     return "\n".join(lines) + "\n\n"
 
 
