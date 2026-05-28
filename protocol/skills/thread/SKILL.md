@@ -94,6 +94,29 @@ Dispatching does NOT end the turn — you MUST still issue a reply or decline
 afterwards to release the invocation token. If you exit without either, the
 daemon will auto-decline on your behalf with reason="no_callback".
 
+## Task-followup turn
+
+You may be invoked with the prompt-header line:
+
+> Task TASK-NNN that you dispatched from this thread reached `<status>`. ...
+
+This is a `task_followup` turn — the runtime injects it when a task you previously
+dispatched from this thread reaches a terminal state. The thread now contains a
+`task_completed` or `task_failed` system message with the task id, final summary,
+and artifact dir (if any).
+
+**What to do:** Reply with the result-bearing follow-up you owe the founder. Use
+`grassland details TASK-NNN` to read the full task record. If there is nothing
+substantive to add (e.g., the task was founder-cancelled and the founder already
+knows), decline.
+
+**What you may NOT do:** Dispatch a new task from this turn. The runtime rejects
+dispatch with purpose `task_followup` (HTTP 400 `wrong_invocation_purpose`). If a
+new action is warranted, mention it in your reply and let the founder loop in.
+
+Callback shapes are unchanged: same `reply` / `decline` payload schema as a normal
+reply turn.
+
 ## Close-out (archive)
 
 When invoked with "This thread is being archived":

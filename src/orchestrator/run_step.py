@@ -149,6 +149,16 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
         logger.debug(
             "run_step %s: cancelled during session, dropping report", task_id,
         )
+        # IN_PROGRESS cancellation: the cancel route sent SIGTERM and set
+        # cancelled_at BEFORE run_step reached Site B, so Site B never runs.
+        # Fire the followup here instead.  Disjoint with the cancel route's
+        # Phase 1b (which fires for PENDING/BLOCKED only — tasks that had no
+        # live subprocess at cancel time), so no double-fire risk.
+        if refetch is not None:
+            _maybe_post_thread_followup(
+                orch, task_id,
+                status=TaskStatus.FAILED, auto_revisit_spawned=False,
+            )
         return
 
     # ---- 5. Classify outcome ----
@@ -1186,7 +1196,18 @@ def _maybe_post_thread_followup(
 
     # Find the original dispatched root via the revisit chain.
     # walk_revisit_chain returns [task, predecessor, ..., original].
-    chain = db.walk_revisit_chain(task_id)
+    # Use a larger hop bound (200) consistent with _count_prior_auto_revisits_by_kind,
+    # and handle LineageTooDeep defensively rather than crashing and silently
+    # discarding the followup without any audit trail.
+    from src.infrastructure.database import LineageTooDeep  # local: avoid cycle
+    try:
+        chain = db.walk_revisit_chain(task_id, max_hops=200)
+    except LineageTooDeep:
+        audit.log_thread_followup_skipped(
+            "(unresolved)", original_task_id=task_id, terminal_task_id=task_id,
+            reason="chain_too_deep",
+        )
+        return
     original = chain[-1] if chain else terminal_task
     thread_id = original.dispatched_from_thread_id
     if thread_id is None:

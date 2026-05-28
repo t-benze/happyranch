@@ -786,12 +786,22 @@ async def cancel_task(
                 task_id=tid, rationale=rationale, cascade=body.cascade,
             )
 
-    # Phase 1b: fire thread followup for PENDING tasks only.  RUNNING tasks are
-    # handled transitively: SIGTERM → rc=-15 → run_step's Site B terminal → helper
-    # fires there.  Calling the helper here for RUNNING tasks would double-fire.
+    # Phase 1b: fire thread followup for PENDING and BLOCKED tasks.
+    #
+    # Two-site coverage (disjoint conditions, no double-fire risk):
+    #   • PENDING + BLOCKED → cancel route owns the followup here, because these
+    #     tasks have no live subprocess — SIGTERM is never sent so run_step never
+    #     runs and the cancel-race guard in run_step never triggers.
+    #   • IN_PROGRESS → cancel route sends SIGTERM (Phase 2 below); the
+    #     subprocess eventually exits with rc=-15; run_step's cancel-race guard
+    #     (``refetch.cancelled_at is not None → return``) fires _before_ Site B,
+    #     so run_step's cancel-race guard fires the helper there instead.
+    #
+    # The disjoint condition ensures we never fire twice for the same task.
+    _CANCEL_ROUTE_FIRES_FOR = {TaskStatus.PENDING, TaskStatus.BLOCKED}
     from src.orchestrator.run_step import _maybe_post_thread_followup
     for tid in to_cancel:
-        if prior_statuses.get(tid) == TaskStatus.PENDING:
+        if prior_statuses.get(tid) in _CANCEL_ROUTE_FIRES_FOR:
             _maybe_post_thread_followup(
                 org.orchestrator, tid,
                 status=TaskStatus.FAILED, auto_revisit_spawned=False,

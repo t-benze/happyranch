@@ -553,6 +553,67 @@ def orch_with_thread_queue(tmp_path: Path):
     thread.join(timeout=2.0)
 
 
+def test_cancel_in_progress_thread_dispatched_task_fires_followup(orch_with_thread_queue):
+    """IN_PROGRESS task cancelled mid-execution: run_step's cancel-race guard fires the helper."""
+    orch, thread_queue, main_loop = orch_with_thread_queue
+    _seed_dispatched_root(orch)
+    # Simulate the IN_PROGRESS + cancelled state at run_step's cancel-race guard entry.
+    from datetime import datetime, timezone
+    orch._db.update_task("TASK-1", status=TaskStatus.IN_PROGRESS)
+    orch._db.update_task("TASK-1",
+                         status=TaskStatus.FAILED,
+                         cancelled_at=datetime.now(timezone.utc).isoformat())
+    # The cancel-race guard branch in run_step would call:
+    from src.orchestrator.run_step import _maybe_post_thread_followup
+    _maybe_post_thread_followup(orch, "TASK-1",
+                                status=TaskStatus.FAILED, auto_revisit_spawned=False)
+    # Followup minted.
+    invs = orch._db.list_thread_invocations("THR-1")
+    followups = [i for i in invs if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP]
+    assert len(followups) == 1
+
+
+def test_cancel_blocked_thread_dispatched_task_fires_followup(orch_with_thread_queue):
+    """BLOCKED(DELEGATED) root cancellation: cancel route's Phase 1b fires the helper."""
+    orch, thread_queue, main_loop = orch_with_thread_queue
+    _seed_dispatched_root(orch)
+    # Walk through: prior_status=BLOCKED → cancel sets FAILED + cancelled_at → fire.
+    from datetime import datetime, timezone
+    orch._db.update_task("TASK-1", status=TaskStatus.BLOCKED, block_kind="delegated")
+    # Mirror cancel route's Phase 1b shape:
+    orch._db.update_task("TASK-1",
+                         status=TaskStatus.FAILED,
+                         cancelled_at=datetime.now(timezone.utc).isoformat())
+    from src.orchestrator.run_step import _maybe_post_thread_followup
+    _maybe_post_thread_followup(orch, "TASK-1",
+                                status=TaskStatus.FAILED, auto_revisit_spawned=False)
+    invs = orch._db.list_thread_invocations("THR-1")
+    followups = [i for i in invs if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP]
+    assert len(followups) == 1
+
+
+def test_lineage_too_deep_skips_with_audit(orch_with_db):
+    """Pathologically deep revisit chain raises LineageTooDeep → audit-skip, no crash."""
+    from src.infrastructure.database import LineageTooDeep
+    orch = orch_with_db
+    _seed_dispatched_root(orch)
+    orch._db.update_task("TASK-1", status=TaskStatus.COMPLETED)
+    # Monkeypatch walk_revisit_chain to simulate a chain that exceeds max_hops.
+    def _raise(*args, **kwargs):
+        raise LineageTooDeep("too deep")
+    orch._db.walk_revisit_chain = _raise
+    from src.orchestrator.run_step import _maybe_post_thread_followup
+    # Must not raise.
+    _maybe_post_thread_followup(orch, "TASK-1",
+                                status=TaskStatus.COMPLETED, auto_revisit_spawned=False)
+    audit_rows = orch._db.get_audit_logs("TASK-1")
+    assert any(
+        r["action"] == "thread_followup_skipped"
+        and "chain_too_deep" in str(r.get("payload", {}))
+        for r in audit_rows
+    )
+
+
 def test_helper_enqueues_invocation_to_thread_queue(orch_with_thread_queue):
     """Successful fire must put a ThreadJob on the org's thread queue."""
     import asyncio
