@@ -100,6 +100,16 @@ async def _lifespan(app: FastAPI):
                 "recovered %d orphaned jobs in org %s: %s",
                 len(recovered), org.slug, recovered,
             )
+        # Spec §5.7: re-evaluate predicate for blocked-on-job tasks. Catches
+        # the case where a job's terminal happened during a crash window —
+        # the job is now terminal but caller A (jobs_runner hook) never fired
+        # because the daemon was down.
+        from src.orchestrator.run_step import _maybe_resume_blocked_task
+        for _task_id in org.db.list_tasks_blocked_on_jobs():
+            _maybe_resume_blocked_task(
+                org.orchestrator, _task_id,
+                trigger="startup_recovery", triggering_job_id=None,
+            )
 
     _main_loop = asyncio.get_running_loop()
     _attach_thread_queue_wiring(state, _main_loop)
