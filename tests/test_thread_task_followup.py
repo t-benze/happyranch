@@ -510,3 +510,91 @@ def test_no_dispatched_from_thread_no_op(orch_with_db):
     # No exception, no thread audit row written.
     audit_rows = orch._db.get_audit_logs("TASK-N")
     assert not any(r["action"].startswith("thread_") for r in audit_rows)
+
+
+# ---------------------------------------------------------------------------
+# Task 8 (enqueue fix) — verify cross-thread enqueue via run_coroutine_threadsafe
+# ---------------------------------------------------------------------------
+
+
+@_pytest.fixture
+def orch_with_thread_queue(tmp_path: Path):
+    """Orchestrator with a real ThreadQueue + a dedicated event loop running in a
+    background thread, so run_coroutine_threadsafe can bridge run_step's worker
+    thread into the queue's async world.
+
+    Yields (orch, thread_queue, main_loop).  The loop thread is cleaned up
+    automatically when the fixture tears down.
+    """
+    import asyncio
+    import threading
+    from src.daemon.thread_queue import ThreadQueue
+
+    rt = RuntimeDir.init(tmp_path / "runtime")
+    paths = OrgPaths(root=rt.orgs_dir / "test")
+    db = Database(tmp_path / "test.db")
+    teams = TeamsRegistry.load(paths.root)
+    orch = Orchestrator(db=db, settings=Settings(), paths=paths, slug="test", teams=teams)
+
+    # Start a real event loop in a background daemon thread so we don't block
+    # the test thread.  This mirrors the daemon lifespan where the loop lives in
+    # the FastAPI/uvicorn thread and run_step uses run_coroutine_threadsafe to
+    # enqueue from the thread-pool worker.
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+
+    queue = ThreadQueue()
+    orch.attach_thread_queue(queue, loop)
+
+    yield orch, queue, loop
+
+    loop.call_soon_threadsafe(loop.stop)
+    thread.join(timeout=2.0)
+
+
+def test_helper_enqueues_invocation_to_thread_queue(orch_with_thread_queue):
+    """Successful fire must put a ThreadJob on the org's thread queue."""
+    import asyncio
+    from src.orchestrator.run_step import _maybe_post_thread_followup
+
+    orch, thread_queue, main_loop = orch_with_thread_queue
+    _seed_dispatched_root(orch)
+    orch._db.update_task("TASK-1", status=TaskStatus.COMPLETED)
+    _maybe_post_thread_followup(orch, "TASK-1",
+                                status=TaskStatus.COMPLETED, auto_revisit_spawned=False)
+
+    # Drive the background loop briefly so the scheduled coroutine lands on the queue.
+    fut = asyncio.run_coroutine_threadsafe(thread_queue.get(), main_loop)
+    job = fut.result(timeout=2.0)
+    assert job.org_slug == "test"
+    assert job.invocation_token  # any non-empty token
+
+    # Also assert the invocation token on the job matches what was minted in the DB.
+    invs = orch._db.list_thread_invocations("THR-1")
+    followups = [i for i in invs if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP]
+    assert len(followups) == 1
+    assert job.invocation_token == followups[0].invocation_token
+
+
+def test_no_thread_queue_wired_writes_enqueue_unavailable_audit(orch_with_db):
+    """When no thread_queue is wired (plain test orchestrator), the helper must
+    write a thread_followup_skipped row with reason='enqueue_unavailable' and
+    still mint the invocation (so the operator can see it)."""
+    from src.orchestrator.run_step import _maybe_post_thread_followup
+    orch = orch_with_db  # no attach_thread_queue call
+    _seed_dispatched_root(orch)
+    orch._db.update_task("TASK-1", status=TaskStatus.COMPLETED)
+    _maybe_post_thread_followup(orch, "TASK-1",
+                                status=TaskStatus.COMPLETED, auto_revisit_spawned=False)
+
+    # Invocation is still minted (best-effort; operator can reap or retry).
+    invs = orch._db.list_thread_invocations("THR-1")
+    followups = [i for i in invs if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP]
+    assert len(followups) == 1
+
+    # Audit row must record the unavailability.
+    audit_rows = orch._db.get_audit_logs("TASK-1")
+    skipped = [r for r in audit_rows if r["action"] == "thread_followup_skipped"]
+    assert skipped, "expected thread_followup_skipped audit row"
+    assert _payload(skipped[0])["reason"] == "enqueue_unavailable"

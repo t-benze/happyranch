@@ -54,6 +54,18 @@ def ensure_workers_started(state: DaemonState) -> None:
     state.queue.start_workers(dispatcher, n=3)
 
 
+def _attach_thread_queue_wiring(state: DaemonState, loop) -> None:
+    """Wire each org's ThreadQueue + the daemon main loop into its Orchestrator.
+
+    Called after the event loop is running (inside the lifespan) so that
+    ``run_step`` workers can cross the thread boundary via
+    ``asyncio.run_coroutine_threadsafe`` when enqueuing task-followup
+    invocations. Mirrors ``_attach_org_runtime_wiring``'s decoupled pattern.
+    """
+    for org in state.orgs.values():
+        org.orchestrator.attach_thread_queue(org.thread_queue, loop)
+
+
 def _start_feishu_listeners(state: DaemonState, loop) -> None:
     """For each org with full Feishu config, construct and start a listener."""
     from src.daemon.feishu_listener import start_feishu_listeners_for_state
@@ -89,7 +101,9 @@ async def _lifespan(app: FastAPI):
                 len(recovered), org.slug, recovered,
             )
 
-    _start_feishu_listeners(state, asyncio.get_running_loop())
+    _main_loop = asyncio.get_running_loop()
+    _attach_thread_queue_wiring(state, _main_loop)
+    _start_feishu_listeners(state, _main_loop)
     thread_worker_tasks = [
         asyncio.create_task(thread_worker_loop(state, state.settings))
         for _ in range(4)

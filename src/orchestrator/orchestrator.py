@@ -71,6 +71,8 @@ class Orchestrator:
         self._queue: "TaskQueue | None" = None  # wired by daemon
         self._sessions: "SessionTracker | None" = None  # wired by daemon
         self._notifier = None  # wired by daemon
+        self._thread_queue = None  # wired by daemon (ThreadQueue)
+        self._main_loop = None    # wired by daemon (asyncio event loop for cross-thread enqueues)
 
     @property
     def teams(self) -> TeamsRegistry:
@@ -102,6 +104,18 @@ class Orchestrator:
     def attach_notifier(self, notifier) -> None:
         """Wire a notifier (mirrors attach_queue / attach_sessions)."""
         self._notifier = notifier
+
+    def attach_thread_queue(self, thread_queue, main_loop) -> None:
+        """Wire the per-org ThreadQueue and the daemon's main event loop.
+
+        ``run_step`` runs on a thread-pool worker with no event loop of its
+        own; ``asyncio.run_coroutine_threadsafe`` bridges the boundary.
+        Decoupled from ``__init__`` for the same reason as ``attach_queue``
+        — tests that build an Orchestrator without a daemon never call this
+        and simply get the None-guarded skip path in ``_maybe_post_thread_followup``.
+        """
+        self._thread_queue = thread_queue
+        self._main_loop = main_loop
 
     def notify_escalated(
         self, *, task_id: str, agent: str, reason: str, last_summary: str = "",

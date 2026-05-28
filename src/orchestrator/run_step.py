@@ -1240,15 +1240,38 @@ def _maybe_post_thread_followup(
         dispatcher=dispatcher, invocation_token=inv.invocation_token,
     )
 
-    # Enqueue onto the thread queue. The Orchestrator does not hold a reference
-    # to the ThreadQueue (which is async-only and lives on OrgState).
-    # The invocation is minted as PENDING; the daemon's reap_pending_invocations
-    # and the startup recovery path will deliver it. Prompt delivery may be
-    # delayed by up to one reap cycle (~5s), which is acceptable for
-    # task-terminal followups (vs. interactive send latency).
-    # NOTE: _thread_queue is intentionally absent from Orchestrator — do NOT
-    # add it without a design review, as it would introduce an async/threading
-    # boundary into the synchronous run_step execution model.
+    # Enqueue onto the org's thread queue. The queue is bound to the daemon's
+    # main event loop, but run_step runs on a worker thread, so we cross the
+    # loop boundary via run_coroutine_threadsafe — same pattern as
+    # `_start_feishu_listeners` uses for cross-thread async bridging.
+    import asyncio as _asyncio
+    from src.daemon.thread_queue import ThreadJob as _ThreadJob
+    thread_queue = getattr(orch, "_thread_queue", None)
+    main_loop = getattr(orch, "_main_loop", None)
+    if thread_queue is not None and main_loop is not None:
+        try:
+            _asyncio.run_coroutine_threadsafe(
+                thread_queue.put(_ThreadJob(
+                    org_slug=orch._slug,
+                    invocation_token=inv.invocation_token,
+                )),
+                main_loop,
+            )
+        except Exception as exc:
+            audit.log_thread_followup_skipped(
+                thread_id, original_task_id=original.id, terminal_task_id=task_id,
+                reason="enqueue_failed", detail=str(exc),
+            )
+    else:
+        # Defence: queue or loop not yet wired (e.g., test orchestrator constructed
+        # without daemon context). Invocation stays PENDING; audit so the
+        # operator can detect it if needed. In production this path is never
+        # taken because _lifespan always calls _attach_thread_queue_wiring before
+        # the first task step runs.
+        audit.log_thread_followup_skipped(
+            thread_id, original_task_id=original.id, terminal_task_id=task_id,
+            reason="enqueue_unavailable",
+        )
 
 
 def _payload_dict(row: dict) -> dict:

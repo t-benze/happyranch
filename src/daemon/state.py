@@ -131,6 +131,11 @@ class DaemonState:
             if loop is not None:
                 from src.daemon.feishu_listener import maybe_start_feishu_listener_for_org
                 maybe_start_feishu_listener_for_org(org, self, loop)
+                # Wire the thread queue + main loop so run_step workers can
+                # cross the async boundary via run_coroutine_threadsafe when
+                # posting task-followup invocations. Same loop-detection pattern
+                # as the Feishu listener wiring above.
+                org.orchestrator.attach_thread_queue(org.thread_queue, loop)
             return org
 
     async def remove_org(self, slug: str) -> None:
