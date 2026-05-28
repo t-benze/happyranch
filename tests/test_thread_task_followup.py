@@ -88,3 +88,28 @@ def test_count_pending_turn_obligations_excludes_non_pending(tmp_path):
 # (route-level tests live in tests/daemon/test_threads_routes.py where the
 #  daemon fixtures tmp_home / app / org_state / auth_headers are declared)
 # ---------------------------------------------------------------------------
+
+
+def test_purpose_note_task_followup_renders_task_id_and_status():
+    from src.daemon.thread_runner import _purpose_note
+    from src.models import ThreadMessage, ThreadMessageKind
+    from datetime import datetime, timezone
+
+    triggering = ThreadMessage(
+        thread_id="THR-1", seq=4, speaker="family_manager",
+        kind=ThreadMessageKind.SYSTEM,
+        system_payload={
+            "kind_tag": "task_completed",
+            "task_id": "TASK-007", "original_task_id": "TASK-007",
+            "status": "completed", "final_output_summary": "report uploaded",
+        },
+        created_at=datetime(2026, 5, 28, 1, 43, 23, tzinfo=timezone.utc),
+    )
+    note = _purpose_note(
+        purpose="task_followup", triggering_seq=4,
+        addressed_to=None, invoked_agent="family_manager",
+        triggering_message=triggering,
+    )
+    assert "TASK-007" in note
+    assert "completed" in note
+    assert "grassland details" in note
