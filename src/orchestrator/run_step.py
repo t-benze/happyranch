@@ -2,9 +2,10 @@
 a task one subprocess call at a time. Separate from orchestrator.py so the
 algorithm has its own test surface.
 
-Entry contract: task MUST be either
+Entry contract: task MUST be one of:
   (a) status=pending, or
-  (b) status=blocked AND block_kind=DELEGATED AND all children are terminal.
+  (b) status=blocked AND block_kind=DELEGATED AND all children are terminal, or
+  (c) status=blocked AND block_kind=BLOCKED_ON_JOB AND all blocking jobs are terminal.
 Any other state = stale enqueue, silent no-op.
 
 Exit contract: task ends in exactly one of {in_progress-then-crashed,
@@ -51,6 +52,28 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         if any(c is None or c.status not in TERMINAL_STATES for c in children):
             logger.debug("run_step %s: child still running, skipping", task_id)
             return
+    elif task.status == TaskStatus.BLOCKED and task.block_kind == BlockKind.BLOCKED_ON_JOB:
+        # Blocked-on-job task: re-check live job table to see whether all
+        # blocking jobs have reached a terminal state. Spec §5.1.
+        import json as _json
+        try:
+            job_ids = _json.loads(task.blocked_on_job_ids or "[]")
+        except _json.JSONDecodeError:
+            logger.debug("run_step %s: blocked_on_job_ids unparseable", task_id)
+            return
+        if not job_ids:
+            logger.debug("run_step %s: blocked_on_job_ids empty", task_id)
+            return
+        _TERMINAL_JOB_STATES = {"completed", "failed", "rejected"}
+        for jid in job_ids:
+            jstatus = db.get_job_status(jid)
+            if jstatus not in _TERMINAL_JOB_STATES:
+                logger.debug(
+                    "run_step %s: blocking job %s still in-flight (status=%s)",
+                    task_id, jid, jstatus,
+                )
+                return
+        # All jobs terminal — fall through to step 2 + step 3.
     else:
         logger.debug(
             "run_step %s: not eligible (status=%s, block_kind=%s)",
