@@ -162,6 +162,7 @@ class ThreadInvocationPurpose(StrEnum):
     REPLY = "reply"
     BOOTSTRAP = "bootstrap"
     CLOSE_OUT = "close_out"
+    TASK_FOLLOWUP = "task_followup"
 
 
 class ThreadRecord(BaseModel):
