@@ -26,7 +26,8 @@ logger = logging.getLogger(__name__)
 TERMINAL_STATES = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED})
 
 
-def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
+def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
+    # metadata: optional resume context (trigger, triggering_job_id); read by the CAS-win audit hook in Task 11.
     db = orch._db
     task = db.get_task(task_id)
     if task is None:
