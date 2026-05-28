@@ -8,6 +8,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from src.daemon.auth import require_token
+from src.daemon.routes._doctrine import SELF_DISPATCH_HINT
 from src.daemon.routes._org_dep import OrgDep
 from src.daemon.runner import enqueue_task
 from src.daemon.state import DaemonState
@@ -849,31 +850,20 @@ async def dispatch_from_thread_endpoint(
         if effective_team != dispatcher_team:
             raise HTTPException(
                 status_code=403,
-                detail={"code": "cross_team_dispatch_forbidden",
+                detail={"code": "thread_dispatch_team_override_forbidden",
                         "dispatcher_team": dispatcher_team,
-                        "requested_team": effective_team},
+                        "requested_team": effective_team,
+                        "hint": SELF_DISPATCH_HINT},
             )
         effective_target = body.target_agent if body.target_agent is not None else dispatcher
-        if not is_manager and effective_target != dispatcher:
+        if effective_target != dispatcher:
             raise HTTPException(
                 status_code=403,
-                detail={"code": "worker_must_self_dispatch",
+                detail={"code": "thread_dispatch_must_be_self",
                         "dispatcher": dispatcher,
-                        "requested_target": effective_target},
+                        "requested_target": effective_target,
+                        "hint": SELF_DISPATCH_HINT},
             )
-        if is_manager:
-            team_meta = org.teams.manager_for_team(dispatcher_team)
-            in_team = (
-                effective_target == team_meta.name
-                or effective_target in team_meta.workers
-            )
-            if not in_team:
-                raise HTTPException(
-                    status_code=403,
-                    detail={"code": "target_not_in_team",
-                            "team": dispatcher_team,
-                            "requested_target": effective_target},
-                )
 
     org_paths = OrgPaths(root=org.root)
     agent_def = prompt_loader.load_agent(org_paths, effective_target)
