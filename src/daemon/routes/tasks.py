@@ -19,7 +19,7 @@ from src.daemon.routes._org_dep import OrgDep
 from src.daemon.runner import enqueue_task
 from src.daemon.state import DaemonState
 from src.infrastructure.feishu.reply_parser import DispatchIntent  # re-export
-from src.models import TaskRecord, TaskStatus
+from src.models import BlockKind, TaskRecord, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +137,16 @@ def get_task(task_id: str, org: OrgDep) -> dict:
                 prior_status = payload.get("prior_status")
                 break
 
+    # When a task is blocked waiting for jobs, include the id+status of each
+    # blocking job so `grassland details` can show the founder what to act on.
+    blocked_on_jobs: list[dict] | None = None
+    if task.status == TaskStatus.BLOCKED and task.block_kind == BlockKind.BLOCKED_ON_JOB:
+        job_ids = _json.loads(task.blocked_on_job_ids or "[]")
+        blocked_on_jobs = [
+            {"job_id": jid, "status": org.db.get_job_status(jid) or "unknown"}
+            for jid in job_ids
+        ]
+
     return {
         "task": _task_to_dict(task),
         "results": org.db.get_task_results(task_id),
@@ -144,6 +154,7 @@ def get_task(task_id: str, org: OrgDep) -> dict:
         "revisit_chain": chain,
         "direct_revisits": direct_revisits,
         "predecessor_prior_status": prior_status,
+        "blocked_on_jobs": blocked_on_jobs,
     }
 
 

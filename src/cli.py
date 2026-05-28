@@ -377,6 +377,10 @@ def cmd_details(args: argparse.Namespace) -> None:
         print(f"Heartbeat:  {_fmt_ts(task['last_heartbeat'])}")
     if task.get("block_kind"):
         print(f"Block kind: {task['block_kind']}")
+    if body.get("blocked_on_jobs"):
+        print("Blocked on jobs:")
+        for entry in body["blocked_on_jobs"]:
+            print(f"  {entry['job_id']}  {entry['status']}")
     if task.get("note"):
         print(f"Note:       {task['note']}")
     if body.get("results"):
