@@ -262,17 +262,40 @@ coordination surfaces; iterative work lives in task trees." See spec
   are now always the same agent.
 ```
 
-## 12. Founder KB entry
+## 12. Doctrine injection into the bootstrap doc
 
-Founder writes (via `grassland kb add`) a precedent entry pointing back to THR-010:
+**Supersedes the originally-planned founder KB entry.** This is a structural,
+system-wide rule that the runtime enforces uniformly across every org — the
+right surface is the bootstrap doc that every agent reads on every session,
+not a per-org KB entry that has to be added by hand once per org.
 
-- slug: `thread-and-talk-dispatch-doctrine`
-- type: `doctrine` (freeform; per existing KB rules)
-- topic: `coordination-vs-iteration`
-- source_task: TASK-547 (the design review that surfaced the gap)
-- body: one-paragraph version of §9, signed by founder.
+New section helper `_thread_talk_dispatch_doctrine_section()` in
+`src/orchestrator/workspace_adapters.py` emits an H2 block titled
+**"Thread and Talk Dispatch are Self-Only"**. The block names both rejection
+codes (`thread_dispatch_must_be_self`, `talk_dispatch_must_be_self`),
+explains the doctrine in plain English, and points at the recommended
+alternatives (self-dispatch a manager root; use `grassland threads compose`
+for cross-agent work). The section is wired into `_build_sections` between
+the Shared Assets and Long-running-commands blocks — both are operational
+guardrails about how to interact with system surfaces.
 
-The KB injection on every agent bootstrap (see CLAUDE.md "Knowledge Base") will then surface this to every future agent invocation.
+The section title is registered in `_RESERVED_AGENT_BODY_HEADERS` so an
+agent's `.md` body cannot author a colliding section (the assembled
+bootstrap would otherwise carry two same-titled blocks).
+
+The injection runs uniformly across all three executors: Claude (`CLAUDE.md`),
+Codex (`AGENTS.md`), opencode (`AGENTS.md`) — `_build_sections` is shared
+across all three adapters.
+
+Word-choice note: the section deliberately avoids the contract-keywords
+"delegate" and "escalate" in prose. Those terms are reserved for the
+NextStep decision schema and are forbidden from the bootstrap doc by
+`test_codex_agents_md_does_not_inline_completion_contract`. Use "spawn
+sub-tasks" or "drive internal work" instead.
+
+No founder action is required post-merge. The doctrine ships uniformly
+with the next workspace rewrite (which `grassland init-agent` triggers
+on every session bootstrap).
 
 ## 13. Test plan
 
@@ -326,4 +349,5 @@ None blocking. Two flagged for future:
 5. New integration test `tests/integration/test_thread_self_dispatch_phase_e2e.py`.
 6. `protocol/skills/thread/SKILL.md`, `protocol/skills/talk/SKILL.md`, `protocol/skills/dispatch/SKILL.md` — doctrine sections.
 7. `CLAUDE.md` — invariants subsection.
-8. Founder KB entry `thread-and-talk-dispatch-doctrine` (post-merge action, founder runs).
+8. `src/orchestrator/workspace_adapters.py` — `_thread_talk_dispatch_doctrine_section()` + wire into `_build_sections` + add header to `_RESERVED_AGENT_BODY_HEADERS`. Tests covering all three executors.
+9. `web/src/features/talks/strings.ts` + `DispatchFromTalkDialog.tsx` — map the new error codes; drop the now-vestigial `target_agent` and `team` inputs from the dispatch dialog.

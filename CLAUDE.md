@@ -409,6 +409,13 @@ coordination surfaces; iterative work lives in task trees." Spec:
   the dispatcher's actual role at dispatch time (manager vs worker) —
   under the new rule that role describes both dispatcher and target, since
   they are now always the same agent.
+- The doctrine is system-prompt-injected into every agent's bootstrap doc
+  via `_thread_talk_dispatch_doctrine_section()` in
+  `src/orchestrator/workspace_adapters.py`. The reserved header
+  `"Thread and Talk Dispatch are Self-Only"` is registered in
+  `_RESERVED_AGENT_BODY_HEADERS` so an agent `.md` body cannot author a
+  colliding section. This supersedes any per-org KB entry — adding one is
+  unnecessary noise.
 - The shared hint string lives at `src/daemon/routes/_doctrine.py`
   (`SELF_DISPATCH_HINT`). Both routes import it; keep wording in sync.
 
