@@ -6,9 +6,11 @@ export const TALKS_ERROR_STRINGS: Record<string, string> = {
   empty_team: 'Team cannot be blank.',
   empty_target_agent: 'Target agent cannot be blank.',
   dispatcher_team_unknown: "The dispatching agent isn't on a team.",
-  cross_team_dispatch_forbidden: 'Cross-team dispatch is not allowed from this talk.',
-  worker_must_self_dispatch: 'Workers can only dispatch tasks to themselves.',
-  target_not_in_team: 'Target agent is not on the dispatching agent’s team.',
+  talk_dispatch_must_be_self:
+    "Dispatch from a talk only spawns a task for the talk's own agent. " +
+    'For cross-agent work, end the talk and open a thread.',
+  talk_dispatch_team_override_forbidden:
+    "The talk's agent can only dispatch within their own team.",
   teams_registry_unavailable: 'Teams registry is unavailable for this org.',
   unknown_agent: "That agent doesn't exist in this org.",
   not_found: 'Talk not found.',

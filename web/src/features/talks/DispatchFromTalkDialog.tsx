@@ -30,15 +30,11 @@ export function DispatchFromTalkDialog({
   const dispatch = useDispatchFromTalk(talkId);
   const idBase = useId();
   const [brief, setBrief] = useState('');
-  const [target, setTarget] = useState('');
-  const [team, setTeam] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) {
       setBrief('');
-      setTarget('');
-      setTeam('');
       setErrorMsg(null);
     }
   }, [open]);
@@ -50,11 +46,7 @@ export function DispatchFromTalkDialog({
       return;
     }
     try {
-      const resp = await dispatch.mutateAsync({
-        brief: brief.trim(),
-        ...(target.trim() ? { target_agent: target.trim() } : {}),
-        ...(team.trim() ? { team: team.trim() } : {}),
-      });
+      const resp = await dispatch.mutateAsync({ brief: brief.trim() });
       onDispatched?.(resp.task_id);
       onClose();
     } catch (err) {
@@ -72,7 +64,7 @@ export function DispatchFromTalkDialog({
         <DialogHeader>
           <DialogTitle>Dispatch task from {talkId}</DialogTitle>
           <DialogDescription className="sr-only">
-            Spawn a new task carried by the dispatching agent's team.
+            Spawn a new task carried by this talk's agent.
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-3">
@@ -85,22 +77,10 @@ export function DispatchFromTalkDialog({
               autoFocus
             />
           </FormField>
-          <FormField label="Target agent (optional)" htmlFor={`${idBase}-target`}>
-            <input
-              id={`${idBase}-target`}
-              value={target}
-              onChange={(e) => setTarget(e.target.value)}
-              className="input"
-            />
-          </FormField>
-          <FormField label="Team (optional)" htmlFor={`${idBase}-team`}>
-            <input
-              id={`${idBase}-team`}
-              value={team}
-              onChange={(e) => setTeam(e.target.value)}
-              className="input"
-            />
-          </FormField>
+          <p className="text-xs text-muted-foreground">
+            The new task is assigned to this talk's own agent. Talks no longer
+            accept cross-agent dispatch — for that, open a thread.
+          </p>
         </div>
         {errorMsg && <p className="text-danger text-sm">{errorMsg}</p>}
         <DialogFooter>
