@@ -1154,6 +1154,63 @@ def _maybe_spawn_auto_revisit(
     return True
 
 
+def _maybe_resume_blocked_task(
+    orch: "Orchestrator",
+    task_id: str,
+    *,
+    trigger: str,
+    triggering_job_id: str | None,
+) -> bool:
+    """Check predicate (all blocking jobs terminal) and enqueue if satisfied.
+
+    READ-ONLY: does NOT mutate task state. The state transition happens at
+    run_step_impl step 3's CAS when the worker picks up the enqueued task.
+
+    Returns True if it enqueued; False otherwise. Idempotent — extra enqueues
+    are harmless (run_step_impl's CAS admits exactly one).
+
+    Spec: docs/superpowers/specs/2026-05-28-task-blocked-by-job-design.md §5.4
+    """
+    import json as _json
+
+    db = orch._db
+    audit = orch._audit
+    task = db.get_task(task_id)
+    if task is None:
+        return False
+    if task.status != TaskStatus.BLOCKED or task.block_kind != BlockKind.BLOCKED_ON_JOB:
+        return False  # silent — steady state
+
+    try:
+        job_ids = _json.loads(task.blocked_on_job_ids or "[]")
+    except _json.JSONDecodeError:
+        audit.log_task_resume_skipped(
+            task_id=task_id, reason="empty_job_list",
+            blocked_on_job_ids_raw=task.blocked_on_job_ids,
+        )
+        return False
+    if not job_ids:
+        audit.log_task_resume_skipped(
+            task_id=task_id, reason="empty_job_list",
+            blocked_on_job_ids_raw=task.blocked_on_job_ids,
+        )
+        return False
+
+    _TERMINAL = {"completed", "failed", "rejected"}
+    for jid in job_ids:
+        if db.get_job_status(jid) not in _TERMINAL:
+            return False  # silent — common steady state
+
+    # All terminal — enqueue.
+    queue = getattr(orch, "_queue", None)
+    if queue is not None:
+        queue.enqueue(
+            orch._slug, task_id,
+            metadata={"trigger": trigger, "triggering_job_id": triggering_job_id},
+        )
+    return True
+
+
 def _maybe_post_thread_followup(
     orch: "Orchestrator",
     task_id: str,
