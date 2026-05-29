@@ -96,7 +96,7 @@ describe('threads api mirror', () => {
 
   test.each([
     ['sendThreadFollowUp', () => sendThreadFollowUp(SLUG, 'THR-001', { body_markdown: 'x' }), '/send'],
-    ['inviteToThread', () => inviteToThread(SLUG, 'THR-001', { agent: 'a' }), '/invite'],
+    ['inviteToThread', () => inviteToThread(SLUG, 'THR-001', { agent_name: 'a' }), '/invite'],
     ['extendThreadCap', () => extendThreadCap(SLUG, 'THR-001', { new_cap: 999 }), '/extend'],
     ['archiveThread', () => archiveThread(SLUG, 'THR-001', { summary: 'done' }), '/archive'],
     ['abandonThread', () => abandonThread(SLUG, 'THR-001', { reason: 'bye' }), '/abandon'],

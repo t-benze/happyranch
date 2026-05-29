@@ -55,8 +55,8 @@ export const sendThreadFollowUp = (
 export const inviteToThread = (
   slug: string,
   threadId: string,
-  body: { agent: string },
-): Promise<{ thread_id: string; participants: string[] }> =>
+  body: { agent_name: string },
+): Promise<{ thread_id: string; agent_name: string; system_message_seq: number }> =>
   request(`/orgs/${slug}/threads/${threadId}/invite`, { method: 'POST', body });
 
 export const extendThreadCap = (

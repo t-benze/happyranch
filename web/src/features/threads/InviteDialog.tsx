@@ -38,7 +38,7 @@ export function InviteDialog({ threadId, open, onClose }: Props): JSX.Element {
       return;
     }
     try {
-      await invite.mutateAsync({ agent: name.trim() });
+      await invite.mutateAsync({ agent_name: name.trim() });
       onClose();
     } catch (err) {
       setErrorMsg(

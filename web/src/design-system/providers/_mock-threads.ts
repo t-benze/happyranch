@@ -261,8 +261,8 @@ function useInviteAgent(threadId: string): MutationLike<InviteArgs, InviteResult
     mutationFn: async (body: InviteArgs) => {
       await sleep(120);
       const list = store.participants[threadId] ?? [];
-      if (!list.includes(body.agent)) {
-        store.participants[threadId] = [...list, body.agent];
+      if (!list.includes(body.agent_name)) {
+        store.participants[threadId] = [...list, body.agent_name];
       }
       const seq = nextSeq(threadId);
       store.messages[threadId] = [
@@ -274,11 +274,11 @@ function useInviteAgent(threadId: string): MutationLike<InviteArgs, InviteResult
           body_markdown: null,
           addressed_to: null,
           decline_reason: null,
-          system_payload: { event: 'invited', agent: body.agent },
+          system_payload: { event: 'invited', agent: body.agent_name },
           created_at: '2026-05-15T12:00:00Z',
         },
       ];
-      return { thread_id: threadId, participants: store.participants[threadId] };
+      return { thread_id: threadId, agent_name: body.agent_name, system_message_seq: seq };
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['mock-thread', threadId] });
