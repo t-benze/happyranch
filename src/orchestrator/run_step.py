@@ -2,9 +2,10 @@
 a task one subprocess call at a time. Separate from orchestrator.py so the
 algorithm has its own test surface.
 
-Entry contract: task MUST be either
+Entry contract: task MUST be one of:
   (a) status=pending, or
-  (b) status=blocked AND block_kind=DELEGATED AND all children are terminal.
+  (b) status=blocked AND block_kind=DELEGATED AND all children are terminal, or
+  (c) status=blocked AND block_kind=BLOCKED_ON_JOB AND all blocking jobs are terminal.
 Any other state = stale enqueue, silent no-op.
 
 Exit contract: task ends in exactly one of {in_progress-then-crashed,
@@ -26,7 +27,8 @@ logger = logging.getLogger(__name__)
 TERMINAL_STATES = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED})
 
 
-def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
+def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
+    # metadata: optional resume context (trigger, triggering_job_id); read by the CAS-win audit hook in Task 11.
     db = orch._db
     task = db.get_task(task_id)
     if task is None:
@@ -50,6 +52,28 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
         if any(c is None or c.status not in TERMINAL_STATES for c in children):
             logger.debug("run_step %s: child still running, skipping", task_id)
             return
+    elif task.status == TaskStatus.BLOCKED and task.block_kind == BlockKind.BLOCKED_ON_JOB:
+        # Blocked-on-job task: re-check live job table to see whether all
+        # blocking jobs have reached a terminal state. Spec §5.1.
+        import json as _json
+        try:
+            job_ids = _json.loads(task.blocked_on_job_ids or "[]")
+        except _json.JSONDecodeError:
+            logger.debug("run_step %s: blocked_on_job_ids unparseable", task_id)
+            return
+        if not job_ids:
+            logger.debug("run_step %s: blocked_on_job_ids empty", task_id)
+            return
+        _TERMINAL_JOB_STATES = {"completed", "failed", "rejected"}
+        for jid in job_ids:
+            jstatus = db.get_job_status(jid)
+            if jstatus not in _TERMINAL_JOB_STATES:
+                logger.debug(
+                    "run_step %s: blocking job %s still in-flight (status=%s)",
+                    task_id, jid, jstatus,
+                )
+                return
+        # All jobs terminal — fall through to step 2 + step 3.
     else:
         logger.debug(
             "run_step %s: not eligible (status=%s, block_kind=%s)",
@@ -91,6 +115,27 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
             task_id,
         )
         return
+
+    # Spec §5.2: write task_resumed_from_jobs audit row immediately after the
+    # CAS wins on a BLOCKED+BLOCKED_ON_JOB → IN_PROGRESS transition. The
+    # prompt-build at step 4 reads this row to inject BLOCKED-JOBS-RESULTS.
+    if (task.status == TaskStatus.BLOCKED
+            and task.block_kind == BlockKind.BLOCKED_ON_JOB):
+        import json as _json
+        try:
+            job_ids = _json.loads(task.blocked_on_job_ids or "[]")
+        except _json.JSONDecodeError:
+            job_ids = []
+        job_outcomes = {jid: (db.get_job_status(jid) or "unknown")
+                        for jid in job_ids}
+        md = metadata or {}
+        orch._audit.log_task_resumed_from_jobs(
+            task_id=task_id,
+            blocking_job_ids=job_ids,
+            trigger=md.get("trigger", "unknown"),
+            triggering_job_id=md.get("triggering_job_id"),
+            job_outcomes=job_outcomes,
+        )
 
     # ---- 4. Run the agent subprocess ----
     agent = task.assigned_agent or _default_agent_for_root(orch, task)
@@ -189,6 +234,49 @@ def run_step_impl(orch: "Orchestrator", task_id: str) -> None:
     orch._log_step_result(task_id, result, report)
 
     if report.status == "blocked":
+        if report.waiting_on_job_ids:
+            # Spec §5.3: block-on-jobs branch. In-place transition, NOT _fail.
+            import json as _json
+            deduped = sorted(set(report.waiting_on_job_ids))
+            # Defensive re-validation: a job could have been deleted between the
+            # route POST and run_step_impl consuming the report (extremely
+            # unlikely; jobs are write-once + terminal-frozen). Degrade gracefully.
+            for jid in deduped:
+                if db.get_job_status(jid) is None:
+                    note = f"self-blocked but job {jid} not found"
+                    _fail(orch, task_id, note=note)
+                    _enqueue_parent_if_waiting(orch, task_id)
+                    _notify_failure_if_eligible(
+                        orch, task_id, failure_kind="self_blocked",
+                        failure_note=note, auto_revisit_spawned=False,
+                        last_summary=report.output_summary or "",
+                    )
+                    _maybe_post_thread_followup(
+                        orch, task_id,
+                        status=TaskStatus.FAILED, auto_revisit_spawned=False,
+                    )
+                    return
+            db.update_task(
+                task_id,
+                status=TaskStatus.BLOCKED,
+                block_kind=BlockKind.BLOCKED_ON_JOB,
+                blocked_on_job_ids=_json.dumps(deduped),
+                note=report.output_summary,
+            )
+            orch._audit.log_task_blocked_on_jobs(
+                task_id=task_id, agent=agent,
+                blocking_job_ids=deduped,
+                output_summary_excerpt=(report.output_summary or "")[:200],
+            )
+            # Immediate predicate check (caller B). Spec §5.6: runs HERE, after
+            # the agent session has already been cleared by submit_completion.
+            # No session race.
+            _maybe_resume_blocked_task(
+                orch, task_id,
+                trigger="block_submit", triggering_job_id=None,
+            )
+            return
+        # Existing escalated path (waiting_on_job_ids empty).
         note = f"self-blocked: {report.output_summary}"
         _fail(orch, task_id, note=note)
         _enqueue_parent_if_waiting(orch, task_id)
@@ -417,6 +505,9 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
     revisit = _revisit_header_if_applicable(orch, task.id)
     if revisit is not None:
         headers.append(revisit)
+    resume_header = _blocked_jobs_resume_header_if_applicable(orch, task.id)
+    if resume_header is not None:
+        headers.append(resume_header)
     resolved = _resolved_escalation_header_if_applicable(orch, task.id)
     if resolved is not None:
         headers.append(resolved)
@@ -610,6 +701,63 @@ def _auto_revisit_header(payload: dict) -> str:
         "decomposition is needed). Decide accordingly.",
     ]
     lines.extend(_REVISIT_DISCIPLINE_LINES)
+    return "\n".join(lines) + "\n\n"
+
+
+def _blocked_jobs_resume_header_if_applicable(
+    orch: "Orchestrator", task_id: str,
+) -> str | None:
+    """Return a BLOCKED-JOBS-RESULTS header on the first agent step after a
+    task resumes from a job-block, otherwise None.
+
+    Trigger: the most recent `task_resumed_from_jobs` audit entry for this task
+    has a higher row id than the most recent `orchestration_step` entry —
+    i.e. the jobs are terminal AND the agent hasn't run yet. Audit `id` is
+    autoincrement, so id-ordering is equivalent to chronological ordering.
+    Once the agent produces its first decision after resume,
+    `log_orchestration_step` writes a row with a higher id and this helper
+    returns None on every subsequent call.
+
+    Spec: §6.4.
+    """
+    import json as _json  # noqa: PLC0415
+
+    logs = orch._db.get_audit_logs(task_id)
+    last_resumed = None
+    last_step = None
+    for entry in logs:
+        action = entry["action"]
+        if action == "task_resumed_from_jobs":
+            last_resumed = entry
+        elif action == "orchestration_step":
+            last_step = entry
+    if last_resumed is None:
+        return None
+    if last_step is not None and last_step["id"] > last_resumed["id"]:
+        return None
+
+    payload = last_resumed["payload"] or {}
+    if isinstance(payload, str):
+        try:
+            payload = _json.loads(payload)
+        except Exception:
+            payload = {}
+    job_ids: list[str] = payload.get("blocking_job_ids", [])
+    outcomes: dict[str, str] = payload.get("job_outcomes", {})
+
+    lines: list[str] = [
+        "=== BLOCKED-JOBS-RESULTS (system) ===",
+        f"You self-blocked on {', '.join(job_ids)}. They are now terminal:",
+        "",
+    ]
+    for jid in job_ids:
+        status = outcomes.get(jid, "unknown")
+        lines.append(f"  {jid}  {status}")
+        lines.append(f"          → grassland jobs show {jid}")
+        lines.append(f"          → grassland jobs output {jid}")
+    lines.append("")
+    lines.append("Re-read your task brief; decide whether to proceed, retry, or escalate.")
+    lines.append("======================================")
     return "\n".join(lines) + "\n\n"
 
 
@@ -1150,6 +1298,63 @@ def _maybe_spawn_auto_revisit(
     queue = getattr(orch, "_queue", None)
     if queue is not None:
         queue.put_nowait(orch._slug, new_id)
+    return True
+
+
+def _maybe_resume_blocked_task(
+    orch: "Orchestrator",
+    task_id: str,
+    *,
+    trigger: str,
+    triggering_job_id: str | None,
+) -> bool:
+    """Check predicate (all blocking jobs terminal) and enqueue if satisfied.
+
+    READ-ONLY: does NOT mutate task state. The state transition happens at
+    run_step_impl step 3's CAS when the worker picks up the enqueued task.
+
+    Returns True if it enqueued; False otherwise. Idempotent — extra enqueues
+    are harmless (run_step_impl's CAS admits exactly one).
+
+    Spec: docs/superpowers/specs/2026-05-28-task-blocked-by-job-design.md §5.4
+    """
+    import json as _json
+
+    db = orch._db
+    audit = orch._audit
+    task = db.get_task(task_id)
+    if task is None:
+        return False
+    if task.status != TaskStatus.BLOCKED or task.block_kind != BlockKind.BLOCKED_ON_JOB:
+        return False  # silent — steady state
+
+    try:
+        job_ids = _json.loads(task.blocked_on_job_ids or "[]")
+    except _json.JSONDecodeError:
+        audit.log_task_resume_skipped(
+            task_id=task_id, reason="empty_job_list",
+            blocked_on_job_ids_raw=task.blocked_on_job_ids,
+        )
+        return False
+    if not job_ids:
+        audit.log_task_resume_skipped(
+            task_id=task_id, reason="empty_job_list",
+            blocked_on_job_ids_raw=task.blocked_on_job_ids,
+        )
+        return False
+
+    _TERMINAL = {"completed", "failed", "rejected"}
+    for jid in job_ids:
+        if db.get_job_status(jid) not in _TERMINAL:
+            return False  # silent — common steady state
+
+    # All terminal — enqueue.
+    queue = getattr(orch, "_queue", None)
+    if queue is not None:
+        queue.enqueue(
+            orch._slug, task_id,
+            metadata={"trigger": trigger, "triggering_job_id": triggering_job_id},
+        )
     return True
 
 

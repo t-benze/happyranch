@@ -492,6 +492,13 @@ class Database:
             # via `grassland revisit --session-timeout-seconds`; inherited from
             # parent on delegate and from predecessor root on revisit.
             "ALTER TABLE tasks ADD COLUMN session_timeout_seconds INTEGER",
+            # Job-blocking link: spec §3.1. JSON array of JOB-NNN IDs that must
+            # complete before this task can proceed. NULL means unblocked.
+            "ALTER TABLE tasks ADD COLUMN blocked_on_job_ids TEXT",
+            # Completion-report job-wait list: JSON array of JOB-NNN IDs the
+            # agent asked to block on. Persisted alongside the task_result row
+            # so run_step can read it back via _read_completion_from_db.
+            "ALTER TABLE task_results ADD COLUMN waiting_on_job_ids TEXT",
         ):
             try:
                 self._conn.execute(ddl)
@@ -689,6 +696,7 @@ class Database:
             dispatched_from_talk_id=row["dispatched_from_talk_id"],
             dispatched_from_thread_id=row["dispatched_from_thread_id"],
             block_kind=row["block_kind"],
+            blocked_on_job_ids=row["blocked_on_job_ids"],
             note=row["note"],
             orchestration_step_count=row["orchestration_step_count"] or 0,
             final_artifact_dir=row["final_artifact_dir"],
@@ -729,6 +737,7 @@ class Database:
                 dispatched_from_talk_id=row["dispatched_from_talk_id"],
                 dispatched_from_thread_id=row["dispatched_from_thread_id"],
                 block_kind=row["block_kind"],
+                blocked_on_job_ids=row["blocked_on_job_ids"],
                 note=row["note"],
                 orchestration_step_count=row["orchestration_step_count"] or 0,
                 final_artifact_dir=row["final_artifact_dir"],
@@ -875,6 +884,7 @@ class Database:
                 dispatched_from_talk_id=row["dispatched_from_talk_id"],
                 dispatched_from_thread_id=row["dispatched_from_thread_id"],
                 block_kind=row["block_kind"],
+                blocked_on_job_ids=row["blocked_on_job_ids"],
                 note=row["note"],
                 orchestration_step_count=row["orchestration_step_count"] or 0,
                 final_artifact_dir=row["final_artifact_dir"],
@@ -889,7 +899,7 @@ class Database:
     def update_task(self, task_id: str, **fields: object) -> None:
         allowed = {
             "status", "assigned_agent", "revision_count", "completed_at",
-            "block_kind", "note", "orchestration_step_count",
+            "block_kind", "blocked_on_job_ids", "note", "orchestration_step_count",
             "final_artifact_dir", "cancelled_at", "last_heartbeat",
         }
         # NOTE: filter on membership, not on None-ness — block_kind must be
@@ -1069,6 +1079,19 @@ class Database:
         )
         return [row["id"] for row in cursor.fetchall()]
 
+    @_synchronized
+    def list_tasks_blocked_on_jobs(self) -> list[str]:
+        """Return ids of tasks currently in BLOCKED + BLOCKED_ON_JOB state.
+
+        Used by startup recovery (spec §5.7) to re-evaluate the predicate after
+        `recover_orphaned_running_jobs` force-fails any leftovers.
+        """
+        rows = self._conn.execute(
+            "SELECT id FROM tasks WHERE status = ? AND block_kind = ?",
+            (TaskStatus.BLOCKED.value, BlockKind.BLOCKED_ON_JOB.value),
+        ).fetchall()
+        return [row["id"] for row in rows]
+
     # --- Audit Log ---
 
     @_synchronized
@@ -1193,13 +1216,14 @@ class Database:
         estimated_cost: float | None = None,
         artifact_dir: str | None = None,
         decision_json: str | None = None,
+        waiting_on_job_ids: list[str] | None = None,
     ) -> None:
         self._conn.execute(
             """INSERT INTO task_results
                (task_id, agent, session_id, status, output_summary, decision_json,
                 confidence_score, learnings, risks_flagged, duration_seconds,
-                token_count, estimated_cost, artifact_dir, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                token_count, estimated_cost, artifact_dir, waiting_on_job_ids, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task_id,
                 agent,
@@ -1214,6 +1238,7 @@ class Database:
                 token_count,
                 estimated_cost,
                 artifact_dir,
+                json.dumps(waiting_on_job_ids) if waiting_on_job_ids is not None else None,
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
@@ -1230,6 +1255,8 @@ class Database:
             d = dict(row)
             if d.get("risks_flagged"):
                 d["risks_flagged"] = json.loads(d["risks_flagged"])
+            if d.get("waiting_on_job_ids"):
+                d["waiting_on_job_ids"] = json.loads(d["waiting_on_job_ids"])
             result.append(d)
         return result
 
@@ -1250,6 +1277,8 @@ class Database:
             d = dict(row)
             if d.get("risks_flagged"):
                 d["risks_flagged"] = json.loads(d["risks_flagged"])
+            if d.get("waiting_on_job_ids"):
+                d["waiting_on_job_ids"] = json.loads(d["waiting_on_job_ids"])
             result.append(d)
         return result
 
@@ -1269,6 +1298,8 @@ class Database:
         d = dict(row)
         if d.get("risks_flagged"):
             d["risks_flagged"] = json.loads(d["risks_flagged"])
+        if d.get("waiting_on_job_ids"):
+            d["waiting_on_job_ids"] = json.loads(d["waiting_on_job_ids"])
         return d
 
     # --- Session Token Usage ---
@@ -1620,6 +1651,30 @@ class Database:
             created_at=row["created_at"],
             submitted_from_talk_id=submitted_from_talk_id,
         )
+
+    @_synchronized
+    def get_job_status(self, job_id: str) -> str | None:
+        """Return jobs.status for the given job id, or None if not present.
+
+        Used by the blocked-on-job predicate-check in _maybe_resume_blocked_task
+        and by run_step_impl's entry-state branch (spec §5.1, §5.4).
+        """
+        row = self._conn.execute(
+            "SELECT status FROM jobs WHERE id = ?", (job_id,)
+        ).fetchone()
+        return row["status"] if row is not None else None
+
+    @_synchronized
+    def get_job_owner_task_id(self, job_id: str) -> str | None:
+        """Return jobs.task_id for the given job id, or None if not present.
+
+        Used by the completion-route validation to verify that the agent
+        submitting a blocked completion actually owns the referenced jobs.
+        """
+        row = self._conn.execute(
+            "SELECT task_id FROM jobs WHERE id = ?", (job_id,)
+        ).fetchone()
+        return row["task_id"] if row is not None else None
 
     @_synchronized
     def list_jobs_db(

@@ -367,6 +367,7 @@ class Orchestrator:
             dependencies=[],
             suggested_reviewer_focus=[],
             artifact_dir=row.get("artifact_dir"),
+            waiting_on_job_ids=row.get("waiting_on_job_ids") or [],
         )
 
     def create_task(self, brief: str, team: str = "engineering") -> str:
@@ -377,14 +378,19 @@ class Orchestrator:
         logger.info("Created task %s: %s", task_id, brief)
         return task_id
 
-    def run_step(self, task_id: str) -> None:
+    def run_step(self, task_id: str, metadata: dict | None = None) -> None:
         """Advance a task one agent-subprocess worth.
 
         Contract: task MUST be PENDING or BLOCKED(DELEGATED)-with-all-children-
         terminal. Anything else is a stale enqueue and is silently ignored.
+
+        ``metadata`` is an optional trigger-context dict forwarded from the
+        queue (e.g. ``{"trigger": "job_terminal", "triggering_job_id": "JOB-5"}``).
+        It is passed directly to ``run_step_impl`` as a function parameter —
+        no shared mutable state.
         """
         from src.orchestrator.run_step import run_step_impl
-        run_step_impl(self, task_id)
+        run_step_impl(self, task_id, metadata=metadata)
 
     def _parse_next_step(self, report: CompletionReport | None) -> NextStep:
         """Parse the team manager's decision from its completion report.

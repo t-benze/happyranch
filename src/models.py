@@ -19,6 +19,7 @@ class TaskStatus(StrEnum):
 class BlockKind(StrEnum):
     DELEGATED = "delegated"
     ESCALATED = "escalated"
+    BLOCKED_ON_JOB = "blocked_on_job"
 
 
 class ReviewVerdict(StrEnum):
@@ -42,6 +43,7 @@ class TaskRecord(BaseModel):
     dispatched_from_talk_id: str | None = None
     dispatched_from_thread_id: str | None = None
     block_kind: BlockKind | None = None
+    blocked_on_job_ids: str | None = None
     note: str | None = None
     final_artifact_dir: str | None = None
     orchestration_step_count: int = 0
@@ -82,6 +84,7 @@ class CompletionReport(BaseModel):
     dependencies: list[str] = Field(default_factory=list)
     suggested_reviewer_focus: list[str] = Field(default_factory=list)
     artifact_dir: str | None = None
+    waiting_on_job_ids: list[str] = Field(default_factory=list)
 
 
 class TaskStep(BaseModel):

@@ -315,6 +315,70 @@ class AuditLogger:
             payload={"step_number": step_number, "decision": decision},
         )
 
+    def log_task_blocked_on_jobs(
+        self,
+        task_id: str,
+        agent: str,
+        blocking_job_ids: list[str],
+        output_summary_excerpt: str,
+    ) -> None:
+        """Written when run_step_impl transitions a task to BLOCKED+BLOCKED_ON_JOB
+        in response to report.status=blocked + report.waiting_on_job_ids non-empty.
+        Spec §7.
+        """
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent=agent,
+            action="task_blocked_on_jobs",
+            payload={
+                "agent": agent,
+                "blocking_job_ids": blocking_job_ids,
+                "output_summary_excerpt": output_summary_excerpt,
+            },
+        )
+
+    def log_task_resumed_from_jobs(
+        self,
+        task_id: str,
+        blocking_job_ids: list[str],
+        trigger: str,
+        triggering_job_id: str | None,
+        job_outcomes: dict[str, str],
+    ) -> None:
+        """Written immediately after try_claim_for_step wins on a BLOCKED+BLOCKED_ON_JOB
+        row. Read by the resume header injector. Spec §5.2, §7.
+        """
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="orchestrator",
+            action="task_resumed_from_jobs",
+            payload={
+                "blocking_job_ids": blocking_job_ids,
+                "trigger": trigger,
+                "triggering_job_id": triggering_job_id,
+                "job_outcomes": job_outcomes,
+            },
+        )
+
+    def log_task_resume_skipped(
+        self,
+        task_id: str,
+        reason: str,
+        blocked_on_job_ids_raw: str | None = None,
+    ) -> None:
+        """Diagnostic-only: written when the resume helper returns False with
+        reason=empty_job_list (the only audited skip reason). Spec §7.
+        """
+        payload: dict[str, object] = {"reason": reason}
+        if blocked_on_job_ids_raw is not None:
+            payload["blocked_on_job_ids_raw"] = blocked_on_job_ids_raw
+        self._db.insert_audit_log(
+            task_id=task_id,
+            agent="orchestrator",
+            action="task_resume_skipped",
+            payload=payload,
+        )
+
     def log_revisit_of(
         self,
         task_id: str,

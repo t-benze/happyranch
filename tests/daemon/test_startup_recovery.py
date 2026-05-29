@@ -45,7 +45,7 @@ def test_sweep_blocked_delegated_with_all_children_terminal_reenqueues(tmp_path)
     queue = TaskQueue()
     _sweep_on_startup(db, queue, "test")
 
-    assert queue._queue.get_nowait() == ("test", "T-PAR")
+    assert queue._queue.get_nowait() == ("test", "T-PAR", None)
 
 
 def test_sweep_blocked_delegated_with_live_children_does_not_reenqueue(tmp_path):
@@ -64,7 +64,7 @@ def test_sweep_blocked_delegated_with_live_children_does_not_reenqueue(tmp_path)
 
     # T-CHD was in_progress → swept to failed → parent enqueued
     assert db.get_task("T-CHD").status == TaskStatus.FAILED
-    assert queue._queue.get_nowait() == ("test", "T-PAR")
+    assert queue._queue.get_nowait() == ("test", "T-PAR", None)
 
 
 def test_sweep_leaves_blocked_escalated_alone(tmp_path):
@@ -92,7 +92,7 @@ def test_sweep_pending_stays_pending_but_gets_enqueued(tmp_path):
     _sweep_on_startup(db, queue, "test")
 
     assert db.get_task("T-1").status == TaskStatus.PENDING
-    assert queue._queue.get_nowait() == ("test", "T-1")
+    assert queue._queue.get_nowait() == ("test", "T-1", None)
 
 
 def test_sweep_calls_notify_failed_on_in_progress_recovery(tmp_path):

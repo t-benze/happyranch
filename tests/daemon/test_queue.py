@@ -15,7 +15,7 @@ def test_enqueue_takes_slug_and_id() -> None:
     items = []
     while not q._queue.empty():
         items.append(q._queue.get_nowait())
-    assert items == [("alpha", "TASK-001"), ("beta", "TASK-001")]
+    assert items == [("alpha", "TASK-001", None), ("beta", "TASK-001", None)]
 
 
 @pytest.mark.asyncio
@@ -27,7 +27,7 @@ async def test_drain_sync_dispatches_per_slug() -> None:
     seen: list[tuple[str, str]] = []
 
     class FakeOrch:
-        def run_step(self, slug: str, task_id: str) -> None:
+        def run_step(self, slug: str, task_id: str, metadata: dict | None = None) -> None:
             seen.append((slug, task_id))
 
     await q.drain_sync(FakeOrch())
@@ -130,7 +130,7 @@ async def test_worker_loop_stamps_heartbeat_and_cancels_after_run_step(
     real_dispatcher = Dispatcher(daemon_state)
     dispatcher = MagicMock(wraps=real_dispatcher)
     dispatcher.run_step = MagicMock(
-        side_effect=lambda slug, task_id: time.sleep(0.1)
+        side_effect=lambda slug, task_id, metadata=None: time.sleep(0.1)
     )
 
     q = TaskQueue()

@@ -1,8 +1,11 @@
 """Asyncio queue + worker pool for invoking Orchestrator.run_step.
 
-Items are ``(slug, task_id)`` tuples. The worker loop unpacks each item,
-looks up ``state.get_org(slug)``, and calls that org's
-``Orchestrator.run_step(task_id)`` on a thread.
+Items are ``(slug, task_id, metadata)`` tuples. The worker loop unpacks each
+item, looks up ``state.get_org(slug)``, and calls that org's
+``Orchestrator.run_step(task_id, metadata=metadata)`` on a thread.
+``metadata`` is an optional dict that callers can use to pass trigger context
+(e.g. ``{"trigger": "job_terminal", "triggering_job_id": "JOB-5"}``); it is
+forwarded unchanged to ``run_step`` and defaults to ``None`` when omitted.
 """
 from __future__ import annotations
 
@@ -23,7 +26,7 @@ HEARTBEAT_INTERVAL_SECONDS = 30
 
 
 class _Dispatcher(Protocol):
-    def run_step(self, slug: str, task_id: str) -> None: ...
+    def run_step(self, slug: str, task_id: str, metadata: dict | None = None) -> None: ...
     def heartbeat(self, slug: str, task_id: str) -> None: ...
 
 
@@ -31,15 +34,15 @@ class TaskQueue:
     """Wrapper around asyncio.Queue + a worker pool."""
 
     def __init__(self) -> None:
-        self._queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
+        self._queue: asyncio.Queue[tuple[str, str, dict | None]] = asyncio.Queue()
         self._worker_tasks: list[asyncio.Task] = []
         self._stopping = False
 
-    def enqueue(self, slug: str, task_id: str) -> None:
-        self._queue.put_nowait((slug, task_id))
+    def enqueue(self, slug: str, task_id: str, *, metadata: dict | None = None) -> None:
+        self._queue.put_nowait((slug, task_id, metadata))
 
-    def put_nowait(self, slug: str, task_id: str) -> None:
-        self.enqueue(slug, task_id)
+    def put_nowait(self, slug: str, task_id: str, *, metadata: dict | None = None) -> None:
+        self.enqueue(slug, task_id, metadata=metadata)
 
     @staticmethod
     async def _heartbeat(dispatcher: _Dispatcher, slug: str, task_id: str) -> None:
@@ -68,11 +71,11 @@ class TaskQueue:
     async def _worker_loop(self, dispatcher: _Dispatcher) -> None:
         loop = asyncio.get_running_loop()
         while not self._stopping:
-            slug, task_id = await self._queue.get()
+            slug, task_id, metadata = await self._queue.get()
             hb = asyncio.create_task(self._heartbeat(dispatcher, slug, task_id))
             try:
                 await loop.run_in_executor(
-                    None, dispatcher.run_step, slug, task_id,
+                    None, dispatcher.run_step, slug, task_id, metadata,
                 )
             except Exception:
                 logger.exception(
@@ -104,10 +107,10 @@ class TaskQueue:
     async def drain_sync(self, dispatcher: _Dispatcher) -> None:
         loop = asyncio.get_running_loop()
         while not self._queue.empty():
-            slug, task_id = self._queue.get_nowait()
+            slug, task_id, metadata = self._queue.get_nowait()
             try:
                 await loop.run_in_executor(
-                    None, dispatcher.run_step, slug, task_id,
+                    None, dispatcher.run_step, slug, task_id, metadata,
                 )
             except Exception:
                 logger.exception(

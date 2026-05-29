@@ -19,7 +19,7 @@ from src.daemon.routes._org_dep import OrgDep
 from src.daemon.runner import enqueue_task
 from src.daemon.state import DaemonState
 from src.infrastructure.feishu.reply_parser import DispatchIntent  # re-export
-from src.models import TaskRecord, TaskStatus
+from src.models import BlockKind, TaskRecord, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +137,16 @@ def get_task(task_id: str, org: OrgDep) -> dict:
                 prior_status = payload.get("prior_status")
                 break
 
+    # When a task is blocked waiting for jobs, include the id+status of each
+    # blocking job so `grassland details` can show the founder what to act on.
+    blocked_on_jobs: list[dict] | None = None
+    if task.status == TaskStatus.BLOCKED and task.block_kind == BlockKind.BLOCKED_ON_JOB:
+        job_ids = _json.loads(task.blocked_on_job_ids or "[]")
+        blocked_on_jobs = [
+            {"job_id": jid, "status": org.db.get_job_status(jid) or "unknown"}
+            for jid in job_ids
+        ]
+
     return {
         "task": _task_to_dict(task),
         "results": org.db.get_task_results(task_id),
@@ -144,6 +154,7 @@ def get_task(task_id: str, org: OrgDep) -> dict:
         "revisit_chain": chain,
         "direct_revisits": direct_revisits,
         "predecessor_prior_status": prior_status,
+        "blocked_on_jobs": blocked_on_jobs,
     }
 
 
@@ -234,6 +245,7 @@ class CompletionBody(BaseModel):
     dependencies: list[str] = []
     suggested_reviewer_focus: list[str] = []
     artifact_dir: str | None = None
+    waiting_on_job_ids: list[str] = []
 
 
 @router.get("/tasks/{task_id}/events")
@@ -269,6 +281,44 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "session_mismatch", "active": expected, "got": body.session_id},
         )
+    # Spec §6.2: validate waiting_on_job_ids if EXPLICITLY present. We check
+    # model_fields_set rather than truthiness so we can distinguish "client
+    # omitted the field" (legacy escalate path, no validation) from "client
+    # explicitly sent []" (malformed payload — reject with 400). The truthy
+    # guard collapses both cases, silently bypassing the contract.
+    if "waiting_on_job_ids" in body.model_fields_set:
+        if not body.waiting_on_job_ids:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "empty_waiting_on_job_ids"},
+            )
+        if body.status != "blocked":
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "waiting_on_job_ids_requires_blocked",
+                    "got_status": body.status,
+                },
+            )
+        deduped = sorted(set(body.waiting_on_job_ids))
+        for jid in deduped:
+            owner = org.db.get_job_owner_task_id(jid)
+            if owner is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail={"code": "job_not_found", "job_id": jid},
+                )
+            if owner != task_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "code": "job_not_owned_by_task",
+                        "job_id": jid,
+                        "owner_task_id": owner,
+                    },
+                )
+        # Persist the deduped list so run_step_impl sees the cleaned-up payload.
+        body.waiting_on_job_ids = deduped
     decision_json = (
         _json.dumps(body.decision) if body.decision is not None else None
     )
@@ -283,6 +333,7 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
             confidence_score=body.confidence,
             risks_flagged=body.risks_flagged,
             artifact_dir=body.artifact_dir,
+            waiting_on_job_ids=body.waiting_on_job_ids or None,
         )
     # Clear the tracker so a duplicate POST for the same session is rejected as
     # unknown_session rather than silently persisting a second row.

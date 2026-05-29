@@ -377,6 +377,10 @@ def cmd_details(args: argparse.Namespace) -> None:
         print(f"Heartbeat:  {_fmt_ts(task['last_heartbeat'])}")
     if task.get("block_kind"):
         print(f"Block kind: {task['block_kind']}")
+    if body.get("blocked_on_jobs"):
+        print("Blocked on jobs:")
+        for entry in body["blocked_on_jobs"]:
+            print(f"  {entry['job_id']}  {entry['status']}")
     if task.get("note"):
         print(f"Note:       {task['note']}")
     if body.get("results"):
@@ -629,6 +633,15 @@ def _completion_payload_from_file(path: str) -> tuple[str, dict]:
     # the orchestrator parses it via the NextStep pydantic model.
     if data.get("decision") is not None:
         body["decision"] = data["decision"]
+    # Agents self-blocking on jobs pass `waiting_on_job_ids` so the daemon's
+    # block-on-jobs branch (run_step's self-blocked handler) transitions the
+    # task to BLOCKED+BLOCKED_ON_JOB instead of the legacy self-escalate path.
+    # Forward when explicitly present (membership check, NOT truthiness) so
+    # the daemon sees an explicit `[]` and can reject it with the documented
+    # 400 empty_waiting_on_job_ids — otherwise a malformed payload silently
+    # bypasses the block-on-jobs contract.
+    if "waiting_on_job_ids" in data:
+        body["waiting_on_job_ids"] = data["waiting_on_job_ids"]
     return data["task_id"], body
 
 

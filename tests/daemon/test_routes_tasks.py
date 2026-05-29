@@ -729,7 +729,7 @@ def test_resolve_escalation_approve_resumes_task(client_with_runtime):
     assert t.block_kind is None
     # Self re-enqueued so the manager picks it up next; queue carries
     # (slug, task_id) tuples in the multi-org layout.
-    assert daemon.queue._queue.get_nowait() == ("alpha", "T-1")
+    assert daemon.queue._queue.get_nowait() == ("alpha", "T-1", None)
 
 
 def test_resolve_escalation_reject_transitions_to_failed(client_with_runtime):
@@ -800,7 +800,7 @@ def test_resolve_escalation_approve_reenqueues_child_not_parent(client_with_runt
     # Approve re-enqueues the child itself (resumes the work). Parent stays
     # blocked(DELEGATED) and will be woken when the child next reaches a
     # true terminal — no immediate parent wake here.
-    assert daemon.queue._queue.get_nowait() == ("alpha", "T-CHD")
+    assert daemon.queue._queue.get_nowait() == ("alpha", "T-CHD", None)
     assert daemon.queue._queue.empty()
     par = state.db.get_task("T-PAR")
     assert par.status == TaskStatus.BLOCKED
@@ -1509,3 +1509,92 @@ def test_progress_empty_message_rejected(tmp_home, app, org_state, auth_headers)
     )
     assert r.status_code == 400
     assert r.json()["detail"]["code"] == "message_required"
+
+
+# --- GET /tasks/{id} blocked_on_jobs ---
+
+
+def test_get_task_includes_blocked_on_jobs_when_blocked(
+    tmp_home, app, daemon_state, org_state, auth_headers,
+) -> None:
+    """GET /tasks/{id} includes blocked_on_jobs list with id+status for each
+    blocking job when the task is in BLOCKED+BLOCKED_ON_JOB state."""
+    import json as _json
+    from datetime import datetime, timezone
+    from src.models import BlockKind, JobInterpreter, JobRecord, JobStatus, TaskRecord, TaskStatus
+
+    db = org_state.db
+    db.insert_task(TaskRecord(
+        id="TASK-BOJ-1",
+        brief="waiting on two jobs",
+        team="engineering",
+        assigned_agent="dev_agent",
+        status=TaskStatus.BLOCKED,
+    ))
+
+    job1_id = db.next_job_id()
+    db.insert_job(JobRecord(
+        id=job1_id,
+        task_id="TASK-BOJ-1",
+        agent_name="dev_agent",
+        title="job one",
+        rationale="need it",
+        script_text="echo 1",
+        interpreter=JobInterpreter.BASH,
+        status=JobStatus.RUNNING,
+        created_at=datetime.now(timezone.utc).isoformat(),
+    ))
+
+    job2_id = db.next_job_id()
+    db.insert_job(JobRecord(
+        id=job2_id,
+        task_id="TASK-BOJ-1",
+        agent_name="dev_agent",
+        title="job two",
+        rationale="need it too",
+        script_text="echo 2",
+        interpreter=JobInterpreter.BASH,
+        status=JobStatus.PENDING,
+        created_at=datetime.now(timezone.utc).isoformat(),
+    ))
+
+    db.update_task(
+        "TASK-BOJ-1",
+        status=TaskStatus.BLOCKED,
+        block_kind=BlockKind.BLOCKED_ON_JOB,
+        blocked_on_job_ids=_json.dumps([job1_id, job2_id]),
+    )
+
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tasks/TASK-BOJ-1",
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    boj = body.get("blocked_on_jobs")
+    assert boj is not None
+    assert len(boj) == 2
+    by_id = {entry["job_id"]: entry["status"] for entry in boj}
+    assert by_id[job1_id] == "running"
+    assert by_id[job2_id] == "pending"
+
+
+def test_get_task_blocked_on_jobs_is_none_for_non_blocked_task(
+    tmp_home, app, daemon_state, org_state, auth_headers,
+) -> None:
+    """blocked_on_jobs is None (not an empty list) for tasks not in
+    BLOCKED+BLOCKED_ON_JOB state, so callers can distinguish the two cases."""
+    from src.models import TaskRecord
+
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-PLAIN", brief="normal task", team="engineering",
+        assigned_agent="dev_agent",
+    ))
+
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tasks/TASK-PLAIN",
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body.get("blocked_on_jobs") is None

@@ -15,7 +15,7 @@ from src.daemon.auth import optional_bearer, require_token
 from src.daemon.event_bus import job_topic
 from src.daemon.routes._org_dep import OrgDep
 from src.daemon.jobs_runner import run_job as _spawn_job
-from src.daemon.jobs_runner import _interpreter_binary
+from src.daemon.jobs_runner import _interpreter_binary, fire_resume_check_for_job
 from src.infrastructure.audit_logger import AuditLogger
 from src.models import (
     JobInterpreter,
@@ -408,6 +408,8 @@ async def reject_job_from_notification(
         task_id=record.task_id, job_id=job_id,
         reviewer="founder", reason=reason_stripped,
     )
+    # Bridge: any task blocked on this job can now be unblocked.
+    fire_resume_check_for_job(org, job_id)
     return org.db.get_job(job_id)
 
 
@@ -854,6 +856,8 @@ async def _run_job_core(
             audit.log_job_run_failed(
                 task_id=record.task_id, job_id=job_id, reason="spawn_failed",
             )
+            # Bridge: terminal status committed — resume any tasks blocked on this job.
+            fire_resume_check_for_job(org, job_id)
             parent = org.db.get_latest_notification_for_sr(job_id, kind="job_request")
             if parent is not None and getattr(org, "orchestrator", None) is not None:
                 org.orchestrator.notify_job_run_result(
@@ -877,6 +881,8 @@ async def _run_job_core(
             audit.log_job_run_failed(
                 task_id=record.task_id, job_id=job_id, reason="internal_error",
             )
+            # Bridge: terminal status committed — resume any tasks blocked on this job.
+            fire_resume_check_for_job(org, job_id)
             parent = org.db.get_latest_notification_for_sr(job_id, kind="job_request")
             if parent is not None and getattr(org, "orchestrator", None) is not None:
                 org.orchestrator.notify_job_run_result(
@@ -901,6 +907,9 @@ async def _run_job_core(
             )
         except ValueError:
             return
+
+        # Bridge: terminal status committed — resume any tasks blocked on this job.
+        fire_resume_check_for_job(org, job_id)
 
         if result.status == "completed":
             audit.log_job_run_completed(

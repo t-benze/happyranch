@@ -519,6 +519,69 @@ def test_completion_payload_from_file_omits_decision_when_absent(tmp_path):
     assert "decision" not in body
 
 
+def test_completion_payload_from_file_passes_waiting_on_job_ids_through(tmp_path):
+    """Agents self-blocking on jobs include `waiting_on_job_ids` in the JSON
+    payload. The CLI must forward the list verbatim to the daemon body — without
+    it, the daemon-side block-on-jobs branch never sees the list and the task
+    falls through to the legacy self-escalate path."""
+    import json as _json
+    from src.cli import _completion_payload_from_file
+
+    path = tmp_path / "blocked.json"
+    path.write_text(_json.dumps({
+        "task_id": "TASK-001",
+        "session_id": "sess-1",
+        "agent": "dev_agent",
+        "status": "blocked",
+        "confidence": 0,
+        "summary": "Waiting on JOB-12 and JOB-13",
+        "waiting_on_job_ids": ["JOB-12", "JOB-13"],
+    }))
+    _, body = _completion_payload_from_file(str(path))
+    assert body["waiting_on_job_ids"] == ["JOB-12", "JOB-13"]
+
+
+def test_completion_payload_from_file_omits_waiting_on_job_ids_when_absent(tmp_path):
+    """When the agent doesn't include `waiting_on_job_ids`, the CLI must NOT
+    inject an empty list — absence vs. empty list is a meaningful distinction
+    on the daemon side (absent = legacy escalate path; explicit [] = 400
+    empty_waiting_on_job_ids)."""
+    import json as _json
+    from src.cli import _completion_payload_from_file
+
+    path = tmp_path / "w.json"
+    path.write_text(_json.dumps({
+        "task_id": "T", "session_id": "s", "agent": "dev_agent",
+        "status": "completed", "summary": "done",
+    }))
+    _, body = _completion_payload_from_file(str(path))
+    assert "waiting_on_job_ids" not in body
+
+
+def test_completion_payload_from_file_forwards_explicit_empty_waiting_on_job_ids(tmp_path):
+    """When the agent EXPLICITLY sends `waiting_on_job_ids: []`, the CLI must
+    forward the empty list to the daemon (membership check, not truthiness) so
+    the daemon can return 400 empty_waiting_on_job_ids. Silently dropping it
+    would mask a malformed agent payload and route it to the legacy escalate
+    path instead — the exact silent-fallback bug Codex flagged."""
+    import json as _json
+    from src.cli import _completion_payload_from_file
+
+    path = tmp_path / "explicit-empty.json"
+    path.write_text(_json.dumps({
+        "task_id": "TASK-001",
+        "session_id": "s",
+        "agent": "dev_agent",
+        "status": "blocked",
+        "confidence": 0,
+        "summary": "agent thought it had jobs to wait on but populated nothing",
+        "waiting_on_job_ids": [],
+    }))
+    _, body = _completion_payload_from_file(str(path))
+    assert "waiting_on_job_ids" in body
+    assert body["waiting_on_job_ids"] == []
+
+
 def test_report_completion_parser_accepts_from_file_alone():
     """With --from-file, none of --task-id/--session-id/... are required.
     --org IS required for agent callbacks (see test_report_completion_parser_requires_org)."""
