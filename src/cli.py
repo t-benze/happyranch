@@ -362,7 +362,7 @@ def cmd_details(args: argparse.Namespace) -> None:
             f"(dispatcher: {dispatcher} / {role})"
         )
 
-    print(f"Task:       {task['id']}")
+    print(f"Task:       {task['task_id']}")
     print(f"Team:       {task.get('team', '-')}")
     print(f"Status:     {task['status']}")
     print(f"Agent:      {task.get('assigned_agent') or '-'}")
