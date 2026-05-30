@@ -343,3 +343,79 @@ export interface JobStopResponse {
 export type JobWaitResponse =
   | (JobRecord & { timed_out: false })
   | { timed_out: true };
+
+// ---------------------------------------------------------------------------
+// Dashboard summary (mirrors src/orchestrator/dashboard_summary.py)
+// ---------------------------------------------------------------------------
+
+export type HeartbeatTier = 'ok' | 'warn' | 'bad';
+
+export interface HeartbeatBucket {
+  hour: number;
+  steps: number;
+  tier: HeartbeatTier;
+}
+
+export interface NarrativeCounts {
+  completed_today: number;
+  failed_today: number;
+  escalated_open: number;
+  kb_added_today: number;
+  agents_active_now: number;
+  spend_today_usd: number;
+}
+
+export interface DashboardEscalationRow {
+  task_id: string;
+  agent: string;
+  team: string;
+  question: string;
+  raised_at: string;
+  age_seconds: number;
+}
+
+export interface ActiveByTeamRow {
+  team: string;
+  count: number;
+  task_ids: string[];
+}
+
+export type ActivityVerdict = 'ok' | 'fail' | 'warn';
+
+export interface DashboardActivityRow {
+  timestamp: string;
+  who: string;
+  event_kind: string;
+  task_id: string | null;
+  verdict: ActivityVerdict | null;
+}
+
+export type UpdateMarker = 'add' | 'warn' | 'info';
+
+export interface DashboardUpdateRow {
+  marker: UpdateMarker;
+  text: string;
+  meta: string;
+  timestamp: string;
+}
+
+export interface TeamPulseRow {
+  team: string;
+  acceptance_pct: number;
+  trend_delta: number;
+  sparkline: number[];
+  members: number;
+  lead: string;
+}
+
+export interface DashboardSummaryResponse {
+  heartbeat: HeartbeatBucket[];
+  narrative_counts: NarrativeCounts;
+  escalations: DashboardEscalationRow[];
+  active_by_team: ActiveByTeamRow[];
+  recent_activity: DashboardActivityRow[];
+  updates_this_week: DashboardUpdateRow[];
+  org_pulse: TeamPulseRow[];
+  org_age_days: number;
+  server_now: string;
+}
