@@ -67,7 +67,7 @@ class ComposeBody(BaseModel):
     subject: str
     recipients: list[str]
     body_markdown: str
-    addressed_to: list[str] = ["@all"]
+    addressed_to: list[str] | None = None  # DEPRECATED: ignored; broadcasts to all participants
     forwarded_from_id: str | None = None
     forwarded_from_kind: str | None = None  # 'thread' | 'talk'
 
@@ -77,7 +77,7 @@ class ComposeAsAgentBody(BaseModel):
     subject: str
     recipients: list[str]
     body_markdown: str
-    addressed_to: list[str] = ["@all"]
+    addressed_to: list[str] | None = None  # DEPRECATED: ignored; broadcasts to all participants
     task_id: str | None = None
     session_id: str | None = None
     talk_id: str | None = None
@@ -131,7 +131,8 @@ async def compose_thread(
                 detail={"code": "unknown_agent", "agent": name},
             )
 
-    _validate_addressed_to(body.addressed_to, body.recipients)
+    addressed_to = body.addressed_to if body.addressed_to is not None else ["@all"]
+    _validate_addressed_to(addressed_to, body.recipients)
 
     # Validate forwarded source if set.
     if (body.forwarded_from_id is None) != (body.forwarded_from_kind is None):
@@ -159,7 +160,7 @@ async def compose_thread(
     org_cfg = load_org_config(org_paths)
     turn_cap = org_cfg.threads_default_turn_cap
 
-    addressed_agents = _resolve_addressed_agents(body.addressed_to, body.recipients)
+    addressed_agents = _resolve_addressed_agents(addressed_to, body.recipients)
 
     if len(addressed_agents) > turn_cap:
         raise HTTPException(
@@ -181,7 +182,7 @@ async def compose_thread(
         seq = org.db.append_thread_message(
             thread_id=thread_id, speaker="founder",
             kind=ThreadMessageKind.MESSAGE,
-            body_markdown=body_text, addressed_to=body.addressed_to,
+            body_markdown=body_text, addressed_to=addressed_to,
         )
         AuditLogger(org.db).log_thread_started(
             thread_id,
@@ -191,7 +192,7 @@ async def compose_thread(
         )
         AuditLogger(org.db).log_thread_message_sent(
             thread_id, seq=seq, speaker="founder",
-            addressed_to=body.addressed_to, kind="message",
+            addressed_to=addressed_to, kind="message",
         )
         # Mint pending invocations for each addressed agent.
         tokens_to_enqueue: list[str] = []
@@ -346,6 +347,8 @@ async def compose_thread_as_agent(
                 detail={"code": "unknown_agent", "agent": name},
             )
 
+    addressed_to = body.addressed_to if body.addressed_to is not None else ["@all"]
+
     # External-recipients rule: recipients minus composer must be non-empty OR
     # @founder must appear in addressed_to (resolved if @all).
     # NOTE: `external` includes @founder by design — used only for the empty-
@@ -353,8 +356,8 @@ async def compose_thread_as_agent(
     # @founder is not a subprocess and must be excluded from the invocation set.
     external = [r for r in recipients if r != body.composer]
     addressed_includes_founder = (
-        FOUNDER_LITERAL in body.addressed_to
-        or (body.addressed_to == ["@all"] and FOUNDER_LITERAL in recipients)
+        FOUNDER_LITERAL in addressed_to
+        or (addressed_to == ["@all"] and FOUNDER_LITERAL in recipients)
     )
     if not external and not addressed_includes_founder:
         raise HTTPException(status_code=422, detail={"code": "empty_external_recipients"})
@@ -363,9 +366,9 @@ async def compose_thread_as_agent(
     # `_validate_addressed_to` doesn't fail on an empty list — guard
     # explicitly so a `"addressed_to": []` payload doesn't create a thread
     # with no addressees (spec §4.3: "broadcast to nobody" is not allowed).
-    if not body.addressed_to:
+    if not addressed_to:
         raise HTTPException(status_code=422, detail={"code": "addressed_to_empty"})
-    _validate_addressed_to(body.addressed_to, recipients)
+    _validate_addressed_to(addressed_to, recipients)
 
     org_cfg = load_org_config(org_paths)
     turn_cap = org_cfg.threads_default_turn_cap
@@ -374,12 +377,12 @@ async def compose_thread_as_agent(
     # - @all → every recipient (including @founder if present, including composer);
     # - otherwise the explicit list, deduped (preserve order) so a payload
     #   with the same name twice doesn't mint two invocations for one message.
-    if body.addressed_to == ["@all"]:
+    if addressed_to == ["@all"]:
         resolved = list(recipients)
     else:
         _seen: set[str] = set()
         resolved = []
-        for name in body.addressed_to:
+        for name in addressed_to:
             if name in _seen:
                 continue
             _seen.add(name)
@@ -425,7 +428,7 @@ async def compose_thread_as_agent(
         seq = org.db.append_thread_message(
             thread_id=thread_id, speaker=body.composer,
             kind=ThreadMessageKind.MESSAGE,
-            body_markdown=body_text, addressed_to=body.addressed_to,
+            body_markdown=body_text, addressed_to=addressed_to,
         )
         AuditLogger(org.db).log_thread_started(
             thread_id,
@@ -438,7 +441,7 @@ async def compose_thread_as_agent(
         )
         AuditLogger(org.db).log_thread_message_sent(
             thread_id, seq=seq, speaker=body.composer,
-            addressed_to=body.addressed_to, kind="message",
+            addressed_to=addressed_to, kind="message",
         )
         if founder_in_addressed:
             channel = "feishu" if org.notifier is not None else "none"
@@ -923,7 +926,7 @@ async def dispatch_from_thread_endpoint(
 
 class SendBody(BaseModel):
     body_markdown: str
-    addressed_to: list[str]
+    addressed_to: list[str] | None = None  # DEPRECATED: ignored; broadcasts to all participants
 
 
 class _SendThreadError(Exception):
@@ -1038,10 +1041,11 @@ async def resolve_thread_from_notification(
 async def send_thread_endpoint(
     slug: str, thread_id: str, body: SendBody, org: OrgDep,
 ) -> dict:
+    addressed_to = body.addressed_to if body.addressed_to is not None else ["@all"]
     try:
         return await _send_thread_message_inprocess(
             org, slug, thread_id,
-            body_markdown=body.body_markdown, addressed_to=body.addressed_to,
+            body_markdown=body.body_markdown, addressed_to=addressed_to,
         )
     except _SendThreadError as exc:
         raise HTTPException(
