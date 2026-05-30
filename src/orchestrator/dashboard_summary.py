@@ -115,3 +115,52 @@ def compute_spend_today(db: Database, *, now: datetime) -> float:
         (midnight,),
     )
     return float(row["total"]) if row else 0.0
+
+
+def compute_narrative_counts_today(
+    db: Database, *, now: datetime, kb_store
+) -> NarrativeCounts:
+    """Today = local midnight to now. Aggregates over tasks + audit_log +
+    task_results + the KB store."""
+    midnight = _local_midnight(now).isoformat()
+
+    completed_row = db.fetch_one_readonly(
+        "SELECT COUNT(*) AS n FROM tasks "
+        "WHERE status = 'completed' AND updated_at >= ?",
+        (midnight,),
+    )
+    completed = int(completed_row["n"]) if completed_row else 0
+
+    failed_row = db.fetch_one_readonly(
+        "SELECT COUNT(*) AS n FROM tasks "
+        "WHERE status = 'failed' AND updated_at >= ?",
+        (midnight,),
+    )
+    failed = int(failed_row["n"]) if failed_row else 0
+
+    escalated_row = db.fetch_one_readonly(
+        "SELECT COUNT(*) AS n FROM tasks "
+        "WHERE status = 'blocked' AND block_kind = 'escalated'",
+    )
+    escalated = int(escalated_row["n"]) if escalated_row else 0
+
+    # Distinct agents with an unmatched session_start
+    active_rows = db.fetch_all_readonly(
+        "SELECT DISTINCT a.agent FROM audit_log a "
+        "WHERE a.action = 'session_start' "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM audit_log b "
+        "  WHERE b.task_id = a.task_id AND b.agent = a.agent "
+        "  AND b.action = 'session_end' AND b.timestamp > a.timestamp"
+        ")"
+    )
+    active_now = len(active_rows)
+
+    return NarrativeCounts(
+        completed_today=completed,
+        failed_today=failed,
+        escalated_open=escalated,
+        kb_added_today=kb_store.count_entries_created_since(_local_midnight(now)),
+        agents_active_now=active_now,
+        spend_today_usd=compute_spend_today(db, now=now),
+    )

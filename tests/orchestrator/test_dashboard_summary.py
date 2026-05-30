@@ -11,9 +11,33 @@ import pytest
 
 from src.infrastructure.database import Database
 from src.orchestrator.dashboard_summary import (
+    compute_narrative_counts_today,
     compute_org_age_days,
     compute_spend_today,
 )
+
+
+class _MockKbStore:
+    def __init__(self) -> None:
+        self._today = 0
+        self._this_week: list[dict] = []
+
+    def set_entries_today(self, n: int) -> None:
+        self._today = n
+
+    def set_entries_this_week(self, rows: list[dict]) -> None:
+        self._this_week = rows
+
+    def count_entries_created_since(self, since: datetime) -> int:
+        return self._today
+
+    def list_entries_created_since(self, since: datetime) -> list[dict]:
+        return list(self._this_week)
+
+
+@pytest.fixture
+def mock_kb_store() -> _MockKbStore:
+    return _MockKbStore()
 
 
 def test_org_age_days_empty_db(db: Database) -> None:
@@ -57,3 +81,59 @@ def test_spend_today_sums_today_only(db: Database) -> None:
         )
     db._conn.commit()
     assert compute_spend_today(db, now=now) == pytest.approx(3.75)
+
+
+def test_narrative_counts_zero(db: Database, mock_kb_store: _MockKbStore) -> None:
+    now = datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc)
+    counts = compute_narrative_counts_today(db, now=now, kb_store=mock_kb_store)
+    assert counts.completed_today == 0
+    assert counts.failed_today == 0
+    assert counts.escalated_open == 0
+    assert counts.kb_added_today == 0
+    assert counts.agents_active_now == 0
+    assert counts.spend_today_usd == 0.0
+
+
+def test_narrative_counts_populated(db: Database, mock_kb_store: _MockKbStore) -> None:
+    # NOTE: the `tasks` table PK is `id` (not `task_id`); `block_kind` is added
+    # via ALTER in _create_tables. Both confirmed against
+    # src/infrastructure/database.py before composing these INSERTs.
+    now = datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc)
+    today = now - timedelta(hours=2)
+
+    # 2 completed today, 1 failed today
+    for tid, status in [("TASK-1", "completed"), ("TASK-2", "completed"), ("TASK-3", "failed")]:
+        db._conn.execute(
+            "INSERT INTO tasks (id, brief, assigned_agent, team, status, created_at, updated_at) "
+            "VALUES (?, 'b', 'a', 't', ?, ?, ?)",
+            (tid, status, today.isoformat(), today.isoformat()),
+        )
+    # 1 escalated (status='blocked' + block_kind='escalated')
+    db._conn.execute(
+        "INSERT INTO tasks (id, brief, assigned_agent, team, status, block_kind, created_at, updated_at) "
+        "VALUES ('TASK-4', 'b', 'a', 't', 'blocked', 'escalated', ?, ?)",
+        (today.isoformat(), today.isoformat()),
+    )
+    # 1 active session_start with no matching session_end (distinct agent counts as active)
+    db._conn.execute(
+        "INSERT INTO audit_log (timestamp, task_id, agent, action, payload) "
+        "VALUES (?, 'TASK-5', 'dev_agent', 'session_start', NULL)",
+        (today.isoformat(),),
+    )
+    # Spend today: 2.50 in task_results.estimated_cost
+    db._conn.execute(
+        "INSERT INTO task_results (task_id, agent, session_id, status, estimated_cost, created_at) "
+        "VALUES ('TASK-6', 'a', 's', 'completed', 2.50, ?)",
+        (today.isoformat(),),
+    )
+    db._conn.commit()
+    # KB: 3 entries today via the mock
+    mock_kb_store.set_entries_today(3)
+
+    counts = compute_narrative_counts_today(db, now=now, kb_store=mock_kb_store)
+    assert counts.completed_today == 2
+    assert counts.failed_today == 1
+    assert counts.escalated_open == 1
+    assert counts.kb_added_today == 3
+    assert counts.agents_active_now == 1
+    assert counts.spend_today_usd == pytest.approx(2.50)
