@@ -303,3 +303,48 @@ def compute_updates_this_week(
 
     items.sort(key=lambda x: x.timestamp, reverse=True)
     return items[:n]
+
+
+def compute_escalations_open(db: Database, *, now: datetime) -> list[EscalationRow]:
+    """Currently-escalated tasks with the question text from audit payload."""
+    rows = db.fetch_all_readonly(
+        "SELECT t.id, t.assigned_agent, t.team, t.updated_at, "
+        "       a.payload AS escalation_payload, a.timestamp AS escalation_ts "
+        "FROM tasks t "
+        "LEFT JOIN audit_log a ON a.task_id = t.id AND a.action = 'escalation' "
+        "WHERE t.status = 'blocked' AND t.block_kind = 'escalated' "
+        "ORDER BY t.updated_at DESC"
+    )
+    result: list[EscalationRow] = []
+    for r in rows:
+        payload = json.loads(r["escalation_payload"] or "{}")
+        question = payload.get("reason") or payload.get("question") or ""
+        raised = datetime.fromisoformat(r["escalation_ts"] or r["updated_at"])
+        if raised.tzinfo is None:
+            raised = raised.replace(tzinfo=timezone.utc)
+        moment = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+        age = int((moment - raised).total_seconds())
+        result.append(EscalationRow(
+            task_id=r["id"],
+            agent=r["assigned_agent"],
+            team=r["team"],
+            question=question,
+            raised_at=raised,
+            age_seconds=max(0, age),
+        ))
+    return result
+
+
+def compute_active_by_team(db: Database) -> list[ActiveByTeam]:
+    """tasks with status='in_progress' grouped by team."""
+    rows = db.fetch_all_readonly(
+        "SELECT team, id FROM tasks WHERE status = 'in_progress' "
+        "ORDER BY team, updated_at DESC"
+    )
+    groups: dict[str, list[str]] = {}
+    for r in rows:
+        groups.setdefault(r["team"], []).append(r["id"])
+    return [
+        ActiveByTeam(team=team, count=len(ids), task_ids=ids[:10])
+        for team, ids in sorted(groups.items())
+    ]

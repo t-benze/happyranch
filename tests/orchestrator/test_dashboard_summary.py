@@ -287,3 +287,50 @@ def test_updates_this_week_combines_kb_and_learnings(
     # Sort assertion: DESC by timestamp
     for i in range(len(rows) - 1):
         assert rows[i].timestamp >= rows[i + 1].timestamp
+
+
+from src.orchestrator.dashboard_summary import (
+    compute_escalations_open, compute_active_by_team,
+)
+
+
+def test_escalations_empty(db: Database) -> None:
+    now = datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc)
+    assert compute_escalations_open(db, now=now) == []
+
+
+def test_escalations_reads_question_from_audit_payload(db: Database) -> None:
+    now = datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc)
+    raised = now - timedelta(minutes=30)
+    db._conn.execute(
+        "INSERT INTO tasks (id, brief, assigned_agent, team, status, block_kind, created_at, updated_at) "
+        "VALUES ('TASK-101', 'b', 'qa_engineer', 'engineering', 'blocked', 'escalated', ?, ?)",
+        (raised.isoformat(), raised.isoformat()),
+    )
+    db._conn.execute(
+        "INSERT INTO audit_log (timestamp, task_id, agent, action, payload) "
+        'VALUES (?, \'TASK-101\', \'qa_engineer\', \'escalation\', \'{"reason":"Photo licensing unclear"}\')',
+        (raised.isoformat(),),
+    )
+    db._conn.commit()
+    rows = compute_escalations_open(db, now=now)
+    assert len(rows) == 1
+    assert rows[0].task_id == "TASK-101"
+    assert rows[0].question == "Photo licensing unclear"
+    assert rows[0].age_seconds == 30 * 60
+
+
+def test_active_by_team_groups_in_progress(db: Database) -> None:
+    now = datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc)
+    for tid, team in [("TASK-1", "engineering"), ("TASK-2", "engineering"), ("TASK-3", "content")]:
+        db._conn.execute(
+            "INSERT INTO tasks (id, brief, assigned_agent, team, status, created_at, updated_at) "
+            "VALUES (?, 'b', 'a', ?, 'in_progress', ?, ?)",
+            (tid, team, now.isoformat(), now.isoformat()),
+        )
+    db._conn.commit()
+    rows = compute_active_by_team(db)
+    by_team = {r.team: r for r in rows}
+    assert by_team["engineering"].count == 2
+    assert set(by_team["engineering"].task_ids) == {"TASK-1", "TASK-2"}
+    assert by_team["content"].count == 1
