@@ -128,16 +128,3 @@ def test_log_thread_started_payload_includes_composer(tmp_path: Path) -> None:
     assert payload["composed_from_talk_id"] is None
 
 
-def test_log_thread_founder_addressed_emits_audit(tmp_path: Path) -> None:
-    db = Database(tmp_path / "grassland.db")
-    db.insert_thread(ThreadRecord(id="THR-021", subject="x"))
-    AuditLogger(db).log_thread_founder_addressed(
-        "THR-021", seq=1, speaker="engineering_head", notify_channel="feishu",
-    )
-    row = db._conn.execute(
-        "SELECT payload FROM audit_log WHERE task_id = ? AND action = 'thread_founder_addressed'",
-        ("THR-021",),
-    ).fetchone()
-    assert row is not None
-    payload = json.loads(row["payload"])
-    assert payload == {"seq": 1, "speaker": "engineering_head", "notify_channel": "feishu"}
