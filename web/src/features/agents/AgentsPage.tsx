@@ -83,15 +83,11 @@ export function AgentsPage(): JSX.Element {
             {agentsQuery.isLoading ? (
               <p className="text-fg-muted">Loading…</p>
             ) : agents.length === 0 ? (
-              <div>
-                <EmptyState
-                  title="No agents yet"
-                  body="Add a manager to create your first team."
-                />
-                <div className="mt-4 flex justify-center">
-                  <Button onClick={() => setAddOpen(true)}>Add agent</Button>
-                </div>
-              </div>
+              <EmptyState
+                title="No agents yet"
+                body="Add a manager to create your first team."
+                cta={{ label: 'Add agent', onClick: () => setAddOpen(true) }}
+              />
             ) : (
               <div className="border-border-subtle overflow-hidden rounded-lg border">
                 <table className="w-full text-sm">
