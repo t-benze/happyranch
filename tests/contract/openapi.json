@@ -76,6 +76,22 @@
           "200",
           "422"
         ]
+      },
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
       }
     },
     "/api/v1/orgs/{slug}/agents/backfill-enrollments": {
@@ -1365,6 +1381,24 @@
           ],
           [
             "task_id",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/teams": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
             "path"
           ]
         ],
