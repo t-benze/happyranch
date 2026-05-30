@@ -64,6 +64,48 @@ def test_list_tasks_filter_by_assigned_agent(
     assert ids == ["TASK-A"]
 
 
+def test_list_tasks_cursor_pagination(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """`?before=<task_id>` returns the page strictly older than that task,
+    and `next_cursor` is null when the page is not full."""
+    from datetime import datetime, timezone, timedelta
+    from src.models import TaskRecord
+
+    base = datetime(2026, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
+    for i, name in enumerate(["TASK-P1", "TASK-P2", "TASK-P3"]):
+        org_state.db.insert_task(TaskRecord(
+            id=name, brief=name, team="engineering",
+            assigned_agent="engineering_head",
+            created_at=base + timedelta(seconds=i),
+            updated_at=base + timedelta(seconds=i),
+        ))
+
+    page1 = TestClient(app).get(
+        "/api/v1/orgs/alpha/tasks?limit=2", headers=auth_headers,
+    ).json()
+    assert [t["task_id"] for t in page1["tasks"]] == ["TASK-P3", "TASK-P2"]
+    assert page1["next_cursor"] == "TASK-P2"
+
+    page2 = TestClient(app).get(
+        "/api/v1/orgs/alpha/tasks?limit=2&before=TASK-P2", headers=auth_headers,
+    ).json()
+    assert [t["task_id"] for t in page2["tasks"]] == ["TASK-P1"]
+    assert page2["next_cursor"] is None
+
+
+def test_list_tasks_cursor_missing_id_returns_empty(
+    tmp_home, app, auth_headers,
+) -> None:
+    """An unknown `before` is a terminating signal, not an error — the
+    cursor likely points at a task that was deleted between pages."""
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tasks?before=TASK-NEVER", headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert r.json() == {"tasks": [], "next_cursor": None}
+
+
 def test_get_task_detail_404_when_missing(tmp_home, app, auth_headers) -> None:
     r = TestClient(app).get("/api/v1/orgs/alpha/tasks/TASK-999", headers=auth_headers)
     assert r.status_code == 404

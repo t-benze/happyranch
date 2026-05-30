@@ -110,9 +110,21 @@ def list_tasks(
     org: OrgDep,
     limit: int = 20,
     assigned_agent: str | None = None,
+    before: str | None = None,
 ) -> dict:
-    tasks = org.db.list_tasks(limit=limit, assigned_agent=assigned_agent)
-    return {"tasks": [_task_to_dict(t) for t in tasks]}
+    # Cursor pagination: `before` is the task_id of the last item on the
+    # previous page. `next_cursor` is the last id of this page when the page
+    # is full (heuristic — caller stops when next_cursor is null OR the next
+    # page comes back empty). When `before` references a missing task, the
+    # database returns [] and we surface that as the end of the list.
+    tasks = org.db.list_tasks(
+        limit=limit, assigned_agent=assigned_agent, before_task_id=before,
+    )
+    next_cursor = tasks[-1].id if len(tasks) == limit else None
+    return {
+        "tasks": [_task_to_dict(t) for t in tasks],
+        "next_cursor": next_cursor,
+    }
 
 
 @router.get("/tasks/{task_id}")

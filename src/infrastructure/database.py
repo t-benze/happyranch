@@ -710,16 +710,43 @@ class Database:
         self,
         limit: int = 20,
         assigned_agent: str | None = None,
+        before_task_id: str | None = None,
     ) -> list[TaskRecord]:
-        if assigned_agent is not None:
+        # Cursor pagination: callers pass the last task_id of the previous page
+        # as `before_task_id`; we resolve its created_at and emit the next page
+        # using (created_at, id) DESC for a stable tiebreak.
+        cursor_created_at: str | None = None
+        if before_task_id is not None:
+            row = self._conn.execute(
+                "SELECT created_at FROM tasks WHERE id = ?", (before_task_id,),
+            ).fetchone()
+            if row is None:
+                return []
+            cursor_created_at = row["created_at"]
+
+        if assigned_agent is not None and cursor_created_at is not None:
             cursor = self._conn.execute(
                 "SELECT * FROM tasks WHERE assigned_agent = ? "
-                "ORDER BY created_at DESC LIMIT ?",
+                "AND (created_at, id) < (?, ?) "
+                "ORDER BY created_at DESC, id DESC LIMIT ?",
+                (assigned_agent, cursor_created_at, before_task_id, limit),
+            )
+        elif assigned_agent is not None:
+            cursor = self._conn.execute(
+                "SELECT * FROM tasks WHERE assigned_agent = ? "
+                "ORDER BY created_at DESC, id DESC LIMIT ?",
                 (assigned_agent, limit),
+            )
+        elif cursor_created_at is not None:
+            cursor = self._conn.execute(
+                "SELECT * FROM tasks WHERE (created_at, id) < (?, ?) "
+                "ORDER BY created_at DESC, id DESC LIMIT ?",
+                (cursor_created_at, before_task_id, limit),
             )
         else:
             cursor = self._conn.execute(
-                "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)
+                "SELECT * FROM tasks ORDER BY created_at DESC, id DESC LIMIT ?",
+                (limit,),
             )
         return [
             TaskRecord(

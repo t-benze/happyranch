@@ -54,6 +54,18 @@ export interface QueryLike<T> {
   error: Error | null;
 }
 
+/** Minimal subset of TanStack's UseInfiniteQueryResult that consumers need.
+ *  `data.pages` is the per-page payload; callers flatten as appropriate. */
+export interface InfiniteQueryLike<TPage> {
+  data: { pages: TPage[] } | undefined;
+  isLoading: boolean;
+  isError: boolean;
+  error: Error | null;
+  fetchNextPage: () => void;
+  hasNextPage: boolean;
+  isFetchingNextPage: boolean;
+}
+
 export interface MutationLike<TArgs, TResult> {
   mutateAsync: (args: TArgs) => Promise<TResult>;
   isPending: boolean;
@@ -118,11 +130,20 @@ export type RevisitTaskResult = Awaited<ReturnType<typeof tasksApi.revisitTask>>
 export type ResolveEscalationArgs = Parameters<typeof tasksApi.resolveEscalation>[2];
 export type ResolveEscalationResult = Awaited<ReturnType<typeof tasksApi.resolveEscalation>>;
 
+export type TasksListPage = { tasks: TaskRecord[]; next_cursor?: string | null };
+
 export interface TasksApi {
   useTasksList: (params?: {
     status?: string;
     limit?: number;
   }) => QueryLike<{ tasks: TaskRecord[] }>;
+  /** Cursor-paginated variant used by the inbox page's infinite scroll.
+   *  Each page is the raw server payload (`tasks` + `next_cursor`); the
+   *  caller flattens `data.pages` and asks `fetchNextPage()` from a
+   *  scroll-observer sentinel. */
+  useTasksInfiniteList: (params?: {
+    status?: string;
+  }) => InfiniteQueryLike<TasksListPage>;
   useTask: (taskId: string | undefined) => QueryLike<TaskRecord>;
   useTaskRecall: (taskId: string | undefined) => QueryLike<TaskRecallNode>;
 

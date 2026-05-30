@@ -1,4 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import { subscribeSSE, tasks as tasksApi } from '@/lib/api';
@@ -6,6 +11,7 @@ import type { TaskEvent } from '@/lib/api/types';
 import type {
   CancelTaskArgs,
   CancelTaskResult,
+  InfiniteQueryLike,
   MutationLike,
   QueryLike,
   ResolveEscalationArgs,
@@ -13,6 +19,7 @@ import type {
   RevisitTaskArgs,
   RevisitTaskResult,
   TasksApi,
+  TasksListPage,
 } from './DataContext';
 
 function useRealOrgSlug(): string {
@@ -28,6 +35,41 @@ function useTasksList(params?: { status?: string; limit?: number }) {
     enabled: !!slug,
     refetchInterval: 10_000,
   }) as QueryLike<Awaited<ReturnType<typeof tasksApi.listTasks>>>;
+}
+
+function useTasksInfiniteList(
+  params?: { status?: string },
+): InfiniteQueryLike<TasksListPage> {
+  const slug = useRealOrgSlug();
+  // Cap the per-page payload — 50 keeps SSR + initial paint cheap while still
+  // covering most viewports in a single fetch. Backend default is 20 but we
+  // ask for more to reduce round-trips during scroll.
+  const PAGE_SIZE = 50;
+  const q = useInfiniteQuery<TasksListPage>({
+    queryKey: ['tasks-infinite', slug, params],
+    initialPageParam: undefined,
+    queryFn: ({ pageParam }) =>
+      tasksApi.listTasks(slug, {
+        ...(params?.status ? { status: params.status } : {}),
+        limit: PAGE_SIZE,
+        ...(pageParam ? { before: pageParam as string } : {}),
+      }),
+    getNextPageParam: (last) => last.next_cursor ?? undefined,
+    enabled: !!slug,
+    // Foreground polling is disabled for the infinite list — pages would
+    // re-fetch independently and confuse the cursor chain. The SSE
+    // invalidation on `['tasks', slug]` already wakes the bounded list;
+    // separate keying isolates the two surfaces.
+  });
+  return {
+    data: q.data ? { pages: q.data.pages } : undefined,
+    isLoading: q.isLoading,
+    isError: q.isError,
+    error: (q.error as Error | null) ?? null,
+    fetchNextPage: () => { void q.fetchNextPage(); },
+    hasNextPage: !!q.hasNextPage,
+    isFetchingNextPage: q.isFetchingNextPage,
+  };
 }
 
 function useTask(taskId: string | undefined) {
@@ -114,6 +156,7 @@ function useResolveEscalation(taskId: string): MutationLike<ResolveEscalationArg
 
 export const realTasksApi: TasksApi = {
   useTasksList,
+  useTasksInfiniteList,
   useTask: useTask as TasksApi['useTask'],
   useTaskRecall: useTaskRecall as TasksApi['useTaskRecall'],
   useTaskTailSSE,

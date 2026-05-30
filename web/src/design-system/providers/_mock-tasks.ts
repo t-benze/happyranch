@@ -1,7 +1,9 @@
 import type { TaskRecord, TaskRecallNode } from '@/lib/api/types';
 import type {
+  InfiniteQueryLike,
   QueryLike,
   TasksApi,
+  TasksListPage,
   TasksRoutes,
   MutationLike,
 } from './DataContext';
@@ -66,8 +68,22 @@ function noopMutation<TArgs, TResult>(): MutationLike<TArgs, TResult> {
   };
 }
 
+function staticInfinite(page: TasksListPage): InfiniteQueryLike<TasksListPage> {
+  return {
+    data: { pages: [page] },
+    isLoading: false,
+    isError: false,
+    error: null,
+    fetchNextPage: () => { /* no-op: prototype fixtures fit in one page */ },
+    hasNextPage: false,
+    isFetchingNextPage: false,
+  };
+}
+
 export const mockTasksApi: TasksApi = {
   useTasksList: () => ok({ tasks: FIXTURES }),
+  useTasksInfiniteList: () =>
+    staticInfinite({ tasks: FIXTURES, next_cursor: null }),
   useTask: (taskId) =>
     ok(FIXTURES.find((t) => t.task_id === taskId) ?? FIXTURES[0]),
   useTaskRecall: () => ok(RECALL_TREE),
