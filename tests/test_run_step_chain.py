@@ -265,3 +265,88 @@ def test_chain_branch_wakes_parent_on_verdict_mismatch(tmp_path):
     assert outcome == "wake"
     # chain must be cleared so the manager can decide next step
     assert db.get_task("TASK-001").active_chain is None
+
+
+def test_chain_final_leg_wakes_manager_and_clears_chain(tmp_path):
+    """When the LAST leg matches its expected verdict, parent wakes (not
+    auto-done) and active_chain is cleared."""
+    from src.infrastructure.database import Database
+    from src.orchestrator.chain import ChainState
+
+    db = Database(tmp_path / "x.db")
+    db.insert_task(TaskRecord(id="TASK-P", team="engineering", brief="p"))
+    db.update_task("TASK-P", status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED)
+    chain = ChainState(
+        step_index=1,  # final leg in flight (the only entry in `legs`)
+        first_leg_expect_verdict=None,
+        legs=[ChainLeg(agent="qa", prompt="q", expect_verdict="PASS")],
+        step_audit_id=1,
+    )
+    db.update_task_active_chain("TASK-P", chain.serialize())
+
+    db.insert_task(TaskRecord(
+        id="TASK-C2", team="engineering", brief="qa",
+        parent_task_id="TASK-P", assigned_agent="qa",
+    ))
+    db.update_task("TASK-C2", status=TaskStatus.COMPLETED)
+    db.insert_task_result(
+        task_id="TASK-C2", agent="qa", session_id="s",
+        status="completed", confidence_score=90,
+        output_summary="all green", verdict="PASS",
+    )
+
+    from src.orchestrator.run_step import _advance_chain_for_completed_child
+    out = _advance_chain_for_completed_child(
+        orch=_orch_with_db(db),
+        parent_task_id="TASK-P",
+        child_task_id="TASK-C2",
+    )
+    assert out == "wake"
+    assert db.get_task("TASK-P").active_chain is None
+
+
+def test_chain_step_count_not_bumped_on_auto_advance(tmp_path):
+    """The whole point of chains: auto-advancing legs must NOT consume the
+    parent's orchestration_step_count budget."""
+    from src.infrastructure.database import Database
+    from src.orchestrator.chain import ChainState
+
+    db = Database(tmp_path / "x.db")
+    db.insert_task(TaskRecord(id="TASK-P", team="engineering", brief="p"))
+    db.update_task("TASK-P", status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED)
+    initial_count = db.get_task("TASK-P").orchestration_step_count
+
+    chain = ChainState(
+        step_index=0, first_leg_expect_verdict=None,
+        legs=[
+            ChainLeg(agent="sr", prompt="r", expect_verdict="APPROVE"),
+            ChainLeg(agent="qa", prompt="q", expect_verdict="PASS"),
+        ],
+        step_audit_id=1,
+    )
+    db.update_task_active_chain("TASK-P", chain.serialize())
+
+    # Walk through two auto-advances.
+    for cid, verdict, agent in [
+        ("TASK-C1", None, "dev"),         # ungated first leg
+        ("TASK-C2", "APPROVE", "sr"),    # second leg expects APPROVE
+    ]:
+        db.insert_task(TaskRecord(
+            id=cid, team="engineering", brief="x",
+            parent_task_id="TASK-P", assigned_agent=agent,
+        ))
+        db.update_task(cid, status=TaskStatus.COMPLETED)
+        db.insert_task_result(
+            task_id=cid, agent=agent, session_id="s",
+            status="completed", confidence_score=80, output_summary="ok",
+            verdict=verdict,
+        )
+        from src.orchestrator.run_step import _advance_chain_for_completed_child
+        _advance_chain_for_completed_child(
+            orch=_orch_with_db(db),
+            parent_task_id="TASK-P",
+            child_task_id=cid,
+        )
+
+    final = db.get_task("TASK-P")
+    assert final.orchestration_step_count == initial_count  # zero growth — the load-bearing invariant
