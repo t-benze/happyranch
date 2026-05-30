@@ -83,6 +83,30 @@ def _purpose_note(
     return f"Message {triggering_seq} (no explicit addressee)"
 
 
+def _decline_by_default_doctrine() -> str:
+    return (
+        "## Decline-by-Default in Threads\n\n"
+        "This invocation was minted because a new message was posted to this\n"
+        "thread. Every participant gets an invocation on every message — that\n"
+        "does NOT mean every participant should reply.\n\n"
+        "Default behavior: call `grassland threads decline --from-file <payload>`\n"
+        "with no reason. Your invocation is consumed silently; no transcript\n"
+        "entry is written.\n\n"
+        "Reply (with `grassland threads reply --from-file <payload>`) only when\n"
+        "ALL of the following hold:\n"
+        "- The latest message contains a question, request, or hand-off that\n"
+        "  you can uniquely answer based on your role.\n"
+        "- You have substantive content to add — not acknowledgment, not\n"
+        "  \"I agree\", not \"noted\".\n"
+        "- No other participant has already covered the same ground in a\n"
+        "  recent reply.\n\n"
+        "The founder is a participant; she reads the full thread in the web UI.\n"
+        "You do not need to \"keep her informed\" by replying.\n\n"
+        "If you are unsure: decline. The thread can always be re-engaged by\n"
+        "another message.\n\n"
+    )
+
+
 def build_thread_prompt(
     *,
     thread: ThreadRecord,
@@ -105,6 +129,7 @@ def build_thread_prompt(
         purpose, triggering_seq, addressed_to, invoked_agent,
         triggering_message=triggering,
     )
+    doctrine = _decline_by_default_doctrine() if purpose == "reply" else ""
     return (
         f"You are participating in thread {thread.id}: \"{thread.subject}\".\n\n"
         f"Participants: {parts_str}.\n"
@@ -112,6 +137,7 @@ def build_thread_prompt(
         f"Full message history follows. Most recent message is at the bottom.\n\n"
         f"---\n{history}\n\n"
         f"You have been invoked because:\n  {note}\n\n"
+        f"{doctrine}"
         f"Your invocation_token for this turn is: {invocation_token}\n"
         f"Include this token in every callback payload (reply, decline, dispatch,\n"
         f"close-out). It authorizes this single turn and is single-use for the\n"
