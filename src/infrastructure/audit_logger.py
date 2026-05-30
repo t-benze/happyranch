@@ -307,8 +307,8 @@ class AuditLogger:
 
     def log_orchestration_step(
         self, task_id: str, step_number: int, decision: dict
-    ) -> None:
-        self._db.insert_audit_log(
+    ) -> int:
+        return self._db.insert_audit_log(
             task_id=task_id,
             agent="orchestrator",
             action="orchestration_step",

@@ -1146,8 +1146,8 @@ class Database:
         agent: str,
         action: str,
         payload: dict | None = None,
-    ) -> None:
-        self._conn.execute(
+    ) -> int:
+        cur = self._conn.execute(
             "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) VALUES (?, ?, ?, ?, ?)",
             (
                 task_id,
@@ -1158,6 +1158,7 @@ class Database:
             ),
         )
         self._conn.commit()
+        return cur.lastrowid
 
     @_synchronized
     def get_audit_logs(self, task_id: str) -> list[dict]:

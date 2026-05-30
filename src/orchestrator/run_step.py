@@ -298,12 +298,13 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
     # `escalate` (see P1 in 2026-04-20 review).
     if orch.teams.is_team_manager(agent):
         decision = orch._parse_next_step(report)
-        orch._audit.log_orchestration_step(
+        _step_audit_id = orch._audit.log_orchestration_step(
             task_id, next_count, decision.model_dump(exclude_none=True),
         )
     else:
         from src.models import NextStep
         decision = NextStep(action="done", summary=report.output_summary)
+        _step_audit_id = None
 
     # ---- 7. Dispatch on action ----
     if decision.action == "done":
@@ -435,6 +436,18 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             return
         if orch._queue is not None:
             orch._queue.put_nowait(orch._slug, child_id)
+        # Persist the chain on the parent so child terminals can auto-advance
+        # via _enqueue_parent_if_waiting (Task 8). Skip if neither `then` nor
+        # `expect_verdict` is set — that's a plain single-leg delegate.
+        if decision.then or decision.expect_verdict is not None:
+            from src.orchestrator.chain import ChainState
+            chain = ChainState(
+                step_index=0,
+                first_leg_expect_verdict=decision.expect_verdict,
+                legs=list(decision.then),
+                step_audit_id=_step_audit_id,
+            )
+            db.update_task_active_chain(task_id, chain.serialize())
         return
 
     # ---- 8. Unknown action ----

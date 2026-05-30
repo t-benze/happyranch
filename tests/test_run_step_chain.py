@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from src.models import ChainLeg, NextStep
+from src.models import ChainLeg, NextStep, TaskRecord
 from src.orchestrator.run_step import _validate_delegate
 
 
@@ -113,3 +113,51 @@ def test_cross_team_chain_guard_first_leg_off_team():
     ])
     off = _chain_legs_off_team(teams, manager="eh", decision=decision)
     assert off == [("outsider", "content")]
+
+
+def test_chain_persistence_writes_active_chain_with_step_audit_id(tmp_path):
+    """When a manager declares a delegate with `then` or `expect_verdict`,
+    the orchestrator persists ChainState on the parent before/with the first
+    leg spawn. This test verifies the persistence API shape; the orchestrator
+    wire-up is tested in integration tests (Task 14)."""
+    from src.infrastructure.database import Database
+    from src.orchestrator.chain import ChainState
+
+    db = Database(tmp_path / "x.db")
+    db.insert_task(TaskRecord(id="TASK-1", brief="parent"))
+    chain = ChainState(
+        step_index=0,
+        first_leg_expect_verdict=None,
+        legs=[ChainLeg(agent="sr", prompt="r", expect_verdict="APPROVE")],
+        step_audit_id=42,
+    )
+    db.update_task_active_chain("TASK-1", chain.serialize())
+
+    task = db.get_task("TASK-1")
+    parsed = ChainState.deserialize(task.active_chain)
+    assert parsed.step_index == 0
+    assert parsed.step_audit_id == 42
+    assert len(parsed.legs) == 1
+
+
+def test_insert_audit_log_returns_row_id(tmp_path):
+    """Database.insert_audit_log should return the inserted row's id (lastrowid).
+    This is the audit_row_id the chain-persistence code uses for step_audit_id."""
+    from src.infrastructure.database import Database
+    db = Database(tmp_path / "x.db")
+    rid = db.insert_audit_log(
+        task_id="TASK-1", agent="orchestrator",
+        action="orchestration_step",
+        payload={"step_number": 1, "decision": {"action": "done"}},
+    )
+    assert isinstance(rid, int)
+    assert rid > 0
+
+
+def test_log_orchestration_step_returns_audit_row_id(tmp_path):
+    from src.infrastructure.database import Database
+    from src.infrastructure.audit_logger import AuditLogger
+    db = Database(tmp_path / "x.db")
+    rid = AuditLogger(db).log_orchestration_step("TASK-1", 1, {"action": "done"})
+    assert isinstance(rid, int)
+    assert rid > 0
