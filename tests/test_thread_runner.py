@@ -60,7 +60,7 @@ class FakeOrgState:
 
 
 @pytest.mark.asyncio
-async def test_run_invocation_no_callback_inserts_auto_decline(tmp_path, monkeypatch):
+async def test_run_invocation_no_callback_silent_decline(tmp_path, monkeypatch):
     db = Database(tmp_path / "grassland.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     db.add_thread_participant("THR-001", "alice", added_by="founder")
@@ -100,7 +100,9 @@ async def test_run_invocation_no_callback_inserts_auto_decline(tmp_path, monkeyp
         org_state=org, invocation_token=inv.invocation_token,
         settings=Settings(),
     )
+    # Broadcast model: silent decline — no transcript row is inserted.
     msgs = db.list_thread_messages("THR-001")
-    assert any(m.kind.value == "decline" for m in msgs), "auto-decline should be inserted"
+    assert not any(m.kind.value == "decline" for m in msgs), "silent decline: no transcript row"
+    # The invocation row itself transitions to a terminal failed/timeout status.
     inv_after = db.get_invocation_any_status(inv.invocation_token)
     assert inv_after.status.value in {"failed", "timeout"}

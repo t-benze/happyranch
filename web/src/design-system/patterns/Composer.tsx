@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@/design-system/primitives/Button';
 import { useOrgSlug } from '@/lib/orgSlug';
-import { MentionTextarea, resolveAddressedTo } from './MentionTextarea';
+import { MentionTextarea } from './MentionTextarea';
 import type { AgentSummary } from '@/lib/api/agents';
 
 const DRAFT_CAP_CHARS = 65_536;
@@ -76,12 +76,14 @@ interface ComposerProps {
   /** Placeholder for the textarea. Defaults to a reasonable copy. */
   placeholder?: string;
   /**
-   * Called with the markdown and addressedTo when the user presses Send or
-   * Enter (Shift+Enter inserts a newline instead). May return a Promise;
-   * if it rejects (or a sync impl throws), the draft is preserved so the
-   * user can retry without retyping.
+   * Called with the markdown when the user presses Send or Enter (Shift+Enter
+   * inserts a newline instead). May return a Promise; if it rejects (or a sync
+   * impl throws), the draft is preserved so the user can retry without retyping.
+   *
+   * Broadcast model: the send is always delivered to all thread participants;
+   * no per-message addressing is needed.
    */
-  onSend: (markdown: string, addressedTo: string[]) => unknown | Promise<unknown>;
+  onSend: (markdown: string) => unknown | Promise<unknown>;
   /** Lets a parent focus the textarea (e.g. the R keyboard shortcut). */
   registerFocus?: (focus: () => void) => void;
 
@@ -106,9 +108,8 @@ export function Composer({
 
   const submit = async () => {
     if (!draft.trim() || disabled || pending) return;
-    const addressedTo = resolveAddressedTo(draft, agents);
     try {
-      await onSend(draft, addressedTo);
+      await onSend(draft);
       clearDraft();
     } catch {
       // Composition surfaces via errorMessage; draft is preserved for retry.
@@ -149,5 +150,5 @@ export const meta = {
   import: "@/design-system/patterns/Composer",
   variants: {},
   consumes: ["components.textarea", "components.button"],
-  example: "<Composer onSend={(md, to) => {}} helper='Enter to send · Shift+Enter for new line' agents={[]} threadId='THR-001' />",
+  example: "<Composer onSend={(md) => {}} helper='Enter to send · Shift+Enter for new line' agents={[]} threadId='THR-001' />",
 } as const;

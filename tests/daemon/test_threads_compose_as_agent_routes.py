@@ -368,25 +368,6 @@ def test_compose_as_agent_accepts_at_founder_literal(tmp_home, app, org_state, a
     assert r.status_code == 200
 
 
-def test_compose_as_agent_rejects_addressed_to_not_subset(tmp_home, app, org_state, auth_headers, daemon_state):
-    _seed_agent(org_state, "engineering_head")
-    _seed_agent(org_state, "payment_agt")
-    task_id, sid = _seed_active_task(org_state, daemon_state, "engineering_head")
-    client = TestClient(app)
-    r = client.post(
-        "/api/v1/orgs/alpha/threads/compose-as-agent",
-        headers=auth_headers,
-        json={
-            "composer": "engineering_head", "subject": "s",
-            "recipients": ["payment_agt"], "body_markdown": "b",
-            "addressed_to": ["@founder"],   # not in recipients
-            "task_id": task_id, "session_id": sid,
-        },
-    )
-    assert r.status_code == 422
-    assert r.json()["detail"]["code"] == "addressed_to_not_subset"
-
-
 def test_compose_as_agent_at_all_expands_to_include_founder(
     tmp_home, app, org_state, auth_headers, daemon_state,
 ):
@@ -455,30 +436,6 @@ def test_compose_as_agent_adds_composer_as_participant(
     thread_id = r.json()["thread_id"]
     parts = {p.agent_name for p in org_state.db.list_thread_participants(thread_id)}
     assert parts == {"engineering_head", "payment_agt"}
-
-
-def test_compose_as_agent_founder_only_addressing_skips_invocations(
-    tmp_home, app, org_state, auth_headers, daemon_state,
-):
-    """recipients includes payment_agt but addressed_to is @founder only —
-    no agent invocations should be minted (payment_agt sees nothing this turn)."""
-    _seed_agent(org_state, "engineering_head")
-    _seed_agent(org_state, "payment_agt")
-    task_id, sid = _seed_active_task(org_state, daemon_state, "engineering_head")
-    client = TestClient(app)
-    r = client.post(
-        "/api/v1/orgs/alpha/threads/compose-as-agent",
-        headers=auth_headers,
-        json={
-            "composer": "engineering_head", "subject": "founder only",
-            "recipients": ["payment_agt", "@founder"], "body_markdown": "hi",
-            "addressed_to": ["@founder"],
-            "task_id": task_id, "session_id": sid,
-        },
-    )
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["pending_replies"] == []
 
 
 def test_compose_as_agent_at_all_excludes_composer_and_founder_from_invocations(
@@ -561,32 +518,6 @@ def test_compose_as_agent_liberal_authority_cross_team(
     assert r.status_code == 200, r.text
     assert r.json()["composed_by"] == "dev_agent"
     assert r.json()["pending_replies"] == ["content_manager"]
-
-
-def test_compose_as_agent_rejects_empty_addressed_to(
-    tmp_home, app, org_state, auth_headers, daemon_state,
-):
-    """Spec §4.3 / Codex P2: `addressed_to: []` is "broadcast to nobody" — not allowed.
-
-    Without this guard the thread would create with zero invocations and zero
-    founder push, effectively delivering the opening message to no one.
-    """
-    _seed_agent(org_state, "engineering_head")
-    _seed_agent(org_state, "payment_agt")
-    task_id, sid = _seed_active_task(org_state, daemon_state, "engineering_head")
-    client = TestClient(app)
-    r = client.post(
-        "/api/v1/orgs/alpha/threads/compose-as-agent",
-        headers=auth_headers,
-        json={
-            "composer": "engineering_head", "subject": "s",
-            "recipients": ["payment_agt"], "body_markdown": "b",
-            "addressed_to": [],
-            "task_id": task_id, "session_id": sid,
-        },
-    )
-    assert r.status_code == 422
-    assert r.json()["detail"]["code"] == "addressed_to_empty"
 
 
 def test_compose_as_agent_deduplicates_addressed_to(

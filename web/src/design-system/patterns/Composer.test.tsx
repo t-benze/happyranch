@@ -113,7 +113,7 @@ describe('Composer / mentions', () => {
     expect(screen.getByText('design_dev_1')).toBeInTheDocument();
   });
 
-  it('selecting an agent inserts @name and sends with addressedTo set', async () => {
+  it('selecting an agent inserts @name into the draft', async () => {
     const user = userEvent.setup();
     const onSend = vi.fn(async () => {});
     render(
@@ -132,7 +132,8 @@ describe('Composer / mentions', () => {
     expect(ta.value).toBe('hi @design_lead ');
     await user.type(ta, 'please review');
     await user.keyboard('{Enter}');
-    expect(onSend).toHaveBeenCalledWith('hi @design_lead please review', ['design_lead']);
+    // Broadcast model: onSend receives only markdown; no addressedTo second arg.
+    expect(onSend).toHaveBeenCalledWith('hi @design_lead please review');
   });
 
   it('send with no mentions falls back to @all', async () => {
@@ -151,7 +152,8 @@ describe('Composer / mentions', () => {
     const ta = screen.getByRole<HTMLTextAreaElement>('textbox', { name: /compose/i });
     await user.type(ta, 'plain message');
     await user.keyboard('{Enter}');
-    expect(onSend).toHaveBeenCalledWith('plain message', ['@all']);
+    // Broadcast model: onSend receives only markdown.
+    expect(onSend).toHaveBeenCalledWith('plain message');
   });
 
   it('Shift+Enter inserts a newline and does not send', async () => {
@@ -191,6 +193,7 @@ describe('Composer / mentions', () => {
     const ta = screen.getByRole<HTMLTextAreaElement>('textbox', { name: /compose/i });
     await user.type(ta, 'heads-up @all');
     await user.keyboard('{Enter}');
-    expect(onSend).toHaveBeenCalledWith('heads-up @all', ['@all']);
+    // Broadcast model: onSend receives only markdown.
+    expect(onSend).toHaveBeenCalledWith('heads-up @all');
   });
 });
