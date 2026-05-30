@@ -168,14 +168,6 @@ async def compose_thread(
     # not in recipients).
     addressed_agents = list(body.recipients)
 
-    if len(addressed_agents) > turn_cap:
-        raise HTTPException(
-            status_code=429,
-            detail={"code": "turn_cap_exceeded",
-                    "used": 0, "cap": turn_cap,
-                    "requested": len(addressed_agents)},
-        )
-
     async with org.db_lock:
         thread_id = org.db.next_thread_id()
         org.db.insert_thread(ThreadRecord(
@@ -380,14 +372,6 @@ async def compose_thread_as_agent(
         if name != FOUNDER_LITERAL and name != body.composer
     ]
     founder_in_addressed = FOUNDER_LITERAL in recipients
-
-    if len(addressed_agents) > turn_cap:
-        raise HTTPException(
-            status_code=429,
-            detail={"code": "turn_cap_exceeded",
-                    "used": 0, "cap": turn_cap,
-                    "requested": len(addressed_agents)},
-        )
 
     composed_from_task_id = body.task_id if has_task else None
     composed_from_talk_id = body.talk_id if has_talk else None
