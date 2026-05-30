@@ -1979,8 +1979,7 @@ def cmd_threads_compose(args: argparse.Namespace) -> None:
         print(
             f"{body['thread_id']}  started={_fmt_ts(body['started_at'])}  "
             f"composed_by={body['composed_by']}  "
-            f"pending={body['pending_replies']}  "
-            f"founder_notified={body['founder_notified']}"
+            f"pending={body['pending_replies']}"
         )
         return
 

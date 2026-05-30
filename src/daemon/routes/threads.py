@@ -314,7 +314,6 @@ async def compose_thread_as_agent(
         name for name in recipients
         if name != FOUNDER_LITERAL and name != body.composer
     ]
-    founder_in_addressed = FOUNDER_LITERAL in recipients
 
     composed_from_task_id = body.task_id if has_task else None
     composed_from_talk_id = body.talk_id if has_talk else None
@@ -356,11 +355,6 @@ async def compose_thread_as_agent(
         AuditLogger(org.db).log_thread_message_sent(
             thread_id, seq=seq, speaker=body.composer, kind="message",
         )
-        if founder_in_addressed:
-            channel = "feishu" if org.notifier is not None else "none"
-            AuditLogger(org.db).log_thread_founder_addressed(
-                thread_id, seq=seq, speaker=body.composer, notify_channel=channel,
-            )
         tokens_to_enqueue: list[str] = []
         for name in addressed_agents:
             inv = org.db.mint_thread_invocation(
@@ -371,22 +365,6 @@ async def compose_thread_as_agent(
 
     for tok in tokens_to_enqueue:
         await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=tok))
-
-    founder_notified = False
-    if founder_in_addressed:
-        # The card's "Recipients:" line lists the actual roster — every
-        # participant the thread carries — not the addressing expression
-        # (`@all` or a subset). Otherwise the founder sees `Recipients: @all`
-        # and has to open the UI to find out who's actually on the thread.
-        card_recipients = [r for r in recipients if r != FOUNDER_LITERAL]
-        if body.composer not in card_recipients:
-            card_recipients.append(body.composer)
-        card_recipients.append(FOUNDER_LITERAL)
-        if org.notifier is not None:
-            founder_notified = await org.notifier.send_thread_addressed(
-                thread_id=thread_id, subject=subject, composer=body.composer,
-                body_text=body_text, addressed_to=card_recipients,
-            )
 
     await _publish_thread_event(
         org, slug,
@@ -401,7 +379,6 @@ async def compose_thread_as_agent(
         "composed_from_task_id": composed_from_task_id,
         "composed_from_talk_id": composed_from_talk_id,
         "pending_replies": addressed_agents,
-        "founder_notified": founder_notified,
     }
 
 
@@ -948,31 +925,6 @@ async def _send_thread_message_inprocess(
     )
 
     return {"thread_id": thread_id, "seq": seq, "pending_replies": addressed}
-
-
-async def resolve_thread_from_notification(
-    org: object,
-    *,
-    thread_id: str,
-    founder_text: str,
-    message_id: str,
-    slug: str,
-) -> None:
-    """Listener-side resolver for founder replies on ``thread_addressed`` cards.
-
-    Translates a freeform founder reply into a ``POST /threads/{id}/send``
-    server-side, then consumes the notification row.
-
-    Raises _SendThreadError if the send fails. The caller (listener) should
-    treat any exception as a rejection and leave the row unconsumed so the
-    founder's intent is preserved for CLI fallback.
-    """
-    await _send_thread_message_inprocess(
-        org, slug, thread_id,
-        body_markdown=founder_text,
-    )
-    # Only consume after successful send.
-    org.db.consume_escalation_notification(message_id, consumed_by="feishu-reply")
 
 
 @router.post("/threads/{thread_id}/send")

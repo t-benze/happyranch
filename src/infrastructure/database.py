@@ -2633,10 +2633,9 @@ class Database:
         expires_at: datetime,
         kind: str = "escalation",
     ) -> None:
-        if kind not in ("escalation", "failure", "thread_addressed", "job_request"):
+        if kind not in ("escalation", "failure", "job_request"):
             raise ValueError(
-                f"kind must be 'escalation', 'failure', 'thread_addressed', "
-                f"or 'job_request', got {kind!r}"
+                f"kind must be 'escalation', 'failure', or 'job_request', got {kind!r}"
             )
         expires_at_str = expires_at.astimezone(timezone.utc).isoformat()
         self._conn.execute(
