@@ -681,44 +681,6 @@ def test_tail_sse_replays_existing_messages(tmp_home, app, org_state, auth_heade
 
 
 # ---------------------------------------------------------------------------
-# F2 — count pending invocations against turn_cap on /invite
-# ---------------------------------------------------------------------------
-
-
-def test_invite_rejects_when_pending_plus_one_exceeds_cap(tmp_home, app, org_state, auth_headers, monkeypatch):
-    """Invite mints a bootstrap invocation — must count against cap too."""
-    from dataclasses import replace
-    from src.orchestrator import org_config as _cfg
-    import src.daemon.routes.threads as routes_mod
-
-    client = TestClient(app)
-    _seed_agent(org_state, "dev_agent")
-    _seed_agent(org_state, "qa_engineer")
-
-    real_load = _cfg.load_org_config
-    cap1_load = lambda p: replace(real_load(p), threads_default_turn_cap=1)  # noqa: E731
-    monkeypatch.setattr(_cfg, "load_org_config", cap1_load)
-    monkeypatch.setattr(routes_mod, "load_org_config", cap1_load)
-
-    # cap=1, 1 pending from compose. Invite of another agent would push to 2.
-    r = client.post(
-        "/api/v1/orgs/alpha/threads",
-        json={"subject": "s", "recipients": ["dev_agent"],
-              "body_markdown": "hi"},
-        headers=auth_headers,
-    ).json()
-
-    resp = client.post(
-        f"/api/v1/orgs/alpha/threads/{r['thread_id']}/invite",
-        json={"agent_name": "qa_engineer"},
-        headers=auth_headers,
-    )
-    assert resp.status_code == 429
-    assert resp.json()["detail"]["code"] == "turn_cap_exceeded"
-    assert resp.json()["detail"]["pending"] == 1
-
-
-# ---------------------------------------------------------------------------
 # Task 3 — TASK_FOLLOWUP admitted by reply/decline; dispatch stays restricted
 # ---------------------------------------------------------------------------
 

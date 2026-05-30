@@ -968,15 +968,8 @@ async def invite_thread_endpoint(
     if agent_def is None or not workspace_exists:
         raise HTTPException(status_code=404, detail={"code": "unknown_agent"})
 
-    pending_load = org.db.count_pending_turn_obligations(thread_id)
-    projected = t.turns_used + pending_load + 1
-    if projected > t.turn_cap:
-        raise HTTPException(
-            status_code=429,
-            detail={"code": "turn_cap_exceeded",
-                    "used": t.turns_used, "pending": pending_load,
-                    "cap": t.turn_cap, "requested": 1},
-        )
+    # Spec §7: "invite is free" — no turn-cap projection here.
+    # The cap check happens at message-send time (turns_used + 1 projection).
 
     token_to_enqueue: str | None = None
     async with org.db_lock:

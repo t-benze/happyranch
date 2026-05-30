@@ -2256,18 +2256,17 @@ class Database:
 
     @_synchronized
     def count_pending_turn_obligations(self, thread_id: str) -> int:
-        """Helper for the /invite projection in routes/threads.py.
+        """Count pending invocations that represent future turn obligations.
 
         REPLY, BOOTSTRAP, TASK_FOLLOWUP count. CLOSE_OUT is excluded
         (per threads spec §5.10.1).
 
-        Note: as of the broadcast-only thread routing change, the /send
-        and /compose paths no longer call this — they use a simpler
-        turns_used + 1 projection. The task-followup auto-extend path
-        (mint_followup_invocation_with_cap_extend) inlines its own
-        pending-count SQL rather than calling this helper. /invite
-        remains as the sole caller because it needs to project the cost
-        of bootstrap invocations.
+        No current callers in production routes — kept as a documented API.
+        After the broadcast-only routing change (spec §7, "invite is free"),
+        the /invite projection was dropped entirely; /send and /compose use
+        a simpler turns_used + 1 projection; the task-followup auto-extend
+        path (mint_followup_invocation_with_cap_extend) inlines its own
+        pending-count SQL. Unit tests exercise this helper directly.
         """
         counted = (
             ThreadInvocationPurpose.REPLY.value,

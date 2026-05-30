@@ -292,7 +292,7 @@ Every `kind=message` written to a thread mints a `REPLY` invocation for every pa
 **Load-bearing invariants:**
 
 - **Broadcast is unconditional** — `_resolve_addressed_agents` and `_verify_addressed` are removed; the mint loop in `routes/threads.py` iterates `thread_participants` and excludes `speaker_name`. No opt-out.
-- **Declines are silent** — `decline` route returns 200 but writes no `thread_messages` row and increments no turn counter. `responder_status` on each message shows per-participant `pending|replied|declined|skipped` state (via DB join on `thread_invocations.triggering_seq`).
+- **Declines are silent** — `decline` route returns 200 but writes no `thread_messages` row and increments no turn counter. `responder_status` on each message shows per-participant `pending|replied|declined|failed` state (via DB join on `thread_invocations.triggering_seq`).
 - **Doctrine is prompt-injected, not skill-embedded** — the reply-vs-decline judgment is in the thread-invocation prompt's "Decline-by-Default" section (purpose `REPLY` only), not in `protocol/skills/thread/SKILL.md`. The skill covers operational mechanics only.
 
 ## Thread task-followup (system bridges task terminal → thread)
