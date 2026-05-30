@@ -131,6 +131,23 @@ class ManageAgentBody(BaseModel):
         return self
 
 
+class FounderCreateAgentBody(BaseModel):
+    name: str
+    role: Literal["worker", "manager"]
+    team: str | None = None
+    new_team: str | None = None
+    executor: Literal["claude", "codex", "opencode"] = "claude"
+    description: str
+    system_prompt: str
+    allow_rules: list[str] | None = None
+    repos: dict[str, str] | None = None
+
+    @field_validator("allow_rules")
+    @classmethod
+    def _reject_unsafe_allow_rules(cls, v: list[str] | None) -> list[str] | None:
+        return _validate_allow_rules(v)
+
+
 _VALID_AGENT_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
@@ -494,6 +511,132 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
         return {"ok": True}
 
     raise HTTPException(status_code=422, detail=f"unknown action: {body.action}")
+
+
+@router.post("/agents")
+async def founder_create_agent(
+    slug: str, body: FounderCreateAgentBody, org: OrgDep,
+) -> dict:
+    """Founder-driven enroll. Lands the agent ACTIVE immediately (no
+    pending hop). Worker: assigned to an existing team. Manager: creates
+    a new team in teams.yaml as part of the same call.
+    """
+    paths = OrgPaths(root=org.root)
+
+    # ---- validation ----
+    if not _VALID_AGENT_NAME.match(body.name):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_agent_name", "name": body.name},
+        )
+    if not body.description.strip() or not body.system_prompt.strip():
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "missing_required_field"},
+        )
+    if body.role == "worker":
+        if not body.team or body.new_team:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "role_team_mismatch"},
+            )
+    else:  # manager
+        if not body.new_team or body.team:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "role_team_mismatch"},
+            )
+
+    # Duplicate check (pending OR active).
+    if (prompt_loader.load_pending_agent(paths, body.name) is not None
+            or prompt_loader.load_agent(paths, body.name) is not None):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "agent_exists", "name": body.name},
+        )
+
+    # ---- team mutation + agent file write, under the same lock ----
+    async with org.teams_lock:
+        if body.role == "worker":
+            assert body.team is not None
+            if body.team not in org.teams.teams():
+                raise HTTPException(
+                    status_code=404,
+                    detail={"code": "unknown_team", "team": body.team},
+                )
+            team_name = body.team
+            org.teams.add_worker(team_name, body.name)
+        else:
+            assert body.new_team is not None
+            if body.new_team in org.teams.teams():
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "team_exists", "team": body.new_team},
+                )
+            team_name = body.new_team
+            org.teams.add_team(team_name, manager=body.name)
+
+        agent_def = AgentDef(
+            name=body.name,
+            team=team_name,
+            role=body.role,
+            executor=body.executor,
+            allow_rules=tuple(body.allow_rules or []),
+            repos=body.repos or {},
+            enrolled_by="founder",
+            enrolled_at_task=None,
+            enrolled_at=datetime.now(timezone.utc),
+            system_prompt=body.system_prompt,
+            description=body.description,
+        )
+
+        # Atomic write directly into active agents/ (skip _pending/).
+        from src.orchestrator.agent_def import render_agent_text
+        paths.agents_dir.mkdir(parents=True, exist_ok=True)
+        active_path = paths.agents_dir / f"{body.name}.md"
+        fd, tmp = tempfile.mkstemp(
+            prefix=f".{body.name}.", suffix=".md",
+            dir=str(paths.agents_dir),
+        )
+        try:
+            with os.fdopen(fd, "w") as fh:
+                fh.write(render_agent_text(agent_def))
+            os.replace(tmp, active_path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+            raise
+
+    # ---- workspace bootstrap (mirrors approve_agent) ----
+    workspace = paths.workspaces_dir / body.name
+    workspace.mkdir(parents=True, exist_ok=True)
+    write_default_agent_config(workspace)
+    set_executor(workspace, agent_def.executor)
+    repos = agent_def.repos or {}
+    for repo_name, url in repos.items():
+        add_repo(workspace, repo_name, url)
+    ctx = ContextBuilder(org.settings, paths, slug=org.slug)
+    for repo_name, url in repos.items():
+        await asyncio.to_thread(ctx.clone_repo, workspace, repo_name, url)
+    await asyncio.to_thread(
+        ctx.ensure_workspace_ready,
+        workspace,
+        body.name,
+        agent_def.system_prompt,
+        provider=load_agent_config(workspace).get("executor") or "claude",
+    )
+    await asyncio.to_thread(ctx.create_agent_dirs, workspace, body.name)
+
+    AuditLogger(org.db).log_agent_managed(
+        scope_id="founder",
+        action="enroll",
+        name=body.name,
+        source="founder",
+        actor="founder",
+    )
+    return {"name": body.name, "team": team_name, "role": body.role}
 
 
 @router.get("/agents/enrollments")
