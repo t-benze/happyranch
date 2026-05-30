@@ -259,3 +259,47 @@ def compute_recent_activity(db: Database, *, n: int = 6) -> list[ActivityRow]:
         )
         for r in rows
     ]
+
+
+def compute_updates_this_week(
+    db: Database, *, now: datetime, kb_store, n: int = 12
+) -> list[UpdateRow]:
+    """Combined feed for the last 7 days: KB entries created + learnings promoted.
+
+    Sources (both honest per the design audit):
+      - KB store filesystem (entries with created_at within 7d)
+      - audit_log rows with action='learning_promoted' within 7d
+
+    No tier-transition row type — the daemon doesn't audit tier changes yet.
+    """
+    week_start = now - timedelta(days=7)
+    items: list[UpdateRow] = []
+
+    # KB entries created this week (from the KB store, not audit_log)
+    for entry in kb_store.list_entries_created_since(week_start):
+        ts = datetime.fromisoformat(entry["created_at"])
+        items.append(UpdateRow(
+            marker="add",
+            text="KB +1",
+            meta=entry["slug"],
+            timestamp=ts,
+        ))
+
+    # Learnings promoted to KB this week
+    rows = db.fetch_all_readonly(
+        "SELECT timestamp, payload FROM audit_log "
+        "WHERE action = 'learning_promoted' AND timestamp >= ? "
+        "ORDER BY timestamp DESC",
+        (week_start.isoformat(),),
+    )
+    for r in rows:
+        payload = json.loads(r["payload"] or "{}")
+        items.append(UpdateRow(
+            marker="info",
+            text="Learning promoted to KB",
+            meta=payload.get("kb_slug", ""),
+            timestamp=datetime.fromisoformat(r["timestamp"]),
+        ))
+
+    items.sort(key=lambda x: x.timestamp, reverse=True)
+    return items[:n]

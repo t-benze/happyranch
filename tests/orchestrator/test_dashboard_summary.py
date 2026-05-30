@@ -249,3 +249,41 @@ def test_recent_activity_extracts_verdict(db: Database) -> None:
     by_kind = {r.event_kind: r for r in rows}
     assert by_kind["completion_report"].verdict == "ok"
     assert by_kind["review_verdict"].verdict == "fail"
+
+
+from src.orchestrator.dashboard_summary import compute_updates_this_week
+
+
+def test_updates_this_week_empty(db: Database, mock_kb_store: _MockKbStore) -> None:
+    now = datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc)
+    assert compute_updates_this_week(db, now=now, kb_store=mock_kb_store) == []
+
+
+def test_updates_this_week_combines_kb_and_learnings(
+    db: Database, mock_kb_store: _MockKbStore
+) -> None:
+    now = datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc)
+    two_days_ago = now - timedelta(days=2)
+    # KB entries this week (via mock)
+    mock_kb_store.set_entries_this_week([
+        {"slug": "release-publish-authority",
+         "created_at": (now - timedelta(days=1)).isoformat()},
+        {"slug": "photo-attribution",
+         "created_at": (now - timedelta(days=3)).isoformat()},
+    ])
+    # learning_promoted audit row
+    db._conn.execute(
+        "INSERT INTO audit_log (timestamp, task_id, agent, action, payload) "
+        'VALUES (?, \'T\', \'engineering_head\', \'learning_promoted\', \'{"kb_slug":"prd-authority"}\')',
+        (two_days_ago.isoformat(),),
+    )
+    db._conn.commit()
+    rows = compute_updates_this_week(db, now=now, kb_store=mock_kb_store)
+    assert len(rows) == 3
+    kinds = [(r.marker, r.text, r.meta) for r in rows]
+    assert ("add", "KB +1", "release-publish-authority") in kinds
+    assert ("add", "KB +1", "photo-attribution") in kinds
+    assert ("info", "Learning promoted to KB", "prd-authority") in kinds
+    # Sort assertion: DESC by timestamp
+    for i in range(len(rows) - 1):
+        assert rows[i].timestamp >= rows[i + 1].timestamp
