@@ -11,13 +11,7 @@ router = APIRouter(dependencies=[require_token()])
 
 @router.get("/teams")
 def list_teams(slug: str, org: OrgDep) -> dict:
-    """Return all registered teams + their managers + workers.
-
-    Sorted by team name. When ``org.teams`` is None (legacy no-runtime
-    branch) returns an empty list — same shape as an empty registry.
-    """
-    if org.teams is None:
-        return {"teams": []}
+    """Return all registered teams + their managers + workers, sorted by team name."""
     rows = []
     for name in org.teams.teams():
         m = org.teams.manager_for_team(name)
