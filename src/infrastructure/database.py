@@ -955,6 +955,17 @@ class Database:
         self._conn.commit()
 
     @_synchronized
+    def update_task_active_chain(self, task_id: str, active_chain: str | None) -> None:
+        """Set or clear tasks.active_chain. Pass None to clear (chain finished,
+        aborted, or never declared)."""
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            "UPDATE tasks SET active_chain = ?, updated_at = ? WHERE id = ?",
+            (active_chain, now, task_id),
+        )
+        self._conn.commit()
+
+    @_synchronized
     def try_claim_for_step(
         self,
         task_id: str,

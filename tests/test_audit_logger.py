@@ -490,3 +490,26 @@ def test_log_asset_put_does_not_collide_with_task_id(tmp_path) -> None:
     asset_rows = db.get_audit_logs("asset:TASK-123")
     assert len(asset_rows) == 1
     assert asset_rows[0]["action"] == "asset_put"
+
+
+def test_log_chain_auto_advance_writes_expected_payload(db):
+    from src.infrastructure.audit_logger import AuditLogger
+    logger = AuditLogger(db)
+    logger.log_chain_auto_advance(
+        parent_task_id="TASK-1",
+        leg_index=2,
+        spawned_child_id="TASK-3",
+        triggering_child_id="TASK-2",
+        triggering_verdict="APPROVE",
+        chain_origin_step_audit_id=4521,
+    )
+    rows = db.get_audit_logs("TASK-1")
+    assert len(rows) == 1
+    assert rows[0]["action"] == "chain_auto_advance"
+    assert rows[0]["agent"] == "orchestrator"
+    payload = rows[0]["payload"]
+    assert payload["leg_index"] == 2
+    assert payload["spawned_child_id"] == "TASK-3"
+    assert payload["triggering_child_id"] == "TASK-2"
+    assert payload["triggering_verdict"] == "APPROVE"
+    assert payload["chain_origin_step_audit_id"] == 4521
