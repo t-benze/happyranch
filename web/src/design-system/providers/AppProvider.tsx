@@ -37,6 +37,7 @@ import {
 import { realJobsApi } from './_real-jobs';
 import { realTalksApi } from './_real-talks';
 import { realTasksApi } from './_real-tasks';
+import { realTeamsApi } from './_real-teams';
 import { realThreadsApi } from './_real-threads';
 
 export function makeQueryClient(): QueryClient {
@@ -71,6 +72,7 @@ export function AppProvider({ children, client }: AppProviderProps): JSX.Element
           tasks: realTasksApi,
           kb: realKbApi,
           talks: realTalksApi,
+          teams: realTeamsApi,
           health: realHealthApi,
           jobs: realJobsApi,
           useThreadRoutes: useRealThreadRoutes,
