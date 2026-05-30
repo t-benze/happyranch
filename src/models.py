@@ -44,6 +44,10 @@ class TaskRecord(BaseModel):
     dispatched_from_thread_id: str | None = None
     block_kind: BlockKind | None = None
     blocked_on_job_ids: str | None = None
+    # In-flight inline delegation chain (JSON-serialized ChainState). NULL when no
+    # chain is active on this parent. See docs/superpowers/specs/2026-05-30-inline-
+    # delegation-chain-design.md.
+    active_chain: str | None = None
     note: str | None = None
     final_artifact_dir: str | None = None
     orchestration_step_count: int = 0

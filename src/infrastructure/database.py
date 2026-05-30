@@ -521,6 +521,12 @@ class Database:
             pass
         try:
             self._conn.execute(
+                "ALTER TABLE tasks ADD COLUMN active_chain TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass
+        try:
+            self._conn.execute(
                 "ALTER TABLE threads ADD COLUMN new_learnings_total INTEGER NOT NULL DEFAULT 0"
             )
         except sqlite3.OperationalError:
@@ -697,6 +703,7 @@ class Database:
             dispatched_from_thread_id=row["dispatched_from_thread_id"],
             block_kind=row["block_kind"],
             blocked_on_job_ids=row["blocked_on_job_ids"],
+            active_chain=row["active_chain"],
             note=row["note"],
             orchestration_step_count=row["orchestration_step_count"] or 0,
             final_artifact_dir=row["final_artifact_dir"],
