@@ -236,13 +236,26 @@ backend route already exists: `POST /api/v1/orgs/{slug}/tasks/{task_id}/resolve-
 Implementation:
 
 - `EscalationInboxRow` expands inline on click.
-- Reply textarea autofocuses.
-- "Save reply as KB ruling" checkbox is checked by default (preserves the prototype's choice).
-- Submit button calls a new dashboard-feature-local mutation hook that POSTs to the existing route. The dashboard does NOT cross-import the `ResolveEscalationDialog` from `features/tasks/` (forbidden by `ARCHITECTURE.md` boundary rule). If the founder also wants the "promote to KB" side-effect, the mutation makes a second call to `POST /api/v1/orgs/{slug}/kb/entries` after the resolve succeeds — both calls land in the dashboard feature folder's mutation hooks file.
-- On success, the row animates out (280ms), the inbox count decrements, an injected "KB +1 just now" row appears optimistically in `updates_this_week` if the founder promoted, and the next refetch confirms it.
+- Rationale textarea autofocuses.
+- Submit button calls the existing `useResolveEscalation` hook from
+  `web/src/hooks/tasks.ts` (re-exported from `TasksApi` — the public hooks
+  layer, NOT a cross-feature import). The dashboard sends
+  `{ decision: 'approve', rationale }`. Reject-with-rationale is handled
+  via the existing Tasks page's `ResolveEscalationDialog`.
+- On success, the row animates out (280ms) and `useDashboardSummary` refetches.
 - ⌘↵ submits; Esc collapses. Both handled in the row's local `onKeyDown`.
 
-A future PR can promote the resolution flow into a shared pattern, allowing both Tasks and Dashboard to consume it. Out of scope here.
+**Scoped out of v1: "Save reply as KB ruling" affordance.** The prototype
+mocked a checkbox that would chain a `POST /api/v1/orgs/{slug}/kb`
+call after the resolve. The real KB add endpoint requires `slug`, `title`,
+`type`, `topic`, `tags`, `agent`, and `body` — fields that can't be
+reasonably synthesized from an inline expander without additional design
+work. A future PR can ship a richer "promote escalation to KB" composer
+that fills those fields explicitly. For now, the founder uses the existing
+KB compose flow if a ruling should land.
+
+A future PR can also promote the resolution flow into a shared pattern,
+allowing both Tasks and Dashboard to consume it. Out of scope here.
 
 ## 5. Empty / error states
 
