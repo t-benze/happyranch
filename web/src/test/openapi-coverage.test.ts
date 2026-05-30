@@ -101,6 +101,8 @@ const INCLUDED_PATHS = new Set<string>([
   'GET /api/v1/orgs/{slug}/jobs/{job_id}/tail',
   'POST /api/v1/orgs/{slug}/jobs/{job_id}/wait',
   'POST /api/v1/orgs/{slug}/jobs/{job_id}/stop',
+  // dashboard — founder-facing summary rollup
+  'GET /api/v1/orgs/{slug}/dashboard/summary',
   // agents — founder-facing (enrollment + read-only learnings)
   'GET /api/v1/orgs/{slug}/agents',
   'POST /api/v1/orgs/{slug}/agents/init',
