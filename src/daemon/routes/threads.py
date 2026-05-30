@@ -467,6 +467,23 @@ async def compose_thread_as_agent(
 # ---------------------------------------------------------------------------
 
 
+def _wire_status(db_status: str) -> str:
+    """Rename DB status values to the spec's wire enum.
+
+    DB: pending | consumed | declined | failed | timeout
+    Wire: pending | replied | declined | failed
+
+    consumed → replied (semantic: agent wrote a reply)
+    timeout → failed (semantic: agent did not engage successfully; UI
+                       doesn't distinguish crash from timeout at this level)
+    """
+    if db_status == "consumed":
+        return "replied"
+    if db_status == "timeout":
+        return "failed"
+    return db_status
+
+
 def _thread_row_to_dict(t: ThreadRecord) -> dict:
     return {
         "thread_id": t.id,
@@ -502,7 +519,7 @@ def _msg_to_dict(m, responders: list[dict] | None = None) -> dict:
         d["responder_status"] = [
             {
                 "agent_name": e["agent_name"],
-                "status": "replied" if e["status"] == "consumed" else e["status"],
+                "status": _wire_status(e["status"]),
                 "responded_at": e["consumed_at"],
             }
             for e in responders

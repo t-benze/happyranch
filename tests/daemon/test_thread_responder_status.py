@@ -116,3 +116,26 @@ def test_responder_status_reflects_declined_state(
     alpha_entry = next(s for s in kickoff["responder_status"] if s["agent_name"] == "alpha")
     assert alpha_entry["status"] == "declined"
     assert alpha_entry["responded_at"] is not None
+
+
+def test_responder_status_maps_timeout_to_failed(
+    client, org_slug, three_agent_thread, db
+):
+    """§9: DB status 'timeout' is exposed as wire status 'failed'.
+    Users don't need to distinguish crash from timeout at the strip level."""
+    thread_id = three_agent_thread
+    # Directly set alpha's pending invocation to timeout in the DB
+    # (simulates what thread_runner does on session timeout).
+    db._conn.execute(
+        "UPDATE thread_invocations SET status='timeout', "
+        "consumed_at=datetime('now') "
+        "WHERE thread_id=? AND agent_name='alpha' AND status='pending'",
+        (thread_id,),
+    )
+    db._conn.commit()
+
+    r = client.get(f"/api/v1/orgs/{org_slug}/threads/{thread_id}")
+    kickoff = r.json()["messages"][0]
+    alpha_entry = next(s for s in kickoff["responder_status"] if s["agent_name"] == "alpha")
+    assert alpha_entry["status"] == "failed"
+    assert alpha_entry["responded_at"] is not None
