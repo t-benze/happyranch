@@ -350,3 +350,78 @@ def test_chain_step_count_not_bumped_on_auto_advance(tmp_path):
 
     final = db.get_task("TASK-P")
     assert final.orchestration_step_count == initial_count  # zero growth — the load-bearing invariant
+
+
+def test_chain_summary_appended_to_prior_steps_when_chain_just_cleared(tmp_path):
+    """After a chain clears (success or abort), the next time the manager
+    wakes, its `prior_steps` history includes a synthetic summary entry so
+    the manager can read what happened without re-deriving from raw child
+    task records."""
+    from src.infrastructure.database import Database
+    from src.orchestrator.run_step import _build_prior_steps_from_db
+    from src.models import TaskStatus
+
+    db = Database(tmp_path / "x.db")
+    db.insert_task(TaskRecord(id="TASK-P", team="engineering", brief="p"))
+    # Three children: two completed, one most-recent reported APPROVE.
+    for cid in ("TASK-C1", "TASK-C2", "TASK-C3"):
+        db.insert_task(TaskRecord(id=cid, team="engineering", brief=cid, parent_task_id="TASK-P", assigned_agent="w"))
+        db.update_task(cid, status=TaskStatus.COMPLETED, note="ok")
+        db.insert_task_result(
+            task_id=cid, agent="w", session_id="s",
+            status="completed", confidence_score=80,
+            output_summary=f"{cid} ok",
+            verdict=("APPROVE" if cid == "TASK-C3" else None),
+        )
+
+    # Two chain_auto_advance audit rows (C1 → C2, C2 → C3) simulating a chain
+    # that just ran and ended at C3.
+    db.insert_audit_log(
+        task_id="TASK-P", agent="orchestrator", action="chain_auto_advance",
+        payload={
+            "leg_index": 1, "spawned_child_id": "TASK-C2",
+            "triggering_child_id": "TASK-C1", "triggering_verdict": None,
+            "chain_origin_step_audit_id": 1,
+        },
+    )
+    db.insert_audit_log(
+        task_id="TASK-P", agent="orchestrator", action="chain_auto_advance",
+        payload={
+            "leg_index": 2, "spawned_child_id": "TASK-C3",
+            "triggering_child_id": "TASK-C2", "triggering_verdict": "APPROVE",
+            "chain_origin_step_audit_id": 1,
+        },
+    )
+
+    from unittest.mock import MagicMock
+    orch = MagicMock()
+    orch._db = db
+    steps = _build_prior_steps_from_db(orch, "TASK-P")
+    # Last step should be a synthetic chain summary; assert the word "chain"
+    # appears in either the action or result_summary field.
+    assert any(
+        "chain" in s.action.lower() or "chain" in s.result_summary.lower()
+        for s in steps
+    )
+
+
+def test_chain_summary_not_appended_when_no_chain_ran(tmp_path):
+    """When the parent has no chain_auto_advance audit rows, no synthetic
+    chain summary is appended — the existing per-child steps stand alone."""
+    from src.infrastructure.database import Database
+    from src.orchestrator.run_step import _build_prior_steps_from_db
+    from src.models import TaskStatus
+
+    db = Database(tmp_path / "x.db")
+    db.insert_task(TaskRecord(id="TASK-P", team="engineering", brief="p"))
+    db.insert_task(TaskRecord(id="TASK-C1", team="engineering", brief="c", parent_task_id="TASK-P", assigned_agent="w"))
+    db.update_task("TASK-C1", status=TaskStatus.COMPLETED, note="ok")
+
+    from unittest.mock import MagicMock
+    orch = MagicMock()
+    orch._db = db
+    steps = _build_prior_steps_from_db(orch, "TASK-P")
+    assert all(
+        "chain" not in s.action.lower() and "chain" not in s.result_summary.lower()
+        for s in steps
+    )

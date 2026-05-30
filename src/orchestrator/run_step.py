@@ -860,7 +860,12 @@ def _build_prior_steps_from_db(orch: "Orchestrator", task_id: str):
     """Reconstruct StepRecord[] for the team manager by reading children's
     terminal outcomes from the DB. Only direct children of `task_id` count
     — each child is one past orchestration step. Order: creation order,
-    1-indexed."""
+    1-indexed.
+
+    If a chain ran since the last manager wake, a synthetic chain-summary
+    entry is appended so the manager can see what happened without re-deriving
+    it from raw child task records.
+    """
     from src.models import StepRecord
     steps: list[StepRecord] = []
     for i, child_id in enumerate(orch._db.get_children(task_id), start=1):
@@ -875,7 +880,45 @@ def _build_prior_steps_from_db(orch: "Orchestrator", task_id: str):
             result_summary=child.note or "(no summary)",
             success=success,
         ))
+    # Append chain summary if a chain ran since the last manager wake.
+    chain_summary = _summarize_recent_chain(orch, task_id)
+    if chain_summary is not None:
+        steps.append(StepRecord(
+            step_number=len(steps) + 1,
+            agent="orchestrator",
+            action="chain summary",
+            result_summary=chain_summary,
+            success=True,
+        ))
     return steps
+
+
+def _summarize_recent_chain(orch: "Orchestrator", parent_task_id: str) -> str | None:
+    """One-line summary of the most-recent chain that ran under parent_task_id.
+
+    Returns None if no chain_auto_advance audit rows exist on the parent.
+    Otherwise pairs the audit rows (which list triggering_child_id and
+    spawned_child_id) with the final spawned child's terminal verdict to
+    produce a human-readable line for the manager's wake context.
+    """
+    rows = [
+        r for r in orch._db.get_audit_logs(parent_task_id)
+        if r["action"] == "chain_auto_advance"
+    ]
+    if not rows:
+        return None
+    triggers = [r["payload"]["triggering_child_id"] for r in rows]
+    spawned = [r["payload"]["spawned_child_id"] for r in rows]
+    chain_children = triggers + ([spawned[-1]] if spawned else [])
+    last_child_id = chain_children[-1]
+    last_report = orch._db.get_latest_completion_report(last_child_id)
+    last_verdict = last_report.verdict if last_report else None
+    arrow = " → ".join(chain_children)
+    if last_report and last_report.status == "blocked":
+        return f"Chain aborted at {last_child_id}: self-blocked"
+    if last_verdict is not None:
+        return f"Chain: {len(chain_children)} legs ({arrow}), final verdict {last_verdict}"
+    return f"Chain: {len(chain_children)} legs ({arrow})"
 
 
 def _is_already_terminal(orch: "Orchestrator", task_id: str) -> bool:
