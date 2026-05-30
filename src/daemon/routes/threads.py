@@ -730,7 +730,7 @@ class DeclineBody(BaseModel):
     thread_id: str
     invocation_token: str
     speaker: str
-    reason: str
+    reason: str | None = None
     in_response_to_seq: int
 
 
@@ -743,9 +743,6 @@ async def decline_thread_endpoint(
         raise HTTPException(status_code=404, detail={"code": "not_found"})
     if t.status is not ThreadStatus.OPEN:
         raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
-    reason = body.reason.strip()
-    if not reason:
-        raise HTTPException(status_code=422, detail={"code": "empty_reason"})
     _validate_invocation_token(
         org, token=body.invocation_token,
         expected_agent=body.speaker, expected_thread_id=thread_id,
@@ -760,26 +757,26 @@ async def decline_thread_endpoint(
     # _verify_addressed removed: broadcast model; any participant can decline
     # any message as long as they hold a valid invocation token.
 
+    reason = body.reason.strip() if body.reason else None
     async with org.db_lock:
         if org.db.get_pending_invocation(body.invocation_token) is None:
             raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
-        seq = org.db.append_thread_message(
-            thread_id=thread_id, speaker=body.speaker,
-            kind=ThreadMessageKind.DECLINE, decline_reason=reason,
+        ok = org.db.mark_invocation_declined(
+            body.invocation_token, decline_reason=reason,
         )
-        org.db.consume_invocation(body.invocation_token)
-        org.db.increment_thread_turns_used(thread_id, by=1)
-        AuditLogger(org.db).log_thread_message_sent(
-            thread_id, seq=seq, speaker=body.speaker,
-            addressed_to=None, kind="decline",
+        if not ok:
+            raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
+        AuditLogger(org.db).log_thread_decline_consumed(
+            thread_id, agent_name=body.speaker, reason=reason,
         )
+        # No thread_messages row, no turns_used increment (spec §6: silent decline).
     await _publish_thread_event(
         org, slug,
-        thread_id=thread_id, seq=seq, speaker=body.speaker,
-        kind="decline", preview=reason, status="open",
+        thread_id=thread_id, seq=None, speaker=body.speaker,
+        kind="decline_status", preview=None, status="open",
     )
 
-    return {"thread_id": thread_id, "seq": seq, "kind": "decline"}
+    return {"thread_id": thread_id, "kind": "decline_status"}
 
 
 # ---------------------------------------------------------------------------

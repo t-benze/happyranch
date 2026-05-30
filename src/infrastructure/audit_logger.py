@@ -702,6 +702,23 @@ class AuditLogger:
             payload={"seq": seq, "addressed_to": addressed_to, "kind": kind},
         )
 
+    def log_thread_decline_consumed(
+        self,
+        thread_id: str,
+        *,
+        agent_name: str,
+        reason: str | None = None,
+    ) -> None:
+        payload: dict[str, object] = {"agent_name": agent_name}
+        if reason:
+            payload["reason"] = reason
+        self._db.insert_audit_log(
+            task_id=thread_id,
+            agent=agent_name,
+            action="thread_decline_consumed",
+            payload=payload,
+        )
+
     def log_thread_participant_added(
         self,
         thread_id: str,

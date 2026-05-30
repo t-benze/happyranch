@@ -258,14 +258,8 @@ async def run_invocation(
     org_state.db.fail_invocation(
         invocation_token, status=status, decline_reason=reason,
     )
-    if inv.purpose is not ThreadInvocationPurpose.CLOSE_OUT:
-        org_state.db.append_thread_message(
-            thread_id=inv.thread_id,
-            speaker=inv.agent_name,
-            kind=ThreadMessageKind.DECLINE,
-            decline_reason=reason,
-        )
-        org_state.db.increment_thread_turns_used(inv.thread_id, by=1)
+    # Spec §6: silent decline — no thread_messages row, no turns_used increment.
+    # The invocation row status (timeout/failed) and decline_reason are the record.
     AuditLogger(org_state.db).log_thread_invocation_failed(
         inv.thread_id,
         agent=inv.agent_name,

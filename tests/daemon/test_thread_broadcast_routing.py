@@ -202,3 +202,62 @@ def test_founder_send_broadcasts_to_all_participants(tmp_home, app, org_state, a
             pending[inv.agent_name] = pending.get(inv.agent_name, 0) + 1
 
     assert pending == {"alpha": 1, "bravo": 1, "charlie": 1}, f"got {pending}"
+
+
+def test_decline_writes_no_transcript_row(
+    three_agent_thread,
+):
+    """§6: decline endpoint consumes invocation but inserts no
+    thread_messages row and does NOT increment turns_used."""
+    thread_id, client, org_state, auth_headers = three_agent_thread
+    db = org_state.db
+    org_slug = "alpha"
+
+    # Capture pre-decline state
+    pre_msgs = db._conn.execute(
+        "SELECT COUNT(*) AS n FROM thread_messages WHERE thread_id=?",
+        (thread_id,),
+    ).fetchone()["n"]
+    pre_turns = db._conn.execute(
+        "SELECT turns_used FROM threads WHERE id=?", (thread_id,)
+    ).fetchone()["turns_used"]
+
+    # Get alpha's pending invocation and decline it
+    alpha_inv = db._conn.execute(
+        "SELECT invocation_token FROM thread_invocations "
+        "WHERE thread_id=? AND agent_name='alpha' AND status='pending'",
+        (thread_id,),
+    ).fetchone()
+    r = client.post(
+        f"/api/v1/orgs/{org_slug}/threads/{thread_id}/decline",
+        json={
+            "thread_id": thread_id,
+            "invocation_token": alpha_inv["invocation_token"],
+            "speaker": "alpha",
+            "reason": "no material to add",
+            "in_response_to_seq": 1,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+
+    # Post-decline assertions
+    post_msgs = db._conn.execute(
+        "SELECT COUNT(*) AS n FROM thread_messages WHERE thread_id=?",
+        (thread_id,),
+    ).fetchone()["n"]
+    post_turns = db._conn.execute(
+        "SELECT turns_used FROM threads WHERE id=?", (thread_id,)
+    ).fetchone()["turns_used"]
+    assert post_msgs == pre_msgs, "decline must not insert a thread_messages row"
+    assert post_turns == pre_turns, "decline must not increment turns_used"
+
+    # Invocation row was updated correctly
+    inv_row = db._conn.execute(
+        "SELECT status, consumed_at, decline_reason FROM thread_invocations "
+        "WHERE invocation_token=?",
+        (alpha_inv["invocation_token"],),
+    ).fetchone()
+    assert inv_row["status"] == "declined"
+    assert inv_row["consumed_at"] is not None
+    assert inv_row["decline_reason"] == "no material to add"

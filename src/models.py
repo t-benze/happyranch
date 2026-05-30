@@ -161,6 +161,7 @@ class ThreadMessageKind(StrEnum):
 class ThreadInvocationStatus(StrEnum):
     PENDING = "pending"
     CONSUMED = "consumed"
+    DECLINED = "declined"
     TIMEOUT = "timeout"
     FAILED = "failed"
 
