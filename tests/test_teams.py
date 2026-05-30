@@ -164,3 +164,19 @@ def test_add_team_raises_on_duplicate(tmp_path: Path) -> None:
     reg = TeamsRegistry.load(rt.root)
     with pytest.raises(ValueError, match="engineering"):
         reg.add_team("engineering", manager="someone_else")
+
+
+def test_remove_team_drops_entry_and_persists(tmp_path: Path) -> None:
+    rt = _runtime_with_teams(tmp_path)
+    reg = TeamsRegistry.load(rt.root)
+    reg.remove_team("engineering")
+    assert "engineering" not in reg.teams()
+    reloaded = TeamsRegistry.load(rt.root)
+    assert "engineering" not in reloaded.teams()
+
+
+def test_remove_team_missing_is_noop(tmp_path: Path) -> None:
+    rt = _runtime(tmp_path)
+    reg = TeamsRegistry.load(rt.root)
+    reg.remove_team("nonexistent")  # should not raise
+    assert reg.teams() == []

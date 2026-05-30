@@ -102,15 +102,17 @@ export function TopBar(): JSX.Element {
           ))}
         </SelectContent>
       </Select>
-      <button
-        type="button"
-        onClick={() => setAddOrgOpen(true)}
-        aria-label="Add org"
-        title="Add org"
-        className="text-fg-muted hover:bg-bg-raised hover:text-fg focus-visible:ring-accent inline-flex h-7 w-7 items-center justify-center rounded transition-colors focus-visible:ring-2 focus-visible:outline-none"
-      >
-        <Plus size={16} aria-hidden="true" />
-      </button>
+      {!isPrototype && (
+        <button
+          type="button"
+          onClick={() => setAddOrgOpen(true)}
+          aria-label="Add org"
+          title="Add org"
+          className="text-fg-muted hover:bg-bg-raised hover:text-fg focus-visible:ring-accent inline-flex h-7 w-7 items-center justify-center rounded transition-colors focus-visible:ring-2 focus-visible:outline-none"
+        >
+          <Plus size={16} aria-hidden="true" />
+        </button>
+      )}
       <nav aria-label="Primary" className="flex items-center gap-1 text-sm">
         <NavTab {...placeholderTab('dashboard')}>Dashboard</NavTab>
         <NavTab to={threadsHref} enabled={!!activeSlug && threadsHref !== '#'}>
@@ -129,7 +131,7 @@ export function TopBar(): JSX.Element {
         <DensityToggle />
         <ThemeToggle />
       </div>
-      <AddOrgDialog open={addOrgOpen} onOpenChange={setAddOrgOpen} />
+      {!isPrototype && <AddOrgDialog open={addOrgOpen} onOpenChange={setAddOrgOpen} />}
     </header>
   );
 }

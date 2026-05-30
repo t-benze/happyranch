@@ -621,6 +621,15 @@ async def founder_create_agent(
                 os.unlink(tmp)
             except FileNotFoundError:
                 pass
+            # Roll back the registry mutation (add_worker or add_team)
+            # so we don't leave a phantom team-membership entry without
+            # the corresponding agent file. Without this rollback the
+            # manager-branch case is unrecoverable on retry (returns
+            # 409 team_exists even though no manager file ever landed).
+            if body.role == "worker":
+                org.teams.remove_worker(team_name, body.name)
+            else:
+                org.teams.remove_team(team_name)
             raise
 
     # ---- workspace bootstrap (mirrors approve_agent) ----

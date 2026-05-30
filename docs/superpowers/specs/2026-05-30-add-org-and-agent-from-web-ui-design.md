@@ -338,13 +338,13 @@ CLAUDE.md after merge:
   is two file moves under one lock and is harder to reason about than a
   direct write. The two paths are independently audited (source=founder
   vs source=task/talk).
-- **`teams.add_team` precedes the agent file write** so that an opaque
-  failure between steps 1–4 leaves a registered team with no manager
-  file — recoverable via the founder re-running Add Agent with the same
-  name. The reverse order (file first, then registry) would leave a
-  bare agent file pointing at a team that doesn't exist, which
-  `approve_agent`'s `team_not_registered` guard would reject on every
-  subsequent founder retry.
+- **`teams.add_team` precedes the agent file write under one lock, with
+  rollback on write failure.** If the agent file write raises,
+  `remove_worker` (worker case) or `remove_team` (manager case) is
+  called to undo the registry mutation, so the founder can retry the
+  POST without hitting a phantom 409 `team_exists`. The original spec
+  considered registry-first irreversible by design; the actual route is
+  registry-first + explicit rollback so retries always make progress.
 - **`enrolled_by="founder"`** is the only marker distinguishing founder-
   created from manager-created agents in the rendered `.md` frontmatter.
   Future tooling that filters by enrollment source must rely on this

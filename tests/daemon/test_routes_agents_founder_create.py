@@ -178,3 +178,55 @@ def test_audit_row_written_with_founder_actor(client_with_runtime) -> None:
     # `log_agent_managed` writes the actor into the audit_log.agent column
     # (see infrastructure/audit_logger.py:534).
     assert last["agent"] == "founder"
+
+
+import os
+
+import pytest
+
+
+def test_worker_rollback_on_file_write_failure(client_with_runtime, monkeypatch) -> None:
+    """If the agent-file os.replace raises, the founder route must undo the
+    add_worker mutation so retry isn't blocked by a phantom roster entry."""
+    client, org = client_with_runtime
+
+    # Make os.replace raise to simulate a file-write failure mid-route.
+    real_replace = os.replace
+    def fail_replace(src, dst, *a, **kw):
+        if str(dst).endswith("rollback_worker.md"):
+            raise OSError("disk full")
+        return real_replace(src, dst, *a, **kw)
+    monkeypatch.setattr(os, "replace", fail_replace)
+
+    # TestClient propagates uncaught server exceptions by default; the route
+    # re-raises after rolling back, so we expect the OSError to surface here.
+    body = _base_worker(name="rollback_worker")
+    with pytest.raises(OSError, match="disk full"):
+        _post(client, body)
+
+    # Registry rolled back — the worker is NOT listed under engineering.
+    assert "rollback_worker" not in org.teams.manager_for_team("engineering").workers
+
+    # And the file is not on disk.
+    paths = OrgPaths(root=org.root)
+    assert not (paths.agents_dir / "rollback_worker.md").exists()
+
+
+def test_manager_rollback_on_file_write_failure(client_with_runtime, monkeypatch) -> None:
+    """If the manager-branch agent-file os.replace raises, the freshly
+    created team must be removed from teams.yaml so retry can succeed."""
+    client, org = client_with_runtime
+
+    real_replace = os.replace
+    def fail_replace(src, dst, *a, **kw):
+        if str(dst).endswith("delta_head.md"):
+            raise OSError("disk full")
+        return real_replace(src, dst, *a, **kw)
+    monkeypatch.setattr(os, "replace", fail_replace)
+
+    body = _base_manager(name="delta_head")
+    with pytest.raises(OSError, match="disk full"):
+        _post(client, body)
+
+    # The freshly-created team was rolled back.
+    assert "delta" not in org.teams.teams()
