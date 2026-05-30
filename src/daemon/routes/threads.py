@@ -182,6 +182,7 @@ async def compose_thread(
             kind=ThreadMessageKind.MESSAGE,
             body_markdown=body_text, addressed_to=["@all"],
         )
+        org.db.increment_thread_turns_used(thread_id, by=1)
         AuditLogger(org.db).log_thread_started(
             thread_id,
             subject=subject,
@@ -399,6 +400,7 @@ async def compose_thread_as_agent(
             kind=ThreadMessageKind.MESSAGE,
             body_markdown=body_text, addressed_to=["@all"],
         )
+        org.db.increment_thread_turns_used(thread_id, by=1)
         AuditLogger(org.db).log_thread_started(
             thread_id,
             subject=subject,
@@ -952,13 +954,11 @@ async def _send_thread_message_inprocess(
     # addressed_to is accepted but ignored for routing.
     addressed = list(participants)
 
-    pending_load = org.db.count_pending_turn_obligations(thread_id)
-    projected = t.turns_used + pending_load + len(addressed)
+    projected = t.turns_used + 1
     if projected > t.turn_cap:
         raise _SendThreadError(
             429, "turn_cap_exceeded",
-            used=t.turns_used, pending=pending_load,
-            cap=t.turn_cap, requested=len(addressed),
+            used=t.turns_used, cap=t.turn_cap, requested=1,
         )
 
     tokens_to_enqueue: list[str] = []
@@ -968,6 +968,7 @@ async def _send_thread_message_inprocess(
             kind=ThreadMessageKind.MESSAGE,
             body_markdown=body_text, addressed_to=["@all"],
         )
+        org.db.increment_thread_turns_used(thread_id, by=1)
         AuditLogger(org.db).log_thread_message_sent(
             thread_id, seq=seq, speaker="founder",
             addressed_to=["@all"], kind="message",

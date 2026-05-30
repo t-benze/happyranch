@@ -127,6 +127,42 @@ def test_founder_not_pinged_on_agent_reply(
     assert "@founder" not in names
 
 
+def test_turns_used_increments_per_message_not_per_invocation(
+    three_agent_thread,
+):
+    """§7: turns_used increments once per kind=message row, regardless of
+    participant count."""
+    thread_id, client, org_state, auth_headers = three_agent_thread
+    db = org_state.db
+
+    # After compose (1 message, 3 participants), turns_used should be 1, not 3.
+    row = db._conn.execute(
+        "SELECT turns_used FROM threads WHERE id=?", (thread_id,)
+    ).fetchone()
+    assert row["turns_used"] == 1
+
+    # After one agent reply (another message), turns_used should be 2.
+    alpha_inv = db._conn.execute(
+        "SELECT invocation_token FROM thread_invocations "
+        "WHERE thread_id=? AND agent_name='alpha' AND status='pending'",
+        (thread_id,),
+    ).fetchone()
+    r = client.post(
+        f"/api/v1/orgs/alpha/threads/{thread_id}/reply",
+        json={"thread_id": thread_id,
+              "invocation_token": alpha_inv["invocation_token"],
+              "speaker": "alpha",
+              "body_markdown": "alpha responding",
+              "in_response_to_seq": 1},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    row = db._conn.execute(
+        "SELECT turns_used FROM threads WHERE id=?", (thread_id,)
+    ).fetchone()
+    assert row["turns_used"] == 2
+
+
 def test_founder_send_broadcasts_to_all_participants(tmp_home, app, org_state, auth_headers):
     """§4: founder /send mints REPLY for every participant (all 3 agents)."""
     _seed_agent(org_state, "alpha")
