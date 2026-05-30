@@ -58,6 +58,29 @@ class LearningBody(BaseModel):
     text: str
 
 
+_ALLOW_RULES_FORBIDDEN = ("\n", "\r", ";", "|", "&", "`", "$(")
+
+
+def _validate_allow_rules(values: list[str] | None) -> list[str] | None:
+    """Shared validator for ``allow_rules`` arrays.
+
+    Rejects entries containing shell metacharacters that could break the
+    Claude/opencode permission matcher. Returns the original list (or None)
+    unchanged on success; raises ``ValueError`` on the first bad entry.
+    """
+    if values is None:
+        return values
+    for entry in values:
+        if not entry or not entry.strip():
+            raise ValueError("allow_rules entries must be non-empty")
+        if entry != entry.strip():
+            raise ValueError("allow_rules entries must not have leading/trailing whitespace")
+        for bad in _ALLOW_RULES_FORBIDDEN:
+            if bad in entry:
+                raise ValueError(f"allow_rules entries must not contain {bad!r}")
+    return values
+
+
 class RepoAction(StrEnum):
     add = "add"
     remove = "remove"
@@ -92,18 +115,7 @@ class ManageAgentBody(BaseModel):
     @field_validator("allow_rules")
     @classmethod
     def _reject_unsafe_allow_rules(cls, v: list[str] | None) -> list[str] | None:
-        if v is None:
-            return v
-        forbidden = {"\n", "\r", ";", "|", "&", "`", "$("}
-        for entry in v:
-            if not entry or not entry.strip():
-                raise ValueError("allow_rules entries must be non-empty")
-            if entry != entry.strip():
-                raise ValueError("allow_rules entries must not have leading/trailing whitespace")
-            for bad in forbidden:
-                if bad in entry:
-                    raise ValueError(f"allow_rules entries must not contain {bad!r}")
-        return v
+        return _validate_allow_rules(v)
 
     @model_validator(mode="after")
     def _exactly_one_auth_path(self) -> ManageAgentBody:
