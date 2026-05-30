@@ -223,7 +223,6 @@ def test_manager_self_dispatch_from_thread_completes_with_followup(
             "subject": "manager self-dispatch test",
             "recipients": ["engineering_head"],
             "body_markdown": "please handle this yourself",
-            "addressed_to": ["@all"],
         },
         headers=_auth_headers(),
         timeout=10.0,

@@ -7,20 +7,16 @@
  * Pure props in / events out. No persistence — the caller controls
  * `value` and chooses whether to back it with state, a draft store, etc.
  *
- * `onSubmit(value, addressedTo)` fires on Enter (and on Cmd/Ctrl+Enter for
- * power users used to that keybind) when the mention popup is closed.
- * Shift+Enter inserts a literal newline. IME composition is respected —
- * Enter while composing CJK input commits the composition without
- * triggering submit. `addressedTo` is resolved against the agents list
- * (literal `@all` is always recognized; defaults to `['@all']` when no
- * known agent is mentioned).
+ * `onSubmit(value)` fires on Enter (and on Cmd/Ctrl+Enter for power users
+ * used to that keybind) when the mention popup is closed. Shift+Enter
+ * inserts a literal newline. IME composition is respected — Enter while
+ * composing CJK input commits the composition without triggering submit.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MentionAutocomplete } from './MentionAutocomplete';
 import type { AgentSummary } from '@/lib/api/agents';
 
 const MAX_TEXTAREA_PX = 240;
-const MENTION_TOKEN_RE = /@([A-Za-z0-9_-]+)/g;
 
 function useAutoGrow(
   ref: React.RefObject<HTMLTextAreaElement>,
@@ -46,17 +42,6 @@ function detectOpenMention(text: string, caret: number):
   return null;
 }
 
-export function resolveAddressedTo(body: string, agents: AgentSummary[] = []): string[] {
-  const byName = new Set(agents.map((a) => a.name));
-  const out = new Set<string>();
-  for (const m of body.matchAll(MENTION_TOKEN_RE)) {
-    const token = m[1];
-    if (token === 'all') { out.add('@all'); continue; }
-    if (byName.has(token)) out.add(token);
-  }
-  return out.size > 0 ? Array.from(out) : ['@all'];
-}
-
 const DEFAULT_CLASSNAME =
   'border-border-default bg-surface-raised text-body-lg text-text-primary placeholder:text-text-muted focus:border-accent-default w-full resize-none rounded-md border px-3 py-2 focus:outline-none disabled:opacity-50';
 
@@ -64,8 +49,8 @@ export interface MentionTextareaProps {
   value: string;
   onChange: (next: string) => void;
   agents: AgentSummary[];
-  /** Fires on Cmd/Ctrl+Enter when the mention popup is closed. */
-  onSubmit?: (value: string, addressedTo: string[]) => void;
+  /** Fires on Enter when the mention popup is closed. */
+  onSubmit?: (value: string) => void;
   disabled?: boolean;
   placeholder?: string;
   rows?: number;
@@ -164,7 +149,7 @@ export function MentionTextarea({
           if (e.nativeEvent.isComposing || e.keyCode === 229) return;
           e.preventDefault();
           if (onSubmit && value.trim() && !disabled) {
-            onSubmit(value, resolveAddressedTo(value, agents));
+            onSubmit(value);
           }
         }}
         placeholder={placeholder}
