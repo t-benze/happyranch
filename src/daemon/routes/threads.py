@@ -487,8 +487,8 @@ def _thread_row_to_dict(t: ThreadRecord) -> dict:
     }
 
 
-def _msg_to_dict(m) -> dict:
-    return {
+def _msg_to_dict(m, responders: list[dict] | None = None) -> dict:
+    d = {
         "seq": m.seq,
         "speaker": m.speaker,
         "kind": m.kind.value,
@@ -498,6 +498,18 @@ def _msg_to_dict(m) -> dict:
         "system_payload": m.system_payload,
         "created_at": m.created_at.isoformat(),
     }
+    if responders is not None:
+        d["responder_status"] = [
+            {
+                "agent_name": e["agent_name"],
+                "status": "replied" if e["status"] == "consumed" else e["status"],
+                "responded_at": e["consumed_at"],
+            }
+            for e in responders
+        ]
+    else:
+        d["responder_status"] = []
+    return d
 
 
 # ---------------------------------------------------------------------------
@@ -572,9 +584,16 @@ async def get_thread_endpoint(
         raise HTTPException(status_code=404, detail={"code": "not_found"})
     participants = [p.agent_name for p in org.db.list_thread_participants(thread_id)]
     msgs = org.db.list_thread_messages(thread_id, limit=200)
+    responders_by_seq = org.db.list_invocations_for_thread_grouped_by_seq(thread_id)
     d = _thread_row_to_dict(t)
     d["participants"] = participants
-    d["messages"] = [_msg_to_dict(m) for m in msgs]
+    d["messages"] = [
+        _msg_to_dict(
+            m,
+            responders=responders_by_seq.get(m.seq) if m.kind == ThreadMessageKind.MESSAGE else None,
+        )
+        for m in msgs
+    ]
     return d
 
 

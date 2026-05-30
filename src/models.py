@@ -213,6 +213,12 @@ class ThreadMessage(BaseModel):
     created_at: datetime = Field(default_factory=_now)
 
 
+class ResponderStatusEntry(BaseModel):
+    agent_name: str
+    status: Literal["pending", "replied", "declined", "failed"]
+    responded_at: str | None
+
+
 class ThreadInvocation(BaseModel):
     id: int | None = None
     thread_id: str

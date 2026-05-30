@@ -2226,6 +2226,34 @@ class Database:
         return [self._row_to_invocation(r) for r in cursor.fetchall()]
 
     @_synchronized
+    def list_invocations_for_thread_grouped_by_seq(
+        self, thread_id: str
+    ) -> dict[int, list[dict[str, object]]]:
+        """Return {triggering_seq: [{agent_name, status, consumed_at}, ...]}
+        for every REPLY invocation in this thread.
+
+        Used by GET /threads/{id} to build the per-message responder_status
+        strip. Status values are the raw DB values (pending/consumed/declined/
+        failed); the route's response builder renames consumed → replied.
+        """
+        rows = self._conn.execute(
+            "SELECT triggering_seq, agent_name, status, consumed_at "
+            "FROM thread_invocations "
+            "WHERE thread_id = ? AND purpose = 'reply' "
+            "ORDER BY triggering_seq, agent_name",
+            (thread_id,),
+        ).fetchall()
+        grouped: dict[int, list[dict[str, object]]] = {}
+        for r in rows:
+            entry = {
+                "agent_name": r["agent_name"],
+                "status": r["status"],
+                "consumed_at": r["consumed_at"],
+            }
+            grouped.setdefault(r["triggering_seq"], []).append(entry)
+        return grouped
+
+    @_synchronized
     def count_pending_turn_obligations(self, thread_id: str) -> int:
         """Helper for the /invite projection in routes/threads.py.
 
