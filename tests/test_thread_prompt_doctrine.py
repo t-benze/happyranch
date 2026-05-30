@@ -60,6 +60,14 @@ def test_doctrine_appears_for_reply_purpose():
     prompt = _build(purpose="reply")
     assert DOCTRINE_HEADER in prompt
     assert "decline" in prompt.lower()
+    # Doctrine must precede the participation block — spec §5 says
+    # "prepends to the existing 'You are participating in thread...' block".
+    doctrine_pos = prompt.index(DOCTRINE_HEADER)
+    participation_pos = prompt.index("You are participating in thread")
+    assert doctrine_pos < participation_pos, (
+        "doctrine must appear before the participation block "
+        "(spec §5: top-of-prompt placement)"
+    )
 
 
 def test_doctrine_absent_for_bootstrap_purpose():

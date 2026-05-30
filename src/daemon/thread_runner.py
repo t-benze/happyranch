@@ -131,13 +131,13 @@ def build_thread_prompt(
     )
     doctrine = _decline_by_default_doctrine() if purpose == "reply" else ""
     return (
+        f"{doctrine}"
         f"You are participating in thread {thread.id}: \"{thread.subject}\".\n\n"
         f"Participants: {parts_str}.\n"
         f"Started: {thread.started_at.isoformat()}. {forwarded}\n\n"
         f"Full message history follows. Most recent message is at the bottom.\n\n"
         f"---\n{history}\n\n"
         f"You have been invoked because:\n  {note}\n\n"
-        f"{doctrine}"
         f"Your invocation_token for this turn is: {invocation_token}\n"
         f"Include this token in every callback payload (reply, decline, dispatch,\n"
         f"close-out). It authorizes this single turn and is single-use for the\n"
