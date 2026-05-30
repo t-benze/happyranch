@@ -75,6 +75,19 @@ export interface TaskEvent {
   [extra: string]: unknown;
 }
 
+export interface ChainLegResponse {
+  agent: string;
+  prompt: string;
+  expect_verdict: string | null;
+}
+
+export interface ActiveChainResponse {
+  step_index: number;
+  first_leg_expect_verdict: string | null;
+  legs: ChainLegResponse[];
+  step_audit_id: number;
+}
+
 /** Envelope returned by `GET /api/v1/orgs/{slug}/tasks/{task_id}`. */
 export interface TaskDetailResponse {
   task: TaskRecord;
@@ -83,6 +96,7 @@ export interface TaskDetailResponse {
   revisit_chain: string[];
   direct_revisits: unknown[];
   predecessor_prior_status: string | null;
+  active_chain: ActiveChainResponse | null;
   [extra: string]: unknown;
 }
 

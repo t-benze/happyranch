@@ -159,6 +159,13 @@ def get_task(task_id: str, org: OrgDep) -> dict:
             for jid in job_ids
         ]
 
+    active_chain = None
+    if task.active_chain is not None:
+        try:
+            active_chain = _json.loads(task.active_chain)
+        except _json.JSONDecodeError:
+            active_chain = None  # defensive — never 500 on malformed on-disk state
+
     return {
         "task": _task_to_dict(task),
         "results": org.db.get_task_results(task_id),
@@ -167,6 +174,7 @@ def get_task(task_id: str, org: OrgDep) -> dict:
         "direct_revisits": direct_revisits,
         "predecessor_prior_status": prior_status,
         "blocked_on_jobs": blocked_on_jobs,
+        "active_chain": active_chain,
     }
 
 
