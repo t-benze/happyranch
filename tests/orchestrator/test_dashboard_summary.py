@@ -187,3 +187,65 @@ def test_heartbeat_tier_thresholds(db: Database) -> None:
     bucket_11 = next(b for b in buckets if b.hour == 11)
     assert bucket_11.steps == 10
     assert bucket_11.tier == "warn"
+
+
+from src.orchestrator.dashboard_summary import compute_recent_activity
+
+
+def test_recent_activity_empty(db: Database) -> None:
+    assert compute_recent_activity(db, n=6) == []
+
+
+def test_recent_activity_returns_last_n_desc(db: Database) -> None:
+    base = datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc)
+    for i in range(10):
+        ts = base + timedelta(minutes=i)
+        db._conn.execute(
+            "INSERT INTO audit_log (timestamp, task_id, agent, action, payload) "
+            "VALUES (?, ?, 'agent', 'session_start', NULL)",
+            (ts.isoformat(), f"TASK-{i}"),
+        )
+    db._conn.commit()
+    rows = compute_recent_activity(db, n=6)
+    assert len(rows) == 6
+    # DESC by timestamp — newest first
+    assert rows[0].task_id == "TASK-9"
+    assert rows[5].task_id == "TASK-4"
+
+
+def test_recent_activity_filters_kind(db: Database) -> None:
+    base = datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc)
+    # 'progress' is NOT in the recent_activity allowlist
+    db._conn.execute(
+        "INSERT INTO audit_log (timestamp, task_id, agent, action, payload) "
+        "VALUES (?, 'T', 'a', 'progress', NULL)",
+        (base.isoformat(),),
+    )
+    db._conn.execute(
+        "INSERT INTO audit_log (timestamp, task_id, agent, action, payload) "
+        "VALUES (?, 'T', 'a', 'session_start', NULL)",
+        ((base + timedelta(seconds=1)).isoformat(),),
+    )
+    db._conn.commit()
+    rows = compute_recent_activity(db, n=6)
+    assert len(rows) == 1
+    assert rows[0].event_kind == "session_start"
+
+
+def test_recent_activity_extracts_verdict(db: Database) -> None:
+    base = datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc)
+    db._conn.execute(
+        "INSERT INTO audit_log (timestamp, task_id, agent, action, payload) "
+        'VALUES (?, \'T\', \'a\', \'completion_report\', \'{"status":"completed"}\')',
+        (base.isoformat(),),
+    )
+    db._conn.execute(
+        "INSERT INTO audit_log (timestamp, task_id, agent, action, payload) "
+        'VALUES (?, \'T\', \'a\', \'review_verdict\', \'{"verdict":"request_changes"}\')',
+        ((base + timedelta(seconds=1)).isoformat(),),
+    )
+    db._conn.commit()
+    rows = compute_recent_activity(db, n=6)
+    by_kind = {r.event_kind: r for r in rows}
+    assert by_kind["completion_report"].verdict == "ok"
+    assert by_kind["review_verdict"].verdict == "fail"

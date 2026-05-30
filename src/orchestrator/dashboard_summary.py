@@ -7,6 +7,7 @@ Spec: docs/superpowers/specs/2026-05-30-dashboard-overhaul-design.md
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
@@ -188,7 +189,6 @@ def compute_heartbeat_24h(db: Database, *, now: datetime) -> list[HeartbeatBucke
         "LIMIT 50000",
         (window_start,),
     )
-    import json
     steps_by_hour: dict[int, int] = {h: 0 for h in range(24)}
     failed_by_hour: dict[int, int] = {h: 0 for h in range(24)}
     completion_by_hour: dict[int, int] = {h: 0 for h in range(24)}
@@ -208,4 +208,54 @@ def compute_heartbeat_24h(db: Database, *, now: datetime) -> list[HeartbeatBucke
             tier=_tier_for_ratio(failed_by_hour[h], completion_by_hour[h]),
         )
         for h in range(24)
+    ]
+
+
+_RECENT_ACTIVITY_KINDS = (
+    "session_start", "completion_report", "review_verdict",
+    "escalation", "escalation_resolved", "task_dispatched",
+    "talk_started", "talk_ended", "learning_promoted",
+)
+
+
+def _verdict_from_payload(
+    action: str, payload_json: str | None
+) -> Literal["ok", "fail", "warn"] | None:
+    """Extract a normalized verdict from an audit row's payload."""
+    payload = json.loads(payload_json or "{}")
+    if action == "completion_report":
+        status = payload.get("status")
+        if status == "completed":
+            return "ok"
+        if status == "failed":
+            return "fail"
+        if status == "blocked":
+            return "warn"
+    if action == "review_verdict":
+        v = payload.get("verdict")
+        if v in ("approved", "accept", "ok"):
+            return "ok"
+        if v in ("request_changes", "rejected"):
+            return "fail"
+    return None
+
+
+def compute_recent_activity(db: Database, *, n: int = 6) -> list[ActivityRow]:
+    """Last n audit rows of meaningful kinds, DESC by timestamp."""
+    placeholders = ",".join("?" * len(_RECENT_ACTIVITY_KINDS))
+    rows = db.fetch_all_readonly(
+        f"SELECT timestamp, task_id, agent, action, payload "
+        f"FROM audit_log WHERE action IN ({placeholders}) "
+        f"ORDER BY timestamp DESC LIMIT ?",
+        (*_RECENT_ACTIVITY_KINDS, n),
+    )
+    return [
+        ActivityRow(
+            timestamp=datetime.fromisoformat(r["timestamp"]),
+            who=r["agent"],
+            event_kind=r["action"],
+            task_id=r["task_id"],
+            verdict=_verdict_from_payload(r["action"], r["payload"]),
+        )
+        for r in rows
     ]
