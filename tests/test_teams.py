@@ -131,3 +131,36 @@ def test_load_reads_runtime_team_file(tmp_path):
     m = reg.manager_for_team("eng")
     assert m.name == "alice"
     assert m.workers == ("bob", "carol")
+
+
+def test_add_team_inserts_with_empty_workers(tmp_path: Path) -> None:
+    rt = _runtime(tmp_path)
+    reg = TeamsRegistry.load(rt.root)
+    reg.add_team("delta", manager="delta_head")
+    assert reg.teams() == ["delta"]
+    m = reg.manager_for_team("delta")
+    assert m == TeamManager(name="delta_head", team="delta", workers=())
+
+
+def test_add_team_auto_persists_to_yaml(tmp_path: Path) -> None:
+    rt = _runtime(tmp_path)
+    reg = TeamsRegistry.load(rt.root)
+    reg.add_team("delta", manager="delta_head")
+    # Reloading from disk should round-trip.
+    reloaded = TeamsRegistry.load(rt.root)
+    assert reloaded.teams() == ["delta"]
+    assert reloaded.manager_for_team("delta").name == "delta_head"
+
+
+def test_add_team_does_not_persist_without_root(tmp_path: Path) -> None:
+    # Detached registry (no _root) accepts the mutation but does not write.
+    reg = TeamsRegistry({})
+    reg.add_team("delta", manager="delta_head")
+    assert reg.teams() == ["delta"]
+
+
+def test_add_team_raises_on_duplicate(tmp_path: Path) -> None:
+    rt = _runtime_with_teams(tmp_path)
+    reg = TeamsRegistry.load(rt.root)
+    with pytest.raises(ValueError, match="engineering"):
+        reg.add_team("engineering", manager="someone_else")
