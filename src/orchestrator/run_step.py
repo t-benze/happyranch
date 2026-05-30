@@ -907,6 +907,15 @@ def _summarize_recent_chain(orch: "Orchestrator", parent_task_id: str) -> str | 
     ]
     if not rows:
         return None
+    # Filter to the most-recent chain only — multiple sequential chains may
+    # share the same parent across separate manager wakes, distinguished by
+    # the chain_origin_step_audit_id of the orchestration_step that minted
+    # each chain.
+    latest_origin_id = rows[-1]["payload"]["chain_origin_step_audit_id"]
+    rows = [
+        r for r in rows
+        if r["payload"]["chain_origin_step_audit_id"] == latest_origin_id
+    ]
     triggers = [r["payload"]["triggering_child_id"] for r in rows]
     spawned = [r["payload"]["spawned_child_id"] for r in rows]
     chain_children = triggers + ([spawned[-1]] if spawned else [])

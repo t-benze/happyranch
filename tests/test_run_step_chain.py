@@ -425,3 +425,45 @@ def test_chain_summary_not_appended_when_no_chain_ran(tmp_path):
         "chain" not in s.action.lower() and "chain" not in s.result_summary.lower()
         for s in steps
     )
+
+
+def test_chain_summary_filters_to_most_recent_chain_only(tmp_path):
+    """When a parent has audit rows from multiple SEQUENTIAL chains, the
+    summary covers ONLY the most-recent chain (identified by
+    chain_origin_step_audit_id), not a conflated union."""
+    from src.infrastructure.database import Database
+    from src.orchestrator.run_step import _summarize_recent_chain
+    from src.models import TaskStatus
+
+    db = Database(tmp_path / "x.db")
+    db.insert_task(TaskRecord(id="TASK-P", team="engineering", brief="p"))
+    # Chain A (origin step audit id = 10): A1 → A2
+    for cid in ("TASK-A1", "TASK-A2"):
+        db.insert_task(TaskRecord(id=cid, team="engineering", brief=cid, parent_task_id="TASK-P", assigned_agent="w"))
+        db.update_task(cid, status=TaskStatus.COMPLETED, note="ok")
+        db.insert_task_result(task_id=cid, agent="w", session_id="s", status="completed", confidence_score=80, output_summary=f"{cid} ok", verdict=None)
+    db.insert_audit_log(
+        task_id="TASK-P", agent="orchestrator", action="chain_auto_advance",
+        payload={"leg_index": 1, "spawned_child_id": "TASK-A2", "triggering_child_id": "TASK-A1", "triggering_verdict": None, "chain_origin_step_audit_id": 10},
+    )
+
+    # Chain B (origin step audit id = 20): B1 → B2
+    for cid in ("TASK-B1", "TASK-B2"):
+        db.insert_task(TaskRecord(id=cid, team="engineering", brief=cid, parent_task_id="TASK-P", assigned_agent="w"))
+        db.update_task(cid, status=TaskStatus.COMPLETED, note="ok")
+        db.insert_task_result(task_id=cid, agent="w", session_id="s", status="completed", confidence_score=80, output_summary=f"{cid} ok", verdict="APPROVE" if cid == "TASK-B2" else None)
+    db.insert_audit_log(
+        task_id="TASK-P", agent="orchestrator", action="chain_auto_advance",
+        payload={"leg_index": 1, "spawned_child_id": "TASK-B2", "triggering_child_id": "TASK-B1", "triggering_verdict": None, "chain_origin_step_audit_id": 20},
+    )
+
+    from unittest.mock import MagicMock
+    orch = MagicMock()
+    orch._db = db
+    summary = _summarize_recent_chain(orch, "TASK-P")
+    # Should mention TASK-B1 and TASK-B2 only — NOT TASK-A1 or TASK-A2.
+    assert summary is not None
+    assert "TASK-B1" in summary
+    assert "TASK-B2" in summary
+    assert "TASK-A1" not in summary
+    assert "TASK-A2" not in summary
