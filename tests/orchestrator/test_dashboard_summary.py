@@ -137,3 +137,53 @@ def test_narrative_counts_populated(db: Database, mock_kb_store: _MockKbStore) -
     assert counts.kb_added_today == 3
     assert counts.agents_active_now == 1
     assert counts.spend_today_usd == pytest.approx(2.50)
+
+
+from src.orchestrator.dashboard_summary import compute_heartbeat_24h
+
+
+def test_heartbeat_empty_returns_24_zero_buckets(db: Database) -> None:
+    now = datetime(2026, 5, 30, 14, 30, 0, tzinfo=timezone.utc)
+    buckets = compute_heartbeat_24h(db, now=now)
+    assert len(buckets) == 24
+    assert all(b.steps == 0 for b in buckets)
+    assert all(b.tier == "ok" for b in buckets)
+
+
+def test_heartbeat_counts_steps_per_hour(db: Database) -> None:
+    now = datetime(2026, 5, 30, 14, 30, 0, tzinfo=timezone.utc)
+    # Three session_starts in the same hour
+    for minute in [5, 20, 50]:
+        ts = now.replace(hour=10, minute=minute, second=0, microsecond=0)
+        db._conn.execute(
+            "INSERT INTO audit_log (timestamp, task_id, agent, action, payload) "
+            "VALUES (?, 'T', 'a', 'session_start', NULL)",
+            (ts.isoformat(),),
+        )
+    db._conn.commit()
+    buckets = compute_heartbeat_24h(db, now=now)
+    # The bucket for hour=10 should show 3 steps
+    bucket_10 = next(b for b in buckets if b.hour == 10)
+    assert bucket_10.steps == 3
+
+
+def test_heartbeat_tier_thresholds(db: Database) -> None:
+    now = datetime(2026, 5, 30, 14, 30, 0, tzinfo=timezone.utc)
+    # 9 completion_reports with status=completed, 1 with status=failed → 10% fail = warn
+    ts = now.replace(hour=11, minute=0, second=0, microsecond=0)
+    for _ in range(9):
+        db._conn.execute(
+            "INSERT INTO audit_log (timestamp, task_id, agent, action, payload) "
+            'VALUES (?, \'T\', \'a\', \'completion_report\', \'{"status":"completed"}\')',
+            (ts.isoformat(),),
+        )
+    db._conn.execute(
+        "INSERT INTO audit_log (timestamp, task_id, agent, action, payload) "
+        'VALUES (?, \'T\', \'a\', \'completion_report\', \'{"status":"failed"}\')',
+        (ts.isoformat(),),
+    )
+    db._conn.commit()
+    buckets = compute_heartbeat_24h(db, now=now)
+    bucket_11 = next(b for b in buckets if b.hour == 11)
+    assert bucket_11.steps == 10
+    assert bucket_11.tier == "warn"

@@ -164,3 +164,48 @@ def compute_narrative_counts_today(
         agents_active_now=active_now,
         spend_today_usd=compute_spend_today(db, now=now),
     )
+
+
+def _tier_for_ratio(failed: int, total: int) -> Literal["ok", "warn", "bad"]:
+    """Map failed:total ratio to a tier. < 10% = ok, < 30% = warn, else = bad."""
+    if total == 0 or failed == 0:
+        return "ok"
+    ratio = failed / total
+    if ratio < 0.10:
+        return "ok"
+    if ratio < 0.30:
+        return "warn"
+    return "bad"
+
+
+def compute_heartbeat_24h(db: Database, *, now: datetime) -> list[HeartbeatBucket]:
+    """24 hourly buckets ending at `now`. Steps = session_start +
+    completion_report rows. Tier = ok/warn/bad by failed:total ratio."""
+    window_start = (now - timedelta(hours=24)).isoformat()
+    rows = db.fetch_all_readonly(
+        "SELECT timestamp, action, payload FROM audit_log "
+        "WHERE timestamp >= ? AND action IN ('session_start', 'completion_report') "
+        "LIMIT 50000",
+        (window_start,),
+    )
+    import json
+    steps_by_hour: dict[int, int] = {h: 0 for h in range(24)}
+    failed_by_hour: dict[int, int] = {h: 0 for h in range(24)}
+    completion_by_hour: dict[int, int] = {h: 0 for h in range(24)}
+    for r in rows:
+        ts = datetime.fromisoformat(r["timestamp"])
+        h = ts.hour
+        steps_by_hour[h] += 1
+        if r["action"] == "completion_report":
+            completion_by_hour[h] += 1
+            payload = json.loads(r["payload"] or "{}")
+            if payload.get("status") == "failed":
+                failed_by_hour[h] += 1
+    return [
+        HeartbeatBucket(
+            hour=h,
+            steps=steps_by_hour[h],
+            tier=_tier_for_ratio(failed_by_hour[h], completion_by_hour[h]),
+        )
+        for h in range(24)
+    ]
