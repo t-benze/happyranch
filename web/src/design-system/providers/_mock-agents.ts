@@ -51,6 +51,15 @@ export const mockAgentsApi: AgentsApi = {
       staleTime: Infinity,
     }),
 
+  useCreateAgent: () =>
+    useMutation({
+      mutationFn: async (body: import('@/lib/api/agents').CreateAgentBody) => ({
+        name: body.name,
+        team: body.team ?? body.new_team ?? '',
+        role: body.role,
+      }),
+    }),
+
   useApproveAgent: () =>
     useMutation({
       mutationFn: async (_agentName: string) => ({ name: _agentName }),
