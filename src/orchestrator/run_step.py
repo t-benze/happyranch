@@ -1154,8 +1154,14 @@ def _advance_chain_for_completed_child(
         orch._db.update_task_active_chain(parent_task_id, None)
         return "wake"
 
-    # Spawn the next leg as a new child task.
+    # Advance: bump chain state FIRST so a crash between this and insert_task
+    # leaves a recoverable "stuck blocked-delegated waiting for missing child"
+    # rather than a silently-mis-routed chain on the next terminal.
     next_child_id = orch._db.next_task_id()
+    chain.step_index = action.next_step_index
+    orch._db.update_task_active_chain(parent_task_id, chain.serialize())
+
+    # Now spawn the next-leg child task.
     prior_context = build_prior_leg_context(
         child_task_id=child_task_id, report=report,
     )
@@ -1171,8 +1177,7 @@ def _advance_chain_for_completed_child(
             session_timeout_seconds=parent.session_timeout_seconds,
         )
     )
-    chain.step_index = action.next_step_index
-    orch._db.update_task_active_chain(parent_task_id, chain.serialize())
+
     orch._audit.log_chain_auto_advance(
         parent_task_id=parent_task_id,
         leg_index=action.next_step_index,
