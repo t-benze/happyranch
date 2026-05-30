@@ -7,7 +7,7 @@ Spec: docs/superpowers/specs/2026-05-30-dashboard-overhaul-design.md
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from pydantic import BaseModel
@@ -77,3 +77,19 @@ class DashboardSummaryResponse(BaseModel):
     org_pulse: list[TeamPulse]
     org_age_days: int
     server_now: datetime
+
+
+def org_age_days(db, *, now: datetime | None = None) -> int:
+    """Days between the earliest audit_log row and `now`. Empty DB → 0."""
+    row = db._conn.execute(
+        "SELECT MIN(timestamp) AS first_ts FROM audit_log"
+    ).fetchone()
+    if not row or not row["first_ts"]:
+        return 0
+    first = datetime.fromisoformat(row["first_ts"])
+    moment = now or datetime.now(timezone.utc)
+    if first.tzinfo is None:
+        first = first.replace(tzinfo=timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return max(0, (moment - first).days)
