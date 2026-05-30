@@ -121,6 +121,7 @@ def fire_resume_check_for_job(org: "object", job_id: str) -> None:
         return
     from src.orchestrator.run_step import _maybe_resume_blocked_task
 
+    # Quotes around job_id are intentional: suffix-anchored so JOB-1 doesn't match JOB-12.
     rows = db._conn.execute(
         "SELECT id FROM tasks "
         "WHERE status = 'blocked' "
@@ -284,6 +285,7 @@ async def run_job(
         binary,
         "-",  # read script from stdin (bash/sh/zsh/python3 all honor this)
         cwd=cwd,
+        # dict() is required: uvloop rejects os.environ (Mapping) with TypeError.
         env=dict(os.environ),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,

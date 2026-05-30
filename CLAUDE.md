@@ -34,8 +34,8 @@ In the `protocol/` folder:
 - **Agent executor**: Per-agent. Claude Code (`claude -p ... --permission-mode auto`), Codex (`codex exec --json -`), and opencode (`opencode run`) are supported — no third-party agent framework dependency.
 - **Daemon**: FastAPI HTTP service (`src/daemon/`) — serves orchestrator work, SSE task events, agent callbacks
 - **CLI**: Thin HTTP client (`src/client/`) that talks to the daemon over localhost
-- **Web UI**: Localhost SPA bundled into the daemon (`web/` → built to `web/dist/` → served at `/`). React 18 + TypeScript strict + Tailwind 3 + TanStack Query v5 + React Router v6. Auth via the same bearer token at `~/.grassland/daemon.token`, fetched once via `GET /api/v1/auth/bootstrap` (localhost-gated). Spec: `docs/superpowers/specs/2026-05-14-web-ui-design.md`. Launch with `grassland web`.
-- **Agent workflow**: Shared workspace skills (`protocol/skills/`) — `start-task`, `make-worktree`, `manage-repo`, `manage-agent`. The orchestrator prompt references the same SOPs across all executors.
+- **Web UI**: Localhost SPA bundled into the daemon (`web/` → built to `web/dist/` → served at `/`). React 18 + TypeScript strict + Tailwind v4 + TanStack Query v5 + React Router v6. Auth via the same bearer token at `~/.grassland/daemon.token`, fetched once via `GET /api/v1/auth/bootstrap` (localhost-gated). Architecture: `web/ARCHITECTURE.md`. Spec: `docs/superpowers/specs/2026-05-14-web-ui-design.md`. Launch with `grassland web`.
+- **Agent workflow**: Shared workspace skills (`protocol/skills/`) — `start-task`, `make-worktree`, `manage-repo`, `manage-agent`, `dispatch`, `jobs`, `talk`, `thread`. The orchestrator prompt references the same SOPs across all executors.
 - **Orchestrator**: Custom Python application. `run_step` is the only primitive — each invocation advances one task by one subprocess call; an async `TaskQueue` + worker pool (`src/daemon/queue.py`) drives re-enqueues across steps. The team manager drives decisions. Implicit `review_verdict` audit rows are written when a delegation terminates (approved / rejected) — the founder reviews those via `grassland audit` to identify which agents need attention.
 - **Data models**: Pydantic v2 + pydantic-settings
 - **Database**: SQLite with WAL mode, per-org under `<runtime>/orgs/<slug>/grassland.db`. Schema covers audit logs and task state, plus per-feature tables (token usage, Feishu correlation, threads) documented in the corresponding specs under `docs/superpowers/specs/`.
@@ -43,35 +43,6 @@ In the `protocol/` folder:
 - **Knowledge base**: File-backed markdown under `<runtime>/orgs/<slug>/kb/` with atomic writes, substring/tag search, `_index.md` regeneration. No vector store yet.
 - **LLM**: Provider depends on the selected executor
 - **Hosting**: Local Mac Mini
-
-## Implementation Order (system features)
-
-System kernel milestones — org-agnostic infrastructure. Org content (agent rosters, charters) is not on this list.
-
-**Done (in order shipped):**
-
-1. Orchestrator + first team — manager-driven decision loop, executor-backed agent sessions.
-2. Audit logging — SQLite-backed semantic events; `session_end` payloads carry full `token_usage` dict.
-3. Manager-driven orchestration — `GRASSLAND_MAX_ORCHESTRATION_STEPS` (default 50) before escalation.
-4. Agent memory — persistent workspaces, per-entry `learnings/LRN-NNN-<slug>.md`, `task_history.md`. Spec: `2026-05-13-per-agent-learnings-structural-upgrade-design.md`.
-5. ~~Performance scoring — 30-day rolling, green/yellow/red tiers.~~ Removed 2026-05-27. The audit log (review verdicts + completion/failure events) is sufficient for the founder to identify which agents need attention; tier classification on top added no enforcement and was misleading. Reviewed via `grassland audit`.
-6. Talk flow — founder↔agent conversations with transcripts and end-of-talk learnings.
-7. Knowledge Base — per-org KB with freeform `type`; founder rulings via `grassland kb add`.
-8. Revisit primitive — spec: `2026-04-21-opc-revisit-design.md`.
-9. Org-per-runtime layout — file-backed `org/{charter.md,escalation-rules.md,teams.yaml,config.yaml,agents/}`.
-10. Multi-org container — per-org DB/workspaces/KB/talks; `grassland migrate-to-multi-org` for v1 → v2.
-11. Feishu notifications — outbound push + reply-to-unblock; specs: `2026-05-08-feishu-notification-design.md`, `2026-05-12-feishu-interactive-actions-design.md`.
-12. Threads foundation — email-style multi-agent workchannels with daemon-minted invocation tokens; CLI surface + end-to-end integration coverage via `fake_claude.sh` thread-prompt routing. Spec: `2026-05-13-threads-design.md`.
-13. Threads web UI — localhost React+Tailwind SPA bundled into the FastAPI daemon, replaces the original Textual TUI. Three-layer architecture (`lib/api/` 1:1 daemon mirror → `features/<domain>/` → generic `components/`) designed to absorb future CLI domains. OpenAPI snapshot + TS coverage test pin the contract. `grassland threads` (no subcommand) points at `grassland web`; the `src/tui/` tree was deleted. Spec: `2026-05-14-web-ui-design.md`.
-14. Jobs (founder-approved + agent-autonomous) — JOB-NNN — agent submits a job with `review_required` and `persistent` flags. `review_required=true` enqueues for founder review; `false` auto-runs immediately. `persistent=true` means unbounded runtime (killed on task terminal or explicit stop); `false` means default 300s timeout. Runner module at `src/daemon/jobs_runner.py`, route module at `src/daemon/routes/jobs.py`, agent skill at `protocol/skills/jobs/SKILL.md`. Spec: `docs/superpowers/specs/2026-05-26-jobs-design.md`.
-15. Session-timeout auto-route — classify executor failures by kind (`session_timeout`, `no_callback`, `rate_limit`, `executor_error`, `agent_exception`, `session_failed` fallback) in `run_step._classify_failure_kind`. Per-kind auto-revisit cap (`_AUTO_REVISIT_CAP_PER_KIND = 2`) replaces the prior global cap — same-kind exhaustion at 2, different kinds have independent budgets. Cascade-fail Feishu notifications are suppressed when a root auto-revisit covers the lineage (the cascade still cascade-fails ancestors for state correctness; only the founder ping is dropped). `failure_kind` is hoisted to top-level of the `auto_revisit_of` audit payload for per-kind counting + AUTO-REVISIT-CONTEXT header rendering. Spec: `2026-05-25-session-timeout-auto-route-design.md`. Founder-ratified at TALK-037.
-16. Shared Assets — org-wide flat blob store for persistent agent artifacts (reports, exports, screenshots). `grassland assets {put,list,get}` CLI; daemon routes under `/api/v1/orgs/{slug}/assets`; audited puts; CLI-only design works uniformly across Claude/Codex/Opencode. Plan: `docs/superpowers/plans/2026-05-27-shared-assets.md`.
-17. **Task blocked-by-job** — agent self-blocks with `waiting_on_job_ids: ["JOB-NNN", ...]` in the `report-completion` payload; system auto-resumes the task when every listed job is terminal. Per-org `tasks.blocked_on_job_ids` JSON column + new `block_kind=blocked_on_job` value + three resume callers (jobs-runner terminal hook, in-place block branch in run_step, startup recovery scan). Spec: `docs/superpowers/specs/2026-05-28-task-blocked-by-job-design.md`.
-
-**Open:**
-
-18. **Founder dashboard** — aggregate audit logs and escalation summaries into a weekly view. Design: `protocol/05e-dashboard.md`.
-19. **Persistent agents** — long-running loops for runtime patterns that don't fit single-task batch execution (e.g., real-time customer-chat worker). Currently every agent session is one task → one subprocess.
 
 ## Directory Layout
 
@@ -84,8 +55,7 @@ System kernel milestones — org-agnostic infrastructure. Org content (agent ros
 |   |-- client/                        # httpx-based client + SSE streaming
 |   |-- daemon/                        # FastAPI app, routes, queue, sessions, Feishu listener
 |   |-- orchestrator/                  # run_step, executors, capabilities, performance, prompt_loader
-|   |-- infrastructure/                # database, audit_logger, kb_store, talk_store, learnings_store, feishu/
-|   `-- tui/                           # Textual threads TUI
+|   `-- infrastructure/                # database, audit_logger, kb_store, talk_store, learnings_store, feishu/
 |-- tests/                             # Unit + integration (with fake CLIs)
 `-- examples/orgs/hk-macau-tourism/    # Canonical sample org tree
 
@@ -174,11 +144,13 @@ Both surfaces are generated from `allow_rules_for_agent(agent_name, cli=...)` in
 
 **Agent-side completion payloads must be single-line `grassland` invocations.** The Claude permission matcher treats newlines (and `&&`, `||`, `;`, `|`) as command separators and matches each subcommand independently; multi-line bash with backslash continuations is rejected even when the surface command is `grassland ...`. The `start-task` skill writes payloads to `/tmp/completion-<task_id>.json` and invokes `grassland report-completion --from-file <path>` as a single line. Any new agent-facing callback with multiple arguments must follow the same `--from-file` pattern.
 
-## Code Style
-- Type hints on all function signatures
-- `from __future__ import annotations` in all source files
-- Pydantic v2 models for structured data, StrEnum for enumerations (agent names are plain strings — agents are discovered dynamically from `<runtime>/orgs/<slug>/org/agents/*.md`)
-- Tests for business logic (escalation rules, audit-log shape)
+## Conventions
+
+**Code style** — Type hints on all function signatures. `from __future__ import annotations` in every source file. Pydantic v2 for structured data, StrEnum for enumerations (agent names are plain strings — agents are discovered dynamically from `<runtime>/orgs/<slug>/org/agents/*.md`). Tests for business logic (escalation rules, audit-log shape).
+
+**Docs split** — `README.md` is for end users (setup, CLI commands, configuration). `CLAUDE.md` (this file) is for developers and AI agents working on the codebase. Design docs in `protocol/` and specs in `docs/superpowers/specs/` are the source of truth for behavior — keep agent system prompts in sync.
+
+**Starting a new feature** — Read the relevant design doc first (e.g., `protocol/05c-orchestrator.md`). Follow existing patterns in `src/orchestrator/`. Write tests alongside implementation.
 
 ## Org content APIs
 
@@ -219,44 +191,22 @@ Two env vars / two fixtures (`fake_claude_plan_env` and `fake_claude_thread_plan
 
 ## Web UI
 
-Localhost SPA at `web/`. Three layers (strict, codified in `web/ARCHITECTURE.md`):
+Layer rules, boundary rule, and agent-callback omissions live in `web/ARCHITECTURE.md` (authoritative). Full design: `docs/superpowers/specs/2026-05-14-web-ui-design.md`.
 
-1. **`web/src/lib/api/<X>.ts`** — one TS module per `src/daemon/routes/<X>.py`,
-   exposing one pure function per `@router.*` decorator. Agent-callback
-   endpoints are deliberately omitted (`/report-completion`, `/tasks/{id}/
-   completion|progress`, `/agents/manage|repos`, `/agents/{a}/learnings*`
-   writes, thread `/reply|/decline|/dispatch|/close-out`).
-2. **`web/src/features/<domain>/`** — React feature folders. Threads is the
-   only one populated. May import only from `lib/` and `components/`. No
-   cross-feature imports.
-3. **`web/src/components/`** — generic primitives (Button, Modal). Promoted
-   from a feature on third use.
+**Contract pinning** — every browser-callable daemon route maps 1:1 to one TS function in `web/src/lib/api/`. Two paired tests enforce this:
 
-Contract pinning:
+- Python — `tests/contract/test_openapi_snapshot.py` pins the OpenAPI to `tests/contract/openapi.json`. Regenerate intentional changes via `GRASSLAND_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py`.
+- TS — `web/src/test/openapi-coverage.test.ts` asserts every documented path is in `INCLUDED_PATHS` (TS mirror written) or `EXCLUDED_PATHS` (justified). Adding a new daemon route fails this test until resolved.
 
-- **Python side** — `tests/contract/test_openapi_snapshot.py` pins paths +
-  methods + params + responses to `tests/contract/openapi.json`. Regenerate
-  intentional changes via `GRASSLAND_REGEN_OPENAPI=1 uv run pytest
-  tests/contract/test_openapi_snapshot.py`.
-- **TS side** — `web/src/test/openapi-coverage.test.ts` reads the same
-  snapshot and asserts every documented path is in exactly one of
-  `INCLUDED_PATHS` or `EXCLUDED_PATHS`. Adding a new daemon route fails
-  this test until the engineer either writes a TS mirror (and lists the
-  path under INCLUDED) or justifies the exclusion (EXCLUDED with a reason).
-
-Build + dev:
+**Build + dev:**
 
 ```bash
 scripts/build_web.sh        # production build → web/dist/, served by daemon at /
 cd web && npm run dev       # Vite dev server, /api/* proxied to the daemon
-grassland web                     # open the built bundle in the default browser
+grassland web               # open the built bundle in the default browser
 ```
 
-Auth model: the SPA fetches the daemon's existing bearer token once via
-`GET /api/v1/auth/bootstrap` (localhost-gated; rejects any peer that isn't
-`127.0.0.1`/`::1`/`localhost`), caches it in `sessionStorage`, and attaches
-it to every subsequent HTTP+SSE call. The CLI bearer-token model is
-unchanged.
+**Auth model:** the SPA fetches the daemon's bearer token once via `GET /api/v1/auth/bootstrap` (localhost-gated; rejects any peer that isn't `127.0.0.1` / `::1` / `localhost`), caches it in `sessionStorage`, and attaches it to every HTTP+SSE call. CLI bearer-token model unchanged.
 
 ## Running the Daemon + CLI
 
@@ -281,7 +231,7 @@ Slug resolution for per-org commands: explicit `--org <slug>` > `GRASSLAND_ORG_S
 - `grassland manage-agent`, `grassland manage-repo`, `grassland dispatch`
 - `grassland threads {reply,decline,dispatch,close-out}`
 
-Every agent callback uses `--from-file <path>` because Claude's permission matcher splits multi-line bash into separate commands; see "Agent permission model" above.
+All use `--from-file <path>` — see "Agent permission model" for why.
 
 ## Knowledge Base
 
@@ -291,13 +241,11 @@ Per-org under `<runtime>/orgs/<slug>/kb/` (orgs do not share a KB). One entry sh
 
 Per-agent under `<runtime>/orgs/<slug>/workspaces/<agent>/learnings/`, one `LRN-NNN-<slug>.md` per entry. Full spec: `docs/superpowers/specs/2026-05-13-per-agent-learnings-structural-upgrade-design.md`. Implementation: `src/infrastructure/learnings_store.py` + the `/agents/{name}/learnings/entries/...` block in `src/daemon/routes/agents.py`. CLI: `grassland learning list|get|search|add|update|promote|reindex`.
 
-**Non-obvious invariants:**
+**Load-bearing invariants** (full catalog: spec §Non-obvious):
 
 - **Per-workspace migration is state-aware** — `PersistentWorkspaceSetup.ensure()` never creates `learnings/` when a non-empty flat `learnings.md` exists. Existing agents stay on the legacy shape until a founder-dispatched migration moves them; new workspaces start on the new layout.
-- **Legacy 410** — `grassland learning --agent X --text "..."` returns `410 Gone` once `learnings/` exists.
-- **Cross-refs** — `related_to` and `supersedes` validated against existing IDs at write time (unknown → 400); self-refs rejected. `supersedes` is the canonical evolve-a-rule primitive.
-- **Promotion** — `grassland learning promote <LRN-NNN> --kb-slug <slug>` is one-way; body becomes a 2-line pointer stub and entry locks.
-- **End-of-talk** — `end_talk` writes into the new store on migrated workspaces (synthesized slug `talk-<talk_id>-<idx>`, topic `talk-residue`); pre-migration → flat-file append.
+- **Cross-refs validated at write time** — `related_to` / `supersedes` against existing IDs (unknown → 400); self-refs rejected. `supersedes` is the canonical evolve-a-rule primitive.
+- **Promotion to KB is one-way** — `grassland learning promote <LRN-NNN> --kb-slug <slug>` replaces the body with a 2-line pointer stub and locks the entry.
 
 ## Shared Assets (org-wide blob store)
 
@@ -306,32 +254,12 @@ persistent artifacts produced by any agent and visible to every other agent
 in the same org. Implementation: `src/infrastructure/asset_store.py` +
 `src/daemon/routes/assets.py`. CLI: `grassland assets {put,list,get}`.
 
-**Non-obvious invariants:**
+**Load-bearing invariants** (full catalog: plan §Non-obvious):
 
-- **CLI-only access by design** — Codex (`workspace-write` sandbox) and
-  Opencode (bash deny-by-default) both block direct writes outside the
-  agent's workspace; only the `grassland` baseline allow-rule works across
-  all three executors. Don't add a "just `cat`/`cp` it" agent skill.
-- **Flat namespace; no nesting v1** — names match `[A-Za-z0-9._-]+`, max
-  200 chars, no leading `.`. Slash-bearing names rejected as
-  `invalid_asset_name`.
-- **Size cap is 10 MB per file** (`MAX_ASSET_BYTES`). Larger uploads → HTTP
-  413. v1 has no chunking / multipart resumption.
-- **PUT is idempotent (overwrites)** — no version history; agents are
-  expected to encode date/identity in the name if they care about
-  history. Atomic via `tempfile.mkstemp` + `os.replace` so partial writes
-  never leak.
-- **`asset_put` is audited; `list`/`get` are not** — read paths are free,
-  consistent with KB list/get and on the same rationale (no PII gradient
-  inside the asset store). The audit row's `task_id` column stores
-  `f"asset:{name}"` (the `asset:` prefix is mandatory) so asset names like
-  `TASK-123` or `TALK-7` can never pollute the corresponding task/talk
-  scopes consumed by `Database.get_audit_logs(task_id)`.
-- **Not the KB** — assets are blobs. The KB is for typed/structured
-  knowledge (frontmatter, slug, type, topic). Don't dump markdown content
-  into assets/ that should be a KB entry.
-- **Dir created at fresh-org init AND idempotently at lifespan startup**
-  for orgs that pre-date the feature. Both code paths are required.
+- **CLI-only access by design** — Codex (`workspace-write` sandbox) and Opencode (bash deny-by-default) block direct writes outside the agent's workspace; only the `grassland` baseline allow-rule works across all three executors. Don't add a "just `cat`/`cp` it" agent skill.
+- **Audit `task_id` overload** — `asset_put` writes `f"asset:{name}"` (the `asset:` prefix is mandatory) so asset names like `TASK-123` or `TALK-7` can't pollute the task/talk scopes consumed by `Database.get_audit_logs(task_id)`. Reads (`list`/`get`) are unaudited by design.
+- **Not the KB** — assets are blobs. KB is for typed/structured knowledge (frontmatter, slug, type, topic). Don't dump markdown content into `assets/` that should be a KB entry.
+- **Dir created at fresh-org init AND idempotently at lifespan startup** for orgs that pre-date the feature. Both code paths are required.
 
 ## Revisit (founder recovery)
 
@@ -339,11 +267,10 @@ in the same org. Implementation: `src/infrastructure/asset_store.py` +
 
 Eligible predecessor states: `failed`, `failed-cancelled` (founder-cancelled, normalized on the wire), `blocked(escalated)`, or `completed`. Anything else → `409 cannot_revisit`.
 
-**Non-obvious invariants:**
+**Load-bearing invariants:**
 
-- The predecessor-link lives in TWO places: `tasks.revisit_of_task_id` column (indexed, queryable) AND a richer `audit_log` entry (`flagged`, `cascade`, `founder_note`, `prior_status`). The column is a **sideways** reference — `walk_ancestors` MUST NOT follow it, or cascade-fail will re-poison revisits via `_enqueue_parent_if_waiting`. Helpers: `Database.walk_revisit_chain` (backward) and `Database.get_direct_revisits` (forward).
-- On the new root's first orchestration step, `_revisit_header_if_applicable(orch, task_id)` prepends a 5-6 line context header pointing the manager at `grassland details` / `grassland audit` / `grassland recall` for the frozen predecessor.
-- `run_step` also auto-revisits on opaque-failure recovery; task-row `session_timeout_seconds` is copied onto every spawned revisit root.
+- **`revisit_of_task_id` is a sideways reference, NOT an ancestor edge.** It lives in two places: the indexed column on `tasks` AND a richer `audit_log` row (`flagged`, `cascade`, `founder_note`, `prior_status`). `walk_ancestors` MUST NOT follow the column, or cascade-fail will re-poison revisits via `_enqueue_parent_if_waiting`. Helpers: `Database.walk_revisit_chain` (backward), `Database.get_direct_revisits` (forward).
+- **Per-task overrides copied to revisit roots, narrowly.** `run_step` auto-revisits on opaque-failure recovery; only `session_timeout_seconds` is copied. `dispatched_from_thread_id` and `blocked_on_job_ids` are deliberately NOT copied — the founder/system retry overrides those.
 
 ## Session-timeout auto-route
 
@@ -351,32 +278,23 @@ Auto-revisit on opaque agent failures (subprocess timeout, no-completion-callbac
 
 **Failure kinds** (`run_step._classify_failure_kind`): `session_timeout` (`error.startswith("Session timed out after")` — written by `executors.py:197`), `no_callback` (`success=True and report is None`, the TASK-045 class), `rate_limit` (substring `"hit your limit"` + `"reset"` OR `"rate limit"` in any of error / stdout_tail / stderr_tail), `executor_error` (non-zero `returncode`), `agent_exception` (exception escapes `_run_agent`). The triad `_SESSION_TIMEOUT_CLASS = {"session_timeout", "no_callback", "rate_limit"}` is a routing-class predicate exposed for future per-class policy; v1 routes all five kinds identically. `session_failed` is the defensive fallback for novel modes.
 
-**Non-obvious invariants:**
+**Load-bearing invariants** (full catalog: spec §10):
 
-- **Per-kind cap, not global** — `_AUTO_REVISIT_CAP_PER_KIND = 2` (in `run_step.py`); same-kind exhausts independently of other kinds. A chain that hits one `session_timeout` then one `executor_error` still has budget for another timeout AND another executor_error. Reverting to a global cap would mask a real bug behind transient infra noise.
-- **Call order matters** — in both opaque-failure branches of `run_step_impl` (`except Exception` at the top and the `not result.success or report is None` block), `_maybe_spawn_auto_revisit` MUST run BEFORE `_enqueue_parent_if_waiting`, because the cascade-fail's notification gate threads through `root_auto_revisit_spawned`. The old order (cascade first, then revisit) caused 13+ ceremonial founder Feishu pings catalogued at TALK-037 — the work was being retried but the founder saw it anyway.
-- **`failure_kind` lives top-level on `auto_revisit_of` audit payloads, NOT nested under `error_context`** — `_count_prior_auto_revisits_by_kind` does a flat `payload.get("failure_kind")` lookup; nesting it would slow per-kind counting + require parser changes.
-- **Pre-spec auto-revisit rows count as zero** — audit entries written before this feature shipped have no `failure_kind` field. The counter ignores them, so an upgrade-in-flight chain gets at worst 2 extra retries (one per kind) above what the legacy global cap would have allowed. Mildly lenient by design; spec §10.
-- **`_enqueue_parent_if_waiting` callers in route code keep the default `False`** — `src/daemon/routes/tasks.py:387` calls `_enqueue_parent_if_waiting(org.orchestrator, task_id)` on the founder-rejected-escalation path, where an auto-revisit would contradict the founder's decision. The kwarg default is correct; do not start passing `True` from anywhere outside `run_step.py`'s opaque-failure branches.
-- **The cascade still cascade-fails ancestors** even when `root_auto_revisit_spawned=True`; ONLY the Feishu notification is suppressed. Parents going FAILED is load-bearing for the existing parent-state machine — the new root via `revisit_of_task_id` is the independent retry tree, not a continuation of the old lineage.
-- **`_count_prior_auto_revisits_by_kind` must NOT use `walk_revisit_chain(truncate=True)`** — under per-kind cap accounting, silent truncation at 20 hops lets older same-kind entries fall out of the count window and re-opens the supposedly-capped budget on long-lived tasks (founder revisits consume hops without counting). The counter walks with `max_hops=_CHAIN_HOP_LIMIT_FOR_COUNTING=200` and `truncate=False`; `LineageTooDeep` is caught and returns `cap` (refuses to spawn) as the conservative answer + circuit breaker against revisit-spawn loops.
+- **Per-kind cap, not global** — `_AUTO_REVISIT_CAP_PER_KIND = 2` in `run_step.py`. Same-kind exhausts independently; a chain that hits one `session_timeout` then one `executor_error` still has budget for another of each. Reverting to a global cap would mask real bugs behind transient infra noise.
+- **Call order at opaque-failure sites** — `_maybe_spawn_auto_revisit` MUST run BEFORE `_enqueue_parent_if_waiting` at both branches of `run_step_impl`, because the cascade-fail's notification gate threads through `root_auto_revisit_spawned`. The old order caused 13+ ceremonial founder Feishu pings (TALK-037).
+- **`failure_kind` lives top-level on `auto_revisit_of` audit payloads, NOT nested under `error_context`.** `_count_prior_auto_revisits_by_kind` does a flat lookup; nesting it would slow counting and require parser changes.
+- **Cascade still cascade-fails ancestors** even when `root_auto_revisit_spawned=True`; only the Feishu notification is suppressed. The new root via `revisit_of_task_id` is an independent retry tree, not a continuation of the old lineage.
 
 ## Thread task-followup (system bridges task terminal → thread)
 
 When a task dispatched from a thread reaches its true terminal state, `_maybe_post_thread_followup` (`src/orchestrator/run_step.py`) appends a `task_completed` or `task_failed` SYSTEM message to the originating thread and mints a fresh invocation with purpose `TASK_FOLLOWUP` so the dispatching agent can compose the result-bearing reply it promised. Spec: `docs/superpowers/specs/2026-05-28-thread-task-followup-design.md`.
 
-**Non-obvious invariants:**
+**Load-bearing invariants** (full catalog: spec §Non-obvious):
 
-- **Call order matters.** The helper must be invoked *after* `_maybe_spawn_auto_revisit` at the two opaque-failure sites in `run_step_impl`, because the predicate ignores FAILED-with-spawned (the revisit chain will reach a later terminal that re-enters the helper). Mirrors the existing constraint between `_maybe_spawn_auto_revisit` and `_enqueue_parent_if_waiting`.
-- **Thread linkage lives on the original root, not on revisit roots.** Auto-revisit and `/revisit` only copy `session_timeout_seconds`; they do NOT copy `dispatched_from_thread_id`. The helper walks `db.walk_revisit_chain(task_id, direction="backward")` and reads the column off `chain[-1]`. Do not propagate the column on revisit insert — the backward walk is the contract.
-- **Dispatcher identity is read from audit, not stored on the task.** The `task_dispatched` audit row written by the dispatch route at `src/daemon/routes/threads.py` is the source of truth. If absent (missing original row), the helper audits `thread_followup_skipped(reason=dispatcher_unresolved)` rather than guessing.
-- **Only root tasks fire.** Child task terminals cascade up to the root via `_enqueue_parent_if_waiting`'s `_fail(parent, ...)`, which re-enters the helper at that site. The `parent_task_id is not None` short-circuit is load-bearing — without it, every child completion in a dispatched-task tree would spam the thread.
-- **`TASK_FOLLOWUP` purpose can reply or decline, but not dispatch.** `/threads/{id}/dispatch` keeps `require_purposes=[REPLY, BOOTSTRAP]`, which structurally rules out followup→dispatch recursion. Combined with the turn-cap auto-extend being per-followup, the loop is bounded.
-- **Turn-cap auto-extend silently bumps `turn_cap` by 1 when projected over.** Audited via `thread_turn_cap_auto_extended(reason=task_followup)`. The pending-load projection counts `REPLY + BOOTSTRAP + TASK_FOLLOWUP` invocations via `Database.count_pending_turn_obligations`; `CLOSE_OUT` is excluded.
-- **Non-OPEN threads skip everything.** `archiving`, `archived`, `abandoned` → audit-only, no system message, no mutation. The state-machine guards on send/reply/dispatch already reject non-OPEN; the helper matches that policy.
-- **Cancelled tasks fire** (founder set `cancelled_at` → status FAILED → `auto_revisit_spawned=False` → fire). The system message's `cancelled: true` field is the surface; the founder gets a transparent thread record of the dispatch chain ending. To suppress, change the predicate; do not silently filter in the call sites.
-- **PENDING-task cancellation has its own hook in `cancel_task`.** The RUNNING-task path is covered transitively (SIGTERM → rc=-15 → `run_step` Site B), but PENDING tasks never enter `run_step`. The cancel route captures `prior_statuses` during its BFS walk and fires the helper only for tasks that were `PENDING` before the cancel update, avoiding a double-fire on RUNNING tasks.
-- **Cross-thread enqueue.** The thread queue is bound to the daemon's main asyncio loop; `run_step` runs on a worker thread. Bridging is via `asyncio.run_coroutine_threadsafe(queue.put(job), main_loop)`. The orchestrator picks up the loop reference at lifespan startup through `attach_thread_queue(thread_queue, main_loop)`; if either is unset (test orchestrators without daemon context), the helper audits `thread_followup_skipped(reason=enqueue_unavailable)` and the minted invocation stays PENDING.
+- **Call order at opaque-failure sites** — the helper must run *after* `_maybe_spawn_auto_revisit`, because the predicate ignores FAILED-with-spawned (the revisit chain reaches a later terminal that re-enters the helper). Mirrors the `_maybe_spawn_auto_revisit` → `_enqueue_parent_if_waiting` order.
+- **Only root tasks fire** — `parent_task_id is not None` short-circuit. Without it, every child completion in a dispatched task tree would spam the thread. Child terminals reach the helper transitively via `_enqueue_parent_if_waiting`'s `_fail(parent, ...)`.
+- **Dispatcher identity reads from the `task_dispatched` audit row, not the task.** Do not add a column. Missing row → `thread_followup_skipped(reason=dispatcher_unresolved)`, don't guess.
+- **Cross-thread enqueue uses the main loop** — thread queue is bound to the daemon's main asyncio loop; `run_step` runs on a worker thread. Bridge via `asyncio.run_coroutine_threadsafe(queue.put(job), main_loop)`. The orchestrator picks up the loop reference at lifespan startup through `attach_thread_queue(thread_queue, main_loop)`; if either is unset (test orchestrators without daemon context), the helper audits `thread_followup_skipped(reason=enqueue_unavailable)` and the minted invocation stays PENDING.
 
 ## Thread / talk dispatch self-only rule
 
@@ -385,40 +303,11 @@ where `effective_target != dispatcher`. The doctrine is "threads/talks are
 coordination surfaces; iterative work lives in task trees." Spec:
 `docs/superpowers/specs/2026-05-28-thread-talk-self-dispatch-only-design.md`.
 
-**Non-obvious invariants:**
+**Load-bearing invariants** (full catalog: spec §Non-obvious):
 
-- The rule applies uniformly to managers AND workers. Pre-2026-05-28
-  history: workers were already restricted (`worker_must_self_dispatch`);
-  managers were exempted. THR-010 surfaced the exemption as a footgun. The
-  new code collapses both paths into a single check.
-- `target_not_in_team` (manager branch) is unreachable under the new rule
-  and has been removed from `routes/threads.py` and `routes/talks.py`. Do
-  not re-introduce it under a different name — the self-only check
-  supersedes it.
-- The `body.team` override check is retained but renamed:
-  `cross_team_dispatch_forbidden` → `thread_dispatch_team_override_forbidden`
-  / `talk_dispatch_team_override_forbidden`. Still reachable because
-  `body.team` is independent of `body.target_agent` — a self-dispatching
-  caller can still send a foreign team and get rejected.
-- Error codes were renamed: `worker_must_self_dispatch` →
-  `thread_dispatch_must_be_self` / `talk_dispatch_must_be_self`.
-- Grandfathered tasks (rows with `dispatched_from_thread_id` predating
-  2026-05-28 that target a different agent) continue to function: the
-  followup hook still fires on their terminals. The route guard only gates
-  new dispatch calls.
-- The `task_dispatched` audit row's `dispatcher_role` field still records
-  the dispatcher's actual role at dispatch time (manager vs worker) —
-  under the new rule that role describes both dispatcher and target, since
-  they are now always the same agent.
-- The doctrine is system-prompt-injected into every agent's bootstrap doc
-  via `_thread_talk_dispatch_doctrine_section()` in
-  `src/orchestrator/workspace_adapters.py`. The reserved header
-  `"Thread and Talk Dispatch are Self-Only"` is registered in
-  `_RESERVED_AGENT_BODY_HEADERS` so an agent `.md` body cannot author a
-  colliding section. This supersedes any per-org KB entry — adding one is
-  unnecessary noise.
-- The shared hint string lives at `src/daemon/routes/_doctrine.py`
-  (`SELF_DISPATCH_HINT`). Both routes import it; keep wording in sync.
+- **Applies to managers AND workers uniformly.** Pre-2026-05-28 managers were exempted; THR-010 surfaced the exemption as a footgun. Don't re-introduce a manager carve-out under a different name — the self-only check supersedes the prior `target_not_in_team` branch (now removed).
+- **Doctrine is system-prompt-injected** via `_thread_talk_dispatch_doctrine_section()` in `src/orchestrator/workspace_adapters.py`. The reserved header `"Thread and Talk Dispatch are Self-Only"` is registered in `_RESERVED_AGENT_BODY_HEADERS` so an agent `.md` body cannot author a colliding section. Don't duplicate via a per-org KB entry.
+- **Shared error hint at `src/daemon/routes/_doctrine.py`** (`SELF_DISPATCH_HINT`). Both threads + talks routes import it; keep wording in sync.
 
 ## Jobs (founder-approved + agent-autonomous)
 
@@ -426,44 +315,26 @@ Per-org `jobs` SQLite table; per-org files at `<runtime>/orgs/<slug>/jobs/JOB-NN
 
 Routes under `/api/v1/orgs/{slug}/jobs/`: `POST /submit` (agent callback; auth via session-binding chain OR talk-path), `GET /`, `GET /{id}`, `POST /{id}/run`, `POST /{id}/reject`, `GET /{id}/output`, `GET /{id}/events` (SSE). The `submit` route is in the OpenAPI EXCLUDED set; everything else is mirrored in `web/src/lib/api/jobs.ts`.
 
-**Non-obvious invariants:**
+**Load-bearing invariants** (full catalog: spec §Non-obvious):
 
-- **Agent identity is derived, not echoed** — `agent_name` on the job row comes from `task.assigned_agent` (task path) or `talk.agent_name` (talk path) after the auth check; the payload's `agent` field (if present) is ignored. This prevents an agent from mis-attributing a job to another agent.
-- **Two mutually-exclusive auth paths** — `SubmitBody._exactly_one_auth_path` enforces (task_id + session_id) XOR talk_id (mirrors `manage-agent` / `threads.compose`). The dual_router endpoints (`/{id}`, `/tail`, `/stop`, `/wait`) check the same in `_enforce_session_or_bearer` inline. Talk path requires `talk.status == OPEN` and `talk.agent_name == record.agent_name`; closed/abandoned talks return 409 from read endpoints and 400 `talk_not_open` from `/submit`.
-- **`task_id` column on `jobs` is overloaded as the scope id** — TASK-NNN on task-path submissions, TALK-NNN on talk-path. Mirrors `audit_log.task_id` and `asset_put`'s `f"asset:{name}"`. The `submitted_from_talk_id` column is the explicit flag for the talk path; downstream audit/notification code passes `record.task_id` through without branching. Renderers that display the scope (`grassland jobs show`, Feishu `send_job_request`) detect the `TALK-` prefix and label accordingly.
-- **Validation order matters** — `task_not_active` is checked BEFORE `session_mismatch`. A completed task has no live session, and reporting `session_mismatch` would mislead. Same discipline as `compose-as-agent`.
-- **Subprocess env must be `dict(os.environ)`** — `asyncio.create_subprocess_exec(env=os.environ, ...)` raises `TypeError: Expected dict, got _Environ` under **uvloop** (FastAPI's default in production), even though stdlib asyncio accepts the mapping. Don't revert to passing `os.environ` directly.
-- **SSE `/events` must re-poll the DB** — the `event_bus.subscribe` queue is registered inside the generator on first `__anext__`, so the runner can publish a terminal event between our initial status check and our subscription registration. The handler races the subscription against a 1s DB-poll loop; the row is authoritative.
-- **Shutdown awaits runner tasks** — `terminate_all_inflight` snapshots `_RUNNER_TASKS` after SIGTERM/SIGKILL and `asyncio.wait_for(gather(*runners), timeout=5)` so each runner can transition its job row to terminal BEFORE per-org DBs close. Without this, rows sit in `running` until the next startup recovery scan, making dead jobs look live.
-- **Startup recovery is the safety net** — `recover_orphaned_running_jobs` runs in the lifespan startup loop for every org; it force-fails any `running` row left from a crash. Independent of, and complementary to, the shutdown-await path.
-- **Revisit header is the unblock path** — agents do NOT poll their own job output. The agent submits + self-blocks with `report-completion status=blocked`; the founder runs the job; the founder revisits the task; `_revisit_header_if_applicable` prepends a section listing predecessor jobs with `grassland jobs show/output JOB-NNN` commands so the new agent session reads them on its own.
-- **Output capture is two-layer** — full streams to disk (no v1 size cap; spec §11 known limit), 65 KB head per stream mirrored to `stdout_head`/`stderr_head` DB columns for fast rendering. `GET /output` reads disk; the drawer + audit deep-link show DB head.
-- **CLI `jobs run` uses raw httpx, not `OpcClient.stream`** — `OpcClient.stream` strips `event:` lines and yields only data payloads; useless for the multi-event-type (stdout/stderr/terminal) job stream. `cmd_jobs_run` accesses `client._client.stream(...)` directly to parse raw SSE frames. If this pattern repeats, promote `stream_raw` to the `OpcClient` public API.
-- **`review_required` and `persistent` are honor-system on submit** — the daemon does not introspect the script against `allow_rules`. Misclassification is recoverable via founder stop + audit + talk + learning. Do NOT add daemon-side validation here without re-litigating the design tradeoff in the spec.
-- **Task-terminal kill uses `_KILL_REASON_OVERRIDE` to signal `reason='task_ended'`** — the override dict is read inside `run_job` after the kill happens. If you add more kill paths, set the override BEFORE sending the signal so the runner sees it on the next bookkeeping pass.
-- **Auto-resume on terminal supersedes founder revisit for blocked-on-job tasks.** The original spec (§2) listed "no task wakes itself" as a non-goal; the 2026-05-28 task-blocked-by-job design reverses that. Agents now self-block with `waiting_on_job_ids` and resume automatically. The `grassland revisit` path remains valid as a founder-driven override (e.g., "give up on JOB-X, start over").
+- **Agent identity is derived from auth context, never echoed from the payload's `agent` field.** Source: `task.assigned_agent` (task path) or `talk.agent_name` (talk path). Prevents mis-attribution.
+- **Two mutually-exclusive auth paths** — (task_id + session_id) XOR talk_id, enforced by `SubmitBody._exactly_one_auth_path` and inline in dual-router endpoints (`/{id}`, `/tail`, `/stop`, `/wait`) via `_enforce_session_or_bearer`. Mirrors `manage-agent` / `threads.compose`.
+- **`task_id` column is overloaded as scope id** — TASK-NNN on task path, TALK-NNN on talk path. Same overload as `audit_log.task_id` and `asset_put`'s `f"asset:{name}"`. The `submitted_from_talk_id` column is the explicit flag; downstream code passes `record.task_id` through without branching.
+- **Shutdown awaits runner tasks** — `terminate_all_inflight` SIGTERMs then `asyncio.wait_for(gather(*runners), timeout=5)` so rows reach terminal before per-org DBs close. `recover_orphaned_running_jobs` at lifespan startup is the complementary safety net.
+- **Output capture is two-layer** — full streams to disk (no v1 size cap), 65 KB head per stream mirrored to `stdout_head`/`stderr_head` DB columns for fast rendering. `GET /output` reads disk; the drawer + audit deep-link show DB head.
+- **`review_required` and `persistent` are honor-system on submit.** The daemon does not introspect the script against `allow_rules`. Misclassification is recoverable via founder stop + audit + talk + learning. Don't add daemon-side validation without re-litigating the design tradeoff in the spec.
+- **Auto-resume on terminal supersedes founder revisit for blocked-on-job tasks.** The 2026-05-28 task-blocked-by-job design reverses the original "no task wakes itself" non-goal. `grassland revisit` is now a founder override ("give up on JOB-X, start over"), not the unblock path.
 
 ## Task blocked-by-job (system auto-resumes from job terminals)
 
 Per-org `tasks.blocked_on_job_ids` (JSON text column) + new `BlockKind.BLOCKED_ON_JOB`. Spec: `docs/superpowers/specs/2026-05-28-task-blocked-by-job-design.md`. Implementation across `src/orchestrator/run_step.py` (entry-state branch + block-on-jobs branch in self-blocked handler + CAS-win audit + read-only `_maybe_resume_blocked_task` helper + `_blocked_jobs_resume_header_if_applicable`), `src/daemon/jobs_runner.py` (caller A bridge via `fire_resume_check_for_job`), and `src/daemon/app.py` (caller C startup recovery scan).
 
-**Non-obvious invariants:**
+**Load-bearing invariants** (full catalog: spec §Non-obvious):
 
-- **State transitions are owned by `run_step_impl`, NOT the route or the helper.** The route only validates + persists the report. `_maybe_resume_blocked_task` is read-only — predicate-check + enqueue. The in-place transition `IN_PROGRESS → BLOCKED+BLOCKED_ON_JOB` happens in the self-blocked handler at `run_step.py:191-ish`. The reverse transition `BLOCKED+BLOCKED_ON_JOB → IN_PROGRESS` happens via the existing CAS `try_claim_for_step` at step 3 after the entry-state branch at step 1 admits the task. No new state-mutation primitives were introduced.
-
-- **`metadata` is a function parameter, NOT shared state.** Earlier draft used a `_pending_resume_metadata: dict[str, dict]` on Orchestrator; that pattern races under concurrent triggers (3 worker threads). The metadata `{trigger, triggering_job_id}` is now threaded through `TaskQueue.enqueue(metadata=...)` → `dispatcher.run_step` → `Orchestrator.run_step(task_id, metadata)` → `run_step_impl(orch, task_id, metadata)` as a function-local parameter. Don't reintroduce a stash.
-
-- **Three resume callers must remain symmetric.** Caller A (jobs-runner terminal hook) fires AFTER the job's status is committed to the DB — both spawn_failed/internal_error/normal-terminal branches of `_run_and_persist` in `routes/jobs.py` and the rejection path in `reject_job_from_notification`. Caller B (immediate predicate check in `run_step_impl`'s block-on-jobs branch) closes the submit-time race where a fast `review_required=false` job finishes between job-submit and block-submit. Caller C (startup recovery in lifespan) runs after `recover_orphaned_running_jobs` force-fails any orphans. All three call `_maybe_resume_blocked_task` (read-only); only the CAS at step 3 of `run_step_impl` flips state.
-
-- **The LIKE pattern `'%"JOB-NNN"%'` is suffix-anchored intentionally.** Caller A's lookup query uses `WHERE blocked_on_job_ids LIKE ?` with the JOB id wrapped in quotes so `JOB-1` does not match `JOB-12`. Don't strip the quotes.
-
-- **Resume-header consumption is idempotent via the audit log.** `_blocked_jobs_resume_header_if_applicable` renders the BLOCKED-JOBS-RESULTS header iff the most recent `task_resumed_from_jobs` audit row is newer than the most recent `orchestration_step` row for that task. After the resumed step runs, its own `orchestration_step` audit row supersedes the resume row, so the next step's prompt-build skips the header. No "header consumed" column needed.
-
-- **Predicate is ALL-terminal, not ANY-terminal.** A task blocked on JOB-A + JOB-B + JOB-C resumes only when every one of them is in `{completed, failed, rejected}`. The `triggering_job_id` in the audit payload is the one whose terminal closed the predicate (typically the last to finish).
-
-- **`waiting_on_job_ids=[]` is rejected at the route.** A blocked completion with an empty list returns `400 empty_waiting_on_job_ids`. The flow is "blocked + non-empty list" or "blocked + empty list = legacy self-escalate path"; the explicit-empty case is a client bug.
-
-- **`blocked_on_job_ids` is NOT copied onto revisit roots.** A manual founder revisit (`grassland revisit`) spawns a fresh root with `blocked_on_job_ids=NULL` — the founder is overriding the wait, so propagating it would defeat the purpose. Backward read via `walk_revisit_chain` is the contract for any future "the predecessor was blocked on these jobs" surfacing.
+- **State transitions are owned by `run_step_impl`, NOT the route or the resume helper.** The route validates + persists; `_maybe_resume_blocked_task` is read-only (predicate-check + enqueue). The in-place `IN_PROGRESS → BLOCKED+BLOCKED_ON_JOB` happens in the self-blocked handler; the reverse goes through the existing CAS `try_claim_for_step`. No new state-mutation primitives.
+- **Three resume callers must stay symmetric** — A: jobs-runner terminal hook (after DB commit, all three terminal branches + the rejection-from-notification path), B: immediate predicate check in `run_step_impl`'s block-on-jobs branch (closes the submit-time race for fast `review_required=false` jobs), C: startup recovery in lifespan (after `recover_orphaned_running_jobs`). All read-only; state flips at the CAS in `run_step_impl`.
+- **Predicate is ALL-terminal, not ANY-terminal.** A task blocked on JOB-A+B+C resumes only when every one is in `{completed, failed, rejected}`. `triggering_job_id` in the audit payload is the one whose terminal closed the predicate (typically last to finish).
+- **`metadata` is a function parameter, NOT shared state.** An earlier draft used `Orchestrator._pending_resume_metadata`; that races under concurrent triggers. Thread `{trigger, triggering_job_id}` through `TaskQueue.enqueue(metadata=...)` → `Orchestrator.run_step(task_id, metadata)`. Don't reintroduce a stash.
 
 ## Feishu notifications (founder push + reply-to-unblock)
 
@@ -471,8 +342,8 @@ Per-org opt-in via `feishu_notifications` in `<runtime>/orgs/<slug>/org/config.y
 
 **Entry points:**
 
-- Outbound: `Orchestrator.notify_escalated` / `notify_failed` — loop-aware fire-and-forget (creates an asyncio task when a loop is running, else spawns a daemon thread). `EscalationNotifier` in `src/infrastructure/feishu/notifier.py` mints `escalation_notifications` rows keyed by Feishu `message_id`. Send failures audit `escalation_notify_failed` and are swallowed; no row is minted on send failure.
-- Inbound: `FeishuEventListener` (`src/daemon/feishu_listener.py`) starts one WebSocket connection per org with full Feishu config. WS thread runs `lark.ws.Client.start()` (blocking) and bridges to the asyncio loop via `asyncio.run_coroutine_threadsafe`. Listener helpers live in `feishu_listener.py` (not `app.py`) to avoid a circular import with `state.py`. Wired from FastAPI lifespan and `DaemonState.add_org`. WS threads are `daemon=True`.
+- **Outbound** — `Orchestrator.notify_escalated` / `notify_failed`, loop-aware fire-and-forget. `EscalationNotifier` (`src/infrastructure/feishu/notifier.py`) mints `escalation_notifications` rows keyed by Feishu `message_id`. Send failures audit `escalation_notify_failed` and are swallowed; no row minted on send failure.
+- **Inbound** — `FeishuEventListener` (`src/daemon/feishu_listener.py`), one WS connection per org. WS thread runs `lark.ws.Client.start()` (blocking) and bridges to the asyncio loop via `asyncio.run_coroutine_threadsafe`. Wired from FastAPI lifespan and `DaemonState.add_org`.
 
 **Reply routing** (8-step pipeline in `_handle_event_async`, updating `processed_event_ids.outcome` on every branch): dedup → chat-id filter → require `root_id` (reply branch) OR `allow_dispatch=true` (top-level dispatch) → drop bot-self → resolve via `resolve_escalation_in_process` / `revisit_from_notification` / `dispatch_via_feishu` → consume row + audit. Trust boundary is `chat_id` only — no per-Feishu-user authorization in v1.
 
@@ -481,20 +352,10 @@ Per-org opt-in via `feishu_notifications` in `<runtime>/orgs/<slug>/org/config.y
 **Optional features:**
 
 - `notify_on_failure: true` — failure replies; hook in `run_step.py:_notify_failure_if_eligible` gates on enabled + not cancelled + no auto-revisit spawned. Listener routes `(kind=failure, decision=revisit)` to `revisit_from_notification`.
-- `allow_dispatch: true` — top-level DISPATCH messages parsed by `parse_top_level_message(text)`; `dispatch_via_feishu` extracts the in-process helper from `submit_task` and raises `DispatchError(reason ∈ {empty_brief, unknown_team, dispatch_failed})`.
-- **Jobs** — `submit_job` route fires `notify_job_submitted` after audit; founder reply `APPROVE` → `run_job_from_notification` (stored defaults), `REJECT\n<reason>` → `reject_job_from_notification`. On terminal transition, `_run_and_persist` looks up the job's notification via `get_latest_notification_for_job(job_id, kind="job_request")` and fires `notify_job_run_result` as a threaded follow-up. Notification kind: `job_request` (fourth value in `escalation_notifications.kind`); the JOB-NNN id lives in the `task_id` column, same overload as `thread_addressed`. Spec: `docs/superpowers/specs/2026-05-25-feishu-script-request-notifications-design.md`.
+- `allow_dispatch: true` — top-level DISPATCH messages parsed by `parse_top_level_message(text)`; `dispatch_via_feishu` raises `DispatchError(reason ∈ {empty_brief, unknown_team, dispatch_failed})`.
+- **Jobs** — `submit_job` fires `notify_job_submitted`; `APPROVE` / `REJECT\n<reason>` reply routes; terminal triggers `notify_job_run_result`. Notification `kind="job_request"`; JOB-NNN lives in the `task_id` column (same overload as `thread_addressed`). Spec: `docs/superpowers/specs/2026-05-25-feishu-script-request-notifications-design.md`.
 
 CLI fallbacks (`grassland resolve-escalation`, `grassland revisit`) consume any open notification row for the task with `consumed_by="cli-fallback"`, so a CLI-first resolution silently no-ops the later Feishu reply.
-
-## Maintaining Documentation
-- **README.md** is for end users — setup, CLI commands, configuration. No developer internals.
-- **CLAUDE.md** is for developers and AI agents working on the codebase — architecture, code patterns, directory layout, implementation order.
-
-## When Starting a New Implementation Phase
-1. Read the relevant design doc first (e.g., `protocol/05c-orchestrator.md`)
-2. Check existing code for patterns to follow — especially `src/orchestrator/`
-3. Write tests alongside implementation
-4. Keep agents' system prompts in sync with the markdown docs — the docs are the source of truth
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
