@@ -656,6 +656,10 @@ def _completion_payload_from_file(path: str) -> tuple[str, dict]:
     }
     if data.get("artifact_dir"):
         body["artifact_dir"] = data["artifact_dir"]
+    # Worker-reported verdict for inline delegation chains. Free string;
+    # omit when the task is not part of a chain or the worker has no verdict.
+    if data.get("verdict") is not None:
+        body["verdict"] = data["verdict"]
     # Manager-only. Workers omit `decision`; team managers set it to a
     # NextStep object (delegate/done/escalate). Passed through verbatim —
     # the orchestrator parses it via the NextStep pydantic model.
