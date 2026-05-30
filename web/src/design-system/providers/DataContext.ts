@@ -34,6 +34,7 @@ import type { audit as auditApi } from '@/lib/api';
 import type { agents as agentsApi } from '@/lib/api';
 import type { jobs as jobsApi } from '@/lib/api';
 import type {
+  DashboardSummaryResponse,
   JobListResponse,
   JobRecord,
   KBEntry,
@@ -319,6 +320,16 @@ export interface AuditApi {
   }) => QueryLike<Awaited<ReturnType<typeof auditApi.listAudit>>>;
 }
 
+// ---------------------------------------------------------------------------
+// DashboardApi — aggregated summary surface for the Dashboard page.
+// Escalation resolution reuses `TasksApi.useResolveEscalation`, so this
+// surface only carries the summary read.
+// ---------------------------------------------------------------------------
+
+export interface DashboardApi {
+  useDashboardSummary: () => QueryLike<DashboardSummaryResponse>;
+}
+
 /**
  * Per-feature URL builders. Compositions consume these via the
  * provider-aware `useThreadRoutes()` hook in `@/hooks/threads` instead of
@@ -351,6 +362,7 @@ export interface DataContextValue {
   talks: TalksApi;
   health: HealthApi;
   jobs: JobsApi;
+  dashboard: DashboardApi;
   /**
    * Provider-supplied React hook that returns the active feature's route
    * builders. A hook (not a plain object) so the implementation can read
