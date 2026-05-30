@@ -37,6 +37,7 @@ import { ArchiveDialog } from './ArchiveDialog';
 import { ExtendDialog } from './ExtendDialog';
 import { InviteDialog } from './InviteDialog';
 import { NewThreadDialog } from './NewThreadDialog';
+import { ResponderStatusStrip } from './ResponderStatusStrip';
 import { describeError } from './strings';
 
 const STATUS_TABS = ['open', 'archived', 'abandoned'] as const;
@@ -251,7 +252,7 @@ export function ThreadsPage(): JSX.Element {
               disabled={activeThread.data?.status !== 'open'}
               pending={sendFollowUp.isPending}
               errorMessage={composerError}
-              helper="Sends as founder; @all by default — type @ to mention an agent."
+              helper="Sends as founder — all participants are notified."
               onSend={onSendFollowUp}
               registerFocus={(focus) => { composerFocusRef.current = focus; }}
             />
@@ -429,18 +430,21 @@ function MessageTranscript({ messages, loading, slug }: TranscriptProps): JSX.El
         <p className="text-caption text-text-muted">No messages yet.</p>
       )}
       {messages.map((m) => (
-        <MessageBubble
-          key={`${m.seq}-${m.speaker}-${m.kind}`}
-          variant={messageVariant(m)}
-          seq={m.seq}
-          speaker={m.kind === 'system' ? undefined : m.speaker}
-          speakerRole={m.speaker === 'founder' ? 'founder' : 'worker'}
-          addressedTo={undefined}
-          timestamp={m.created_at}
-          body={m.body_markdown}
-          declineReason={m.decline_reason}
-          systemDescription={m.kind === 'system' ? describeSystem(m.system_payload, slug) : undefined}
-        />
+        <div key={`${m.seq}-${m.speaker}-${m.kind}`}>
+          <MessageBubble
+            variant={messageVariant(m)}
+            seq={m.seq}
+            speaker={m.kind === 'system' ? undefined : m.speaker}
+            speakerRole={m.speaker === 'founder' ? 'founder' : 'worker'}
+            timestamp={m.created_at}
+            body={m.body_markdown}
+            declineReason={m.decline_reason}
+            systemDescription={m.kind === 'system' ? describeSystem(m.system_payload, slug) : undefined}
+          />
+          {m.kind === 'message' && (
+            <ResponderStatusStrip statuses={m.responder_status ?? []} />
+          )}
+        </div>
       ))}
       <div ref={endRef} />
     </div>
