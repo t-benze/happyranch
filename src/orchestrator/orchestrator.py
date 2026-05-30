@@ -362,6 +362,7 @@ class Orchestrator:
             status=row.get("status") or "completed",
             confidence=row["confidence_score"] or 0,
             output_summary=row["output_summary"] or "",
+            verdict=row.get("verdict"),
             decision=decision,
             risks_flagged=row.get("risks_flagged") or [],
             dependencies=[],

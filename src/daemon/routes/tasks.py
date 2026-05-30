@@ -253,6 +253,11 @@ class CompletionBody(BaseModel):
     # Must be a dict matching the NextStep schema if present — validated
     # on the orchestrator side when the parser runs.
     decision: dict | None = None
+    # Worker-reported outcome label for inline delegation chains. Free string;
+    # per-team vocabulary (APPROVE, PASS, REQUEST_CHANGES, etc.) defined in
+    # each team's workflow KB entry. Omit when the task is not part of a chain
+    # or when the worker has no verdict to report.
+    verdict: str | None = None
     risks_flagged: list[str] = []
     dependencies: list[str] = []
     suggested_reviewer_focus: list[str] = []
@@ -346,6 +351,7 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
             risks_flagged=body.risks_flagged,
             artifact_dir=body.artifact_dir,
             waiting_on_job_ids=body.waiting_on_job_ids or None,
+            verdict=body.verdict,
         )
     # Clear the tracker so a duplicate POST for the same session is rejected as
     # unknown_session rather than silently persisting a second row.

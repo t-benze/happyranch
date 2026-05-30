@@ -1073,6 +1073,76 @@ def _log_verdict_if_delegated(
     )
 
 
+def _advance_chain_for_completed_child(
+    *,
+    orch: "Orchestrator",
+    parent_task_id: str,
+    child_task_id: str,
+) -> str:
+    """Inspect the parent's active_chain against the just-completed child's
+    report. Either spawn the next leg ("advance") or clear the chain so the
+    caller falls through to the normal parent-wake path ("wake").
+
+    Returns "advance" or "wake". When "advance" is returned, the parent is
+    NOT re-enqueued and orchestration_step_count is NOT bumped.
+
+    Only called when child.status == COMPLETED — failed/cancelled children
+    cascade-fail as before; chains do NOT survive an opaque leg failure in v1.
+    """
+    from src.models import TaskRecord
+    from src.orchestrator.chain import (
+        ChainState,
+        build_prior_leg_context,
+        compute_advance_action,
+    )
+
+    parent = orch._db.get_task(parent_task_id)
+    if parent is None or parent.active_chain is None:
+        return "wake"
+
+    chain = ChainState.deserialize(parent.active_chain)
+    report = orch._db.get_latest_completion_report(child_task_id)
+    if report is None:
+        orch._db.update_task_active_chain(parent_task_id, None)
+        return "wake"
+
+    action = compute_advance_action(chain=chain, report=report)
+    if action.kind == "wake":
+        orch._db.update_task_active_chain(parent_task_id, None)
+        return "wake"
+
+    # Spawn the next leg as a new child task.
+    next_child_id = orch._db.next_task_id()
+    prior_context = build_prior_leg_context(
+        child_task_id=child_task_id, report=report,
+    )
+    full_brief = action.next_leg.prompt + prior_context
+    orch._db.insert_task(
+        TaskRecord(
+            id=next_child_id,
+            team=parent.team,
+            brief=full_brief,
+            parent_task_id=parent_task_id,
+            assigned_agent=action.next_leg.agent,
+            status=TaskStatus.PENDING,
+            session_timeout_seconds=parent.session_timeout_seconds,
+        )
+    )
+    chain.step_index = action.next_step_index
+    orch._db.update_task_active_chain(parent_task_id, chain.serialize())
+    orch._audit.log_chain_auto_advance(
+        parent_task_id=parent_task_id,
+        leg_index=action.next_step_index,
+        spawned_child_id=next_child_id,
+        triggering_child_id=child_task_id,
+        triggering_verdict=report.verdict,
+        chain_origin_step_audit_id=chain.step_audit_id,
+    )
+    if orch._queue is not None:
+        orch._queue.put_nowait(orch._slug, next_child_id)
+    return "advance"
+
+
 def _enqueue_parent_if_waiting(
     orch: "Orchestrator",
     task_id: str,
@@ -1109,6 +1179,25 @@ def _enqueue_parent_if_waiting(
         return
     if parent.block_kind != BlockKind.DELEGATED:
         return
+
+    # Chain-advance branch: if the parent has an active chain and the just-
+    # completed child terminated cleanly, try to auto-advance to the next leg
+    # instead of waking the parent. Failed children skip this branch and fall
+    # through to the cascade-fail path below.
+    child = orch._db.get_task(task_id)
+    if (
+        child is not None
+        and child.status == TaskStatus.COMPLETED
+        and parent.active_chain is not None
+    ):
+        outcome = _advance_chain_for_completed_child(
+            orch=orch, parent_task_id=parent.id, child_task_id=task_id,
+        )
+        if outcome == "advance":
+            return  # next leg spawned; parent stays blocked-delegated
+        # outcome == "wake" → chain cleared; fall through to sibling-check
+        # + parent-wake path below.
+
     siblings = [orch._db.get_task(cid) for cid in orch._db.get_children(parent.id)]
     if any(s is None or s.status not in TERMINAL_STATES for s in siblings):
         return
