@@ -53,7 +53,6 @@ def test_render_transcript_renders_message_decline_system():
             thread_id="THR-001", seq=1, speaker="founder",
             kind=ThreadMessageKind.MESSAGE,
             body_markdown="should we cap refunds at 30 days?",
-            addressed_to=["@all"],
         ),
         ThreadMessage(
             thread_id="THR-001", seq=2, speaker="alice",

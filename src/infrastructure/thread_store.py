@@ -74,9 +74,6 @@ def render_transcript_body(messages: list) -> str:
         if kind_name == "message":
             header = f"## Message {m.seq} — {m.speaker} · {ts}"
             lines.append(header)
-            if m.addressed_to:
-                lines.append(f"> To: {', '.join(m.addressed_to)}")
-                lines.append("")
             lines.append(m.body_markdown or "")
             lines.append("")
         elif kind_name == "decline":

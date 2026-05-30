@@ -692,14 +692,13 @@ class AuditLogger:
         *,
         seq: int,
         speaker: str,
-        addressed_to: list[str] | None,
         kind: str,
     ) -> None:
         self._db.insert_audit_log(
             task_id=thread_id,
             agent=speaker,
             action="thread_message_sent",
-            payload={"seq": seq, "addressed_to": addressed_to, "kind": kind},
+            payload={"seq": seq, "kind": kind},
         )
 
     def log_thread_decline_consumed(

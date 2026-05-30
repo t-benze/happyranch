@@ -207,7 +207,6 @@ class ThreadMessage(BaseModel):
     speaker: str
     kind: ThreadMessageKind
     body_markdown: str | None = None
-    addressed_to: list[str] | None = None
     decline_reason: str | None = None
     system_payload: dict | None = None
     created_at: datetime = Field(default_factory=_now)

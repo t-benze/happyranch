@@ -23,7 +23,7 @@ async def test_finalize_thread_writes_transcript_and_archives(tmp_path):
     db.add_thread_participant("THR-001", "dev_agent", added_by="founder")
     db.append_thread_message(
         thread_id="THR-001", speaker="founder",
-        kind=ThreadMessageKind.MESSAGE, body_markdown="hi", addressed_to=["@all"],
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
     )
     db.set_thread_status("THR-001", status=ThreadStatus.ARCHIVING, summary="done")
     store = ThreadStore(tmp_path / "threads")

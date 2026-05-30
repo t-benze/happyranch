@@ -38,9 +38,8 @@ def _render_message(m: ThreadMessage) -> str:
     ts = m.created_at.isoformat()
     if m.kind is ThreadMessageKind.MESSAGE:
         head = f"[Message {m.seq} — {m.speaker} · {ts}]"
-        addressed = f"To: {', '.join(m.addressed_to)}" if m.addressed_to else ""
         body = m.body_markdown or ""
-        return "\n".join(filter(None, [head, addressed, "", body])) + "\n---"
+        return "\n".join(filter(None, [head, "", body])) + "\n---"
     if m.kind is ThreadMessageKind.DECLINE:
         return (
             f"[Message {m.seq} — {m.speaker} · {ts}]\n"
@@ -54,7 +53,6 @@ def _render_message(m: ThreadMessage) -> str:
 def _purpose_note(
     purpose: str,
     triggering_seq: int,
-    addressed_to: list[str] | None,
     invoked_agent: str,
     triggering_message: "ThreadMessage | None" = None,
 ) -> str:
@@ -74,13 +72,8 @@ def _purpose_note(
             f"from this turn is not allowed; mention any new action in the "
             f"reply and let the founder loop in."
         )
-    # purpose == "reply"
-    addr = addressed_to or []
-    if addr == ["@all"]:
-        return f"Message {triggering_seq} addressed @all"
-    if invoked_agent in addr:
-        return f"Message {triggering_seq} addressed you individually"
-    return f"Message {triggering_seq} (no explicit addressee)"
+    # purpose == "reply" — broadcast model; all participants receive the message
+    return f"Message {triggering_seq} was posted to this thread"
 
 
 def _decline_by_default_doctrine() -> str:
@@ -118,7 +111,6 @@ def build_thread_prompt(
     triggering_seq: int,
 ) -> str:
     triggering = next((m for m in messages if m.seq == triggering_seq), None)
-    addressed_to = triggering.addressed_to if triggering else None
     parts_str = ", ".join(p.agent_name for p in participants)
     history = "\n".join(_render_message(m) for m in messages)
     forwarded = (
@@ -126,7 +118,7 @@ def build_thread_prompt(
         if thread.forwarded_from_id else ""
     )
     note = _purpose_note(
-        purpose, triggering_seq, addressed_to, invoked_agent,
+        purpose, triggering_seq, invoked_agent,
         triggering_message=triggering,
     )
     doctrine = _decline_by_default_doctrine() if purpose == "reply" else ""

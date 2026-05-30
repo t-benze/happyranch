@@ -31,8 +31,8 @@ router = APIRouter(dependencies=[require_token()])
 
 # Special routing literal for addressing the founder. NOT a real agent name —
 # it never appears in `thread_participants`, never receives a ThreadInvocation,
-# and is permitted only in `recipients` / `addressed_to` on agent-initiated
-# composes. Routes via the Feishu notifier and the inbox UI instead.
+# and is permitted only in `recipients` on agent-initiated composes.
+# Routes via the Feishu notifier and the inbox UI instead.
 FOUNDER_LITERAL = "@founder"
 
 
@@ -68,7 +68,6 @@ class ComposeBody(BaseModel):
     subject: str
     recipients: list[str]
     body_markdown: str
-    addressed_to: list[str] | None = None  # DEPRECATED: ignored; broadcasts to all participants
     forwarded_from_id: str | None = None
     forwarded_from_kind: str | None = None  # 'thread' | 'talk'
 
@@ -78,32 +77,9 @@ class ComposeAsAgentBody(BaseModel):
     subject: str
     recipients: list[str]
     body_markdown: str
-    addressed_to: list[str] | None = None  # DEPRECATED: ignored; broadcasts to all participants
     task_id: str | None = None
     session_id: str | None = None
     talk_id: str | None = None
-
-
-def _validate_addressed_to(addressed_to: list[str], recipients: list[str]) -> None:
-    if addressed_to == ["@all"]:
-        return
-    for name in addressed_to:
-        if name == "@all":
-            raise HTTPException(
-                status_code=422,
-                detail={"code": "addressed_to_mixed_at_all"},
-            )
-        if name not in recipients:
-            raise HTTPException(
-                status_code=422,
-                detail={"code": "addressed_to_not_subset", "name": name},
-            )
-
-
-def _resolve_addressed_agents(addressed_to: list[str], recipients: list[str]) -> list[str]:
-    if addressed_to == ["@all"]:
-        return list(recipients)
-    return list(addressed_to)
 
 
 @router.post("/threads")
@@ -131,11 +107,6 @@ async def compose_thread(
                 status_code=404,
                 detail={"code": "unknown_agent", "agent": name},
             )
-
-    # Broadcast model: addressed_to is ignored for routing; validate only to
-    # preserve backward-compat error codes for callers that still send it.
-    if body.addressed_to is not None:
-        _validate_addressed_to(body.addressed_to, body.recipients)
 
     # Validate forwarded source if set.
     if (body.forwarded_from_id is None) != (body.forwarded_from_kind is None):
@@ -181,7 +152,7 @@ async def compose_thread(
         seq = org.db.append_thread_message(
             thread_id=thread_id, speaker="founder",
             kind=ThreadMessageKind.MESSAGE,
-            body_markdown=body_text, addressed_to=["@all"],
+            body_markdown=body_text,
         )
         org.db.increment_thread_turns_used(thread_id, by=1)
         AuditLogger(org.db).log_thread_started(
@@ -191,8 +162,7 @@ async def compose_thread(
             forwarded_from_id=body.forwarded_from_id,
         )
         AuditLogger(org.db).log_thread_message_sent(
-            thread_id, seq=seq, speaker="founder",
-            addressed_to=["@all"], kind="message",
+            thread_id, seq=seq, speaker="founder", kind="message",
         )
         # Broadcast: mint REPLY for every recipient (participant). The founder
         # is the speaker and is not in recipients, so she is never minted.
@@ -225,26 +195,6 @@ async def compose_thread(
 # NOTE: This route must be registered BEFORE /threads/{thread_id} routes so
 # FastAPI does not match the literal "compose-as-agent" as a thread_id param.
 # ---------------------------------------------------------------------------
-
-
-async def _maybe_notify_founder_addressed(
-    org, *, thread_id: str, subject: str, composer: str,
-    body_text: str, addressed_to: list[str],
-) -> bool:
-    """Push a Feishu card if @founder addressed and org has Feishu configured.
-
-    Returns True iff a send was attempted (notifier is configured and reached
-    the send call). Returns False if no notifier is configured. Delivery
-    failures still return True — the audit log is the source of truth for
-    actual delivery status.
-    """
-    notifier = org.notifier
-    if notifier is None:
-        return False
-    return await notifier.send_thread_addressed(
-        thread_id=thread_id, subject=subject, composer=composer,
-        body_text=body_text, addressed_to=addressed_to,
-    )
 
 
 @router.post("/threads/compose-as-agent")
@@ -348,20 +298,12 @@ async def compose_thread_as_agent(
                 detail={"code": "unknown_agent", "agent": name},
             )
 
-    # Broadcast model: addressed_to is ignored for routing; validate only to
-    # preserve backward-compat error codes for callers that still send it.
-
     # External-recipients rule: recipients minus composer must be non-empty OR
     # @founder must appear in recipients.
     external = [r for r in recipients if r != body.composer]
     founder_in_recipients = FOUNDER_LITERAL in recipients
     if not external and not founder_in_recipients:
         raise HTTPException(status_code=422, detail={"code": "empty_external_recipients"})
-
-    if body.addressed_to is not None:
-        if not body.addressed_to:
-            raise HTTPException(status_code=422, detail={"code": "addressed_to_empty"})
-        _validate_addressed_to(body.addressed_to, recipients)
 
     org_cfg = load_org_config(org_paths)
     turn_cap = org_cfg.threads_default_turn_cap
@@ -399,7 +341,7 @@ async def compose_thread_as_agent(
         seq = org.db.append_thread_message(
             thread_id=thread_id, speaker=body.composer,
             kind=ThreadMessageKind.MESSAGE,
-            body_markdown=body_text, addressed_to=["@all"],
+            body_markdown=body_text,
         )
         org.db.increment_thread_turns_used(thread_id, by=1)
         AuditLogger(org.db).log_thread_started(
@@ -412,8 +354,7 @@ async def compose_thread_as_agent(
             composed_from_talk_id=composed_from_talk_id,
         )
         AuditLogger(org.db).log_thread_message_sent(
-            thread_id, seq=seq, speaker=body.composer,
-            addressed_to=["@all"], kind="message",
+            thread_id, seq=seq, speaker=body.composer, kind="message",
         )
         if founder_in_addressed:
             channel = "feishu" if org.notifier is not None else "none"
@@ -441,10 +382,11 @@ async def compose_thread_as_agent(
         if body.composer not in card_recipients:
             card_recipients.append(body.composer)
         card_recipients.append(FOUNDER_LITERAL)
-        founder_notified = await _maybe_notify_founder_addressed(
-            org, thread_id=thread_id, subject=subject, composer=body.composer,
-            body_text=body_text, addressed_to=card_recipients,
-        )
+        if org.notifier is not None:
+            founder_notified = await org.notifier.send_thread_addressed(
+                thread_id=thread_id, subject=subject, composer=body.composer,
+                body_text=body_text, addressed_to=card_recipients,
+            )
 
     await _publish_thread_event(
         org, slug,
@@ -511,7 +453,6 @@ def _msg_to_dict(m, responders: list[dict] | None = None) -> dict:
         "speaker": m.speaker,
         "kind": m.kind.value,
         "body_markdown": m.body_markdown,
-        "addressed_to": m.addressed_to,
         "decline_reason": m.decline_reason,
         "system_payload": m.system_payload,
         "created_at": m.created_at.isoformat(),
@@ -680,19 +621,6 @@ def _validate_invocation_token(
     return inv
 
 
-def _verify_addressed(org, *, thread_id: str, seq: int, speaker: str) -> None:
-    m = org.db.get_thread_message_by_seq(thread_id, seq)
-    if m is None:
-        raise HTTPException(status_code=400, detail={"code": "not_addressed", "reason": "seq missing"})
-    addr = m.addressed_to or []
-    if addr == ["@all"]:
-        return
-    if speaker not in addr:
-        if m.kind.value == "system" and (m.system_payload or {}).get("agent_name") == speaker:
-            return
-        raise HTTPException(status_code=400, detail={"code": "not_addressed"})
-
-
 @router.post("/threads/{thread_id}/reply")
 async def reply_thread_endpoint(
     slug: str, thread_id: str, body: ReplyBody, org: OrgDep,
@@ -733,8 +661,7 @@ async def reply_thread_endpoint(
         org.db.consume_invocation(body.invocation_token)
         org.db.increment_thread_turns_used(thread_id, by=1)
         AuditLogger(org.db).log_thread_message_sent(
-            thread_id, seq=seq, speaker=body.speaker,
-            addressed_to=["@all"], kind="message",
+            thread_id, seq=seq, speaker=body.speaker, kind="message",
         )
         # Broadcast: mint REPLY for every participant except the speaker.
         for p in org.db.list_thread_participants(thread_id):
@@ -947,7 +874,6 @@ async def dispatch_from_thread_endpoint(
 
 class SendBody(BaseModel):
     body_markdown: str
-    addressed_to: list[str] | None = None  # DEPRECATED: ignored; broadcasts to all participants
 
 
 class _SendThreadError(Exception):
@@ -985,7 +911,6 @@ async def _send_thread_message_inprocess(
 
     # Broadcast model: founder /send mints REPLY for every participant.
     # The founder is not a participant, so she is never a mint target.
-    # addressed_to is accepted but ignored for routing.
     addressed = list(participants)
 
     projected = t.turns_used + 1
@@ -1000,12 +925,11 @@ async def _send_thread_message_inprocess(
         seq = org.db.append_thread_message(
             thread_id=thread_id, speaker="founder",
             kind=ThreadMessageKind.MESSAGE,
-            body_markdown=body_text, addressed_to=["@all"],
+            body_markdown=body_text,
         )
         org.db.increment_thread_turns_used(thread_id, by=1)
         AuditLogger(org.db).log_thread_message_sent(
-            thread_id, seq=seq, speaker="founder",
-            addressed_to=["@all"], kind="message",
+            thread_id, seq=seq, speaker="founder", kind="message",
         )
         for name in addressed:
             inv = org.db.mint_thread_invocation(
