@@ -168,10 +168,10 @@ function mkMessage(
     speaker,
     kind,
     body_markdown: kind === 'message' ? body : null,
-    addressed_to: ['@all'],
     decline_reason: kind === 'decline' ? body : null,
     system_payload: kind === 'system' ? { event: body } : null,
     created_at: '2026-05-14T00:00:00Z',
+    responder_status: [],
   };
 }
 
@@ -181,10 +181,10 @@ function mkSystemMessage(seq: number, speaker: string, payload: Record<string, u
     speaker,
     kind: 'system' as const,
     body_markdown: null,
-    addressed_to: null,
     decline_reason: null,
     system_payload: payload,
     created_at: '2026-05-14T00:00:00Z',
+    responder_status: [],
   };
 }
 

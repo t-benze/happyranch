@@ -206,10 +206,10 @@ function useComposeThread(): MutationLike<ComposeArgs, ComposeResult> {
           speaker: 'founder',
           kind: 'message',
           body_markdown: body.body_markdown,
-          addressed_to: body.addressed_to ?? ['@all'],
           decline_reason: null,
           system_payload: null,
           created_at: startedAt,
+          responder_status: [],
         },
       ];
       return { thread_id: newId, started_at: startedAt, pending_replies: body.recipients.length };
@@ -231,10 +231,10 @@ function useSendFollowUp(threadId: string): MutationLike<SendFollowUpArgs, SendF
         speaker: 'founder',
         kind: 'message',
         body_markdown: body.body_markdown,
-        addressed_to: body.addressed_to ?? ['@all'],
         decline_reason: null,
         system_payload: null,
         created_at: '2026-05-15T12:00:00Z',
+        responder_status: [],
       };
       const prev = store.messages[threadId] ?? [];
       store.messages[threadId] = [...prev, msg];
@@ -272,10 +272,10 @@ function useInviteAgent(threadId: string): MutationLike<InviteArgs, InviteResult
           speaker: 'founder',
           kind: 'system',
           body_markdown: null,
-          addressed_to: null,
           decline_reason: null,
           system_payload: { event: 'invited', agent: body.agent_name },
           created_at: '2026-05-15T12:00:00Z',
+          responder_status: [],
         },
       ];
       return { thread_id: threadId, agent_name: body.agent_name, system_message_seq: seq };
@@ -327,10 +327,10 @@ function useAbandonThread(threadId: string): MutationLike<AbandonArgs, AbandonRe
           speaker: 'founder',
           kind: 'system',
           body_markdown: null,
-          addressed_to: null,
           decline_reason: null,
           system_payload: { event: 'abandoned', reason: body.reason },
           created_at: '2026-05-15T12:00:00Z',
+          responder_status: [],
         },
       ];
       return { thread_id: threadId, status: 'abandoned' };
@@ -360,10 +360,10 @@ function useExtendCap(threadId: string): MutationLike<ExtendArgs, ExtendResult> 
           speaker: 'founder',
           kind: 'system',
           body_markdown: null,
-          addressed_to: null,
           decline_reason: null,
           system_payload: { event: 'extended', new_cap: body.new_cap },
           created_at: '2026-05-15T12:00:00Z',
+          responder_status: [],
         },
       ];
       return { thread_id: threadId, turn_cap: body.new_cap };

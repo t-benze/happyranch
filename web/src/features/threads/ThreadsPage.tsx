@@ -116,11 +116,11 @@ export function ThreadsPage(): JSX.Element {
     setShowNew(true);
   };
 
-  const onSendFollowUp = async (markdown: string, addressedTo: string[]) => {
+  const onSendFollowUp = async (markdown: string) => {
     if (!threadId) return;
     setComposerError(null);
     try {
-      await sendFollowUp.mutateAsync({ body_markdown: markdown, addressed_to: addressedTo });
+      await sendFollowUp.mutateAsync({ body_markdown: markdown });
     } catch (err) {
       if (err instanceof ApiError) {
         setComposerError(describeError(err.code, `HTTP ${err.status}`));
@@ -435,7 +435,7 @@ function MessageTranscript({ messages, loading, slug }: TranscriptProps): JSX.El
           seq={m.seq}
           speaker={m.kind === 'system' ? undefined : m.speaker}
           speakerRole={m.speaker === 'founder' ? 'founder' : 'worker'}
-          addressedTo={m.addressed_to ?? undefined}
+          addressedTo={undefined}
           timestamp={m.created_at}
           body={m.body_markdown}
           declineReason={m.decline_reason}
