@@ -12,6 +12,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from src.infrastructure.database import Database
+
 
 class HeartbeatBucket(BaseModel):
     hour: int
@@ -79,11 +81,9 @@ class DashboardSummaryResponse(BaseModel):
     server_now: datetime
 
 
-def org_age_days(db, *, now: datetime | None = None) -> int:
+def compute_org_age_days(db: Database, *, now: datetime | None = None) -> int:
     """Days between the earliest audit_log row and `now`. Empty DB → 0."""
-    row = db._conn.execute(
-        "SELECT MIN(timestamp) AS first_ts FROM audit_log"
-    ).fetchone()
+    row = db.fetch_one_readonly("SELECT MIN(timestamp) AS first_ts FROM audit_log")
     if not row or not row["first_ts"]:
         return 0
     first = datetime.fromisoformat(row["first_ts"])
