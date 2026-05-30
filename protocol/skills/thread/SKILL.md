@@ -10,6 +10,11 @@ prior history is in your prompt, along with a note explaining WHY you were
 invoked AND an `invocation_token` that authorizes this single turn. Read the
 history end-to-end, then decide one outcome.
 
+> **Decision rule for reply-vs-decline** lives in the thread invocation prompt
+> (see the "Decline-by-Default" section injected for `purpose=REPLY` turns),
+> not in this skill. This skill covers the operational mechanics — how to
+> format and submit each outcome.
+
 ## Your invocation_token
 
 Look for this line in your prompt:
@@ -26,9 +31,9 @@ second terminal callback with the same token returns 409.
 
 The "You have been invoked because" line tells you which case applies:
 
-- "Message N addressed you individually" — the founder (or another participant
-  via the system) put your name in the To: field of message N.
-- "Message N addressed @all" — message N targets every participant.
+- "A new message was posted on this thread" — a `REPLY` turn. Every participant
+  except the speaker receives this invocation. Read the prompt's
+  "Decline-by-Default" section to decide whether to reply or decline.
 - "The founder has added you to this thread" — bootstrap. You may post a brief
   intro or decline. No further obligation.
 - "This thread is being archived" — close-out. Different procedure: see §
@@ -50,9 +55,9 @@ Then single-line:
 grassland threads reply --org <slug> --thread-id <id> --from-file /tmp/thread-reply-<id>-<seq>.json
 
 Reply when:
-- You were addressed individually (default behavior).
-- You were addressed via @all AND you have material to add the others haven't
-  covered (correction, missing context, agreement with reasoning).
+- You have material to add that others haven't covered (correction, missing
+  context, substantive input). See the invocation prompt's "Decline-by-Default"
+  section for the full triage rule.
 
 ### Decline
 
@@ -64,9 +69,10 @@ Then:
 grassland threads decline --org <slug> --thread-id <id> --from-file /tmp/thread-decline-<id>-<seq>.json
 
 Decline when:
-- You were addressed via @all AND another participant has already covered what
-  you'd say — restating wastes founder attention.
+- Another participant has already covered what you'd say — restating wastes
+  founder attention.
 - You don't have relevant expertise on the topic.
+- See the invocation prompt's "Decline-by-Default" section for the full rule.
 
 Keep the reason short and substantive ("payment_agt covered the constraint",
 not "I have nothing to add").
@@ -184,9 +190,8 @@ Requirements:
 - You are currently in an active task session (you have a `task_id` +
   `session_id` from `start-task`) OR an open talk (`talk_id` from `/talk
   start`).
-- You name the OTHER agents you want in the thread. You may also include
-  `@founder` if you want the founder pushed via Feishu (and otherwise
-  notified).
+- You name the OTHER agents you want in the thread. The founder is not a
+  participant — they follow the thread via the web UI.
 
 ### Procedure
 
@@ -195,7 +200,6 @@ Requirements:
    {"composer": "<your name>",
     "subject": "<≤120 chars>",
     "recipients": ["agent_a", "agent_b"],
-    "addressed_to": ["@all"] OR a subset of recipients (+ optional "@founder"),
     "body_markdown": "<the message>"}
 
 2. From a task, single-line:
@@ -232,7 +236,7 @@ Requirements:
 - Do NOT issue multiple terminal callbacks (reply AND decline) in one
   invocation. One terminal outcome per turn. Dispatch is the only non-terminal
   extra.
-- Do NOT parse `@text` in message bodies as routing. The `addressed_to` list
-  in the message is authoritative.
+- Do NOT parse `@text` in message bodies as routing. Every message broadcasts
+  to all participants; body @-mentions are visual only.
 - Do NOT share or persist your `invocation_token` outside the current
   subprocess — it's single-use and turn-scoped.

@@ -1,5 +1,11 @@
 # Threads — Design Spec
 
+> **Addressing model superseded** by `2026-05-30-thread-broadcast-only-design.md`.
+> The `addressed_to` field, the `@all` / `@founder` tokens, the `_verify_addressed`
+> reply-eligibility check, and the in-thread Feishu founder push are removed.
+> Threads now broadcast every message to all participants; declines are silent.
+> See the new spec for the current routing model.
+
 **Date:** 2026-05-13
 **Status:** Draft, pending implementation plan.
 **Relates to:** `docs/superpowers/specs/2026-04-21-talk-flow-design.md` (sibling primitive — 1:1 reflective ritual), `docs/superpowers/specs/2026-04-26-talk-dispatch-design.md` (agent task-dispatch precedent; thread dispatch mirrors this), `docs/superpowers/specs/2026-05-08-feishu-notification-design.md` (no Feishu surface for threads yet), `protocol/06-knowledge-base.md` (reused at archive).
