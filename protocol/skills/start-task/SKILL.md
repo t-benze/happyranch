@@ -144,6 +144,8 @@ Parameters:
    reason in `summary`. Optional keys (`risks`, `dependencies`,
    `reviewer_focus`, `confidence`, `artifact_dir`) may be omitted.
 
+   - If your role is to issue a verdict (code review, QA, design review, etc.), include `"verdict": "<value>"` in your payload. Free string; your team's workflow KB entry documents the vocabulary. Optional — workers without verdicts simply omit the field.
+
    **Team-manager only — add a `decision` field.** Alongside the prose
    `summary`, a team-manager session must include a top-level `decision`
    object that the orchestrator will execute. Workers omit it. Omitting it
