@@ -242,7 +242,7 @@ async def run_invocation(
     after = org_state.db.get_invocation_any_status(invocation_token)
     if after is None:
         return
-    if after.status is ThreadInvocationStatus.CONSUMED:
+    if after.status in {ThreadInvocationStatus.CONSUMED, ThreadInvocationStatus.DECLINED}:
         return
 
     # Subprocess exited without consuming → auto-decline.

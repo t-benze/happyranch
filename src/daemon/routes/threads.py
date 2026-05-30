@@ -776,7 +776,7 @@ async def decline_thread_endpoint(
         kind="decline_status", preview=None, status="open",
     )
 
-    return {"thread_id": thread_id, "kind": "decline_status"}
+    return {"thread_id": thread_id, "status": "declined"}
 
 
 # ---------------------------------------------------------------------------
