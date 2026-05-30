@@ -334,3 +334,83 @@ def test_active_by_team_groups_in_progress(db: Database) -> None:
     assert by_team["engineering"].count == 2
     assert set(by_team["engineering"].task_ids) == {"TASK-1", "TASK-2"}
     assert by_team["content"].count == 1
+
+
+from src.orchestrator.dashboard_summary import (
+    compute_org_pulse_7d, compose_dashboard_summary,
+)
+
+
+class _MockTeamsRegistry:
+    """Duck-types the subset of TeamsRegistry that dashboard_summary needs."""
+    def __init__(self, layout: dict[str, tuple[str, list[str]]]) -> None:
+        # layout: {team_name: (manager_handle, [worker_handles])}
+        self._layout = layout
+
+    def teams(self) -> list[str]:
+        return sorted(self._layout.keys())
+
+    def manager_for_team(self, team: str):
+        from src.orchestrator.teams import TeamManager
+        mgr, workers = self._layout[team]
+        return TeamManager(name=mgr, team=team, workers=tuple(workers))
+
+
+@pytest.fixture
+def mock_teams_empty() -> _MockTeamsRegistry:
+    return _MockTeamsRegistry({})
+
+
+@pytest.fixture
+def mock_teams_one() -> _MockTeamsRegistry:
+    return _MockTeamsRegistry({"engineering": ("engineering_head", ["eng_worker"])})
+
+
+def test_org_pulse_zero_teams(db: Database, mock_teams_empty: _MockTeamsRegistry) -> None:
+    now = datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc)
+    assert compute_org_pulse_7d(db, now=now, teams=mock_teams_empty) == []
+
+
+def test_org_pulse_acceptance_pct(db: Database, mock_teams_one: _MockTeamsRegistry) -> None:
+    now = datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc)
+    week_start = now - timedelta(days=7)
+    # 4 reviews this week: 3 approved, 1 rejected → 75%
+    for i, verdict in enumerate(["approved", "approved", "approved", "rejected"]):
+        ts = week_start + timedelta(days=i)
+        tid = f"TASK-{i}"
+        db._conn.execute(
+            "INSERT INTO tasks (id, brief, assigned_agent, team, status, created_at, updated_at) "
+            "VALUES (?, 'b', 'eng_worker', 'engineering', 'completed', ?, ?)",
+            (tid, ts.isoformat(), ts.isoformat()),
+        )
+        db._conn.execute(
+            "INSERT INTO audit_log (timestamp, task_id, agent, action, payload) "
+            "VALUES (?, ?, 'engineering_head', 'review_verdict', ?)",
+            (ts.isoformat(), tid, f'{{"verdict":"{verdict}"}}'),
+        )
+    db._conn.commit()
+    rows = compute_org_pulse_7d(db, now=now, teams=mock_teams_one)
+    assert len(rows) == 1
+    assert rows[0].team == "engineering"
+    assert rows[0].acceptance_pct == 75
+    assert rows[0].members == 1   # one worker (manager not counted as member)
+    assert rows[0].lead == "engineering_head"
+    assert len(rows[0].sparkline) == 12
+
+
+def test_compose_returns_full_shape(
+    db: Database, mock_kb_store: _MockKbStore, mock_teams_empty: _MockTeamsRegistry,
+) -> None:
+    now = datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc)
+    resp = compose_dashboard_summary(
+        db=db, kb_store=mock_kb_store, teams=mock_teams_empty, now=now,
+    )
+    assert len(resp.heartbeat) == 24
+    assert resp.narrative_counts.completed_today == 0
+    assert resp.escalations == []
+    assert resp.active_by_team == []
+    assert resp.recent_activity == []
+    assert resp.updates_this_week == []
+    assert resp.org_pulse == []
+    assert resp.org_age_days == 0
+    assert resp.server_now == now

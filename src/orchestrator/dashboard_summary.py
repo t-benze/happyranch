@@ -348,3 +348,88 @@ def compute_active_by_team(db: Database) -> list[ActiveByTeam]:
         ActiveByTeam(team=team, count=len(ids), task_ids=ids[:10])
         for team, ids in sorted(groups.items())
     ]
+
+
+def _acceptance_pct_for_window(
+    db: Database, *, team: str, start: datetime, end: datetime,
+) -> tuple[int, int]:
+    """Return (approved_count, total_count) of review_verdict rows in window
+    where the reviewed task belonged to `team`."""
+    rows = db.fetch_all_readonly(
+        "SELECT a.payload FROM audit_log a "
+        "JOIN tasks t ON t.id = a.task_id "
+        "WHERE a.action = 'review_verdict' "
+        "  AND t.team = ? "
+        "  AND a.timestamp >= ? AND a.timestamp < ?",
+        (team, start.isoformat(), end.isoformat()),
+    )
+    approved = 0
+    total = len(rows)
+    for r in rows:
+        payload = json.loads(r["payload"] or "{}")
+        v = payload.get("verdict")
+        if v in ("approved", "accept", "ok"):
+            approved += 1
+    return approved, total
+
+
+def compute_org_pulse_7d(db: Database, *, now: datetime, teams) -> list[TeamPulse]:
+    """Per-team 7d acceptance + trend + 12-week sparkline.
+
+    `teams` duck-types TeamsRegistry: needs `.teams() -> list[str]` and
+    `.manager_for_team(team) -> TeamManager(name, team, workers)`.
+    """
+    week_now_start = now - timedelta(days=7)
+    week_prior_start = now - timedelta(days=14)
+
+    result: list[TeamPulse] = []
+    for team_name in teams.teams():
+        mgr = teams.manager_for_team(team_name)
+        # Current 7d
+        approved_now, total_now = _acceptance_pct_for_window(
+            db, team=team_name, start=week_now_start, end=now,
+        )
+        # Prior 7d (for trend delta)
+        approved_prior, total_prior = _acceptance_pct_for_window(
+            db, team=team_name, start=week_prior_start, end=week_now_start,
+        )
+        acceptance = int(round(100 * approved_now / total_now)) if total_now else 0
+        prior_acc = int(round(100 * approved_prior / total_prior)) if total_prior else 0
+        trend_delta = acceptance - prior_acc
+
+        # 12-week sparkline (oldest first), each value in [0, 1]
+        sparkline: list[float] = []
+        for i in range(12, 0, -1):
+            w_start = now - timedelta(days=i * 7)
+            w_end = now - timedelta(days=(i - 1) * 7)
+            approved, total = _acceptance_pct_for_window(
+                db, team=team_name, start=w_start, end=w_end,
+            )
+            sparkline.append(approved / total if total else 0.0)
+
+        result.append(TeamPulse(
+            team=team_name,
+            acceptance_pct=acceptance,
+            trend_delta=trend_delta,
+            sparkline=sparkline,
+            members=len(mgr.workers),
+            lead=mgr.name,
+        ))
+    return result
+
+
+def compose_dashboard_summary(
+    *, db: Database, kb_store, teams, now: datetime,
+) -> DashboardSummaryResponse:
+    """Top-level: run every aggregation, return the wire-shape response."""
+    return DashboardSummaryResponse(
+        heartbeat=compute_heartbeat_24h(db, now=now),
+        narrative_counts=compute_narrative_counts_today(db, now=now, kb_store=kb_store),
+        escalations=compute_escalations_open(db, now=now),
+        active_by_team=compute_active_by_team(db),
+        recent_activity=compute_recent_activity(db, n=6),
+        updates_this_week=compute_updates_this_week(db, now=now, kb_store=kb_store, n=12),
+        org_pulse=compute_org_pulse_7d(db, now=now, teams=teams),
+        org_age_days=compute_org_age_days(db, now=now),
+        server_now=now,
+    )
