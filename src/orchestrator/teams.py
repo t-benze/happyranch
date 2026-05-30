@@ -136,3 +136,31 @@ class TeamsRegistry:
         )
         if self._root is not None:
             self.save()
+
+    def remove_team(self, name: str) -> None:
+        """Remove a team entirely.
+
+        Auto-persists when ``self._root`` is set. No-op if the team does
+        not exist (mirrors ``remove_worker``'s tolerance of missing
+        targets). Used by ``founder_create_agent`` to roll back a freshly
+        created team if the subsequent agent file write fails.
+        """
+        if name not in self._teams:
+            return
+        del self._teams[name]
+        if self._root is not None:
+            self.save()
+
+    def add_team(self, name: str, manager: str) -> None:
+        """Register a new team with the given manager and empty workers.
+
+        Auto-persists to teams.yaml when ``self._root`` is set, matching
+        ``add_worker`` / ``remove_worker`` semantics.
+
+        Raises ValueError if a team with this name already exists.
+        """
+        if name in self._teams:
+            raise ValueError(f"team {name!r} already exists")
+        self._teams[name] = TeamManager(name=manager, team=name, workers=())
+        if self._root is not None:
+            self.save()

@@ -103,6 +103,7 @@ const INCLUDED_PATHS = new Set<string>([
   'POST /api/v1/orgs/{slug}/jobs/{job_id}/stop',
   // agents — founder-facing (enrollment + read-only learnings)
   'GET /api/v1/orgs/{slug}/agents',
+  'POST /api/v1/orgs/{slug}/agents',
   'POST /api/v1/orgs/{slug}/agents/init',
   'GET /api/v1/orgs/{slug}/agents/enrollments',
   'POST /api/v1/orgs/{slug}/agents/{agent_name}/approve',
@@ -111,6 +112,8 @@ const INCLUDED_PATHS = new Set<string>([
   'GET /api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries/',
   'GET /api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries/{id_or_slug}',
   'POST /api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries/search',
+  // teams — founder-facing
+  'GET /api/v1/orgs/{slug}/teams',
 ]);
 
 /**

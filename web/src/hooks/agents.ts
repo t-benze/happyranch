@@ -26,4 +26,7 @@ export const useApproveAgent: ReturnType<typeof useData>['agents']['useApproveAg
 export const useRejectAgent: ReturnType<typeof useData>['agents']['useRejectAgent'] = () =>
   useData().agents.useRejectAgent();
 
+export const useCreateAgent: ReturnType<typeof useData>['agents']['useCreateAgent'] = () =>
+  useData().agents.useCreateAgent();
+
 export const useAgentsRoutes = () => useData().useAgentsRoutes();
