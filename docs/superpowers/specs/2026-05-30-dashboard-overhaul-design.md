@@ -41,7 +41,7 @@ class NarrativeCounts(BaseModel):
     escalated_open: int
     kb_added_today: int
     agents_active_now: int  # distinct agents with an unclosed session_start
-    spend_today_usd: float  # sum from token_usage table, today's rows
+    spend_today_usd: float  # sum from task_results.estimated_cost, today's rows
 
 class EscalationRow(BaseModel):
     task_id: str
@@ -134,7 +134,7 @@ def updates_this_week(
     excluded from v1."""
 
 def spend_today(db: Database, *, now: datetime) -> float:
-    """Sum of token_usage.cost_usd rows where timestamp >= local midnight."""
+    """Sum of task_results.estimated_cost where created_at >= local midnight."""
 
 def org_age_days(db: Database) -> int:
     """Days since MIN(audit_log.timestamp). Returns 0 for empty orgs."""

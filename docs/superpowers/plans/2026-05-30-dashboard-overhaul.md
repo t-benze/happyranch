@@ -413,7 +413,7 @@ Append to `dashboard_summary.py`:
 ```python
 def narrative_counts_today(db, *, now: datetime, kb_store) -> NarrativeCounts:
     """Today = local midnight to now. Aggregates over tasks + audit_log +
-    session_token_usage + the KB store."""
+    task_results + the KB store."""
     midnight = _local_midnight(now).isoformat()
 
     completed = db.fetchone(
