@@ -520,6 +520,11 @@ async def founder_create_agent(
     """Founder-driven enroll. Lands the agent ACTIVE immediately (no
     pending hop). Worker: assigned to an existing team. Manager: creates
     a new team in teams.yaml as part of the same call.
+
+    If workspace bootstrap (clone_repo / ensure_workspace_ready /
+    create_agent_dirs) fails mid-flight, the agent file and teams.yaml
+    entry are RETAINED — matches ``approve_agent``'s semantics. Use
+    ``manage-agent terminate`` to clean up before retrying.
     """
     paths = OrgPaths(root=org.root)
 
@@ -547,16 +552,16 @@ async def founder_create_agent(
                 detail={"code": "role_team_mismatch"},
             )
 
-    # Duplicate check (pending OR active).
-    if (prompt_loader.load_pending_agent(paths, body.name) is not None
-            or prompt_loader.load_agent(paths, body.name) is not None):
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "agent_exists", "name": body.name},
-        )
-
     # ---- team mutation + agent file write, under the same lock ----
     async with org.teams_lock:
+        # Duplicate check inside the lock to close TOCTOU between check + write.
+        if (prompt_loader.load_pending_agent(paths, body.name) is not None
+                or prompt_loader.load_agent(paths, body.name) is not None):
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "agent_exists", "name": body.name},
+            )
+
         if body.role == "worker":
             assert body.team is not None
             if body.team not in org.teams.teams():
@@ -574,7 +579,16 @@ async def founder_create_agent(
                     detail={"code": "team_exists", "team": body.new_team},
                 )
             team_name = body.new_team
-            org.teams.add_team(team_name, manager=body.name)
+            try:
+                org.teams.add_team(team_name, manager=body.name)
+            except ValueError:
+                # Defense in depth — the in-lock check above should make this
+                # unreachable, but if a future refactor drifts, surface as 409
+                # rather than a bare 500.
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "team_exists", "team": body.new_team},
+                )
 
         agent_def = AgentDef(
             name=body.name,
