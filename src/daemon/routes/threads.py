@@ -348,7 +348,6 @@ async def compose_thread_as_agent(
 
     # Broadcast model: addressed_to is ignored for routing; validate only to
     # preserve backward-compat error codes for callers that still send it.
-    addressed_to = body.addressed_to if body.addressed_to is not None else ["@all"]
 
     # External-recipients rule: recipients minus composer must be non-empty OR
     # @founder must appear in recipients.
@@ -931,7 +930,6 @@ async def _send_thread_message_inprocess(
     thread_id: str,
     *,
     body_markdown: str,
-    addressed_to: list[str],
 ) -> dict:
     """Append a founder message to an open thread + mint reply invocations.
 
@@ -1013,7 +1011,6 @@ async def resolve_thread_from_notification(
     await _send_thread_message_inprocess(
         org, slug, thread_id,
         body_markdown=founder_text,
-        addressed_to=["@all"],
     )
     # Only consume after successful send.
     org.db.consume_escalation_notification(message_id, consumed_by="feishu-reply")
@@ -1023,11 +1020,10 @@ async def resolve_thread_from_notification(
 async def send_thread_endpoint(
     slug: str, thread_id: str, body: SendBody, org: OrgDep,
 ) -> dict:
-    addressed_to = body.addressed_to if body.addressed_to is not None else ["@all"]
     try:
         return await _send_thread_message_inprocess(
             org, slug, thread_id,
-            body_markdown=body.body_markdown, addressed_to=addressed_to,
+            body_markdown=body.body_markdown,
         )
     except _SendThreadError as exc:
         raise HTTPException(
