@@ -137,13 +137,12 @@ def test_get_thread_missing_returns_404(tmp_home, app, org_state, auth_headers):
 # ---------------------------------------------------------------------------
 
 
-def _start_thread(client, org_state, auth_headers, *, recipient="dev_agent", addressed=None):
+def _start_thread(client, org_state, auth_headers, *, recipient="dev_agent"):
     """Helper: seeds the agent and creates a thread, returning (thread_id, invocation_token)."""
     _seed_agent(org_state, recipient)
-    addressed = addressed or ["@all"]
     r = client.post(
         "/api/v1/orgs/alpha/threads",
-        json={"subject": "s", "recipients": [recipient], "body_markdown": "hi", "addressed_to": addressed},
+        json={"subject": "s", "recipients": [recipient], "body_markdown": "hi"},
         headers=auth_headers,
     ).json()
     inv = org_state.db.list_thread_invocations(r["thread_id"])[0]
