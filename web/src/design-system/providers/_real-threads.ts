@@ -124,7 +124,7 @@ function useThreadTailSSE(threadId: string | undefined): void {
         if (ev.seq == null) return;
         sinceSeqRef.current = Math.max(sinceSeqRef.current, ev.seq);
 
-        if ('body_markdown' in ev || 'addressed_to' in ev) {
+        if ('body_markdown' in ev) {
           // Full ThreadMessage from replay — append to cache.
           qc.setQueryData<{ messages: ThreadMessage[] }>(
             ['thread-messages', slug, threadId],
