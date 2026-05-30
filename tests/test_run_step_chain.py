@@ -62,3 +62,54 @@ def test_validate_delegate_rejects_chain_leg_with_missing_workspace():
     err = _validate_delegate(orch, decision)
     assert err is not None
     assert "ghost_agent" in err
+
+
+def test_cross_team_chain_guard_rejects_off_team_leg():
+    """If any leg targets an agent not on the manager's team, the whole
+    chain is rejected via the existing feedback mechanism."""
+    from src.orchestrator.run_step import _chain_legs_off_team
+
+    teams = MagicMock()
+    teams.team_for_manager.return_value = "engineering"
+    teams.team_for_agent.side_effect = lambda name: {
+        "dev": "engineering",
+        "sr": "engineering",
+        "outsider": "content",
+    }.get(name)
+
+    decision = NextStep(
+        action="delegate", agent="dev", prompt="build",
+        then=[
+            ChainLeg(agent="sr", prompt="review"),
+            ChainLeg(agent="outsider", prompt="other"),
+        ],
+    )
+    off = _chain_legs_off_team(teams, manager="eh", decision=decision)
+    assert off == [("outsider", "content")]
+
+
+def test_cross_team_chain_guard_passes_when_all_legs_on_team():
+    from src.orchestrator.run_step import _chain_legs_off_team
+    teams = MagicMock()
+    teams.team_for_manager.return_value = "engineering"
+    teams.team_for_agent.return_value = "engineering"
+    decision = NextStep(action="delegate", agent="dev", prompt="x", then=[
+        ChainLeg(agent="sr", prompt="y"),
+    ])
+    assert _chain_legs_off_team(teams, manager="eh", decision=decision) == []
+
+
+def test_cross_team_chain_guard_first_leg_off_team():
+    """First leg's off-team membership is also caught by the new helper."""
+    from src.orchestrator.run_step import _chain_legs_off_team
+    teams = MagicMock()
+    teams.team_for_manager.return_value = "engineering"
+    teams.team_for_agent.side_effect = lambda name: {
+        "outsider": "content",
+        "sr": "engineering",
+    }.get(name)
+    decision = NextStep(action="delegate", agent="outsider", prompt="x", then=[
+        ChainLeg(agent="sr", prompt="y"),
+    ])
+    off = _chain_legs_off_team(teams, manager="eh", decision=decision)
+    assert off == [("outsider", "content")]

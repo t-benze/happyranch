@@ -360,13 +360,14 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         # Cross-team delegation guard: a manager may only delegate to workers
         # on its own team. Violations feed a feedback step back (not a hard
         # fail) so the manager can correct its decision on the next step.
-        caller_team = orch.teams.team_for_manager(agent)
-        target_team = orch.teams.team_for_agent(decision.agent)
-        if caller_team is None or target_team is None or caller_team != target_team:
+        off_team_legs = _chain_legs_off_team(orch.teams, manager=agent, decision=decision)
+        if off_team_legs:
+            caller_team = orch.teams.team_for_manager(agent)
+            parts = [f"{name!r} is on team {team!r}" for name, team in off_team_legs]
             feedback = (
                 f"Invalid delegation: you are on team {caller_team!r}, "
-                f"but {decision.agent!r} is on team {target_team!r}. "
-                "Pick a worker on your own team, or escalate."
+                f"but {'; '.join(parts)}. "
+                "Pick workers on your own team, or escalate."
             )
             db.insert_task_result(
                 task_id=task_id,
@@ -479,6 +480,30 @@ def _validate_delegate(orch: "Orchestrator", decision) -> str | None:
         if err is not None:
             return err
     return None
+
+
+def _chain_legs_off_team(
+    teams,
+    manager: str,
+    decision,
+) -> list[tuple[str, str | None]]:
+    """Return [(agent_name, agent_team)] for every leg in ``decision`` whose
+    agent is NOT on ``manager``'s team. Empty list means all legs are on-team.
+    """
+    caller_team = teams.team_for_manager(manager)
+    if caller_team is None:
+        # Manager itself isn't registered — surface every leg as off-team.
+        all_agents = [decision.agent] + [leg.agent for leg in (decision.then or [])]
+        return [(a, teams.team_for_agent(a)) for a in all_agents if a]
+
+    off: list[tuple[str, str | None]] = []
+    for agent_name in [decision.agent] + [leg.agent for leg in (decision.then or [])]:
+        if not agent_name:
+            continue
+        agent_team = teams.team_for_agent(agent_name)
+        if agent_team is None or agent_team != caller_team:
+            off.append((agent_name, agent_team))
+    return off
 
 
 def _default_agent_for_root(orch: "Orchestrator", task) -> str:
