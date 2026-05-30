@@ -93,3 +93,25 @@ def compute_org_age_days(db: Database, *, now: datetime | None = None) -> int:
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=timezone.utc)
     return max(0, (moment - first).days)
+
+
+def _local_midnight(now: datetime) -> datetime:
+    """Truncate `now` to local midnight (UTC for our deterministic clock)."""
+    return now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def compute_spend_today(db: Database, *, now: datetime) -> float:
+    """Sum estimated USD spend recorded since local midnight.
+
+    The real schema stores per-session cost on ``task_results.estimated_cost``
+    (``session_token_usage`` records token counts only). The spec's pseudocode
+    references a ``token_usage.cost_usd`` column that does not exist; this
+    function implements the intent against the actual table.
+    """
+    midnight = _local_midnight(now).isoformat()
+    row = db.fetch_one_readonly(
+        "SELECT COALESCE(SUM(estimated_cost), 0) AS total "
+        "FROM task_results WHERE created_at >= ?",
+        (midnight,),
+    )
+    return float(row["total"]) if row else 0.0
