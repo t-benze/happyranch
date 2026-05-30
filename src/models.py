@@ -64,11 +64,23 @@ class TaskRecord(BaseModel):
     last_heartbeat: datetime | None = None
 
 
+class ChainLeg(BaseModel):
+    """One leg of an inline delegation chain. The manager declares legs 2..N in
+    NextStep.then; the first leg is the existing delegate payload (agent +
+    prompt + optional expect_verdict).
+    """
+    agent: str
+    prompt: str
+    expect_verdict: str | None = None
+
+
 class NextStep(BaseModel):
     """Decision returned by a team manager for what the orchestrator should do next."""
     action: Literal["delegate", "done", "escalate"]
     agent: str | None = None
     prompt: str | None = None
+    expect_verdict: str | None = None
+    then: list[ChainLeg] = Field(default_factory=list)
     summary: str | None = None
     reason: str | None = None
 
@@ -79,6 +91,11 @@ class CompletionReport(BaseModel):
     status: str
     confidence: int = Field(ge=0, le=100)
     output_summary: str
+    # Optional structured outcome for review/QA-type workers (APPROVE, PASS,
+    # REQUEST_CHANGES, etc.). Free-string; per-team vocabulary lives in each
+    # team's workflow KB entry. Used by inline delegation chains to gate
+    # auto-advance.
+    verdict: str | None = None
     # Manager-only: structured next-step decision. Workers leave this None.
     # Separating the decision from the prose summary eliminates the
     # double-encoding trap where the manager's output_summary had to itself
