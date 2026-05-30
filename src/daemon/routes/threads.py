@@ -15,6 +15,7 @@ from src.daemon.state import DaemonState
 from src.daemon.thread_queue import ThreadJob
 from src.infrastructure.audit_logger import AuditLogger
 from src.models import (
+    ResponderStatusEntry,
     TalkStatus,
     TaskRecord,
     ThreadInvocationPurpose,
@@ -517,11 +518,11 @@ def _msg_to_dict(m, responders: list[dict] | None = None) -> dict:
     }
     if responders is not None:
         d["responder_status"] = [
-            {
-                "agent_name": e["agent_name"],
-                "status": _wire_status(e["status"]),
-                "responded_at": e["consumed_at"],
-            }
+            ResponderStatusEntry(
+                agent_name=e["agent_name"],
+                status=_wire_status(e["status"]),
+                responded_at=e["consumed_at"],
+            ).model_dump(mode="json")
             for e in responders
         ]
     else:

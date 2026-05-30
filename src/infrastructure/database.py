@@ -2235,6 +2235,11 @@ class Database:
         Used by GET /threads/{id} to build the per-message responder_status
         strip. Status values are the raw DB values (pending/consumed/declined/
         failed); the route's response builder renames consumed → replied.
+
+        Note: ``consumed_at`` is set by both reply (``status='consumed'``) and
+        decline (``status='declined'``) paths — the schema has no separate
+        ``declined_at`` column. The wire ``responded_at`` field is sourced from
+        this single timestamp regardless of which path consumed the invocation.
         """
         rows = self._conn.execute(
             "SELECT triggering_seq, agent_name, status, consumed_at "
