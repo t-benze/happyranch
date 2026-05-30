@@ -11,6 +11,7 @@
  * top of the Active tab when `:agent_name` is present (and forces the
  * Active tab — a Pending list under a per-agent drawer makes no sense).
  */
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   useNavigate,
@@ -26,10 +27,12 @@ import {
 } from '@/design-system/primitives/Tabs';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { AgentChip } from '@/design-system/patterns/AgentChip';
+import { Button } from '@/design-system/primitives/Button';
 import { useAgentsList, useAgentsRoutes } from '@/hooks/agents';
 import { useDensity } from '@/hooks/density';
 import { PendingEnrollmentsTab } from './PendingEnrollmentsTab';
 import { AgentDetailDrawer } from './AgentDetailDrawer';
+import { AddAgentDialog } from './AddAgentDialog';
 
 export function AgentsPage(): JSX.Element {
   const { agent_name: openAgentName } = useParams<{ agent_name?: string }>();
@@ -39,6 +42,7 @@ export function AgentsPage(): JSX.Element {
   const agentsQuery = useAgentsList();
   const { density } = useDensity();
   const rowPad = density === 'compact' ? 'py-1.5' : 'py-2.5';
+  const [addOpen, setAddOpen] = useState(false);
 
   // A per-agent drawer pins the Active tab — Pending under a detail view
   // doesn't make sense as a state. The URL's `view=pending` is otherwise
@@ -58,10 +62,13 @@ export function AgentsPage(): JSX.Element {
   return (
     <div className="bg-surface-canvas flex h-full flex-col">
       <header className="border-border-subtle border-b p-4">
-        <PageHeader
-          title="Agents"
-          meta="Active roster + pending enrollments."
-        />
+        <div className="flex items-start justify-between gap-3">
+          <PageHeader
+            title="Agents"
+            meta="Active roster + pending enrollments."
+          />
+          <Button onClick={() => setAddOpen(true)}>Add agent</Button>
+        </div>
         <Tabs value={tab} onValueChange={onTabChange} className="mt-3">
           <TabsList>
             <TabsTrigger value="active">Active</TabsTrigger>
@@ -76,10 +83,15 @@ export function AgentsPage(): JSX.Element {
             {agentsQuery.isLoading ? (
               <p className="text-fg-muted">Loading…</p>
             ) : agents.length === 0 ? (
-              <EmptyState
-                title="No agents yet"
-                body="Run grassland agents init to bootstrap the team."
-              />
+              <div>
+                <EmptyState
+                  title="No agents yet"
+                  body="Add a manager to create your first team."
+                />
+                <div className="mt-4 flex justify-center">
+                  <Button onClick={() => setAddOpen(true)}>Add agent</Button>
+                </div>
+              </div>
             ) : (
               <div className="border-border-subtle overflow-hidden rounded-lg border">
                 <table className="w-full text-sm">
@@ -129,6 +141,7 @@ export function AgentsPage(): JSX.Element {
         </Tabs>
       </main>
 
+      <AddAgentDialog open={addOpen} onOpenChange={setAddOpen} />
       {openAgentName && <AgentDetailDrawer agentName={openAgentName} />}
     </div>
   );
