@@ -1294,3 +1294,20 @@ def test_try_delegate_rejects_missing_parent(db):
     ok = db.try_delegate("T-NOPE", child, parent_note="x")
     assert ok is False
     assert db.get_task("T-CHILD") is None
+
+
+def test_tasks_active_chain_column_exists_and_defaults_null(db):
+    task = TaskRecord(
+        id="TASK-1",
+        team="engineering",
+        brief="x",
+        parent_task_id=None,
+    )
+    db.insert_task(task)
+    retrieved = db.get_task("TASK-1")
+    assert retrieved is not None
+    assert retrieved.active_chain is None  # column exists, NULL by default
+
+    cursor = db._conn.execute("PRAGMA table_info(tasks)")
+    cols = {row[1] for row in cursor.fetchall()}
+    assert "active_chain" in cols
