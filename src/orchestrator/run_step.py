@@ -450,14 +450,34 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
     )
 
 
+def _validate_one_leg(orch: "Orchestrator", *, agent: str | None, where: str) -> str | None:
+    """Validate a single delegation leg (agent present + workspace exists).
+    Returns None on success, a human-readable error string on failure.
+    ``where`` is used only for chain-leg messages; the first-leg messages
+    preserve the original wording for backward compatibility.
+    """
+    if not agent:
+        return "missing agent name"
+    workspace = orch._paths.workspaces_dir / agent
+    if not workspace.exists():
+        if where == "first leg":
+            return f"no workspace for agent {agent!r}"
+        return f"chain leg {where}: no workspace for agent {agent!r}"
+    return None
+
+
 def _validate_delegate(orch: "Orchestrator", decision) -> str | None:
     """Return a human-readable error string if the delegate decision is
-    unusable, or None if it's good to spawn."""
-    if not decision.agent:
-        return "missing agent name"
-    workspace = orch._paths.workspaces_dir / decision.agent
-    if not workspace.exists():
-        return f"no workspace for agent {decision.agent!r}"
+    unusable, or None if it's good to spawn. Validates the first leg and
+    every entry in ``decision.then`` (chain legs), returning on the first
+    failure encountered."""
+    err = _validate_one_leg(orch, agent=decision.agent, where="first leg")
+    if err is not None:
+        return err
+    for i, leg in enumerate(decision.then or []):
+        err = _validate_one_leg(orch, agent=leg.agent, where=str(i + 2))
+        if err is not None:
+            return err
     return None
 
 
