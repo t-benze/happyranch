@@ -131,8 +131,10 @@ async def compose_thread(
                 detail={"code": "unknown_agent", "agent": name},
             )
 
-    addressed_to = body.addressed_to if body.addressed_to is not None else ["@all"]
-    _validate_addressed_to(addressed_to, body.recipients)
+    # Broadcast model: addressed_to is ignored for routing; validate only to
+    # preserve backward-compat error codes for callers that still send it.
+    if body.addressed_to is not None:
+        _validate_addressed_to(body.addressed_to, body.recipients)
 
     # Validate forwarded source if set.
     if (body.forwarded_from_id is None) != (body.forwarded_from_kind is None):
@@ -160,7 +162,11 @@ async def compose_thread(
     org_cfg = load_org_config(org_paths)
     turn_cap = org_cfg.threads_default_turn_cap
 
-    addressed_agents = _resolve_addressed_agents(addressed_to, body.recipients)
+    # Broadcast model: every recipient (== future participant) gets a REPLY
+    # invocation. The founder is not a participant; no founder mint.
+    # Self-exclusion is moot at compose time (founder is the speaker and is
+    # not in recipients).
+    addressed_agents = list(body.recipients)
 
     if len(addressed_agents) > turn_cap:
         raise HTTPException(
@@ -182,7 +188,7 @@ async def compose_thread(
         seq = org.db.append_thread_message(
             thread_id=thread_id, speaker="founder",
             kind=ThreadMessageKind.MESSAGE,
-            body_markdown=body_text, addressed_to=addressed_to,
+            body_markdown=body_text, addressed_to=["@all"],
         )
         AuditLogger(org.db).log_thread_started(
             thread_id,
@@ -192,9 +198,10 @@ async def compose_thread(
         )
         AuditLogger(org.db).log_thread_message_sent(
             thread_id, seq=seq, speaker="founder",
-            addressed_to=addressed_to, kind="message",
+            addressed_to=["@all"], kind="message",
         )
-        # Mint pending invocations for each addressed agent.
+        # Broadcast: mint REPLY for every recipient (participant). The founder
+        # is the speaker and is not in recipients, so she is never minted.
         tokens_to_enqueue: list[str] = []
         for name in addressed_agents:
             inv = org.db.mint_thread_invocation(
@@ -347,53 +354,32 @@ async def compose_thread_as_agent(
                 detail={"code": "unknown_agent", "agent": name},
             )
 
+    # Broadcast model: addressed_to is ignored for routing; validate only to
+    # preserve backward-compat error codes for callers that still send it.
     addressed_to = body.addressed_to if body.addressed_to is not None else ["@all"]
 
     # External-recipients rule: recipients minus composer must be non-empty OR
-    # @founder must appear in addressed_to (resolved if @all).
-    # NOTE: `external` includes @founder by design — used only for the empty-
-    # check below. Do NOT reuse this list to mint ThreadInvocations in Task 10;
-    # @founder is not a subprocess and must be excluded from the invocation set.
+    # @founder must appear in recipients.
     external = [r for r in recipients if r != body.composer]
-    addressed_includes_founder = (
-        FOUNDER_LITERAL in addressed_to
-        or (addressed_to == ["@all"] and FOUNDER_LITERAL in recipients)
-    )
-    if not external and not addressed_includes_founder:
+    founder_in_recipients = FOUNDER_LITERAL in recipients
+    if not external and not founder_in_recipients:
         raise HTTPException(status_code=422, detail={"code": "empty_external_recipients"})
 
-    # addressed_to: either ["@all"] or non-empty subset of recipients.
-    # `_validate_addressed_to` doesn't fail on an empty list — guard
-    # explicitly so a `"addressed_to": []` payload doesn't create a thread
-    # with no addressees (spec §4.3: "broadcast to nobody" is not allowed).
-    if not addressed_to:
-        raise HTTPException(status_code=422, detail={"code": "addressed_to_empty"})
-    _validate_addressed_to(addressed_to, recipients)
+    if body.addressed_to is not None:
+        if not body.addressed_to:
+            raise HTTPException(status_code=422, detail={"code": "addressed_to_empty"})
+        _validate_addressed_to(body.addressed_to, recipients)
 
     org_cfg = load_org_config(org_paths)
     turn_cap = org_cfg.threads_default_turn_cap
 
-    # Resolve the addressee set:
-    # - @all → every recipient (including @founder if present, including composer);
-    # - otherwise the explicit list, deduped (preserve order) so a payload
-    #   with the same name twice doesn't mint two invocations for one message.
-    if addressed_to == ["@all"]:
-        resolved = list(recipients)
-    else:
-        _seen: set[str] = set()
-        resolved = []
-        for name in addressed_to:
-            if name in _seen:
-                continue
-            _seen.add(name)
-            resolved.append(name)
-    # Concrete agent invocations exclude both @founder and the composer
-    # (composer is already running; @founder isn't a subprocess).
+    # Broadcast: every participant except the composer-speaker gets a REPLY.
+    # @founder is not a participant; no founder mint.
     addressed_agents = [
-        a for a in resolved
-        if a != FOUNDER_LITERAL and a != body.composer
+        name for name in recipients
+        if name != FOUNDER_LITERAL and name != body.composer
     ]
-    founder_in_addressed = FOUNDER_LITERAL in resolved
+    founder_in_addressed = FOUNDER_LITERAL in recipients
 
     if len(addressed_agents) > turn_cap:
         raise HTTPException(
@@ -428,7 +414,7 @@ async def compose_thread_as_agent(
         seq = org.db.append_thread_message(
             thread_id=thread_id, speaker=body.composer,
             kind=ThreadMessageKind.MESSAGE,
-            body_markdown=body_text, addressed_to=addressed_to,
+            body_markdown=body_text, addressed_to=["@all"],
         )
         AuditLogger(org.db).log_thread_started(
             thread_id,
@@ -441,7 +427,7 @@ async def compose_thread_as_agent(
         )
         AuditLogger(org.db).log_thread_message_sent(
             thread_id, seq=seq, speaker=body.composer,
-            addressed_to=addressed_to, kind="message",
+            addressed_to=["@all"], kind="message",
         )
         if founder_in_addressed:
             channel = "feishu" if org.notifier is not None else "none"
@@ -710,8 +696,10 @@ async def reply_thread_endpoint(
     )
     if not org.db.is_thread_participant(thread_id, body.speaker):
         raise HTTPException(status_code=403, detail={"code": "not_participant"})
-    _verify_addressed(org, thread_id=thread_id, seq=body.in_response_to_seq, speaker=body.speaker)
+    # _verify_addressed removed: broadcast model; any participant can reply to
+    # any message as long as they hold a valid invocation token.
 
+    tokens_to_enqueue: list[str] = []
     async with org.db_lock:
         inv = org.db.get_pending_invocation(body.invocation_token)
         if inv is None:
@@ -724,8 +712,21 @@ async def reply_thread_endpoint(
         org.db.increment_thread_turns_used(thread_id, by=1)
         AuditLogger(org.db).log_thread_message_sent(
             thread_id, seq=seq, speaker=body.speaker,
-            addressed_to=None, kind="message",
+            addressed_to=["@all"], kind="message",
         )
+        # Broadcast: mint REPLY for every participant except the speaker.
+        for p in org.db.list_thread_participants(thread_id):
+            if p.agent_name == body.speaker:
+                continue
+            new_inv = org.db.mint_thread_invocation(
+                thread_id=thread_id, agent_name=p.agent_name,
+                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
+            )
+            tokens_to_enqueue.append(new_inv.invocation_token)
+
+    for token in tokens_to_enqueue:
+        await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
+
     await _publish_thread_event(
         org, slug,
         thread_id=thread_id, seq=seq, speaker=body.speaker,
@@ -771,7 +772,8 @@ async def decline_thread_endpoint(
     )
     if not org.db.is_thread_participant(thread_id, body.speaker):
         raise HTTPException(status_code=403, detail={"code": "not_participant"})
-    _verify_addressed(org, thread_id=thread_id, seq=body.in_response_to_seq, speaker=body.speaker)
+    # _verify_addressed removed: broadcast model; any participant can decline
+    # any message as long as they hold a valid invocation token.
 
     async with org.db_lock:
         if org.db.get_pending_invocation(body.invocation_token) is None:
@@ -962,15 +964,11 @@ async def _send_thread_message_inprocess(
         raise _SendThreadError(422, "empty_body")
 
     participants = [p.agent_name for p in org.db.list_thread_participants(thread_id)]
-    try:
-        _validate_addressed_to(addressed_to, participants)
-    except HTTPException as exc:
-        raise _SendThreadError(
-            exc.status_code,
-            exc.detail["code"],
-            **{k: v for k, v in exc.detail.items() if k != "code"},
-        ) from exc
-    addressed = _resolve_addressed_agents(addressed_to, participants)
+
+    # Broadcast model: founder /send mints REPLY for every participant.
+    # The founder is not a participant, so she is never a mint target.
+    # addressed_to is accepted but ignored for routing.
+    addressed = list(participants)
 
     pending_load = org.db.count_pending_turn_obligations(thread_id)
     projected = t.turns_used + pending_load + len(addressed)
@@ -986,11 +984,11 @@ async def _send_thread_message_inprocess(
         seq = org.db.append_thread_message(
             thread_id=thread_id, speaker="founder",
             kind=ThreadMessageKind.MESSAGE,
-            body_markdown=body_text, addressed_to=addressed_to,
+            body_markdown=body_text, addressed_to=["@all"],
         )
         AuditLogger(org.db).log_thread_message_sent(
             thread_id, seq=seq, speaker="founder",
-            addressed_to=addressed_to, kind="message",
+            addressed_to=["@all"], kind="message",
         )
         for name in addressed:
             inv = org.db.mint_thread_invocation(
