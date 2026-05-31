@@ -434,11 +434,13 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
                 task_id,
             )
             return
-        if orch._queue is not None:
-            orch._queue.put_nowait(orch._slug, child_id)
         # Persist the chain on the parent so child terminals can auto-advance
         # via _enqueue_parent_if_waiting (Task 8). Skip if neither `then` nor
         # `expect_verdict` is set — that's a plain single-leg delegate.
+        # MUST happen BEFORE enqueueing the child: a fast worker can otherwise
+        # complete and reach `_enqueue_parent_if_waiting` while active_chain is
+        # still NULL, missing the auto-advance gate and waking the parent as a
+        # plain delegation.
         if decision.then or decision.expect_verdict is not None:
             from src.orchestrator.chain import ChainState
             chain = ChainState(
@@ -448,6 +450,8 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
                 step_audit_id=_step_audit_id,
             )
             db.update_task_active_chain(task_id, chain.serialize())
+        if orch._queue is not None:
+            orch._queue.put_nowait(orch._slug, child_id)
         return
 
     # ---- 8. Unknown action ----
@@ -901,11 +905,22 @@ def _summarize_recent_chain(orch: "Orchestrator", parent_task_id: str) -> str | 
     spawned_child_id) with the final spawned child's terminal verdict to
     produce a human-readable line for the manager's wake context.
     """
-    rows = [
-        r for r in orch._db.get_audit_logs(parent_task_id)
-        if r["action"] == "chain_auto_advance"
-    ]
+    audit_logs = orch._db.get_audit_logs(parent_task_id)
+    rows = [r for r in audit_logs if r["action"] == "chain_auto_advance"]
     if not rows:
+        return None
+    # Suppress the summary if a manager decision (orchestration_step) has
+    # landed AFTER the most-recent chain advance — the manager has already
+    # seen this chain summary in the wake where the chain ended, and the
+    # current wake is for a later non-chain event. Showing it again would
+    # place a stale chain summary at the end of prior_steps, misrepresenting
+    # the latest event.
+    max_chain_id = max(r["id"] for r in rows)
+    max_step_id = max(
+        (r["id"] for r in audit_logs if r["action"] == "orchestration_step"),
+        default=0,
+    )
+    if max_step_id > max_chain_id:
         return None
     # Filter to the most-recent chain only — multiple sequential chains may
     # share the same parent across separate manager wakes, distinguished by

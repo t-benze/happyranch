@@ -539,3 +539,52 @@ def test_chain_summary_filters_to_most_recent_chain_only(tmp_path):
     assert "TASK-B2" in summary
     assert "TASK-A1" not in summary
     assert "TASK-A2" not in summary
+
+
+def test_chain_summary_suppressed_when_manager_decision_landed_after_chain(tmp_path):
+    """After the manager has already seen the chain summary (in the wake where
+    the chain ended) and made a subsequent non-chain decision, later wakes
+    must NOT re-append the stale chain summary. The marker is: an
+    `orchestration_step` audit row with id > max chain_auto_advance id means
+    the manager has moved on."""
+    from src.infrastructure.database import Database
+    from src.orchestrator.run_step import _summarize_recent_chain
+    from src.models import TaskStatus
+
+    db = Database(tmp_path / "x.db")
+    db.insert_task(TaskRecord(id="TASK-P", team="engineering", brief="p"))
+    # Chain ran: 1 child, then 1 auto-advance.
+    for cid in ("TASK-C1", "TASK-C2"):
+        db.insert_task(TaskRecord(id=cid, team="engineering", brief=cid, parent_task_id="TASK-P", assigned_agent="w"))
+        db.update_task(cid, status=TaskStatus.COMPLETED, note="ok")
+        db.insert_task_result(
+            task_id=cid, agent="w", session_id="s", status="completed",
+            confidence_score=80, output_summary=f"{cid} ok",
+            verdict="APPROVE" if cid == "TASK-C2" else None,
+        )
+    db.insert_audit_log(
+        task_id="TASK-P", agent="orchestrator", action="chain_auto_advance",
+        payload={"leg_index": 1, "spawned_child_id": "TASK-C2",
+                 "triggering_child_id": "TASK-C1", "triggering_verdict": None,
+                 "chain_origin_step_audit_id": 1},
+    )
+
+    orch = MagicMock()
+    orch._db = db
+
+    # Before any post-chain manager decision: summary SHOULD show.
+    summary = _summarize_recent_chain(orch, "TASK-P")
+    assert summary is not None
+    assert "TASK-C1" in summary
+
+    # Manager wakes (final-leg wake), makes a non-chain delegate decision.
+    # That decision logs an orchestration_step audit row.
+    db.insert_audit_log(
+        task_id="TASK-P", agent="orchestrator", action="orchestration_step",
+        payload={"step_number": 2, "decision": {"action": "delegate", "agent": "cleanup", "prompt": "..."}},
+    )
+
+    # Later wake (triggered by cleanup child completing): summary must NOT show,
+    # because the manager already saw it at the prior wake.
+    summary = _summarize_recent_chain(orch, "TASK-P")
+    assert summary is None
