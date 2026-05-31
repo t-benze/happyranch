@@ -310,7 +310,7 @@ def cmd_tasks(args: argparse.Namespace) -> None:
         if t.get("revisit_of_task_id"):
             brief = f"{brief}  ↩ {t['revisit_of_task_id']}"
         team = t.get("team") or "-"
-        print(f"{t['id']:<12} {team:<16} {status:<22} {agent:<18} {brief}")
+        print(f"{t['task_id']:<12} {team:<16} {status:<22} {agent:<18} {brief}")
 
 
 def cmd_details(args: argparse.Namespace) -> None:
