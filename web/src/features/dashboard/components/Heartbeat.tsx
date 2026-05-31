@@ -31,7 +31,7 @@ export function Heartbeat({ data, nowIdx }: HeartbeatProps): JSX.Element {
     >
       {data.map((b, i) => {
         const totalH = (b.steps / maxSteps) * H;
-        const failedH = b.steps > 0 ? (b.failed / b.steps) * totalH : 0;
+        const failedH = b.steps > 0 ? ((b.failed ?? 0) / b.steps) * totalH : 0;
         const okH = totalH - failedH;
         return (
           <svg
