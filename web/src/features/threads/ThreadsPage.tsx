@@ -147,7 +147,7 @@ export function ThreadsPage(): JSX.Element {
       else if (threadId && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); setShowArchive(true); }
       else if (threadId && (e.key === 'x' || e.key === 'X')) { e.preventDefault(); setShowAbandon(true); }
       else if (threadId && (e.key === 'f' || e.key === 'F')) { e.preventDefault(); openForward(); }
-      else if (threadId && (e.key === 'r' || e.key === 'R')) {
+      else if (threadId && (e.key === 'r' || e.key === 'R') && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
         composerFocusRef.current?.();
       }
