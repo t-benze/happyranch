@@ -41,7 +41,7 @@ uv run pytest tests/ -v
 This walks through setting up a runtime container and materializing the canonical HK/Macau tourism sample org.
 
 ```bash
-# 1. Start the daemon (once per machine). It listens on localhost and
+# 1. Start the daemon (once per machine). It listens on localhost:8765 and
 #    stores its auth token + runtime registry under ~/.happyranch/.
 scripts/daemon.sh start
 
@@ -358,10 +358,12 @@ After approval, the new workspace will have `executor: codex` (or `opencode`) in
 `scripts/daemon.sh` is a tiny supervisor that records the pid/port under `~/.happyranch/`:
 
 ```bash
-scripts/daemon.sh start    # start in background
+scripts/daemon.sh start    # start in background (binds to localhost:8765)
 scripts/daemon.sh status   # check if running
 scripts/daemon.sh stop     # graceful shutdown
 ```
+
+The daemon binds to port **8765** by default. Override with `HAPPYRANCH_DAEMON_PORT=<n>` before starting if that port is taken.
 
 ## Configuration
 
@@ -375,6 +377,7 @@ Operational settings use the `HAPPYRANCH_` env prefix. Runtime paths are derived
 | `HAPPYRANCH_PERMISSION_MODE` | `auto` | Claude Code permission mode |
 | `HAPPYRANCH_MAX_ORCHESTRATION_STEPS` | `50` | Max manager decision steps before escalation |
 | `HAPPYRANCH_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout (30 min) — global default; see overrides below |
+| `HAPPYRANCH_DAEMON_PORT` | `8765` | Port the daemon binds to (`0` = ephemeral, old behaviour) |
 | `HAPPYRANCH_ORG_SLUG` | _(unset)_ | Default org slug for per-org CLI commands |
 
 ### Per-Agent Configuration
