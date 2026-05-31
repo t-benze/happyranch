@@ -1612,7 +1612,7 @@ def test_cmd_details_shows_note(capsys):
     response.status_code = 200
     response.json.return_value = {
         "task": {
-            "id": "T-1", "type": "general", "status": "completed",
+            "task_id": "T-1", "type": "general", "status": "completed",
             "assigned_agent": "engineering_head", "brief": "b",
             "created_at": "2026-04-19T00:00:00", "updated_at": "2026-04-19T00:00:00",
             "note": "Feature landed",
@@ -1640,7 +1640,7 @@ def test_cmd_details_full_flag_shows_untruncated_summary(capsys):
     response.status_code = 200
     response.json.return_value = {
         "task": {
-            "id": "T-1", "type": "general", "status": "completed",
+            "task_id": "T-1", "type": "general", "status": "completed",
             "assigned_agent": "engineering_head", "brief": "b",
             "created_at": "2026-04-19T00:00:00", "updated_at": "2026-04-19T00:00:00",
         },
@@ -1820,7 +1820,7 @@ def test_cmd_details_shows_revisit_header_chain_and_footer(capsys):
     fake.get.return_value.status_code = 200
     fake.get.return_value.json.return_value = {
         "task": {
-            "id": "TASK-072",
+            "task_id": "TASK-072",
             "type": "implement_feature",
             "status": "pending",
             "assigned_agent": None,
@@ -1862,7 +1862,7 @@ def test_cmd_details_omits_revisit_blocks_when_plain_task(capsys):
     fake.get.return_value.status_code = 200
     fake.get.return_value.json.return_value = {
         "task": {
-            "id": "TASK-001",
+            "task_id": "TASK-001",
             "type": "general",
             "status": "pending",
             "assigned_agent": None,
@@ -1895,7 +1895,7 @@ def test_cmd_details_shows_footer_only_when_predecessor_has_revisits(capsys):
     fake.get.return_value.status_code = 200
     fake.get.return_value.json.return_value = {
         "task": {
-            "id": "TASK-052",
+            "task_id": "TASK-052",
             "type": "general",
             "status": "failed",
             "assigned_agent": None,
@@ -1935,7 +1935,7 @@ def test_cmd_details_renders_dispatched_from(capsys):
     fake.get.return_value.status_code = 200
     fake.get.return_value.json.return_value = {
         "task": {
-            "id": "TASK-042",
+            "task_id": "TASK-042",
             "type": "general",
             "status": "pending",
             "assigned_agent": None,
