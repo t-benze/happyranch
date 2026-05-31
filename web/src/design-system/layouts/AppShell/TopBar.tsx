@@ -144,7 +144,15 @@ export function TopBar(): JSX.Element {
           value={activeSlug ?? undefined}
           onValueChange={(target) => {
             if (!target || target === activeSlug) return;
-            navigate(routes.inboxForOrg(target));
+            // Stay on the same section; strip any detail suffix (e.g. task/thread id)
+            // so we land on the section inbox, not a stale detail route.
+            const sectionMatch = activeSlug
+              ? location.pathname.match(
+                  new RegExp(`^/orgs/${activeSlug}/([^/]+)`),
+                )
+              : null;
+            const section = sectionMatch?.[1];
+            navigate(section ? `/orgs/${target}/${section}` : routes.inboxForOrg(target));
           }}
           disabled={!switchEnabled}
         >
