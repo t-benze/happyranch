@@ -11,6 +11,7 @@ from src.daemon.routes import (
     assets,
     audit,
     auth,
+    dashboard,
     health,
     jobs,
     kb,
@@ -159,6 +160,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(jobs.router, prefix="/api/v1/orgs/{slug}", tags=["jobs"])
     app.include_router(jobs.dual_router, prefix="/api/v1/orgs/{slug}", tags=["jobs"])
     app.include_router(assets.router, prefix="/api/v1/orgs/{slug}", tags=["assets"])
+    app.include_router(dashboard.router, prefix="/api/v1/orgs/{slug}", tags=["dashboard"])
     from src.daemon.routes import web_static
     web_static.register(app)
     return app

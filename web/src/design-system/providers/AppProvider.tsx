@@ -23,6 +23,7 @@ import { TooltipProvider } from '@/design-system/primitives/Tooltip';
 import { DataContext } from './DataContext';
 import { realAgentsApi } from './_real-agents';
 import { realAuditApi } from './_real-audit';
+import { realDashboardApi } from './_real-dashboard';
 import { realHealthApi } from './_real-health';
 import { realKbApi } from './_real-kb';
 import { realOrgsApi } from './_real-orgs';
@@ -70,6 +71,7 @@ export function AppProvider({ children, client }: AppProviderProps): JSX.Element
           audit: realAuditApi,
           threads: realThreadsApi,
           tasks: realTasksApi,
+          dashboard: realDashboardApi,
           kb: realKbApi,
           talks: realTalksApi,
           teams: realTeamsApi,

@@ -1163,6 +1163,28 @@ class Database:
         return result
 
     @_synchronized
+    def fetch_one_readonly(
+        self, sql: str, params: tuple = ()
+    ) -> "sqlite3.Row | None":
+        """Run a read-only SELECT and return the first row or None.
+
+        For use by modules outside ``Database`` (e.g. ``dashboard_summary``)
+        that need to issue read aggregations without bypassing ``_lock``.
+        Holds the same ``RLock`` as every other public Database method.
+        """
+        return self._conn.execute(sql, params).fetchone()
+
+    @_synchronized
+    def fetch_all_readonly(
+        self, sql: str, params: tuple = ()
+    ) -> "list[sqlite3.Row]":
+        """Run a read-only SELECT and return all rows.
+
+        See ``fetch_one_readonly`` for the threading rationale.
+        """
+        return self._conn.execute(sql, params).fetchall()
+
+    @_synchronized
     def get_audit_logs_by_action(self, action: str, since: str | None = None) -> list[dict]:
         """Get audit logs filtered by action, optionally since a date."""
         if since:

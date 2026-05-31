@@ -1,68 +1,45 @@
-import { screen, waitFor, within } from '@testing-library/react';
-import { delay, http, HttpResponse } from 'msw';
+import { screen, waitFor } from '@testing-library/react';
+import { http, HttpResponse, delay } from 'msw';
 import { describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
+import type { DashboardSummaryResponse } from '@/lib/api/types';
 
 const SLUG = 'hk-macau-tourism';
+const ROUTE = `/orgs/${SLUG}/dashboard`;
 
-function task(overrides: Record<string, unknown>) {
+function emptySummary(): DashboardSummaryResponse {
   return {
-    task_id: 'TASK-0001',
-    team: 'content',
-    brief: 'placeholder',
-    status: 'in_progress',
-    block_kind: null,
-    parent_task_id: null,
-    revisit_of_task_id: null,
-    created_at: '2026-05-18T10:00:00Z',
-    updated_at: '2026-05-18T10:00:00Z',
-    closed_at: null,
-    cancelled_at: null,
-    session_timeout_seconds: null,
-    ...overrides,
+    heartbeat: Array.from({ length: 24 }, (_, h) => ({
+      hour: h,
+      steps: 0,
+      tier: 'ok',
+    })),
+    narrative_counts: {
+      completed_today: 0,
+      failed_today: 0,
+      escalated_open: 0,
+      kb_added_today: 0,
+      agents_active_now: 0,
+      spend_today_usd: 0,
+    },
+    escalations: [],
+    active_by_team: [],
+    recent_activity: [],
+    updates_this_week: [],
+    org_pulse: [],
+    org_age_days: 0,
+    server_now: '2026-05-30T12:00:00Z',
   };
 }
 
-const ESCALATED = task({
-  task_id: 'TASK-ESC-1',
-  team: 'cx',
-  brief: 'Refund $280 awaiting founder',
-  status: 'blocked',
-  block_kind: 'escalated',
-});
-
-const DELEGATED = task({
-  task_id: 'TASK-BLK-1',
-  team: 'product',
-  brief: 'Waiting on child worker',
-  status: 'blocked',
-  block_kind: 'delegated',
-});
-
-const ACTIVE_CONTENT = task({
-  task_id: 'TASK-ACT-1',
-  team: 'content',
-  brief: 'Draft Hong Kong visa guide v2',
-  status: 'in_progress',
-});
-
-const ACTIVE_OPS = task({
-  task_id: 'TASK-ACT-2',
-  team: 'ops',
-  brief: 'Vet partner hotel candidates',
-  status: 'in_progress',
-});
-
-const COMPLETED = task({
-  task_id: 'TASK-DONE-1',
-  team: 'content',
-  brief: 'Already shipped',
-  status: 'completed',
-});
-
-function mountAt(route: string) {
+/**
+ * Seed the surrounding routes that AppShell + TopBar query on mount.
+ * MSW is configured with `onUnhandledRequest: 'error'`, so every call the
+ * app makes must be answered — even ones not under test.
+ */
+function seedShell(): void {
   sessionStorage.setItem('grassland.token', 'tok');
   server.use(
     http.get('/api/v1/orgs', () =>
@@ -71,153 +48,111 @@ function mountAt(route: string) {
     http.get('/api/v1/health', () =>
       HttpResponse.json({ status: 'ok', active_runtime: '/Users/x/grassland' }),
     ),
-    http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
-      HttpResponse.json({
-        tasks: [ESCALATED, DELEGATED, ACTIVE_CONTENT, ACTIVE_OPS, COMPLETED],
-      }),
-    ),
   );
-  return renderWithProviders(<AppRoutes />, { route });
+}
+
+function handler(summary: DashboardSummaryResponse) {
+  return http.get(`/api/v1/orgs/${SLUG}/dashboard/summary`, () =>
+    HttpResponse.json(summary),
+  );
 }
 
 describe('DashboardPage', () => {
-  test('renders all four card sections', async () => {
-    mountAt(`/orgs/${SLUG}/dashboard`);
-    await waitFor(() => {
-      expect(screen.getByLabelText(/system health/i)).toBeInTheDocument();
-      expect(screen.getByLabelText(/pending your action/i)).toBeInTheDocument();
-      expect(screen.getByLabelText(/active tasks by team/i)).toBeInTheDocument();
-      expect(screen.getByLabelText(/blocked tasks/i)).toBeInTheDocument();
-    });
-  });
-
-  test('system health card shows daemon-ok + active runtime', async () => {
-    mountAt(`/orgs/${SLUG}/dashboard`);
-    const card = await screen.findByLabelText(/system health/i);
-    await waitFor(() => {
-      expect(within(card).getByText(/daemon: ok/i)).toBeInTheDocument();
-    });
-    expect(within(card).getByText(/grassland/i)).toBeInTheDocument();
-  });
-
-  test('pending your action lists only escalated-blocked tasks', async () => {
-    mountAt(`/orgs/${SLUG}/dashboard`);
-    const card = await screen.findByLabelText(/pending your action/i);
-    await waitFor(() => {
-      expect(within(card).getByText(/refund \$280/i)).toBeInTheDocument();
-    });
-    expect(within(card).queryByText(/waiting on child worker/i)).toBeNull();
-    expect(within(card).queryByText(/draft hong kong/i)).toBeNull();
-  });
-
-  test('active tasks card groups by team', async () => {
-    mountAt(`/orgs/${SLUG}/dashboard`);
-    const card = await screen.findByLabelText(/active tasks by team/i);
-    await waitFor(() => {
-      expect(within(card).getByText(/draft hong kong/i)).toBeInTheDocument();
-    });
-    expect(within(card).getByText(/vet partner hotel/i)).toBeInTheDocument();
-    // Team headings are rendered at least once (TaskCard also shows `team` in
-    // muted text inside the row, so use getAllByText).
-    expect(within(card).getAllByText(/^content$/i).length).toBeGreaterThan(0);
-    expect(within(card).getAllByText(/^ops$/i).length).toBeGreaterThan(0);
-    // Completed task does not leak in.
-    expect(within(card).queryByText(/already shipped/i)).toBeNull();
-  });
-
-  test('blocked tasks card excludes escalations and completions', async () => {
-    mountAt(`/orgs/${SLUG}/dashboard`);
-    const card = await screen.findByLabelText(/blocked tasks/i);
-    await waitFor(() => {
-      expect(within(card).getByText(/waiting on child worker/i)).toBeInTheDocument();
-    });
-    expect(within(card).queryByText(/refund \$280/i)).toBeNull();
-    expect(within(card).queryByText(/already shipped/i)).toBeNull();
-  });
-
-  test('task cards show loading state while /tasks is in flight', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+  test('renders loading state initially', async () => {
+    seedShell();
     server.use(
-      http.get('/api/v1/orgs', () =>
-        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
-      ),
-      http.get('/api/v1/health', () =>
-        HttpResponse.json({ status: 'ok', active_runtime: '/Users/x/grassland' }),
-      ),
-      // Pending forever so the dashboard observes the loading branch.
-      http.get(`/api/v1/orgs/${SLUG}/tasks`, async () => {
-        await delay('infinite');
-        return HttpResponse.json({ tasks: [] });
+      http.get(`/api/v1/orgs/${SLUG}/dashboard/summary`, async () => {
+        await delay(200);
+        return HttpResponse.json(emptySummary());
       }),
     );
-    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
-
-    const pending = await screen.findByLabelText(/pending your action/i);
-    await waitFor(() => {
-      expect(within(pending).getByText(/loading…/i)).toBeInTheDocument();
-    });
-    expect(
-      within(screen.getByLabelText(/active tasks by team/i)).getByText(/loading…/i),
-    ).toBeInTheDocument();
-    expect(
-      within(screen.getByLabelText(/blocked tasks/i)).getByText(/loading…/i),
-    ).toBeInTheDocument();
-    // No false-negative empty state should leak through during loading.
-    expect(within(pending).queryByText(/all clear/i)).toBeNull();
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+    expect(await screen.findByText(/Loading dashboard/i)).toBeInTheDocument();
   });
 
-  test('task cards show an error message when /tasks fails', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+  test('renders error state on 500', async () => {
+    seedShell();
     server.use(
-      http.get('/api/v1/orgs', () =>
-        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
-      ),
-      http.get('/api/v1/health', () =>
-        HttpResponse.json({ status: 'ok', active_runtime: '/Users/x/grassland' }),
-      ),
-      http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
-        HttpResponse.json({ detail: 'boom' }, { status: 500 }),
+      http.get(`/api/v1/orgs/${SLUG}/dashboard/summary`, () =>
+        new HttpResponse(null, { status: 500 }),
       ),
     );
-    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
-
-    const pending = await screen.findByLabelText(/pending your action/i);
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
     await waitFor(() => {
-      expect(within(pending).getByText(/failed to load tasks/i)).toBeInTheDocument();
+      expect(screen.getByText(/Failed to load dashboard/i)).toBeInTheDocument();
     });
-    expect(
-      within(screen.getByLabelText(/active tasks by team/i)).getByText(/failed to load tasks/i),
-    ).toBeInTheDocument();
-    expect(
-      within(screen.getByLabelText(/blocked tasks/i)).getByText(/failed to load tasks/i),
-    ).toBeInTheDocument();
-    expect(within(pending).queryByText(/all clear/i)).toBeNull();
   });
 
-  test('empty buckets render their respective empty states', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
-    server.use(
-      http.get('/api/v1/orgs', () =>
-        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
-      ),
-      http.get('/api/v1/health', () =>
-        HttpResponse.json({ status: 'ok', active_runtime: '/Users/x/grassland' }),
-      ),
-      http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
-        HttpResponse.json({ tasks: [] }),
-      ),
-    );
-    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
-
-    const pending = await screen.findByLabelText(/pending your action/i);
+  test('renders first-run empty state when org_age_days is 0 and no activity', async () => {
+    seedShell();
+    server.use(handler(emptySummary()));
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
     await waitFor(() => {
-      expect(within(pending).getByText(/all clear/i)).toBeInTheDocument();
+      expect(screen.getByText(/Start your first brief/i)).toBeInTheDocument();
     });
-    expect(
-      within(screen.getByLabelText(/active tasks by team/i)).getByText(/no active tasks/i),
-    ).toBeInTheDocument();
-    expect(
-      within(screen.getByLabelText(/blocked tasks/i)).getByText(/no blocked tasks/i),
-    ).toBeInTheDocument();
+  });
+
+  test('renders All clear when established org has no escalations', async () => {
+    const s = emptySummary();
+    s.org_age_days = 14;
+    s.narrative_counts.completed_today = 5;
+    seedShell();
+    server.use(handler(s));
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+    await waitFor(() => {
+      expect(screen.getByText(/All clear/i)).toBeInTheDocument();
+    });
+    // The completed count surfaces in the narrative paragraph: "5 tasks completed".
+    expect(screen.getByText(/tasks completed/i)).toBeInTheDocument();
+  });
+
+  test('renders escalation rows and pending count', async () => {
+    const s = emptySummary();
+    s.org_age_days = 14;
+    s.narrative_counts.completed_today = 5;
+    s.narrative_counts.escalated_open = 1;
+    s.escalations = [
+      {
+        task_id: 'TASK-101',
+        agent: 'qa_engineer',
+        team: 'engineering',
+        question: 'Photo licensing unclear',
+        raised_at: '2026-05-30T11:00:00Z',
+        age_seconds: 3600,
+      },
+    ];
+    seedShell();
+    server.use(handler(s));
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+    await waitFor(() => {
+      expect(screen.getByText(/Waiting on you · 1/i)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Photo licensing unclear/i)).toBeInTheDocument();
+  });
+
+  test('renders org pulse table when teams exist', async () => {
+    const s = emptySummary();
+    s.org_age_days = 14;
+    s.narrative_counts.completed_today = 3;
+    s.org_pulse = [
+      {
+        team: 'engineering',
+        acceptance_pct: 87,
+        trend_delta: -3,
+        sparkline: [
+          0.85, 0.86, 0.87, 0.88, 0.86, 0.85, 0.87, 0.88, 0.86, 0.87, 0.86,
+          0.87,
+        ],
+        members: 4,
+        lead: 'engineering_head',
+      },
+    ];
+    seedShell();
+    server.use(handler(s));
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+    await waitFor(() => {
+      expect(screen.getByText(/engineering_head/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/87%/)).toBeInTheDocument();
   });
 });

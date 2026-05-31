@@ -540,6 +540,24 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/dashboard/summary": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/jobs/": {
       "GET": {
         "params": [
