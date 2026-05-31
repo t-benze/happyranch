@@ -369,6 +369,7 @@ export type HeartbeatTier = 'ok' | 'warn' | 'bad';
 export interface HeartbeatBucket {
   hour: number;
   steps: number;
+  failed: number;
   tier: HeartbeatTier;
 }
 

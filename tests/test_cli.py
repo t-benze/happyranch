@@ -163,7 +163,7 @@ def test_cmd_tasks_calls_list_endpoint(capsys):
     fake = MagicMock()
     fake.get.return_value.status_code = 200
     fake.get.return_value.json.return_value = {"tasks": [
-        {"id": "TASK-001", "team": "engineering", "status": "approved", "brief": "x"},
+        {"task_id": "TASK-001", "team": "engineering", "status": "approved", "brief": "x"},
     ]}
     with patch("src.cli.OpcClient.from_env", return_value=fake), \
          patch("src.cli._fetch_available_orgs", return_value=["alpha"]):
@@ -185,17 +185,17 @@ def test_cmd_tasks_shows_assigned_agent_column(capsys):
     fake.get.return_value.status_code = 200
     fake.get.return_value.json.return_value = {"tasks": [
         {
-            "id": "TASK-020", "team": "engineering", "status": "in_progress",
+            "task_id": "TASK-020", "team": "engineering", "status": "in_progress",
             "brief": "Fix the save button",
             "assigned_agent": "dev_agent",
         },
         {
-            "id": "TASK-018", "team": "engineering", "status": "in_progress",
+            "task_id": "TASK-018", "team": "engineering", "status": "in_progress",
             "brief": "Re-dispatch of TASK-017",
             "assigned_agent": "engineering_head",
         },
         {
-            "id": "TASK-021", "team": "engineering", "status": "pending",
+            "task_id": "TASK-021", "team": "engineering", "status": "pending",
             "brief": "Not yet assigned",
             "assigned_agent": None,
         },
@@ -1252,10 +1252,10 @@ def test_cmd_tasks_shows_block_kind_when_present(capsys):
     response = MagicMock()
     response.status_code = 200
     response.json.return_value = {"tasks": [
-        {"id": "T-1", "team": "engineering", "status": "blocked",
+        {"task_id": "T-1", "team": "engineering", "status": "blocked",
          "assigned_agent": "engineering_head", "brief": "waiting",
          "block_kind": "delegated"},
-        {"id": "T-2", "team": "engineering", "status": "completed",
+        {"task_id": "T-2", "team": "engineering", "status": "completed",
          "assigned_agent": "engineering_head", "brief": "done",
          "block_kind": None},
     ]}
@@ -1279,9 +1279,9 @@ def test_cmd_tasks_renders_team_column(capsys):
     fake = MagicMock()
     fake.get.return_value.status_code = 200
     fake.get.return_value.json.return_value = {"tasks": [
-        {"id": "TASK-030", "team": "content", "status": "in_progress",
+        {"task_id": "TASK-030", "team": "content", "status": "in_progress",
          "assigned_agent": "content_manager", "brief": "Draft Macau visa guide"},
-        {"id": "TASK-031", "team": "engineering", "status": "completed",
+        {"task_id": "TASK-031", "team": "engineering", "status": "completed",
          "assigned_agent": "engineering_head", "brief": "Add Alipay"},
     ]}
     with patch("src.cli.OpcClient.from_env", return_value=fake), \
@@ -2121,13 +2121,13 @@ def test_cmd_tasks_suffixes_revisit_rows(capsys):
     fake.get.return_value.status_code = 200
     fake.get.return_value.json.return_value = {"tasks": [
         {
-            "id": "TASK-072", "team": "engineering", "status": "pending",
+            "task_id": "TASK-072", "team": "engineering", "status": "pending",
             "brief": "Add Alipay support",
             "assigned_agent": None,
             "revisit_of_task_id": "TASK-052",
         },
         {
-            "id": "TASK-001", "team": "engineering", "status": "completed",
+            "task_id": "TASK-001", "team": "engineering", "status": "completed",
             "brief": "plain task",
             "assigned_agent": "dev_agent",
             "revisit_of_task_id": None,

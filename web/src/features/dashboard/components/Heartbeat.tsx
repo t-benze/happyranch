@@ -20,41 +20,41 @@ interface HeartbeatProps {
   nowIdx?: number;
 }
 
-const TIER_FILL: Record<HeartbeatBucket['tier'], string> = {
-  ok: 'fill-tier-green',
-  warn: 'fill-tier-yellow',
-  bad: 'fill-tier-red',
-};
 
 export function Heartbeat({ data, nowIdx }: HeartbeatProps): JSX.Element {
   const maxSteps = Math.max(...data.map((b) => b.steps), 1);
+  const H = 36;
   return (
     <div
       className="flex h-9 items-end gap-1"
       aria-label="Today's hourly activity"
     >
       {data.map((b, i) => {
-        const h = (b.steps / maxSteps) * 36;
+        const totalH = (b.steps / maxSteps) * H;
+        const failedH = b.steps > 0 ? (b.failed / b.steps) * totalH : 0;
+        const okH = totalH - failedH;
         return (
           <svg
             key={b.hour}
             width={6}
-            height={36}
+            height={H}
             className={cn(
               'overflow-visible',
               i === nowIdx ? 'opacity-100' : 'opacity-70',
             )}
           >
-            <rect
-              x={0}
-              y={36 - h}
-              width={6}
-              height={h}
-              rx={1}
-              className={
-                b.steps === 0 ? 'fill-border-default' : TIER_FILL[b.tier]
-              }
-            />
+            {b.steps === 0 ? (
+              <rect x={0} y={H - 2} width={6} height={2} rx={1} className="fill-border-default" />
+            ) : (
+              <>
+                {okH > 0 && (
+                  <rect x={0} y={H - totalH} width={6} height={okH} rx={1} className="fill-tier-green" />
+                )}
+                {failedH > 0 && (
+                  <rect x={0} y={H - totalH + okH} width={6} height={failedH} rx={1} className="fill-tier-red" />
+                )}
+              </>
+            )}
           </svg>
         );
       })}

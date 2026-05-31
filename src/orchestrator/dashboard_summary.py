@@ -19,6 +19,7 @@ from src.infrastructure.database import Database
 class HeartbeatBucket(BaseModel):
     hour: int
     steps: int
+    failed: int
     tier: Literal["ok", "warn", "bad"]
 
 
@@ -205,6 +206,7 @@ def compute_heartbeat_24h(db: Database, *, now: datetime) -> list[HeartbeatBucke
         HeartbeatBucket(
             hour=h,
             steps=steps_by_hour[h],
+            failed=failed_by_hour[h],
             tier=_tier_for_ratio(failed_by_hour[h], completion_by_hour[h]),
         )
         for h in range(24)

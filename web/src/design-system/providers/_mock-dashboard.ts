@@ -14,6 +14,7 @@ const FIXTURE: DashboardSummaryResponse = {
   heartbeat: Array.from({ length: 24 }, (_, h) => ({
     hour: h,
     steps: h >= 9 && h <= 17 ? 3 + (h % 5) : 0,
+    failed: h === 15 ? 1 : 0,
     tier: h === 15 ? 'warn' : 'ok',
   })),
   narrative_counts: {

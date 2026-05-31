@@ -14,6 +14,7 @@ function emptySummary(): DashboardSummaryResponse {
     heartbeat: Array.from({ length: 24 }, (_, h) => ({
       hour: h,
       steps: 0,
+      failed: 0,
       tier: 'ok',
     })),
     narrative_counts: {
