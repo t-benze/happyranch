@@ -277,8 +277,13 @@ def compute_updates_this_week(
     week_start = now - timedelta(days=7)
     items: list[UpdateRow] = []
 
-    # KB entries created this week (from the KB store, not audit_log)
+    # KB entries created this week (from the KB store, not audit_log).
+    # Exclude operational artifact types that agents write for task-state
+    # persistence — they are not knowledge contributions.
+    _OPERATIONAL_KB_TYPES = {"driver-state", "state"}
     for entry in kb_store.list_entries_created_since(week_start):
+        if entry.get("type") in _OPERATIONAL_KB_TYPES:
+            continue
         ts = datetime.fromisoformat(entry["created_at"])
         items.append(UpdateRow(
             marker="add",
