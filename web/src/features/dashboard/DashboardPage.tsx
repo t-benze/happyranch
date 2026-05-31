@@ -87,7 +87,7 @@ export function DashboardPage(): JSX.Element {
 
   return (
     <div className="bg-surface-canvas h-full overflow-y-auto">
-      <div className="mx-auto max-w-7xl p-6">
+      <div className="p-6">
         <div className="text-text-muted mb-4 flex items-baseline gap-3 font-mono text-xs">
           <span className="text-text-primary font-medium">
             {now.toLocaleDateString(undefined, {
