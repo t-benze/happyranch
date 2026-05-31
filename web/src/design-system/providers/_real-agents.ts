@@ -16,6 +16,8 @@ import type {
   AgentsApi,
   ApproveAgentArgs,
   ApproveAgentResult,
+  CreateAgentArgs,
+  CreateAgentResult,
   RejectAgentResult,
 } from './DataContext';
 
@@ -67,6 +69,20 @@ export const realAgentsApi: AgentsApi = {
           limit: 20,
         }) as Promise<{ tasks: TaskRecord[] }>,
       enabled: !!slug && !!agentName,
+    });
+  },
+
+  useCreateAgent: () => {
+    const slug = useRealOrgSlug();
+    const qc = useQueryClient();
+    return useMutation({
+      mutationFn: (body: CreateAgentArgs): Promise<CreateAgentResult> =>
+        agentsApi.createAgent(slug, body),
+      onSuccess: () => {
+        qc.invalidateQueries({ queryKey: ['agents', slug] });
+        qc.invalidateQueries({ queryKey: ['agent-enrollments', slug] });
+        qc.invalidateQueries({ queryKey: ['teams', slug] });
+      },
     });
   },
 

@@ -34,6 +34,7 @@ import type { audit as auditApi } from '@/lib/api';
 import type { agents as agentsApi } from '@/lib/api';
 import type { jobs as jobsApi } from '@/lib/api';
 import type {
+  DashboardSummaryResponse,
   JobListResponse,
   JobRecord,
   KBEntry,
@@ -261,6 +262,9 @@ export type ApproveAgentResult = Awaited<ReturnType<typeof agentsApi.approveAgen
 export type RejectAgentArgs = Parameters<typeof agentsApi.rejectAgent>[2];
 export type RejectAgentResult = Awaited<ReturnType<typeof agentsApi.rejectAgent>>;
 
+export type CreateAgentArgs = Parameters<typeof agentsApi.createAgent>[1];
+export type CreateAgentResult = Awaited<ReturnType<typeof agentsApi.createAgent>>;
+
 export interface AgentsApi {
   useAgentsList: () => QueryLike<{ agents: import('@/lib/api/agents').AgentSummary[] }>;
   /** Pending enrollments — `status` filter narrows the file scan. */
@@ -276,6 +280,7 @@ export interface AgentsApi {
     agentName: string | undefined,
   ) => QueryLike<{ tasks: TaskRecord[] }>;
 
+  useCreateAgent: () => MutationLike<CreateAgentArgs, CreateAgentResult>;
   useApproveAgent: () => MutationLike<ApproveAgentArgs, ApproveAgentResult>;
   useRejectAgent: () => MutationLike<
     { agentName: string; body?: { reason?: string } },
@@ -288,6 +293,14 @@ export interface AgentsRoutes {
   pending: () => string;
   detail: (agentName: string) => string;
   inboxForOrg: (slug: string) => string;
+}
+
+// ---------------------------------------------------------------------------
+// TeamsApi — minimal read-only roster driving the Add Agent team dropdown.
+// ---------------------------------------------------------------------------
+
+export interface TeamsApi {
+  useTeamsList: () => QueryLike<{ teams: import('@/lib/api/teams').TeamSummary[] }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -340,6 +353,16 @@ export interface AuditApi {
   }) => QueryLike<Awaited<ReturnType<typeof auditApi.listAudit>>>;
 }
 
+// ---------------------------------------------------------------------------
+// DashboardApi — aggregated summary surface for the Dashboard page.
+// Escalation resolution reuses `TasksApi.useResolveEscalation`, so this
+// surface only carries the summary read.
+// ---------------------------------------------------------------------------
+
+export interface DashboardApi {
+  useDashboardSummary: () => QueryLike<DashboardSummaryResponse>;
+}
+
 /**
  * Per-feature URL builders. Compositions consume these via the
  * provider-aware `useThreadRoutes()` hook in `@/hooks/threads` instead of
@@ -370,8 +393,10 @@ export interface DataContextValue {
   tasks: TasksApi;
   kb: KbApi;
   talks: TalksApi;
+  teams: TeamsApi;
   health: HealthApi;
   jobs: JobsApi;
+  dashboard: DashboardApi;
   /**
    * Provider-supplied React hook that returns the active feature's route
    * builders. A hook (not a plain object) so the implementation can read

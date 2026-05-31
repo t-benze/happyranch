@@ -54,8 +54,8 @@ colors:
     signal_200: "#a8dbf3"
     signal_100: "#dbeefb"
 
-    # Tiers — green/yellow/red, but desaturated by ~15 percent vs Tailwind
-    # defaults so a busy scorecard does not vibrate.
+    # Tier palette — green/yellow/red, desaturated by ~15 percent vs
+    # Tailwind defaults so dense tables of status badges do not vibrate.
     green_700: "#1e7a4c"
     green_500: "#2ea36a"
     green_300: "#6fcea3"
@@ -72,8 +72,8 @@ colors:
     red_100:   "#f5d8d3"
 
     # Agent identity dots — one warm violet (manager), one cool teal
-    # (worker). Deliberately NOT mapped to tier colors — those have to be
-    # free to mean what the scorecard says they mean.
+    # (worker). Deliberately NOT mapped to tier colors — role identity is
+    # orthogonal to status meaning.
     violet_500: "#8265c8"
     violet_300: "#b6a3e1"
     teal_500:   "#2a9a93"
@@ -422,7 +422,7 @@ components:
 
   agent_chip:
     # The agent name with a leading 6px role-colored dot. Used everywhere
-    # an agent is rendered — message header, participant list, scorecard.
+    # an agent is rendered — message header, participant list, roster.
     dot_size: "6px"
     dot_radius: "{layout.radius.pill}"
     gap: "{layout.spacing.2}"
@@ -597,11 +597,11 @@ See the frontmatter for the full palette. The opinion behind it:
   the founder's message bubble, primary button fills, the focus ring, and
   the daemon-connected dot in the statusbar. If we want a second
   "accent," we have done something wrong.
-- **Tiers are semantic, not decorative.** `tier.green / yellow / red` map
-  to performance/scorecard meaning ONLY. They are *not* used as a generic
-  status palette and *never* used to tint a whole row or background — that
-  reads as alarmist. Use the tint variants (`*_tint`, 14% alpha) for
-  badge fills.
+- **Tier palette is the green/yellow/red semantic system.** `tier.green
+  / yellow / red` carry status meaning — healthy / warning / failed —
+  consumed by StatusBadge, decline message bubbles, and error text.
+  Never used to tint a whole row or background; that reads as alarmist.
+  Use the tint variants (`*_tint`, 14% alpha) for badge fills.
 - **Two agent identity colors.** Manager = warm violet
   (`violet_500`), worker = cool teal (`teal_500`). They prefix every agent
   name with a 6px dot. Founder uses the accent blue (`signal_400`), so the
@@ -733,11 +733,10 @@ keycaps, audit-event names, completion tokens. The visual contrast of
 mono-vs-sans is doing real work — it tells the founder which strings
 they can paste into the CLI as-is.
 
-**DO** keep tier color reserved for the scorecard surface (Agents page,
-agent detail drawer). On other surfaces, tier may appear *only* as a 6px
-dot beside the agent name in dense data tables. Tier is a performance
-verdict; bleeding it everywhere makes every screen feel like a report
-card.
+**DO** keep tier color confined to small badges and inline text — status
+pills, decline bubble borders, error strings. Tier is a status verdict;
+bleeding it across whole rows or backgrounds makes every screen feel
+alarmist.
 
 **DO** show the org slug in two places at once: TopBar (large,
 clickable, switcher) and Statusbar (small, mono, ambient). The Statusbar
@@ -748,9 +747,9 @@ audit-log scroll.
 button fill, active inbox row marker, founder message bubble tint.
 Anything else gets `border.strong` or `text.secondary`.
 
-**DON'T** color an entire row by tier. A yellow-tier agent's tasks must
-not all read as warnings. Tier is a column in a scorecard; reserve it
-there.
+**DON'T** color an entire row or background by tier. Tier belongs in
+badges and inline text — full-bleed tier color makes neutral rows read
+as warnings.
 
 **DON'T** use drop shadows on resting cards, rows, or message bubbles. If
 something is floating, it's a popover/modal/toast and gets elevation

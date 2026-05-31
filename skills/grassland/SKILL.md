@@ -397,7 +397,7 @@ scripts/grassland init-agent                                   # bootstrap works
   - `migrate-to-multi-org` — v1 → v2 rewrite; TTY-gated, refuses with active tasks or open talks
 - **Agent-callback subcommands — do NOT invoke by hand:**
   - `report-completion`, `progress`, `learning {add,update,promote,reindex}`, `manage-agent`, `manage-repo`, `dispatch`, `talk end`, `threads {reply,decline,dispatch,close-out}`, `scripts submit`
-  - These run inside an agent session under the `Bash(grassland:*)` allow rule. Invoking them manually falsifies audit data and can corrupt scorecards. Read-side verbs (learning `list|get|search`, `scripts list|show|output`, `talk list|show|status`) are safe for ad-hoc inspection.
+  - These run inside an agent session under the `Bash(grassland:*)` allow rule. Invoking them manually falsifies audit data and review-verdict rows. Read-side verbs (learning `list|get|search`, `scripts list|show|output`, `talk list|show|status`) are safe for ad-hoc inspection.
 
 ## Troubleshooting
 

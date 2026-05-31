@@ -1,5 +1,6 @@
 export * as agents from './agents';
 export * as audit from './audit';
+export * as dashboard from './dashboard';
 export * as health from './health';
 export * as kb from './kb';
 export * as orgs from './orgs';
@@ -7,6 +8,7 @@ export * as runtime from './runtime';
 export * as jobs from './jobs';
 export * as talks from './talks';
 export * as tasks from './tasks';
+export * as teams from './teams';
 export * as threads from './threads';
 export * as tokens from './tokens';
 export { ApiError, request, type RequestOptions } from './client';

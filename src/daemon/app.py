@@ -11,6 +11,7 @@ from src.daemon.routes import (
     assets,
     audit,
     auth,
+    dashboard,
     health,
     jobs,
     kb,
@@ -18,6 +19,7 @@ from src.daemon.routes import (
     runtime,
     talks,
     tasks,
+    teams,
     threads,
     tokens,
 )
@@ -149,6 +151,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(orgs.router, prefix="/api/v1")
     app.include_router(tasks.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(agents.router, prefix="/api/v1/orgs/{slug}")
+    app.include_router(teams.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(audit.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(tokens.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(kb.router, prefix="/api/v1/orgs/{slug}")
@@ -157,6 +160,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(jobs.router, prefix="/api/v1/orgs/{slug}", tags=["jobs"])
     app.include_router(jobs.dual_router, prefix="/api/v1/orgs/{slug}", tags=["jobs"])
     app.include_router(assets.router, prefix="/api/v1/orgs/{slug}", tags=["assets"])
+    app.include_router(dashboard.router, prefix="/api/v1/orgs/{slug}", tags=["dashboard"])
     from src.daemon.routes import web_static
     web_static.register(app)
     return app

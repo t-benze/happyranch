@@ -18,6 +18,7 @@ import { MOCK_ORG_SLUG } from '@/mocks';
 import { DataContext } from './DataContext';
 import { mockAgentsApi } from './_mock-agents';
 import { mockAuditApi } from './_mock-audit';
+import { mockDashboardApi } from './_mock-dashboard';
 import { mockHealthApi } from './_mock-health';
 import { mockKbApi, useMockKbRoutes } from './_mock-kb';
 import { mockOrgsApi } from './_mock-orgs';
@@ -25,6 +26,7 @@ import { useMockAgentsRoutes, useMockJobsRoutes, useMockThreadRoutes } from './_
 import { mockJobsApi } from './_mock-jobs';
 import { mockTalksApi, useMockTalksRoutes } from './_mock-talks';
 import { mockTasksApi, useMockTasksRoutes } from './_mock-tasks';
+import { mockTeamsApi } from './_mock-teams';
 import { mockThreadsApi } from './_mock-threads';
 
 function makePrototypeQueryClient(): QueryClient {
@@ -51,8 +53,10 @@ export function PrototypeProvider({ children }: { children: ReactNode }): JSX.El
           audit: mockAuditApi,
           threads: mockThreadsApi,
           tasks: mockTasksApi,
+          dashboard: mockDashboardApi,
           kb: mockKbApi,
           talks: mockTalksApi,
+          teams: mockTeamsApi,
           health: mockHealthApi,
           jobs: mockJobsApi,
           useThreadRoutes: useMockThreadRoutes,

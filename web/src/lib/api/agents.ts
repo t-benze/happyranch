@@ -30,6 +30,24 @@ export const listAgents = (
 ): Promise<{ agents: AgentSummary[] }> =>
   request(`/orgs/${slug}/agents`);
 
+export interface CreateAgentBody {
+  name: string;
+  role: 'worker' | 'manager';
+  team?: string;
+  new_team?: string;
+  executor: 'claude' | 'codex' | 'opencode';
+  description: string;
+  system_prompt: string;
+  allow_rules?: string[];
+  repos?: Record<string, string>;
+}
+
+export const createAgent = (
+  slug: string,
+  body: CreateAgentBody,
+): Promise<{ name: string; team: string; role: 'worker' | 'manager' }> =>
+  request(`/orgs/${slug}/agents`, { method: 'POST', body });
+
 export const initAgents = (
   slug: string,
   body?: { agent?: string },

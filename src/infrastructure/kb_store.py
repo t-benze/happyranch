@@ -164,6 +164,70 @@ class KBStore:
             ))
         return out
 
+    def _parse_authored_at(self, raw: Optional[str]) -> Optional[datetime]:
+        """Best-effort parse of the canonical ``%Y-%m-%dT%H:%M:%SZ`` string.
+
+        Returns None for missing or unparseable values so that the dashboard
+        helpers can silently skip pre-stamp legacy entries instead of crashing.
+        """
+        if not raw:
+            return None
+        try:
+            # ``fromisoformat`` accepts "+00:00" but not the "Z" suffix on
+            # older Pythons; canonicalize to the offset form before parsing.
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    def count_entries_created_since(self, since: datetime) -> int:
+        """Count KB entries whose ``authored_at`` is >= ``since``.
+
+        Used by the dashboard summary aggregation. Reads the same filesystem
+        state as :meth:`list_entries` — no separate index. Entries with a
+        missing or unparseable ``authored_at`` are skipped.
+        """
+        n = 0
+        for path in sorted(self._root.glob("*.md")):
+            if path.name == "_index.md":
+                continue
+            try:
+                entry = self._parse(path.read_text())
+            except InvalidEntry:
+                continue
+            authored = self._parse_authored_at(entry.authored_at)
+            if authored is not None and authored >= since:
+                n += 1
+        return n
+
+    def list_entries_created_since(self, since: datetime) -> list[dict]:
+        """List entries authored on or after ``since``, newest first.
+
+        Returns a list of dicts with keys ``slug``, ``title``, ``type``, and
+        ``created_at`` (sourced from ``KBEntry.authored_at`` — the field is
+        renamed at the dict boundary to match dashboard consumer
+        expectations without altering the underlying schema). Entries with a
+        missing or unparseable ``authored_at`` are skipped.
+        """
+        out: list[dict] = []
+        for path in sorted(self._root.glob("*.md")):
+            if path.name == "_index.md":
+                continue
+            try:
+                entry = self._parse(path.read_text())
+            except InvalidEntry:
+                continue
+            authored = self._parse_authored_at(entry.authored_at)
+            if authored is None or authored < since:
+                continue
+            out.append({
+                "slug": entry.slug,
+                "title": entry.title,
+                "type": entry.type,
+                "created_at": entry.authored_at,
+            })
+        out.sort(key=lambda row: row["created_at"], reverse=True)
+        return out
+
     def find_near_duplicates(
         self, title: str, tags: list[str], threshold: float = 0.7, min_tag_overlap: int = 2
     ) -> list[KBDuplicate]:

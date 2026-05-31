@@ -1314,7 +1314,6 @@ def test_tasks_active_chain_column_exists_and_defaults_null(db):
 
 
 def test_update_task_active_chain_sets_and_clears(db):
-    from src.infrastructure.database import Database
     db.insert_task(TaskRecord(id="TASK-1", team="engineering", brief="x", parent_task_id=None))
 
     db.update_task_active_chain("TASK-1", '{"step_index":0,"legs":[],"step_audit_id":1}')

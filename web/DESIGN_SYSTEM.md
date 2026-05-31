@@ -107,7 +107,6 @@ web/
 │  │  │  ├─ IdBadge.tsx
 │  │  │  ├─ KbdChip.tsx
 │  │  │  ├─ StatusBadge.tsx
-│  │  │  ├─ TierBadge.tsx
 │  │  │  ├─ InboxRow.tsx
 │  │  │  ├─ MessageBubble.tsx
 │  │  │  ├─ Composer.tsx
@@ -479,9 +478,9 @@ from the CSS at `css` path.
 - **Import rule:** Nobody imports tokens directly. Components reference them via
   Tailwind utilities (`bg-surface-canvas`) or via the aliased shadcn vars (`bg-card`).
 - **Worked example:** `tier.red` lives once, in `tokens.css` as `--color-tier-red`.
-  The `TierBadge` pattern uses `bg-tier-red-tint text-tier-red`. The shadcn `Button`
-  variant `destructive` uses `bg-destructive` which aliases to `--color-tier-red`.
-  Change the hex once; every consumer updates.
+  `MessageBubble.decline` uses `bg-tier-red-tint border-tier-red`; the shadcn
+  `Button` variant `destructive` uses `bg-destructive` which aliases to
+  `--color-tier-red`. Change the hex once; every consumer updates.
 
 ### Layer 2 — Primitives (shadcn)
 
@@ -578,16 +577,15 @@ pattern, mapped from UI_SPEC molecules and DESIGN.md `components.*` blocks.
 | `IdBadge` | Monospace `THR-NNN` / `TASK-NNN`, color-tinted, no fill. | `components.badge.variants.id_*` |
 | `KbdChip` | Keycap with inset bottom shadow. Mono 11px. | `components.kbd_chip` |
 | `StatusBadge` | open / archiving / archived / abandoned / blocked / escalated. | `components.badge.variants.status_*` |
-| `TierBadge` | green / yellow / red tier scorecard pill. Reserved for Agents page. | `components.badge.variants.tier_*` |
 | `MessageBubble` | One of `{founder, worker, manager, decline, system}` variants. | `components.message_bubble` |
 | `InboxRow` | Two-line row, needs-you dot, active marker. | `components.inbox_row` |
 | `Composer` | Sticky-bottom textarea + helper + Send. | `components.textarea` + `components.button.primary` |
 | `FormField` | Label + Input/Textarea + inline error message. Used by all five dialogs. | `components.input` + `typography.label` |
 | `HelpSheet` | The HelpDrawer rendered as a Dialog (per UI_SPEC §5). | `components.dialog` + `components.kbd_chip` |
 
-**Future patterns (not in v0.1):** `TaskCard` (Tasks page), `ScorecardRow` (Agents
-page), `AuditRow` (Audit page), `KbCard` (KB page). Each unlocks one placeholder
-screen from UI_SPEC §§8–11.
+**Future patterns (not in v0.1):** `TaskCard` (Tasks page), `AuditRow`
+(Audit page), `KbCard` (KB page). Each unlocks one placeholder screen
+from UI_SPEC §§8–11.
 
 ---
 
