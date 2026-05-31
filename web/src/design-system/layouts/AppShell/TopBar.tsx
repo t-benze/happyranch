@@ -125,36 +125,6 @@ export function TopBar(): JSX.Element {
           <span className="text-fg">Ranch</span>
         </span>
       </div>
-      <Select
-        value={activeSlug ?? undefined}
-        onValueChange={(target) => {
-          if (!target || target === activeSlug) return;
-          navigate(routes.inboxForOrg(target));
-        }}
-        disabled={!switchEnabled}
-      >
-        <SelectTrigger aria-label="Active org" className="w-[180px]">
-          <SelectValue placeholder="Select org…" />
-        </SelectTrigger>
-        <SelectContent>
-          {orgsQuery.data?.orgs.map((o) => (
-            <SelectItem key={o.slug} value={o.slug}>
-              {o.slug}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      {!isPrototype && (
-        <button
-          type="button"
-          onClick={() => setAddOrgOpen(true)}
-          aria-label="Add org"
-          title="Add org"
-          className="text-fg-muted hover:bg-bg-raised hover:text-fg focus-visible:ring-accent inline-flex h-7 w-7 items-center justify-center rounded transition-colors focus-visible:ring-2 focus-visible:outline-none"
-        >
-          <Plus size={16} aria-hidden="true" />
-        </button>
-      )}
       <nav aria-label="Primary" className="flex items-center gap-1 text-sm">
         <NavTab {...placeholderTab('dashboard')}>Dashboard</NavTab>
         <NavTab to={threadsHref} enabled={!!activeSlug && threadsHref !== '#'}>
@@ -169,7 +139,37 @@ export function TopBar(): JSX.Element {
         </NavTab>
         <NavTab {...placeholderTab('jobs')}>Jobs</NavTab>
       </nav>
-      <div className="ml-auto flex items-center gap-1">
+      <div className="ml-auto flex items-center gap-2">
+        <Select
+          value={activeSlug ?? undefined}
+          onValueChange={(target) => {
+            if (!target || target === activeSlug) return;
+            navigate(routes.inboxForOrg(target));
+          }}
+          disabled={!switchEnabled}
+        >
+          <SelectTrigger aria-label="Active org" className="w-[160px]">
+            <SelectValue placeholder="Select org…" />
+          </SelectTrigger>
+          <SelectContent>
+            {orgsQuery.data?.orgs.map((o) => (
+              <SelectItem key={o.slug} value={o.slug}>
+                {o.slug}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {!isPrototype && (
+          <button
+            type="button"
+            onClick={() => setAddOrgOpen(true)}
+            aria-label="Add org"
+            title="Add org"
+            className="text-fg-muted hover:bg-bg-raised hover:text-fg focus-visible:ring-accent inline-flex h-7 w-7 items-center justify-center rounded transition-colors focus-visible:ring-2 focus-visible:outline-none"
+          >
+            <Plus size={16} aria-hidden="true" />
+          </button>
+        )}
         <DensityToggle />
         <ThemeToggle />
       </div>

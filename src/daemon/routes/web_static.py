@@ -88,12 +88,13 @@ def register(app: FastAPI) -> None:
 
         @app.exception_handler(StarletteHTTPException)
         async def _spa_or_404(request: Request, exc: StarletteHTTPException):
-            if (
-                request.method == "GET"
-                and exc.status_code == 404
-                and _is_spa_route(request.url.path)
-            ):
-                return FileResponse(str(index_path))
+            if request.method == "GET" and exc.status_code == 404:
+                # Serve root-level static files (favicon, manifests, etc.)
+                file_path = dist / request.url.path.lstrip("/")
+                if file_path.is_file():
+                    return FileResponse(str(file_path))
+                if _is_spa_route(request.url.path):
+                    return FileResponse(str(index_path))
             return JSONResponse(
                 status_code=exc.status_code,
                 content={"detail": exc.detail},
