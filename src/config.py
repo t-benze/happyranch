@@ -38,6 +38,7 @@ class Settings(BaseSettings):
 
     # Daemon
     daemon_bind_host: str = "127.0.0.1"
+    daemon_port: int = 8765  # 0 = ephemeral (old behaviour)
 
     def get_protocol_dir(self) -> Path:
         return self.project_root / self.protocol_dir

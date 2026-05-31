@@ -91,13 +91,12 @@ def _build_state(settings: Settings) -> DaemonState:
     return state
 
 
-def _bind_port(host: str) -> tuple[socket.socket, int]:
-    """Bind an ephemeral port and return (socket, port)."""
+def _bind_port(host: str, port: int = 0) -> tuple[socket.socket, int]:
+    """Bind to `port` (0 = ephemeral) and return (socket, actual_port)."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind((host, 0))
-    port = sock.getsockname()[1]
-    return sock, port
+    sock.bind((host, port))
+    return sock, sock.getsockname()[1]
 
 
 def _install_signal_handlers(state: DaemonState) -> None:
@@ -133,7 +132,7 @@ def main() -> None:
     state = _build_state(settings)
     app = create_app(state)
 
-    sock, port = _bind_port(settings.daemon_bind_host)
+    sock, port = _bind_port(settings.daemon_bind_host, settings.daemon_port)
     paths.port_file().write_text(str(port))
     paths.pid_file().write_text(str(os.getpid()))
     _install_signal_handlers(state)
