@@ -82,7 +82,49 @@ export function TopBar(): JSX.Element {
       role="banner"
       className="border-border bg-bg-subtle flex h-12 shrink-0 items-center gap-4 border-b px-4"
     >
-      <div className="text-fg font-semibold">HappyRanch</div>
+      {/* Brand lockup: lasso mark + Baloo 2 wordmark */}
+      <div className="flex shrink-0 items-center gap-1.5">
+        <svg
+          viewBox="0 0 100 100"
+          width="22"
+          height="22"
+          aria-hidden="true"
+          className="text-accent"
+          style={{ color: '#4ade80' }}
+        >
+          <g transform="rotate(-7 50 44)">
+            <path
+              d="M50 26 C68 26 78 34 78 44 C78 54 66 60 50 60 C34 60 22 54 22 44 C22 34 32 26 50 26 Z"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="6.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </g>
+          <ellipse cx="41" cy="59" rx="6.2" ry="5" fill="none" stroke="currentColor" strokeWidth="5" />
+          <path
+            d="M44 63 C50 78 70 82 80 71 C85 65 83 59 77 60"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="6.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+        <span
+          style={{
+            fontFamily: "'Baloo 2', sans-serif",
+            fontWeight: 800,
+            fontSize: '1rem',
+            letterSpacing: '-0.03em',
+            lineHeight: 1,
+          }}
+        >
+          <span style={{ color: '#4ade80' }}>Happy</span>
+          <span className="text-fg">Ranch</span>
+        </span>
+      </div>
       <Select
         value={activeSlug ?? undefined}
         onValueChange={(target) => {
