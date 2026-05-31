@@ -76,7 +76,7 @@
         "components.textarea",
         "components.button"
       ],
-      "example": "<Composer onSend={(md, to) => {}} helper='Enter to send · Shift+Enter for new line' agents={[]} threadId='THR-001' />"
+      "example": "<Composer onSend={(md) => {}} helper='Enter to send · Shift+Enter for new line' agents={[]} threadId='THR-001' />"
     },
     {
       "name": "DashboardLayout",
@@ -125,6 +125,14 @@
         "components.empty_state"
       ],
       "example": "<EmptyState title='No threads' body='Start one with grassland threads compose.' />"
+    },
+    {
+      "name": "ErrorBoundary",
+      "layer": "layout",
+      "import": "@/design-system/layouts/AppShell/ErrorBoundary",
+      "variants": {},
+      "consumes": [],
+      "example": "<ErrorBoundary><RouteContent /></ErrorBoundary>"
     },
     {
       "name": "FilterSidebar",

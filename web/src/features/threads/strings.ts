@@ -6,8 +6,6 @@ export const THREAD_ERROR_STRINGS: Record<string, string> = {
   empty_subject: 'Subject is required.',
   empty_recipients: 'At least one recipient is required.',
   empty_body: 'Body is required.',
-  addressed_to_mixed_at_all: "Can't mix @all with specific names.",
-  addressed_to_not_subset: "Addressed-to name isn't a participant.",
   unknown_agent: "That agent doesn't exist in this org.",
   unknown_team: "That team doesn't exist in this org.",
   thread_not_open: 'This thread is no longer open.',

@@ -38,9 +38,8 @@ def _render_message(m: ThreadMessage) -> str:
     ts = m.created_at.isoformat()
     if m.kind is ThreadMessageKind.MESSAGE:
         head = f"[Message {m.seq} — {m.speaker} · {ts}]"
-        addressed = f"To: {', '.join(m.addressed_to)}" if m.addressed_to else ""
         body = m.body_markdown or ""
-        return "\n".join(filter(None, [head, addressed, "", body])) + "\n---"
+        return "\n".join(filter(None, [head, "", body])) + "\n---"
     if m.kind is ThreadMessageKind.DECLINE:
         return (
             f"[Message {m.seq} — {m.speaker} · {ts}]\n"
@@ -54,7 +53,6 @@ def _render_message(m: ThreadMessage) -> str:
 def _purpose_note(
     purpose: str,
     triggering_seq: int,
-    addressed_to: list[str] | None,
     invoked_agent: str,
     triggering_message: "ThreadMessage | None" = None,
 ) -> str:
@@ -74,13 +72,32 @@ def _purpose_note(
             f"from this turn is not allowed; mention any new action in the "
             f"reply and let the founder loop in."
         )
-    # purpose == "reply"
-    addr = addressed_to or []
-    if addr == ["@all"]:
-        return f"Message {triggering_seq} addressed @all"
-    if invoked_agent in addr:
-        return f"Message {triggering_seq} addressed you individually"
-    return f"Message {triggering_seq} (no explicit addressee)"
+    # purpose == "reply" — broadcast model; all participants receive the message
+    return f"Message {triggering_seq} was posted to this thread"
+
+
+def _decline_by_default_doctrine() -> str:
+    return (
+        "## Decline-by-Default in Threads\n\n"
+        "This invocation was minted because a new message was posted to this\n"
+        "thread. Every participant gets an invocation on every message — that\n"
+        "does NOT mean every participant should reply.\n\n"
+        "Default behavior: call `grassland threads decline --from-file <payload>`\n"
+        "with no reason. Your invocation is consumed silently; no transcript\n"
+        "entry is written.\n\n"
+        "Reply (with `grassland threads reply --from-file <payload>`) only when\n"
+        "ALL of the following hold:\n"
+        "- The latest message contains a question, request, or hand-off that\n"
+        "  you can uniquely answer based on your role.\n"
+        "- You have substantive content to add — not acknowledgment, not\n"
+        "  \"I agree\", not \"noted\".\n"
+        "- No other participant has already covered the same ground in a\n"
+        "  recent reply.\n\n"
+        "The founder is a participant; she reads the full thread in the web UI.\n"
+        "You do not need to \"keep her informed\" by replying.\n\n"
+        "If you are unsure: decline. The thread can always be re-engaged by\n"
+        "another message.\n\n"
+    )
 
 
 def build_thread_prompt(
@@ -94,7 +111,6 @@ def build_thread_prompt(
     triggering_seq: int,
 ) -> str:
     triggering = next((m for m in messages if m.seq == triggering_seq), None)
-    addressed_to = triggering.addressed_to if triggering else None
     parts_str = ", ".join(p.agent_name for p in participants)
     history = "\n".join(_render_message(m) for m in messages)
     forwarded = (
@@ -102,10 +118,12 @@ def build_thread_prompt(
         if thread.forwarded_from_id else ""
     )
     note = _purpose_note(
-        purpose, triggering_seq, addressed_to, invoked_agent,
+        purpose, triggering_seq, invoked_agent,
         triggering_message=triggering,
     )
+    doctrine = _decline_by_default_doctrine() if purpose == "reply" else ""
     return (
+        f"{doctrine}"
         f"You are participating in thread {thread.id}: \"{thread.subject}\".\n\n"
         f"Participants: {parts_str}.\n"
         f"Started: {thread.started_at.isoformat()}. {forwarded}\n\n"
@@ -242,7 +260,7 @@ async def run_invocation(
     after = org_state.db.get_invocation_any_status(invocation_token)
     if after is None:
         return
-    if after.status is ThreadInvocationStatus.CONSUMED:
+    if after.status in {ThreadInvocationStatus.CONSUMED, ThreadInvocationStatus.DECLINED}:
         return
 
     # Subprocess exited without consuming → auto-decline.
@@ -258,14 +276,8 @@ async def run_invocation(
     org_state.db.fail_invocation(
         invocation_token, status=status, decline_reason=reason,
     )
-    if inv.purpose is not ThreadInvocationPurpose.CLOSE_OUT:
-        org_state.db.append_thread_message(
-            thread_id=inv.thread_id,
-            speaker=inv.agent_name,
-            kind=ThreadMessageKind.DECLINE,
-            decline_reason=reason,
-        )
-        org_state.db.increment_thread_turns_used(inv.thread_id, by=1)
+    # Spec §6: silent decline — no thread_messages row, no turns_used increment.
+    # The invocation row status (timeout/failed) and decline_reason are the record.
     AuditLogger(org_state.db).log_thread_invocation_failed(
         inv.thread_id,
         agent=inv.agent_name,

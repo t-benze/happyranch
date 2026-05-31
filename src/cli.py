@@ -1979,8 +1979,7 @@ def cmd_threads_compose(args: argparse.Namespace) -> None:
         print(
             f"{body['thread_id']}  started={_fmt_ts(body['started_at'])}  "
             f"composed_by={body['composed_by']}  "
-            f"pending={body['pending_replies']}  "
-            f"founder_notified={body['founder_notified']}"
+            f"pending={body['pending_replies']}"
         )
         return
 
@@ -1996,7 +1995,6 @@ def cmd_threads_compose(args: argparse.Namespace) -> None:
         "subject": args.subject,
         "recipients": recipients,
         "body_markdown": args.body,
-        "addressed_to": ["@all"],
     }
     r = client.post(f"/api/v1/orgs/{slug}/threads", json=payload)
     if not _ok(r):
@@ -2128,8 +2126,6 @@ def cmd_threads_show(args: argparse.Namespace) -> None:
     for m in data.get("messages", []):
         kind = m["kind"]
         head = f"--- seq {m['seq']} — {m['speaker']} · {kind}"
-        if m.get("addressed_to"):
-            head += f" · To: {', '.join(m['addressed_to'])}"
         print(head)
         if m.get("body_markdown"):
             print(m["body_markdown"])
@@ -2275,7 +2271,6 @@ def cmd_threads_forward(args: argparse.Namespace) -> None:
         "subject": args.subject or default_subject,
         "recipients": [r.strip() for r in args.recipients.split(",") if r.strip()],
         "body_markdown": body,
-        "addressed_to": ["@all"],
         "forwarded_from_id": source,
         "forwarded_from_kind": kind,
     }

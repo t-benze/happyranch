@@ -71,7 +71,6 @@ def test_agent_compose_from_task_spawns_thread_and_recipient_replies(
         '{"composer": "engineering_head",\n'
         ' "subject": "int test loop in",\n'
         ' "recipients": ["payment_agt"],\n'
-        ' "addressed_to": ["@all"],\n'
         ' "body_markdown": "looping payment_agt in"}\n'
         'ENDJSON\n'
         '\n'

@@ -285,6 +285,16 @@ Auto-revisit on opaque agent failures (subprocess timeout, no-completion-callbac
 - **`failure_kind` lives top-level on `auto_revisit_of` audit payloads, NOT nested under `error_context`.** `_count_prior_auto_revisits_by_kind` does a flat lookup; nesting it would slow counting and require parser changes.
 - **Cascade still cascade-fails ancestors** even when `root_auto_revisit_spawned=True`; only the Feishu notification is suppressed. The new root via `revisit_of_task_id` is an independent retry tree, not a continuation of the old lineage.
 
+## Thread broadcast routing (addressing model)
+
+Every `kind=message` written to a thread mints a `REPLY` invocation for every participant except the speaker. There is no `addressed_to` field, `@all` token, or `@founder` token — all participants receive an invocation on every message. Agents triage via a decline-by-default doctrine injected into the `REPLY` invocation prompt; declines are silent (no transcript row, no turn increment). The founder participates via the web UI exclusively — there are no in-thread Feishu pings (Feishu is used only for task escalations, failures, and job requests, not for ongoing thread conversation). Spec: `docs/superpowers/specs/2026-05-30-thread-broadcast-only-design.md`.
+
+**Load-bearing invariants:**
+
+- **Broadcast is unconditional** — `_resolve_addressed_agents` and `_verify_addressed` are removed; the mint loop in `routes/threads.py` iterates `thread_participants` and excludes `speaker_name`. No opt-out.
+- **Declines are silent** — `decline` route returns 200 but writes no `thread_messages` row and increments no turn counter. `responder_status` on each message shows per-participant `pending|replied|declined|failed` state (via DB join on `thread_invocations.triggering_seq`).
+- **Doctrine is prompt-injected, not skill-embedded** — the reply-vs-decline judgment is in the thread-invocation prompt's "Decline-by-Default" section (purpose `REPLY` only), not in `protocol/skills/thread/SKILL.md`. The skill covers operational mechanics only.
+
 ## Thread task-followup (system bridges task terminal → thread)
 
 When a task dispatched from a thread reaches its true terminal state, `_maybe_post_thread_followup` (`src/orchestrator/run_step.py`) appends a `task_completed` or `task_failed` SYSTEM message to the originating thread and mints a fresh invocation with purpose `TASK_FOLLOWUP` so the dispatching agent can compose the result-bearing reply it promised. Spec: `docs/superpowers/specs/2026-05-28-thread-task-followup-design.md`.
@@ -353,7 +363,7 @@ Per-org opt-in via `feishu_notifications` in `<runtime>/orgs/<slug>/org/config.y
 
 - `notify_on_failure: true` — failure replies; hook in `run_step.py:_notify_failure_if_eligible` gates on enabled + not cancelled + no auto-revisit spawned. Listener routes `(kind=failure, decision=revisit)` to `revisit_from_notification`.
 - `allow_dispatch: true` — top-level DISPATCH messages parsed by `parse_top_level_message(text)`; `dispatch_via_feishu` raises `DispatchError(reason ∈ {empty_brief, unknown_team, dispatch_failed})`.
-- **Jobs** — `submit_job` fires `notify_job_submitted`; `APPROVE` / `REJECT\n<reason>` reply routes; terminal triggers `notify_job_run_result`. Notification `kind="job_request"`; JOB-NNN lives in the `task_id` column (same overload as `thread_addressed`). Spec: `docs/superpowers/specs/2026-05-25-feishu-script-request-notifications-design.md`.
+- **Jobs** — `submit_job` fires `notify_job_submitted`; `APPROVE` / `REJECT\n<reason>` reply routes; terminal triggers `notify_job_run_result`. Notification `kind="job_request"`; JOB-NNN lives in the `task_id` column (same `task_id`-column overload used by other non-task scopes). Spec: `docs/superpowers/specs/2026-05-25-feishu-script-request-notifications-design.md`.
 
 CLI fallbacks (`grassland resolve-escalation`, `grassland revisit`) consume any open notification row for the task with `consumed_by="cli-fallback"`, so a CLI-first resolution silently no-ops the later Feishu reply.
 

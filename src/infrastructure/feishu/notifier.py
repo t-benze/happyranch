@@ -398,63 +398,6 @@ class EscalationNotifier:
             # the original audit row for dispatch_via_feishu_rejected already exists.
             pass
 
-    async def send_thread_addressed(
-        self,
-        *,
-        thread_id: str,
-        subject: str,
-        composer: str,
-        body_text: str,
-        addressed_to: list[str],
-    ) -> bool:
-        """Push a card to the founder when an agent addresses `@founder` in a thread.
-
-        Returns True iff a send was attempted (i.e., this notifier is configured
-        and reached the send call). Delivery failures are swallowed and audited;
-        caller still receives True so it can report `founder_notified: true` —
-        the audit log is the canonical "did it actually deliver" record.
-        Returns False only if a precondition failure prevents even attempting.
-        """
-        preview = (
-            body_text if len(body_text) <= _HINT_PREVIEW_CAP
-            else body_text[:_HINT_PREVIEW_CAP] + "…"
-        )
-        title = f"Thread {thread_id} · started by {composer}"
-        lines = [
-            f"Subject: {subject}",
-            f"Recipients: {', '.join(addressed_to)}",
-            "",
-            preview,
-        ]
-        try:
-            now = datetime.now(timezone.utc)
-            message_id = self._client.send_post_message(
-                chat_id=self._config.chat_id,
-                title=title,
-                body_lines=lines,
-            )
-            expires = now + timedelta(hours=self._config.reply_ttl_hours)
-            self._db.mint_escalation_notification(
-                feishu_message_id=message_id,
-                org_slug=self._slug,
-                task_id=thread_id,
-                chat_id=self._config.chat_id,
-                expires_at=expires,
-                kind="thread_addressed",
-            )
-            self._audit.log_thread_founder_notify_sent(
-                thread_id=thread_id, feishu_message_id=message_id,
-            )
-        except Exception as exc:
-            logger.exception("send_thread_addressed failed for thread %s", thread_id)
-            try:
-                self._audit.log_thread_founder_notify_failed(
-                    thread_id=thread_id, error=f"{type(exc).__name__}: {exc}",
-                )
-            except Exception:
-                logger.exception("audit log_thread_founder_notify_failed also failed")
-        return True
-
     async def send_job_request(
         self,
         *,
@@ -490,7 +433,7 @@ class EscalationNotifier:
             self._db.mint_escalation_notification(
                 feishu_message_id=message_id,
                 org_slug=self._slug,
-                task_id=job_id,            # SR-NNN in task_id column (matches thread_addressed)
+                task_id=job_id,            # JOB-NNN in task_id column
                 chat_id=self._config.chat_id,
                 expires_at=expires,
                 kind="job_request",

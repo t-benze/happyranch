@@ -52,3 +52,12 @@ export class ErrorBoundary extends Component<Props, State> {
     );
   }
 }
+
+export const meta = {
+  name: "ErrorBoundary",
+  layer: "layout",
+  import: "@/design-system/layouts/AppShell/ErrorBoundary",
+  variants: {},
+  consumes: [],
+  example: "<ErrorBoundary><RouteContent /></ErrorBoundary>",
+} as const;

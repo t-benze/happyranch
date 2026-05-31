@@ -153,15 +153,23 @@ export interface ThreadDetailResponse extends ThreadRecord {
   messages: ThreadMessage[];
 }
 
+export type ResponderStatus = "pending" | "replied" | "declined" | "failed";
+
+export interface ResponderStatusEntry {
+  agent_name: string;
+  status: ResponderStatus;
+  responded_at: string | null;
+}
+
 export interface ThreadMessage {
   seq: number;
   speaker: string; // "founder" | <agent_name>
   kind: ThreadMessageKind;
   body_markdown: string | null;
-  addressed_to: string[] | null;
   decline_reason: string | null;
   system_payload: Record<string, unknown> | null;
   created_at: string;
+  responder_status: ResponderStatusEntry[];
 }
 
 export interface ThreadInboxEvent {

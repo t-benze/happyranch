@@ -1992,7 +1992,6 @@ class Database:
         speaker: str,
         kind: ThreadMessageKind,
         body_markdown: str | None = None,
-        addressed_to: list[str] | None = None,
         decline_reason: str | None = None,
         system_payload: dict | None = None,
     ) -> int:
@@ -2010,15 +2009,14 @@ class Database:
         next_seq = cursor.fetchone()["next_seq"]
         self._conn.execute(
             "INSERT INTO thread_messages (thread_id, seq, speaker, kind, "
-            "body_markdown, addressed_to_json, decline_reason, system_payload_json, "
-            "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "body_markdown, decline_reason, system_payload_json, "
+            "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 thread_id,
                 next_seq,
                 speaker,
                 kind.value,
                 body_markdown,
-                json.dumps(addressed_to) if addressed_to else None,
                 decline_reason,
                 json.dumps(system_payload) if system_payload else None,
                 _now().isoformat(),
@@ -2044,7 +2042,6 @@ class Database:
                 speaker=r["speaker"],
                 kind=ThreadMessageKind(r["kind"]),
                 body_markdown=r["body_markdown"],
-                addressed_to=json.loads(r["addressed_to_json"]) if r["addressed_to_json"] else None,
                 decline_reason=r["decline_reason"],
                 system_payload=json.loads(r["system_payload_json"]) if r["system_payload_json"] else None,
                 created_at=datetime.fromisoformat(r["created_at"]),
@@ -2070,7 +2067,6 @@ class Database:
             speaker=row["speaker"],
             kind=ThreadMessageKind(row["kind"]),
             body_markdown=row["body_markdown"],
-            addressed_to=json.loads(row["addressed_to_json"]) if row["addressed_to_json"] else None,
             decline_reason=row["decline_reason"],
             system_payload=json.loads(row["system_payload_json"]) if row["system_payload_json"] else None,
             created_at=datetime.fromisoformat(row["created_at"]),
@@ -2153,6 +2149,23 @@ class Database:
         return cursor.rowcount == 1
 
     @_synchronized
+    def mark_invocation_declined(
+        self, token: str, *, decline_reason: str | None = None
+    ) -> bool:
+        """Set invocation status to 'declined' with an optional reason.
+
+        Returns True if the row was updated (was pending), False otherwise.
+        """
+        cursor = self._conn.execute(
+            "UPDATE thread_invocations SET status = 'declined', "
+            "consumed_at = ?, decline_reason = ? "
+            "WHERE invocation_token = ? AND status = 'pending'",
+            (_now().isoformat(), decline_reason, token),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    @_synchronized
     def record_dispatch_on_invocation(
         self, token: str, *, task_id: str
     ) -> bool:
@@ -2209,13 +2222,51 @@ class Database:
         return [self._row_to_invocation(r) for r in cursor.fetchall()]
 
     @_synchronized
+    def list_invocations_for_thread_grouped_by_seq(
+        self, thread_id: str
+    ) -> dict[int, list[dict[str, object]]]:
+        """Return {triggering_seq: [{agent_name, status, consumed_at}, ...]}
+        for every REPLY invocation in this thread.
+
+        Used by GET /threads/{id} to build the per-message responder_status
+        strip. Status values are the raw DB values (pending/consumed/declined/
+        failed); the route's response builder renames consumed → replied.
+
+        Note: ``consumed_at`` is set by both reply (``status='consumed'``) and
+        decline (``status='declined'``) paths — the schema has no separate
+        ``declined_at`` column. The wire ``responded_at`` field is sourced from
+        this single timestamp regardless of which path consumed the invocation.
+        """
+        rows = self._conn.execute(
+            "SELECT triggering_seq, agent_name, status, consumed_at "
+            "FROM thread_invocations "
+            "WHERE thread_id = ? AND purpose = 'reply' "
+            "ORDER BY triggering_seq, agent_name",
+            (thread_id,),
+        ).fetchall()
+        grouped: dict[int, list[dict[str, object]]] = {}
+        for r in rows:
+            entry = {
+                "agent_name": r["agent_name"],
+                "status": r["status"],
+                "consumed_at": r["consumed_at"],
+            }
+            grouped.setdefault(r["triggering_seq"], []).append(entry)
+        return grouped
+
+    @_synchronized
     def count_pending_turn_obligations(self, thread_id: str) -> int:
-        """Pending invocations that will increment turns_used when consumed.
+        """Count pending invocations that represent future turn obligations.
 
         REPLY, BOOTSTRAP, TASK_FOLLOWUP count. CLOSE_OUT is excluded
-        (per threads spec §5.10.1). Single-source helper for both the
-        send/compose projection in routes/threads.py and the auto-extend
-        projection in _maybe_post_thread_followup.
+        (per threads spec §5.10.1).
+
+        No current callers in production routes — kept as a documented API.
+        After the broadcast-only routing change (spec §7, "invite is free"),
+        the /invite projection was dropped entirely; /send and /compose use
+        a simpler turns_used + 1 projection; the task-followup auto-extend
+        path (mint_followup_invocation_with_cap_extend) inlines its own
+        pending-count SQL. Unit tests exercise this helper directly.
         """
         counted = (
             ThreadInvocationPurpose.REPLY.value,
@@ -2581,10 +2632,9 @@ class Database:
         expires_at: datetime,
         kind: str = "escalation",
     ) -> None:
-        if kind not in ("escalation", "failure", "thread_addressed", "job_request"):
+        if kind not in ("escalation", "failure", "job_request"):
             raise ValueError(
-                f"kind must be 'escalation', 'failure', 'thread_addressed', "
-                f"or 'job_request', got {kind!r}"
+                f"kind must be 'escalation', 'failure', or 'job_request', got {kind!r}"
             )
         expires_at_str = expires_at.astimezone(timezone.utc).isoformat()
         self._conn.execute(

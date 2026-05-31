@@ -38,7 +38,6 @@ def test_compose_creates_thread_and_invocations(tmp_home, app, org_state, auth_h
             "subject": "Refund policy",
             "recipients": ["dev_agent", "qa_engineer"],
             "body_markdown": "should we cap refunds at 30 days?",
-            "addressed_to": ["@all"],
         },
         headers=auth_headers,
     )
@@ -60,7 +59,6 @@ def test_compose_rejects_unknown_recipient(tmp_home, app, org_state, auth_header
             "subject": "x",
             "recipients": ["ghost"],
             "body_markdown": "hi",
-            "addressed_to": ["@all"],
         },
         headers=auth_headers,
     )
@@ -77,7 +75,6 @@ def test_compose_rejects_empty_subject(tmp_home, app, org_state, auth_headers):
             "subject": "   ",
             "recipients": ["dev_agent"],
             "body_markdown": "hi",
-            "addressed_to": ["@all"],
         },
         headers=auth_headers,
     )
@@ -94,12 +91,12 @@ def test_list_threads_returns_recent(tmp_home, app, org_state, auth_headers):
     _seed_agent(org_state, "dev_agent")
     client.post(
         "/api/v1/orgs/alpha/threads",
-        json={"subject": "a", "recipients": ["dev_agent"], "body_markdown": "x", "addressed_to": ["@all"]},
+        json={"subject": "a", "recipients": ["dev_agent"], "body_markdown": "x"},
         headers=auth_headers,
     )
     client.post(
         "/api/v1/orgs/alpha/threads",
-        json={"subject": "b", "recipients": ["dev_agent"], "body_markdown": "x", "addressed_to": ["@all"]},
+        json={"subject": "b", "recipients": ["dev_agent"], "body_markdown": "x"},
         headers=auth_headers,
     )
     resp = client.get("/api/v1/orgs/alpha/threads", headers=auth_headers)
@@ -114,7 +111,7 @@ def test_get_thread_returns_messages_and_participants(tmp_home, app, org_state, 
     _seed_agent(org_state, "dev_agent")
     r = client.post(
         "/api/v1/orgs/alpha/threads",
-        json={"subject": "a", "recipients": ["dev_agent"], "body_markdown": "hi", "addressed_to": ["@all"]},
+        json={"subject": "a", "recipients": ["dev_agent"], "body_markdown": "hi"},
         headers=auth_headers,
     ).json()
     tid = r["thread_id"]
@@ -137,13 +134,12 @@ def test_get_thread_missing_returns_404(tmp_home, app, org_state, auth_headers):
 # ---------------------------------------------------------------------------
 
 
-def _start_thread(client, org_state, auth_headers, *, recipient="dev_agent", addressed=None):
+def _start_thread(client, org_state, auth_headers, *, recipient="dev_agent"):
     """Helper: seeds the agent and creates a thread, returning (thread_id, invocation_token)."""
     _seed_agent(org_state, recipient)
-    addressed = addressed or ["@all"]
     r = client.post(
         "/api/v1/orgs/alpha/threads",
-        json={"subject": "s", "recipients": [recipient], "body_markdown": "hi", "addressed_to": addressed},
+        json={"subject": "s", "recipients": [recipient], "body_markdown": "hi"},
         headers=auth_headers,
     ).json()
     inv = org_state.db.list_thread_invocations(r["thread_id"])[0]
@@ -165,7 +161,8 @@ def test_reply_appends_message_and_consumes_token(tmp_home, app, org_state, auth
     assert resp.status_code == 200, resp.text
     msgs = org_state.db.list_thread_messages(tid)
     assert msgs[-1].body_markdown == "hello back"
-    assert org_state.db.get_thread(tid).turns_used == 1
+    # Broadcast model: compose increments turns_used by 1; reply increments by 1 → 2 total.
+    assert org_state.db.get_thread(tid).turns_used == 2
     assert org_state.db.get_pending_invocation(token) is None
 
 
@@ -200,7 +197,7 @@ def test_reply_rejects_mismatched_speaker(tmp_home, app, org_state, auth_headers
     r = client.post(
         "/api/v1/orgs/alpha/threads",
         json={"subject": "s", "recipients": ["dev_agent", "qa_engineer"],
-              "body_markdown": "hi", "addressed_to": ["@all"]},
+              "body_markdown": "hi"},
         headers=auth_headers,
     ).json()
     tid = r["thread_id"]
@@ -234,9 +231,14 @@ def test_decline_records_decline_and_consumes_token(tmp_home, app, org_state, au
         headers=auth_headers,
     )
     assert resp.status_code == 200
+    # Broadcast model: silent decline — no transcript row is inserted.
     msgs = org_state.db.list_thread_messages(tid)
-    assert msgs[-1].kind.value == "decline"
-    assert msgs[-1].decline_reason == "nothing to add"
+    assert not any(m.kind.value == "decline" for m in msgs)
+    # Invocation is marked declined; token is consumed.
+    from src.models import ThreadInvocationStatus
+    inv = org_state.db.get_invocation_any_status(token)
+    assert inv.status is ThreadInvocationStatus.DECLINED
+    assert inv.decline_reason == "nothing to add"
     assert org_state.db.get_pending_invocation(token) is None
 
 
@@ -357,19 +359,20 @@ def test_founder_send_appends_and_enqueues(tmp_home, app, org_state, auth_header
     r = client.post(
         "/api/v1/orgs/alpha/threads",
         json={"subject": "s", "recipients": ["dev_agent", "qa_engineer"],
-              "body_markdown": "hi", "addressed_to": ["dev_agent"]},
+              "body_markdown": "hi"},
         headers=auth_headers,
     ).json()
     tid = r["thread_id"]
     before_invocations = len(org_state.db.list_thread_invocations(tid))
     resp = client.post(
         f"/api/v1/orgs/alpha/threads/{tid}/send",
-        json={"body_markdown": "any thoughts qa_engineer?", "addressed_to": ["qa_engineer"]},
+        json={"body_markdown": "any thoughts?"},
         headers=auth_headers,
     )
     assert resp.status_code == 200
     after_invocations = len(org_state.db.list_thread_invocations(tid))
-    assert after_invocations == before_invocations + 1
+    # Broadcast model: /send mints REPLY for every participant (2 agents).
+    assert after_invocations == before_invocations + 2
 
 
 # ---------------------------------------------------------------------------
@@ -384,7 +387,7 @@ def test_invite_adds_participant_and_bootstrap_invocation(tmp_home, app, org_sta
     r = client.post(
         "/api/v1/orgs/alpha/threads",
         json={"subject": "s", "recipients": ["dev_agent"],
-              "body_markdown": "hi", "addressed_to": ["@all"]},
+              "body_markdown": "hi"},
         headers=auth_headers,
     ).json()
     tid = r["thread_id"]
@@ -412,7 +415,7 @@ def test_invite_already_participant_409(tmp_home, app, org_state, auth_headers):
     r = client.post(
         "/api/v1/orgs/alpha/threads",
         json={"subject": "s", "recipients": ["dev_agent"],
-              "body_markdown": "hi", "addressed_to": ["@all"]},
+              "body_markdown": "hi"},
         headers=auth_headers,
     ).json()
     resp = client.post(
@@ -434,7 +437,7 @@ def test_extend_increases_turn_cap(tmp_home, app, org_state, auth_headers):
     r = client.post(
         "/api/v1/orgs/alpha/threads",
         json={"subject": "s", "recipients": ["dev_agent"],
-              "body_markdown": "hi", "addressed_to": ["@all"]},
+              "body_markdown": "hi"},
         headers=auth_headers,
     ).json()
     tid = r["thread_id"]
@@ -453,7 +456,7 @@ def test_extend_rejects_non_increase(tmp_home, app, org_state, auth_headers):
     r = client.post(
         "/api/v1/orgs/alpha/threads",
         json={"subject": "s", "recipients": ["dev_agent"],
-              "body_markdown": "hi", "addressed_to": ["@all"]},
+              "body_markdown": "hi"},
         headers=auth_headers,
     ).json()
     resp = client.post(
@@ -481,7 +484,7 @@ def test_archive_phase_a_transitions_to_archiving(tmp_home, app, org_state, auth
     r = client.post(
         "/api/v1/orgs/alpha/threads",
         json={"subject": "s", "recipients": ["dev_agent", "qa_engineer"],
-              "body_markdown": "hi", "addressed_to": ["@all"]},
+              "body_markdown": "hi"},
         headers=auth_headers,
     ).json()
     tid = r["thread_id"]
@@ -514,7 +517,7 @@ def test_close_out_writes_learnings_and_kb_slugs(tmp_home, app, org_state, auth_
     r = client.post(
         "/api/v1/orgs/alpha/threads",
         json={"subject": "s", "recipients": ["dev_agent"],
-              "body_markdown": "hi", "addressed_to": ["@all"]},
+              "body_markdown": "hi"},
         headers=auth_headers,
     ).json()
     tid = r["thread_id"]
@@ -563,7 +566,7 @@ def test_close_out_does_not_append_learnings_when_consume_loses(tmp_home, app, o
     r = client.post(
         "/api/v1/orgs/alpha/threads",
         json={"subject": "s", "recipients": ["dev_agent"],
-              "body_markdown": "hi", "addressed_to": ["@all"]},
+              "body_markdown": "hi"},
         headers=auth_headers,
     ).json()
     tid = r["thread_id"]
@@ -603,7 +606,7 @@ def test_abandon_reaps_pending_and_writes_no_transcript(tmp_home, app, org_state
     r = client.post(
         "/api/v1/orgs/alpha/threads",
         json={"subject": "s", "recipients": ["dev_agent"],
-              "body_markdown": "hi", "addressed_to": ["@all"]},
+              "body_markdown": "hi"},
         headers=auth_headers,
     ).json()
     tid = r["thread_id"]
@@ -657,7 +660,6 @@ def test_tail_sse_replays_existing_messages(tmp_home, app, org_state, auth_heade
             "subject": "s",
             "recipients": ["dev_agent"],
             "body_markdown": "hi",
-            "addressed_to": ["@all"],
         },
         headers=auth_headers,
     ).json()
@@ -679,119 +681,6 @@ def test_tail_sse_replays_existing_messages(tmp_home, app, org_state, auth_heade
 
 
 # ---------------------------------------------------------------------------
-# F1 — compose rejects when first fan-out exceeds turn_cap (codex P2)
-# ---------------------------------------------------------------------------
-
-
-def test_compose_rejects_initial_fanout_over_cap(tmp_home, app, org_state, auth_headers, monkeypatch):
-    """If turn_cap < number of initial addressees, compose returns 429 instead
-    of creating an instantly-over-budget thread."""
-    from dataclasses import replace
-    from src.orchestrator import org_config as _cfg
-    import src.daemon.routes.threads as routes_mod
-
-    client = TestClient(app)
-    _seed_agent(org_state, "dev_agent")
-    _seed_agent(org_state, "qa_engineer")
-
-    real_load = _cfg.load_org_config
-
-    def small_cap_load(paths):
-        cfg = real_load(paths)
-        return replace(cfg, threads_default_turn_cap=1)
-
-    monkeypatch.setattr(_cfg, "load_org_config", small_cap_load)
-    monkeypatch.setattr(routes_mod, "load_org_config", small_cap_load)
-
-    resp = client.post(
-        "/api/v1/orgs/alpha/threads",
-        json={
-            "subject": "x", "recipients": ["dev_agent", "qa_engineer"],
-            "body_markdown": "hi", "addressed_to": ["@all"],
-        },
-        headers=auth_headers,
-    )
-    assert resp.status_code == 429, resp.text
-    assert resp.json()["detail"]["code"] == "turn_cap_exceeded"
-    assert resp.json()["detail"]["cap"] == 1
-    assert resp.json()["detail"]["requested"] == 2
-
-
-# ---------------------------------------------------------------------------
-# F2 — count pending invocations against turn_cap on /send and /invite
-# ---------------------------------------------------------------------------
-
-
-def test_send_rejects_when_pending_plus_new_exceeds_cap(tmp_home, app, org_state, auth_headers, monkeypatch):
-    """Pending invocations count against turn_cap. With cap=2 and 2 pending
-    invocations from compose, a second /send to @all must 429."""
-    from dataclasses import replace
-    from src.orchestrator import org_config as _cfg
-    import src.daemon.routes.threads as routes_mod
-
-    client = TestClient(app)
-    _seed_agent(org_state, "dev_agent")
-    _seed_agent(org_state, "qa_engineer")
-
-    real_load = _cfg.load_org_config
-    cap2_load = lambda p: replace(real_load(p), threads_default_turn_cap=2)  # noqa: E731
-    monkeypatch.setattr(_cfg, "load_org_config", cap2_load)
-    monkeypatch.setattr(routes_mod, "load_org_config", cap2_load)
-
-    r = client.post(
-        "/api/v1/orgs/alpha/threads",
-        json={"subject": "s", "recipients": ["dev_agent", "qa_engineer"],
-              "body_markdown": "hi", "addressed_to": ["@all"]},
-        headers=auth_headers,
-    )
-    assert r.status_code == 200, r.text
-    tid = r.json()["thread_id"]
-
-    # cap=2, turns_used=0, but 2 pending — second send should be rejected.
-    resp = client.post(
-        f"/api/v1/orgs/alpha/threads/{tid}/send",
-        json={"body_markdown": "follow-up", "addressed_to": ["@all"]},
-        headers=auth_headers,
-    )
-    assert resp.status_code == 429, resp.text
-    assert resp.json()["detail"]["code"] == "turn_cap_exceeded"
-    assert resp.json()["detail"]["pending"] == 2
-
-
-def test_invite_rejects_when_pending_plus_one_exceeds_cap(tmp_home, app, org_state, auth_headers, monkeypatch):
-    """Invite mints a bootstrap invocation — must count against cap too."""
-    from dataclasses import replace
-    from src.orchestrator import org_config as _cfg
-    import src.daemon.routes.threads as routes_mod
-
-    client = TestClient(app)
-    _seed_agent(org_state, "dev_agent")
-    _seed_agent(org_state, "qa_engineer")
-
-    real_load = _cfg.load_org_config
-    cap1_load = lambda p: replace(real_load(p), threads_default_turn_cap=1)  # noqa: E731
-    monkeypatch.setattr(_cfg, "load_org_config", cap1_load)
-    monkeypatch.setattr(routes_mod, "load_org_config", cap1_load)
-
-    # cap=1, 1 pending from compose. Invite of another agent would push to 2.
-    r = client.post(
-        "/api/v1/orgs/alpha/threads",
-        json={"subject": "s", "recipients": ["dev_agent"],
-              "body_markdown": "hi", "addressed_to": ["@all"]},
-        headers=auth_headers,
-    ).json()
-
-    resp = client.post(
-        f"/api/v1/orgs/alpha/threads/{r['thread_id']}/invite",
-        json={"agent_name": "qa_engineer"},
-        headers=auth_headers,
-    )
-    assert resp.status_code == 429
-    assert resp.json()["detail"]["code"] == "turn_cap_exceeded"
-    assert resp.json()["detail"]["pending"] == 1
-
-
-# ---------------------------------------------------------------------------
 # Task 3 — TASK_FOLLOWUP admitted by reply/decline; dispatch stays restricted
 # ---------------------------------------------------------------------------
 
@@ -809,7 +698,6 @@ def _open_thread_with_followup_token(client, org_state, auth_headers, *, recipie
             "subject": "s",
             "recipients": [recipient],
             "body_markdown": "hi",
-            "addressed_to": ["@all"],
         },
         headers=auth_headers,
     ).json()

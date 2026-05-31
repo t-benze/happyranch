@@ -53,7 +53,6 @@ def test_render_transcript_renders_message_decline_system():
             thread_id="THR-001", seq=1, speaker="founder",
             kind=ThreadMessageKind.MESSAGE,
             body_markdown="should we cap refunds at 30 days?",
-            addressed_to=["@all"],
         ),
         ThreadMessage(
             thread_id="THR-001", seq=2, speaker="alice",
@@ -78,7 +77,7 @@ def test_render_transcript_renders_message_decline_system():
     ]
     out = render_transcript_body(msgs)
     assert "## Message 1 — founder" in out
-    assert "To: @all" in out
+    assert "should we cap refunds at 30 days?" in out
     assert "## Message 3 — bob" in out
     assert "declined" in out and "alice covered it" in out
     assert "system: dispatched TASK-091 to dev" in out

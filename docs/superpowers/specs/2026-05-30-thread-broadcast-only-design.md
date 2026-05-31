@@ -184,7 +184,7 @@ The status strip is the load-bearing UI addition. Without it, silent declines ar
 - `_validate_addressed_to` (`routes/threads.py:86`)
 - `_resolve_addressed_agents` (`routes/threads.py:102`)
 - `_verify_addressed` (`routes/threads.py:672`)
-- `FOUNDER_LITERAL = "@founder"` constant — no longer addressable.
+- `FOUNDER_LITERAL = "@founder"` — constant retained. Still used by `compose-as-agent` to permit `@founder` in the `recipients` list as an external-recipient flag (the founder is not added as a participant; this is the "founder should see this thread" semantic). The constant's role in `addressed_to` routing is gone (since `addressed_to` itself is gone), but its role in recipients validation stays.
 
 **New on `GET /threads/{id}` response:** the `responder_status` array described in §9.
 

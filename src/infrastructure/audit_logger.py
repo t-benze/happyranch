@@ -651,55 +651,36 @@ class AuditLogger:
             },
         )
 
-    def log_thread_founder_addressed(
-        self,
-        thread_id: str,
-        *,
-        seq: int,
-        speaker: str,
-        notify_channel: str,
-    ) -> None:
-        self._db.insert_audit_log(
-            task_id=thread_id,
-            agent=speaker,
-            action="thread_founder_addressed",
-            payload={"seq": seq, "speaker": speaker, "notify_channel": notify_channel},
-        )
-
-    def log_thread_founder_notify_sent(
-        self, *, thread_id: str, feishu_message_id: str,
-    ) -> None:
-        # agent="daemon" matches log_escalation_notify_sent / log_failure_notify_sent
-        # — these are infrastructure-generated push events, not founder actions.
-        self._db.insert_audit_log(
-            task_id=thread_id, agent="daemon",
-            action="thread_founder_notify_sent",
-            payload={"feishu_message_id": feishu_message_id},
-        )
-
-    def log_thread_founder_notify_failed(
-        self, *, thread_id: str, error: str,
-    ) -> None:
-        self._db.insert_audit_log(
-            task_id=thread_id, agent="daemon",
-            action="thread_founder_notify_failed",
-            payload={"error": error},
-        )
-
     def log_thread_message_sent(
         self,
         thread_id: str,
         *,
         seq: int,
         speaker: str,
-        addressed_to: list[str] | None,
         kind: str,
     ) -> None:
         self._db.insert_audit_log(
             task_id=thread_id,
             agent=speaker,
             action="thread_message_sent",
-            payload={"seq": seq, "addressed_to": addressed_to, "kind": kind},
+            payload={"seq": seq, "kind": kind},
+        )
+
+    def log_thread_decline_consumed(
+        self,
+        thread_id: str,
+        *,
+        agent_name: str,
+        reason: str | None = None,
+    ) -> None:
+        payload: dict[str, object] = {"agent_name": agent_name}
+        if reason:
+            payload["reason"] = reason
+        self._db.insert_audit_log(
+            task_id=thread_id,
+            agent=agent_name,
+            action="thread_decline_consumed",
+            payload=payload,
         )
 
     def log_thread_participant_added(

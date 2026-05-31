@@ -24,7 +24,7 @@ def test_count_pending_turn_obligations_counts_reply_bootstrap_followup(tmp_path
     db.add_thread_participant("THR-001", "alice", added_by="founder")
     seq = db.append_thread_message(
         thread_id="THR-001", speaker="founder", kind=ThreadMessageKind.MESSAGE,
-        body_markdown="hi", addressed_to=["@all"],
+        body_markdown="hi",
     )
     for purpose in (
         ThreadInvocationPurpose.REPLY,
@@ -47,7 +47,7 @@ def test_count_pending_turn_obligations_excludes_non_pending(tmp_path):
     db.add_thread_participant("THR-001", "alice", added_by="founder")
     seq = db.append_thread_message(
         thread_id="THR-001", speaker="founder", kind=ThreadMessageKind.MESSAGE,
-        body_markdown="hi", addressed_to=["@all"],
+        body_markdown="hi",
     )
 
     # Mint two REPLY and two BOOTSTRAP invocations (all PENDING initially).
@@ -107,7 +107,7 @@ def test_purpose_note_task_followup_renders_task_id_and_status():
     )
     note = _purpose_note(
         purpose="task_followup", triggering_seq=4,
-        addressed_to=None, invoked_agent="family_manager",
+        invoked_agent="family_manager",
         triggering_message=triggering,
     )
     assert "TASK-007" in note

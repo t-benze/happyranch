@@ -15,7 +15,6 @@ export interface ComposeThreadBody {
   subject: string;
   recipients: string[];
   body_markdown: string;
-  addressed_to?: string[];
   forwarded_from_id?: string;
   forwarded_from_kind?: 'thread' | 'talk';
 }
@@ -48,7 +47,7 @@ export const listThreadMessages = (
 export const sendThreadFollowUp = (
   slug: string,
   threadId: string,
-  body: { body_markdown: string; addressed_to?: string[] },
+  body: { body_markdown: string },
 ): Promise<{ seq: number; thread_id: string }> =>
   request(`/orgs/${slug}/threads/${threadId}/send`, { method: 'POST', body });
 

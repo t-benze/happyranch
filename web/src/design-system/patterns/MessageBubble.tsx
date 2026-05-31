@@ -23,7 +23,6 @@ interface MessageBubbleProps {
   speaker?: string;
   /** Role for the agent chip dot color. Founder/decline default to founder. */
   speakerRole?: 'manager' | 'worker' | 'founder';
-  addressedTo?: string[];
   timestamp: string;
   /** Markdown body for `message`/`worker`/`manager`/`founder` variants. */
   body?: string | null;
@@ -64,7 +63,7 @@ export function MessageBubble(props: MessageBubbleProps): JSX.Element {
     );
   }
 
-  const { variant, seq, speaker, speakerRole, addressedTo, timestamp, body, declineReason } = props;
+  const { variant, seq, speaker, speakerRole, timestamp, body, declineReason } = props;
 
   return (
     <article className={VARIANT_CONTAINER[variant]}>
@@ -74,9 +73,6 @@ export function MessageBubble(props: MessageBubbleProps): JSX.Element {
             name={speaker}
             role={speakerRole ?? (variant === 'founder' ? 'founder' : 'worker')}
           />
-        )}
-        {addressedTo && addressedTo.length > 0 && (
-          <span className="text-text-muted">→ {addressedTo.join(', ')}</span>
         )}
         <span className="text-text-muted ml-auto font-mono">
           #{seq} · {fmtTs(timestamp)}

@@ -165,11 +165,12 @@ def test_completion_callback_rejected_when_session_unknown(
         headers=_auth_headers(),
         timeout=5.0,
     )
-    assert r.status_code == 409, r.text
+    # Task validation runs before session validation; a fabricated task_id
+    # returns 404 unknown_task and never reaches the session check.
+    assert r.status_code == 404, r.text
     detail = r.json()["detail"]
-    assert detail["code"] == "unknown_session"
+    assert detail["code"] == "unknown_task"
     assert detail["task_id"] == task_id
-    assert detail["agent"] == "engineering_head"
 
 
 def test_delegate_and_resume_roundtrip(

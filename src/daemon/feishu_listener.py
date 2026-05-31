@@ -34,7 +34,6 @@ DispatchFn = Callable[..., Awaitable[tuple[str, str]]]
 SendConfirmFn = Callable[..., Awaitable[None]]
 SendErrorFn = Callable[..., Awaitable[None]]
 SendParseHintFn = Callable[..., Awaitable[None]]
-ResolveThreadFn = Callable[..., Awaitable[None]]
 RunJobFn = Callable[..., Awaitable[dict]]
 RejectJobFn = Callable[..., Awaitable[object]]
 
@@ -71,7 +70,6 @@ class FeishuEventListener:
         run_job_from_notification: RunJobFn | None = None,
         reject_job_from_notification: RejectJobFn | None = None,
         send_parse_hint: SendParseHintFn | None = None,
-        resolve_thread_from_notification: ResolveThreadFn | None = None,
     ) -> None:
         self._slug = slug
         self._db = db
@@ -83,7 +81,6 @@ class FeishuEventListener:
         self._send_dispatch_confirmation = send_dispatch_confirmation
         self._send_dispatch_error = send_dispatch_error
         self._send_parse_hint = send_parse_hint
-        self._resolve_thread_from_notification = resolve_thread_from_notification
         self._run_job_from_notification = run_job_from_notification
         self._reject_job_from_notification = reject_job_from_notification
         self._allow_dispatch = allow_dispatch
@@ -200,33 +197,7 @@ class FeishuEventListener:
             _close("ignored", "notification_expired")
             return
 
-        # 6a. Thread reply — founder's text is freeform, not a decision verb.
-        #     Route directly to resolve_thread_from_notification, skip parse_reply.
-        if (row.get("kind") or "escalation") == "thread_addressed":
-            freeform_text = extract_text_from_content(msg.message_type, msg.content)
-            if freeform_text is None:
-                _close("rejected", "unsupported_msg_type")
-                return
-            if self._resolve_thread_from_notification is None:
-                _close("rejected", "handler_exception")
-                return
-            try:
-                await self._resolve_thread_from_notification(
-                    thread_id=row["task_id"],
-                    founder_text=freeform_text,
-                    message_id=msg.root_id,
-                )
-            except Exception:  # noqa: BLE001
-                logger.exception(
-                    "resolve_thread_from_notification raised for thread %s",
-                    row["task_id"],
-                )
-                _close("rejected", "handler_exception")
-                return
-            _close("consumed", None)
-            return
-
-        # 6b. Escalation/failure reply — parse the decision verb.
+        # 6. Escalation/failure reply — parse the decision verb.
         text = extract_text_from_content(msg.message_type, msg.content)
         if text is None:
             _close("rejected", "unsupported_msg_type")
@@ -524,14 +495,6 @@ def maybe_start_feishu_listener_for_org(org, state, loop) -> None:
             feishu_event_id=feishu_event_id,
         )
 
-    async def _resolve_thread_for_listener(*, thread_id, founder_text, message_id):
-        from src.daemon.routes.threads import resolve_thread_from_notification
-        return await resolve_thread_from_notification(
-            org,
-            thread_id=thread_id, founder_text=founder_text,
-            message_id=message_id, slug=org.slug,
-        )
-
     async def _run_job_for_listener(*, job_id):
         from src.daemon.routes.jobs import run_job_from_notification
         return await run_job_from_notification(org, job_id=job_id)
@@ -553,7 +516,6 @@ def maybe_start_feishu_listener_for_org(org, state, loop) -> None:
         send_dispatch_confirmation=_send_confirm_for_listener,
         send_dispatch_error=_send_error_for_listener,
         send_parse_hint=_send_parse_hint_for_listener,
-        resolve_thread_from_notification=_resolve_thread_for_listener,
         run_job_from_notification=_run_job_for_listener,
         reject_job_from_notification=_reject_job_for_listener,
         allow_dispatch=allow_dispatch,

@@ -49,7 +49,6 @@ def test_thread_models_roundtrip():
     m = ThreadMessage(
         thread_id="THR-001", seq=1, speaker="founder",
         kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
-        addressed_to=["@all"],
     )
     assert m.kind is ThreadMessageKind.MESSAGE
     inv = ThreadInvocation(
@@ -136,7 +135,7 @@ def test_append_thread_message_allocates_monotonic_seq(tmp_path):
     seq_a = db.append_thread_message(
         thread_id="THR-001", speaker="founder",
         kind=ThreadMessageKind.MESSAGE,
-        body_markdown="hello", addressed_to=["@all"],
+        body_markdown="hello",
     )
     seq_b = db.append_thread_message(
         thread_id="THR-001", speaker="alice",
@@ -147,8 +146,6 @@ def test_append_thread_message_allocates_monotonic_seq(tmp_path):
     assert seq_b == 2
     msgs = db.list_thread_messages("THR-001")
     assert [m.seq for m in msgs] == [1, 2]
-    assert msgs[0].addressed_to == ["@all"]
-    assert msgs[1].addressed_to is None
 
 
 def test_append_thread_decline_message(tmp_path):

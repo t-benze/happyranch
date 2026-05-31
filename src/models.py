@@ -161,6 +161,7 @@ class ThreadMessageKind(StrEnum):
 class ThreadInvocationStatus(StrEnum):
     PENDING = "pending"
     CONSUMED = "consumed"
+    DECLINED = "declined"
     TIMEOUT = "timeout"
     FAILED = "failed"
 
@@ -206,10 +207,15 @@ class ThreadMessage(BaseModel):
     speaker: str
     kind: ThreadMessageKind
     body_markdown: str | None = None
-    addressed_to: list[str] | None = None
     decline_reason: str | None = None
     system_payload: dict | None = None
     created_at: datetime = Field(default_factory=_now)
+
+
+class ResponderStatusEntry(BaseModel):
+    agent_name: str
+    status: Literal["pending", "replied", "declined", "failed"]
+    responded_at: str | None
 
 
 class ThreadInvocation(BaseModel):
