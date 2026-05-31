@@ -2,7 +2,7 @@
  * Sparkline — minimal SVG polyline for trend data. Pure prop-driven.
  *
  * Used by the founder dashboard (Org pulse table) and by the Agents
- * scorecard table. No axes, no labels — it's a glyph of motion.
+ * roster table. No axes, no labels — it's a glyph of motion.
  *
  * Empty `data` renders an empty SVG of the requested size (consumers
  * still get a stable reservation in their layout).
