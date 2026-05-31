@@ -626,6 +626,18 @@ async def reply_thread_endpoint(
     # _verify_addressed removed: broadcast model; any participant can reply to
     # any message as long as they hold a valid invocation token.
 
+    # Turn-cap projection — agent replies must respect the same brake as
+    # founder /send; without this an agent ping-pong can blow past the cap.
+    projected = t.turns_used + 1
+    if projected > t.turn_cap:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "turn_cap_exceeded",
+                "used": t.turns_used, "cap": t.turn_cap, "requested": 1,
+            },
+        )
+
     tokens_to_enqueue: list[str] = []
     async with org.db_lock:
         inv = org.db.get_pending_invocation(body.invocation_token)

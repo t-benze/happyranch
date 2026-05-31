@@ -261,3 +261,81 @@ def test_decline_writes_no_transcript_row(
     assert inv_row["status"] == "declined"
     assert inv_row["consumed_at"] is not None
     assert inv_row["decline_reason"] == "no material to add"
+
+
+def test_agent_reply_rejected_when_turn_cap_reached(
+    three_agent_thread,
+):
+    """§7: turn_cap projection applies to agent replies too. When
+    turns_used has already reached turn_cap, a reply must return 429
+    turn_cap_exceeded WITHOUT appending a message, consuming the
+    invocation, incrementing turns_used, or minting new invocations.
+
+    Without this check the only ping-pong brake can be bypassed by
+    agents — see Codex review on PR #45."""
+    thread_id, client, org_state, auth_headers = three_agent_thread
+    db = org_state.db
+    org_slug = "alpha"
+
+    # Saturate the thread to its turn_cap.
+    row = db._conn.execute(
+        "SELECT turn_cap FROM threads WHERE id=?", (thread_id,)
+    ).fetchone()
+    cap = row["turn_cap"]
+    db._conn.execute(
+        "UPDATE threads SET turns_used=? WHERE id=?", (cap, thread_id),
+    )
+    db._conn.commit()
+
+    pre_msgs = db._conn.execute(
+        "SELECT COUNT(*) AS n FROM thread_messages WHERE thread_id=?",
+        (thread_id,),
+    ).fetchone()["n"]
+    pre_pending = db._conn.execute(
+        "SELECT COUNT(*) AS n FROM thread_invocations "
+        "WHERE thread_id=? AND status='pending'",
+        (thread_id,),
+    ).fetchone()["n"]
+
+    alpha_inv = db._conn.execute(
+        "SELECT invocation_token FROM thread_invocations "
+        "WHERE thread_id=? AND agent_name='alpha' AND status='pending'",
+        (thread_id,),
+    ).fetchone()
+    r = client.post(
+        f"/api/v1/orgs/{org_slug}/threads/{thread_id}/reply",
+        json={
+            "thread_id": thread_id,
+            "invocation_token": alpha_inv["invocation_token"],
+            "speaker": "alpha",
+            "body_markdown": "alpha responding",
+            "in_response_to_seq": 1,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 429, r.text
+    assert r.json()["detail"]["code"] == "turn_cap_exceeded"
+
+    # No side effects: message count, pending count, turns_used unchanged.
+    post_msgs = db._conn.execute(
+        "SELECT COUNT(*) AS n FROM thread_messages WHERE thread_id=?",
+        (thread_id,),
+    ).fetchone()["n"]
+    post_pending = db._conn.execute(
+        "SELECT COUNT(*) AS n FROM thread_invocations "
+        "WHERE thread_id=? AND status='pending'",
+        (thread_id,),
+    ).fetchone()["n"]
+    post_turns = db._conn.execute(
+        "SELECT turns_used FROM threads WHERE id=?", (thread_id,)
+    ).fetchone()["turns_used"]
+    assert post_msgs == pre_msgs
+    assert post_pending == pre_pending
+    assert post_turns == cap
+
+    # Alpha's invocation must NOT have been consumed.
+    inv_row = db._conn.execute(
+        "SELECT status FROM thread_invocations WHERE invocation_token=?",
+        (alpha_inv["invocation_token"],),
+    ).fetchone()
+    assert inv_row["status"] == "pending"
