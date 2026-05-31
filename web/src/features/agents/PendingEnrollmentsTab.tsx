@@ -6,7 +6,7 @@
  * for an optional reason (mirrors the CLI's `grassland reject-agent` UX).
  *
  * The list only renders when `status=pending`; approved enrollments
- * live in the Active tab's main scorecard table.
+ * live in the Active tab's main roster table.
  */
 import { useState } from 'react';
 import {

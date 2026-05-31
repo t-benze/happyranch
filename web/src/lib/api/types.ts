@@ -212,12 +212,6 @@ export interface HealthResponse {
 // Agents
 // ---------------------------------------------------------------------------
 
-/**
- * 30-day rolling scorecard. NULL fields are returned by the daemon when
- * the agent has no review history in the window — the founder UI renders
- * a dash rather than misleading zeros.
- */
-
 export interface AgentSummary {
   name: string;
   team: string | null;

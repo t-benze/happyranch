@@ -2,13 +2,6 @@
 
 The self-hosted dashboard for org-wide visibility, plus the recommended build sequence.
 
-> **2026-05-27 note.** The performance-tier feature was removed. Any
-> section of this doc that proposes tier-based UI (e.g. "Page 2: Agent
-> Scorecards", tier-keyed routing, calibration via acceptance-rate) is
-> obsolete and should be ignored when implementing. The audit log is the
-> canonical record of agent outcomes; see `05c-orchestrator.md` §2 for the
-> deprecation note.
-
 ---
 
 ## 1. Dashboard Purpose
@@ -16,7 +9,7 @@ The self-hosted dashboard for org-wide visibility, plus the recommended build se
 The CLI (`grassland ...`) and SSE task streams are for real-time interaction — submitting work, streaming events, founder↔agent talks, approving escalations. The dashboard is for when you want the big picture: how is the org performing, what happened recently, where are the trends going, and what's the full audit trail. It runs as a local web app on your Mac Mini, accessible from any device on your network.
 
 ### Fully Self-Hosted
-All data stays on your Mac Mini — no third-party observability service. The orchestrator records execution data (agent decisions, task timelines, tool usage, LLM calls) directly to SQLite alongside the business-level metrics (scorecards, escalation history, calibration insights). One dashboard covers both engineering observability and business performance — no cloud dependency, no data leaving your infrastructure. Compliance posture (e.g., applicable data-protection regimes) is defined per runtime in the org charter, not in this blueprint.
+All data stays on your Mac Mini — no third-party observability service. The orchestrator records execution data (agent decisions, task timelines, tool usage, LLM calls) directly to SQLite alongside the business-level metrics (escalation history, audit trail). One dashboard covers both engineering observability and business performance — no cloud dependency, no data leaving your infrastructure. Compliance posture (e.g., applicable data-protection regimes) is defined per runtime in the org charter, not in this blueprint.
 
 ### Tech Stack
 - **Backend**: FastAPI (Python) — reads from the same SQLite database the orchestrator writes to
@@ -77,46 +70,7 @@ The landing page — what's happening right now.
 
 Data sources: orchestrator task state database (real-time), escalation queue
 
-### Page 2: Agent Scorecards
-
-Rolling 30-day performance for every agent.
-
-```
-┌──────────────────────────────────────────────────────────┐
-│  Agent Scorecards — 30 Day Rolling          [Export CSV] │
-├──────────────────────────────────────────────────────────┤
-│                                                          │
-│  Agent            Tier    Acceptance  Revision  Errors   │
-│  ─────────────────────────────────────────────────────   │
-│  Content Writer   🟢 92%    92%        6%       2       │
-│  Content QA         🟢 96%    96%        3%       0       │
-│  SEO Agent        🟢 91%    91%        7%       1       │
-│  Dev Agent        🟢 94%    94%        4%       1       │
-│  Payment Agent    🟢 98%    98%        2%       0       │
-│  Partner Liaison  🟢 90%    90%        8%       2       │
-│  Compliance Agent 🟢 95%    95%        5%       0       │
-│  Support Agent    🟡 82%    82%       12%       4       │
-│                                                          │
-│  [Click any agent for detailed breakdown]                │
-│                                                          │
-│  ─── CALIBRATION ────────────────────────────────────    │
-│                                                          │
-│  Agent            Avg Confidence  Actual Accuracy  Gap   │
-│  ─────────────────────────────────────────────────────   │
-│  Content Writer       85%             88%          -3%   │
-│  Content QA             90%             92%          -2%   │
-│  Support Agent        78%             72%          +6% ⚠ │
-│                                                          │
-│  ⚠ Support Agent is overconfident — flags issues as      │
-│    resolved but 6% are reopened by tourists              │
-└──────────────────────────────────────────────────────────┘
-```
-
-Clicking an agent opens a detail view: task-by-task history, confidence vs. outcome for each task, trend line over the 30-day window, and the agent's current learnings file.
-
-Data sources: performance tracker database, agent memory files
-
-### Page 3: Work Log (Audit Trail)
+### Page 2: Work Log (Audit Trail)
 
 Searchable, filterable log of every action in the system.
 
@@ -158,7 +112,7 @@ Each entry is expandable to show the full completion report, including risks fla
 
 Data sources: audit logger (JSONL files or SQLite audit table)
 
-### Page 4: Escalation History
+### Page 3: Escalation History
 
 Every escalation that was routed, how it was resolved, and whether the system is calibrated correctly.
 
@@ -200,7 +154,7 @@ The "calibration insights" section is generated by the orchestrator — if the f
 
 Data sources: escalation router database, founder response logs
 
-### Page 5: Trends
+### Page 4: Trends
 
 Charts showing how the org is performing over time.
 
@@ -248,9 +202,9 @@ Charts showing how the org is performing over time.
 
 The "Founder Involvement" section is key — it shows whether the system is trending toward more autonomy (fewer escalations, faster resolution) or more dependency on you. The goal is for this number to decrease over time as thresholds are calibrated and agents improve.
 
-Data sources: all databases (task history, performance tracker, escalation logs, audit trail)
+Data sources: all databases (task history, escalation logs, audit trail)
 
-### Page 6: Execution Traces
+### Page 5: Execution Traces
 
 Engineering-level observability for debugging and cost tracking — fully self-hosted, no third-party tracing service.
 
@@ -316,8 +270,6 @@ The dashboard backend exposes a REST API that the frontend consumes. This same A
 | Endpoint | Returns |
 |---|---|
 | `GET /api/status` | Live system status, active tasks, blocked tasks, pending approvals |
-| `GET /api/scorecards` | All agent scorecards with 30-day rolling metrics |
-| `GET /api/scorecards/{agent}` | Detailed scorecard for one agent |
 | `GET /api/logs?agent=&date=&type=` | Filtered audit trail entries |
 | `GET /api/logs/{task_id}` | Full history for a specific task |
 | `GET /api/escalations?period=` | Escalation history with calibration insights |
@@ -343,18 +295,16 @@ The dashboard is read-only. All founder actions (approvals, directives, goal-set
 
 4. **Add the revision loop** — orchestrator logic to re-run when QA returns REVISE, with revision count tracking and escalation after max rounds.
 
-5. **Add agent memory** — implement the learnings file write-back, scorecard injection, and periodic consolidation.
+5. **Add agent memory** — implement the learnings file write-back and periodic consolidation.
 
-6. **Add performance scoring** — after each Team run, score the agents. Start displaying scorecards. Implement tier-based task chain adjustment.
+6. **Add the knowledge base** — RAG access to org charter, guides, and SOPs. Scoped read/write per agent.
 
-7. **Add the knowledge base** — RAG access to org charter, guides, and SOPs. Scoped read/write per agent.
+7. **Stand up Team 2 (Product) and Team 3 (Ops)** — these are more complex due to cross-team dependencies (Compliance Agent cross-auditing Payment Agent).
 
-8. **Stand up Team 2 (Product) and Team 3 (Ops)** — these are more complex due to cross-team dependencies (Compliance Agent cross-auditing Payment Agent).
+8. **Add inter-Team communication** — the orchestrator routes cross-team tasks.
 
-9. **Add inter-Team communication** — the orchestrator routes cross-team tasks.
+9. **Stand up CX Team** — with the Support Agent as a persistent session for real-time chat (running outside the standard task loop) while still reporting into the CX Team for review workflows.
 
-10. **Stand up CX Team** — with the Support Agent as a persistent session for real-time chat (running outside the standard task loop) while still reporting into the CX Team for review workflows.
+10. **Add additional executor support** — once the abstraction is solid with one provider, add Codex and OpenCode as options.
 
-11. **Add additional executor support** — once the abstraction is solid with one provider, add Codex and OpenCode as options.
-
-12. **Build the founder dashboard** — FastAPI backend exposing the REST API, React or static HTML frontend with the 6 pages (live status, scorecards, work log, escalation history, trends, execution traces). No third-party observability dependency — all data captured via orchestrator audit hooks and stored locally.
+11. **Build the founder dashboard** — FastAPI backend exposing the REST API, React or static HTML frontend with the 5 pages (live status, work log, escalation history, trends, execution traces). No third-party observability dependency — all data captured via orchestrator audit hooks and stored locally.

@@ -1,7 +1,7 @@
 /**
  * AgentChip — agent name preceded by a 6px role-colored dot. Per
  * DESIGN.md `components.agent_chip`. Used wherever an agent identity is
- * rendered (message header, participant list, scorecard, …).
+ * rendered (message header, participant list, roster, …).
  *
  * Pure prop-driven. No hooks, no data fetches.
  */
