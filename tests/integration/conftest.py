@@ -13,6 +13,42 @@ from src.daemon import runtimes as runtimes_mod
 from src.runtime import RuntimeDir
 
 
+def pytest_configure(config):
+    """Warn if a production daemon is running — it will inflate RSS during tests.
+
+    Integration tests run an isolated daemon (via GRASSLAND_DAEMON_HOME in a
+    tmp dir) so data is never shared with the production daemon, but both
+    processes run on the same machine.  A production daemon with active
+    Claude sessions can add 200-400+ MB of shared-machine RAM, making
+    "memory spike" reports misleading.
+
+    To silence: stop the production daemon before running integration tests:
+        scripts/daemon.sh stop
+    """
+    from src.daemon import paths as _paths
+    pid_file = _paths.pid_file()
+    if not pid_file.exists():
+        return
+    try:
+        pid = int(pid_file.read_text().strip())
+    except (ValueError, OSError):
+        return
+    try:
+        os.kill(pid, 0)  # 0 = just check existence, no signal sent
+    except (ProcessLookupError, PermissionError):
+        return
+    import warnings
+    warnings.warn(
+        f"\n[grassland] Production daemon (pid={pid}) is running alongside "
+        f"integration tests. Each test spawns its own isolated daemon, but "
+        f"both share machine RAM. Active Claude sessions in the production "
+        f"daemon can cause 300-400 MB memory spikes. "
+        f"Run `scripts/daemon.sh stop` before the test suite to avoid this.",
+        UserWarning,
+        stacklevel=1,
+    )
+
+
 @pytest.fixture(autouse=True)
 def _reset_lark_token_cache():
     """Reset the lark-oapi token cache between tests.
