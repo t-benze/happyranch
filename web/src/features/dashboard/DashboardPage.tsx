@@ -8,8 +8,10 @@
  * Spec: docs/superpowers/specs/2026-05-30-dashboard-overhaul-design.md
  */
 import { useState, type ReactNode } from 'react';
+import { Link, useParams } from 'react-router-dom';
 import { useDashboardSummary } from '@/hooks/dashboard';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
+import { useOrgSlugOptional } from '@/lib/orgSlug';
 import { Heartbeat } from './components/Heartbeat';
 import { NarrativeParagraph } from './components/NarrativeParagraph';
 import { OrgPulseTable } from './components/OrgPulseTable';
@@ -48,9 +50,16 @@ function Panel({ title, meta, children }: PanelProps): JSX.Element {
   );
 }
 
+function useActiveSlug(): string | null {
+  const { slug } = useParams<{ slug: string }>();
+  const ctx = useOrgSlugOptional();
+  return slug ?? ctx ?? null;
+}
+
 export function DashboardPage(): JSX.Element {
   const q = useDashboardSummary();
   const [expandedEscId, setExpandedEscId] = useState<string | null>(null);
+  const slug = useActiveSlug();
 
   if (q.isLoading) {
     return <p className="text-text-muted p-6 text-sm">Loading dashboard…</p>;
@@ -185,10 +194,20 @@ export function DashboardPage(): JSX.Element {
                       {r.verdict === 'fail' && (
                         <span className="text-tier-red">· fail</span>
                       )}
-                      {r.task_id && (
-                        <span className="text-text-muted ml-auto">
+                      {r.task_id && slug && (
+                        <Link
+                          to={
+                            r.task_id.startsWith('THR-')
+                              ? `/orgs/${slug}/threads/${r.task_id}`
+                              : `/orgs/${slug}/tasks/${r.task_id}`
+                          }
+                          className="text-id-task ml-auto hover:underline"
+                        >
                           {r.task_id}
-                        </span>
+                        </Link>
+                      )}
+                      {r.task_id && !slug && (
+                        <span className="text-id-task ml-auto">{r.task_id}</span>
                       )}
                     </li>
                   ))}
