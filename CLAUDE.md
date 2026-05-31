@@ -173,6 +173,33 @@ Team-manager completion payloads carry two fields with distinct purposes:
 
 Full schema with worked examples lives in `protocol/00-completion-contract.md` ("Manager decision field"). The decision-field name for a delegated child task's brief is **`prompt`, not `brief`** — Pydantic v2 silently ignores extras, so writing `"brief"` produces an empty-brief child task.
 
+## Inline delegation chains
+
+A manager can declare a multi-leg workflow in one `delegate` decision using `NextStep.then` (list of `ChainLeg`) and optional per-leg `expect_verdict` gates. The orchestrator auto-advances to the next leg whenever a child terminates COMPLETED with a matching verdict, without consuming the manager's step budget. Spec: `docs/superpowers/specs/2026-05-30-inline-delegation-chain-design.md`. Protocol: `protocol/00-completion-contract.md` ("Inline delegation chains"). Implementation: `src/orchestrator/chain.py` (pure-logic state model + helpers) wired from `src/orchestrator/run_step.py`.
+
+Example decision payload:
+```json
+{
+  "action": "delegate",
+  "agent": "dev_agent",
+  "prompt": "Build the feature...",
+  "then": [
+    {"agent": "senior_dev",  "prompt": "Code-review the PR.", "expect_verdict": "APPROVE"},
+    {"agent": "qa_engineer", "prompt": "QA the PR.",          "expect_verdict": "PASS"}
+  ]
+}
+```
+
+**Load-bearing invariants:**
+
+- **Cross-team validation runs on every leg at decision-parse time.** Any off-team agent rejects the entire decision via the existing `_parse_next_step` feedback path — you cannot declare a chain and have one leg silently skipped.
+- **Auto-advances do NOT consume orchestration steps.** Declaring a chain costs 1 step; the final-leg wake costs 1 step. A clean 3-leg workflow costs 2 steps instead of 4 (one manager wake per leg).
+- **Final-leg match still wakes the manager.** Chains never auto-`done`; the manager reviews the outcome and decides. Don't add a chain-terminal auto-done shortcut without re-litigating this in the spec.
+- **Mismatch or blocked child clears `active_chain` and wakes the manager.** `compute_advance_action` returns `kind="wake"` with `reason ∈ {"child_blocked", "verdict_mismatch", "chain_complete"}`. The orchestrator logs a `chain_auto_advance` or `chain_wake_manager` audit row accordingly.
+- **Non-first legs receive a "Prior leg context" suffix.** `build_prior_leg_context` appends the upstream worker's summary, verdict, confidence, and `artifact_dir` to the leg's manager-authored brief. Don't pre-embed upstream context in the authored prompt.
+- **Chain state is serialized JSON on `tasks.active_chain`.** `ChainState` holds `step_index`, `first_leg_expect_verdict`, `legs`, and `step_audit_id` (the audit row that spawned the chain, used for crash recovery). Written before the child is enqueued so a crash leaves the chain visible.
+- **`active_chain` is exposed in the task detail response.** `GET /api/v1/orgs/{slug}/tasks/{id}` returns a `parsed_active_chain` field (`ChainState` deserialized, or null). The web UI renders a "Current workflow chain" strip from it.
+
 ## Running Tests
 ```bash
 uv run pytest tests/ -v                  # unit tests only (default)
@@ -294,6 +321,7 @@ Every `kind=message` written to a thread mints a `REPLY` invocation for every pa
 - **Broadcast is unconditional** — `_resolve_addressed_agents` and `_verify_addressed` are removed; the mint loop in `routes/threads.py` iterates `thread_participants` and excludes `speaker_name`. No opt-out.
 - **Declines are silent** — `decline` route returns 200 but writes no `thread_messages` row and increments no turn counter. `responder_status` on each message shows per-participant `pending|replied|declined|failed` state (via DB join on `thread_invocations.triggering_seq`).
 - **Doctrine is prompt-injected, not skill-embedded** — the reply-vs-decline judgment is in the thread-invocation prompt's "Decline-by-Default" section (purpose `REPLY` only), not in `protocol/skills/thread/SKILL.md`. The skill covers operational mechanics only.
+- **Agent replies enforce the same turn_cap as founder `/send`.** The reply endpoint (consumed by REPLY/BOOTSTRAP/TASK_FOLLOWUP invocations) projects `turns_used + 1` against `turn_cap` before the DB lock and raises `429 turn_cap_exceeded` if it would exceed. Without this, agent ping-pong can blow past the cap silently.
 
 ## Thread task-followup (system bridges task terminal → thread)
 
