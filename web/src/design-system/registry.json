@@ -127,6 +127,14 @@
       "example": "<EmptyState title='No threads' body='Start one with grassland threads compose.' />"
     },
     {
+      "name": "ErrorBoundary",
+      "layer": "layout",
+      "import": "@/design-system/layouts/AppShell/ErrorBoundary",
+      "variants": {},
+      "consumes": [],
+      "example": "<ErrorBoundary><RouteContent /></ErrorBoundary>"
+    },
+    {
       "name": "FilterSidebar",
       "layer": "pattern",
       "import": "@/design-system/patterns/FilterSidebar",
