@@ -983,6 +983,12 @@ def _fail(orch: "Orchestrator", task_id: str, *, note: str) -> None:
     # overwrite the founder's "cancelled by founder: ..." note.
     if _is_already_terminal(orch, task_id):
         return
+    # Clear any in-flight chain so the CLI/Web UI doesn't show a chain strip
+    # on a FAILED task. The chain can't re-activate (the task is terminal),
+    # but the dangling state is cosmetically misleading. Always-clear is
+    # cheap and works for cascade-fail, self-blocked, invalid-delegate, and
+    # session-failure failure modes.
+    orch._db.update_task_active_chain(task_id, None)
     orch._db.update_task(
         task_id,
         status=TaskStatus.FAILED,
@@ -1263,6 +1269,8 @@ def _enqueue_parent_if_waiting(
     if failed:
         first = failed[0]
         note = f"delegated child {first.id} failed: {first.note or '(no note)'}"
+        if parent.active_chain is not None:
+            orch._db.update_task_active_chain(parent.id, None)
         _fail(orch, parent.id, note=note)
         _enqueue_parent_if_waiting(
             orch, parent.id,

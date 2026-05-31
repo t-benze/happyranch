@@ -156,7 +156,10 @@ Parameters:
    - `delegate` — hand the next subtask to a worker; requires `agent` and `prompt`.
      Note the field is `prompt`, **not** `brief` — the orchestrator silently
      drops unknown keys, so writing `"brief"` produces a child task with an
-     empty brief.
+     empty brief. Managers can declare a multi-leg workflow chain inline by
+     adding `"then": [...]` to a delegate decision. The orchestrator
+     auto-advances routine legs without consuming orchestration steps. Full
+     shape: see `protocol/00-completion-contract.md`.
    - `done` — the task is complete; requires `summary` of the outcome.
    - `escalate` — the task needs founder intervention; requires `reason`.
 

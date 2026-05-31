@@ -427,6 +427,78 @@ def test_chain_summary_not_appended_when_no_chain_ran(tmp_path):
     )
 
 
+def test_cascade_fail_clears_active_chain(tmp_path):
+    """When a chain leg's child fails, the cascade-fail path must clear the
+    parent's active_chain so the FAILED parent doesn't carry a stale chain
+    pointer (would render confusingly in CLI/Web UI)."""
+    from src.infrastructure.database import Database
+    from src.orchestrator.chain import ChainState
+    from src.orchestrator._paths import OrgPaths
+    from src.models import TaskStatus, BlockKind
+    from src.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    db = Database(tmp_path / "x.db")
+    db.insert_task(TaskRecord(id="TASK-P", team="engineering", brief="p", parent_task_id=None))
+    db.update_task("TASK-P", status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED)
+    chain = ChainState(
+        step_index=0, first_leg_expect_verdict=None,
+        legs=[ChainLeg(agent="sr", prompt="r", expect_verdict="APPROVE")],
+        step_audit_id=1,
+    )
+    db.update_task_active_chain("TASK-P", chain.serialize())
+
+    # Child that ended in FAILED (not COMPLETED) — triggers cascade-fail path.
+    db.insert_task(TaskRecord(
+        id="TASK-C1", team="engineering", brief="b",
+        parent_task_id="TASK-P", assigned_agent="dev",
+    ))
+    db.update_task("TASK-C1", status=TaskStatus.FAILED, note="executor crashed")
+
+    orch = MagicMock()
+    orch._db = db
+    orch._audit = AuditLogger(db)
+    orch._queue = None
+    orch._slug = "test-org"
+    # Use a real OrgPaths pointing at tmp_path so _notify_failure_if_eligible →
+    # load_org_config finds no config.yaml and returns early (a MagicMock path
+    # causes yaml.safe_load to hang indefinitely reading MagicMock.read() calls).
+    orch._paths = OrgPaths(tmp_path)
+
+    _enqueue_parent_if_waiting(orch, "TASK-C1")
+
+    parent_after = db.get_task("TASK-P")
+    assert parent_after.status == TaskStatus.FAILED
+    assert parent_after.active_chain is None, "cascade-fail must clear active_chain"
+
+
+def test_chain_cleared_on_cascade_fail(tmp_path):
+    """When a chain leg fails (not completes), the parent's active_chain
+    must be cleared so the UI doesn't render a stale chain strip."""
+    from src.infrastructure.database import Database
+    from src.orchestrator.chain import ChainState
+    from src.orchestrator.run_step import _fail
+    from src.models import TaskStatus
+
+    db = Database(tmp_path / "x.db")
+    db.insert_task(TaskRecord(id="TASK-P", team="engineering", brief="p", parent_task_id=None))
+    db.update_task("TASK-P", status=TaskStatus.IN_PROGRESS)
+    chain = ChainState(
+        step_index=0, first_leg_expect_verdict=None,
+        legs=[ChainLeg(agent="sr", prompt="r", expect_verdict="APPROVE")],
+        step_audit_id=1,
+    )
+    db.update_task_active_chain("TASK-P", chain.serialize())
+    assert db.get_task("TASK-P").active_chain is not None
+
+    orch = MagicMock()
+    orch._db = db
+    _fail(orch, "TASK-P", note="cascade")
+
+    task = db.get_task("TASK-P")
+    assert task.status == TaskStatus.FAILED
+    assert task.active_chain is None  # the fix
+
+
 def test_chain_summary_filters_to_most_recent_chain_only(tmp_path):
     """When a parent has audit rows from multiple SEQUENTIAL chains, the
     summary covers ONLY the most-recent chain (identified by
