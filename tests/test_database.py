@@ -1311,3 +1311,13 @@ def test_tasks_active_chain_column_exists_and_defaults_null(db):
     cursor = db._conn.execute("PRAGMA table_info(tasks)")
     cols = {row[1] for row in cursor.fetchall()}
     assert "active_chain" in cols
+
+
+def test_update_task_active_chain_sets_and_clears(db):
+    db.insert_task(TaskRecord(id="TASK-1", team="engineering", brief="x", parent_task_id=None))
+
+    db.update_task_active_chain("TASK-1", '{"step_index":0,"legs":[],"step_audit_id":1}')
+    assert db.get_task("TASK-1").active_chain == '{"step_index":0,"legs":[],"step_audit_id":1}'
+
+    db.update_task_active_chain("TASK-1", None)
+    assert db.get_task("TASK-1").active_chain is None

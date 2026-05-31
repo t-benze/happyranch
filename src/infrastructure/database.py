@@ -499,6 +499,11 @@ class Database:
             # agent asked to block on. Persisted alongside the task_result row
             # so run_step can read it back via _read_completion_from_db.
             "ALTER TABLE task_results ADD COLUMN waiting_on_job_ids TEXT",
+            # Worker-reported verdict (free string: APPROVE, PASS, REQUEST_CHANGES,
+            # etc.). Used by inline delegation chains to gate auto-advance to the
+            # next leg without consuming the manager's orchestration_step_count.
+            # NULL for non-chain or non-verdict workers.
+            "ALTER TABLE task_results ADD COLUMN verdict TEXT",
         ):
             try:
                 self._conn.execute(ddl)
@@ -955,6 +960,17 @@ class Database:
         self._conn.commit()
 
     @_synchronized
+    def update_task_active_chain(self, task_id: str, active_chain: str | None) -> None:
+        """Set or clear tasks.active_chain. Pass None to clear (chain finished,
+        aborted, or never declared)."""
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            "UPDATE tasks SET active_chain = ?, updated_at = ? WHERE id = ?",
+            (active_chain, now, task_id),
+        )
+        self._conn.commit()
+
+    @_synchronized
     def try_claim_for_step(
         self,
         task_id: str,
@@ -1135,8 +1151,8 @@ class Database:
         agent: str,
         action: str,
         payload: dict | None = None,
-    ) -> None:
-        self._conn.execute(
+    ) -> int:
+        cur = self._conn.execute(
             "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) VALUES (?, ?, ?, ?, ?)",
             (
                 task_id,
@@ -1147,6 +1163,7 @@ class Database:
             ),
         )
         self._conn.commit()
+        return cur.lastrowid
 
     @_synchronized
     def get_audit_logs(self, task_id: str) -> list[dict]:
@@ -1273,13 +1290,15 @@ class Database:
         artifact_dir: str | None = None,
         decision_json: str | None = None,
         waiting_on_job_ids: list[str] | None = None,
+        verdict: str | None = None,
     ) -> None:
         self._conn.execute(
             """INSERT INTO task_results
                (task_id, agent, session_id, status, output_summary, decision_json,
                 confidence_score, learnings, risks_flagged, duration_seconds,
-                token_count, estimated_cost, artifact_dir, waiting_on_job_ids, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                token_count, estimated_cost, artifact_dir, waiting_on_job_ids,
+                verdict, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task_id,
                 agent,
@@ -1295,6 +1314,7 @@ class Database:
                 estimated_cost,
                 artifact_dir,
                 json.dumps(waiting_on_job_ids) if waiting_on_job_ids is not None else None,
+                verdict,
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
@@ -1357,6 +1377,43 @@ class Database:
         if d.get("waiting_on_job_ids"):
             d["waiting_on_job_ids"] = json.loads(d["waiting_on_job_ids"])
         return d
+
+    @_synchronized
+    def get_latest_completion_report(self, task_id: str):
+        """Return the most-recent task_results row for the given task as a
+        CompletionReport, or None if no row exists.
+
+        Used by the chain-advance logic in run_step to read the just-completed
+        child's verdict without requiring the caller to know agent/session_id.
+        """
+        from src.models import CompletionReport
+        row = self._conn.execute(
+            "SELECT * FROM task_results WHERE task_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        keys = row.keys()
+        return CompletionReport(
+            task_id=task_id,
+            agent=row["agent"],
+            status=row["status"] or "completed",
+            confidence=row["confidence_score"] or 0,
+            output_summary=row["output_summary"] or "",
+            verdict=row["verdict"] if "verdict" in keys else None,
+            artifact_dir=row["artifact_dir"] if "artifact_dir" in keys else None,
+            risks_flagged=(
+                json.loads(row["risks_flagged"])
+                if row["risks_flagged"]
+                else []
+            ),
+            waiting_on_job_ids=(
+                json.loads(row["waiting_on_job_ids"])
+                if "waiting_on_job_ids" in keys and row["waiting_on_job_ids"]
+                else []
+            ),
+        )
 
     # --- Session Token Usage ---
 

@@ -381,6 +381,34 @@ def cmd_details(args: argparse.Namespace) -> None:
         print("Blocked on jobs:")
         for entry in body["blocked_on_jobs"]:
             print(f"  {entry['job_id']}  {entry['status']}")
+    if body.get("active_chain"):
+        chain = body["active_chain"]
+        total_legs = 1 + len(chain.get("legs", []))
+        current_idx = chain.get("step_index", 0)
+        print(f"\nCurrent workflow chain (step {current_idx + 1} of {total_legs}):")
+        # First leg is the implicit decision.agent/prompt — only the first_leg_expect_verdict
+        # is captured in active_chain (the agent name/brief live in the orchestration_step
+        # audit row referenced by step_audit_id, not in active_chain).
+        first_marker = "▶" if current_idx == 0 else "✓"
+        first_verdict_note = (
+            f" (expecting: {chain['first_leg_expect_verdict']})"
+            if chain.get("first_leg_expect_verdict") else ""
+        )
+        print(f"  {first_marker} Leg 1  (first leg — see orchestration_step audit){first_verdict_note}")
+        for i, leg in enumerate(chain.get("legs", []), start=2):
+            if current_idx == i - 1:
+                marker = "▶"
+            elif current_idx >= i:
+                marker = "✓"
+            else:
+                marker = "⋯"
+            verdict_note = (
+                f" (expecting: {leg['expect_verdict']})"
+                if leg.get("expect_verdict") else ""
+            )
+            agent = leg.get("agent", "")
+            prompt_excerpt = (leg.get("prompt") or "")[:40]
+            print(f"  {marker} Leg {i}  {agent:<14} {prompt_excerpt}{verdict_note}")
     if task.get("note"):
         print(f"Note:       {task['note']}")
     if body.get("results"):
@@ -628,6 +656,10 @@ def _completion_payload_from_file(path: str) -> tuple[str, dict]:
     }
     if data.get("artifact_dir"):
         body["artifact_dir"] = data["artifact_dir"]
+    # Worker-reported verdict for inline delegation chains. Free string;
+    # omit when the task is not part of a chain or the worker has no verdict.
+    if data.get("verdict") is not None:
+        body["verdict"] = data["verdict"]
     # Manager-only. Workers omit `decision`; team managers set it to a
     # NextStep object (delegate/done/escalate). Passed through verbatim —
     # the orchestrator parses it via the NextStep pydantic model.

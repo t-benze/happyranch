@@ -159,6 +159,13 @@ def get_task(task_id: str, org: OrgDep) -> dict:
             for jid in job_ids
         ]
 
+    active_chain = None
+    if task.active_chain is not None:
+        try:
+            active_chain = _json.loads(task.active_chain)
+        except _json.JSONDecodeError:
+            active_chain = None  # defensive — never 500 on malformed on-disk state
+
     return {
         "task": _task_to_dict(task),
         "results": org.db.get_task_results(task_id),
@@ -167,6 +174,7 @@ def get_task(task_id: str, org: OrgDep) -> dict:
         "direct_revisits": direct_revisits,
         "predecessor_prior_status": prior_status,
         "blocked_on_jobs": blocked_on_jobs,
+        "active_chain": active_chain,
     }
 
 
@@ -253,6 +261,11 @@ class CompletionBody(BaseModel):
     # Must be a dict matching the NextStep schema if present — validated
     # on the orchestrator side when the parser runs.
     decision: dict | None = None
+    # Worker-reported outcome label for inline delegation chains. Free string;
+    # per-team vocabulary (APPROVE, PASS, REQUEST_CHANGES, etc.) defined in
+    # each team's workflow KB entry. Omit when the task is not part of a chain
+    # or when the worker has no verdict to report.
+    verdict: str | None = None
     risks_flagged: list[str] = []
     dependencies: list[str] = []
     suggested_reviewer_focus: list[str] = []
@@ -346,6 +359,7 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
             risks_flagged=body.risks_flagged,
             artifact_dir=body.artifact_dir,
             waiting_on_job_ids=body.waiting_on_job_ids or None,
+            verdict=body.verdict,
         )
     # Clear the tracker so a duplicate POST for the same session is rejected as
     # unknown_session rather than silently persisting a second row.

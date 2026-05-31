@@ -298,12 +298,13 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
     # `escalate` (see P1 in 2026-04-20 review).
     if orch.teams.is_team_manager(agent):
         decision = orch._parse_next_step(report)
-        orch._audit.log_orchestration_step(
+        _step_audit_id = orch._audit.log_orchestration_step(
             task_id, next_count, decision.model_dump(exclude_none=True),
         )
     else:
         from src.models import NextStep
         decision = NextStep(action="done", summary=report.output_summary)
+        _step_audit_id = None
 
     # ---- 7. Dispatch on action ----
     if decision.action == "done":
@@ -360,13 +361,14 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         # Cross-team delegation guard: a manager may only delegate to workers
         # on its own team. Violations feed a feedback step back (not a hard
         # fail) so the manager can correct its decision on the next step.
-        caller_team = orch.teams.team_for_manager(agent)
-        target_team = orch.teams.team_for_agent(decision.agent)
-        if caller_team is None or target_team is None or caller_team != target_team:
+        off_team_legs = _chain_legs_off_team(orch.teams, manager=agent, decision=decision)
+        if off_team_legs:
+            caller_team = orch.teams.team_for_manager(agent)
+            parts = [f"{name!r} is on team {team!r}" for name, team in off_team_legs]
             feedback = (
                 f"Invalid delegation: you are on team {caller_team!r}, "
-                f"but {decision.agent!r} is on team {target_team!r}. "
-                "Pick a worker on your own team, or escalate."
+                f"but {'; '.join(parts)}. "
+                "Pick workers on your own team, or escalate."
             )
             db.insert_task_result(
                 task_id=task_id,
@@ -432,6 +434,22 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
                 task_id,
             )
             return
+        # Persist the chain on the parent so child terminals can auto-advance
+        # via _enqueue_parent_if_waiting (Task 8). Skip if neither `then` nor
+        # `expect_verdict` is set — that's a plain single-leg delegate.
+        # MUST happen BEFORE enqueueing the child: a fast worker can otherwise
+        # complete and reach `_enqueue_parent_if_waiting` while active_chain is
+        # still NULL, missing the auto-advance gate and waking the parent as a
+        # plain delegation.
+        if decision.then or decision.expect_verdict is not None:
+            from src.orchestrator.chain import ChainState
+            chain = ChainState(
+                step_index=0,
+                first_leg_expect_verdict=decision.expect_verdict,
+                legs=list(decision.then),
+                step_audit_id=_step_audit_id,
+            )
+            db.update_task_active_chain(task_id, chain.serialize())
         if orch._queue is not None:
             orch._queue.put_nowait(orch._slug, child_id)
         return
@@ -450,15 +468,59 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
     )
 
 
+def _validate_one_leg(orch: "Orchestrator", *, agent: str | None, where: str) -> str | None:
+    """Validate a single delegation leg (agent present + workspace exists).
+    Returns None on success, a human-readable error string on failure.
+    ``where`` is used only for chain-leg messages; the first-leg messages
+    preserve the original wording for backward compatibility.
+    """
+    if not agent:
+        return "missing agent name"
+    workspace = orch._paths.workspaces_dir / agent
+    if not workspace.exists():
+        if where == "first leg":
+            return f"no workspace for agent {agent!r}"
+        return f"chain leg {where}: no workspace for agent {agent!r}"
+    return None
+
+
 def _validate_delegate(orch: "Orchestrator", decision) -> str | None:
     """Return a human-readable error string if the delegate decision is
-    unusable, or None if it's good to spawn."""
-    if not decision.agent:
-        return "missing agent name"
-    workspace = orch._paths.workspaces_dir / decision.agent
-    if not workspace.exists():
-        return f"no workspace for agent {decision.agent!r}"
+    unusable, or None if it's good to spawn. Validates the first leg and
+    every entry in ``decision.then`` (chain legs), returning on the first
+    failure encountered."""
+    err = _validate_one_leg(orch, agent=decision.agent, where="first leg")
+    if err is not None:
+        return err
+    for i, leg in enumerate(decision.then or []):
+        err = _validate_one_leg(orch, agent=leg.agent, where=str(i + 2))
+        if err is not None:
+            return err
     return None
+
+
+def _chain_legs_off_team(
+    teams,
+    manager: str,
+    decision,
+) -> list[tuple[str, str | None]]:
+    """Return [(agent_name, agent_team)] for every leg in ``decision`` whose
+    agent is NOT on ``manager``'s team. Empty list means all legs are on-team.
+    """
+    caller_team = teams.team_for_manager(manager)
+    if caller_team is None:
+        # Manager itself isn't registered — surface every leg as off-team.
+        all_agents = [decision.agent] + [leg.agent for leg in (decision.then or [])]
+        return [(a, teams.team_for_agent(a)) for a in all_agents if a]
+
+    off: list[tuple[str, str | None]] = []
+    for agent_name in [decision.agent] + [leg.agent for leg in (decision.then or [])]:
+        if not agent_name:
+            continue
+        agent_team = teams.team_for_agent(agent_name)
+        if agent_team is None or agent_team != caller_team:
+            off.append((agent_name, agent_team))
+    return off
 
 
 def _default_agent_for_root(orch: "Orchestrator", task) -> str:
@@ -802,7 +864,12 @@ def _build_prior_steps_from_db(orch: "Orchestrator", task_id: str):
     """Reconstruct StepRecord[] for the team manager by reading children's
     terminal outcomes from the DB. Only direct children of `task_id` count
     — each child is one past orchestration step. Order: creation order,
-    1-indexed."""
+    1-indexed.
+
+    If a chain ran since the last manager wake, a synthetic chain-summary
+    entry is appended so the manager can see what happened without re-deriving
+    it from raw child task records.
+    """
     from src.models import StepRecord
     steps: list[StepRecord] = []
     for i, child_id in enumerate(orch._db.get_children(task_id), start=1):
@@ -817,7 +884,65 @@ def _build_prior_steps_from_db(orch: "Orchestrator", task_id: str):
             result_summary=child.note or "(no summary)",
             success=success,
         ))
+    # Append chain summary if a chain ran since the last manager wake.
+    chain_summary = _summarize_recent_chain(orch, task_id)
+    if chain_summary is not None:
+        steps.append(StepRecord(
+            step_number=len(steps) + 1,
+            agent="orchestrator",
+            action="chain summary",
+            result_summary=chain_summary,
+            success=True,
+        ))
     return steps
+
+
+def _summarize_recent_chain(orch: "Orchestrator", parent_task_id: str) -> str | None:
+    """One-line summary of the most-recent chain that ran under parent_task_id.
+
+    Returns None if no chain_auto_advance audit rows exist on the parent.
+    Otherwise pairs the audit rows (which list triggering_child_id and
+    spawned_child_id) with the final spawned child's terminal verdict to
+    produce a human-readable line for the manager's wake context.
+    """
+    audit_logs = orch._db.get_audit_logs(parent_task_id)
+    rows = [r for r in audit_logs if r["action"] == "chain_auto_advance"]
+    if not rows:
+        return None
+    # Suppress the summary if a manager decision (orchestration_step) has
+    # landed AFTER the most-recent chain advance — the manager has already
+    # seen this chain summary in the wake where the chain ended, and the
+    # current wake is for a later non-chain event. Showing it again would
+    # place a stale chain summary at the end of prior_steps, misrepresenting
+    # the latest event.
+    max_chain_id = max(r["id"] for r in rows)
+    max_step_id = max(
+        (r["id"] for r in audit_logs if r["action"] == "orchestration_step"),
+        default=0,
+    )
+    if max_step_id > max_chain_id:
+        return None
+    # Filter to the most-recent chain only — multiple sequential chains may
+    # share the same parent across separate manager wakes, distinguished by
+    # the chain_origin_step_audit_id of the orchestration_step that minted
+    # each chain.
+    latest_origin_id = rows[-1]["payload"]["chain_origin_step_audit_id"]
+    rows = [
+        r for r in rows
+        if r["payload"]["chain_origin_step_audit_id"] == latest_origin_id
+    ]
+    triggers = [r["payload"]["triggering_child_id"] for r in rows]
+    spawned = [r["payload"]["spawned_child_id"] for r in rows]
+    chain_children = triggers + ([spawned[-1]] if spawned else [])
+    last_child_id = chain_children[-1]
+    last_report = orch._db.get_latest_completion_report(last_child_id)
+    last_verdict = last_report.verdict if last_report else None
+    arrow = " → ".join(chain_children)
+    if last_report and last_report.status == "blocked":
+        return f"Chain aborted at {last_child_id}: self-blocked"
+    if last_verdict is not None:
+        return f"Chain: {len(chain_children)} legs ({arrow}), final verdict {last_verdict}"
+    return f"Chain: {len(chain_children)} legs ({arrow})"
 
 
 def _is_already_terminal(orch: "Orchestrator", task_id: str) -> bool:
@@ -873,6 +998,12 @@ def _fail(orch: "Orchestrator", task_id: str, *, note: str) -> None:
     # overwrite the founder's "cancelled by founder: ..." note.
     if _is_already_terminal(orch, task_id):
         return
+    # Clear any in-flight chain so the CLI/Web UI doesn't show a chain strip
+    # on a FAILED task. The chain can't re-activate (the task is terminal),
+    # but the dangling state is cosmetically misleading. Always-clear is
+    # cheap and works for cascade-fail, self-blocked, invalid-delegate, and
+    # session-failure failure modes.
+    orch._db.update_task_active_chain(task_id, None)
     orch._db.update_task(
         task_id,
         status=TaskStatus.FAILED,
@@ -1015,6 +1146,81 @@ def _log_verdict_if_delegated(
     )
 
 
+def _advance_chain_for_completed_child(
+    *,
+    orch: "Orchestrator",
+    parent_task_id: str,
+    child_task_id: str,
+) -> str:
+    """Inspect the parent's active_chain against the just-completed child's
+    report. Either spawn the next leg ("advance") or clear the chain so the
+    caller falls through to the normal parent-wake path ("wake").
+
+    Returns "advance" or "wake". When "advance" is returned, the parent is
+    NOT re-enqueued and orchestration_step_count is NOT bumped.
+
+    Only called when child.status == COMPLETED — failed/cancelled children
+    cascade-fail as before; chains do NOT survive an opaque leg failure in v1.
+    """
+    from src.models import TaskRecord
+    from src.orchestrator.chain import (
+        ChainState,
+        build_prior_leg_context,
+        compute_advance_action,
+    )
+
+    parent = orch._db.get_task(parent_task_id)
+    if parent is None or parent.active_chain is None:
+        return "wake"
+
+    chain = ChainState.deserialize(parent.active_chain)
+    report = orch._db.get_latest_completion_report(child_task_id)
+    if report is None:
+        orch._db.update_task_active_chain(parent_task_id, None)
+        return "wake"
+
+    action = compute_advance_action(chain=chain, report=report)
+    if action.kind == "wake":
+        orch._db.update_task_active_chain(parent_task_id, None)
+        return "wake"
+
+    # Advance: bump chain state FIRST so a crash between this and insert_task
+    # leaves a recoverable "stuck blocked-delegated waiting for missing child"
+    # rather than a silently-mis-routed chain on the next terminal.
+    next_child_id = orch._db.next_task_id()
+    chain.step_index = action.next_step_index
+    orch._db.update_task_active_chain(parent_task_id, chain.serialize())
+
+    # Now spawn the next-leg child task.
+    prior_context = build_prior_leg_context(
+        child_task_id=child_task_id, report=report,
+    )
+    full_brief = action.next_leg.prompt + prior_context
+    orch._db.insert_task(
+        TaskRecord(
+            id=next_child_id,
+            team=parent.team,
+            brief=full_brief,
+            parent_task_id=parent_task_id,
+            assigned_agent=action.next_leg.agent,
+            status=TaskStatus.PENDING,
+            session_timeout_seconds=parent.session_timeout_seconds,
+        )
+    )
+
+    orch._audit.log_chain_auto_advance(
+        parent_task_id=parent_task_id,
+        leg_index=action.next_step_index,
+        spawned_child_id=next_child_id,
+        triggering_child_id=child_task_id,
+        triggering_verdict=report.verdict,
+        chain_origin_step_audit_id=chain.step_audit_id,
+    )
+    if orch._queue is not None:
+        orch._queue.put_nowait(orch._slug, next_child_id)
+    return "advance"
+
+
 def _enqueue_parent_if_waiting(
     orch: "Orchestrator",
     task_id: str,
@@ -1051,6 +1257,25 @@ def _enqueue_parent_if_waiting(
         return
     if parent.block_kind != BlockKind.DELEGATED:
         return
+
+    # Chain-advance branch: if the parent has an active chain and the just-
+    # completed child terminated cleanly, try to auto-advance to the next leg
+    # instead of waking the parent. Failed children skip this branch and fall
+    # through to the cascade-fail path below.
+    child = orch._db.get_task(task_id)
+    if (
+        child is not None
+        and child.status == TaskStatus.COMPLETED
+        and parent.active_chain is not None
+    ):
+        outcome = _advance_chain_for_completed_child(
+            orch=orch, parent_task_id=parent.id, child_task_id=task_id,
+        )
+        if outcome == "advance":
+            return  # next leg spawned; parent stays blocked-delegated
+        # outcome == "wake" → chain cleared; fall through to sibling-check
+        # + parent-wake path below.
+
     siblings = [orch._db.get_task(cid) for cid in orch._db.get_children(parent.id)]
     if any(s is None or s.status not in TERMINAL_STATES for s in siblings):
         return
@@ -1059,6 +1284,8 @@ def _enqueue_parent_if_waiting(
     if failed:
         first = failed[0]
         note = f"delegated child {first.id} failed: {first.note or '(no note)'}"
+        if parent.active_chain is not None:
+            orch._db.update_task_active_chain(parent.id, None)
         _fail(orch, parent.id, note=note)
         _enqueue_parent_if_waiting(
             orch, parent.id,

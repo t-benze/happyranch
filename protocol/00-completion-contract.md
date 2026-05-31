@@ -33,6 +33,22 @@ Payload shape (required keys: `task_id`, `session_id`, `agent`, `status`, `summa
 
 `summary` is prose; the structured arrays (`risks`, `dependencies`, `reviewer_focus`) are first-class JSON keys, not subfields embedded inside `summary`. `confidence` is an integer 0–100 indicating how sure you are the work is correct (default 80 if omitted).
 
+For review/QA-type workers, optionally include a structured verdict:
+
+```json
+{
+  "task_id": "...",
+  "session_id": "...",
+  "agent": "senior_dev",
+  "status": "completed",
+  "confidence": 92,
+  "summary": "Code review complete. All 7 verification rows green...",
+  "verdict": "APPROVE"
+}
+```
+
+`verdict` is a free-string field. Each team's workflow KB entry documents the allowed values (e.g., engineering uses `APPROVE | REQUEST_CHANGES | BLOCK` for reviews; `PASS | REVISE | BLOCK` for QA). Omit when not applicable. Inline delegation chains (see `decision.then` below) use this field to gate auto-advance.
+
 ## Blocker path
 
 Use `"status": "blocked"` when you cannot finish and need the orchestrator to route around you. Set `"confidence": 0` and put the blocker reason in `summary` — the orchestrator reads it verbatim when deciding the next step.
@@ -93,6 +109,37 @@ Examples — same payload shape as a worker's, plus a top-level `decision`:
   }
 }
 ```
+
+### Inline delegation chains
+
+A manager can declare a multi-leg workflow in one decision via `decision.then` (additional legs) and per-leg `expect_verdict` gates:
+
+```json
+{
+  "task_id": "...",
+  "session_id": "...",
+  "agent": "engineering_head",
+  "status": "completed",
+  "summary": "Dispatching Item 1a small-feature gate chain.",
+  "decision": {
+    "action": "delegate",
+    "agent": "dev_agent",
+    "prompt": "Build Item 1a Gallery uplift...",
+    "then": [
+      {"agent": "senior_dev",  "prompt": "Code-review the PR described in prior-leg context.", "expect_verdict": "APPROVE"},
+      {"agent": "qa_engineer", "prompt": "QA the PR described in prior-leg context.",          "expect_verdict": "PASS"}
+    ]
+  }
+}
+```
+
+The orchestrator spawns the first leg, then auto-advances to the next leg on each child terminal whose `verdict` matches the leg's `expect_verdict`. Any mismatch (or `status=blocked`) clears the chain and wakes the manager. The final leg's match wakes the manager too — chains do not auto-`done`. Each subsequent leg's brief is auto-suffixed with a "Prior leg context" block (the upstream worker's summary + verdict + artifact_dir).
+
+Step-budget effect: declaring a chain consumes one orchestration step; auto-advances do NOT consume steps. A clean small-item workflow (`dev → senior_dev[APPROVE] → qa_engineer[PASS]`) costs 2 steps (declare + final wake) instead of 4.
+
+Cross-team validation runs on every leg at decision-parse time; any off-team agent rejects the whole decision via the feedback mechanism.
+
+See `docs/superpowers/specs/2026-05-30-inline-delegation-chain-design.md`.
 
 ## Mid-task learnings
 

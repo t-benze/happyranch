@@ -1,4 +1,5 @@
 from src.models import (
+    ChainLeg,
     CompletionReport,
     NextStep,
     ReviewVerdict,
@@ -215,3 +216,57 @@ def test_script_request_record_defaults():
     assert r.max_runtime_seconds is None  # unbounded by default
     assert r.cwd_hint is None
     assert r.exit_code is None
+
+
+def test_chain_leg_roundtrip():
+    leg = ChainLeg(agent="senior_dev", prompt="review", expect_verdict="APPROVE")
+    assert leg.model_dump() == {
+        "agent": "senior_dev",
+        "prompt": "review",
+        "expect_verdict": "APPROVE",
+    }
+    leg2 = ChainLeg(agent="qa_engineer", prompt="qa")
+    assert leg2.expect_verdict is None
+
+
+def test_next_step_accepts_then_and_expect_verdict():
+    ns = NextStep(
+        action="delegate",
+        agent="dev_agent",
+        prompt="build",
+        expect_verdict=None,
+        then=[
+            {"agent": "senior_dev", "prompt": "review", "expect_verdict": "APPROVE"},
+            {"agent": "qa_engineer", "prompt": "qa", "expect_verdict": "PASS"},
+        ],
+    )
+    assert len(ns.then) == 2
+    assert ns.then[0].agent == "senior_dev"
+    assert ns.then[0].expect_verdict == "APPROVE"
+    assert ns.then[1].expect_verdict == "PASS"
+
+
+def test_next_step_then_defaults_to_empty_list():
+    ns = NextStep(action="delegate", agent="dev", prompt="x")
+    assert ns.then == []
+    assert ns.expect_verdict is None
+
+
+def test_completion_report_accepts_optional_verdict():
+    r = CompletionReport(
+        task_id="TASK-1",
+        agent="senior_dev",
+        status="completed",
+        confidence=92,
+        output_summary="LGTM",
+        verdict="APPROVE",
+    )
+    assert r.verdict == "APPROVE"
+    r2 = CompletionReport(
+        task_id="TASK-2",
+        agent="dev_agent",
+        status="completed",
+        confidence=80,
+        output_summary="built it",
+    )
+    assert r2.verdict is None

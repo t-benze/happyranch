@@ -144,6 +144,8 @@ Parameters:
    reason in `summary`. Optional keys (`risks`, `dependencies`,
    `reviewer_focus`, `confidence`, `artifact_dir`) may be omitted.
 
+   - If your role is to issue a verdict (code review, QA, design review, etc.), include `"verdict": "<value>"` in your payload. Free string; your team's workflow KB entry documents the vocabulary. Optional — workers without verdicts simply omit the field.
+
    **Team-manager only — add a `decision` field.** Alongside the prose
    `summary`, a team-manager session must include a top-level `decision`
    object that the orchestrator will execute. Workers omit it. Omitting it
@@ -154,7 +156,10 @@ Parameters:
    - `delegate` — hand the next subtask to a worker; requires `agent` and `prompt`.
      Note the field is `prompt`, **not** `brief` — the orchestrator silently
      drops unknown keys, so writing `"brief"` produces a child task with an
-     empty brief.
+     empty brief. Managers can declare a multi-leg workflow chain inline by
+     adding `"then": [...]` to a delegate decision. The orchestrator
+     auto-advances routine legs without consuming orchestration steps. Full
+     shape: see `protocol/00-completion-contract.md`.
    - `done` — the task is complete; requires `summary` of the outcome.
    - `escalate` — the task needs founder intervention; requires `reason`.
 

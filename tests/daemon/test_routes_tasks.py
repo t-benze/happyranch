@@ -1640,3 +1640,63 @@ def test_get_task_blocked_on_jobs_is_none_for_non_blocked_task(
     assert r.status_code == 200
     body = r.json()
     assert body.get("blocked_on_jobs") is None
+
+
+# --- GET /tasks/{id} active_chain ---
+
+
+def test_task_detail_includes_parsed_active_chain(
+    tmp_home, app, daemon_state, org_state, auth_headers,
+) -> None:
+    """When a task has active_chain set, the detail response surfaces it as a
+    parsed dict (not a raw JSON string) so the web UI and CLI can render it."""
+    import json as _json
+    from src.models import TaskRecord
+
+    db = org_state.db
+    db.insert_task(TaskRecord(
+        id="TASK-CHAIN-1", brief="chain task", team="engineering",
+        assigned_agent="engineering_head",
+    ))
+    chain_json = _json.dumps({
+        "step_index": 0,
+        "first_leg_expect_verdict": "APPROVE",
+        "legs": [{"agent": "sr", "prompt": "r", "expect_verdict": "APPROVE"}],
+        "step_audit_id": 1,
+    })
+    db.update_task_active_chain("TASK-CHAIN-1", chain_json)
+
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tasks/TASK-CHAIN-1",
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert "active_chain" in body
+    chain = body["active_chain"]
+    assert isinstance(chain, dict)
+    assert chain["step_index"] == 0
+    assert chain["first_leg_expect_verdict"] == "APPROVE"
+    assert chain["legs"][0]["agent"] == "sr"
+    assert chain["step_audit_id"] == 1
+
+
+def test_task_detail_active_chain_is_null_when_no_chain(
+    tmp_home, app, daemon_state, org_state, auth_headers,
+) -> None:
+    """Tasks without an active chain return active_chain: null (not missing key)."""
+    from src.models import TaskRecord
+
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-NO-CHAIN", brief="plain task", team="engineering",
+        assigned_agent="dev_agent",
+    ))
+
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tasks/TASK-NO-CHAIN",
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert "active_chain" in body
+    assert body["active_chain"] is None

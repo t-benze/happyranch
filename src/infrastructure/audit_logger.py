@@ -307,12 +307,40 @@ class AuditLogger:
 
     def log_orchestration_step(
         self, task_id: str, step_number: int, decision: dict
-    ) -> None:
-        self._db.insert_audit_log(
+    ) -> int:
+        return self._db.insert_audit_log(
             task_id=task_id,
             agent="orchestrator",
             action="orchestration_step",
             payload={"step_number": step_number, "decision": decision},
+        )
+
+    def log_chain_auto_advance(
+        self,
+        parent_task_id: str,
+        *,
+        leg_index: int,
+        spawned_child_id: str,
+        triggering_child_id: str,
+        triggering_verdict: str | None,
+        chain_origin_step_audit_id: int,
+    ) -> None:
+        """Audit row for an orchestrator-driven chain advance. Distinct from
+        `orchestration_step` (which is manager-authored). Does NOT correspond to
+        a tasks.orchestration_step_count bump — chains are one decision, multiple
+        auto-advances.
+        """
+        self._db.insert_audit_log(
+            task_id=parent_task_id,
+            agent="orchestrator",
+            action="chain_auto_advance",
+            payload={
+                "leg_index": leg_index,
+                "spawned_child_id": spawned_child_id,
+                "triggering_child_id": triggering_child_id,
+                "triggering_verdict": triggering_verdict,
+                "chain_origin_step_audit_id": chain_origin_step_audit_id,
+            },
         )
 
     def log_task_blocked_on_jobs(

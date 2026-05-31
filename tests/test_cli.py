@@ -1966,6 +1966,58 @@ def test_cmd_details_renders_dispatched_from(capsys):
     assert "dev_agent / worker" in out
 
 
+def test_cmd_details_renders_workflow_chain(capsys):
+    """When body['active_chain'] is set, the chain block is rendered showing
+    step N of M, leg markers (▶ in-flight, ✓ completed, ⋯ pending), and
+    expect_verdict notes."""
+    from argparse import Namespace
+
+    from src.cli import cmd_details
+
+    fake = MagicMock()
+    fake.get.return_value.status_code = 200
+    fake.get.return_value.json.return_value = {
+        "task": {
+            "task_id": "TASK-050",
+            "type": "general",
+            "status": "in_progress",
+            "assigned_agent": "dev_agent",
+            "brief": "Delegate multi-leg task",
+            "created_at": "2026-04-26T10:00:00+00:00",
+            "updated_at": "2026-04-26T10:00:00+00:00",
+        },
+        "active_chain": {
+            "step_index": 1,
+            "first_leg_expect_verdict": "approved",
+            "legs": [
+                {
+                    "agent": "pm",
+                    "prompt": "Review the design",
+                    "expect_verdict": "approved",
+                },
+                {
+                    "agent": "eng_lead",
+                    "prompt": "Implement feature X",
+                    "expect_verdict": "completed",
+                },
+            ],
+        },
+        "results": [],
+        "audit_log": [],
+    }
+    with patch("src.cli.OpcClient.from_env", return_value=fake), \
+         patch("src.cli._fetch_available_orgs", return_value=["alpha"]):
+        cmd_details(Namespace(org=None, task_id="TASK-050"))
+    out = capsys.readouterr().out
+    assert "Current workflow chain" in out
+    assert "step 2 of 3" in out
+    assert "▶ Leg 2" in out
+    assert "✓ Leg 1" in out
+    assert "pm" in out
+    assert "Review the design" in out
+    assert "expecting: approved" in out
+
+
 def test_cmd_dispatch_happy_path(tmp_path):
     """`grassland dispatch --from-file ...` POSTs to /talks/{talk_id}/dispatch with
     body shaped {brief, target_agent?, team?} — talk_id stays in the URL path
