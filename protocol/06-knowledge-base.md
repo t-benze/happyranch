@@ -27,7 +27,7 @@ Contribute when any is true:
 - You made a non-trivial procedural decision worth preserving as a mini-SOP
   (not a one-off workaround).
 - The founder resolved an escalation and a future agent should follow the
-  same ruling without re-escalating. Write it via plain `grassland kb add` with
+  same ruling without re-escalating. Write it via plain `happyranch kb add` with
   `source_task: TASK-XXX` in the frontmatter so the link survives.
 
 ## What does not belong
@@ -49,7 +49,7 @@ YAML frontmatter + markdown body. Required fields: `slug`, `title`, `type`,
 `<slug>.md`; the slug and filename are the canonical identity.
 
 `type` is any non-empty string — used for grouping in `_index.md` and the
-`--type` filter on `grassland kb list`. Common conventions: `reference` for
+`--type` filter on `happyranch kb list`. Common conventions: `reference` for
 durable factual material, `ruling` for founder decisions, `sop` for
 procedures. Use whatever vocabulary your org settles on.
 
@@ -63,7 +63,7 @@ Body is markdown, ≤32 KiB.
 On `add` the daemon runs two checks inside a write lock:
 
 1. **`slug_exists`** — a file with that slug already exists. Use
-   `grassland kb update` instead, or pick a different slug.
+   `happyranch kb update` instead, or pick a different slug.
 2. **`near_duplicate`** — title similarity >0.70 or ≥2 shared tags. Response
    lists candidate slugs. Either update the existing entry (strongly preferred)
    or pass `--force-new-sibling` if the topic is genuinely distinct.
@@ -89,5 +89,5 @@ vocabulary.
 
 ## Hands-on
 
-Read the full CLI surface with `grassland kb --help`. The `start-task` skill
+Read the full CLI surface with `happyranch kb --help`. The `start-task` skill
 documents when to consult and when to contribute.

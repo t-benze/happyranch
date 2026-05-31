@@ -60,7 +60,7 @@ function stubBaseHandlers() {
 
 describe('Tasks write path', () => {
   test('cancels a task end-to-end', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     stubBaseHandlers();
     let cancelCalled = false;
     server.use(

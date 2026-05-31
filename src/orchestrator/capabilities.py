@@ -107,7 +107,7 @@ def build_capabilities_prompt(
         "`summary` — that guardrail exists because silent prose-to-decision "
         "inference masked past delegation bugs (TASK-013 / TASK-016).\n",
         "**manage-agent** -- Enroll, update, or terminate an agent:",
-        "Use the manage-agent skill to write a JSON file and call `grassland manage-agent --from-file <path>`.",
+        "Use the manage-agent skill to write a JSON file and call `happyranch manage-agent --from-file <path>`.",
         "Enrollment requires founder approval before the agent becomes active. "
         "This is a side-channel capability, not one of the three decision shapes above — "
         "your `decision` field still has to be one of delegate/done/escalate.\n",

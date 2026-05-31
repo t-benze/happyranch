@@ -40,13 +40,13 @@ function emptySummary(): DashboardSummaryResponse {
  * app makes must be answered — even ones not under test.
  */
 function seedShell(): void {
-  sessionStorage.setItem('grassland.token', 'tok');
+  sessionStorage.setItem('happyranch.token', 'tok');
   server.use(
     http.get('/api/v1/orgs', () =>
       HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
     ),
     http.get('/api/v1/health', () =>
-      HttpResponse.json({ status: 'ok', active_runtime: '/Users/x/grassland' }),
+      HttpResponse.json({ status: 'ok', active_runtime: '/Users/x/happyranch' }),
     ),
   );
 }

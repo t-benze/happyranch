@@ -22,7 +22,7 @@ const OPEN_TALK = {
 };
 
 function baseStubs() {
-  sessionStorage.setItem('grassland.token', 'tok');
+  sessionStorage.setItem('happyranch.token', 'tok');
   server.use(
     http.get('/api/v1/orgs', () =>
       HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),

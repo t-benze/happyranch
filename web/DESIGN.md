@@ -1,12 +1,12 @@
 ---
-# DESIGN.md — Grassland Founder Console
+# DESIGN.md — HappyRanch Founder Console
 # Format: google-labs/design.md (YAML frontmatter machine-readable tokens
 # + canonical markdown sections below). Token references use {dot.path}.
 #
 # Owner: the one human founder running this org. Everything is a single
 # desktop SPA, served on localhost, used daily, for years.
 
-name: Grassland Founder Console
+name: HappyRanch Founder Console
 version: 0.1.0
 description: >
   A calm, dense, slightly editorial cockpit for a single human supervising
@@ -557,7 +557,7 @@ components:
 
 # Overview
 
-Grassland is a desk-tool used by one person, every working day, for years. The
+HappyRanch is a desk-tool used by one person, every working day, for years. The
 visual identity is **calm editorial cockpit**: dense, monochrome-leaning,
 with a single saturated cyan-blue accent (`signal_500`) used sparingly —
 the way a broadcast control room uses one indicator color, or the way a
@@ -573,7 +573,7 @@ flat, layered surface — depth is conveyed by surface tint, not by
 elevation, except where elevation actually means "this is floating
 above the page" (popovers, modals, drawers).
 
-Why this matters for Grassland specifically: every screen carries org slug,
+Why this matters for HappyRanch specifically: every screen carries org slug,
 agent identity, IDs (THR-NNN / TASK-NNN), tier color, timestamps, status,
 keyboard hints. If the chrome is loud, the signal disappears. The design
 language is built to make the *data* the foreground and the *UI* the

@@ -162,7 +162,7 @@ The string template lives in one helper (`src/orchestrator/chain.py:build_prior_
 
 ### Step-budget accounting
 
-The 50-step cap (`GRASSLAND_MAX_ORCHESTRATION_STEPS`, enforced via `tasks.orchestration_step_count`) was designed to detect runaway manager indecision. A chain is one decision; auto-advances are the orchestrator executing it.
+The 50-step cap (`HAPPYRANCH_MAX_ORCHESTRATION_STEPS`, enforced via `tasks.orchestration_step_count`) was designed to detect runaway manager indecision. A chain is one decision; auto-advances are the orchestrator executing it.
 
 - **Declaring a chain** increments `orchestration_step_count` by exactly **1** (same as a single-leg delegate today — uses the existing `try_claim_for_step` CAS on the manager's session).
 - **Each `chain_auto_advance`** writes an audit row but does **NOT** bump `orchestration_step_count`.
@@ -174,7 +174,7 @@ Concrete projection on TASK-577's small-item wakes: items 7 and 8 (no REVISE ite
 
 ### Observability
 
-**`grassland details TASK-X`** gets a "Current workflow chain" block when `active_chain` is set:
+**`happyranch details TASK-X`** gets a "Current workflow chain" block when `active_chain` is set:
 
 ```
 Current workflow chain (step 2 of 3):
@@ -198,9 +198,9 @@ Rendering source: `parent.active_chain` + the spawned child tasks identified via
 }
 ```
 
-`grassland audit TASK-X --action chain_auto_advance` filters to chain transitions only. `--action orchestration_step` continues to surface only manager decisions, so the founder can read "what counted against the 50-cap" cleanly.
+`happyranch audit TASK-X --action chain_auto_advance` filters to chain transitions only. `--action orchestration_step` continues to surface only manager decisions, so the founder can read "what counted against the 50-cap" cleanly.
 
-**Web UI.** The existing task detail route already returns the full task row; `active_chain` is exposed in the existing response (no new endpoint). The UI renders a thin chain-strip component above the orchestration-steps timeline. The OpenAPI snapshot test (`tests/contract/test_openapi_snapshot.py`) needs regeneration via `GRASSLAND_REGEN_OPENAPI=1`; the TS mirror at `web/src/lib/api/tasks.ts` and its types update accordingly.
+**Web UI.** The existing task detail route already returns the full task row; `active_chain` is exposed in the existing response (no new endpoint). The UI renders a thin chain-strip component above the orchestration-steps timeline. The OpenAPI snapshot test (`tests/contract/test_openapi_snapshot.py`) needs regeneration via `HAPPYRANCH_REGEN_OPENAPI=1`; the TS mirror at `web/src/lib/api/tasks.ts` and its types update accordingly.
 
 **Wake reason on parent.** When the parent wakes (chain complete or aborted), the manager's invocation prompt's history block gets a one-line chain summary:
 
@@ -223,7 +223,7 @@ The manager doesn't need to re-derive the chain's history from raw child task re
 | Leg's spawned child fails to launch | Treated as leg failure → manager wakes. Same code path as today's failed-delegate. |
 | Founder cascade-cancels parent | Existing cascade kills any in-flight leg; clears `active_chain` as part of the parent-cancel path. |
 | Founder cancels a leg directly (no cascade) | Wake parent; clear `active_chain`. Explicit termination beats auto-advance. |
-| Founder revisits parent mid-chain | Cannot happen — `grassland revisit` requires terminal predecessor; parent is `blocked(delegated)` while chain runs. |
+| Founder revisits parent mid-chain | Cannot happen — `happyranch revisit` requires terminal predecessor; parent is `blocked(delegated)` while chain runs. |
 | Manager declares chain with off-team agent (any leg) | Validated at decision-parse time across all legs; rejected as feedback step back to manager (existing `feedback` mechanism). No partial spawn. |
 | Manager declares chain referencing themselves | Same path as cross-team guard — managers are not in the team's worker registry; rejected. |
 | Empty `then: []`, no `expect_verdict` | Identical to today's single-leg delegate. Allowed (zero-cost forward-compat). |

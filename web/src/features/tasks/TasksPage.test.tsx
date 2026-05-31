@@ -64,7 +64,7 @@ const JOB: JobRecord = {
 
 describe('TasksPage — read path', () => {
   test('renders the inbox with fixture tasks', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
         HttpResponse.json({ tasks: [TASK] }),
@@ -77,7 +77,7 @@ describe('TasksPage — read path', () => {
   });
 
   test('renders filter sidebar groups', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
         HttpResponse.json({ tasks: [TASK] }),
@@ -120,7 +120,7 @@ describe('TaskDetailPane — jobs cross-link', () => {
   }
 
   test('shows jobs section when task has jobs', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     stubHandlers([JOB]);
     renderWithProviders(<AppRoutes />, {
       route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
@@ -136,7 +136,7 @@ describe('TaskDetailPane — jobs cross-link', () => {
   });
 
   test('hides jobs section when task has no jobs', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     stubHandlers([]);
     renderWithProviders(<AppRoutes />, {
       route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
@@ -198,7 +198,7 @@ describe('TaskDetailPane — workflow chain strip', () => {
   }
 
   test('renders the chain strip when active_chain is set', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     stubHandlers(ACTIVE_CHAIN);
     renderWithProviders(<AppRoutes />, {
       route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
@@ -210,7 +210,7 @@ describe('TaskDetailPane — workflow chain strip', () => {
   });
 
   test('does not render the chain strip when active_chain is null', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     stubHandlers(null);
     renderWithProviders(<AppRoutes />, {
       route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,

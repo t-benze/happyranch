@@ -184,7 +184,7 @@ git commit -m "feat(web): Drawer primitive for in-context detail panes"
 - Create: `web/src/hooks/density.ts`
 - Create: `web/src/hooks/density.test.ts`
 
-`localStorage["grassland.density"]` ∈ `{"comfortable", "compact"}`. Default comfortable.
+`localStorage["happyranch.density"]` ∈ `{"comfortable", "compact"}`. Default comfortable.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -203,7 +203,7 @@ describe('useDensity', () => {
   });
 
   it('reads persisted value', () => {
-    localStorage.setItem('grassland.density', 'compact');
+    localStorage.setItem('happyranch.density', 'compact');
     const { result } = renderHook(() => useDensity());
     expect(result.current.density).toBe('compact');
   });
@@ -212,11 +212,11 @@ describe('useDensity', () => {
     const { result } = renderHook(() => useDensity());
     act(() => result.current.setDensity('compact'));
     expect(result.current.density).toBe('compact');
-    expect(localStorage.getItem('grassland.density')).toBe('compact');
+    expect(localStorage.getItem('happyranch.density')).toBe('compact');
   });
 
   it('ignores invalid persisted value', () => {
-    localStorage.setItem('grassland.density', 'garbage');
+    localStorage.setItem('happyranch.density', 'garbage');
     const { result } = renderHook(() => useDensity());
     expect(result.current.density).toBe('comfortable');
   });
@@ -238,7 +238,7 @@ Expected: FAIL — module not found.
 import { useCallback, useState } from 'react';
 
 export type Density = 'comfortable' | 'compact';
-const KEY = 'grassland.density';
+const KEY = 'happyranch.density';
 
 function readInitial(): Density {
   const v = typeof window !== 'undefined' ? window.localStorage.getItem(KEY) : null;
@@ -1950,7 +1950,7 @@ Edit `web/UI_SPEC.md`, section 8 ("Tasks — placeholder shell"). Rename to "Tas
 
 ### Purpose
 
-Inbox + detail surface for every task across the org. Equivalent to `grassland tasks list` + `grassland details <task_id>` + `grassland events <task_id>` + `grassland cancel|revisit|resolve-escalation`.
+Inbox + detail surface for every task across the org. Equivalent to `happyranch tasks list` + `happyranch details <task_id>` + `happyranch events <task_id>` + `happyranch cancel|revisit|resolve-escalation`.
 
 ### Layout
 
@@ -2039,7 +2039,7 @@ Expected: PASS — this plan touches no Python.
 ```bash
 scripts/daemon.sh restart
 scripts/build_web.sh
-uv run grassland web --no-open
+uv run happyranch web --no-open
 ```
 
 In a browser at the printed URL:

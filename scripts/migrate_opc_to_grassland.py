@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
-"""One-shot live-data migration for the opc -> grassland rename.
+"""One-shot live-data migration for the opc -> happyranch rename.
 
 What it does:
 
 1. Stops a running daemon (graceful TERM, then KILL after 5s).
-2. Renames ``~/.opc/`` -> ``~/.grassland/`` (refuses if target exists).
+2. Renames ``~/.opc/`` -> ``~/.happyranch/`` (refuses if target exists).
 3. For every registered runtime, renames the ``opc.yaml`` marker
-   -> ``grassland.yaml`` and each org's ``opc.db*`` -> ``grassland.db*``.
+   -> ``happyranch.yaml`` and each org's ``opc.db*`` -> ``happyranch.db*``.
 4. Rewrites the ``Bash(opc:*)`` allow rule in each agent workspace's
    ``.claude/settings.json`` (and the ``opc *`` key in ``opencode.json``).
-5. Prints the list of ``grassland init-agent`` commands the founder
+5. Prints the list of ``happyranch init-agent`` commands the founder
    should run next to refresh each workspace's bootstrap doc + skills.
 
 Run AFTER you have updated the source tree to the renamed branch::
 
     uv sync
-    uv run python scripts/migrate_opc_to_grassland.py [--dry-run]
+    uv run python scripts/migrate_opc_to_happyranch.py [--dry-run]
 
 Idempotent: rerunning is safe — rename steps skip when the destination
 already exists, and the JSON rewrites are pure string substitutions.
@@ -33,7 +33,7 @@ from pathlib import Path
 import yaml
 
 OPC_HOME = Path.home() / ".opc"
-GRASSLAND_HOME = Path.home() / ".grassland"
+HAPPYRANCH_HOME = Path.home() / ".happyranch"
 
 
 def info(msg: str) -> None:
@@ -125,7 +125,7 @@ def rewrite_settings_json(path: Path, dry: bool) -> bool:
         return False
     allow = data.get("permissions", {}).get("allow", [])
     new_allow = [
-        rule.replace("Bash(opc:", "Bash(grassland:").replace("opc:*", "grassland:*")
+        rule.replace("Bash(opc:", "Bash(happyranch:").replace("opc:*", "happyranch:*")
         for rule in allow
     ]
     if new_allow == allow:
@@ -148,9 +148,9 @@ def rewrite_opencode_json(path: Path, dry: bool) -> bool:
     for key, val in bash.items():
         new_key = key
         if key == "opc *":
-            new_key = "grassland *"
+            new_key = "happyranch *"
         elif key.startswith("opc "):
-            new_key = "grassland " + key[len("opc "):]
+            new_key = "happyranch " + key[len("opc "):]
         if new_key != key:
             changed = True
         new_bash[new_key] = val
@@ -168,10 +168,10 @@ def migrate_runtime(rt: Path, dry: bool, reinit: list[tuple[Path, str, str]]) ->
     if not rt.is_dir():
         warn("  not a directory, skipping")
         return
-    rename_if_exists(rt / "opc.yaml", rt / "grassland.yaml", dry)
+    rename_if_exists(rt / "opc.yaml", rt / "happyranch.yaml", dry)
     for bak in sorted(rt.glob("opc.db.bak-*")):
         rename_if_exists(
-            bak, rt / bak.name.replace("opc.db", "grassland.db", 1), dry
+            bak, rt / bak.name.replace("opc.db", "happyranch.db", 1), dry
         )
     orgs_dir = rt / "orgs"
     if not orgs_dir.is_dir():
@@ -181,11 +181,11 @@ def migrate_runtime(rt: Path, dry: bool, reinit: list[tuple[Path, str, str]]) ->
         info(f"  org: {slug}")
         for suffix in ("", "-shm", "-wal", "-journal"):
             rename_if_exists(
-                org / f"opc.db{suffix}", org / f"grassland.db{suffix}", dry
+                org / f"opc.db{suffix}", org / f"happyranch.db{suffix}", dry
             )
         for bak in sorted(org.glob("opc.db.bak-*")):
             rename_if_exists(
-                bak, org / bak.name.replace("opc.db", "grassland.db", 1), dry
+                bak, org / bak.name.replace("opc.db", "happyranch.db", 1), dry
             )
         ws_dir = org / "workspaces"
         if not ws_dir.is_dir():
@@ -211,26 +211,26 @@ def main() -> int:
     dry = args.dry_run
     tag = " (dry-run)" if dry else ""
 
-    if not OPC_HOME.exists() and not GRASSLAND_HOME.exists():
-        info("nothing to migrate: neither ~/.opc nor ~/.grassland exists")
+    if not OPC_HOME.exists() and not HAPPYRANCH_HOME.exists():
+        info("nothing to migrate: neither ~/.opc nor ~/.happyranch exists")
         return 0
 
     if OPC_HOME.exists():
         info(f"step 1: stop any running daemon under {OPC_HOME}{tag}")
         stop_daemon_if_running(OPC_HOME, dry)
 
-        if GRASSLAND_HOME.exists():
-            warn(f"refusing to rename: {GRASSLAND_HOME} already exists")
+        if HAPPYRANCH_HOME.exists():
+            warn(f"refusing to rename: {HAPPYRANCH_HOME} already exists")
             warn("delete or back it up before re-running, or migrate manually")
             return 2
 
-        info(f"step 2: rename {OPC_HOME} -> {GRASSLAND_HOME}{tag}")
+        info(f"step 2: rename {OPC_HOME} -> {HAPPYRANCH_HOME}{tag}")
         if not dry:
-            OPC_HOME.rename(GRASSLAND_HOME)
+            OPC_HOME.rename(HAPPYRANCH_HOME)
     else:
-        info("~/.opc not present — assuming already migrated to ~/.grassland")
+        info("~/.opc not present — assuming already migrated to ~/.happyranch")
 
-    home_for_walk = GRASSLAND_HOME if GRASSLAND_HOME.exists() else OPC_HOME
+    home_for_walk = HAPPYRANCH_HOME if HAPPYRANCH_HOME.exists() else OPC_HOME
     runtimes = discover_runtimes(home_for_walk)
     if not runtimes:
         info("no registered runtimes — done")
@@ -245,12 +245,12 @@ def main() -> int:
     info("migration complete.")
     info("next steps:")
     info("  1. uv sync                                    # regenerate uv.lock with the new package name")
-    info("  2. scripts/daemon.sh start                    # start daemon under ~/.grassland")
+    info("  2. scripts/daemon.sh start                    # start daemon under ~/.happyranch")
     info("  3. re-run init-agent for each existing agent so each workspace's")
-    info("     CLAUDE.md and .claude/skills/ are rewritten to use `grassland`:")
+    info("     CLAUDE.md and .claude/skills/ are rewritten to use `happyranch`:")
     info("")
     for _rt, slug, agent in reinit:
-        info(f"     grassland init-agent --org {slug} {agent}")
+        info(f"     happyranch init-agent --org {slug} {agent}")
     return 0
 
 

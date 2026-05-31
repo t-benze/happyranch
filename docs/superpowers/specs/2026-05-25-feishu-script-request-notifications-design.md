@@ -9,7 +9,7 @@
 
 ## 1. Goal
 
-When an agent submits a script request (`SR-NNN`), the founder learns about it via a push channel they already watch — Feishu — and can act (run or reject) without hopping to the CLI or web. Today the founder must actively run `grassland scripts list` or refresh `/scripts` in the web UI to discover new SRs. That defeats the purpose of an "escape hatch" primitive: the agent is now blocked, but the founder has no idea the wall was hit.
+When an agent submits a script request (`SR-NNN`), the founder learns about it via a push channel they already watch — Feishu — and can act (run or reject) without hopping to the CLI or web. Today the founder must actively run `happyranch scripts list` or refresh `/scripts` in the web UI to discover new SRs. That defeats the purpose of an "escape hatch" primitive: the agent is now blocked, but the founder has no idea the wall was hit.
 
 This spec wires SR submissions into the same Feishu outbound+listener rails the escalation and failure flows already use. After this lands:
 
@@ -18,13 +18,13 @@ This spec wires SR submissions into the same Feishu outbound+listener rails the 
 3. Founder replies `REJECT\n<reason>` → daemon rejects the SR with that reason.
 4. When the run terminates (completed or failed), daemon posts a threaded reply with status, exit code, duration, and head of stdout/stderr.
 
-The CLI (`grassland scripts run|reject`) and web (`/scripts` feature) remain authoritative and unchanged. Feishu is an additional surface.
+The CLI (`happyranch scripts run|reject`) and web (`/scripts` feature) remain authoritative and unchanged. Feishu is an additional surface.
 
 ## 2. Non-goals
 
 - **No live stdout/stderr streaming into Feishu.** The web UI's SSE panel is the streaming surface; Feishu gets a single terminal-result post per run.
 - **No `cwd_override` or `timeout_seconds` overrides via reply.** Founder uses CLI or web for those. The reply grammar accepts only the verb + optional rationale.
-- **No re-run via reply.** If the founder wants to re-submit after a failure, they revisit the agent's task (existing primitive) or run `grassland scripts run` manually.
+- **No re-run via reply.** If the founder wants to re-submit after a failure, they revisit the agent's task (existing primitive) or run `happyranch scripts run` manually.
 - **No backfill notifications.** SRs submitted before this feature ships (or before the daemon starts) do not get a notification.
 - **No completion notifications for runs initiated via CLI or web.** Only Feishu-initiated runs get the terminal-result follow-up. (CLI run shows output in its own stream; web run renders the live SSE panel — both surfaces already give terminal feedback in-context.)
 - **No multi-chat / multi-recipient escalation.** Same chat per org as every other Feishu notification.
@@ -38,7 +38,7 @@ The CLI (`grassland scripts run|reject`) and web (`/scripts` feature) remain aut
 **Push on submit:**
 
 ```
-[Grassland hk-macau-tourism] SR-019 submitted — review needed
+[HappyRanch hk-macau-tourism] SR-019 submitted — review needed
 
 Agent:        engineering_head
 Task:         TASK-091
@@ -66,12 +66,12 @@ To resolve, reply in this thread with one of:
   <reason>
 
 You can also resolve via CLI:
-  grassland scripts show SR-019
-  grassland scripts run SR-019
-  grassland scripts reject SR-019 --reason "..."
+  happyranch scripts show SR-019
+  happyranch scripts run SR-019
+  happyranch scripts reject SR-019 --reason "..."
 ```
 
-Script body is truncated to `_SCRIPT_PREVIEW_CAP = 1500` characters with `\n[truncated — see grassland scripts show SR-019 for full script]` appended when cut.
+Script body is truncated to `_SCRIPT_PREVIEW_CAP = 1500` characters with `\n[truncated — see happyranch scripts show SR-019 for full script]` appended when cut.
 
 **Founder reply (APPROVE branch):**
 
@@ -93,7 +93,7 @@ Rationale is required; if the founder posts just `REJECT` with no body, the audi
 **Terminal-result follow-up** (threaded reply, posted by daemon when the run finishes):
 
 ```
-[Grassland hk-macau-tourism] SR-019 completed (exit 0)
+[HappyRanch hk-macau-tourism] SR-019 completed (exit 0)
 
 Duration: 1.4s
 
@@ -104,12 +104,12 @@ stderr:
 (empty)
 ```
 
-stdout/stderr are capped at `_RESULT_OUTPUT_PREVIEW_CAP = 500` chars each, with truncation footer pointing at `grassland scripts output SR-019` for the full read.
+stdout/stderr are capped at `_RESULT_OUTPUT_PREVIEW_CAP = 500` chars each, with truncation footer pointing at `happyranch scripts output SR-019` for the full read.
 
 On failure:
 
 ```
-[Grassland hk-macau-tourism] SR-019 failed (timeout)
+[HappyRanch hk-macau-tourism] SR-019 failed (timeout)
 
 Duration: 300.0s
 
@@ -118,7 +118,7 @@ stdout:
 
 stderr:
 Error: connection timed out
-[truncated — 12 KB more in grassland scripts output SR-019]
+[truncated — 12 KB more in happyranch scripts output SR-019]
 ```
 
 ### 3.2 What the founder sees on edge paths
@@ -388,12 +388,12 @@ def _build_script_request_body(
     title: str, rationale: str, script_text: str,
     interpreter: str, cwd_hint: str | None,
 ) -> tuple[str, list[str]]:
-    header = f"[Grassland {slug}] {sr_id} submitted — review needed"
+    header = f"[HappyRanch {slug}] {sr_id} submitted — review needed"
     script_preview = script_text
     if len(script_preview) > _SCRIPT_PREVIEW_CAP:
         script_preview = (
             script_preview[:_SCRIPT_PREVIEW_CAP]
-            + f"\n[truncated — see grassland scripts show {sr_id} for full script]"
+            + f"\n[truncated — see happyranch scripts show {sr_id} for full script]"
         )
     lines = [
         f"Agent:        {agent}",
@@ -419,9 +419,9 @@ def _build_script_request_body(
         "  <reason>",
         "",
         "You can also resolve via CLI:",
-        f"  grassland scripts show {sr_id}",
-        f"  grassland scripts run {sr_id}",
-        f"  grassland scripts reject {sr_id} --reason \"...\"",
+        f"  happyranch scripts show {sr_id}",
+        f"  happyranch scripts run {sr_id}",
+        f"  happyranch scripts reject {sr_id} --reason \"...\"",
     ]
     return header, lines
 ```
@@ -440,7 +440,7 @@ def _build_script_result_body(
         descriptor = f"completed (exit {exit_code if exit_code is not None else '?'})"
     else:
         descriptor = f"failed ({reason or 'unknown'})"
-    header = f"[Grassland {slug}] {sr_id} {descriptor}"
+    header = f"[HappyRanch {slug}] {sr_id} {descriptor}"
 
     def _preview(s: str | None) -> list[str]:
         if not s:
@@ -450,7 +450,7 @@ def _build_script_result_body(
             return s.split("\n")
         return (
             s[:_RESULT_OUTPUT_PREVIEW_CAP].split("\n")
-            + [f"[truncated — full output in grassland scripts output {sr_id}]"]
+            + [f"[truncated — full output in happyranch scripts output {sr_id}]"]
         )
 
     duration_s = duration_ms / 1000.0
@@ -498,7 +498,7 @@ No new auth surface, no new credentials, no new chat. Trust boundary unchanged.
 
 | Scenario | Behavior |
 |---|---|
-| Daemon down during agent submit | `submit_script` route fails before `notify_script_submitted` is reached; agent's `grassland scripts submit` callback returns non-zero. Standard CLI failure path. |
+| Daemon down during agent submit | `submit_script` route fails before `notify_script_submitted` is reached; agent's `happyranch scripts submit` callback returns non-zero. Standard CLI failure path. |
 | Daemon up but Feishu disabled | `Orchestrator.notifier is None` → `notify_script_submitted` is a no-op. SR proceeds via CLI/web only. |
 | Feishu send fails (network, 429, etc.) | Audit `script_notify_failed`; SR remains pending; CLI/web still works. |
 | Daemon crashes between send and mint | Founder sees a Feishu post but the notification row is missing. Reply hits `notification_not_found`. Founder falls back to CLI. (Same trade-off as the existing escalation send-then-mint discipline; acceptable because mint follows send by µseconds.) |
@@ -529,7 +529,7 @@ No new auth surface, no new credentials, no new chat. Trust boundary unchanged.
 - **Submit → push → REJECT:** same scaffolding, founder replies REJECT; assert SR transitions to rejected; assert no follow-up post.
 - **Submit → push → verb_mismatch:** founder replies REVISIT; assert audit `script_reply_rejected reason=verb_mismatch`; notification unconsumed; SR still pending.
 - **Disabled config:** `feishu_notifications.enabled=false`; assert no HTTP traffic to fake Feishu; SR proceeds via CLI only.
-- **CLI-initiated run (no Feishu notification):** founder runs SR via `grassland scripts run`; assert no follow-up post sent (because `get_open_notification_for_sr` returns None).
+- **CLI-initiated run (no Feishu notification):** founder runs SR via `happyranch scripts run`; assert no follow-up post sent (because `get_open_notification_for_sr` returns None).
 
 ### 11.3 What we explicitly skip
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fake Codex binary — reads scripted behavior from $FAKE_CODEX_PLAN
-# and optionally calls grassland to simulate an agent session.
+# and optionally calls happyranch to simulate an agent session.
 set -e
 
 PROMPT=""

@@ -108,7 +108,7 @@ When `@founder` is addressed:
 - Feishu push fires via the existing `EscalationNotifier` mechanism, with a new payload kind `thread_addressed`. Reusing the inbound listener path means a founder reply via Feishu can land back on the thread (see §6.2 for the read side).
 - The thread appears in `GET /threads` results regardless of any filter — it is by definition "open with founder attention pending."
 
-When `@founder` is NOT addressed, the thread is agent-to-agent. The founder still sees it via `grassland threads list` (god-mode read), but no proactive push fires. This is the explicit cost-of-attention tradeoff: silent inter-agent threads are observable but not interruptive.
+When `@founder` is NOT addressed, the thread is agent-to-agent. The founder still sees it via `happyranch threads list` (god-mode read), but no proactive push fires. This is the explicit cost-of-attention tradeoff: silent inter-agent threads are observable but not interruptive.
 
 ### 4.3 Addressing semantics with `@founder`
 
@@ -153,7 +153,7 @@ Each step gates the next:
 2. **Exactly one binding** (`task_id`+`session_id` XOR `talk_id`). Else 422 `binding_required` / `binding_ambiguous`.
 3. **Task path** (if `task_id` set):
    - Task exists and `assigned_agent == composer`. Else 404 `unknown_task` / 403 `composer_not_task_owner`.
-   - Active session for `task_id` matches `session_id` (same `SessionTracker.expected_session_id` check used by `grassland report-completion`). Else 409 `session_mismatch`.
+   - Active session for `task_id` matches `session_id` (same `SessionTracker.expected_session_id` check used by `happyranch report-completion`). Else 409 `session_mismatch`.
    - Task `status` ∈ {`pending`, `in_progress`}. Else 400 `task_not_active`.
 4. **Talk path** (if `talk_id` set):
    - Talk exists. Else 404 `unknown_talk`.
@@ -235,16 +235,16 @@ If Feishu is not configured for the org, the `thread_addressed` push is a no-op 
 
 ### 6.3 No proactive push for agent-to-agent (no `@founder`)
 
-When `@founder` is NOT addressed, no push fires. The founder sees the thread in `grassland threads list` and in the Web UI inbox. This is the deliberate "silent observation" mode.
+When `@founder` is NOT addressed, no push fires. The founder sees the thread in `happyranch threads list` and in the Web UI inbox. This is the deliberate "silent observation" mode.
 
 ## 7. CLI
 
-### 7.1 Extended `grassland threads compose`
+### 7.1 Extended `happyranch threads compose`
 
 The existing `cmd_threads_compose` (single CLI subcommand) gains optional flags:
 
 ```
-grassland threads compose [--org <slug>] --from-file <path>
+happyranch threads compose [--org <slug>] --from-file <path>
     [--task-id TASK-NNN --session-id <sid>]
     [--talk-id TALK-NNN]
 ```
@@ -254,7 +254,7 @@ Behavior:
 - If `--task-id`/`--session-id` or `--talk-id` is present, the CLI calls the new agent-compose route. The `--from-file` JSON must contain `composer`; the CLI does NOT default-fill it (forces explicit declaration).
 - If neither is present, the CLI calls today's founder `POST /threads` route. `composer` in the JSON is ignored if present (founder mode).
 
-This keeps the single-subcommand discipline (matches `grassland threads ... --from-file` pattern). The flag presence is the routing signal.
+This keeps the single-subcommand discipline (matches `happyranch threads ... --from-file` pattern). The flag presence is the routing signal.
 
 ### 7.2 JSON payload shape
 
@@ -274,7 +274,7 @@ This keeps the single-subcommand discipline (matches `grassland threads ... --fr
 
 ### 7.3 Allow-rule baseline
 
-The agent's existing `Bash(grassland *)` allow rule covers `grassland threads compose ...`. No frontmatter `allow_rules` changes anywhere. The single-line `--from-file` discipline is mandatory — same reason as every other agent callback.
+The agent's existing `Bash(happyranch *)` allow rule covers `happyranch threads compose ...`. No frontmatter `allow_rules` changes anywhere. The single-line `--from-file` discipline is mandatory — same reason as every other agent callback.
 
 ## 8. Skill updates
 
@@ -311,11 +311,11 @@ Requirements:
 
 2. From a task, single-line:
 
-   grassland threads compose --org <slug> --task-id <TASK> --session-id <SID> --from-file /tmp/thread-compose-<tag>.json
+   happyranch threads compose --org <slug> --task-id <TASK> --session-id <SID> --from-file /tmp/thread-compose-<tag>.json
 
    From a talk:
 
-   grassland threads compose --org <slug> --talk-id <TALK> --from-file /tmp/thread-compose-<tag>.json
+   happyranch threads compose --org <slug> --talk-id <TALK> --from-file /tmp/thread-compose-<tag>.json
 
 3. Capture the returned `thread_id`. Mention it in your task completion
    summary (or talk transcript) so the founder can find it.
@@ -347,7 +347,7 @@ Add a brief mention in step 4 ("Plan and execute"):
 
 In the "What NOT to do" exceptions list, add:
 
-> **Exception:** Composing a thread to loop in another agent is allowed via the talk-path payload (`--talk-id` on `grassland threads compose`). See the `thread` skill. Record the thread_id in your `transcript_markdown` so the founder has a record at talk-end.
+> **Exception:** Composing a thread to loop in another agent is allowed via the talk-path payload (`--talk-id` on `happyranch threads compose`). See the `thread` skill. Record the thread_id in your `transcript_markdown` so the founder has a record at talk-end.
 
 ## 9. Configuration
 
@@ -391,7 +391,7 @@ All other v1 errors (turn-cap, unknown recipient, etc.) flow through unchanged.
 
 ### 11.2 Integration
 
-A new fixture extension is needed: `fake_claude.sh` already routes thread prompts to `$FAKE_CLAUDE_THREAD_PLAN`. For agent-initiated compose, the composer is INSIDE a task or talk — so the task-side `$FAKE_CLAUDE_PLAN` (or talk-side `$FAKE_CLAUDE_TALK_PLAN` if present) needs to invoke `grassland threads compose ... --task-id ... --session-id ...`. Add this exercise to:
+A new fixture extension is needed: `fake_claude.sh` already routes thread prompts to `$FAKE_CLAUDE_THREAD_PLAN`. For agent-initiated compose, the composer is INSIDE a task or talk — so the task-side `$FAKE_CLAUDE_PLAN` (or talk-side `$FAKE_CLAUDE_TALK_PLAN` if present) needs to invoke `happyranch threads compose ... --task-id ... --session-id ...`. Add this exercise to:
 
 - `tests/integration/test_threads_e2e.py::test_agent_compose_from_task_creates_thread_and_invokes_recipients`
 - `tests/integration/test_threads_e2e.py::test_agent_compose_from_task_with_founder_addressed_fires_feishu` (mocks the Feishu client; asserts the message_id row in `escalation_notifications`)
@@ -406,7 +406,7 @@ The last test is the key behavioral check: composer A composes thread targeting 
 `tests/contract/test_openapi_snapshot.py` will pick up the new route automatically; regenerate snapshot:
 
 ```bash
-GRASSLAND_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py
+HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py
 ```
 
 `web/src/test/openapi-coverage.test.ts` will fail until the new path is listed in `INCLUDED_PATHS` or `EXCLUDED_PATHS`. Since the Web UI doesn't currently use agent-callback routes, list `POST /api/v1/orgs/{slug}/threads/compose-as-agent` under `EXCLUDED_PATHS` with reason `"agent callback — not exercised from the Web UI"`.
@@ -436,6 +436,6 @@ Rollback: drop the new route (404 returns); the new columns are harmless (founde
 
 ## 14. Open implementation choices (not gating the design)
 
-- Whether `grassland threads compose` autodetects `--task-id` vs. `--talk-id` from environment (e.g., `GRASSLAND_TASK_ID`) when called from inside a session. Recommendation: NO autodetect in v1. Skill spells out the flags explicitly so failures are localizable.
-- Whether to surface `composed_from_task_id` / `composed_from_talk_id` in `grassland threads show` output. Recommendation: yes — one extra line in the human view, near-zero cost.
+- Whether `happyranch threads compose` autodetects `--task-id` vs. `--talk-id` from environment (e.g., `HAPPYRANCH_TASK_ID`) when called from inside a session. Recommendation: NO autodetect in v1. Skill spells out the flags explicitly so failures are localizable.
+- Whether to surface `composed_from_task_id` / `composed_from_talk_id` in `happyranch threads show` output. Recommendation: yes — one extra line in the human view, near-zero cost.
 - Whether the Feishu card for `thread_addressed` includes the full body or a 200-char preview. Recommendation: preview + a "open in Web UI" deeplink, same as today's escalation cards.

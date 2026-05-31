@@ -244,4 +244,4 @@ Threads ↔ audit is intentionally narrow: thread events are not in `audit_log` 
 - **Server-side pagination for the audit list.** v1 caps at `limit=200` client-side; the daemon route does not currently page. If founder usage hits the cap regularly, add `offset` to `query_audit_logs` and wire a TanStack `useInfiniteQuery`.
 - **Free-form date range.** v1 ships today / this week / all. A `DateRangePicker` primitive (Radix Popover + two date inputs) is a PR 13 polish item.
 - **Thread → audit deep link.** v1 filters by thread author. A richer projection (thread participants, time-windowed) requires the daemon to emit thread audit entries — out of scope.
-- **Compose KB entry from an audit row.** Founder rulings flow through `grassland kb add` in v1; an inline "promote to KB" affordance is a follow-up.
+- **Compose KB entry from an audit row.** Founder rulings flow through `happyranch kb add` in v1; an inline "promote to KB" affordance is a follow-up.

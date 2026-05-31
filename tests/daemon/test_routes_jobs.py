@@ -1464,7 +1464,7 @@ def test_submit_talk_path_audit_scope_is_talk_id(client_with_runtime):
     """job_submitted audit row's task_id column carries the TALK-NNN scope.
 
     Mirrors manage-agent / asset_put audit-overloading. Lets the founder run
-    `grassland audit TALK-NNN` and see the job submission events without
+    `happyranch audit TALK-NNN` and see the job submission events without
     needing a separate query path.
     """
     client, org = client_with_runtime

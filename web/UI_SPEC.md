@@ -1,4 +1,4 @@
-# UI_SPEC.md — Grassland Founder Console
+# UI_SPEC.md — HappyRanch Founder Console
 
 **Companion to:** `web/DESIGN.md` (tokens), `web/ARCHITECTURE.md` (layer rules), `docs/superpowers/specs/2026-05-14-web-ui-design.md` (the original web-UI design doc), `protocol/05e-dashboard.md` (informs the future Audit / Trends surface).
 
@@ -40,7 +40,7 @@ Three regions, fixed: a 48px TopBar, a flexible body, a 24px Statusbar. Every sc
 
 ```
 +--------------------------------------------------------------------------+
-| Grassland  [hk-macau-tourism ▾]  Threads · Tasks · KB · Audit · Agents     ⏻ ◐|  48px  TopBar
+| HappyRanch  [hk-macau-tourism ▾]  Threads · Tasks · KB · Audit · Agents     ⏻ ◐|  48px  TopBar
 +--------------------------------------------------------------------------+
 |                                                                          |
 |                                                                          |
@@ -53,7 +53,7 @@ Three regions, fixed: a 48px TopBar, a flexible body, a 24px Statusbar. Every sc
 ```
 
 TopBar elements, left to right:
-- **Wordmark** "Grassland" in `typography.h3` weight 600, tracking -0.005em. Click → routes to `/orgs/:slug/threads` (no separate "home").
+- **Wordmark** "HappyRanch" in `typography.h3` weight 600, tracking -0.005em. Click → routes to `/orgs/:slug/threads` (no separate "home").
 - **OrgSwitcher** — native `<select>` themed as a `components.select`, value = active slug. Shows slug only (not display name), mono in the trigger; on click opens to a list of `{slug — display_name}`. If exactly one org, the trigger is read-only static text in `typography.mono_md` colored `accent.default`.
 - **Nav row** — five tabs: Threads, Tasks, KB, Audit, Agents. Active tab uses `surface.raised` background + `text.primary`. Disabled tabs (Tasks, KB, Audit, Agents until shipped) use `text.muted` + `cursor: not-allowed` + tooltip "Coming soon."
 - **Right slot** — two icon-only ghost buttons: theme toggle (sun/moon, 16px) and density toggle (≡ vs ≣).
@@ -69,7 +69,7 @@ Statusbar elements, left to right:
 
 | State | Visual |
 |---|---|
-| No orgs in container | TopBar shows "Grassland", nav disabled, body renders an EmptyState pointing at `grassland orgs init` |
+| No orgs in container | TopBar shows "HappyRanch", nav disabled, body renders an EmptyState pointing at `happyranch orgs init` |
 | One org | OrgSwitcher renders as static slug; no chevron |
 | Multiple orgs | OrgSwitcher opens dropdown |
 | Daemon offline | TopBar still renders; Statusbar dot turns red; body shows the global disconnected screen (§7) |
@@ -396,7 +396,7 @@ Five canonical empty states:
 
 | Where | Title | Body | CTA |
 |---|---|---|---|
-| Orgs list empty | "No orgs in this runtime." | "Initialize one with `grassland orgs init <slug>`." | (none) |
+| Orgs list empty | "No orgs in this runtime." | "Initialize one with `happyranch orgs init <slug>`." | (none) |
 | Inbox open, no threads | "No threads yet." | "Press `N` to compose, or have an agent dispatch one." | "+ New thread" |
 | Inbox filter, no match | "No threads match the filter." | (none) | "Clear filter" (ghost) |
 | Detail, none selected | "Select a thread from the inbox." | "Or press `N` to start a new one." | (none) |
@@ -413,7 +413,7 @@ The whole body of the app is replaced with an EmptyState variant:
 ```
                        ⚡
               Daemon unreachable
-        Is the Grassland daemon running on this machine?
+        Is the HappyRanch daemon running on this machine?
 
            [ Try again ]   [ Show CLI command ]
 ```
@@ -438,7 +438,7 @@ Stays in the originating dialog or composer, with inline error in `tier.red`. A 
 
 ### Purpose
 
-Inbox + detail surface for every task across the org. Equivalent to `grassland tasks list` + `grassland details <task_id>` + `grassland events <task_id>` + `grassland cancel|revisit|resolve-escalation`.
+Inbox + detail surface for every task across the org. Equivalent to `happyranch tasks list` + `happyranch details <task_id>` + `happyranch events <task_id>` + `happyranch cancel|revisit|resolve-escalation`.
 
 ### Layout
 
@@ -544,7 +544,7 @@ Audit lists are dense — we lean on `density: compact` (32px row default). Trac
 ## 11. Talks
 
 Founder↔agent 1:1 conversations. Read + lifecycle surface for the
-`grassland talk ...` CLI; no real-time chat (the agent session is
+`happyranch talk ...` CLI; no real-time chat (the agent session is
 attached via CLI). Two-pane: 340px inbox column with status tabs
 (open / closed / abandoned) + filter; right pane shows the talk header
 (id, agent, status, summary if closed) plus actions (Dispatch, End,
@@ -554,7 +554,7 @@ Abandon) and a transcript or empty-state.
 
 | Talk status | Right-pane content |
 |-------------|--------------------|
-| open        | EmptyState "Talk is open. Use `grassland talk resume`…" |
+| open        | EmptyState "Talk is open. Use `happyranch talk resume`…" |
 | closed      | Transcript rendered via MessageBubble per speaker section (best-effort split on `## founder` / `## agent` / `**founder:**`). Falls back to a single Markdown panel when no markers are present. |
 | abandoned   | EmptyState "Talk abandoned. No transcript was recorded." |
 
@@ -648,7 +648,7 @@ the enrollments list so the post-action UI flips immediately.
 - Learnings: read-only list of summaries from
   `GET /agents/{name}/learnings/entries/`. Surfaces a 412
   (`workspace_not_migrated`) error with a hint to run
-  `grassland learning reindex` rather than silently failing.
+  `happyranch learning reindex` rather than silently failing.
 - Writes (creating a learning) stay agent-callback-only — the umbrella
   spec §5.7 reserves this surface for the CLI.
 
@@ -704,5 +704,5 @@ In v0.1: dark is the only mode actually shipped. The toggle is rendered, hits a 
 
 ### Density toggle
 
-Comfortable (default) ↔ Compact. Stored in `localStorage["grassland.density"]`. Affects: InboxRow height, MessageList gap, audit-log row height. Does not affect message-body text size (we never make message bodies less legible).
+Comfortable (default) ↔ Compact. Stored in `localStorage["happyranch.density"]`. Affects: InboxRow height, MessageList gap, audit-log row height. Does not affect message-body text size (we never make message bodies less legible).
 

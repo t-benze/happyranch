@@ -40,7 +40,7 @@ def scripts_test_org(tmp_path):
     root = tmp_path / "orgs" / "acme"
     (root / "scripts").mkdir(parents=True)
     (root / "workspaces" / "dev").mkdir(parents=True)
-    db = Database(root / "grassland.db")
+    db = Database(root / "happyranch.db")
     org = SimpleNamespace(
         slug="acme",
         root=root,

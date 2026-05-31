@@ -8,13 +8,13 @@
 
 ## 1. Goal
 
-Founder-facing read + lifecycle surface for **talks** — 1:1 founder↔agent conversations. Mirrors the existing CLI surface (`grassland talk {start,resume,abandon,end,list,show}`) and adds the in-talk `dispatch` action. Reuses the threads `MessageBubble` for the transcript view.
+Founder-facing read + lifecycle surface for **talks** — 1:1 founder↔agent conversations. Mirrors the existing CLI surface (`happyranch talk {start,resume,abandon,end,list,show}`) and adds the in-talk `dispatch` action. Reuses the threads `MessageBubble` for the transcript view.
 
 ## 2. Non-goals
 
 - No SSE for talks (transcript is materialized only at `end`; polling 60s on the detail view is sufficient).
 - No editing of transcripts from the UI. The `end` dialog accepts a markdown transcript verbatim (the founder pastes from their CLI session); the UI never re-parses or re-flows it.
-- No talk-resume from the UI in v1 (CLI `grassland talk resume` is the supported path for re-attaching to the agent session).
+- No talk-resume from the UI in v1 (CLI `happyranch talk resume` is the supported path for re-attaching to the agent session).
 - No new design-system patterns. `TalkTranscript` is a thin transform from `TalkRecord.transcript` into a `MessageBubble` list and ships inside the feature folder.
 
 ## 3. Wire contract (current daemon shape, not what `talks.ts` says today)
@@ -51,7 +51,7 @@ Source of truth: `src/daemon/routes/talks.py::_talk_to_dict`. **The current `web
 | `POST /talks/{id}/dispatch` | `{brief, target_agent?, team?}` | 422 `empty_brief`. 403 `cross_team_dispatch_forbidden`, etc. |
 | `POST /talks/{id}/resume` | — | **Not used by the web UI in v1** (CLI only). |
 
-The `EndTalkBody.learnings` field is `[{text: string}, ...]`. KB slugs must already exist (founder uses `grassland kb add` first).
+The `EndTalkBody.learnings` field is `[{text: string}, ...]`. KB slugs must already exist (founder uses `happyranch kb add` first).
 
 ## 4. Information architecture
 
@@ -68,7 +68,7 @@ Mirrors threads:
 | InboxRow list            |                                         |
 |   subject = agent name   | Transcript area                         |
 |   meta    = status time  |   • status=open: empty-state             |
-|                          |     "Talk is open. Use grassland talk    |
+|                          |     "Talk is open. Use happyranch talk    |
 |   active = current id    |      resume to converse, then End to     |
 |                          |      record this transcript."            |
 |                          |   • status=closed: transcript markdown   |
@@ -99,7 +99,7 @@ A more useful pass: when the transcript starts with `## founder` or `## agent` h
 
 - Inputs: summary (single-line), transcript markdown (multiline textarea, autosized), optional topic_list (CSV string), optional learnings (one-per-line textarea — each line becomes `{text: line}`), optional kb_slugs (CSV).
 - Submits `POST /talks/{id}/end { summary, topic_list, transcript_markdown, learnings, kb_slugs }`.
-- Error mapping: `unknown_kb_slug` → "KB slug ‹X› doesn't exist. Add it with `grassland kb add` first."
+- Error mapping: `unknown_kb_slug` → "KB slug ‹X› doesn't exist. Add it with `happyranch kb add` first."
 - Confirm-step: the dialog has a single primary button; no extra confirmation. End is reversible in practice (the talk just becomes a closed record with whatever the founder typed).
 
 ### 6.3 AbandonTalkDialog

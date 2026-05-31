@@ -39,7 +39,7 @@ The orchestrator assembles each agent's context into an executor-specific bootst
 
 ### Permission enforcement and callbacks
 
-Claude workspaces have a `.claude/settings.json` that configures Claude Code's auto-allowed tools. Codex workspaces do not use that file. Across executors, agents call back through the same single-line `grassland ... --from-file` contract. Agents can read, write, and execute freely within their workspace and the cloned codebase, subject to the executor's sandbox mode and the orchestrator's workflow rules.
+Claude workspaces have a `.claude/settings.json` that configures Claude Code's auto-allowed tools. Codex workspaces do not use that file. Across executors, agents call back through the same single-line `happyranch ... --from-file` contract. Agents can read, write, and execute freely within their workspace and the cloned codebase, subject to the executor's sandbox mode and the orchestrator's workflow rules.
 
 **Only founder-concern boundaries are restricted** (as defined in the org charter):
 - No `git push` to `main` / production deploy
@@ -117,7 +117,7 @@ Each agent accumulates its own operational learnings. The Content QA records "DS
 After each task, the orchestrator prompts the agent: "Based on this task, are there any new learnings to record?" Responses are appended to the learnings file. Over time, when the file gets long, the orchestrator periodically asks the agent to consolidate and prune it.
 
 **3. ~~Performance memory~~ (REMOVED 2026-05-27)**
-The 30-day rolling scorecard / tier classification was removed. The audit log (implicit `review_verdict` rows after every delegated child terminates, plus completion / failure events) is sufficient for the founder to identify which agents need attention — via `grassland audit`. The legacy `scorecards` table is no longer created on fresh DBs.
+The 30-day rolling scorecard / tier classification was removed. The audit log (implicit `review_verdict` rows after every delegated child terminates, plus completion / failure events) is sufficient for the founder to identify which agents need attention — via `happyranch audit`. The legacy `scorecards` table is no longer created on fresh DBs.
 
 ### How context gets assembled at session start
 
@@ -138,7 +138,7 @@ The agent's persistent files (learnings, prior work products) are already in the
 After each session completes, the orchestrator:
 1. Extracts the completion report (`completion_report.json` written by the agent)
 2. Checks for new learnings and appends to the learnings file
-3. Writes an implicit `review_verdict` audit row for delegated work (approved / rejected) so the founder can audit per-agent outcomes via `grassland audit`
+3. Writes an implicit `review_verdict` audit row for delegated work (approved / rejected) so the founder can audit per-agent outcomes via `happyranch audit`
 4. Appends to `recent_tasks.md` with a summary of the task
 5. Logs everything to the audit trail (SQLite)
 6. Does NOT clean up the workspace — files persist for future sessions

@@ -1,4 +1,4 @@
-"""Tests for `grassland web`."""
+"""Tests for `happyranch web`."""
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch

@@ -10,7 +10,7 @@ import pytest
 @pytest.fixture()
 def org_with_engineering_team(tmp_path: Path):
     from src.infrastructure.database import Database
-    db = Database(tmp_path / "grassland.db")
+    db = Database(tmp_path / "happyranch.db")
     org = MagicMock()
     org.db = db
     org.slug = "acme"

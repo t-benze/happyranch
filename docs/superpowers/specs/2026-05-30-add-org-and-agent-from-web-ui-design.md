@@ -6,7 +6,7 @@
 ## Problem
 
 Today the web app can list orgs and agents but cannot create them. New orgs
-require running `grassland orgs init <slug>` from a terminal, and new agents
+require running `happyranch orgs init <slug>` from a terminal, and new agents
 require either hand-editing `<runtime>/orgs/<slug>/org/agents/<name>.md`
 (managers) or going through the manager-driven talk + `manage-agent enroll`
 flow (workers). The founder cannot stay in the browser to grow an org from
@@ -152,7 +152,7 @@ Returns `{"name": <name>, "team": <team>|<new_team>, "role": <role>}`.
 
 Failure recovery: if step 5 (workspace bootstrap) fails partway, the
 agent file and teams.yaml row are kept and the founder can retry via
-`grassland init-agent <name>`. This matches `approve_agent`'s current
+`happyranch init-agent <name>`. This matches `approve_agent`'s current
 behavior — adding a rollback only here would diverge the two paths. The
 audit row is logged in step 6 only if step 5 completes; mid-bootstrap
 failures bubble as a 500 and the founder retries.
@@ -187,7 +187,7 @@ talk, so we record the literal string `"founder"`. This matches the
 ### Contract pinning
 
 Regenerate `tests/contract/openapi.json` with
-`GRASSLAND_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py`.
+`HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py`.
 Add to `INCLUDED_PATHS`:
 
 - `GET /api/v1/orgs/{slug}/teams`

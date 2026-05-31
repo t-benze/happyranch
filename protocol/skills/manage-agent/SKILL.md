@@ -1,6 +1,6 @@
 ---
 name: manage-agent
-description: Enroll, update, or terminate an agent. Write a JSON file and call grassland manage-agent --from-file to keep the invocation single-line. Enrollment requires founder approval.
+description: Enroll, update, or terminate an agent. Write a JSON file and call happyranch manage-agent --from-file to keep the invocation single-line. Enrollment requires founder approval.
 ---
 
 # manage-agent
@@ -74,11 +74,11 @@ The two paths are **mutually exclusive** — supply one pair or the other, never
 2. **Invoke as a single-line command:**
 
    ```bash
-   grassland manage-agent --org {ORG_SLUG} --from-file /tmp/manage-agent-<unique>.json
+   happyranch manage-agent --org {ORG_SLUG} --from-file /tmp/manage-agent-<unique>.json
    ```
 
    The `--from-file` form is mandatory for agent sessions. In Claude sessions,
-   multi-line bash commands are rejected by the `Bash(grassland:*)` permission rule
+   multi-line bash commands are rejected by the `Bash(happyranch:*)` permission rule
    because newlines count as command separators.
 
 ## Access control
@@ -107,11 +107,11 @@ If you invoke this skill from within a talk, **record the call in the `transcrip
 [during talk] submitted enrollment request for agent `content_writer` (pending founder approval).
 ```
 
-The transcript is the only human-readable record of what happened in the conversation, and the daemon writes it at talk-end from whatever you provide. Skipping this step silently mutates the roster from the founder's point of view. The audit log (`grassland audit --org {ORG_SLUG} <talk_id>`) captures the action too, but the transcript is what the founder reads back.
+The transcript is the only human-readable record of what happened in the conversation, and the daemon writes it at talk-end from whatever you provide. Skipping this step silently mutates the roster from the founder's point of view. The audit log (`happyranch audit --org {ORG_SLUG} <talk_id>`) captures the action too, but the transcript is what the founder reads back.
 
 ## What happens
 
-- **enroll**: Creates a pending enrollment request. You may optionally specify `executor: "claude"` or `executor: "codex"`; if omitted, it defaults to `claude`. You may also include `"allow_rules": ["curl https://api.example.com", ...]` to grant additional Bash prefixes beyond the baseline `grassland` grant — for example, to allow a specific external API call. The founder must run `grassland approve-agent --org {ORG_SLUG} <name>` before the agent's workspace is bootstrapped and the agent becomes available for delegation.
+- **enroll**: Creates a pending enrollment request. You may optionally specify `executor: "claude"` or `executor: "codex"`; if omitted, it defaults to `claude`. You may also include `"allow_rules": ["curl https://api.example.com", ...]` to grant additional Bash prefixes beyond the baseline `happyranch` grant — for example, to allow a specific external API call. The founder must run `happyranch approve-agent --org {ORG_SLUG} <name>` before the agent's workspace is bootstrapped and the agent becomes available for delegation.
 - **update**: Updates the agent's description, system prompt, executor, or repos in the enrollment registry. If the system prompt or executor changes, the workspace bootstrap files are regenerated. Only works on approved agents.
 - **terminate**: Marks the agent as terminated and deletes its workspace directory. Only works on approved agents.
 
@@ -121,6 +121,6 @@ Agent names must be lowercase with underscores only (e.g. `content_writer`, `seo
 
 ## Error handling
 
-- If `grassland` returns non-zero, retry once after 1 second.
+- If `happyranch` returns non-zero, retry once after 1 second.
 - `409` (duplicate name on enroll, non-approved agent on update/terminate) and `404` (agent not found, talk not found) are not retryable.
 - `422` usually means the payload mixed task and talk auth paths, or supplied neither — fix the JSON and retry.

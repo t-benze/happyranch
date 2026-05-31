@@ -8,17 +8,17 @@
 
 **Relates to:**
 - `docs/superpowers/specs/2026-05-28-thread-task-followup-design.md` — the inverse bridging shape (task terminal → thread re-invocation). This spec mirrors that pattern for job terminal → task resume.
-- `docs/superpowers/specs/2026-04-21-opc-revisit-design.md` — the manual unblock path (founder runs `grassland revisit <task-id>`). Still valid for founder-driven recovery; no longer the *only* unblock path for blocked-on-job tasks.
+- `docs/superpowers/specs/2026-04-21-opc-revisit-design.md` — the manual unblock path (founder runs `happyranch revisit <task-id>`). Still valid for founder-driven recovery; no longer the *only* unblock path for blocked-on-job tasks.
 
 ## 1. Goal
 
-Today, when an agent submits a job and cannot proceed without its result, the agent must self-block with `report-completion status=blocked` and the founder must manually run `grassland revisit <task-id>` after the job runs. For `review_required=true` jobs this is fine — the founder is already in the loop. For `review_required=false` jobs (agent-autonomous), it is friction: the daemon ran the job autonomously, the agent self-blocked autonomously, and yet the unblock requires a manual founder step. The agent's autonomy ends at the unblock boundary for no good reason.
+Today, when an agent submits a job and cannot proceed without its result, the agent must self-block with `report-completion status=blocked` and the founder must manually run `happyranch revisit <task-id>` after the job runs. For `review_required=true` jobs this is fine — the founder is already in the loop. For `review_required=false` jobs (agent-autonomous), it is friction: the daemon ran the job autonomously, the agent self-blocked autonomously, and yet the unblock requires a manual founder step. The agent's autonomy ends at the unblock boundary for no good reason.
 
 This spec adds an auto-resume channel: when a task is blocked on a list of jobs, the system resumes the task automatically once every listed job reaches a terminal state. The bridging shape mirrors the thread task-followup helper (spec 2026-05-28) — same primitives, opposite direction.
 
 ### 1.1 Why this reverses the original `jobs-design.md` §2 non-goal
 
-The original jobs spec explicitly listed *"Auto-unblock on completion. The agent self-blocks (when it chose to); founder uses `grassland revisit` to unblock. No 'task wakes itself' channel."* as out-of-scope. That call was made before the thread task-followup bridge shipped on 2026-05-28. The followup bridge proves the architecture supports terminal-state-in-subsystem-A → invocation-in-subsystem-B cleanly, with race-safe CAS, cross-thread enqueue from a worker, and audited-skip when state guards fail. Mirroring that pattern for the job → task direction is mechanical, not novel.
+The original jobs spec explicitly listed *"Auto-unblock on completion. The agent self-blocks (when it chose to); founder uses `happyranch revisit` to unblock. No 'task wakes itself' channel."* as out-of-scope. That call was made before the thread task-followup bridge shipped on 2026-05-28. The followup bridge proves the architecture supports terminal-state-in-subsystem-A → invocation-in-subsystem-B cleanly, with race-safe CAS, cross-thread enqueue from a worker, and audited-skip when state guards fail. Mirroring that pattern for the job → task direction is mechanical, not novel.
 
 ## 2. Non-goals
 
@@ -28,8 +28,8 @@ Out of scope for this spec:
 - **Cross-task blocking.** A task can only block on jobs it submitted (i.e., jobs whose `task_id` matches the blocking task). Blocking on another task's jobs is rejected with `400 job_not_owned_by_task`.
 - **Block-on-job at child-task granularity for `block_kind=delegated`.** The existing `delegated` block_kind for parent→child relationships is unchanged. The new `blocked_on_job` block_kind is an independent state.
 - **Daemon-side modification of the blocking-job list.** Once submitted, `blocked_on_job_ids` is immutable. To change the wait set, the agent must be resumed (via founder revisit) and re-submit a new block.
-- **Notification on resume.** The agent finds out it resumed by being re-invoked with a `BLOCKED-JOBS-RESULTS` header in its bootstrap doc; no Feishu ping fires. (The founder can observe resumes via `grassland audit`.)
-- **Resume cap / loop detection.** A pathological agent could block-resume-block-resume forever. The existing `GRASSLAND_MAX_ORCHESTRATION_STEPS` ceiling (default 50) bounds the lineage in practice; tighter detection is deferred.
+- **Notification on resume.** The agent finds out it resumed by being re-invoked with a `BLOCKED-JOBS-RESULTS` header in its bootstrap doc; no Feishu ping fires. (The founder can observe resumes via `happyranch audit`.)
+- **Resume cap / loop detection.** A pathological agent could block-resume-block-resume forever. The existing `HAPPYRANCH_MAX_ORCHESTRATION_STEPS` ceiling (default 50) bounds the lineage in practice; tighter detection is deferred.
 
 ## 3. Data model
 
@@ -48,7 +48,7 @@ The existing `BlockKind` (Python enum) and the corresponding `tasks.block_kind` 
 | `block_kind` | Meaning | Resume path |
 |---|---|---|
 | `delegated` | Waiting on a child task | Child terminal → `_enqueue_parent_if_waiting` (existing) |
-| `escalated` | Waiting on founder | Founder runs `grassland resolve-escalation` or `grassland revisit` (existing) |
+| `escalated` | Waiting on founder | Founder runs `happyranch resolve-escalation` or `happyranch revisit` (existing) |
 | `blocked_on_job` | Waiting on N jobs (new) | All jobs terminal → `_maybe_resume_blocked_task` CAS-flips row to `in_progress` and re-enqueues |
 
 Migration: idempotent `ALTER TABLE` added to the existing `Database._create_tables` block at `src/infrastructure/database.py:462` (where the existing `block_kind` and `dispatched_from_*` `ALTER TABLE` calls live, each wrapped in a `try/except sqlite3.OperationalError: pass` for "duplicate column" idempotency). No schema-version bump — the project has no formal schema-version tracking; the column is additive and nullable so old daemons reading new DBs and vice versa coexist cleanly.
@@ -95,7 +95,7 @@ Migration: idempotent `ALTER TABLE` added to the existing `Database._create_tabl
                  │   via `terminate_jobs_for_task` (no new hook needed; the
                  │   existing kill cascade keys on task_id and is block_kind-blind)
                  │
-                 └─ founder `grassland revisit` (manual override) → existing path;
+                 └─ founder `happyranch revisit` (manual override) → existing path;
                    the new root inherits nothing from blocked_on_job_ids
                    (revisit_of_task_id is sideways; see §6.5)
 ```
@@ -360,9 +360,9 @@ The existing skill section (jobs-design.md §9.1, the paragraph beginning "If `r
 > }
 > ```
 >
-> The system will resume your task automatically once **every** listed job reaches a terminal state (`completed`, `failed`, or `rejected`). When you resume, your bootstrap doc will include a `BLOCKED-JOBS-RESULTS` section listing each job's status, exit code, and `grassland jobs show JOB-NNN` / `grassland jobs output JOB-NNN` commands to fetch full output. **You don't poll.**
+> The system will resume your task automatically once **every** listed job reaches a terminal state (`completed`, `failed`, or `rejected`). When you resume, your bootstrap doc will include a `BLOCKED-JOBS-RESULTS` section listing each job's status, exit code, and `happyranch jobs show JOB-NNN` / `happyranch jobs output JOB-NNN` commands to fetch full output. **You don't poll.**
 
-The skill's existing "If `review_required=false`" branch (loop on `grassland jobs wait`) remains as a valid pattern for short-lived auto-running jobs the agent can stay in-session for. The block-and-resume path is the recommended pattern for any wait long enough to risk session timeout.
+The skill's existing "If `review_required=false`" branch (loop on `happyranch jobs wait`) remains as a valid pattern for short-lived auto-running jobs the agent can stay in-session for. The block-and-resume path is the recommended pattern for any wait long enough to risk session timeout.
 
 ### 6.4 Resume header — new `_blocked_jobs_resume_header_if_applicable`
 
@@ -377,12 +377,12 @@ Render shape:
 You self-blocked on JOB-12, JOB-13. They are now terminal:
 
   JOB-12  completed  exit=0   12.3s   "Run migration on staging"
-          → grassland jobs show JOB-12
-          → grassland jobs output JOB-12 --stream stdout
+          → happyranch jobs show JOB-12
+          → happyranch jobs output JOB-12 --stream stdout
   JOB-13  failed     exit=2   4.1s    "Verify schema"
           reason: non-zero exit
-          → grassland jobs show JOB-13
-          → grassland jobs output JOB-13 --stream stderr
+          → happyranch jobs show JOB-13
+          → happyranch jobs output JOB-13 --stream stderr
 
 Re-read your task brief; decide whether to proceed, retry, or escalate.
 ======================================
@@ -394,7 +394,7 @@ The header is injected at the same call site as `_revisit_header_if_applicable` 
 
 Consistent with how `dispatched_from_thread_id` is treated (CLAUDE.md "Thread task-followup invariants"): `blocked_on_job_ids` is **not** copied onto revisit roots by `/revisit` or by auto-revisit. The column lives on the original blocked row; once a manual revisit spawns a fresh root, the new root is unblocked from scratch.
 
-This is intentional. A founder using `grassland revisit` on a blocked-on-jobs task is explicitly overriding the wait — propagating the wait would defeat the purpose. The original row's `blocked_on_job_ids` remains in the DB for audit purposes; the new row starts at `status=pending` with `blocked_on_job_ids=NULL`.
+This is intentional. A founder using `happyranch revisit` on a blocked-on-jobs task is explicitly overriding the wait — propagating the wait would defeat the purpose. The original row's `blocked_on_job_ids` remains in the DB for audit purposes; the new row starts at `status=pending` with `blocked_on_job_ids=NULL`.
 
 ## 7. Audit events
 
@@ -414,7 +414,7 @@ The `triggering_job_id` field on `task_resumed_from_jobs` is the founder's debug
 
 ## 8. Web UI and CLI surface changes
 
-- **`grassland details <task-id>`**: gains a "Blocked on jobs:" subsection when `block_kind=blocked_on_job`, listing each JOB-NNN with its current status (so the founder can see what the agent is waiting on).
+- **`happyranch details <task-id>`**: gains a "Blocked on jobs:" subsection when `block_kind=blocked_on_job`, listing each JOB-NNN with its current status (so the founder can see what the agent is waiting on).
 - **Web UI task detail panel**: same — render the JOB-NNN list with links to `/jobs/:id` when block_kind is `blocked_on_job`. Lives in `web/src/features/tasks/` (the existing task-detail panel; no new feature folder needed).
 - **No new top-level route** — block submission is an extension of the existing `POST /tasks/{id}/completion` route, not a new endpoint. OpenAPI snapshot regenerates because the request body model changes, but no INCLUDED/EXCLUDED set changes.
 
@@ -501,13 +501,13 @@ The following CLAUDE.md sections gain content; the spec author should make these
 
 **"Jobs (founder-approved + agent-autonomous)" section — Non-obvious invariants** — append:
 
-> - **Auto-resume on terminal supersedes founder revisit for blocked-on-job tasks.** The original spec (§2) listed "no task wakes itself" as a non-goal; the 2026-05-28 task-blocked-by-job design reverses that. Agents now self-block with `waiting_on_job_ids` and resume automatically. The `grassland revisit` path remains valid as a founder-driven override (e.g., "give up on JOB-X, start over").
+> - **Auto-resume on terminal supersedes founder revisit for blocked-on-job tasks.** The original spec (§2) listed "no task wakes itself" as a non-goal; the 2026-05-28 task-blocked-by-job design reverses that. Agents now self-block with `waiting_on_job_ids` and resume automatically. The `happyranch revisit` path remains valid as a founder-driven override (e.g., "give up on JOB-X, start over").
 
 A new top-level section **"Task blocked-by-job (system auto-resumes from job terminals)"** is added between the existing "Jobs" and "Feishu notifications" sections, documenting the three resume sites, the call-order invariant with thread followup, and the backward-read invariant on revisit chains. The content mirrors §5 and §6.4–6.5 of this spec, with the same "Non-obvious invariants" style as adjacent sections.
 
 ## 11. Open questions / known limitations
 
-- **No loop detection.** A pathological agent could block-resume-block-resume forever. The existing `GRASSLAND_MAX_ORCHESTRATION_STEPS` ceiling (default 50) bounds the lineage in practice; tighter detection (e.g., "this task has blocked-on-jobs N times in M minutes") is deferred until a real instance occurs.
+- **No loop detection.** A pathological agent could block-resume-block-resume forever. The existing `HAPPYRANCH_MAX_ORCHESTRATION_STEPS` ceiling (default 50) bounds the lineage in practice; tighter detection (e.g., "this task has blocked-on-jobs N times in M minutes") is deferred until a real instance occurs.
 - **No partial-result resume.** With ALL-terminal policy, a long-running JOB-B holds up the task even if JOB-A finished hours ago. The agent has no way to say "show me JOB-A's results now and JOB-B's results whenever, just unblock me on JOB-A." If this becomes a real pattern, add an ANY-terminal mode in a follow-up spec.
 - **No cross-task blocking.** An agent who needs another agent's job result can't block on it directly — they have to coordinate via threads or have the founder bridge it. Adequate for v1; coordination across agents is the job of threads.
 - **Unindexed scan for caller A's lookup.** Caller A's lookup uses `WHERE status='blocked' AND block_kind='blocked_on_job' AND blocked_on_job_ids LIKE ?`; the `tasks` table has no `status` or `block_kind` index today (§3.1) and the LIKE pattern is opaque to any index. Acceptable at expected scale (low hundreds of active blocked tasks per org). Remedy ladder if profiling shows it: (1) add the partial index in §3.1, (2) replace the LIKE with a `json_each(blocked_on_job_ids)` subquery (requires SQLite JSON1, available in the project's Python builds), (3) denormalize into a `task_blocking_jobs` join table.

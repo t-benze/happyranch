@@ -1,7 +1,7 @@
 export const TALKS_ERROR_STRINGS: Record<string, string> = {
   talk_already_open: 'An open talk with this agent already exists.',
   talk_not_open: 'This talk is no longer open.',
-  unknown_kb_slug: "That KB slug doesn't exist. Add it with `grassland kb add` first.",
+  unknown_kb_slug: "That KB slug doesn't exist. Add it with `happyranch kb add` first.",
   empty_brief: 'Brief is required.',
   empty_team: 'Team cannot be blank.',
   empty_target_agent: 'Target agent cannot be blank.',

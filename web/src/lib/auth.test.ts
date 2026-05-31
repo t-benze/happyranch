@@ -36,11 +36,11 @@ describe('getToken', () => {
     await getToken();
     await getToken();
     expect(calls).toBe(1);
-    expect(sessionStorage.getItem('grassland.token')).toBe('abc123');
+    expect(sessionStorage.getItem('happyranch.token')).toBe('abc123');
   });
 
   test('reads from sessionStorage if pre-populated', async () => {
-    sessionStorage.setItem('grassland.token', 'pre-existing');
+    sessionStorage.setItem('happyranch.token', 'pre-existing');
     server.use(
       http.get('/api/v1/auth/bootstrap', () => {
         throw new Error('should not be called');

@@ -1,7 +1,7 @@
 """Localhost-only bootstrap endpoint that hands the SPA the bearer token.
 
 The web UI runs entirely on the founder's local machine. Browsers cannot read
-``~/.grassland/daemon.token`` themselves, so the SPA fetches it once on load via this
+``~/.happyranch/daemon.token`` themselves, so the SPA fetches it once on load via this
 endpoint and stashes it in ``sessionStorage``. The endpoint refuses any peer
 that isn't loopback so the token never escapes the host.
 

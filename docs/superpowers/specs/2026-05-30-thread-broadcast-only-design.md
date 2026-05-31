@@ -75,11 +75,11 @@ This invocation was minted because a new message was posted to THR-NNN.
 Every participant gets an invocation on every message — that does NOT mean
 every participant should reply.
 
-Default behavior: call `grassland threads decline --from-file <payload>`
+Default behavior: call `happyranch threads decline --from-file <payload>`
 with no reason. Your invocation is consumed silently; no transcript entry
 is written.
 
-Reply (with `grassland threads reply --from-file <payload>`) only when ALL
+Reply (with `happyranch threads reply --from-file <payload>`) only when ALL
 of the following hold:
 - The latest message contains a question, request, or hand-off that
   you can uniquely answer based on your role.
@@ -208,7 +208,7 @@ Minimal-impact, no big-bang:
 
 4. **Old transcript rendering.** Web UI reads `addressed_to_json` is removed; old messages render with no recipient badges (the field is just ignored). Old `kind='decline'` messages render as a slim "decline" entry in transcript for backward visual compat — this is the one render branch the new UI keeps for pre-migration data.
 
-5. **OpenAPI snapshot.** `tests/contract/test_openapi_snapshot.py` fails on the body field removals. Regenerate intentionally with `GRASSLAND_REGEN_OPENAPI=1`. TS coverage test in `web/src/test/openapi-coverage.test.ts` does not need changes (path set unchanged; only request bodies shifted).
+5. **OpenAPI snapshot.** `tests/contract/test_openapi_snapshot.py` fails on the body field removals. Regenerate intentionally with `HAPPYRANCH_REGEN_OPENAPI=1`. TS coverage test in `web/src/test/openapi-coverage.test.ts` does not need changes (path set unchanged; only request bodies shifted).
 
 6. **Integration test fixtures.** Every `tests/integration/test_threads_*.py` that posts `addressed_to: ["@all"]` has the field removed. `fake_claude.sh` does not inspect addressing per the existing inventory; thread-prompt routing path is untouched.
 

@@ -10,7 +10,7 @@ from src.daemon import paths
 
 
 class DaemonNotRunning(RuntimeError):
-    """Raised when ~/.grassland/daemon.port is missing."""
+    """Raised when ~/.happyranch/daemon.port is missing."""
 
 
 class DaemonStateInconsistent(RuntimeError):

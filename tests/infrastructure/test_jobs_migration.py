@@ -126,7 +126,7 @@ def _seed_legacy_scripts_db(db_path: Path) -> None:
 
 
 def test_migration_renames_table_and_rewrites_ids(tmp_path: Path) -> None:
-    db_path = tmp_path / "grassland.db"
+    db_path = tmp_path / "happyranch.db"
     _seed_legacy_scripts_db(db_path)
 
     # Initializing Database against the legacy file should run the migration.
@@ -209,7 +209,7 @@ def test_migration_renames_table_and_rewrites_ids(tmp_path: Path) -> None:
 
 def test_migration_is_idempotent(tmp_path: Path) -> None:
     """Running Database init twice on an already-migrated DB must be a no-op."""
-    db_path = tmp_path / "grassland.db"
+    db_path = tmp_path / "happyranch.db"
     _seed_legacy_scripts_db(db_path)
     Database(db_path)
     # Second init: must not crash and must not duplicate-migrate.
@@ -226,7 +226,7 @@ def test_migration_is_idempotent(tmp_path: Path) -> None:
 
 def test_fresh_install_has_correct_defaults(tmp_path: Path) -> None:
     """A fresh DB (no legacy table) gets the jobs table with DEFAULT 0 for both flags."""
-    db_path = tmp_path / "grassland.db"
+    db_path = tmp_path / "happyranch.db"
     Database(db_path)
 
     conn = sqlite3.connect(str(db_path))
@@ -249,7 +249,7 @@ def test_migration_rolls_back_on_partial_failure(tmp_path: Path) -> None:
     idempotency check sees the renamed ``jobs`` table and skips re-running,
     leaving audit_log + escalation_notifications referencing dead SR-NNN ids.
     """
-    db_path = tmp_path / "grassland.db"
+    db_path = tmp_path / "happyranch.db"
     _seed_legacy_scripts_db(db_path)
 
     call_count = {"n": 0}

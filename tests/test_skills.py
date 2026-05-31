@@ -42,7 +42,7 @@ def test_make_worktree_references_claude_worktrees_path() -> None:
 def test_start_task_skill_documents_memory_consult() -> None:
     body = (SKILLS_ROOT / "start-task" / "SKILL.md").read_text()
     assert "task_history.md" in body
-    assert "grassland recall" in body
+    assert "happyranch recall" in body
     assert "Consult memory" in body
 
 
@@ -55,16 +55,16 @@ def test_start_task_skill_documents_artifact_convention() -> None:
 def test_start_task_skill_documents_kb_consult() -> None:
     body = (SKILLS_ROOT / "start-task" / "SKILL.md").read_text()
     assert "Consult the knowledge base" in body
-    assert "grassland kb list" in body
-    assert "grassland kb search" in body
-    assert "grassland kb get" in body
+    assert "happyranch kb list" in body
+    assert "happyranch kb search" in body
+    assert "happyranch kb get" in body
 
 
 def test_start_task_skill_documents_kb_contribute() -> None:
     body = (SKILLS_ROOT / "start-task" / "SKILL.md").read_text()
     assert "Contribute to the KB" in body or "Contribute to KB" in body
-    assert "grassland kb add" in body
-    # Mandatory `--from-file` pattern — Bash(grassland:*) permission rule
+    assert "happyranch kb add" in body
+    # Mandatory `--from-file` pattern — Bash(happyranch:*) permission rule
     assert "--from-file" in body
 
 
@@ -86,10 +86,10 @@ def test_start_task_skill_documents_manager_decision_field() -> None:
 
 def test_talk_skill_documents_start_procedure() -> None:
     body = (SKILLS_ROOT / "talk" / "SKILL.md").read_text()
-    assert "grassland talk start" in body
-    assert "grassland talk status" in body
-    assert "grassland talk resume" in body
-    assert "grassland talk abandon" in body
+    assert "happyranch talk start" in body
+    assert "happyranch talk status" in body
+    assert "happyranch talk resume" in body
+    assert "happyranch talk abandon" in body
     assert "## Since last talk" in body
     assert "## Notable tasks" in body
     assert "## New learnings" in body
@@ -99,23 +99,23 @@ def test_talk_skill_documents_start_procedure() -> None:
 
 def test_talk_skill_documents_end_procedure() -> None:
     body = (SKILLS_ROOT / "talk" / "SKILL.md").read_text()
-    assert "grassland talk end" in body
+    assert "happyranch talk end" in body
     assert "--from-file" in body
     assert "summary" in body
     assert "topic_list" in body
     assert "transcript_markdown" in body
     assert "learnings" in body
     assert "kb_slugs" in body
-    assert "grassland kb add" in body
+    assert "happyranch kb add" in body
 
 
 def test_talk_skill_documents_single_line_rationale() -> None:
     body = (SKILLS_ROOT / "talk" / "SKILL.md").read_text()
-    assert "Bash(grassland *)" in body
+    assert "Bash(happyranch *)" in body
 
 
 def test_skill_cli_commands_exist() -> None:
-    """Every `grassland <subcommand>` referenced by a skill must be a real subcommand."""
+    """Every `happyranch <subcommand>` referenced by a skill must be a real subcommand."""
     from src.cli import build_parser
 
     parser = build_parser()
@@ -128,9 +128,9 @@ def test_skill_cli_commands_exist() -> None:
     for skill in SKILLS_ROOT.iterdir():
         body = (skill / "SKILL.md").read_text()
         for line in body.splitlines():
-            if "grassland " in line:
-                idx = line.find("grassland ")
-                tokens = line[idx + len("grassland "):].split()
+            if "happyranch " in line:
+                idx = line.find("happyranch ")
+                tokens = line[idx + len("happyranch "):].split()
                 if tokens:
                     referenced.add(tokens[0].rstrip("`,."))
     referenced -= {"<subcommand>"}

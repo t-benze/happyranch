@@ -47,7 +47,7 @@ function stubBase() {
 
 describe('KbPage — read path', () => {
   test('renders entries from /kb', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     stubBase();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
     await waitFor(() => {
@@ -57,7 +57,7 @@ describe('KbPage — read path', () => {
   });
 
   test('filters by type via server param', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     let serverParams: string | null = null;
     server.use(
       http.get('/api/v1/orgs', () =>
@@ -84,7 +84,7 @@ describe('KbPage — read path', () => {
   });
 
   test('client-side tag filter narrows the list', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     stubBase();
     const user = userEvent.setup();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
@@ -97,7 +97,7 @@ describe('KbPage — read path', () => {
   });
 
   test('opens drawer with markdown + source-task badge linking to /tasks', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     stubBase();
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/kb/policy/refund-thresholds`, () =>
@@ -118,7 +118,7 @@ describe('KbPage — read path', () => {
   });
 
   test('search box switches active query to /kb/search', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     let searchHit = false;
     server.use(
       http.get('/api/v1/orgs', () =>
@@ -140,7 +140,7 @@ describe('KbPage — read path', () => {
   });
 
   test('type filter persists when search becomes active', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),

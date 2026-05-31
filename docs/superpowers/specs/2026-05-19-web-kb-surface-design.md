@@ -50,7 +50,7 @@ Three layers, matching the PR 7 (Tasks) shape:
 | empty search, type + tag | `useKBList({ type })` | `type` | `entry.tags.includes(tag)` |
 | non-empty search | `useKBSearch(q, { limit: 50 })` | `q` | `type` + `tag` applied client-side over the result list (kept simple; result sets are small) |
 
-`limit: 50` is the same default the CLI uses (`grassland kb search`). The list query holds a 30s staleTime (DataContext default). The compose mutation, when enabled, invalidates `['kb-list', slug]` and `['kb-search', slug]`.
+`limit: 50` is the same default the CLI uses (`happyranch kb search`). The list query holds a 30s staleTime (DataContext default). The compose mutation, when enabled, invalidates `['kb-list', slug]` and `['kb-search', slug]`.
 
 `useKBEntry(entry_slug)` is enabled only when `entry_slug` is in the URL (mirrors `useTask` enablement). The Drawer fetches on mount, with a fast path that hydrates from the list cache if the entry happens to be there (TanStack `select` over the list cache, optional optimization — skip if it complicates the test).
 

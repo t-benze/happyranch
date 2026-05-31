@@ -40,7 +40,7 @@ function seedAudit() {
 
 describe('AuditPage', () => {
   test('renders activity feed by default and honors agent filter from URL', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     seedAudit();
     mountAt(`/orgs/${SLUG}/audit?agent=alice`);
     await waitFor(() =>
@@ -57,7 +57,7 @@ describe('AuditPage', () => {
   });
 
   test('escalations sub-route mounts the escalations tab', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     seedAudit();
     mountAt(`/orgs/${SLUG}/audit/escalations`);
     await waitFor(() =>
@@ -68,7 +68,7 @@ describe('AuditPage', () => {
   });
 
   test('traces sub-route shows the empty picker prompt without a selected task', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     // Empty audit list → no recent tasks → "Pick a task" prompt.
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/audit`, () =>
@@ -84,7 +84,7 @@ describe('AuditPage', () => {
   test('escalations forwards ?task_id= to the wire query', async () => {
     // Regression: previously the Escalations query dropped filters.task_id,
     // so the table showed org-wide escalations under a "task: X" banner.
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     let lastTaskId: string | null = null;
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/audit`, ({ request }) => {
@@ -101,7 +101,7 @@ describe('AuditPage', () => {
     // Regression: previously the wire query carried agent=alice, which
     // filtered out escalation_resolved rows authored by the founder/peer
     // manager — the table then showed the escalation as still open.
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/audit`, () =>
         HttpResponse.json({
@@ -139,7 +139,7 @@ describe('AuditPage', () => {
     // Regression: clicking "View audit →" from a Task lands on /audit?task_id=X,
     // then switching to Traces via the SubTabBar should render the selected
     // task's trace — not the generic "Pick a task" prompt.
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/audit`, () =>
         HttpResponse.json({ entries: [] }),

@@ -3,7 +3,7 @@
  * approve / reject action.
  *
  * Approve is a one-click POST. Reject opens a small inline dialog asking
- * for an optional reason (mirrors the CLI's `grassland reject-agent` UX).
+ * for an optional reason (mirrors the CLI's `happyranch reject-agent` UX).
  *
  * The list only renders when `status=pending`; approved enrollments
  * live in the Active tab's main roster table.
@@ -46,7 +46,7 @@ export function PendingEnrollmentsTab(): JSX.Element {
     return (
       <EmptyState
         title="No pending enrollments"
-        body="Managers can enroll new agents via grassland talk + manage-agent."
+        body="Managers can enroll new agents via happyranch talk + manage-agent."
       />
     );
   }

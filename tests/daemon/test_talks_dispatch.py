@@ -218,7 +218,7 @@ def test_manager_cannot_dispatch_to_team_worker(client_with_runtime):
 
     Replaces the prior happy-path test; the THR-010 founder diagnosis
     (2026-05-28) made this rejection the intended behavior. Cross-agent work
-    routes via `grassland threads compose`, not via dispatch.
+    routes via `happyranch threads compose`, not via dispatch.
     """
     client, state = client_with_runtime
     _seed_workspace(state, "dev_agent")

@@ -61,7 +61,7 @@ def _columns(db: Database, table: str) -> set[str]:
 
 
 def test_threads_table_has_composer_columns(tmp_path: Path) -> None:
-    db = Database(tmp_path / "grassland.db")
+    db = Database(tmp_path / "happyranch.db")
     cols = _columns(db, "threads")
     assert "composed_by" in cols
     assert "composed_from_task_id" in cols
@@ -69,7 +69,7 @@ def test_threads_table_has_composer_columns(tmp_path: Path) -> None:
 
 
 def test_composer_columns_index_present(tmp_path: Path) -> None:
-    db = Database(tmp_path / "grassland.db")
+    db = Database(tmp_path / "happyranch.db")
     cursor = db._conn.execute("PRAGMA index_list(threads)")
     index_names = {row["name"] for row in cursor.fetchall()}
     assert "idx_threads_composed_from_task" in index_names
@@ -147,7 +147,7 @@ from src.models import ThreadRecord
 
 
 def test_thread_record_roundtrip_with_composer_fields(tmp_path: Path) -> None:
-    db = Database(tmp_path / "grassland.db")
+    db = Database(tmp_path / "happyranch.db")
     rec = ThreadRecord(
         id="THR-001",
         subject="cross-team handoff",
@@ -163,7 +163,7 @@ def test_thread_record_roundtrip_with_composer_fields(tmp_path: Path) -> None:
 
 
 def test_thread_record_defaults_to_founder(tmp_path: Path) -> None:
-    db = Database(tmp_path / "grassland.db")
+    db = Database(tmp_path / "happyranch.db")
     db.insert_thread(ThreadRecord(id="THR-002", subject="founder thread"))
     got = db.get_thread("THR-002")
     assert got.composed_by == "founder"
@@ -294,7 +294,7 @@ The constraint was already added in Task 2 (`ValueError` raise). This task adds 
 
 ```python
 def test_insert_thread_rejects_dual_binding(tmp_path: Path) -> None:
-    db = Database(tmp_path / "grassland.db")
+    db = Database(tmp_path / "happyranch.db")
     with pytest.raises(ValueError, match="mutually exclusive"):
         db.insert_thread(
             ThreadRecord(
@@ -337,7 +337,7 @@ from src.daemon.routes.threads import _thread_row_to_dict
 
 
 def test_thread_row_dict_exposes_composer_fields(tmp_path: Path) -> None:
-    db = Database(tmp_path / "grassland.db")
+    db = Database(tmp_path / "happyranch.db")
     db.insert_thread(
         ThreadRecord(
             id="THR-010", subject="s",
@@ -418,7 +418,7 @@ from src.infrastructure.audit_logger import AuditLogger
 
 
 def test_log_thread_started_payload_includes_composer(tmp_path: Path) -> None:
-    db = Database(tmp_path / "grassland.db")
+    db = Database(tmp_path / "happyranch.db")
     db.insert_thread(ThreadRecord(id="THR-020", subject="x", composed_by="engineering_head", composed_from_task_id="TASK-9"))
     AuditLogger(db).log_thread_started(
         "THR-020",
@@ -441,7 +441,7 @@ def test_log_thread_started_payload_includes_composer(tmp_path: Path) -> None:
 
 
 def test_log_thread_founder_addressed_emits_audit(tmp_path: Path) -> None:
-    db = Database(tmp_path / "grassland.db")
+    db = Database(tmp_path / "happyranch.db")
     db.insert_thread(ThreadRecord(id="THR-021", subject="x"))
     AuditLogger(db).log_thread_founder_addressed(
         "THR-021", seq=1, speaker="engineering_head", notify_channel="feishu",
@@ -549,14 +549,14 @@ def app_client(tmp_path, monkeypatch):
     """Spin up the FastAPI app against a tmp runtime with one org + agents seeded."""
     from src.daemon import paths as paths_mod
     from src.daemon.app import create_app
-    monkeypatch.setenv("GRASSLAND_DAEMON_HOME", str(tmp_path / ".grassland"))
-    monkeypatch.setenv("GRASSLAND_DEFAULT_RUNTIME", str(tmp_path / "runtime"))
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / ".happyranch"))
+    monkeypatch.setenv("HAPPYRANCH_DEFAULT_RUNTIME", str(tmp_path / "runtime"))
     runtime = tmp_path / "runtime"
     (runtime / "orgs" / "test" / "org" / "agents").mkdir(parents=True)
     (runtime / "orgs" / "test" / "org" / "teams.yaml").write_text(
         "teams:\n  engineering:\n    manager: engineering_head\n    workers: [payment_agt]\n"
     )
-    (runtime / "orgs" / "test" / "grassland.yaml").write_text(
+    (runtime / "orgs" / "test" / "happyranch.yaml").write_text(
         "schema_version: 2\ntype: multi-org-runtime\n"
     )
     for agent in ("engineering_head", "payment_agt"):
@@ -1628,7 +1628,7 @@ git commit -m "feat(feishu): route founder thread_addressed replies into /send"
 
 ```python
 def test_cli_compose_with_task_binding_calls_new_route(app_client, tmp_path) -> None:
-    """`grassland threads compose --task-id ... --session-id ... --from-file ...`
+    """`happyranch threads compose --task-id ... --session-id ... --from-file ...`
     targets the agent-compose route, NOT the founder route."""
     import json as _json
     client, token = app_client
@@ -1752,7 +1752,7 @@ Replace the subparser registration (line 2505) with:
 
 ```bash
 uv run pytest tests/unit/test_threads_compose_as_agent.py -v
-uv run grassland threads compose --help  # smoke-check the help text
+uv run happyranch threads compose --help  # smoke-check the help text
 ```
 
 Expected: tests PASS; help text shows the new flags.
@@ -1761,7 +1761,7 @@ Expected: tests PASS; help text shows the new flags.
 
 ```bash
 git add src/cli.py tests/unit/test_threads_compose_as_agent.py
-git commit -m "feat(cli): grassland threads compose accepts task/talk binding"
+git commit -m "feat(cli): happyranch threads compose accepts task/talk binding"
 ```
 
 ---
@@ -1808,11 +1808,11 @@ Requirements:
 
 2. From a task, single-line:
 
-   grassland threads compose --org <slug> --task-id <TASK> --session-id <SID> --from-file /tmp/thread-compose-<tag>.json
+   happyranch threads compose --org <slug> --task-id <TASK> --session-id <SID> --from-file /tmp/thread-compose-<tag>.json
 
    From a talk:
 
-   grassland threads compose --org <slug> --talk-id <TALK> --from-file /tmp/thread-compose-<tag>.json
+   happyranch threads compose --org <slug> --talk-id <TALK> --from-file /tmp/thread-compose-<tag>.json
 
 3. Capture the returned `thread_id`. Mention it in your task completion
    summary (or talk transcript) so the founder can find it.
@@ -1846,11 +1846,11 @@ Find step 4 ("Plan and execute"). Append the following bullet to that step:
 
 - [ ] **Step 3: Update `protocol/skills/talk/SKILL.md`**
 
-In the "What NOT to do" section, find the existing "Exception:" bullets (around `grassland manage-agent` and `grassland dispatch`). Add a third exception:
+In the "What NOT to do" section, find the existing "Exception:" bullets (around `happyranch manage-agent` and `happyranch dispatch`). Add a third exception:
 
 ```markdown
 - **Exception:** Composing a thread to loop in another agent is allowed
-  via the talk-path payload (`--talk-id` on `grassland threads compose`).
+  via the talk-path payload (`--talk-id` on `happyranch threads compose`).
   See the `thread` skill. Record the thread_id in your
   `transcript_markdown` so the founder has a record at talk-end.
 ```
@@ -1873,7 +1873,7 @@ git commit -m "docs(skills): document agent-initiated thread compose flow"
 - [ ] **Step 1: Regenerate the OpenAPI snapshot**
 
 ```bash
-GRASSLAND_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py -v
+HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py -v
 ```
 
 Expected: snapshot rewritten and the test passes on the second run:
@@ -1926,7 +1926,7 @@ def test_agent_compose_from_task_creates_thread_and_invokes_recipient(
     fake_claude_plan_env,
     fake_claude_thread_plan_env,
 ):
-    """A worker task plan runs `grassland threads compose --task-id ... --session-id ...`,
+    """A worker task plan runs `happyranch threads compose --task-id ... --session-id ...`,
     spawning a thread that invokes payment_agt via the thread queue.
 
     The thread-plan path then accepts payment_agt's reply.
@@ -1936,7 +1936,7 @@ def test_agent_compose_from_task_creates_thread_and_invokes_recipient(
     _seed(runtime, "engineering_head")
     _seed(runtime, "payment_agt")
 
-    # Task plan: composer writes a compose payload, calls grassland threads compose,
+    # Task plan: composer writes a compose payload, calls happyranch threads compose,
     # then report-completion.
     plan = (runtime / "fake_claude_plan.sh")
     plan.write_text(
@@ -1946,14 +1946,14 @@ def test_agent_compose_from_task_creates_thread_and_invokes_recipient(
         '"addressed_to": ["@all"], '
         '"body_markdown": "looping you in"}\n'
         'EOF\n'
-        'grassland threads compose --org test --task-id "$task_id" --session-id "$session_id" '
+        'happyranch threads compose --org test --task-id "$task_id" --session-id "$session_id" '
         '--from-file /tmp/thread-compose-int.json\n'
         'cat > /tmp/completion-$task_id.json <<EOF\n'
         '{"task_id": "$task_id", "session_id": "$session_id", '
         '"agent": "engineering_head", "status": "completed", "confidence": 90, '
         '"summary": "composed thread"}\n'
         'EOF\n'
-        'grassland report-completion --org test --from-file /tmp/completion-$task_id.json\n'
+        'happyranch report-completion --org test --from-file /tmp/completion-$task_id.json\n'
     )
     fake_claude_plan_env(plan)
 
@@ -1964,7 +1964,7 @@ def test_agent_compose_from_task_creates_thread_and_invokes_recipient(
         '{"thread_id": "$thread_id", "invocation_token": "$token", '
         '"speaker": "$agent", "body_markdown": "got it", "in_response_to_seq": 1}\n'
         'EOF\n'
-        'grassland threads reply --org test --thread-id "$thread_id" '
+        'happyranch threads reply --org test --thread-id "$thread_id" '
         '--from-file /tmp/thread-reply-int.json\n'
     )
     fake_claude_thread_plan_env(thread_plan)

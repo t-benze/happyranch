@@ -68,7 +68,7 @@ def _build_body_phase1(
     last_summary: str = "",
 ) -> tuple[str, list[str]]:
     """Return (title, body_lines) for the post-format payload."""
-    title = f"[Grassland {slug}] {task_id} escalated — action required"
+    title = f"[HappyRanch {slug}] {task_id} escalated — action required"
     lines = ["Brief:", brief]
     if last_summary:
         lines += ["", "Result:", last_summary]
@@ -85,7 +85,7 @@ def _build_failure_body(
     failure_note: str,
 ) -> tuple[str, list[str]]:
     """Return (title, body_lines) for the failure post-format payload."""
-    title = f"[Grassland {slug}] {task_id} FAILED — review needed"
+    title = f"[HappyRanch {slug}] {task_id} FAILED — review needed"
     lines = [
         "Brief:",
         brief,
@@ -114,10 +114,10 @@ def _build_job_request_body(
     cwd_hint: str | None,
 ) -> tuple[str, list[str]]:
     """Body for the script-request submit push (msg_type=post)."""
-    header = f"[Grassland {slug}] {job_id} submitted — review needed"
+    header = f"[HappyRanch {slug}] {job_id} submitted — review needed"
     if len(script_text) > _SCRIPT_PREVIEW_CAP:
         script_lines = script_text[:_SCRIPT_PREVIEW_CAP].split("\n") + [
-            f"[truncated — see grassland scripts show {job_id} for full script]"
+            f"[truncated — see happyranch scripts show {job_id} for full script]"
         ]
     else:
         script_lines = script_text.split("\n")
@@ -149,9 +149,9 @@ def _build_job_request_body(
         "  <reason>",
         "",
         "You can also resolve via CLI:",
-        f"  grassland scripts show {job_id}",
-        f"  grassland scripts run {job_id}",
-        f"  grassland scripts reject {job_id} --reason \"...\"",
+        f"  happyranch scripts show {job_id}",
+        f"  happyranch scripts run {job_id}",
+        f"  happyranch scripts reject {job_id} --reason \"...\"",
     ]
     return header, lines
 
@@ -172,7 +172,7 @@ def _build_job_result_body(
         descriptor = f"completed (exit {exit_code if exit_code is not None else '?'})"
     else:
         descriptor = f"failed ({reason or 'unknown'})"
-    header = f"[Grassland {slug}] {job_id} {descriptor}"
+    header = f"[HappyRanch {slug}] {job_id} {descriptor}"
 
     def _preview(s: str | None) -> list[str]:
         if not s:
@@ -182,7 +182,7 @@ def _build_job_result_body(
             return s.split("\n")
         return (
             s[:_RESULT_OUTPUT_PREVIEW_CAP].split("\n")
-            + [f"[truncated — full output in grassland scripts output {job_id}]"]
+            + [f"[truncated — full output in happyranch scripts output {job_id}]"]
         )
 
     duration_s = duration_ms / 1000.0
@@ -365,13 +365,13 @@ class EscalationNotifier:
         Best-effort; swallows + audits exceptions."""
         try:
             brief_trunc = brief if len(brief) <= 240 else brief[:240] + "…"
-            title = f"[Grassland {self._slug}] Task {task_id} dispatched"
+            title = f"[HappyRanch {self._slug}] Task {task_id} dispatched"
             body_lines = [
                 f"Team:  {team or '(auto)'}",
                 f"Brief: {brief_trunc}",
                 "",
                 "Track with:",
-                f"  grassland tail --org {self._slug} {task_id}",
+                f"  happyranch tail --org {self._slug} {task_id}",
             ]
             self._client.send_post_message(
                 chat_id=self._config.chat_id, title=title, body_lines=body_lines,
@@ -386,7 +386,7 @@ class EscalationNotifier:
     ) -> None:
         """Top-level post reporting a rejected DISPATCH. Best-effort."""
         try:
-            title = f"[Grassland {self._slug}] Dispatch rejected"
+            title = f"[HappyRanch {self._slug}] Dispatch rejected"
             body_lines = [f"Reason: {reason}"]
             if valid_teams:
                 body_lines.append(f"Valid teams: {', '.join(valid_teams)}")

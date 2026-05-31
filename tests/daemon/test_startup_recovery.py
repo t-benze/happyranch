@@ -17,7 +17,7 @@ def _seed_org(tmp_path: Path, slug: str = "test") -> Database:
     org_root.mkdir(parents=True)
     (org_root / "org").mkdir()
     (org_root / "org" / "teams.yaml").write_text("teams: {}\n")
-    return Database(org_root / "grassland.db")
+    return Database(org_root / "happyranch.db")
 
 
 def test_sweep_in_progress_to_failed(tmp_path: Path) -> None:

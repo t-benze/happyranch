@@ -44,7 +44,7 @@ def _copy_skills_tree(src: Path, dst: Path, *, slug: str) -> None:
     — is shared.
 
     Every ``.md`` file has ``{ORG_SLUG}`` substituted with ``slug`` so example
-    ``grassland`` invocations carry the per-workspace ``--org`` automatically. Other
+    ``happyranch`` invocations carry the per-workspace ``--org`` automatically. Other
     file types are copied byte-for-byte.
     """
     if not src.exists():
@@ -95,25 +95,25 @@ def _learnings_bootstrap_section(workspace: Path) -> list[str]:
         return [
             "## Persistent Files\n",
             "- `learnings/_index.md` -- index of your operational learnings",
-            "  (full bodies via `grassland learning get`)",
+            "  (full bodies via `happyranch learning get`)",
             "- `task_history.md` -- read-only, updated by orchestrator\n",
             "## Your Learnings\n",
             index_body,
             "\nFetch any entry's body:",
             "```",
-            "grassland learning get --org <slug> --agent <you> <LRN-NNN-or-slug>",
+            "happyranch learning get --org <slug> --agent <you> <LRN-NNN-or-slug>",
             "```",
             "Write a new learning (file payload with slug/title/topic/tags/body):",
             "```",
-            "grassland learning add --org <slug> --agent <you> --from-file <path>",
+            "happyranch learning add --org <slug> --agent <you> --from-file <path>",
             "```",
             "Update an existing learning:",
             "```",
-            "grassland learning update --org <slug> --agent <you> <LRN-NNN> --from-file <path>",
+            "happyranch learning update --org <slug> --agent <you> <LRN-NNN> --from-file <path>",
             "```",
             "Promote a durable cross-agent rule to the shared KB (one-way):",
             "```",
-            "grassland learning promote --org <slug> --agent <you> <LRN-NNN> --kb-slug <slug>",
+            "happyranch learning promote --org <slug> --agent <you> <LRN-NNN> --kb-slug <slug>",
             "```\n",
         ]
     if flat.exists():
@@ -124,7 +124,7 @@ def _learnings_bootstrap_section(workspace: Path) -> list[str]:
             "- `task_history.md` -- read-only, updated by orchestrator\n",
             "## Your Learnings\n",
             flat_body + "\n",
-            "Append a new line via `grassland learning --agent <you> --text \"...\"`.",
+            "Append a new line via `happyranch learning --agent <you> --text \"...\"`.",
             "_The structured per-entry format is available once this workspace is migrated._\n",
         ]
     # Brand-new workspace, ensure() should have created learnings/ already.
@@ -148,12 +148,12 @@ def _shared_assets_section() -> list[str]:
         "references, founder rulings). Assets are for *files and binary artifacts*.",
         "Don't put scratch work here — use your workspace `repos/`, learning",
         "entries, or task artifacts for transient state.\n",
-        "All access is via `grassland`. Direct filesystem reads/writes won't work",
+        "All access is via `happyranch`. Direct filesystem reads/writes won't work",
         "uniformly across executors — use the CLI:\n",
         "```",
-        "grassland assets put <local-path> --agent <you> [--name <name>]",
-        "grassland assets list",
-        "grassland assets get <name> --output <local-path>",
+        "happyranch assets put <local-path> --agent <you> [--name <name>]",
+        "happyranch assets list",
+        "happyranch assets get <name> --output <local-path>",
         "```\n",
         "Naming convention: prefix with your agent name + ISO date for",
         "traceability, e.g. `dev_agent-YYYY-MM-DD-perf-report.pdf`. Names must",
@@ -194,7 +194,7 @@ def _thread_talk_dispatch_doctrine_section() -> list[str]:
         "  system message at the end and a single TASK_FOLLOWUP turn where",
         "  you report back.",
         "- **Do not** thread-dispatch another agent. Instead, open or extend",
-        "  a thread with `grassland threads compose --to <other-agent>` and",
+        "  a thread with `happyranch threads compose --to <other-agent>` and",
         "  let them decide whether to take the work on. Cross-team handoffs",
         "  always route through compose, not dispatch.\n",
         "If you find yourself wanting to dispatch a SECOND task from the same",
@@ -214,7 +214,7 @@ def _non_stop_command_warning_section() -> list[str]:
 
     The remedy is the `jobs` skill: the daemon spawns the subprocess
     out-of-process, the agent's session continues, and the agent polls
-    `grassland jobs tail|wait|stop` for status.
+    `happyranch jobs tail|wait|stop` for status.
     """
     return [
         "## Long-running and non-stop commands\n",
@@ -229,7 +229,7 @@ def _non_stop_command_warning_section() -> list[str]:
         "- Anything that needs founder credentials your `allow_rules` block",
         "  (`aws`, `stripe`, `ssh`, `sudo`, blocked `gh` verbs)\n",
         "Submit a **job** instead — the daemon runs the subprocess, your session",
-        "continues, and you check on it with `grassland jobs tail|wait|stop` when",
+        "continues, and you check on it with `happyranch jobs tail|wait|stop` when",
         "ready. See the **jobs** skill (`protocol/skills/jobs/SKILL.md`; available",
         "to you under your workspace's skills directory) for the form fields, the",
         "two policy flags (`review_required`, `persistent`), and how to self-block",
@@ -316,7 +316,7 @@ def _task_completion_format_section() -> list[str]:
     """
     return [
         "## Task Completion Format\n",
-        "Every task ends with a `grassland report-completion --from-file <path>`",
+        "Every task ends with a `happyranch report-completion --from-file <path>`",
         "callback driven by the **start-task** skill. The skill's *Report",
         "completion* step carries the canonical JSON payload shape — fields,",
         "the manager-only `decision` block, and the blocked-path variant.",
@@ -351,12 +351,12 @@ def allow_rules_for_agent(
 ) -> list[str]:
     """Build the Bash allow-rule list for ``agent_name``.
 
-    Baseline ``grassland`` is always included (the agent-callback channel).
+    Baseline ``happyranch`` is always included (the agent-callback channel).
     Additional prefixes come from the agent's ``allow_rules`` frontmatter
     field in ``<runtime>/org/agents/<name>.md``.
     """
     from src.orchestrator import prompt_loader
-    rules = [_format_allow_rule("grassland", cli=cli)]
+    rules = [_format_allow_rule("happyranch", cli=cli)]
     if agent_name is None:
         return rules
     for prefix in prompt_loader.allow_rules_for_agent(paths, agent_name):
@@ -376,7 +376,7 @@ def bash_allow_prefixes_for_agent(
     ``allow_rules`` frontmatter) is the same; only the rendering differs.
     """
     from src.orchestrator import prompt_loader
-    prefixes = ["grassland"]
+    prefixes = ["happyranch"]
     if agent_name is None:
         return prefixes
     for prefix in prompt_loader.allow_rules_for_agent(paths, agent_name):
@@ -522,13 +522,13 @@ class ClaudeWorkspaceAdapter:
                 "PreToolUse hook in `.claude/settings.json`."
             ),
             callback_note=(
-                "The `--from-file` form is mandatory here — multi-line `grassland` "
-                "invocations are blocked by the `Bash(grassland:*)` permission rule."
+                "The `--from-file` form is mandatory here — multi-line `happyranch` "
+                "invocations are blocked by the `Bash(happyranch:*)` permission rule."
             ),
             workflow_section=[
                 "Every task arrives via the orchestrator's prompt. Use the **start-task** skill",
                 "(in `.claude/skills/start-task/`) to parse parameters and report completion via",
-                "`grassland report-completion`. Mid-task learnings go through `grassland learning`.\n",
+                "`happyranch report-completion`. Mid-task learnings go through `happyranch learning`.\n",
             ],
         )
         (workspace / "CLAUDE.md").write_text("\n".join(sections))
@@ -564,15 +564,15 @@ class ClaudeWorkspaceAdapter:
         sections.extend([
             "Read:",
             "```",
-            "grassland kb list [--topic <t>] [--type <label>]",
-            "grassland kb search \"<keywords>\"",
-            "grassland kb get <slug>",
+            "happyranch kb list [--topic <t>] [--type <label>]",
+            "happyranch kb search \"<keywords>\"",
+            "happyranch kb get <slug>",
             "```\n",
             "Write (durable, cross-agent knowledge only — regulations, partner-API quirks,",
             "payment flows, founder rulings; **not** task-specific notes):",
             "```",
-            "grassland kb add --agent <you> --from-file /tmp/kb-<slug>.md",
-            "grassland kb update <slug> --agent <you> --from-file /tmp/kb-<slug>.md",
+            "happyranch kb add --agent <you> --from-file /tmp/kb-<slug>.md",
+            "happyranch kb update <slug> --agent <you> --from-file /tmp/kb-<slug>.md",
             "```",
             "Payload file needs YAML frontmatter (`slug`, `title`, `type`, `topic`,",
             "optional `tags`, `source_task`) followed by a markdown body. `type` is a",
@@ -585,9 +585,9 @@ class ClaudeWorkspaceAdapter:
             "## Task Recall\n",
             "Past task context (brief, completion summary, artifacts) is retrievable via:",
             "```",
-            "grassland recall <task_id>                              # brief + final summary",
-            "grassland recall <task_id> --tree                       # list files under artifacts/<task_id>/",
-            "grassland recall <task_id> --fetch-artifact <relpath>   # read one artifact",
+            "happyranch recall <task_id>                              # brief + final summary",
+            "happyranch recall <task_id> --tree                       # list files under artifacts/<task_id>/",
+            "happyranch recall <task_id> --fetch-artifact <relpath>   # read one artifact",
             "```",
             "Use when the current brief references a prior task, when you need to revisit",
             "your own earlier output before reworking, or when a KB entry points to",
@@ -672,7 +672,7 @@ class CodexWorkspaceAdapter:
             workflow_section=[
                 "Every task arrives via the orchestrator's prompt. Use the **start-task** skill",
                 "(in `.agents/skills/start-task/`) to parse parameters and report completion via",
-                "`grassland report-completion`. Mid-task learnings go through `grassland learning`.\n",
+                "`happyranch report-completion`. Mid-task learnings go through `happyranch learning`.\n",
             ],
         )
         (workspace / "AGENTS.md").write_text("\n".join(sections))
@@ -744,7 +744,7 @@ class OpencodeWorkspaceAdapter:
         Default for unmatched bash is ``"deny"`` so an agent attempting an
         unsanctioned command fails fast rather than waiting on an
         interactive prompt that will never arrive in headless mode. The
-        sanctioned channel (``grassland``) is always allowed; per-agent extras
+        sanctioned channel (``happyranch``) is always allowed; per-agent extras
         come from the same ``allow_rules`` frontmatter Claude reads.
         """
         prefixes = bash_allow_prefixes_for_agent(self._paths, agent_name)

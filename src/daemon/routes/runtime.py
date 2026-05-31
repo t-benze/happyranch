@@ -49,7 +49,7 @@ async def register_runtime(body: RuntimePath, request: Request) -> dict:
 
     # If we're swapping the active runtime out, refuse when any org still has
     # in-flight work — same guard as `/runtime/use`. Re-registering the same
-    # path (idempotent `grassland init <existing>`) is allowed: identical resolved
+    # path (idempotent `happyranch init <existing>`) is allowed: identical resolved
     # root means there's no swap.
     same_root = (
         daemon.runtime is not None and daemon.runtime.root == runtime.root

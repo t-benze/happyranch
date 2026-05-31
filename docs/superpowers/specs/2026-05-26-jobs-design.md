@@ -7,7 +7,7 @@
 - `docs/superpowers/specs/2026-05-25-feishu-script-request-notifications-design.md` — Feishu integration for the SR path; the notification kind is renamed and the rest carries over verbatim.
 
 **Relates to:**
-- `docs/superpowers/specs/2026-04-21-opc-revisit-design.md` — the unblock path after a founder-reviewed job runs (`grassland revisit <task-id>` surfaces job outputs in its context header).
+- `docs/superpowers/specs/2026-04-21-opc-revisit-design.md` — the unblock path after a founder-reviewed job runs (`happyranch revisit <task-id>` surfaces job outputs in its context header).
 - `docs/superpowers/specs/2026-05-14-web-ui-design.md` — three-layer web architecture (`lib/api → features/<domain> → components`) and OpenAPI snapshot contract.
 - `docs/superpowers/specs/2026-05-13-threads-design.md` — agent-initiated → founder-review pattern reused.
 
@@ -22,8 +22,8 @@ This design unifies both flows under a single noun (`jobs`) and lets the agent d
 Use cases:
 
 - Engineering worker needs to run `gh pr close 247` — submits with `review_required=true, persistent=false`. Founder reviews, runs, agent revisits.
-- Engineering worker needs `npm run dev` to verify a UI change — submits with `review_required=false, persistent=true`. Daemon auto-runs; agent tails output via `grassland jobs tail`.
-- Support worker spawns a 15-minute backup script — submits with `review_required=false, persistent=false`. Daemon auto-runs with default timeout; agent checks result later via `grassland jobs show` / `wait`.
+- Engineering worker needs `npm run dev` to verify a UI change — submits with `review_required=false, persistent=true`. Daemon auto-runs; agent tails output via `happyranch jobs tail`.
+- Support worker spawns a 15-minute backup script — submits with `review_required=false, persistent=false`. Daemon auto-runs with default timeout; agent checks result later via `happyranch jobs show` / `wait`.
 - Founder wants an agent-monitored process under explicit oversight — agent submits with `review_required=true, persistent=true`. Founder reviews, then triggers a persistent run.
 
 ## 2. Non-goals
@@ -34,7 +34,7 @@ Out of scope for v1:
 - Founder edits the script before running. If wrong, founder rejects with reason; agent re-submits.
 - Scheduled / cron jobs. v1 is on-demand only.
 - Per-job secrets injection. Daemon uses its own environment.
-- Auto-unblock on completion. The agent self-blocks (when it chose to); founder uses `grassland revisit` to unblock. No "task wakes itself" channel.
+- Auto-unblock on completion. The agent self-blocks (when it chose to); founder uses `happyranch revisit` to unblock. No "task wakes itself" channel.
 - Agent-readable output during a `review_required=true` flow before the founder runs it.
 - Job dependency graphs (job B starts when A exits).
 - Restart-on-failure policies.
@@ -59,7 +59,7 @@ This spec ships as one cutover: the existing `scripts` module is renamed wholesa
 | Disk dir | `<runtime>/orgs/<slug>/scripts/` | `<runtime>/orgs/<slug>/jobs/` |
 | Files | `SR-NNN.{out,err,script}` | `JOB-NNN.{out,err,script}` |
 | Routes | `/api/v1/orgs/{slug}/scripts/...` | `/api/v1/orgs/{slug}/jobs/...` |
-| CLI noun | `grassland scripts ...` | `grassland jobs ...` |
+| CLI noun | `happyranch scripts ...` | `happyranch jobs ...` |
 | Skill dir | `protocol/skills/scripts/` | `protocol/skills/jobs/` |
 | Audit kinds | `script_submitted`, `script_run`, `script_completed`, `script_rejected`, `script_failed` | `job_submitted`, `job_run`, `job_completed`, `job_rejected`, `job_failed` (plus new: `job_auto_started`, `job_killed`, `job_stopped`) |
 | Runtime module | `src/daemon/scripts_runner.py` | `src/daemon/jobs_runner.py` |
@@ -70,11 +70,11 @@ This spec ships as one cutover: the existing `scripts` module is renamed wholesa
 
 ### 3.1 Backwards-compat shim
 
-A `grassland scripts ...` CLI namespace remains for one release. It prints a single-line deprecation warning to stderr and dispatches to the corresponding `jobs` handler:
+A `happyranch scripts ...` CLI namespace remains for one release. It prints a single-line deprecation warning to stderr and dispatches to the corresponding `jobs` handler:
 
 ```
-$ grassland scripts submit --from-file payload.json
-[deprecated] `grassland scripts` is renamed to `grassland jobs` — alias removed in next release.
+$ happyranch scripts submit --from-file payload.json
+[deprecated] `happyranch scripts` is renamed to `happyranch jobs` — alias removed in next release.
 ok: submitted JOB-019 ...
 ```
 
@@ -328,7 +328,7 @@ for f in SR-*.out SR-*.err SR-*.script; do
 done
 ```
 
-The migration is automatic — no `grassland migrate-scripts-to-jobs` command is required because the rename is unambiguous and reversible at the schema level (we can write a backstop reverse-rename if needed, but expect not to). The migration handles `running` rows inline (force-failing them with `reason=daemon_crash` as shown above) rather than aborting and asking the founder to bounce the daemon, because the per-org startup-recovery scan in §5.3 only inspects the renamed `jobs` table — a legacy `script_requests` row in `running` would otherwise have no path to a terminal state and would block the upgrade indefinitely.
+The migration is automatic — no `happyranch migrate-scripts-to-jobs` command is required because the rename is unambiguous and reversible at the schema level (we can write a backstop reverse-rename if needed, but expect not to). The migration handles `running` rows inline (force-failing them with `reason=daemon_crash` as shown above) rather than aborting and asking the founder to bounce the daemon, because the per-org startup-recovery scan in §5.3 only inspects the renamed `jobs` table — a legacy `script_requests` row in `running` would otherwise have no path to a terminal state and would block the upgrade indefinitely.
 
 ## 7. Routes
 
@@ -358,17 +358,17 @@ The CLI noun is `jobs`. All verbs work for any row regardless of policy flags �
 ### 8.1 Founder-facing
 
 ```bash
-grassland jobs list [--status pending|running|completed|failed|rejected]
+happyranch jobs list [--status pending|running|completed|failed|rejected]
                    [--review-required true|false]
                    [--persistent true|false]
                    [--task TASK-NNN]
-grassland jobs show <id>
-grassland jobs run <id> [--max-runtime-seconds N]   # pending → running
-grassland jobs reject <id> --reason "<text>"        # pending → rejected
-grassland jobs stop <id>                            # running → failed (founder_stop)
-grassland jobs output <id> [--stream stdout|stderr]
-grassland jobs tail <id> [--stream stdout|stderr] [--lines N]
-grassland jobs wait <id> [--timeout-seconds N]
+happyranch jobs show <id>
+happyranch jobs run <id> [--max-runtime-seconds N]   # pending → running
+happyranch jobs reject <id> --reason "<text>"        # pending → rejected
+happyranch jobs stop <id>                            # running → failed (founder_stop)
+happyranch jobs output <id> [--stream stdout|stderr]
+happyranch jobs tail <id> [--stream stdout|stderr] [--lines N]
+happyranch jobs wait <id> [--timeout-seconds N]
 ```
 
 ### 8.2 Agent-facing
@@ -376,18 +376,18 @@ grassland jobs wait <id> [--timeout-seconds N]
 All agent-side invocations follow the established `--from-file` discipline so the Claude permission matcher sees one line:
 
 ```bash
-grassland jobs submit --from-file /tmp/job-<rand>.json [--org <slug>]
-grassland jobs tail   <id> [--stream stdout|stderr] [--lines N]
-grassland jobs wait   <id> [--timeout-seconds N]
-grassland jobs stop   <id>
-grassland jobs show   <id>
+happyranch jobs submit --from-file /tmp/job-<rand>.json [--org <slug>]
+happyranch jobs tail   <id> [--stream stdout|stderr] [--lines N]
+happyranch jobs wait   <id> [--timeout-seconds N]
+happyranch jobs stop   <id>
+happyranch jobs show   <id>
 ```
 
 Agent-facing commands fail with `409 session_mismatch` if invoked against a job the agent doesn't own (i.e., `agent_name` mismatch) or after the agent's session has been superseded.
 
-### 8.3 `grassland scripts ...` shim
+### 8.3 `happyranch scripts ...` shim
 
-For one release, `grassland scripts <verb>` prints `[deprecated] grassland scripts is renamed to grassland jobs — alias removed in next release.` to stderr and dispatches to the corresponding `jobs` handler. Removed in the next release.
+For one release, `happyranch scripts <verb>` prints `[deprecated] happyranch scripts is renamed to happyranch jobs — alias removed in next release.` to stderr and dispatches to the corresponding `jobs` handler. Removed in the next release.
 
 ## 9. Skill
 
@@ -473,21 +473,21 @@ The two flags are independent. All four combinations are valid:
 2. Submit as a single line (`--from-file` is mandatory; multi-line bash is rejected by the permission matcher):
 
    ```bash
-   grassland jobs submit --from-file /tmp/job-<random>.json --org <slug>
+   happyranch jobs submit --from-file /tmp/job-<random>.json --org <slug>
    ```
 
 3. Output is `ok: submitted JOB-NNN ...`. Keep the JOB-NNN id.
 
 ## After submitting
 
-**If `review_required=true`:** the job is `pending`. You can't proceed until the founder reviews. Self-block your task with `report-completion status=blocked` referencing the JOB-NNN. The founder will run it and use `grassland revisit <task-id>` to bring you back with the output available via the revisit header.
+**If `review_required=true`:** the job is `pending`. You can't proceed until the founder reviews. Self-block your task with `report-completion status=blocked` referencing the JOB-NNN. The founder will run it and use `happyranch revisit <task-id>` to bring you back with the output available via the revisit header.
 
 **If `review_required=false`:** the job is `running`. Continue your work. Check on the job with:
 
-- `grassland jobs tail JOB-NNN` — see recent output.
-- `grassland jobs wait JOB-NNN --timeout-seconds 30` — block until terminal or timeout.
-- `grassland jobs show JOB-NNN` — full status snapshot.
-- `grassland jobs stop JOB-NNN` — kill it (useful if you're done with the dev server).
+- `happyranch jobs tail JOB-NNN` — see recent output.
+- `happyranch jobs wait JOB-NNN --timeout-seconds 30` — block until terminal or timeout.
+- `happyranch jobs show JOB-NNN` — full status snapshot.
+- `happyranch jobs stop JOB-NNN` — kill it (useful if you're done with the dev server).
 
 ## Cleanup
 
@@ -556,7 +556,7 @@ The `escalation_notifications.kind` enum gains `job_request`; the old `script_re
 
 ## 14. Web UI
 
-`web/src/features/jobs/` replaces `web/src/features/scripts/`. The `web/src/lib/api/jobs.ts` module mirrors `web/src/lib/api/scripts.ts` route-by-route. OpenAPI snapshot regenerates (`GRASSLAND_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py`).
+`web/src/features/jobs/` replaces `web/src/features/scripts/`. The `web/src/lib/api/jobs.ts` module mirrors `web/src/lib/api/scripts.ts` route-by-route. OpenAPI snapshot regenerates (`HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py`).
 
 UI surface:
 
@@ -581,7 +581,7 @@ Integration tests (under `tests/integration/`, opt-in via `-m integration`):
 
 - `tests/integration/test_jobs_persistent.py` — spawns a real daemon, submits a `persistent=true` job (a `sleep 60 && echo done` loop), confirms agent can `tail`/`stop`, confirms task-terminal kill.
 - `tests/integration/test_jobs_review_required.py` — submits `review_required=true`, confirms founder approval path via the route, confirms Feishu notification kind is `job_request`.
-- `tests/integration/test_jobs_legacy_alias.py` — `grassland scripts <verb>` shim writes deprecation warning + dispatches correctly.
+- `tests/integration/test_jobs_legacy_alias.py` — `happyranch scripts <verb>` shim writes deprecation warning + dispatches correctly.
 
 ## 16. Open questions / known limitations
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the Grassland web UI bundle into web/dist/.
+# Build the HappyRanch web UI bundle into web/dist/.
 # The daemon's StaticFiles mount serves web/dist/ at /.
 set -euo pipefail
 

@@ -134,7 +134,7 @@ if [ "$purpose" = "task_followup" ]; then
     payload=$(mktemp)
     printf '{"thread_id":"%s","invocation_token":"%s","speaker":"%s","body_markdown":"followup: task done","in_response_to_seq":1}' \\
         "$thread_id" "$token" "$agent" > "$payload"
-    grassland threads reply --org "$org" --thread-id "$thread_id" --from-file "$payload"
+    happyranch threads reply --org "$org" --thread-id "$thread_id" --from-file "$payload"
     exit 0
 fi
 
@@ -149,7 +149,7 @@ if [ -f "$state_file" ]; then
     payload=$(mktemp)
     printf '{"thread_id":"%s","invocation_token":"%s","speaker":"%s","body_markdown":"already dispatched","in_response_to_seq":1}' \\
         "$thread_id" "$token" "$agent" > "$payload"
-    grassland threads reply --org "$org" --thread-id "$thread_id" --from-file "$payload"
+    happyranch threads reply --org "$org" --thread-id "$thread_id" --from-file "$payload"
     exit 0
 fi
 touch "$state_file"
@@ -158,13 +158,13 @@ touch "$state_file"
 dispatch=$(mktemp)
 printf '{"thread_id":"%s","invocation_token":"%s","dispatcher":"%s","brief":"manager self-dispatched task"}' \\
     "$thread_id" "$token" "$agent" > "$dispatch"
-grassland threads dispatch --org "$org" --thread-id "$thread_id" --from-file "$dispatch"
+happyranch threads dispatch --org "$org" --thread-id "$thread_id" --from-file "$dispatch"
 
 # Reply to release the invocation token (dispatch does NOT consume it).
 reply=$(mktemp)
 printf '{"thread_id":"%s","invocation_token":"%s","speaker":"%s","body_markdown":"dispatched to myself, will report back","in_response_to_seq":1}' \\
     "$thread_id" "$token" "$agent" > "$reply"
-grassland threads reply --org "$org" --thread-id "$thread_id" --from-file "$reply"
+happyranch threads reply --org "$org" --thread-id "$thread_id" --from-file "$reply"
 """
 
 
@@ -209,7 +209,7 @@ def test_manager_self_dispatch_from_thread_completes_with_followup(
     fake_claude_plan_env.write_text(
         "#!/usr/bin/env bash\n"
         "task_id=$1; session_id=$2; agent=$3; org_slug=$4\n"
-        'grassland report-completion --org "$org_slug" \\\n'
+        'happyranch report-completion --org "$org_slug" \\\n'
         '  --task-id "$task_id" --session-id "$session_id" \\\n'
         '  --agent "$agent" --status completed --confidence 90 \\\n'
         "  --summary '{\"action\":\"done\",\"summary\":\"manager task finished ok\"}'\n"

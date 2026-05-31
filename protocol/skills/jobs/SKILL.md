@@ -90,7 +90,7 @@ The two flags are independent. All four combinations are valid:
 2. Submit as a single line (`--from-file` is mandatory; multi-line bash is rejected by the permission matcher):
 
    ```bash
-   grassland jobs submit --from-file /tmp/job-<random>.json --org <slug>
+   happyranch jobs submit --from-file /tmp/job-<random>.json --org <slug>
    ```
 
 3. Output is `ok: submitted JOB-NNN ...`. Keep the JOB-NNN id.
@@ -114,11 +114,11 @@ with `status=blocked` and `waiting_on_job_ids` populated:
 The system resumes your task automatically once **every** listed job reaches a
 terminal state (`completed`, `failed`, or `rejected`). When you resume, your
 bootstrap doc will include a `BLOCKED-JOBS-RESULTS` section listing each job's
-status and `grassland jobs show JOB-NNN` / `grassland jobs output JOB-NNN`
+status and `happyranch jobs show JOB-NNN` / `happyranch jobs output JOB-NNN`
 commands to fetch full output. **You don't poll.**
 
 If you need to stay in-session for a fast `review_required=false` job, the
-existing `grassland jobs wait JOB-NNN --timeout-seconds 30` pattern still works.
+existing `happyranch jobs wait JOB-NNN --timeout-seconds 30` pattern still works.
 Prefer block-and-resume for any wait long enough to risk session timeout.
 
 ## Cleanup

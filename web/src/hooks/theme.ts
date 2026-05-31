@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 export type Theme = 'dark' | 'light';
-const KEY = 'grassland.theme';
+const KEY = 'happyranch.theme';
 
 function readInitial(): Theme {
   if (typeof window === 'undefined') return 'dark';

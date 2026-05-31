@@ -16,7 +16,7 @@ The threads feature already shipped (`2026-05-14-web-ui-design.md`). Every daemo
 - **Mobile / responsive layouts.** Desktop founder workstation only.
 - **Multi-user / RBAC / login.** Localhost-only, single founder, single Mac Mini.
 - **Auto-generated TS types from Pydantic.** Hand-mirrored types + the OpenAPI snapshot stays the rule.
-- **Orgs / runtime CRUD in the browser.** `grassland init`, `grassland orgs init`, `grassland orgs delete`, `grassland migrate-to-multi-org` stay TTY-gated through the CLI. The web shows orgs; never mutates them.
+- **Orgs / runtime CRUD in the browser.** `happyranch init`, `happyranch orgs init`, `happyranch orgs delete`, `happyranch migrate-to-multi-org` stay TTY-gated through the CLI. The web shows orgs; never mutates them.
 - **Agent-callback endpoints in the browser.** `report-completion`, `manage-agent`, `manage-repo`, `dispatch` (agent variant), `learning add/update/promote`, thread `/reply` `/decline` `/dispatch` `/close-out` are agent-subprocess-only and remain absent from `lib/api/`.
 - **`--as-founder` impersonation surface for KB deletes.** TTY-gated through the CLI.
 - **Notifications inside the web app.** Feishu owns the founder-push channel.
@@ -83,7 +83,7 @@ These are the choices most likely to thrash if each PR decides independently. Lo
 
 Affects: InboxRow, MessageList row gap, TaskCard row, AuditRow, AgentScorecardRow. Does **not** affect markdown body text (we never make message bodies less legible).
 
-Implementation: one `useDensity()` hook landing in PR 7 (Tasks introduces the first dense table). Stored in `localStorage["grassland.density"]`. Comfortable (default) ↔ Compact. Subsequent features adopt the hook for free.
+Implementation: one `useDensity()` hook landing in PR 7 (Tasks introduces the first dense table). Stored in `localStorage["happyranch.density"]`. Comfortable (default) ↔ Compact. Subsequent features adopt the hook for free.
 
 ### 5.3 Theme toggle
 
@@ -115,7 +115,7 @@ Cap at 4 concurrent streams. Statusbar already shows the count.
 
 ### 5.6 KB write surface
 
-Browse-only through PR 10. A "Compose KB entry" dialog may land in PR 10 if the PR has slack, behind a feature flag. Until that dialog ships and is signed off, founder rulings flow through `grassland kb add`. Edits and deletes stay CLI-only in v1.
+Browse-only through PR 10. A "Compose KB entry" dialog may land in PR 10 if the PR has slack, behind a feature flag. Until that dialog ships and is signed off, founder rulings flow through `happyranch kb add`. Edits and deletes stay CLI-only in v1.
 
 ### 5.7 Agent enrollment approval
 

@@ -1,4 +1,4 @@
-"""CLI smoke tests for grassland jobs subcommands."""
+"""CLI smoke tests for happyranch jobs subcommands."""
 from __future__ import annotations
 
 import subprocess
@@ -6,9 +6,9 @@ from pathlib import Path
 
 
 def _run(*args) -> subprocess.CompletedProcess:
-    """Invoke `uv run grassland ...` from the worktree root."""
+    """Invoke `uv run happyranch ...` from the worktree root."""
     return subprocess.run(
-        ["uv", "run", "grassland", *args],
+        ["uv", "run", "happyranch", *args],
         capture_output=True, text=True,
         cwd=str(Path(__file__).resolve().parents[1]),
     )
@@ -66,7 +66,7 @@ def test_jobs_run_requires_tty():
 
 
 def test_scripts_shim_prints_deprecation_warning():
-    """`grassland scripts <verb>` reaches the handler with a deprecation banner."""
+    """`happyranch scripts <verb>` reaches the handler with a deprecation banner."""
     # `run` fails the TTY gate before any network call — same pattern as
     # test_jobs_run_requires_tty above, just on the deprecated alias path.
     r = _run("scripts", "run", "JOB-001", "--org", "alpha")

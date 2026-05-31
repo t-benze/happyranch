@@ -43,9 +43,9 @@ def test_request_body_renders_all_fields():
     assert "gh pr close 247" in body
     assert "APPROVE" in body
     assert "REJECT" in body
-    assert "grassland scripts show SR-019" in body
-    assert "grassland scripts run SR-019" in body
-    assert "grassland scripts reject SR-019" in body
+    assert "happyranch scripts show SR-019" in body
+    assert "happyranch scripts run SR-019" in body
+    assert "happyranch scripts reject SR-019" in body
 
 
 def test_request_body_missing_cwd_hint_renders_workspace_root():
@@ -66,7 +66,7 @@ def test_request_body_truncates_long_script():
         interpreter="bash", cwd_hint=None,
     )
     body = "\n".join(lines)
-    assert "[truncated — see grassland scripts show SR-019 for full script]" in body
+    assert "[truncated — see happyranch scripts show SR-019 for full script]" in body
     assert body.count("[truncated") == 1
 
 
@@ -121,7 +121,7 @@ def test_result_body_truncates_long_output():
         stdout_head=long_out, stderr_head=None, reason=None,
     )
     body = "\n".join(lines)
-    assert f"[truncated — full output in grassland scripts output SR-019]" in body
+    assert f"[truncated — full output in happyranch scripts output SR-019]" in body
 
 
 def test_result_body_completed_unknown_exit_code():
@@ -162,7 +162,7 @@ def test_request_body_truncation_marker_is_its_own_element():
         interpreter="bash", cwd_hint=None,
     )
     # The truncation marker is a standalone element.
-    marker = f"[truncated — see grassland scripts show SR-019 for full script]"
+    marker = f"[truncated — see happyranch scripts show SR-019 for full script]"
     assert marker in lines
     # And again, no embedded newlines anywhere.
     for el in lines:
@@ -187,7 +187,7 @@ class _FakeClient:
 
 @pytest.fixture()
 def notifier_setup(tmp_path: Path):
-    db = Database(tmp_path / "grassland.db")
+    db = Database(tmp_path / "happyranch.db")
     audit = AuditLogger(db)
     client = _FakeClient()
     cfg = FeishuNotificationsConfig(

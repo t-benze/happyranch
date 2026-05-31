@@ -38,7 +38,7 @@ function stubBaseHandlers() {
 }
 
 function mountAt(route: string) {
-  sessionStorage.setItem('grassland.token', 'tok');
+  sessionStorage.setItem('happyranch.token', 'tok');
   return renderWithProviders(<AppRoutes />, { route });
 }
 
@@ -247,7 +247,7 @@ describe('AgentDetailDrawer — recent jobs cross-link', () => {
   };
 
   test('shows recent jobs in agent drawer when data present', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
@@ -279,7 +279,7 @@ describe('AgentDetailDrawer — recent jobs cross-link', () => {
   });
 
   test('hides recent jobs section when agent has none', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),

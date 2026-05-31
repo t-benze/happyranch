@@ -1,7 +1,7 @@
 """Audit-log inspection endpoint.
 
 Exposes a filtered view of the ``audit_log`` table so CLI / UI consumers never
-need to poke at ``grassland.db`` directly. Schema-coupled access is a liability —
+need to poke at ``happyranch.db`` directly. Schema-coupled access is a liability —
 this route is the one read path we want to keep stable.
 """
 from __future__ import annotations

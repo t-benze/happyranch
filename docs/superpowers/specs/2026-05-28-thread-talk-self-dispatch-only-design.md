@@ -40,7 +40,7 @@ The same exemption + same shape exists at `src/daemon/routes/talks.py:315-338`.
 - Backfilling: existing cross-agent dispatches (e.g., TASK-546, TASK-547 on THR-010) are **grandfathered**. The rule applies to new dispatch calls only. Their `TASK_FOLLOWUP` turns continue to land in the originating thread per the existing followup spec.
 - Changing `TASK_FOLLOWUP` dispatch policy. `2026-05-28-thread-task-followup-design.md` §6.4 stands: followup turns still cannot dispatch.
 - Changing `threads.compose` semantics. Cross-agent / cross-team messaging continues to mint REPLY/BOOTSTRAP turns for the addressed participants exactly as today.
-- Top-level `grassland dispatch` (founder CLI / Feishu DISPATCH). The founder retains full dispatch authority from outside thread/talk context.
+- Top-level `happyranch dispatch` (founder CLI / Feishu DISPATCH). The founder retains full dispatch authority from outside thread/talk context.
 - Observability layer (counting dispatches per thread for dashboard). Founder dashboard is unshipped; revisit when it lands.
 
 ## 4. The rule
@@ -84,7 +84,7 @@ Threads (and talks) only accept self-dispatch.
 For cross-agent work, either:
   (a) self-dispatch a manager root and delegate internally via the
       manager-decision loop (recommended for iterative phase work), or
-  (b) use `grassland threads compose --to <other-agent>` to address
+  (b) use `happyranch threads compose --to <other-agent>` to address
       the other agent (or their team's manager) as a thread message,
       and let them drive their own work.
 
@@ -148,7 +148,7 @@ Threads (and talks) only accept self-dispatch.
 For cross-agent work, either:
   (a) self-dispatch a manager root and delegate internally via the
       manager-decision loop (recommended for iterative phase work), or
-  (b) use `grassland threads compose --to <other-agent>` to address
+  (b) use `happyranch threads compose --to <other-agent>` to address
       the other agent (or their team's manager) as a thread message,
       and let them drive their own work.
 
@@ -192,7 +192,7 @@ The pattern: **dispatch is for "I will work on this"; compose is for "you, pleas
 ```markdown
 ## Dispatch from a thread is self-only
 
-When you are participating in a thread (REPLY / BOOTSTRAP turn), `grassland
+When you are participating in a thread (REPLY / BOOTSTRAP turn), `happyranch
 threads dispatch` may only target **yourself**. The runtime rejects any other
 target with `thread_dispatch_must_be_self`.
 
@@ -208,11 +208,11 @@ loop handles delegation natively.
   to workers internally. The thread sees one `task_completed` / `task_failed`
   system message and one TASK_FOLLOWUP turn at the end.
 
-- **Loop in another agent in your team:** use `grassland threads compose --to
-  <agent>` or `grassland threads invite`. They receive a thread invocation
+- **Loop in another agent in your team:** use `happyranch threads compose --to
+  <agent>` or `happyranch threads invite`. They receive a thread invocation
   (BOOTSTRAP or REPLY) and decide what to do with it.
 
-- **Cross-team handoff:** use `grassland threads compose --to <other-team-
+- **Cross-team handoff:** use `happyranch threads compose --to <other-team-
   manager>` — possibly opening a new thread for the cross-team subject.
   Their manager receives a BOOTSTRAP turn and self-dispatches if they take
   the work on.
@@ -274,7 +274,7 @@ New section helper `_thread_talk_dispatch_doctrine_section()` in
 **"Thread and Talk Dispatch are Self-Only"**. The block names both rejection
 codes (`thread_dispatch_must_be_self`, `talk_dispatch_must_be_self`),
 explains the doctrine in plain English, and points at the recommended
-alternatives (self-dispatch a manager root; use `grassland threads compose`
+alternatives (self-dispatch a manager root; use `happyranch threads compose`
 for cross-agent work). The section is wired into `_build_sections` between
 the Shared Assets and Long-running-commands blocks — both are operational
 guardrails about how to interact with system surfaces.
@@ -294,7 +294,7 @@ NextStep decision schema and are forbidden from the bootstrap doc by
 sub-tasks" or "drive internal work" instead.
 
 No founder action is required post-merge. The doctrine ships uniformly
-with the next workspace rewrite (which `grassland init-agent` triggers
+with the next workspace rewrite (which `happyranch init-agent` triggers
 on every session bootstrap).
 
 ## 13. Test plan
@@ -338,7 +338,7 @@ No schema or path changes. `tests/contract/test_openapi_snapshot.py` should pass
 None blocking. Two flagged for future:
 
 - **Audit signal for repeat-dispatch attempts.** A bored signal: under the new rule, the same agent calling dispatch with `target != dispatcher` is now an immediate 403, no historical state needed. But a "manager attempted N times across M threads" counter could feed the founder dashboard once shipped. Not v1.
-- **Talks-as-dispatch surface.** The talk-dispatch route is rarely used in practice (most talks are conversational, not task-spawning). If usage stays low post-rule, consider deprecating talk-dispatch entirely in favor of "end the talk → use `grassland dispatch`." Out of scope for this spec.
+- **Talks-as-dispatch surface.** The talk-dispatch route is rarely used in practice (most talks are conversational, not task-spawning). If usage stays low post-rule, consider deprecating talk-dispatch entirely in favor of "end the talk → use `happyranch dispatch`." Out of scope for this spec.
 
 ## 16. Implementation order
 

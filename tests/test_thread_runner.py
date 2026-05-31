@@ -61,7 +61,7 @@ class FakeOrgState:
 
 @pytest.mark.asyncio
 async def test_run_invocation_no_callback_silent_decline(tmp_path, monkeypatch):
-    db = Database(tmp_path / "grassland.db")
+    db = Database(tmp_path / "happyranch.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     db.add_thread_participant("THR-001", "alice", added_by="founder")
     db.append_thread_message(

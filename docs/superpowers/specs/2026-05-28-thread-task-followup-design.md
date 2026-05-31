@@ -33,10 +33,10 @@ The manager's promise is reasonable behavior for an LLM that doesn't know how th
 
 **Out of scope for v1:**
 
-- Backfilling follow-ups for already-terminal tasks on existing threads (THR-001, THR-002). The hook fires only on future terminal transitions. A one-off `grassland threads backfill-followups` is left as a possible follow-up.
+- Backfilling follow-ups for already-terminal tasks on existing threads (THR-001, THR-002). The hook fires only on future terminal transitions. A one-off `happyranch threads backfill-followups` is left as a possible follow-up.
 - A persistent task↔thread agent (the "Open" item 18 in CLAUDE.md). This spec adds one bounded re-invocation per dispatched task, not a long-running participant.
 - Changing the dispatch authority rules. Cross-team / participant / token semantics are unchanged.
-- Surfacing intermediate task progress in the thread. Only the **single** terminal event posts back; mid-task heartbeats stay in `grassland progress` / audit.
+- Surfacing intermediate task progress in the thread. Only the **single** terminal event posts back; mid-task heartbeats stay in `happyranch progress` / audit.
 - Allowing the followup agent to chain a new dispatch in the followup turn (see §6.4).
 
 ## 4. Fire predicate
@@ -183,7 +183,7 @@ if purpose == "task_followup":
     return (
         f"Task TASK-NNN that you dispatched from this thread reached "
         f"<status>. Compose a follow-up reply with the result (pull details "
-        f"via `grassland details TASK-NNN`), or decline if there is nothing "
+        f"via `happyranch details TASK-NNN`), or decline if there is nothing "
         f"substantive to add."
     )
 ```
@@ -210,7 +210,7 @@ No API surface change in `web/src/lib/api/`; the threads stream already carries 
 
 ## 10. Audit events
 
-New event names, all consumed by `grassland audit`:
+New event names, all consumed by `happyranch audit`:
 
 - `thread_task_followup_enqueued` — dispatcher, original task, terminal task, invocation_token
 - `thread_followup_skipped` — reason ∈ {`thread_not_open`, `dispatcher_unresolved`, `no_thread_linkage`}, with `task_status`, `thread_status`

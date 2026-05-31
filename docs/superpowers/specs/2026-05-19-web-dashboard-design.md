@@ -53,7 +53,7 @@ Render:
 ```
 SYSTEM HEALTH
 ● daemon: ok
-  active runtime: /Users/.../grassland
+  active runtime: /Users/.../happyranch
 ```
 
 - Green dot when `status === 'ok'`, red dot otherwise.
@@ -295,7 +295,7 @@ runtime:
 1. Visit `/orgs/<slug>/dashboard` directly — confirm all four cards render
    and the layout doesn't overlap the TopBar.
 2. Click TopBar `Dashboard` — confirm nav active state lights up.
-3. Submit a task (`grassland submit --team <team> --brief "..."`) — confirm
+3. Submit a task (`happyranch submit --team <team> --brief "..."`) — confirm
    it appears in "Active tasks by team" within 30 s.
 4. Cancel the task — confirm it disappears within 30 s.
 

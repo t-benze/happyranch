@@ -39,7 +39,7 @@ def _make_event(*, root_id: str | None, text: str, sender_type: str = "user", ev
 @pytest.fixture()
 def listener(tmp_path: Path):
     from src.daemon.feishu_listener import FeishuEventListener
-    db = Database(tmp_path / "grassland.db")
+    db = Database(tmp_path / "happyranch.db")
     audit = AuditLogger(db)
     loop = asyncio.new_event_loop()
     l = FeishuEventListener(
@@ -69,7 +69,7 @@ def test_top_level_dispatch_branch_taken(listener):
 
 def test_top_level_dispatch_dropped_when_disabled(tmp_path: Path):
     from src.daemon.feishu_listener import FeishuEventListener
-    db = Database(tmp_path / "grassland.db")
+    db = Database(tmp_path / "happyranch.db")
     audit = AuditLogger(db)
     loop = asyncio.new_event_loop()
     l = FeishuEventListener(

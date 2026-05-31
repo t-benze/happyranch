@@ -104,7 +104,7 @@ def test_persistent_job_full_lifecycle(
           "persistent": true
         }}' "$task_id" "$session_id" > "$payload"
 
-        grassland jobs submit --from-file "$payload" --org "$org_slug" \\
+        happyranch jobs submit --from-file "$payload" --org "$org_slug" \\
             > /tmp/job-persistent-submit-$$.log 2>&1
         cat /tmp/job-persistent-submit-$$.log >&2
         touch "{job_sentinel}"
@@ -131,7 +131,7 @@ def test_persistent_job_full_lifecycle(
           "suggested_reviewer_focus": []
         }}' "$task_id" "$session_id" "$agent" > "$report"
 
-        grassland report-completion --from-file "$report" --org "$org_slug"
+        happyranch report-completion --from-file "$report" --org "$org_slug"
     """))
     fake_claude_plan_env.chmod(0o755)
 

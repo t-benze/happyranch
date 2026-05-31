@@ -52,7 +52,7 @@ Write `/tmp/thread-reply-<thread_id>-<seq>.json`:
  "speaker": "<your name>", "body_markdown": "...", "in_response_to_seq": <N>}
 
 Then single-line:
-grassland threads reply --org <slug> --thread-id <id> --from-file /tmp/thread-reply-<id>-<seq>.json
+happyranch threads reply --org <slug> --thread-id <id> --from-file /tmp/thread-reply-<id>-<seq>.json
 
 Reply when:
 - You have material to add that others haven't covered (correction, missing
@@ -66,7 +66,7 @@ Write `/tmp/thread-decline-<thread_id>-<seq>.json`:
  "speaker": "<your name>", "reason": "...", "in_response_to_seq": <N>}
 
 Then:
-grassland threads decline --org <slug> --thread-id <id> --from-file /tmp/thread-decline-<id>-<seq>.json
+happyranch threads decline --org <slug> --thread-id <id> --from-file /tmp/thread-decline-<id>-<seq>.json
 
 Decline when:
 - Another participant has already covered what you'd say — restating wastes
@@ -92,7 +92,7 @@ Write `/tmp/thread-dispatch-<thread_id>.json`:
  "team": "<team>" /* optional, defaults to your team */}
 
 Then:
-grassland threads dispatch --org <slug> --thread-id <id> --from-file /tmp/thread-dispatch-<id>.json
+happyranch threads dispatch --org <slug> --thread-id <id> --from-file /tmp/thread-dispatch-<id>.json
 
 Each dispatch posts a system message into the thread for transparency.
 
@@ -102,7 +102,7 @@ daemon will auto-decline on your behalf with reason="no_callback".
 
 ## Dispatch from a thread is self-only
 
-When you are participating in a thread (REPLY / BOOTSTRAP turn), `grassland
+When you are participating in a thread (REPLY / BOOTSTRAP turn), `happyranch
 threads dispatch` may only target **yourself**. The runtime rejects any other
 target with `thread_dispatch_must_be_self`.
 
@@ -118,11 +118,11 @@ loop handles delegation natively.
   to workers internally. The thread sees one `task_completed` /
   `task_failed` system message and one TASK_FOLLOWUP turn at the end.
 
-- **Loop in another agent in your team:** use `grassland threads compose
-  --to <agent>` or `grassland threads invite`. They receive a thread
+- **Loop in another agent in your team:** use `happyranch threads compose
+  --to <agent>` or `happyranch threads invite`. They receive a thread
   invocation (BOOTSTRAP or REPLY) and decide what to do with it.
 
-- **Cross-team handoff:** use `grassland threads compose --to
+- **Cross-team handoff:** use `happyranch threads compose --to
   <other-team-manager>` — possibly opening a new thread for the cross-team
   subject. Their manager receives a BOOTSTRAP turn and self-dispatches if
   they take the work on.
@@ -143,7 +143,7 @@ dispatched from this thread reaches a terminal state. The thread now contains a
 and artifact dir (if any).
 
 **What to do:** Reply with the result-bearing follow-up you owe the founder. Use
-`grassland details TASK-NNN` to read the full task record. If there is nothing
+`happyranch details TASK-NNN` to read the full task record. If there is nothing
 substantive to add (e.g., the task was founder-cancelled and the founder already
 knows), decline.
 
@@ -160,7 +160,7 @@ When invoked with "This thread is being archived":
 
 1. Review what was discussed.
 2. Identify KB-worthy material (apply rules from protocol/06-knowledge-base.md
-   §2). Write those with `grassland kb add` BEFORE the close-out callback.
+   §2). Write those with `happyranch kb add` BEFORE the close-out callback.
 3. Identify durable learnings for yourself — write them to
    /tmp/thread-closeout-<thread_id>-<your_name>.json:
    {"thread_id": "<id>", "invocation_token": "<token>",
@@ -168,7 +168,7 @@ When invoked with "This thread is being archived":
     "learnings": [{"text": "..."}],
     "kb_slugs": ["the-slugs-you-just-added"]}
 4. Run:
-   grassland threads close-out --org <slug> --thread-id <id> --from-file /tmp/thread-closeout-<id>-<your_name>.json
+   happyranch threads close-out --org <slug> --thread-id <id> --from-file /tmp/thread-closeout-<id>-<your_name>.json
 
 Other participants will produce their own close-outs in parallel. Each
 contributes to their own learnings.md; KB slugs are unioned.
@@ -204,11 +204,11 @@ Requirements:
 
 2. From a task, single-line:
 
-   grassland threads compose --org <slug> --task-id <TASK> --session-id <SID> --from-file /tmp/thread-compose-<tag>.json
+   happyranch threads compose --org <slug> --task-id <TASK> --session-id <SID> --from-file /tmp/thread-compose-<tag>.json
 
    From a talk:
 
-   grassland threads compose --org <slug> --talk-id <TALK> --from-file /tmp/thread-compose-<tag>.json
+   happyranch threads compose --org <slug> --talk-id <TALK> --from-file /tmp/thread-compose-<tag>.json
 
 3. Capture the returned `thread_id`. Mention it in your task completion
    summary (or talk transcript) so the founder can find it.

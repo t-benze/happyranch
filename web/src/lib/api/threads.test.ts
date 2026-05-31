@@ -16,7 +16,7 @@ import {
 } from './threads';
 
 const SLUG = 'alpha';
-const seedToken = () => sessionStorage.setItem('grassland.token', 'tok');
+const seedToken = () => sessionStorage.setItem('happyranch.token', 'tok');
 
 describe('threads api mirror', () => {
   test('composeThread POSTs the right body', async () => {

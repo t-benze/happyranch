@@ -234,7 +234,7 @@ export function TalksPage(): JSX.Element {
                 ) : detail.data.status === 'open' ? (
                   <EmptyState
                     title="Talk is open"
-                    body="Use `grassland talk resume` to converse, then End to record the transcript."
+                    body="Use `happyranch talk resume` to converse, then End to record the transcript."
                   />
                 ) : (
                   <EmptyState

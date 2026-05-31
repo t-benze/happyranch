@@ -131,7 +131,7 @@ def test_multi_job_resume_waits_for_all(
             }}' "$task_id" "$session_id" > "$payload_a"
 
             submit_log_a="/tmp/multi-job-submit-log-a-$$.txt"
-            grassland jobs submit --from-file "$payload_a" --org "$org_slug" \
+            happyranch jobs submit --from-file "$payload_a" --org "$org_slug" \
                 > "$submit_log_a" 2>&1
             cat "$submit_log_a" >&2
 
@@ -158,7 +158,7 @@ def test_multi_job_resume_waits_for_all(
             }}' "$task_id" "$session_id" > "$payload_b"
 
             submit_log_b="/tmp/multi-job-submit-log-b-$$.txt"
-            grassland jobs submit --from-file "$payload_b" --org "$org_slug" \
+            happyranch jobs submit --from-file "$payload_b" --org "$org_slug" \
                 > "$submit_log_b" 2>&1
             cat "$submit_log_b" >&2
 
@@ -172,8 +172,8 @@ def test_multi_job_resume_waits_for_all(
             echo "$job_b" > "{jobb_file}"
 
             # Self-block on BOTH jobs via direct HTTP call.
-            port=$(cat "$GRASSLAND_DAEMON_HOME/daemon.port")
-            token=$(cat "$GRASSLAND_DAEMON_HOME/daemon.token")
+            port=$(cat "$HAPPYRANCH_DAEMON_HOME/daemon.port")
+            token=$(cat "$HAPPYRANCH_DAEMON_HOME/daemon.token")
 
             completion_payload="/tmp/multi-job-completion-$$.json"
             printf '{{
@@ -201,7 +201,7 @@ def test_multi_job_resume_waits_for_all(
             # ── Stage 2: both jobs completed; task resumed ──
             echo "Stage 2: task resumed after both jobs ran, reporting completion" >&2
 
-            grassland report-completion --org "$org_slug" \\
+            happyranch report-completion --org "$org_slug" \\
                 --task-id "$task_id" --session-id "$session_id" \\
                 --agent "$agent" --status completed --confidence 90 \\
                 --summary '{{"action":"done","summary":"completed after both jobs unblocked"}}'

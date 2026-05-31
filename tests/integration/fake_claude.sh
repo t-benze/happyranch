@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fake Claude binary — reads scripted behavior from $FAKE_CLAUDE_PLAN
-# and optionally calls grassland to simulate an agent's session.
+# and optionally calls happyranch to simulate an agent's session.
 set -e
 
 PROMPT=""
@@ -58,16 +58,16 @@ EOF
     exit 0
 fi
 
-# If a plan file exists, source it (it can call grassland). Pass the agent name as
+# If a plan file exists, source it (it can call happyranch). Pass the agent name as
 # $3 and the org slug as $4 so plans can call agent-callback commands with
 # the required --org flag.
 #
 # The plan's stdout is redirected to stderr so the fixture-shaped JSON we emit
 # below is the ONLY thing on our stdout. ClaudeExecutor passes
 # `--output-format json` and the parser does `json.loads(stdout.strip())`, so
-# any grassland-error messages or plan diagnostic prints would otherwise corrupt
+# any happyranch-error messages or plan diagnostic prints would otherwise corrupt
 # the JSON parse. Plans only need stdout-clean execution; their side effects
-# (calling grassland, touching files) are unaffected.
+# (calling happyranch, touching files) are unaffected.
 if [[ -n "${FAKE_CLAUDE_PLAN:-}" && -f "$FAKE_CLAUDE_PLAN" ]]; then
     bash "$FAKE_CLAUDE_PLAN" "$TASK_ID" "$SESSION_ID" "$AGENT" "$ORG_SLUG" 1>&2
 fi

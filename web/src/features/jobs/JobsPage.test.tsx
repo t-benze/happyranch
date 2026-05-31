@@ -50,7 +50,7 @@ const JOB: JobRecord = {
 
 describe('JobsPage — read path', () => {
   test('renders empty state when no jobs', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
         HttpResponse.json({ jobs: [] }),
@@ -63,7 +63,7 @@ describe('JobsPage — read path', () => {
   });
 
   test('renders job cards when list returns data', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
         HttpResponse.json({ jobs: [JOB] }),
@@ -78,7 +78,7 @@ describe('JobsPage — read path', () => {
   });
 
   test('renders filter sidebar with Status, Review, and Persistence groups', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
         HttpResponse.json({ jobs: [JOB] }),
@@ -109,7 +109,7 @@ describe('JobDetailPane + RejectJobDialog — write path', () => {
   }
 
   test('detail drawer renders title, rationale, script, and action bar for pending job', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     stubDetailHandlers();
     mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
     // Title and rationale appear in both the card and the drawer — use getAllByText
@@ -123,7 +123,7 @@ describe('JobDetailPane + RejectJobDialog — write path', () => {
   });
 
   test('RejectJobDialog submits reason and calls POST reject endpoint', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     stubDetailHandlers();
     let capturedBody: unknown = null;
     server.use(
@@ -156,7 +156,7 @@ describe('JobDetailPane + RejectJobDialog — write path', () => {
   });
 
   test('reject button is disabled when reason is empty', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     stubDetailHandlers();
 
     const user = userEvent.setup();
@@ -174,7 +174,7 @@ describe('JobDetailPane + RejectJobDialog — write path', () => {
   });
 
   test('detail drawer shows reject reason section for rejected job', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     const rejectedJob: JobRecord = {
       ...JOB,
       status: 'rejected',
@@ -222,7 +222,7 @@ describe('JobDetailPane — Stop button (running job)', () => {
   }
 
   test('renders Stop button for running job and POSTs to /stop', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     const runningJob: JobRecord = {
       ...JOB,
       status: 'running',
@@ -247,7 +247,7 @@ describe('JobDetailPane — Stop button (running job)', () => {
   });
 
   test('live drawer seeds output from /tail on mount', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     const runningJob: JobRecord = {
       ...JOB,
       status: 'running',
@@ -278,7 +278,7 @@ describe('JobDetailPane — Stop button (running job)', () => {
   });
 
   test('no Stop button when job is pending', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     stubRunningHandlers(JOB);
     mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
     await waitFor(() =>
@@ -304,7 +304,7 @@ describe('OutputPanel', () => {
   }
 
   test('renders no output section for pending job', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     stubDetailForStatus(JOB);
     mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
     // Wait for detail pane to load
@@ -316,7 +316,7 @@ describe('OutputPanel', () => {
   });
 
   test('renders stdout and stderr pre blocks for completed job', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     const completedJob: JobRecord = {
       ...JOB,
       status: 'completed',
@@ -348,7 +348,7 @@ describe('OutputPanel', () => {
   });
 
   test('renders no output section for rejected job', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     const rejectedJob: JobRecord = {
       ...JOB,
       status: 'rejected',

@@ -6,7 +6,7 @@ import { renderWithProviders } from './test/render';
 import { server } from './test/server';
 
 test('root with orgs renders the TopBar org dropdown after navigate', async () => {
-  sessionStorage.setItem('grassland.token', 'tok');
+  sessionStorage.setItem('happyranch.token', 'tok');
   server.use(
     http.get('/api/v1/orgs', () =>
       HttpResponse.json({ orgs: [{ slug: 'alpha', root: '/x' }] }),
@@ -28,7 +28,7 @@ test('root with orgs renders the TopBar org dropdown after navigate', async () =
 });
 
 test('root with no orgs renders the empty-state message', async () => {
-  sessionStorage.setItem('grassland.token', 'tok');
+  sessionStorage.setItem('happyranch.token', 'tok');
   server.use(http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [] })));
   renderWithProviders(<AppRoutes />, { route: '/' });
   await waitFor(() =>

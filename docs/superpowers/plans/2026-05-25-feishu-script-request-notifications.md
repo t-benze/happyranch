@@ -49,7 +49,7 @@ def test_mint_escalation_notification_accepts_script_request_kind(tmp_path):
     from datetime import datetime, timedelta, timezone
     from src.infrastructure.database import Database
 
-    db = Database(tmp_path / "grassland.db")
+    db = Database(tmp_path / "happyranch.db")
     db.mint_escalation_notification(
         feishu_message_id="om_sr_1",
         org_slug="acme",
@@ -68,7 +68,7 @@ def test_get_open_notification_for_sr_returns_most_recent(tmp_path):
     from datetime import datetime, timedelta, timezone
     from src.infrastructure.database import Database
 
-    db = Database(tmp_path / "grassland.db")
+    db = Database(tmp_path / "happyranch.db")
     now = datetime.now(timezone.utc)
     db.mint_escalation_notification(
         feishu_message_id="om_old", org_slug="acme", task_id="SR-007",
@@ -87,7 +87,7 @@ def test_get_open_notification_for_sr_returns_most_recent(tmp_path):
 
 def test_get_open_notification_for_sr_returns_none_when_missing(tmp_path):
     from src.infrastructure.database import Database
-    db = Database(tmp_path / "grassland.db")
+    db = Database(tmp_path / "happyranch.db")
     assert db.get_open_notification_for_sr("SR-999", kind="script_request") is None
 
 
@@ -97,7 +97,7 @@ def test_get_open_notification_for_sr_finds_consumed_rows(tmp_path):
     from datetime import datetime, timedelta, timezone
     from src.infrastructure.database import Database
 
-    db = Database(tmp_path / "grassland.db")
+    db = Database(tmp_path / "happyranch.db")
     db.mint_escalation_notification(
         feishu_message_id="om_x", org_slug="acme", task_id="SR-008",
         chat_id="oc_xyz",
@@ -298,7 +298,7 @@ from src.infrastructure.database import Database
 
 @pytest.fixture()
 def audit_db_pair(tmp_path):
-    db = Database(tmp_path / "grassland.db")
+    db = Database(tmp_path / "happyranch.db")
     return AuditLogger(db), db
 ```
 
@@ -510,9 +510,9 @@ def test_request_body_renders_all_fields():
     assert "APPROVE" in body
     assert "REJECT" in body
     # CLI fallback hints
-    assert "grassland scripts show SR-019" in body
-    assert "grassland scripts run SR-019" in body
-    assert "grassland scripts reject SR-019" in body
+    assert "happyranch scripts show SR-019" in body
+    assert "happyranch scripts run SR-019" in body
+    assert "happyranch scripts reject SR-019" in body
 
 
 def test_request_body_missing_cwd_hint_renders_workspace_root():
@@ -533,7 +533,7 @@ def test_request_body_truncates_long_script():
         interpreter="bash", cwd_hint=None,
     )
     body = "\n".join(lines)
-    assert "[truncated — see grassland scripts show SR-019 for full script]" in body
+    assert "[truncated — see happyranch scripts show SR-019 for full script]" in body
     # The slice itself must not exceed the cap (footer is appended after).
     # Easiest check: the truncation marker only appears once.
     assert body.count("[truncated") == 1
@@ -590,7 +590,7 @@ def test_result_body_truncates_long_output():
         stdout_head=long_out, stderr_head=None, reason=None,
     )
     body = "\n".join(lines)
-    assert f"[truncated — full output in grassland scripts output SR-019]" in body
+    assert f"[truncated — full output in happyranch scripts output SR-019]" in body
 
 
 def test_result_body_completed_unknown_exit_code():
@@ -637,12 +637,12 @@ def _build_script_request_body(
     cwd_hint: str | None,
 ) -> tuple[str, list[str]]:
     """Body for the script-request submit push (msg_type=post)."""
-    header = f"[Grassland {slug}] {sr_id} submitted — review needed"
+    header = f"[HappyRanch {slug}] {sr_id} submitted — review needed"
     script_preview = script_text
     if len(script_preview) > _SCRIPT_PREVIEW_CAP:
         script_preview = (
             script_preview[:_SCRIPT_PREVIEW_CAP]
-            + f"\n[truncated — see grassland scripts show {sr_id} for full script]"
+            + f"\n[truncated — see happyranch scripts show {sr_id} for full script]"
         )
     lines = [
         f"Agent:        {agent}",
@@ -668,9 +668,9 @@ def _build_script_request_body(
         "  <reason>",
         "",
         "You can also resolve via CLI:",
-        f"  grassland scripts show {sr_id}",
-        f"  grassland scripts run {sr_id}",
-        f"  grassland scripts reject {sr_id} --reason \"...\"",
+        f"  happyranch scripts show {sr_id}",
+        f"  happyranch scripts run {sr_id}",
+        f"  happyranch scripts reject {sr_id} --reason \"...\"",
     ]
     return header, lines
 
@@ -691,7 +691,7 @@ def _build_script_result_body(
         descriptor = f"completed (exit {exit_code if exit_code is not None else '?'})"
     else:
         descriptor = f"failed ({reason or 'unknown'})"
-    header = f"[Grassland {slug}] {sr_id} {descriptor}"
+    header = f"[HappyRanch {slug}] {sr_id} {descriptor}"
 
     def _preview(s: str | None) -> list[str]:
         if not s:
@@ -701,7 +701,7 @@ def _build_script_result_body(
             return s.split("\n")
         return (
             s[:_RESULT_OUTPUT_PREVIEW_CAP].split("\n")
-            + [f"[truncated — full output in grassland scripts output {sr_id}]"]
+            + [f"[truncated — full output in happyranch scripts output {sr_id}]"]
         )
 
     duration_s = duration_ms / 1000.0
@@ -784,7 +784,7 @@ class _FakeClient:
 
 @pytest.fixture()
 def notifier_setup(tmp_path: Path):
-    db = Database(tmp_path / "grassland.db")
+    db = Database(tmp_path / "happyranch.db")
     audit = AuditLogger(db)
     client = _FakeClient()
     cfg = FeishuNotificationsConfig(
@@ -1190,7 +1190,7 @@ def scripts_test_org(tmp_path):
     root = tmp_path / "orgs" / "acme"
     (root / "scripts").mkdir(parents=True)
     (root / "workspaces" / "dev").mkdir(parents=True)
-    db = Database(root / "grassland.db")
+    db = Database(root / "happyranch.db")
     paths = OrgPaths(runtime_root=tmp_path, slug="acme")
     # The helpers only touch org.db, org.root, org.event_bus, org.db_lock,
     # org.sessions, and (in run path) the scripts_runner module-level state.
@@ -1571,7 +1571,7 @@ def _make_orchestrator(tmp_path: Path):
     settings = Settings()
 
     from src.infrastructure.database import Database
-    db = Database(paths.org_root / "grassland.db")
+    db = Database(paths.org_root / "happyranch.db")
     orch = Orchestrator(paths=paths, db=db, settings=settings)
     return orch
 
@@ -1883,7 +1883,7 @@ from src.infrastructure.database import Database
 
 
 def _mk_listener(tmp_path: Path):
-    db = Database(tmp_path / "grassland.db")
+    db = Database(tmp_path / "happyranch.db")
     audit = AuditLogger(db)
     loop = asyncio.new_event_loop()
     listener = FeishuEventListener(
@@ -2486,7 +2486,7 @@ Read the existing `docs/setup/feishu-notifications.md` and add a section at the 
 ```markdown
 ## Script requests (SR-NNN)
 
-When an agent submits a script request (`grassland scripts submit`), the daemon pushes a Feishu post to the configured chat. Reply in the same thread to act on it:
+When an agent submits a script request (`happyranch scripts submit`), the daemon pushes a Feishu post to the configured chat. Reply in the same thread to act on it:
 
 - **Approve and run:**
   ```
@@ -2506,7 +2506,7 @@ When an agent submits a script request (`grassland scripts submit`), the daemon 
 
 - **APPROVE shows the full script in the push body** (up to 1500 chars). Read it before replying. There is no "are you sure" prompt in Feishu — the message-body preview is the confirmation surface.
 
-Audit events for the script-request notification flow: `script_notify_sent`, `script_notify_failed`, `script_reply_processed`, `script_reply_rejected`, `script_run_result_notify_sent`, `script_run_result_notify_failed`. Inspect via `grassland audit --org <slug> --action script_*`.
+Audit events for the script-request notification flow: `script_notify_sent`, `script_notify_failed`, `script_reply_processed`, `script_reply_rejected`, `script_run_result_notify_sent`, `script_run_result_notify_failed`. Inspect via `happyranch audit --org <slug> --action script_*`.
 ```
 
 - [ ] **Step 2: Update CLAUDE.md**
@@ -2571,7 +2571,7 @@ Expected: Daemon up and running on its usual port.
 
 If a test org with `feishu_notifications.enabled: true` is configured:
 
-1. Trigger an SR via `grassland scripts submit --from-file /tmp/sr.json` (impersonating the agent with a valid `(task_id, session_id)` pair).
+1. Trigger an SR via `happyranch scripts submit --from-file /tmp/sr.json` (impersonating the agent with a valid `(task_id, session_id)` pair).
 2. Observe a Feishu push appears in the configured chat.
 3. Reply `APPROVE` and confirm the SR transitions to `completed`/`failed`.
 4. Observe a threaded follow-up arrives with the terminal status.

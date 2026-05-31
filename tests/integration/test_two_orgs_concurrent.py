@@ -126,7 +126,7 @@ def test_two_orgs_run_tasks_concurrently_under_one_daemon(
         '#!/usr/bin/env bash\n'
         'set -e\n'
         'task_id=$1; session_id=$2; agent=$3; org_slug=$4\n'
-        'grassland report-completion --org "$org_slug" \\\n'
+        'happyranch report-completion --org "$org_slug" \\\n'
         '  --task-id "$task_id" --session-id "$session_id" \\\n'
         '  --agent engineering_head --status completed --confidence 90 \\\n'
         '  --summary \'{"action":"done","summary":"ok"}\'\n'

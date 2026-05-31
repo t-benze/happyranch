@@ -41,7 +41,7 @@ Five granular kinds, classified at the point of failure in `run_step`:
 | `failure_kind` | Trigger | Source signal |
 |---|---|---|
 | `session_timeout` | Subprocess walltime exceeded `session_timeout_seconds` | `executors.py:197` writes `result.error = "Session timed out after {N} seconds"` and `result.success=False` |
-| `no_callback` | Subprocess exited rc=0 but the agent never invoked `grassland report-completion` (TASK-045 class) | `result.success=True and report is None` |
+| `no_callback` | Subprocess exited rc=0 but the agent never invoked `happyranch report-completion` (TASK-045 class) | `result.success=True and report is None` |
 | `rate_limit` | Executor hit a provider rate limit ("hit your limit · resets …") | Substring match on `result.stdout_tail`/`stderr_tail`/`error` |
 | `executor_error` | Subprocess exited with a non-zero `returncode` | `result.returncode not in (None, 0)` |
 | `agent_exception` | Python exception escaped `Orchestrator._run_agent` | The `except Exception` branch in `run_step._run_agent` |
@@ -88,7 +88,7 @@ The counting walks `walk_revisit_chain(root.id, truncate=True)` (already used fo
 | 1× founder-cancellation mid-run | 0 (cancellation always wins) | 0 |
 | 1× session_timeout, then founder-cancel of the revisit | 1 then cancelled | 0 (cancel suppresses notify) |
 
-Founder revisits (`grassland revisit ...`, action=`log_revisit_of`) are **not** counted — they're intentional human retries, just like today.
+Founder revisits (`happyranch revisit ...`, action=`log_revisit_of`) are **not** counted — they're intentional human retries, just like today.
 
 ### 5.2 Audit payload extension
 

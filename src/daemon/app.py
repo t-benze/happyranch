@@ -88,7 +88,7 @@ async def _lifespan(app: FastAPI):
 
     # Recover any jobs left in 'running' state from a previous daemon process.
     _now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    _logger = logging.getLogger("grassland.daemon")
+    _logger = logging.getLogger("happyranch.daemon")
     from src.daemon.jobs_runner import migrate_filesystem_layout
     for org in state.orgs.values():
         # Rename <org_root>/scripts/ → jobs/ (and SR-* → JOB-*) BEFORE the
@@ -143,7 +143,7 @@ async def _lifespan(app: FastAPI):
 
 
 def create_app(state: DaemonState) -> FastAPI:
-    app = FastAPI(title="Grassland Daemon", version="0.2.0", lifespan=_lifespan)
+    app = FastAPI(title="HappyRanch Daemon", version="0.2.0", lifespan=_lifespan)
     app.state.daemon = state
     app.include_router(health.router, prefix="/api/v1")
     app.include_router(auth.router, prefix="/api/v1")

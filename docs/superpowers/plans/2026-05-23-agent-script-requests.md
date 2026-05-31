@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship the `SR-NNN` script-request primitive: agents submit scripts they can't run in their sandbox, founder reviews via CLI/web, daemon spawns the subprocess with founder-grade env, output streams via SSE, unblock path reuses `grassland revisit`.
+**Goal:** Ship the `SR-NNN` script-request primitive: agents submit scripts they can't run in their sandbox, founder reviews via CLI/web, daemon spawns the subprocess with founder-grade env, output streams via SSE, unblock path reuses `happyranch revisit`.
 
-**Architecture:** New per-org `script_requests` SQLite table + Pydantic model; one HTTP route module (`src/daemon/routes/scripts.py`) under `/api/v1/orgs/{slug}/scripts/`; a dedicated subprocess runner (`src/daemon/scripts_runner.py`) using `asyncio.create_subprocess_exec` with line-buffered stdout/stderr pumps that fan out to an in-memory pub/sub channel; founder CLI subcommands under `grassland scripts`; web feature folder `web/src/features/scripts/` mirroring the threads three-layer architecture; agent identity proven through the existing session-binding chain (no per-agent bearer scoping).
+**Architecture:** New per-org `script_requests` SQLite table + Pydantic model; one HTTP route module (`src/daemon/routes/scripts.py`) under `/api/v1/orgs/{slug}/scripts/`; a dedicated subprocess runner (`src/daemon/scripts_runner.py`) using `asyncio.create_subprocess_exec` with line-buffered stdout/stderr pumps that fan out to an in-memory pub/sub channel; founder CLI subcommands under `happyranch scripts`; web feature folder `web/src/features/scripts/` mirroring the threads three-layer architecture; agent identity proven through the existing session-binding chain (no per-agent bearer scoping).
 
 **Tech Stack:** Python 3.11+ / FastAPI / Pydantic v2 / SQLite (per-org) / asyncio subprocess / SSE; React 18 + TypeScript strict + Tailwind 3 + TanStack Query v5; vitest for web; pytest for python; integration tests via `fake_claude.sh`.
 
@@ -54,10 +54,10 @@ These are the patterns the plan mirrors. Skim them before starting Task 1 so the
 - `src/daemon/event_bus.py` — add `script_topic(sr_id)` helper.
 - `src/daemon/app.py` — wire `scripts.router`; add startup recovery call; add shutdown subprocess cleanup.
 - `src/daemon/state.py` — register in-flight SR tracker (for shutdown cleanup).
-- `src/cli.py` — add `grassland scripts` subparser + 6 subcommands.
+- `src/cli.py` — add `happyranch scripts` subparser + 6 subcommands.
 - `src/orchestrator/run_step.py` — extend `_revisit_header_if_applicable` to append SR summary block.
 - `protocol/skills/start-task/SKILL.md` — cross-reference the new scripts skill.
-- `tests/contract/test_openapi_snapshot.py` — regenerate (no code change; just run with `GRASSLAND_REGEN_OPENAPI=1`).
+- `tests/contract/test_openapi_snapshot.py` — regenerate (no code change; just run with `HAPPYRANCH_REGEN_OPENAPI=1`).
 - `tests/contract/openapi.json` — auto-regenerated snapshot.
 - `web/src/test/openapi-coverage.test.ts` — add new paths to INCLUDED + the `/submit` exclusion.
 - `web/src/App.tsx` (or router file) — add `/scripts` routes.
@@ -67,7 +67,7 @@ These are the patterns the plan mirrors. Skim them before starting Task 1 so the
 - `web/src/features/tasks/...` — SRs-from-task section in task drawer (Task 31).
 - `tests/integration/fake_claude.sh` — add `--script-submit` prompt branch.
 - `README.md` — add SR section.
-- `skills/grassland/SKILL.md` — add SR section.
+- `skills/happyranch/SKILL.md` — add SR section.
 
 ---
 
@@ -2537,7 +2537,7 @@ git commit -m "feat(daemon): SR recovery on startup + SIGTERM on shutdown"
 
 ---
 
-### Task 19: CLI — `grassland scripts submit`
+### Task 19: CLI — `happyranch scripts submit`
 
 **Files:**
 - Modify: `src/cli.py`
@@ -2548,7 +2548,7 @@ git commit -m "feat(daemon): SR recovery on startup + SIGTERM on shutdown"
 Create `tests/test_cli_scripts.py`:
 
 ```python
-"""CLI tests for grassland scripts subcommands."""
+"""CLI tests for happyranch scripts subcommands."""
 from __future__ import annotations
 
 import json
@@ -2560,12 +2560,12 @@ import pytest
 
 
 def _run(*args, daemon_url="http://localhost:0", token=None) -> subprocess.CompletedProcess:
-    """Invoke `uv run grassland ...` against a stub daemon URL (set via env)."""
-    env = {"GRASSLAND_DAEMON_URL": daemon_url}
+    """Invoke `uv run happyranch ...` against a stub daemon URL (set via env)."""
+    env = {"HAPPYRANCH_DAEMON_URL": daemon_url}
     if token:
-        env["GRASSLAND_AUTH_TOKEN"] = token
+        env["HAPPYRANCH_AUTH_TOKEN"] = token
     return subprocess.run(
-        ["uv", "run", "grassland", *args],
+        ["uv", "run", "happyranch", *args],
         capture_output=True, text=True, env={**__import__("os").environ, **env},
     )
 
@@ -2639,12 +2639,12 @@ Expected: passing.
 
 ```bash
 git add src/cli.py tests/test_cli_scripts.py
-git commit -m "feat(cli): grassland scripts submit (agent callback, --from-file)"
+git commit -m "feat(cli): happyranch scripts submit (agent callback, --from-file)"
 ```
 
 ---
 
-### Task 20: CLI — `grassland scripts list|show|reject|output`
+### Task 20: CLI — `happyranch scripts list|show|reject|output`
 
 **Files:**
 - Modify: `src/cli.py`
@@ -2768,12 +2768,12 @@ def cmd_scripts_show(args: argparse.Namespace) -> None:
             print("Stderr (head):")
             for line in d["stderr_head"].splitlines():
                 print(f"  {line}")
-        print(f"Full output:  grassland scripts output {d['id']}")
+        print(f"Full output:  happyranch scripts output {d['id']}")
     elif d["status"] == "pending":
         print()
         print("Founder actions:")
-        print(f"  grassland scripts run {d['id']} [--cwd PATH] [--timeout-seconds N]")
-        print(f"  grassland scripts reject {d['id']} --reason \"...\"")
+        print(f"  happyranch scripts run {d['id']} [--cwd PATH] [--timeout-seconds N]")
+        print(f"  happyranch scripts reject {d['id']} --reason \"...\"")
     elif d["status"] == "rejected":
         print()
         print(f"Reject reason: {d['reject_reason']}")
@@ -2830,12 +2830,12 @@ Expected: passing.
 
 ```bash
 git add src/cli.py tests/test_cli_scripts.py
-git commit -m "feat(cli): grassland scripts list|show|reject|output"
+git commit -m "feat(cli): happyranch scripts list|show|reject|output"
 ```
 
 ---
 
-### Task 21: CLI — `grassland scripts run` (TTY confirm + SSE stream)
+### Task 21: CLI — `happyranch scripts run` (TTY confirm + SSE stream)
 
 **Files:**
 - Modify: `src/cli.py`
@@ -2977,7 +2977,7 @@ Expected: passing.
 
 ```bash
 git add src/cli.py tests/test_cli_scripts.py
-git commit -m "feat(cli): grassland scripts run with TTY confirm + SSE stream"
+git commit -m "feat(cli): happyranch scripts run with TTY confirm + SSE stream"
 ```
 
 ---
@@ -3007,7 +3007,7 @@ Do NOT use this skill for anything you could just do in your own workspace (e.g.
 
 ## How to submit
 
-Single-line `grassland scripts submit --from-file <path>` invocation, just like `report-completion`. Multi-line bash is split by Claude's permission matcher — keep it one line.
+Single-line `happyranch scripts submit --from-file <path>` invocation, just like `report-completion`. Multi-line bash is split by Claude's permission matcher — keep it one line.
 
 Write the JSON payload to `/tmp/script-<random>.json` first:
 
@@ -3030,7 +3030,7 @@ Allowed `interpreter` values: `bash`, `sh`, `zsh`, `python3`.
 Then invoke:
 
 ```bash
-grassland scripts submit --from-file /tmp/script-9j2.json
+happyranch scripts submit --from-file /tmp/script-9j2.json
 ```
 
 Output is `ok: submitted SR-NNN ...`. Keep the `SR-NNN` id — reference it in your completion report.
@@ -3047,7 +3047,7 @@ Always self-block your task immediately after submit. Report completion with `st
 }
 ```
 
-The orchestrator's manager will see the block and escalate to the founder. Once the founder has run the script and reviewed the output, they will use `grassland revisit <task-id>` to spawn a fresh root with your SR's output available in context. You do NOT need to poll for the output yourself — it will arrive in your next revisited task.
+The orchestrator's manager will see the block and escalate to the founder. Once the founder has run the script and reviewed the output, they will use `happyranch revisit <task-id>` to spawn a fresh root with your SR's output available in context. You do NOT need to poll for the output yourself — it will arrive in your next revisited task.
 
 ## If the founder rejects
 
@@ -3093,8 +3093,8 @@ def test_revisit_header_includes_sr_summary(orch_with_sr_in_predecessor):
     assert header is not None
     assert "SR-019" in header
     assert "Close PR #247" in header
-    assert "grassland scripts show SR-019" in header
-    assert "grassland scripts output SR-019" in header
+    assert "happyranch scripts show SR-019" in header
+    assert "happyranch scripts output SR-019" in header
 ```
 
 (If the fixture doesn't exist, peek at existing revisit-header tests and adapt — the key setup is: insert a `revisit_of` audit row plus a `script_submitted` audit row for the predecessor.)
@@ -3127,8 +3127,8 @@ In `src/orchestrator/run_step.py`, modify `_revisit_header_if_applicable`. Locat
         lines.append("Read the outputs / rejection reasons before continuing:")
         for e in sr_entries:
             sr_id = e["payload"]["script_request_id"]
-            lines.append(f"  grassland scripts show {sr_id}")
-            lines.append(f"  grassland scripts output {sr_id}")
+            lines.append(f"  happyranch scripts show {sr_id}")
+            lines.append(f"  happyranch scripts output {sr_id}")
 ```
 
 Also do the analogous append in `_auto_revisit_header` if it makes sense for that path — but if the auto-revisit predecessor is rarely an SR-submitting agent, leave that for a follow-up.
@@ -3154,7 +3154,7 @@ git commit -m "feat(revisit): header surfaces predecessor SRs with show/output c
 
 - [ ] **Step 1: Regenerate**
 
-Run: `GRASSLAND_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py -v`
+Run: `HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py -v`
 
 - [ ] **Step 2: Confirm snapshot diff**
 
@@ -4088,7 +4088,7 @@ if [ -n "$FAKE_CLAUDE_SCRIPT_PLAN" ]; then
     task_id="$(grep -oE 'task_id: [^ ]+' "$PROMPT_FILE" | head -1 | awk '{print $2}')"
     session_id="$(grep -oE 'session_id: [^ ]+' "$PROMPT_FILE" | head -1 | awk '{print $2}')"
     agent="${PWD##*/}"
-    org_slug="$GRASSLAND_TEST_ORG_SLUG"
+    org_slug="$HAPPYRANCH_TEST_ORG_SLUG"
     # shellcheck disable=SC1090
     source "$FAKE_CLAUDE_SCRIPT_PLAN"
     exit 0
@@ -4144,11 +4144,11 @@ cat > "$payload" <<EOF
   "session_id": "$session_id",
   "title": "touch a sentinel",
   "rationale": "needs founder write to /tmp",
-  "script": "touch /tmp/grassland-sr-e2e-sentinel.$$",
+  "script": "touch /tmp/happyranch-sr-e2e-sentinel.$$",
   "interpreter": "bash"
 }}
 EOF
-grassland scripts submit --from-file "$payload" --org "$org_slug" >/tmp/sr-output-$$.log
+happyranch scripts submit --from-file "$payload" --org "$org_slug" >/tmp/sr-output-$$.log
 sr_id=$(grep -oE 'SR-[0-9]+' /tmp/sr-output-$$.log | head -1)
 report="/tmp/sr-completion-$$.json"
 cat > "$report" <<EOF
@@ -4158,7 +4158,7 @@ cat > "$report" <<EOF
   "summary": "Awaiting $sr_id"
 }}
 EOF
-grassland report-completion --from-file "$report" --org "$org_slug"
+happyranch report-completion --from-file "$report" --org "$org_slug"
 """)
     plan_path.chmod(0o755)
     os.environ["FAKE_CLAUDE_SCRIPT_PLAN"] = str(plan_path)
@@ -4201,7 +4201,7 @@ grassland report-completion --from-file "$report" --org "$org_slug"
     assert rev.status_code in (200, 201)
     new_task_id = rev.json()["task_id"]
     # Inspect the revisited task's first orchestrator prompt for SR mention.
-    # (Implementation detail: grassland recall or get the bootstrap doc.)
+    # (Implementation detail: happyranch recall or get the bootstrap doc.)
     recall = daemon.client.get(f"/api/v1/orgs/{daemon.org_slug}/tasks/{new_task_id}/recall").json()
     assert sr_id in json.dumps(recall)
 ```
@@ -4226,7 +4226,7 @@ git commit -m "test(integration): SR submit → run → revisit end-to-end"
 
 **Files:**
 - Modify: `README.md` (add Script Requests section in the founder-facing surface)
-- Modify: `skills/grassland/SKILL.md` (add SR section)
+- Modify: `skills/happyranch/SKILL.md` (add SR section)
 
 - [ ] **Step 1: README**
 
@@ -4238,22 +4238,22 @@ In `README.md`, find the section that lists primitives (likely "Threads" / "Talk
 Agents who hit a permission wall can submit a script for you to run with
 founder-grade credentials. List pending requests:
 
-    grassland scripts list
+    happyranch scripts list
 
 Review details:
 
-    grassland scripts show SR-019
+    happyranch scripts show SR-019
 
 Run (TTY-gated):
 
-    grassland scripts run SR-019
+    happyranch scripts run SR-019
 
 Reject with a reason:
 
-    grassland scripts reject SR-019 --reason "we don't ship that change today"
+    happyranch scripts reject SR-019 --reason "we don't ship that change today"
 
 The same surface is available in the web UI at `/scripts`. After a run
-completes, use `grassland revisit <task-id>` to unblock the agent's task with
+completes, use `happyranch revisit <task-id>` to unblock the agent's task with
 the captured output in context.
 
 Operational note: scripts run inside the daemon process with `os.environ`
@@ -4263,12 +4263,12 @@ interactive shell, restart the daemon so the new env is picked up.
 
 - [ ] **Step 2: founder skill**
 
-In `skills/grassland/SKILL.md`, add a "Script requests" section in the same shape as the existing "Threads" / "KB" / "Talks" sections, listing all `grassland scripts ...` commands with one-line descriptions.
+In `skills/happyranch/SKILL.md`, add a "Script requests" section in the same shape as the existing "Threads" / "KB" / "Talks" sections, listing all `happyranch scripts ...` commands with one-line descriptions.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add README.md skills/grassland/SKILL.md
+git add README.md skills/happyranch/SKILL.md
 git commit -m "docs: script-requests in README + founder skill"
 ```
 
@@ -4305,7 +4305,7 @@ Edge cases worth re-checking before implementation:
 1. **Task 7 recovery test** — the test as written touches private DB fields (`db._conn.execute`). The integration harness might require seeding via a public method; adjust if the harness API differs.
 2. **Task 17 events test** — `client.stream` is httpx's API; if the test client is `TestClient` (Starlette), use `with client.stream(...)` semantics correctly or replace with a chunked read.
 3. **Task 21 TTY guard** — `subprocess.run` always gives a non-TTY stdin, so the test reliably exercises the guard path. Good.
-4. **Task 33 — `grassland recall` content** — the test asserts `sr_id in json.dumps(recall)`. The actual recall endpoint shape may need a different inspection (e.g., reading the next orchestration_step row's bootstrap text). Adjust based on what's actually in the integration harness.
+4. **Task 33 — `happyranch recall` content** — the test asserts `sr_id in json.dumps(recall)`. The actual recall endpoint shape may need a different inspection (e.g., reading the next orchestration_step row's bootstrap text). Adjust based on what's actually in the integration harness.
 
 If any of the above bite during execution, fix inline in the failing task and move on.
 

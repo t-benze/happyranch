@@ -27,7 +27,7 @@ interface DraftHandle {
 }
 
 function useThreadDraft(orgSlug: string, threadId: string): DraftHandle {
-  const key = `grassland:draft:${orgSlug}:${threadId}`;
+  const key = `happyranch:draft:${orgSlug}:${threadId}`;
   const [draft, setDraftState] = useState<string>(() => {
     try { return localStorage.getItem(key) ?? ''; } catch { return ''; }
   });

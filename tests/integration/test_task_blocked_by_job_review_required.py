@@ -126,7 +126,7 @@ def test_review_required_founder_approves_then_resumes(
             }}' "$task_id" "$session_id" > "$payload"
 
             submit_log="/tmp/blocked-by-job-rr-approve-submit-log-$$.txt"
-            grassland jobs submit --from-file "$payload" --org "$org_slug" > "$submit_log" 2>&1
+            happyranch jobs submit --from-file "$payload" --org "$org_slug" > "$submit_log" 2>&1
             cat "$submit_log" >&2
 
             job_id=$(grep -oE 'JOB-[0-9]+' "$submit_log" | head -1)
@@ -141,10 +141,10 @@ def test_review_required_founder_approves_then_resumes(
             echo "$job_id" > "{jobid_file}"
 
             # Self-block with waiting_on_job_ids via direct HTTP call.
-            # The grassland CLI report-completion --from-file path does not yet
+            # The happyranch CLI report-completion --from-file path does not yet
             # expose waiting_on_job_ids; we POST to the daemon directly.
-            port=$(cat "$GRASSLAND_DAEMON_HOME/daemon.port")
-            token=$(cat "$GRASSLAND_DAEMON_HOME/daemon.token")
+            port=$(cat "$HAPPYRANCH_DAEMON_HOME/daemon.port")
+            token=$(cat "$HAPPYRANCH_DAEMON_HOME/daemon.token")
 
             completion_payload="/tmp/blocked-by-job-rr-approve-completion-$$.json"
             printf '{{
@@ -171,7 +171,7 @@ def test_review_required_founder_approves_then_resumes(
             # ── Stage 2: founder-approved job ran; complete the task ──
             echo "Stage 2: task resumed after founder-approved job, reporting completion" >&2
 
-            grassland report-completion --org "$org_slug" \\
+            happyranch report-completion --org "$org_slug" \\
                 --task-id "$task_id" --session-id "$session_id" \\
                 --agent "$agent" --status completed --confidence 90 \\
                 --summary '{{"action":"done","summary":"completed after founder-approved job unblock"}}'
@@ -352,7 +352,7 @@ def test_review_required_founder_rejects_then_resumes(
             }}' "$task_id" "$session_id" > "$payload"
 
             submit_log="/tmp/blocked-by-job-rr-reject-submit-log-$$.txt"
-            grassland jobs submit --from-file "$payload" --org "$org_slug" > "$submit_log" 2>&1
+            happyranch jobs submit --from-file "$payload" --org "$org_slug" > "$submit_log" 2>&1
             cat "$submit_log" >&2
 
             job_id=$(grep -oE 'JOB-[0-9]+' "$submit_log" | head -1)
@@ -367,8 +367,8 @@ def test_review_required_founder_rejects_then_resumes(
             echo "$job_id" > "{jobid_file}"
 
             # Self-block with waiting_on_job_ids via direct HTTP call.
-            port=$(cat "$GRASSLAND_DAEMON_HOME/daemon.port")
-            token=$(cat "$GRASSLAND_DAEMON_HOME/daemon.token")
+            port=$(cat "$HAPPYRANCH_DAEMON_HOME/daemon.port")
+            token=$(cat "$HAPPYRANCH_DAEMON_HOME/daemon.token")
 
             completion_payload="/tmp/blocked-by-job-rr-reject-completion-$$.json"
             printf '{{
@@ -395,7 +395,7 @@ def test_review_required_founder_rejects_then_resumes(
             # ── Stage 2: job was rejected by founder; adapt and complete ──
             echo "Stage 2: task resumed after founder-rejected job, reporting completion" >&2
 
-            grassland report-completion --org "$org_slug" \\
+            happyranch report-completion --org "$org_slug" \\
                 --task-id "$task_id" --session-id "$session_id" \\
                 --agent "$agent" --status completed --confidence 90 \\
                 --summary '{{"action":"done","summary":"completed despite job rejection — adapted plan"}}'

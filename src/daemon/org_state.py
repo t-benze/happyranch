@@ -2,7 +2,7 @@
 
 One ``OrgState`` per active org under ``<runtime>/orgs/<slug>/``. Constructed
 once at daemon startup (via ``DaemonState.from_runtime``) or lazily on
-``grassland orgs init <slug>``. Each instance is fully self-contained — no
+``happyranch orgs init <slug>``. Each instance is fully self-contained — no
 cross-references to other orgs.
 """
 from __future__ import annotations

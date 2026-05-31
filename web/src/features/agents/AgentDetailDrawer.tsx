@@ -112,7 +112,7 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
           ) : learningsError?.status === 412 ? (
             <p className="text-fg-muted text-xs">
               This workspace hasn't been migrated to the per-entry learnings
-              layout yet. Run <code>grassland learning reindex</code> from the
+              layout yet. Run <code>happyranch learning reindex</code> from the
               CLI to upgrade.
             </p>
           ) : learningsError ? (

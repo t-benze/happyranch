@@ -54,7 +54,7 @@ SELF_DISPATCH_HINT = (
     "For cross-agent work, either:\n"
     "  (a) self-dispatch a manager root and delegate internally via the\n"
     "      manager-decision loop (recommended for iterative phase work), or\n"
-    "  (b) use `grassland threads compose --to <other-agent>` to address\n"
+    "  (b) use `happyranch threads compose --to <other-agent>` to address\n"
     "      the other agent (or their team's manager) as a thread message,\n"
     "      and let them drive their own work.\n\n"
     "Cross-team handoffs always route through compose, not dispatch."
@@ -260,7 +260,7 @@ def test_manager_cannot_dispatch_to_team_worker(client_with_runtime):
 
     Replaces the prior happy-path test; the THR-010 founder diagnosis
     (2026-05-28) made this rejection the intended behavior. Cross-agent work
-    routes via `grassland threads compose`, not via dispatch.
+    routes via `happyranch threads compose`, not via dispatch.
     """
     client, state = client_with_runtime
     _seed_workspace(state, "dev_agent")
@@ -437,7 +437,7 @@ def test_manager_self_dispatch_phase_root(
 ):
     # 1. Founder composes a thread to engineering_head.
     # 2. fake_claude_thread_plan_env: on the manager's BOOTSTRAP/REPLY turn,
-    #    the manager calls `grassland threads dispatch` with no target
+    #    the manager calls `happyranch threads dispatch` with no target
     #    (defaults to self) and brief "drive phase X".
     # 3. fake_claude_plan_env: the resulting task (phase root) runs a
     #    manager-decision loop that delegates to a worker (`dev_agent`),
@@ -494,7 +494,7 @@ Insert after the existing dispatch-related section (or at the end if none exists
 ```markdown
 ## Dispatch from a thread is self-only
 
-When you are participating in a thread (REPLY / BOOTSTRAP turn), `grassland
+When you are participating in a thread (REPLY / BOOTSTRAP turn), `happyranch
 threads dispatch` may only target **yourself**. The runtime rejects any other
 target with `thread_dispatch_must_be_self`.
 
@@ -510,11 +510,11 @@ loop handles delegation natively.
   to workers internally. The thread sees one `task_completed` /
   `task_failed` system message and one TASK_FOLLOWUP turn at the end.
 
-- **Loop in another agent in your team:** use `grassland threads compose
-  --to <agent>` or `grassland threads invite`. They receive a thread
+- **Loop in another agent in your team:** use `happyranch threads compose
+  --to <agent>` or `happyranch threads invite`. They receive a thread
   invocation (BOOTSTRAP or REPLY) and decide what to do with it.
 
-- **Cross-team handoff:** use `grassland threads compose --to
+- **Cross-team handoff:** use `happyranch threads compose --to
   <other-team-manager>` — possibly opening a new thread for the cross-team
   subject. Their manager receives a BOOTSTRAP turn and self-dispatches if
   they take the work on.
@@ -535,7 +535,7 @@ One sentence at the top:
 ```markdown
 > **Self-only from thread / talk:** Inside a thread or talk turn, this command
 > may only target yourself. See `protocol/skills/thread/SKILL.md` for the
-> doctrine and `grassland threads compose` for cross-agent work.
+> doctrine and `happyranch threads compose` for cross-agent work.
 ```
 
 - [ ] **Step 5: Commit**
@@ -641,7 +641,7 @@ Not implementable by an agent — listed so the executor surfaces it back to the
 After the PR merges, the founder should run (from any orgs that have managers who might encounter the new rule):
 
 ```bash
-grassland kb add \
+happyranch kb add \
   --slug thread-and-talk-dispatch-doctrine \
   --type doctrine \
   --topic coordination-vs-iteration \
@@ -652,4 +652,4 @@ grassland kb add \
 
 This surfaces the founder ruling to every future agent invocation via the bootstrap KB context block.
 
-- [ ] **Surface this note to the founder when execution completes; do not run the `grassland kb add` command yourself.**
+- [ ] **Surface this note to the founder when execution completes; do not run the `happyranch kb add` command yourself.**

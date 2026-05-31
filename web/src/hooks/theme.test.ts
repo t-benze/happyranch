@@ -14,7 +14,7 @@ describe('useTheme', () => {
   });
 
   it('reads persisted value', () => {
-    localStorage.setItem('grassland.theme', 'light');
+    localStorage.setItem('happyranch.theme', 'light');
     const { result } = renderHook(() => useTheme());
     expect(result.current.theme).toBe('light');
   });
@@ -23,12 +23,12 @@ describe('useTheme', () => {
     const { result } = renderHook(() => useTheme());
     act(() => result.current.setTheme('light'));
     expect(result.current.theme).toBe('light');
-    expect(localStorage.getItem('grassland.theme')).toBe('light');
+    expect(localStorage.getItem('happyranch.theme')).toBe('light');
     expect(document.documentElement.getAttribute('data-theme')).toBe('light');
   });
 
   it('ignores invalid persisted value', () => {
-    localStorage.setItem('grassland.theme', 'sepia');
+    localStorage.setItem('happyranch.theme', 'sepia');
     const { result } = renderHook(() => useTheme());
     expect(result.current.theme).toBe('dark');
   });
@@ -38,7 +38,7 @@ describe('useTheme', () => {
     act(() => {
       window.dispatchEvent(
         new StorageEvent('storage', {
-          key: 'grassland.theme',
+          key: 'happyranch.theme',
           newValue: 'light',
         }),
       );

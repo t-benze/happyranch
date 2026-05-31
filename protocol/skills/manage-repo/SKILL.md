@@ -1,6 +1,6 @@
 ---
 name: manage-repo
-description: Add, remove, or update a repository in your agent.yaml configuration. Write a JSON file and call grassland manage-repo --from-file to keep the invocation single-line.
+description: Add, remove, or update a repository in your agent.yaml configuration. Write a JSON file and call happyranch manage-repo --from-file to keep the invocation single-line.
 ---
 
 # manage-repo
@@ -43,11 +43,11 @@ Manage the repositories cloned into your `repos/` directory. You can **add** a n
 2. **Invoke as a single-line command:**
 
    ```bash
-   grassland manage-repo --org {ORG_SLUG} --from-file /tmp/manage-repo-<unique>.json
+   happyranch manage-repo --org {ORG_SLUG} --from-file /tmp/manage-repo-<unique>.json
    ```
 
    The `--from-file` form is mandatory for agent sessions. In Claude sessions,
-   multi-line bash commands are rejected by the `Bash(grassland:*)` permission rule
+   multi-line bash commands are rejected by the `Bash(happyranch:*)` permission rule
    because newlines count as command separators.
 
 ## What happens
@@ -58,5 +58,5 @@ Manage the repositories cloned into your `repos/` directory. You can **add** a n
 
 ## Error handling
 
-- If `grassland` returns non-zero, retry once after 1 second.
+- If `happyranch` returns non-zero, retry once after 1 second.
 - `409` (duplicate repo on add) and `404` (repo not found on remove/update) are not retryable — check your `agent.yaml` and adjust.

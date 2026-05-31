@@ -2,7 +2,7 @@
 
 Covers the full happy path:
   1. Dispatch a task to engineering_head.
-  2. Fake agent submits a review_required=true job (via grassland jobs submit)
+  2. Fake agent submits a review_required=true job (via happyranch jobs submit)
      and self-blocks (report-completion status=blocked → task becomes FAILED).
   3. Founder lists pending jobs, runs the job via POST /jobs/{id}/run.
   4. Job reaches completed + exit_code==0.
@@ -90,7 +90,7 @@ def test_review_required_job_lifecycle_submit_run_revisit(
     # The plan receives: $1=task_id $2=session_id $3=agent $4=org_slug
     #
     # We use printf + a temp file to build the JSON payload so here-docs with
-    # variable expansion stay simple, and the payload is a single grassland
+    # variable expansion stay simple, and the payload is a single happyranch
     # invocation (required by the Claude permission model).
     fake_claude_plan_env.write_text(dedent("""\
         #!/usr/bin/env bash
@@ -107,13 +107,13 @@ def test_review_required_job_lifecycle_submit_run_revisit(
           "session_id": "%s",
           "title": "touch e2e sentinel",
           "rationale": "integration test needs founder approval",
-          "script": "touch /tmp/grassland-job-e2e-sentinel",
+          "script": "touch /tmp/happyranch-job-e2e-sentinel",
           "interpreter": "bash",
           "review_required": true
         }' "$task_id" "$session_id" > "$payload"
 
         # Submit the job (agent callback).
-        grassland jobs submit --from-file "$payload" --org "$org_slug" \\
+        happyranch jobs submit --from-file "$payload" --org "$org_slug" \\
             > /tmp/job-e2e-submit-$$.log 2>&1
 
         # Extract job id from submit output, e.g. "ok: submitted JOB-001 (status=pending)."
@@ -138,7 +138,7 @@ def test_review_required_job_lifecycle_submit_run_revisit(
           "suggested_reviewer_focus": []
         }' "$task_id" "$session_id" "$agent" "$job_id" > "$report"
 
-        grassland report-completion --from-file "$report" --org "$org_slug"
+        happyranch report-completion --from-file "$report" --org "$org_slug"
     """))
     fake_claude_plan_env.chmod(0o755)
 

@@ -12,7 +12,7 @@ from src.daemon.state import DaemonState
 
 @pytest.fixture
 def app_client(tmp_path, monkeypatch):
-    monkeypatch.setenv("GRASSLAND_DAEMON_HOME", str(tmp_path))
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
     paths.ensure_token()  # mints daemon.token under tmp_path
     state = DaemonState.idle(Settings())
     app = create_app(state)
@@ -42,7 +42,7 @@ def test_bootstrap_returns_token_from_localhost(app_client, monkeypatch):
 
 
 def test_bootstrap_returns_500_if_token_missing(tmp_path, monkeypatch):
-    monkeypatch.setenv("GRASSLAND_DAEMON_HOME", str(tmp_path))
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
     # Do NOT call ensure_token; daemon.token is absent.
     state = DaemonState.idle(Settings())
     app = create_app(state)

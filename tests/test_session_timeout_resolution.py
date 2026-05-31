@@ -85,9 +85,9 @@ def test_no_task_id_uses_org_then_settings(
 def test_settings_default_respects_env_override(
     test_runtime: OrgPaths, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The bottom layer is itself env-overridable via GRASSLAND_SESSION_TIMEOUT_SECONDS,
+    """The bottom layer is itself env-overridable via HAPPYRANCH_SESSION_TIMEOUT_SECONDS,
     so a runtime with no org/task overrides still picks up the env value."""
-    monkeypatch.setenv("GRASSLAND_SESSION_TIMEOUT_SECONDS", "900")
+    monkeypatch.setenv("HAPPYRANCH_SESSION_TIMEOUT_SECONDS", "900")
     test_runtime.root.mkdir(parents=True, exist_ok=True)
     settings = Settings(project_root=test_runtime.root)
     db = Database(test_runtime.db_path)

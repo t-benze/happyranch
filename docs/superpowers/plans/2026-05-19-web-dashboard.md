@@ -523,13 +523,13 @@ const COMPLETED = task({
 });
 
 function mountAt(route: string) {
-  sessionStorage.setItem('grassland.token', 'tok');
+  sessionStorage.setItem('happyranch.token', 'tok');
   server.use(
     http.get('/api/v1/orgs', () =>
       HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
     ),
     http.get('/api/v1/health', () =>
-      HttpResponse.json({ status: 'ok', active_runtime: '/Users/x/grassland' }),
+      HttpResponse.json({ status: 'ok', active_runtime: '/Users/x/happyranch' }),
     ),
     http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
       HttpResponse.json({
@@ -557,7 +557,7 @@ describe('DashboardPage', () => {
     await waitFor(() => {
       expect(within(card).getByText(/daemon: ok/i)).toBeInTheDocument();
     });
-    expect(within(card).getByText(/grassland/i)).toBeInTheDocument();
+    expect(within(card).getByText(/happyranch/i)).toBeInTheDocument();
   });
 
   test('pending your action lists only escalated-blocked tasks', async () => {
@@ -595,13 +595,13 @@ describe('DashboardPage', () => {
   });
 
   test('empty buckets render their respective empty states', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
       ),
       http.get('/api/v1/health', () =>
-        HttpResponse.json({ status: 'ok', active_runtime: '/Users/x/grassland' }),
+        HttpResponse.json({ status: 'ok', active_runtime: '/Users/x/happyranch' }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
         HttpResponse.json({ tasks: [] }),
@@ -864,11 +864,11 @@ Expected: `web/dist/` regenerated; no errors.
 Run: `scripts/daemon.sh status` first. If running, restart so the bundled
 SPA picks up the new files. Else: `scripts/daemon.sh start`.
 
-Expected: pid + port file under `~/.grassland/`.
+Expected: pid + port file under `~/.happyranch/`.
 
 - [ ] **Step 3: Open the dashboard**
 
-Run: `uv run grassland web` (or open the URL printed by the daemon and
+Run: `uv run happyranch web` (or open the URL printed by the daemon and
 navigate to `/orgs/<slug>/dashboard`).
 
 Expected:
@@ -883,7 +883,7 @@ Expected:
 In a separate shell:
 
 ```bash
-uv run grassland submit --team content --brief "Dashboard smoke task"
+uv run happyranch submit --team content --brief "Dashboard smoke task"
 ```
 
 Expected: within 10–30 s the task appears in the "Active tasks by team"
@@ -893,7 +893,7 @@ wait for the next poll.)
 - [ ] **Step 5: Cancel the task and watch it disappear**
 
 ```bash
-uv run grassland cancel <TASK-ID>
+uv run happyranch cancel <TASK-ID>
 ```
 
 Expected: the task disappears from the active card on the next poll.

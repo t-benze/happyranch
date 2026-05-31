@@ -22,7 +22,7 @@ class _FakeClient:
 
 @pytest.fixture()
 def setup(tmp_path: Path):
-    db = Database(tmp_path / "grassland.db")
+    db = Database(tmp_path / "happyranch.db")
     audit = AuditLogger(db)
     client = _FakeClient()
     cfg = FeishuNotificationsConfig(

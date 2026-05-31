@@ -1491,7 +1491,7 @@ def test_progress_session_mismatch_409(tmp_home, app, org_state, auth_headers) -
 
 def test_progress_persists_audit_entry(tmp_home, app, org_state, auth_headers) -> None:
     """A successful progress POST writes an audit entry with action=progress
-    and the supplied message — visible to `grassland details` / `grassland audit`."""
+    and the supplied message — visible to `happyranch details` / `happyranch audit`."""
     sub = TestClient(app).post(
         "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
     )

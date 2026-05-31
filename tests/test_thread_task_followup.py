@@ -112,7 +112,7 @@ def test_purpose_note_task_followup_renders_task_id_and_status():
     )
     assert "TASK-007" in note
     assert "completed" in note
-    assert "grassland details" in note
+    assert "happyranch details" in note
 
 
 # ---------------------------------------------------------------------------

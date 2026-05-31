@@ -44,7 +44,7 @@ The orchestrator is the application code that ties everything together. It spawn
 
 **4. Manages the revision loop.** When QA returns REVISE, the orchestrator tracks the revision count and either re-triggers the Content Team with feedback or escalates after max rounds.
 
-**5. Audits delegations.** After each delegated child task terminates, the orchestrator writes an implicit `review_verdict` audit row (`approved` for COMPLETED, `rejected` for FAILED). The founder reviews these via `grassland audit` to identify which agents need attention. (The legacy 30-day rolling tier classification was removed on 2026-05-27 — see §2.)
+**5. Audits delegations.** After each delegated child task terminates, the orchestrator writes an implicit `review_verdict` audit row (`approved` for COMPLETED, `rejected` for FAILED). The founder reviews these via `happyranch audit` to identify which agents need attention. (The legacy 30-day rolling tier classification was removed on 2026-05-27 — see §2.)
 
 **6. Assembles agent context.** Before each session, the orchestrator gathers the system prompt, learnings file, team health, and task-specific context, then writes them into the agent's workspace in the format expected by the configured executor.
 
@@ -79,7 +79,7 @@ The orchestrator is a Python application that:
 The performance-tier feature was removed on 2026-05-27. The audit log
 (implicit `review_verdict` rows after every delegation, plus completion /
 failure events) is sufficient for the founder to identify which agents
-need attention via `grassland audit`. Tier classification on top of the
+need attention via `happyranch audit`. Tier classification on top of the
 verdicts added no behavioral enforcement in code, and the per-agent tier
 prose in agent `.md` files was not actionable (workers never saw their
 own tier; managers saw worker tiers but the tier didn't gate delegation).
@@ -90,7 +90,7 @@ own tier; managers saw worker tiers but the tier didn't gate delegation).
 
 ### Approach: executor-native sandboxing + system prompt guardrails
 
-Agents run through their configured executor. Claude sessions use `claude --permission-mode auto` plus a narrow `Bash(grassland:*)` allow rule for callbacks. Codex sessions use `codex exec` with the configured sandbox mode. Permissions are otherwise generous — agents can read, write, and execute within their workspace.
+Agents run through their configured executor. Claude sessions use `claude --permission-mode auto` plus a narrow `Bash(happyranch:*)` allow rule for callbacks. Codex sessions use `codex exec` with the configured sandbox mode. Permissions are otherwise generous — agents can read, write, and execute within their workspace.
 
 **Founder-concern boundaries** (the only things that truly need restricting) are enforced through two layers:
 
@@ -147,7 +147,7 @@ There are four types of permission blocks, each handled differently:
 **Response**: Agent calls `escalate(category="novel", severity="medium", summary="...")` with its best assessment and a recommendation.
 **Task state**: Moves to `waiting_for_guidance`.
 **Orchestrator action**: Routes to founder. The agent's recommendation is included so the founder can often just approve/deny rather than research from scratch.
-**Resolution**: Founder runs `grassland resolve-escalation` to clear the task and — when the ruling should bind future occurrences — writes a KB entry via `grassland kb add` (with `source_task: <task-id>` in frontmatter) so the next agent finds the answer without re-escalating.
+**Resolution**: Founder runs `happyranch resolve-escalation` to clear the task and — when the ruling should bind future occurrences — writes a KB entry via `happyranch kb add` (with `source_task: <task-id>` in frontmatter) so the next agent finds the answer without re-escalating.
 
 ### Task state machine
 
@@ -156,7 +156,7 @@ There are four types of permission blocks, each handled differently:
 - **in_progress** — an agent subprocess is running *right now* for this task.
 - **blocked** — suspended, awaiting an external event. Requires `block_kind`:
   - `delegated` — waiting on one or more child tasks to terminate.
-  - `escalated` — waiting on the founder (via `grassland resolve-escalation`).
+  - `escalated` — waiting on the founder (via `happyranch resolve-escalation`).
 - **completed** — terminal, success.
 - **failed** — terminal, unsuccessful.
 

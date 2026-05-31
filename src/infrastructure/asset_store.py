@@ -1,7 +1,7 @@
 """Org-shared asset storage. Flat directory of opaque blobs.
 
 Persistent artifacts produced by agents (reports, exports, screenshots, PDFs)
-live here. Visible to every agent in the org via `grassland assets {put,list,get}`.
+live here. Visible to every agent in the org via `happyranch assets {put,list,get}`.
 
 This module owns name validation, atomic writes, and read/list. It does NOT
 touch HTTP, audit, or agent identity — those are concerns of the route layer.

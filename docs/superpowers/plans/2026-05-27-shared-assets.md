@@ -6,7 +6,7 @@
 
 **Architecture:**
 - Org-scoped flat directory at `<runtime>/orgs/<slug>/assets/`. One folder per org; no nesting v1.
-- Access exclusively via daemon HTTP routes + `grassland assets {put,list,get}` CLI. Direct filesystem writes are blocked by Codex `workspace-write` sandbox and Opencode bash deny-by-default; the `grassland` prefix is the only access path that works uniformly across Claude / Codex / Opencode executors.
+- Access exclusively via daemon HTTP routes + `happyranch assets {put,list,get}` CLI. Direct filesystem writes are blocked by Codex `workspace-write` sandbox and Opencode bash deny-by-default; the `happyranch` prefix is the only access path that works uniformly across Claude / Codex / Opencode executors.
 - Mirrors the KB pattern (file-backed, atomic writes, audited) but without metadata/frontmatter — assets are opaque blobs.
 - All three executor adapters get a new bootstrap section so every dispatched agent learns the folder's purpose and CLI on its next task.
 
@@ -18,8 +18,8 @@
 
 **Why CLI-only:**
 - Codex agents run under `sandbox_workspace_write` whose cwd is `workspaces/<agent>/`; writes to a sibling `assets/` are denied.
-- Opencode agents have `opencode.json` `permission.bash: {"*": "deny", "grassland *": "allow", ...}`; raw `cp`/`mv` are denied.
-- Only `grassland` is in the baseline allow-rule for every agent. Wrapping asset ops in `grassland assets ...` is the only design that works for all three executors without per-executor permission gymnastics.
+- Opencode agents have `opencode.json` `permission.bash: {"*": "deny", "happyranch *": "allow", ...}`; raw `cp`/`mv` are denied.
+- Only `happyranch` is in the baseline allow-rule for every agent. Wrapping asset ops in `happyranch assets ...` is the only design that works for all three executors without per-executor permission gymnastics.
 
 **Validation rules:**
 - Name: matches `^[A-Za-z0-9._-]+$`, length 1-200, does not start with `.`, does not contain `..` or `/`.
@@ -272,7 +272,7 @@ Expected: `ModuleNotFoundError: No module named 'src.infrastructure.asset_store'
 """Org-shared asset storage. Flat directory of opaque blobs.
 
 Persistent artifacts produced by agents (reports, exports, screenshots, PDFs)
-live here. Visible to every agent in the org via `grassland assets {put,list,get}`.
+live here. Visible to every agent in the org via `happyranch assets {put,list,get}`.
 
 This module owns name validation, atomic writes, and read/list. It does NOT
 touch HTTP, audit, or agent identity — those are concerns of the route layer.
@@ -956,9 +956,9 @@ uv run pytest tests/test_cli_assets.py -v
 ```bash
 scripts/daemon.sh start
 echo "hello" > /tmp/hello.txt
-uv run grassland assets put /tmp/hello.txt --agent founder
-uv run grassland assets list
-uv run grassland assets get hello.txt --output /tmp/back.txt
+uv run happyranch assets put /tmp/hello.txt --agent founder
+uv run happyranch assets list
+uv run happyranch assets get hello.txt --output /tmp/back.txt
 diff /tmp/hello.txt /tmp/back.txt && echo "OK"
 ```
 
@@ -966,7 +966,7 @@ diff /tmp/hello.txt /tmp/back.txt && echo "OK"
 
 ```bash
 git add src/cli.py src/client/ tests/test_cli_assets.py
-git commit -m "feat(assets): add grassland assets {put,list,get} CLI"
+git commit -m "feat(assets): add happyranch assets {put,list,get} CLI"
 ```
 
 ---
@@ -996,9 +996,9 @@ def test_claude_md_includes_shared_assets_section(tmp_path: Path) -> None:
     adapter.write_claude_md(workspace, "dev_agent", "You are dev_agent.")
     content = (workspace / "CLAUDE.md").read_text()
     assert "## Shared Assets" in content
-    assert "grassland assets put" in content
-    assert "grassland assets list" in content
-    assert "grassland assets get" in content
+    assert "happyranch assets put" in content
+    assert "happyranch assets list" in content
+    assert "happyranch assets get" in content
 
 
 def test_codex_agents_md_includes_shared_assets_section(tmp_path: Path) -> None:
@@ -1012,7 +1012,7 @@ def test_codex_agents_md_includes_shared_assets_section(tmp_path: Path) -> None:
     adapter.write_agents_md(workspace, "dev_agent", "You are dev_agent.")
     content = (workspace / "AGENTS.md").read_text()
     assert "## Shared Assets" in content
-    assert "grassland assets put" in content
+    assert "happyranch assets put" in content
 
 
 def test_opencode_agents_md_includes_shared_assets_section(tmp_path: Path) -> None:
@@ -1026,7 +1026,7 @@ def test_opencode_agents_md_includes_shared_assets_section(tmp_path: Path) -> No
     adapter.write_agents_md(workspace, "dev_agent", "You are dev_agent.")
     content = (workspace / "AGENTS.md").read_text()
     assert "## Shared Assets" in content
-    assert "grassland assets put" in content
+    assert "happyranch assets put" in content
 ```
 
 - [ ] **Step 2: Run, expect failure**
@@ -1053,12 +1053,12 @@ def _shared_assets_section() -> list[str]:
         "references, founder rulings). Assets are for *files and binary artifacts*.",
         "Don't put scratch work here — use your workspace `repos/`, learning",
         "entries, or task artifacts for transient state.\n",
-        "All access is via `grassland`. Direct filesystem reads/writes won't work",
+        "All access is via `happyranch`. Direct filesystem reads/writes won't work",
         "uniformly across executors — use the CLI:\n",
         "```",
-        "grassland assets put <local-path> --agent <you> [--name <name>]",
-        "grassland assets list",
-        "grassland assets get <name> --output <local-path>",
+        "happyranch assets put <local-path> --agent <you> [--name <name>]",
+        "happyranch assets list",
+        "happyranch assets get <name> --output <local-path>",
         "```\n",
         "Naming convention: prefix with your agent name + ISO date for",
         "traceability, e.g. `dev_agent-2026-05-27-perf-report.pdf`. Names must",
@@ -1209,7 +1209,7 @@ git commit -m "test(assets): add end-to-end put/list/get roundtrip + lifespan en
 - [ ] **Step 1: Regenerate snapshot**
 
 ```bash
-GRASSLAND_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py -v
+HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py -v
 ```
 
 - [ ] **Step 2: Verify the diff**
@@ -1271,7 +1271,7 @@ Find the runtime layout block (under "Directory Layout"). After the `talks/` lin
 
 ```
     |-- scripts/                       # SR-NNN.{out,err,script} (full captured output + frozen script body)
-    `-- assets/                        # org-shared blob store (put/list/get via `grassland assets`)
+    `-- assets/                        # org-shared blob store (put/list/get via `happyranch assets`)
 ```
 
 (Adjust the trailing-`-` characters to match the existing ASCII tree style.)
@@ -1286,13 +1286,13 @@ After the "Per-Agent Learnings" section, insert:
 Per-org at `<runtime>/orgs/<slug>/assets/`. Flat directory of opaque files —
 persistent artifacts produced by any agent and visible to every other agent
 in the same org. Implementation: `src/infrastructure/asset_store.py` +
-`src/daemon/routes/assets.py`. CLI: `grassland assets {put,list,get}`.
+`src/daemon/routes/assets.py`. CLI: `happyranch assets {put,list,get}`.
 
 **Non-obvious invariants:**
 
 - **CLI-only access by design** — Codex (`workspace-write` sandbox) and
   Opencode (bash deny-by-default) both block direct writes outside the
-  agent's workspace; only the `grassland` baseline allow-rule works across
+  agent's workspace; only the `happyranch` baseline allow-rule works across
   all three executors. Don't add a "just `cat`/`cp` it" agent skill.
 - **Flat namespace; no nesting v1** — names match `[A-Za-z0-9._-]+`, max
   200 chars, no leading `.`. Slash-bearing names rejected as
@@ -1360,13 +1360,13 @@ Expected: green.
 scripts/daemon.sh stop || true
 scripts/daemon.sh start
 # Use whatever org slug is present in your local runtime
-uv run grassland assets put README.md --agent founder
-uv run grassland assets list
-uv run grassland assets get README.md --output /tmp/grassland-readme-copy.md
-diff README.md /tmp/grassland-readme-copy.md && echo "OK roundtrip"
+uv run happyranch assets put README.md --agent founder
+uv run happyranch assets list
+uv run happyranch assets get README.md --output /tmp/happyranch-readme-copy.md
+diff README.md /tmp/happyranch-readme-copy.md && echo "OK roundtrip"
 
 # Confirm audit row
-uv run grassland audit --action asset_put | head
+uv run happyranch audit --action asset_put | head
 ```
 
 - [ ] **Step 5: Re-index gitnexus**
@@ -1386,9 +1386,9 @@ git status
 
 ## Self-Review Checklist (run after completion)
 
-- [ ] All `grassland assets` invocations work for: `put` (founder), `put` (agent), `list`, `get`
+- [ ] All `happyranch assets` invocations work for: `put` (founder), `put` (agent), `list`, `get`
 - [ ] `assets/` directory exists for both newly-init'd orgs AND pre-existing orgs (post-daemon-restart)
-- [ ] `asset_put` audit row visible via `grassland audit`
+- [ ] `asset_put` audit row visible via `happyranch audit`
 - [ ] All three executor adapters' bootstrap docs contain the "Shared Assets" section (verify by inspecting `<runtime>/orgs/<slug>/workspaces/<agent>/CLAUDE.md` or `AGENTS.md`)
 - [ ] OpenAPI snapshot test green; web openapi-coverage test green
 - [ ] CLAUDE.md Directory Layout and Shared Assets section reflect the actual implementation

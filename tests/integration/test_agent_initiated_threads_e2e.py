@@ -1,7 +1,7 @@
 """End-to-end coverage for agent-initiated thread composition.
 
 Drives a real daemon with `fake_claude.sh`. The composer's task plan runs
-`grassland threads compose --task-id ... --session-id ...`, spawning a
+`happyranch threads compose --task-id ... --session-id ...`, spawning a
 thread that invokes payment_agt via the thread queue. The thread-plan
 path then accepts payment_agt's reply.
 """
@@ -54,7 +54,7 @@ def test_agent_compose_from_task_spawns_thread_and_recipient_replies(
     _seed_thread_agent(runtime, "engineering_head")
     _seed_thread_agent(runtime, "payment_agt")
 
-    # Task plan: composer writes compose payload, calls grassland threads compose
+    # Task plan: composer writes compose payload, calls happyranch threads compose
     # (with the binding flags wired from fake_claude.sh's positional args), then
     # reports completion.
     #
@@ -74,7 +74,7 @@ def test_agent_compose_from_task_spawns_thread_and_recipient_replies(
         ' "body_markdown": "looping payment_agt in"}\n'
         'ENDJSON\n'
         '\n'
-        'grassland threads compose --org "$ORG_SLUG" --task-id "$TASK_ID" '
+        'happyranch threads compose --org "$ORG_SLUG" --task-id "$TASK_ID" '
         '--session-id "$SESSION_ID" --from-file /tmp/thread-compose-int.json >&2\n'
         '\n'
         '# Write the completion payload using printf to avoid heredoc expansion issues.\n'
@@ -82,7 +82,7 @@ def test_agent_compose_from_task_spawns_thread_and_recipient_replies(
         '"status": "completed", "confidence": 90, "summary": "composed thread"}\' '
         '"$TASK_ID" "$SESSION_ID" > "/tmp/completion-${TASK_ID}.json"\n'
         '\n'
-        'grassland report-completion --org "$ORG_SLUG" '
+        'happyranch report-completion --org "$ORG_SLUG" '
         '--from-file "/tmp/completion-${TASK_ID}.json" >&2\n'
     )
     fake_claude_plan_env.chmod(0o755)
@@ -98,7 +98,7 @@ def test_agent_compose_from_task_spawns_thread_and_recipient_replies(
         'printf \'{"thread_id": "%s", "invocation_token": "%s", "speaker": "%s", '
         '"body_markdown": "got it", "in_response_to_seq": 1}\' '
         '"$THREAD_ID" "$TOKEN" "$AGENT" > "$payload"\n'
-        'grassland threads reply --org "$ORG_SLUG" --thread-id "$THREAD_ID" '
+        'happyranch threads reply --org "$ORG_SLUG" --thread-id "$THREAD_ID" '
         '--from-file "$payload" >&2\n'
     )
     fake_claude_thread_plan_env.chmod(0o755)

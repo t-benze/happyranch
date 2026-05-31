@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_prefix="GRASSLAND_",
+        env_prefix="HAPPYRANCH_",
         env_file=".env",
         extra="ignore",
     )

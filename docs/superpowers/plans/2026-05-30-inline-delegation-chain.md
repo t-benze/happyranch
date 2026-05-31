@@ -26,7 +26,7 @@
 - `src/infrastructure/audit_logger.py` — `log_chain_auto_advance` method
 - `src/orchestrator/run_step.py` — `_validate_delegate` (validate every leg); `delegate` branch (persist chain); `_enqueue_parent_if_waiting` (chain advancement branch); `_build_prior_steps_from_db` (inject chain summary)
 - `src/daemon/routes/tasks.py` — surface parsed `active_chain` in task detail response
-- `src/cli.py` — render "Current workflow chain" block in `grassland details`
+- `src/cli.py` — render "Current workflow chain" block in `happyranch details`
 - `web/src/lib/api/types.ts` — add `active_chain` to `TaskDetailResponse`
 - `web/src/features/tasks/TaskDetailPane.tsx` — chain-strip rendering
 - `protocol/00-completion-contract.md` — document `verdict` + `then`/`expect_verdict`
@@ -1635,7 +1635,7 @@ export interface TaskDetailResponse {
 Run:
 ```
 uv run pytest tests/ -v -k task_detail_includes_parsed_active_chain
-GRASSLAND_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py
+HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py
 cd web && npm test -- --run openapi-coverage
 ```
 Expected: PASS, openapi.json updated, TS coverage test still passes.
@@ -1649,7 +1649,7 @@ git commit -m "feat(api): expose parsed active_chain in task detail response"
 
 ---
 
-### Task 12: CLI render — `grassland details` chain block
+### Task 12: CLI render — `happyranch details` chain block
 
 **Files:**
 - Modify: `src/cli.py` (details command)
@@ -1692,7 +1692,7 @@ scripts/daemon.sh status || scripts/daemon.sh start
 
 # Seed a task with an active chain via a quick Python REPL or the test
 # helper, then:
-uv run grassland --org tourism-org details TASK-X
+uv run happyranch --org tourism-org details TASK-X
 ```
 
 Expected: "Current workflow chain (step …)" block appears between the existing sections.

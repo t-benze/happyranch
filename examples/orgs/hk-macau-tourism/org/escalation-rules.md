@@ -89,7 +89,7 @@ Every escalation must be submitted as a structured object:
 ### Rule 12: NOVEL SITUATION
 **Condition**: `category == "novel"` — situation not covered by any existing rule or SOP
 **Action**: Route to founder. Submitting manager must describe why this is novel and propose a handling approach.
-**Note**: When the founder's decision should bind future occurrences, add it to the knowledge base (`grassland kb add` with `source_task` set to this task ID) so the next agent finds the ruling without re-escalating.
+**Note**: When the founder's decision should bind future occurrences, add it to the knowledge base (`happyranch kb add` with `source_task` set to this task ID) so the next agent finds the ruling without re-escalating.
 
 ---
 

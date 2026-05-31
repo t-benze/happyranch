@@ -20,9 +20,9 @@ def _seed_org(org_root: Path) -> None:
 
 @pytest.fixture
 def auth(monkeypatch, tmp_path):
-    home = tmp_path / "grassland-home"
+    home = tmp_path / "happyranch-home"
     home.mkdir()
-    monkeypatch.setenv("GRASSLAND_DAEMON_HOME", str(home))
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(home))
     from src.daemon import paths
     token = paths.ensure_token()
     return {"Authorization": f"Bearer {token}"}
@@ -143,7 +143,7 @@ def test_unload_org_refuses_with_active_tasks(tmp_path: Path, auth) -> None:
 
 def test_unload_org_refuses_with_blocked_tasks(tmp_path: Path, auth) -> None:
     """blocked is non-terminal — a blocked-escalated task is waiting on the
-    founder. Unloading the org would make `grassland resolve-escalation` hit a 404."""
+    founder. Unloading the org would make `happyranch resolve-escalation` hit a 404."""
     from src.models import BlockKind, TaskRecord, TaskStatus
     rt = RuntimeDir.init(tmp_path / "rt")
     _seed_org(rt.orgs_dir / "alpha")

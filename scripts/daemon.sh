@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-GRASSLAND_HOME="${GRASSLAND_DAEMON_HOME:-$HOME/.grassland}"
-PID_FILE="$GRASSLAND_HOME/daemon.pid"
-PORT_FILE="$GRASSLAND_HOME/daemon.port"
-LOG_FILE="$GRASSLAND_HOME/daemon.log"
+HAPPYRANCH_HOME="${HAPPYRANCH_DAEMON_HOME:-$HOME/.happyranch}"
+PID_FILE="$HAPPYRANCH_HOME/daemon.pid"
+PORT_FILE="$HAPPYRANCH_HOME/daemon.port"
+LOG_FILE="$HAPPYRANCH_HOME/daemon.log"
 
 cmd_start() {
-    mkdir -p "$GRASSLAND_HOME"
+    mkdir -p "$HAPPYRANCH_HOME"
     if [[ -f "$PID_FILE" ]]; then
         pid=$(cat "$PID_FILE")
         if kill -0 "$pid" 2>/dev/null; then

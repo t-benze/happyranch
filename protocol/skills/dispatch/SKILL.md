@@ -7,7 +7,7 @@ description: Dispatch a new task to the orchestrator from inside an open talk. W
 
 > **Self-only from thread / talk:** Inside a thread or talk turn, this command
 > may only target yourself. See `protocol/skills/thread/SKILL.md` for the
-> doctrine and `grassland threads compose` for cross-agent work.
+> doctrine and `happyranch threads compose` for cross-agent work.
 
 Inside an OPEN talk, you can submit a new root task to the orchestrator without ending the talk. The founder is co-present in the talk; their authority is what the dispatch borrows. Use this when something actionable surfaces in conversation that you and the founder agree should become a task.
 
@@ -17,7 +17,7 @@ Inside an OPEN talk, you can submit a new root task to the orchestrator without 
 - The new task fits within your role's authority (workers: yourself; managers: anyone on your team).
 - You can describe the work in a single, concrete brief.
 
-If any of those is missing, do not dispatch — keep talking, or recommend the founder run `grassland run` themselves later.
+If any of those is missing, do not dispatch — keep talking, or recommend the founder run `happyranch run` themselves later.
 
 ## Authentication
 
@@ -49,10 +49,10 @@ Authority comes from the OPEN talk itself: pass the `talk_id` of the talk you ar
 2. **Invoke as a single-line command:**
 
    ```bash
-   grassland dispatch --org {ORG_SLUG} --from-file /tmp/dispatch-<talk_id>.json
+   happyranch dispatch --org {ORG_SLUG} --from-file /tmp/dispatch-<talk_id>.json
    ```
 
-   The `--from-file` form is mandatory in agent sessions. Multi-line bash is rejected by the `Bash(grassland:*)` permission rule because newlines count as command separators.
+   The `--from-file` form is mandatory in agent sessions. Multi-line bash is rejected by the `Bash(happyranch:*)` permission rule because newlines count as command separators.
 
 ## Authorization rules
 
@@ -71,13 +71,13 @@ After dispatching, **record the call in the `transcript_markdown` you will send 
 [during talk] dispatched TASK-042 to dev_agent: "Implement Option B for TASK-087".
 ```
 
-The audit log captures the action (`grassland audit --org {ORG_SLUG} TASK-042`), but the transcript is what the founder reads back. Skipping this silently mutates the queue from the founder's point of view.
+The audit log captures the action (`happyranch audit --org {ORG_SLUG} TASK-042`), but the transcript is what the founder reads back. Skipping this silently mutates the queue from the founder's point of view.
 
 ## What happens
 
 The orchestrator inserts a new root task with `assigned_agent` set to your `effective_target` and enqueues it for execution. Worker self-dispatch **bypasses the team manager's EH decision step** — the conversation is treated as the gating decision, so the worker runs directly. Manager dispatches to a team worker behave the same way: the manager has already decided, so the orchestrator runs the assignee.
 
-The new task carries `dispatched_from_talk_id = <your talk_id>` for observability. `grassland details --org {ORG_SLUG} TASK-NNN` shows a "Dispatched from" line.
+The new task carries `dispatched_from_talk_id = <your talk_id>` for observability. `happyranch details --org {ORG_SLUG} TASK-NNN` shows a "Dispatched from" line.
 
 ## Error handling
 
@@ -93,7 +93,7 @@ The new task carries `dispatched_from_talk_id = <your talk_id>` for observabilit
 - `403 target_not_in_team`: you are a manager and `target_agent` is not on your team.
 - `404 unknown_agent`: the resolved target has no approved workspace.
 
-If `grassland` returns non-zero, retry once after 1 second. The 4xx codes above are not retryable — fix the payload.
+If `happyranch` returns non-zero, retry once after 1 second. The 4xx codes above are not retryable — fix the payload.
 
 ## Naming
 

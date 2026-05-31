@@ -13,9 +13,9 @@ from src.runtime import RuntimeDir
 
 @pytest.fixture
 def auth(monkeypatch, tmp_path):
-    home = tmp_path / "grassland-home"
+    home = tmp_path / "happyranch-home"
     home.mkdir()
-    monkeypatch.setenv("GRASSLAND_DAEMON_HOME", str(home))
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(home))
     from src.daemon import paths
     return {"Authorization": f"Bearer {paths.ensure_token()}"}
 
@@ -49,7 +49,7 @@ def _seed_org(rt: RuntimeDir, slug: str) -> None:
 
 
 def test_post_runtime_refuses_swap_with_active_tasks(tmp_path: Path, auth) -> None:
-    """`grassland init <new-path>` must not orphan in-flight work in the current
+    """`happyranch init <new-path>` must not orphan in-flight work in the current
     container — same guard as `/runtime/use`. Without it the old org's
     in-progress tasks lose their OrgState mid-flight and get dropped by
     the dispatcher as 'unknown org'."""
@@ -77,7 +77,7 @@ def test_post_runtime_refuses_swap_with_active_tasks(tmp_path: Path, auth) -> No
 
 def test_post_runtime_swap_idempotent_to_same_path(tmp_path: Path, auth) -> None:
     """Re-registering the *same* runtime path must not be blocked by its own
-    in-flight tasks — that would make `grassland init <existing>` a no-op fail.
+    in-flight tasks — that would make `happyranch init <existing>` a no-op fail.
     Skip the guard when the requested path resolves to the active root."""
     from src.models import TaskRecord, TaskStatus
     rt = RuntimeDir.init(tmp_path / "rt")

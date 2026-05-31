@@ -1,5 +1,5 @@
 [project]
-name = "grassland"
+name = "happyranch"
 version = "0.1.0"
 requires-python = ">=3.11,<3.14"
 dependencies = [
@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-grassland = "src.cli:main"
+happyranch = "src.cli:main"
 
 [dependency-groups]
 dev = [

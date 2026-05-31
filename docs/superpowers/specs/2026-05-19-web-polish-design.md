@@ -44,7 +44,7 @@ export type Theme = 'dark' | 'light';
 export function useTheme(): { theme: Theme; setTheme: (t: Theme) => void };
 ```
 
-- `localStorage["grassland.theme"]`, default `'dark'`.
+- `localStorage["happyranch.theme"]`, default `'dark'`.
 - On change, writes `<html data-theme="light|dark">` so CSS overrides
   flip immediately.
 - Subscribes to the `storage` event so two open tabs stay in sync (the
@@ -352,7 +352,7 @@ palette does not subsume the jump map.
 
 ### 9.3 Theme persistence per browser
 
-`localStorage["grassland.theme"]` is per-origin, not per-org. The
+`localStorage["happyranch.theme"]` is per-origin, not per-org. The
 founder's preference rides with the browser, not the slug. Same rule as
 density.
 

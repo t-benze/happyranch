@@ -16,7 +16,7 @@ def test_sweep_calls_notify_failed_not_escalated(tmp_path: Path):
     from src.infrastructure.database import Database
     from src.models import TaskRecord, TaskStatus
 
-    db = Database(tmp_path / "grassland.db")
+    db = Database(tmp_path / "happyranch.db")
     db.insert_task(TaskRecord(
         id="TASK-1", brief="x", team="engineering",
         assigned_agent="dev_agent", status=TaskStatus.IN_PROGRESS,
@@ -57,7 +57,7 @@ def test_sweep_uses_unknown_for_missing_assigned_agent(tmp_path: Path):
     from src.infrastructure.database import Database
     from src.models import TaskRecord, TaskStatus
 
-    db = Database(tmp_path / "grassland.db")
+    db = Database(tmp_path / "happyranch.db")
     db.insert_task(TaskRecord(
         id="TASK-2", brief="x", team="engineering",
         assigned_agent=None,  # ← no assigned agent

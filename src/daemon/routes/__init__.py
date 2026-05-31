@@ -1,1 +1,1 @@
-"""HTTP route modules for the Grassland daemon."""
+"""HTTP route modules for the HappyRanch daemon."""

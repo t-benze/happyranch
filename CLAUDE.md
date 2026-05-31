@@ -1,7 +1,7 @@
-# Project: Grassland — Multi-Agent Org Runtime
+# Project: HappyRanch — Multi-Agent Org Runtime
 
 ## What This Is
-Grassland is an **org-agnostic runtime** for operating a multi-agent organization supervised by a single human founder. The repo provides the system kernel (orchestrator, daemon + CLI, audit, KB, talk, revisit, escalation primitives); the *organization* it runs — charter, teams, agents, escalation rules, jurisdictions, budget authority — is loaded per-runtime from `<runtime>/orgs/<slug>/org/`.
+HappyRanch is an **org-agnostic runtime** for operating a multi-agent organization supervised by a single human founder. The repo provides the system kernel (orchestrator, daemon + CLI, audit, KB, talk, revisit, escalation primitives); the *organization* it runs — charter, teams, agents, escalation rules, jurisdictions, budget authority — is loaded per-runtime from `<runtime>/orgs/<slug>/org/`.
 
 A canonical sample org shipped at `examples/orgs/hk-macau-tourism/` runs a one-person tourism company serving foreign visitors to Hong Kong SAR and Macau SAR. Treat it as the reference shape when bootstrapping a new org; nothing about its specific teams, agents, or constraints is baked into the system.
 
@@ -9,11 +9,11 @@ A canonical sample org shipped at `examples/orgs/hk-macau-tourism/` runs a one-p
 - **Layer 1**: Founder (human) — sets org rules, handles escalations, reviews weekly dashboard
 - **Layer 2**: Manager agents — defined per-org in `<runtime>/orgs/<slug>/org/agents/<name>.md` with `role: manager`. Each manager owns one team listed in `teams.yaml`.
 - **Layer 3**: Worker agents — same file shape, `role: worker`. Workers are assigned to a team via `teams.yaml`.
-- **Infrastructure (org-agnostic, lives in this repo)**: orchestrator, FastAPI daemon + `grassland` CLI, audit logger, knowledge base, talk store, revisit primitive, escalation routing.
+- **Infrastructure (org-agnostic, lives in this repo)**: orchestrator, FastAPI daemon + `happyranch` CLI, audit logger, knowledge base, talk store, revisit primitive, escalation routing.
 
 Agents operate autonomously within authority defined by their org. The system enforces structural patterns regardless of org: managers cross-audit each other (peer review), and no agent both proposes and approves consequential actions (maker-checker pattern). Org-specific authority (e.g., budget thresholds, refund limits) lives in `escalation-rules.md` and the agents' system prompts.
 
-A single runtime container (`<runtime>/`) hosts **multiple orgs** under `<runtime>/orgs/<slug>/`. Each org has its own `org/` content, SQLite DB, workspaces, KB, and talks. One daemon serves all orgs concurrently. Bootstrap: `grassland init <runtime>` creates the empty container; `grassland orgs init <slug> --from examples/orgs/hk-macau-tourism` materializes an org from the sample tree.
+A single runtime container (`<runtime>/`) hosts **multiple orgs** under `<runtime>/orgs/<slug>/`. Each org has its own `org/` content, SQLite DB, workspaces, KB, and talks. One daemon serves all orgs concurrently. Bootstrap: `happyranch init <runtime>` creates the empty container; `happyranch orgs init <slug> --from examples/orgs/hk-macau-tourism` materializes an org from the sample tree.
 
 ## Design Documents (read these first)
 
@@ -34,11 +34,11 @@ In the `protocol/` folder:
 - **Agent executor**: Per-agent. Claude Code (`claude -p ... --permission-mode auto`), Codex (`codex exec --json -`), and opencode (`opencode run`) are supported — no third-party agent framework dependency.
 - **Daemon**: FastAPI HTTP service (`src/daemon/`) — serves orchestrator work, SSE task events, agent callbacks
 - **CLI**: Thin HTTP client (`src/client/`) that talks to the daemon over localhost
-- **Web UI**: Localhost SPA bundled into the daemon (`web/` → built to `web/dist/` → served at `/`). React 18 + TypeScript strict + Tailwind v4 + TanStack Query v5 + React Router v6. Auth via the same bearer token at `~/.grassland/daemon.token`, fetched once via `GET /api/v1/auth/bootstrap` (localhost-gated). Architecture: `web/ARCHITECTURE.md`. Spec: `docs/superpowers/specs/2026-05-14-web-ui-design.md`. Launch with `grassland web`.
+- **Web UI**: Localhost SPA bundled into the daemon (`web/` → built to `web/dist/` → served at `/`). React 18 + TypeScript strict + Tailwind v4 + TanStack Query v5 + React Router v6. Auth via the same bearer token at `~/.happyranch/daemon.token`, fetched once via `GET /api/v1/auth/bootstrap` (localhost-gated). Architecture: `web/ARCHITECTURE.md`. Spec: `docs/superpowers/specs/2026-05-14-web-ui-design.md`. Launch with `happyranch web`.
 - **Agent workflow**: Shared workspace skills (`protocol/skills/`) — `start-task`, `make-worktree`, `manage-repo`, `manage-agent`, `dispatch`, `jobs`, `talk`, `thread`. The orchestrator prompt references the same SOPs across all executors.
-- **Orchestrator**: Custom Python application. `run_step` is the only primitive — each invocation advances one task by one subprocess call; an async `TaskQueue` + worker pool (`src/daemon/queue.py`) drives re-enqueues across steps. The team manager drives decisions. Implicit `review_verdict` audit rows are written when a delegation terminates (approved / rejected) — the founder reviews those via `grassland audit` to identify which agents need attention.
+- **Orchestrator**: Custom Python application. `run_step` is the only primitive — each invocation advances one task by one subprocess call; an async `TaskQueue` + worker pool (`src/daemon/queue.py`) drives re-enqueues across steps. The team manager drives decisions. Implicit `review_verdict` audit rows are written when a delegation terminates (approved / rejected) — the founder reviews those via `happyranch audit` to identify which agents need attention.
 - **Data models**: Pydantic v2 + pydantic-settings
-- **Database**: SQLite with WAL mode, per-org under `<runtime>/orgs/<slug>/grassland.db`. Schema covers audit logs and task state, plus per-feature tables (token usage, Feishu correlation, threads) documented in the corresponding specs under `docs/superpowers/specs/`.
+- **Database**: SQLite with WAL mode, per-org under `<runtime>/orgs/<slug>/happyranch.db`. Schema covers audit logs and task state, plus per-feature tables (token usage, Feishu correlation, threads) documented in the corresponding specs under `docs/superpowers/specs/`.
 - **Feishu integration**: `lark-oapi>=1.6,<2` (official ByteDance SDK) — outbound `im.v1.message.create` via `src/infrastructure/feishu/`; inbound WS subscription to `im.message.receive_v1` via `src/daemon/feishu_listener.py`.
 - **Knowledge base**: File-backed markdown under `<runtime>/orgs/<slug>/kb/` with atomic writes, substring/tag search, `_index.md` regeneration. No vector store yet.
 - **LLM**: Provider depends on the selected executor
@@ -51,7 +51,7 @@ In the `protocol/` folder:
 |-- protocol/                          # System kernel docs (00, 05*, 06) + shared agent skills
 |-- scripts/daemon.sh                  # Launch the FastAPI daemon
 |-- src/
-|   |-- cli.py                         # `grassland` command — HTTP client
+|   |-- cli.py                         # `happyranch` command — HTTP client
 |   |-- client/                        # httpx-based client + SSE streaming
 |   |-- daemon/                        # FastAPI app, routes, queue, sessions, Feishu listener
 |   |-- orchestrator/                  # run_step, executors, capabilities, performance, prompt_loader
@@ -59,12 +59,12 @@ In the `protocol/` folder:
 |-- tests/                             # Unit + integration (with fake CLIs)
 `-- examples/orgs/hk-macau-tourism/    # Canonical sample org tree
 
-~/.grassland/                                # Daemon home — auth_token, runtimes.yaml, daemon.pid, daemon.port
+~/.happyranch/                                # Daemon home — auth_token, runtimes.yaml, daemon.pid, daemon.port
 
-<runtime-dir>/                         # Slugless multi-org container (created by `grassland init <path>`)
-|-- grassland.yaml                           # marker — schema_version: 2, type: multi-org-runtime
-`-- orgs/<slug>/                       # Created by `grassland orgs init <slug> [--from <example>]`
-    |-- grassland.db                         # per-org SQLite
+<runtime-dir>/                         # Slugless multi-org container (created by `happyranch init <path>`)
+|-- happyranch.yaml                           # marker — schema_version: 2, type: multi-org-runtime
+`-- orgs/<slug>/                       # Created by `happyranch orgs init <slug> [--from <example>]`
+    |-- happyranch.db                         # per-org SQLite
     |-- org/                           # editable org content
     |   |-- charter.md, escalation-rules.md, teams.yaml, config.yaml
     |   `-- agents/                    # active `<name>.md` + `_pending/<name>.md`
@@ -73,33 +73,33 @@ In the `protocol/` folder:
     |-- talks/                         # TALK-NNN.md
     |-- threads/                       # THR-NNN.md
     |-- jobs/                          # JOB-NNN.{out,err,script} (full captured output + frozen script body)
-    `-- assets/                        # org-shared blob store (put/list/get via `grassland assets`)
+    `-- assets/                        # org-shared blob store (put/list/get via `happyranch assets`)
 ```
 
-HTTP routes: per-org under `/api/v1/orgs/<slug>/...`; container-level under `/api/v1/runtime` and `/api/v1/orgs`. Legacy v1 (single-org flat layout) migrates in place via `grassland migrate-to-multi-org` — TTY-gated, refuses with active tasks or open talks. Even older v0 (DB-backed agent enrollments) migrates first via `grassland migrate-to-org-runtime`.
+HTTP routes: per-org under `/api/v1/orgs/<slug>/...`; container-level under `/api/v1/runtime` and `/api/v1/orgs`. Legacy v1 (single-org flat layout) migrates in place via `happyranch migrate-to-multi-org` — TTY-gated, refuses with active tasks or open talks. Even older v0 (DB-backed agent enrollments) migrates first via `happyranch migrate-to-org-runtime`.
 
 ## Configuration
 
-Operational settings use the `GRASSLAND_` env prefix. Runtime paths are derived from the runtime directory.
+Operational settings use the `HAPPYRANCH_` env prefix. Runtime paths are derived from the runtime directory.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GRASSLAND_CLAUDE_CLI_PATH` | `claude` | Path to Claude Code CLI |
-| `GRASSLAND_CODEX_CLI_PATH` | `codex` | Path to Codex CLI |
-| `GRASSLAND_OPENCODE_CLI_PATH` | `opencode` | Path to opencode CLI |
-| `GRASSLAND_PERMISSION_MODE` | `auto` | Claude Code permission mode |
-| `GRASSLAND_PROTOCOL_DIR` | `protocol` | Protocol docs dirname (relative to project root) |
-| `GRASSLAND_MAX_ORCHESTRATION_STEPS` | `50` | Max manager decision steps before escalation |
-| `GRASSLAND_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout — global default; see resolution below |
-| `GRASSLAND_ORG_SLUG` | _(unset)_ | Default org slug for per-org CLI commands. Resolution: explicit `--org` flag > `GRASSLAND_ORG_SLUG` env > auto-infer (only if exactly one org exists) > error |
+| `HAPPYRANCH_CLAUDE_CLI_PATH` | `claude` | Path to Claude Code CLI |
+| `HAPPYRANCH_CODEX_CLI_PATH` | `codex` | Path to Codex CLI |
+| `HAPPYRANCH_OPENCODE_CLI_PATH` | `opencode` | Path to opencode CLI |
+| `HAPPYRANCH_PERMISSION_MODE` | `auto` | Claude Code permission mode |
+| `HAPPYRANCH_PROTOCOL_DIR` | `protocol` | Protocol docs dirname (relative to project root) |
+| `HAPPYRANCH_MAX_ORCHESTRATION_STEPS` | `50` | Max manager decision steps before escalation |
+| `HAPPYRANCH_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout — global default; see resolution below |
+| `HAPPYRANCH_ORG_SLUG` | _(unset)_ | Default org slug for per-org CLI commands. Resolution: explicit `--org` flag > `HAPPYRANCH_ORG_SLUG` env > auto-infer (only if exactly one org exists) > error |
 
 ### Session timeout resolution
 
 `Orchestrator._resolve_session_timeout(agent_name, task_id=...)` walks three layers, highest precedence first:
 
-1. **Task override** — `tasks.session_timeout_seconds` column, set via `grassland revisit ... --session-timeout-seconds N` and inherited by every child spawned from that task.
+1. **Task override** — `tasks.session_timeout_seconds` column, set via `happyranch revisit ... --session-timeout-seconds N` and inherited by every child spawned from that task.
 2. **Org override** — `session_timeout_seconds:` in `<runtime>/orgs/<slug>/org/config.yaml` (loaded by `src/orchestrator/org_config.py`).
-3. **Code default** — `Settings.session_timeout_seconds` (1800s; overridable via `GRASSLAND_SESSION_TIMEOUT_SECONDS`).
+3. **Code default** — `Settings.session_timeout_seconds` (1800s; overridable via `HAPPYRANCH_SESSION_TIMEOUT_SECONDS`).
 
 Positive integers only; `<= 0` or non-int raises at parse time. The `agent_name` argument is unused (kept for call-site symmetry); legacy `session_timeout_seconds` in agent frontmatter is silently ignored.
 
@@ -113,11 +113,11 @@ Each workspace declares an `executor` in `agent.yaml`: `claude`, `codex`, or `op
 | Codex | `AGENTS.md` | `.agents/skills/` | sandbox flags on CLI |
 | opencode | `AGENTS.md` | `.agents/skills/` | `opencode.json` `permission.bash` map |
 
-**Codex sandbox**: `CodexExecutor.run` passes `-c sandbox_workspace_write.network_access=true` on every invocation. The `workspace-write` sandbox blocks localhost by default, which would kill the agent's `grassland report-completion` callback to `127.0.0.1`. Do not remove this flag without re-architecting the callback path away from localhost sockets.
+**Codex sandbox**: `CodexExecutor.run` passes `-c sandbox_workspace_write.network_access=true` on every invocation. The `workspace-write` sandbox blocks localhost by default, which would kill the agent's `happyranch report-completion` callback to `127.0.0.1`. Do not remove this flag without re-architecting the callback path away from localhost sockets.
 
-**opencode permissions**: `OpencodeWorkspaceAdapter.write_opencode_json` writes a strict default — `{"permission": {"bash": {"*": "deny", "grassland *": "allow", ...per-agent allow_rules...}}}`. **Do not pass `--dangerously-skip-permissions` on the CLI** — it bypasses `opencode.json` and erases the per-prefix discipline.
+**opencode permissions**: `OpencodeWorkspaceAdapter.write_opencode_json` writes a strict default — `{"permission": {"bash": {"*": "deny", "happyranch *": "allow", ...per-agent allow_rules...}}}`. **Do not pass `--dangerously-skip-permissions` on the CLI** — it bypasses `opencode.json` and erases the per-prefix discipline.
 
-Enrolling a non-Claude worker: set `"executor": "codex"` (or `"opencode"`) in the `grassland manage-agent --from-file` payload. Founder approval (`grassland approve-agent`) bootstraps the right surface for the chosen executor. See `protocol/skills/manage-agent/SKILL.md` for full payload shapes.
+Enrolling a non-Claude worker: set `"executor": "codex"` (or `"opencode"`) in the `happyranch manage-agent --from-file` payload. Founder approval (`happyranch approve-agent`) bootstraps the right surface for the chosen executor. See `protocol/skills/manage-agent/SKILL.md` for full payload shapes.
 
 Repos are configured per agent in `agent.yaml`:
 ```yaml
@@ -125,11 +125,11 @@ repos:
   web-app: https://github.com/t-benze/web-app.git
   docs: https://github.com/t-benze/docs.git
 ```
-`grassland init-agent` creates a default `agent.yaml` with empty repos if missing.
+`happyranch init-agent` creates a default `agent.yaml` with empty repos if missing.
 
 ### Agent permission model
 
-Agents call the orchestrator's CLI (`grassland report-completion`, `grassland learning`, `grassland manage-repo`, `grassland manage-agent`, `grassland dispatch`, ...) as their only sanctioned side-effect channel. **Baseline allow rule for every agent: `grassland`.**
+Agents call the orchestrator's CLI (`happyranch report-completion`, `happyranch learning`, `happyranch manage-repo`, `happyranch manage-agent`, `happyranch dispatch`, ...) as their only sanctioned side-effect channel. **Baseline allow rule for every agent: `happyranch`.**
 
 Per-agent extras are declared in agent frontmatter (`<runtime>/orgs/<slug>/org/agents/<name>.md`) under `allow_rules:`. Example: the sample org's `engineering_head` declares `gh pr close`, `gh pr comment`, `gh issue close`, `gh issue comment` — needed because Claude's headless risk heuristic refuses those calls otherwise even in `--permission-mode auto`. Keep extras narrow: each prefix can silently mutate shared external state on every future task.
 
@@ -138,11 +138,11 @@ Per-agent extras are declared in agent frontmatter (`<runtime>/orgs/<slug>/org/a
 1. `.claude/settings.json` `permissions.allow` — written by `ClaudeWorkspaceAdapter.write_settings_json` (used by interactive sessions; surfaces intent).
 2. `--allowedTools` on the CLI — passed by `ClaudeExecutor.run` for headless sessions.
 
-Both surfaces are generated from `allow_rules_for_agent(agent_name, cli=...)` in `src/orchestrator/workspace_adapters.py` (settings uses `Bash(<cmd>:*)`; CLI uses `Bash(<cmd> *)`). **Do not hand-edit either** — `grassland init-agent` rewrites them. The two-surface requirement exists because Claude Code 2.1.x ignores `permissions.allow` in headless `-p` mode; without the CLI flag, the agent's first `grassland ...` call is blocked and the task silently rejects.
+Both surfaces are generated from `allow_rules_for_agent(agent_name, cli=...)` in `src/orchestrator/workspace_adapters.py` (settings uses `Bash(<cmd>:*)`; CLI uses `Bash(<cmd> *)`). **Do not hand-edit either** — `happyranch init-agent` rewrites them. The two-surface requirement exists because Claude Code 2.1.x ignores `permissions.allow` in headless `-p` mode; without the CLI flag, the agent's first `happyranch ...` call is blocked and the task silently rejects.
 
-**When adding new orchestrator capabilities, keep them under the `grassland` binary** so they stay inside the baseline allow rule. Only add a raw-tool prefix when the operation genuinely cannot be wrapped in `grassland` (e.g., third-party CLI for external infra we don't own).
+**When adding new orchestrator capabilities, keep them under the `happyranch` binary** so they stay inside the baseline allow rule. Only add a raw-tool prefix when the operation genuinely cannot be wrapped in `happyranch` (e.g., third-party CLI for external infra we don't own).
 
-**Agent-side completion payloads must be single-line `grassland` invocations.** The Claude permission matcher treats newlines (and `&&`, `||`, `;`, `|`) as command separators and matches each subcommand independently; multi-line bash with backslash continuations is rejected even when the surface command is `grassland ...`. The `start-task` skill writes payloads to `/tmp/completion-<task_id>.json` and invokes `grassland report-completion --from-file <path>` as a single line. Any new agent-facing callback with multiple arguments must follow the same `--from-file` pattern.
+**Agent-side completion payloads must be single-line `happyranch` invocations.** The Claude permission matcher treats newlines (and `&&`, `||`, `;`, `|`) as command separators and matches each subcommand independently; multi-line bash with backslash continuations is rejected even when the surface command is `happyranch ...`. The `start-task` skill writes payloads to `/tmp/completion-<task_id>.json` and invokes `happyranch report-completion --from-file <path>` as a single line. Any new agent-facing callback with multiple arguments must follow the same `--from-file` pattern.
 
 ## Conventions
 
@@ -162,13 +162,13 @@ Both surfaces are generated from `allow_rules_for_agent(agent_name, cli=...)` in
 
 ## Task status vocabularies
 
-Agents self-report `status="completed"|"blocked"` via `grassland report-completion` (the worker's view of its session). The orchestrator-owned `TaskStatus` lives on the `tasks` row and is distinct: `{pending, in_progress, blocked, completed, failed}` based on orchestration classification, with `block_kind` (`delegated` | `escalated` | `blocked_on_job`) specifying the reason.
+Agents self-report `status="completed"|"blocked"` via `happyranch report-completion` (the worker's view of its session). The orchestrator-owned `TaskStatus` lives on the `tasks` row and is distinct: `{pending, in_progress, blocked, completed, failed}` based on orchestration classification, with `block_kind` (`delegated` | `escalated` | `blocked_on_job`) specifying the reason.
 
 ## Manager decision contract
 
 Team-manager completion payloads carry two fields with distinct purposes:
 
-- **`summary`** (prose) — human-readable description of what the manager did or concluded this step. Rendered in `grassland details`, audit logs, `task_history.md`. Stored on `task_results.output_summary`.
+- **`summary`** (prose) — human-readable description of what the manager did or concluded this step. Rendered in `happyranch details`, audit logs, `task_history.md`. Stored on `task_results.output_summary`.
 - **`decision`** (JSON object, NextStep schema) — the structured action the orchestrator will execute: `{"action": "delegate"|"done"|"escalate", ...}`. Stored on `task_results.decision_json` (manager-only column; workers leave NULL). Parsed by `Orchestrator._parse_next_step` directly — no prose inference.
 
 Full schema with worked examples lives in `protocol/00-completion-contract.md` ("Manager decision field"). The decision-field name for a delegated child task's brief is **`prompt`, not `brief`** — Pydantic v2 silently ignores extras, so writing `"brief"` produces an empty-brief child task.
@@ -207,7 +207,7 @@ uv run pytest tests/ -v -m integration   # end-to-end tests (spawns a real daemo
 uv run pytest tests/ -v -m ""            # both
 ```
 
-Integration tests are excluded by default because they spawn a real daemon and fake CLIs. They are isolated from `~/.grassland/` via `GRASSLAND_DAEMON_HOME`. **Run them locally before any change touching the daemon lifespan, SessionTracker, or callback routes** — that's the surface area where unit tests have historically missed regressions. CI runs them on every PR.
+Integration tests are excluded by default because they spawn a real daemon and fake CLIs. They are isolated from `~/.happyranch/` via `HAPPYRANCH_DAEMON_HOME`. **Run them locally before any change touching the daemon lifespan, SessionTracker, or callback routes** — that's the surface area where unit tests have historically missed regressions. CI runs them on every PR.
 
 `tests/integration/fake_claude.sh` recognizes two prompt shapes and routes to two plan-env vars:
 
@@ -222,7 +222,7 @@ Layer rules, boundary rule, and agent-callback omissions live in `web/ARCHITECTU
 
 **Contract pinning** — every browser-callable daemon route maps 1:1 to one TS function in `web/src/lib/api/`. Two paired tests enforce this:
 
-- Python — `tests/contract/test_openapi_snapshot.py` pins the OpenAPI to `tests/contract/openapi.json`. Regenerate intentional changes via `GRASSLAND_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py`.
+- Python — `tests/contract/test_openapi_snapshot.py` pins the OpenAPI to `tests/contract/openapi.json`. Regenerate intentional changes via `HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py`.
 - TS — `web/src/test/openapi-coverage.test.ts` asserts every documented path is in `INCLUDED_PATHS` (TS mirror written) or `EXCLUDED_PATHS` (justified). Adding a new daemon route fails this test until resolved.
 
 **Build + dev:**
@@ -230,7 +230,7 @@ Layer rules, boundary rule, and agent-callback omissions live in `web/ARCHITECTU
 ```bash
 scripts/build_web.sh        # production build → web/dist/, served by daemon at /
 cd web && npm run dev       # Vite dev server, /api/* proxied to the daemon
-grassland web               # open the built bundle in the default browser
+happyranch web               # open the built bundle in the default browser
 ```
 
 **Auth model:** the SPA fetches the daemon's bearer token once via `GET /api/v1/auth/bootstrap` (localhost-gated; rejects any peer that isn't `127.0.0.1` / `::1` / `localhost`), caches it in `sessionStorage`, and attaches it to every HTTP+SSE call. CLI bearer-token model unchanged.
@@ -240,57 +240,57 @@ grassland web               # open the built bundle in the default browser
 The CLI is an HTTP client. Start the daemon once, then run CLI commands.
 
 ```bash
-scripts/daemon.sh start    # background; pid/port under ~/.grassland/
+scripts/daemon.sh start    # background; pid/port under ~/.happyranch/
 scripts/daemon.sh status   # or stop
 scripts/build_web.sh       # build web/dist/ (npm ci + vite build)
-grassland web [--no-open]        # open the SPA in the default browser
+happyranch web [--no-open]        # open the SPA in the default browser
 ```
 
-Slug resolution for per-org commands: explicit `--org <slug>` > `GRASSLAND_ORG_SLUG` env > auto-infer (only when the container has exactly one org) > error. Container-level commands (`grassland init`, `grassland use`, `grassland orgs ...`, `grassland migrate-to-multi-org`) take no `--org`.
+Slug resolution for per-org commands: explicit `--org <slug>` > `HAPPYRANCH_ORG_SLUG` env > auto-infer (only when the container has exactly one org) > error. Container-level commands (`happyranch init`, `happyranch use`, `happyranch orgs ...`, `happyranch migrate-to-multi-org`) take no `--org`.
 
-**Full founder-facing CLI** — tasks, agents, KB, threads, talks, audit, assets, runtime, migrations — is documented in `skills/grassland/SKILL.md` (symlinked at `~/.claude/skills/grassland`).
+**Full founder-facing CLI** — tasks, agents, KB, threads, talks, audit, assets, runtime, migrations — is documented in `skills/happyranch/SKILL.md` (symlinked at `~/.claude/skills/happyranch`).
 
 **Agent-side callbacks** (invoked by skills inside agent sessions; do NOT invoke by hand — they falsify audit data):
 
-- `grassland report-completion` — terminal callback from the `start-task` skill
-- `grassland progress` — long-running mid-task heartbeat
-- `grassland learning {add,update,promote,reindex}` on migrated workspaces; legacy `grassland learning --text` on pre-migration
-- `grassland manage-agent`, `grassland manage-repo`, `grassland dispatch`
-- `grassland threads {reply,decline,dispatch,close-out}`
+- `happyranch report-completion` — terminal callback from the `start-task` skill
+- `happyranch progress` — long-running mid-task heartbeat
+- `happyranch learning {add,update,promote,reindex}` on migrated workspaces; legacy `happyranch learning --text` on pre-migration
+- `happyranch manage-agent`, `happyranch manage-repo`, `happyranch dispatch`
+- `happyranch threads {reply,decline,dispatch,close-out}`
 
 All use `--from-file <path>` — see "Agent permission model" for why.
 
 ## Knowledge Base
 
-Per-org under `<runtime>/orgs/<slug>/kb/` (orgs do not share a KB). One entry shape — `KBEntry.type` is freeform; route validation only enforces non-empty `slug/title/type/topic`. The dedicated `kb precedent` route was removed; founder rulings flow through plain `grassland kb add` with `source_task: <task-id>` in frontmatter. Implementation: `src/infrastructure/kb_store.py` + `src/daemon/routes/kb.py` (atomic writes, `kb_lock`, substring/tag search, `_index.md` regen). Full rules: `protocol/06-knowledge-base.md`. The context builder injects a "Knowledge Base" section into every agent's bootstrap doc; `start-task` has explicit consult + contribute steps.
+Per-org under `<runtime>/orgs/<slug>/kb/` (orgs do not share a KB). One entry shape — `KBEntry.type` is freeform; route validation only enforces non-empty `slug/title/type/topic`. The dedicated `kb precedent` route was removed; founder rulings flow through plain `happyranch kb add` with `source_task: <task-id>` in frontmatter. Implementation: `src/infrastructure/kb_store.py` + `src/daemon/routes/kb.py` (atomic writes, `kb_lock`, substring/tag search, `_index.md` regen). Full rules: `protocol/06-knowledge-base.md`. The context builder injects a "Knowledge Base" section into every agent's bootstrap doc; `start-task` has explicit consult + contribute steps.
 
 ## Per-Agent Learnings
 
-Per-agent under `<runtime>/orgs/<slug>/workspaces/<agent>/learnings/`, one `LRN-NNN-<slug>.md` per entry. Full spec: `docs/superpowers/specs/2026-05-13-per-agent-learnings-structural-upgrade-design.md`. Implementation: `src/infrastructure/learnings_store.py` + the `/agents/{name}/learnings/entries/...` block in `src/daemon/routes/agents.py`. CLI: `grassland learning list|get|search|add|update|promote|reindex`.
+Per-agent under `<runtime>/orgs/<slug>/workspaces/<agent>/learnings/`, one `LRN-NNN-<slug>.md` per entry. Full spec: `docs/superpowers/specs/2026-05-13-per-agent-learnings-structural-upgrade-design.md`. Implementation: `src/infrastructure/learnings_store.py` + the `/agents/{name}/learnings/entries/...` block in `src/daemon/routes/agents.py`. CLI: `happyranch learning list|get|search|add|update|promote|reindex`.
 
 **Load-bearing invariants** (full catalog: spec §Non-obvious):
 
 - **Per-workspace migration is state-aware** — `PersistentWorkspaceSetup.ensure()` never creates `learnings/` when a non-empty flat `learnings.md` exists. Existing agents stay on the legacy shape until a founder-dispatched migration moves them; new workspaces start on the new layout.
 - **Cross-refs validated at write time** — `related_to` / `supersedes` against existing IDs (unknown → 400); self-refs rejected. `supersedes` is the canonical evolve-a-rule primitive.
-- **Promotion to KB is one-way** — `grassland learning promote <LRN-NNN> --kb-slug <slug>` replaces the body with a 2-line pointer stub and locks the entry.
+- **Promotion to KB is one-way** — `happyranch learning promote <LRN-NNN> --kb-slug <slug>` replaces the body with a 2-line pointer stub and locks the entry.
 
 ## Shared Assets (org-wide blob store)
 
 Per-org at `<runtime>/orgs/<slug>/assets/`. Flat directory of opaque files —
 persistent artifacts produced by any agent and visible to every other agent
 in the same org. Implementation: `src/infrastructure/asset_store.py` +
-`src/daemon/routes/assets.py`. CLI: `grassland assets {put,list,get}`.
+`src/daemon/routes/assets.py`. CLI: `happyranch assets {put,list,get}`.
 
 **Load-bearing invariants** (full catalog: plan §Non-obvious):
 
-- **CLI-only access by design** — Codex (`workspace-write` sandbox) and Opencode (bash deny-by-default) block direct writes outside the agent's workspace; only the `grassland` baseline allow-rule works across all three executors. Don't add a "just `cat`/`cp` it" agent skill.
+- **CLI-only access by design** — Codex (`workspace-write` sandbox) and Opencode (bash deny-by-default) block direct writes outside the agent's workspace; only the `happyranch` baseline allow-rule works across all three executors. Don't add a "just `cat`/`cp` it" agent skill.
 - **Audit `task_id` overload** — `asset_put` writes `f"asset:{name}"` (the `asset:` prefix is mandatory) so asset names like `TASK-123` or `TALK-7` can't pollute the task/talk scopes consumed by `Database.get_audit_logs(task_id)`. Reads (`list`/`get`) are unaudited by design.
 - **Not the KB** — assets are blobs. KB is for typed/structured knowledge (frontmatter, slug, type, topic). Don't dump markdown content into `assets/` that should be a KB entry.
 - **Dir created at fresh-org init AND idempotently at lifespan startup** for orgs that pre-date the feature. Both code paths are required.
 
 ## Revisit (founder recovery)
 
-`grassland revisit <task-id>` spawns a NEW root task inheriting brief + team from a terminal predecessor; old lineage is frozen. TTY-gated; no `--yes` bypass. Spec: `docs/superpowers/specs/2026-04-21-opc-revisit-design.md`.
+`happyranch revisit <task-id>` spawns a NEW root task inheriting brief + team from a terminal predecessor; old lineage is frozen. TTY-gated; no `--yes` bypass. Spec: `docs/superpowers/specs/2026-04-21-opc-revisit-design.md`.
 
 Eligible predecessor states: `failed`, `failed-cancelled` (founder-cancelled, normalized on the wire), `blocked(escalated)`, or `completed`. Anything else → `409 cannot_revisit`.
 
@@ -361,7 +361,7 @@ Routes under `/api/v1/orgs/{slug}/jobs/`: `POST /submit` (agent callback; auth v
 - **Shutdown awaits runner tasks** — `terminate_all_inflight` SIGTERMs then `asyncio.wait_for(gather(*runners), timeout=5)` so rows reach terminal before per-org DBs close. `recover_orphaned_running_jobs` at lifespan startup is the complementary safety net.
 - **Output capture is two-layer** — full streams to disk (no v1 size cap), 65 KB head per stream mirrored to `stdout_head`/`stderr_head` DB columns for fast rendering. `GET /output` reads disk; the drawer + audit deep-link show DB head.
 - **`review_required` and `persistent` are honor-system on submit.** The daemon does not introspect the script against `allow_rules`. Misclassification is recoverable via founder stop + audit + talk + learning. Don't add daemon-side validation without re-litigating the design tradeoff in the spec.
-- **Auto-resume on terminal supersedes founder revisit for blocked-on-job tasks.** The 2026-05-28 task-blocked-by-job design reverses the original "no task wakes itself" non-goal. `grassland revisit` is now a founder override ("give up on JOB-X, start over"), not the unblock path.
+- **Auto-resume on terminal supersedes founder revisit for blocked-on-job tasks.** The 2026-05-28 task-blocked-by-job design reverses the original "no task wakes itself" non-goal. `happyranch revisit` is now a founder override ("give up on JOB-X, start over"), not the unblock path.
 
 ## Task blocked-by-job (system auto-resumes from job terminals)
 
@@ -393,7 +393,7 @@ Per-org opt-in via `feishu_notifications` in `<runtime>/orgs/<slug>/org/config.y
 - `allow_dispatch: true` — top-level DISPATCH messages parsed by `parse_top_level_message(text)`; `dispatch_via_feishu` raises `DispatchError(reason ∈ {empty_brief, unknown_team, dispatch_failed})`.
 - **Jobs** — `submit_job` fires `notify_job_submitted`; `APPROVE` / `REJECT\n<reason>` reply routes; terminal triggers `notify_job_run_result`. Notification `kind="job_request"`; JOB-NNN lives in the `task_id` column (same `task_id`-column overload used by other non-task scopes). Spec: `docs/superpowers/specs/2026-05-25-feishu-script-request-notifications-design.md`.
 
-CLI fallbacks (`grassland resolve-escalation`, `grassland revisit`) consume any open notification row for the task with `consumed_by="cli-fallback"`, so a CLI-first resolution silently no-ops the later Feishu reply.
+CLI fallbacks (`happyranch resolve-escalation`, `happyranch revisit`) consume any open notification row for the task with `consumed_by="cli-fallback"`, so a CLI-first resolution silently no-ops the later Feishu reply.
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence

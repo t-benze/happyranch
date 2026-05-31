@@ -1290,7 +1290,7 @@ Expected: FAIL with "OpenAPI snapshot drifted"
 
 - [ ] **Step 2: Regenerate**
 
-Run: `GRASSLAND_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py -v`
+Run: `HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py -v`
 Expected: 1 passed (snapshot rewritten)
 
 - [ ] **Step 3: Inspect the new path is present**

@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Rename the product from "Grassland" to "HappyRanch" and the CLI binary from `grassland` to `happyranch` across all source, test, docs, skill, and shell files, then migrate the daemon home directory and re-register the CLI entry point.
+**Goal:** Rename the product from "HappyRanch" to "HappyRanch" and the CLI binary from `happyranch` to `happyranch` across all source, test, docs, skill, and shell files, then migrate the daemon home directory and re-register the CLI entry point.
 
-**Architecture:** A Python bulk-rename script applies five ordered string substitutions across all text files in the repo (skipping binaries, `.venv/`, `node_modules/`, `.git/`). After the bulk pass, the `skills/grassland/` directory and its shim script are renamed manually, the `~/.claude/skills/` symlink is recreated, the daemon home is migrated, and `uv pip install -e .` registers `happyranch` as the CLI binary.
+**Architecture:** A Python bulk-rename script applies five ordered string substitutions across all text files in the repo (skipping binaries, `.venv/`, `node_modules/`, `.git/`). After the bulk pass, the `skills/happyranch/` directory and its shim script are renamed manually, the `~/.claude/skills/` symlink is recreated, the daemon home is migrated, and `uv pip install -e .` registers `happyranch` as the CLI binary.
 
 **Tech Stack:** Python 3.11+, uv, bash, pytest, vitest
 
@@ -14,41 +14,41 @@
 
 Files **modified** by the bulk script (Task 2):
 - `pyproject.toml` — `name`, `[project.scripts]` entry
-- `src/config.py` — `env_prefix="GRASSLAND_"` → `HAPPYRANCH_`
+- `src/config.py` — `env_prefix="HAPPYRANCH_"` → `HAPPYRANCH_`
 - `src/daemon/paths.py` — default home path constant + docstring
 - `src/daemon/__main__.py` — docstring
 - `src/client/client.py` — error message string
 - `src/daemon/routes/auth.py` — docstring
-- `src/cli.py` — `os.environ.get("GRASSLAND_ORG_SLUG")` + ~25 help-text strings
+- `src/cli.py` — `os.environ.get("HAPPYRANCH_ORG_SLUG")` + ~25 help-text strings
 - All other `src/**/*.py` — env var string literals, comments
-- `tests/**/*.py` — `GRASSLAND_DAEMON_HOME` env var, `GRASSLAND_REGEN_OPENAPI`, path strings
-- `tests/integration/fake_claude.sh` — inline comments referencing `grassland` CLI
+- `tests/**/*.py` — `HAPPYRANCH_DAEMON_HOME` env var, `HAPPYRANCH_REGEN_OPENAPI`, path strings
+- `tests/integration/fake_claude.sh` — inline comments referencing `happyranch` CLI
 - `tests/integration/fake_codex.sh` — same
-- `web/src/lib/auth.ts` — `STORAGE_KEY = 'grassland.token'` → `'happyranch.token'`
+- `web/src/lib/auth.ts` — `STORAGE_KEY = 'happyranch.token'` → `'happyranch.token'`
 - `web/src/lib/auth.test.ts` — sessionStorage key
 - `web/src/routes.tsx` — UI error string
 - `web/src/mocks/orgs.ts` — mock path string
 - `web/src/features/**/*.test.tsx` — sessionStorage key
 - `web/src/features/talks/strings.ts` — CLI hint string
-- `scripts/daemon.sh` — `GRASSLAND_HOME` var + path refs
-- `protocol/skills/*/SKILL.md` — `grassland` CLI invocations (~8 files)
+- `scripts/daemon.sh` — `HAPPYRANCH_HOME` var + path refs
+- `protocol/skills/*/SKILL.md` — `happyranch` CLI invocations (~8 files)
 - `protocol/*.md` — CLI examples in design docs
 - `docs/superpowers/plans/*.md` — plan docs (historical, for consistency)
 - `docs/superpowers/specs/*.md` — spec docs (skip `2026-05-31-happyranch-rename-design.md`)
 - `docs/setup/*.md` — setup docs
 - `examples/orgs/hk-macau-tourism/org/escalation-rules.md` — any CLI refs
 - `README.md` — product name + CLI refs
-- `skills/grassland/SKILL.md` — product name, CLI name, env var
+- `skills/happyranch/SKILL.md` — product name, CLI name, env var
 
 Files **renamed** manually (Task 3):
-- `skills/grassland/` → `skills/happyranch/`
-- `skills/happyranch/scripts/grassland` → `skills/happyranch/scripts/happyranch` (shim script)
-- `~/.claude/skills/grassland` symlink → `~/.claude/skills/happyranch`
+- `skills/happyranch/` → `skills/happyranch/`
+- `skills/happyranch/scripts/happyranch` → `skills/happyranch/scripts/happyranch` (shim script)
+- `~/.claude/skills/happyranch` symlink → `~/.claude/skills/happyranch`
 
 Files **not touched**:
 - `CLAUDE.md` — updated last, in Task 5
 - `docs/superpowers/specs/2026-05-31-happyranch-rename-design.md` — already correct
-- `tests/contract/openapi.json` — no grassland strings (API paths only)
+- `tests/contract/openapi.json` — no happyranch strings (API paths only)
 - `src/**` Python import paths (`src.` prefix unchanged)
 - Database files, `.venv/`, `node_modules/`, `web/dist/`, `.git/`
 
@@ -58,11 +58,11 @@ Files **not touched**:
 
 | # | Old | New | Reason |
 |---|-----|-----|--------|
-| 1 | `GRASSLAND_` | `HAPPYRANCH_` | Catches env vars with trailing `_` first |
-| 2 | `.grassland` | `.happyranch` | Catches dotfile paths before bare lowercase |
-| 3 | `Grassland` | `HappyRanch` | Title case |
-| 4 | `grassland` | `happyranch` | Lowercase (CLI name, skill name, etc.) |
-| 5 | `GRASSLAND` | `HAPPYRANCH` | Residual all-caps (e.g., in comments) |
+| 1 | `HAPPYRANCH_` | `HAPPYRANCH_` | Catches env vars with trailing `_` first |
+| 2 | `.happyranch` | `.happyranch` | Catches dotfile paths before bare lowercase |
+| 3 | `HappyRanch` | `HappyRanch` | Title case |
+| 4 | `happyranch` | `happyranch` | Lowercase (CLI name, skill name, etc.) |
+| 5 | `HAPPYRANCH` | `HAPPYRANCH` | Residual all-caps (e.g., in comments) |
 
 ---
 
@@ -96,11 +96,11 @@ Expected: all tests PASSED.
 
 - [ ] **Step 1: Write the rename script**
 
-Create `/tmp/rename_grassland.py`:
+Create `/tmp/rename_happyranch.py`:
 
 ```python
 #!/usr/bin/env python3
-"""Apply ordered Grassland→HappyRanch renames across the repo."""
+"""Apply ordered HappyRanch→HappyRanch renames across the repo."""
 import sys
 from pathlib import Path
 
@@ -108,18 +108,18 @@ REPO = Path("/Users/tangbz/projects/my-opc")
 
 # Apply in this exact order — longer/more-specific patterns first
 REPLACEMENTS = [
-    ("GRASSLAND_",  "HAPPYRANCH_"),   # env var prefix
-    (".grassland",  ".happyranch"),   # dotfile paths
-    ("Grassland",   "HappyRanch"),    # title case
-    ("grassland",   "happyranch"),    # lowercase
-    ("GRASSLAND",   "HAPPYRANCH"),    # residual all-caps
+    ("HAPPYRANCH_",  "HAPPYRANCH_"),   # env var prefix
+    (".happyranch",  ".happyranch"),   # dotfile paths
+    ("HappyRanch",   "HappyRanch"),    # title case
+    ("happyranch",   "happyranch"),    # lowercase
+    ("HAPPYRANCH",   "HAPPYRANCH"),    # residual all-caps
 ]
 
 SKIP_DIRS = {".git", ".venv", "node_modules", "__pycache__", "dist", ".cache"}
 SKIP_FILES = {
     "2026-05-31-happyranch-rename-design.md",  # already correct
-    "openapi.json",                             # no grassland strings
-    "rename_grassland.py",                      # this script itself
+    "openapi.json",                             # no happyranch strings
+    "rename_happyranch.py",                      # this script itself
 }
 SKIP_EXTENSIONS = {
     ".pyc", ".pyo", ".png", ".jpg", ".jpeg", ".gif", ".ico",
@@ -167,7 +167,7 @@ for f in changed:
 
 ```bash
 # Preview what would change without writing
-python3 /tmp/rename_grassland.py 2>&1 | head -20
+python3 /tmp/rename_happyranch.py 2>&1 | head -20
 ```
 
 Do not proceed if the output looks wrong (e.g., modifying files that should be skipped).
@@ -178,7 +178,7 @@ The script writes in-place. Run it:
 
 ```bash
 cd /Users/tangbz/projects/my-opc
-python3 /tmp/rename_grassland.py
+python3 /tmp/rename_happyranch.py
 ```
 
 Expected output: a list of ~140–160 changed files. Verify the list includes:
@@ -188,7 +188,7 @@ Expected output: a list of ~140–160 changed files. Verify the list includes:
 - `src/cli.py`
 - `web/src/lib/auth.ts`
 - `scripts/daemon.sh`
-- `skills/grassland/SKILL.md`
+- `skills/happyranch/SKILL.md`
 
 - [ ] **Step 4: Verify pyproject.toml entry point**
 
@@ -249,7 +249,7 @@ Expected: all tests PASSED.
 ```bash
 cd /Users/tangbz/projects/my-opc
 git add -u
-git commit -m "refactor: rename Grassland → HappyRanch, CLI grassland → happyranch
+git commit -m "refactor: rename HappyRanch → HappyRanch, CLI happyranch → happyranch
 
 Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
 ```
@@ -259,22 +259,22 @@ Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
 ## Task 3: Rename Skills Directory and Shim Script
 
 **Files:**
-- Rename: `skills/grassland/` → `skills/happyranch/`
-- Rename: `skills/happyranch/scripts/grassland` → `skills/happyranch/scripts/happyranch`
-- Update: `~/.claude/skills/grassland` symlink → `~/.claude/skills/happyranch`
+- Rename: `skills/happyranch/` → `skills/happyranch/`
+- Rename: `skills/happyranch/scripts/happyranch` → `skills/happyranch/scripts/happyranch`
+- Update: `~/.claude/skills/happyranch` symlink → `~/.claude/skills/happyranch`
 
-The bulk script already updated `skills/grassland/SKILL.md` content. Now we rename the directories and files, and update the shim script's internal path comment.
+The bulk script already updated `skills/happyranch/SKILL.md` content. Now we rename the directories and files, and update the shim script's internal path comment.
 
 - [ ] **Step 1: Rename the skills directory**
 
 ```bash
-mv /Users/tangbz/projects/my-opc/skills/grassland /Users/tangbz/projects/my-opc/skills/happyranch
+mv /Users/tangbz/projects/my-opc/skills/happyranch /Users/tangbz/projects/my-opc/skills/happyranch
 ```
 
 - [ ] **Step 2: Rename the shim script**
 
 ```bash
-mv /Users/tangbz/projects/my-opc/skills/happyranch/scripts/grassland \
+mv /Users/tangbz/projects/my-opc/skills/happyranch/scripts/happyranch \
    /Users/tangbz/projects/my-opc/skills/happyranch/scripts/happyranch
 chmod +x /Users/tangbz/projects/my-opc/skills/happyranch/scripts/happyranch
 ```
@@ -302,18 +302,18 @@ DEFAULT_PROJECT_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 exec uv --project "${HAPPYRANCH_PROJECT_DIR:-$DEFAULT_PROJECT_DIR}" run happyranch "$@"
 ```
 
-If the `exec uv ... run` line still says `grassland`, fix it manually:
+If the `exec uv ... run` line still says `happyranch`, fix it manually:
 ```bash
-sed -i '' 's/run grassland/run happyranch/g' \
+sed -i '' 's/run happyranch/run happyranch/g' \
     /Users/tangbz/projects/my-opc/skills/happyranch/scripts/happyranch
-sed -i '' 's/GRASSLAND_PROJECT_DIR/HAPPYRANCH_PROJECT_DIR/g' \
+sed -i '' 's/HAPPYRANCH_PROJECT_DIR/HAPPYRANCH_PROJECT_DIR/g' \
     /Users/tangbz/projects/my-opc/skills/happyranch/scripts/happyranch
 ```
 
 - [ ] **Step 4: Update the ~/.claude/skills/ symlink**
 
 ```bash
-rm ~/.claude/skills/grassland
+rm ~/.claude/skills/happyranch
 ln -s /Users/tangbz/projects/my-opc/skills/happyranch ~/.claude/skills/happyranch
 ls -la ~/.claude/skills/happyranch
 ```
@@ -325,7 +325,7 @@ Expected: `~/.claude/skills/happyranch -> /Users/tangbz/projects/my-opc/skills/h
 ```bash
 cd /Users/tangbz/projects/my-opc
 git add skills/
-git commit -m "refactor: rename skills/grassland → skills/happyranch, update shim
+git commit -m "refactor: rename skills/happyranch → skills/happyranch, update shim
 
 Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
 ```
@@ -346,11 +346,11 @@ python3 - <<'EOF'
 from pathlib import Path
 
 REPLACEMENTS = [
-    ("GRASSLAND_",  "HAPPYRANCH_"),
-    (".grassland",  ".happyranch"),
-    ("Grassland",   "HappyRanch"),
-    ("grassland",   "happyranch"),
-    ("GRASSLAND",   "HAPPYRANCH"),
+    ("HAPPYRANCH_",  "HAPPYRANCH_"),
+    (".happyranch",  ".happyranch"),
+    ("HappyRanch",   "HappyRanch"),
+    ("happyranch",   "happyranch"),
+    ("HAPPYRANCH",   "HAPPYRANCH"),
 ]
 
 p = Path("/Users/tangbz/projects/my-opc/CLAUDE.md")
@@ -375,7 +375,7 @@ Expected: The header line should now say `HappyRanch — Multi-Agent Org Runtime
 ```bash
 cd /Users/tangbz/projects/my-opc
 git add CLAUDE.md
-git commit -m "docs(CLAUDE.md): rename Grassland → HappyRanch throughout
+git commit -m "docs(CLAUDE.md): rename HappyRanch → HappyRanch throughout
 
 Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
 ```
@@ -389,7 +389,7 @@ Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
 - [ ] **Step 1: Check if daemon is running and stop it**
 
 ```bash
-~/.grassland/daemon.pid 2>/dev/null && cat ~/.grassland/daemon.pid || echo "no pid file"
+~/.happyranch/daemon.pid 2>/dev/null && cat ~/.happyranch/daemon.pid || echo "no pid file"
 scripts/daemon.sh status 2>/dev/null || echo "daemon not running or script not available"
 ```
 
@@ -401,11 +401,11 @@ scripts/daemon.sh stop
 - [ ] **Step 2: Migrate the daemon home directory**
 
 ```bash
-mv ~/.grassland ~/.happyranch
+mv ~/.happyranch ~/.happyranch
 echo "Migrated: $(ls ~/.happyranch)"
 ```
 
-Expected: lists `daemon.token`, `daemon.port` (if it exists), `runtimes.yaml`, and any other files that were in `~/.grassland`.
+Expected: lists `daemon.token`, `daemon.port` (if it exists), `runtimes.yaml`, and any other files that were in `~/.happyranch`.
 
 - [ ] **Step 3: Reinstall to register the new CLI entry point**
 
@@ -427,10 +427,10 @@ Expected: either `which` finds the binary or `uv run happyranch --help` prints t
 - [ ] **Step 5: Verify the old CLI name is gone**
 
 ```bash
-which grassland 2>/dev/null && echo "WARNING: old grassland binary still present" || echo "OK: grassland binary removed"
+which happyranch 2>/dev/null && echo "WARNING: old happyranch binary still present" || echo "OK: happyranch binary removed"
 ```
 
-Expected: `OK: grassland binary removed`
+Expected: `OK: happyranch binary removed`
 
 ---
 
@@ -456,10 +456,10 @@ npm test -- --run 2>&1 | tail -20
 
 Expected: all tests PASSED.
 
-- [ ] **Step 3: Confirm no residual "grassland" references in executable files**
+- [ ] **Step 3: Confirm no residual "happyranch" references in executable files**
 
 ```bash
-grep -rn "grassland\|GRASSLAND\|Grassland" \
+grep -rn "happyranch\|HAPPYRANCH\|HappyRanch" \
     /Users/tangbz/projects/my-opc/src \
     /Users/tangbz/projects/my-opc/tests \
     /Users/tangbz/projects/my-opc/web/src \

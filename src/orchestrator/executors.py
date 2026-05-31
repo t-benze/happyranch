@@ -251,7 +251,7 @@ class ClaudeExecutor:
         # honoured in headless `-p` mode (observed empirically: Claude Code
         # 2.1.105 records `command_permissions.allowedTools: []` regardless of
         # what's in settings.json). Pass --allowedTools on the CLI instead so
-        # agents can reliably call `grassland ...` callbacks. Per-agent extras come
+        # agents can reliably call `happyranch ...` callbacks. Per-agent extras come
         # from the optional ``allow_rules:`` list in the agent's frontmatter
         # at ``<runtime>/org/agents/<name>.md``.
         from src.orchestrator.workspace_adapters import allow_rules_for_agent
@@ -299,13 +299,13 @@ class CodexExecutor:
             "--sandbox",
             self._sandbox_mode,
             # Codex's `workspace-write` sandbox blocks all outbound sockets by
-            # default, including localhost. The `grassland` CLI talks to the daemon
+            # default, including localhost. The `happyranch` CLI talks to the daemon
             # over 127.0.0.1 via httpx, so without this override the agent's
-            # `grassland report-completion` call dies with
+            # `happyranch report-completion` call dies with
             # `httpx.ConnectError: [Errno 1] Operation not permitted` and the
             # task auto-rejects with "no completion callback" (TASK-080 class
             # of failure). Enable network at the sandbox layer; agent-side
-            # discipline still flows through the sanctioned `grassland` channel.
+            # discipline still flows through the sanctioned `happyranch` channel.
             "-c",
             "sandbox_workspace_write.network_access=true",
             "--skip-git-repo-check",
@@ -329,7 +329,7 @@ class OpencodeExecutor:
     opencode has no `--allowedTools`-style flag; permissions are configured
     via the workspace's ``opencode.json`` (written by
     ``OpencodeWorkspaceAdapter``). Headless runs honor that file directly,
-    so the sanctioned-channel discipline (allow ``grassland`` + agent-specific
+    so the sanctioned-channel discipline (allow ``happyranch`` + agent-specific
     extras, deny everything else) lives in a single surface — cleaner than
     Claude's two-surface settings.json + ``--allowedTools`` workaround.
 

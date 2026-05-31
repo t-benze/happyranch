@@ -11,13 +11,13 @@
 
 ## 1. Goal
 
-`grassland cancel <task>` must be a hard stop. Once the founder cancels a task, no subsequent decision from that task's in-flight session can spawn a child task, overwrite the cancellation status, or rewrite the founder's note.
+`happyranch cancel <task>` must be a hard stop. Once the founder cancels a task, no subsequent decision from that task's in-flight session can spawn a child task, overwrite the cancellation status, or rewrite the founder's note.
 
 ## 2. Motivation — what TASK-497 showed
 
-Founder ran `grassland cancel TASK-497 --cascade` at `2026-05-26T01:57:16.726Z`. Nineteen seconds later TASK-501 was created as a child of TASK-497 and ran to terminal completion, shipping PR #165 against `main` from a task tree the founder had explicitly cancelled.
+Founder ran `happyranch cancel TASK-497 --cascade` at `2026-05-26T01:57:16.726Z`. Nineteen seconds later TASK-501 was created as a child of TASK-497 and ran to terminal completion, shipping PR #165 against `main` from a task tree the founder had explicitly cancelled.
 
-Audit timeline (`grassland audit TASK-497 / TASK-501`):
+Audit timeline (`happyranch audit TASK-497 / TASK-501`):
 
 | Time | Event |
 |---|---|
@@ -38,7 +38,7 @@ End state of TASK-497:
 
 A status row that simultaneously says "blocked, delegated" and "cancelled by founder" is invalid. The founder's note (`"cancelled by founder"`) was overwritten silently.
 
-The blast radius isn't theoretical — PR #165 is real, on GitHub, sitting open, from a lineage the founder cancelled. If the cancel had been issued for cost reasons (production OSS upload), the downstream `grassland scripts submit` flow would have proceeded too.
+The blast radius isn't theoretical — PR #165 is real, on GitHub, sitting open, from a lineage the founder cancelled. If the cancel had been issued for cost reasons (production OSS upload), the downstream `happyranch scripts submit` flow would have proceeded too.
 
 ## 3. Root cause — three missing guards
 
@@ -90,7 +90,7 @@ That's why TASK-497 ended up `blocked(delegated)` with `cancelled_at` set and th
 - **No changes to the Phase 1 / Phase 2 ordering in `cancel_task`.** The "stamp DB before SIGTERM" rationale is correct and load-bearing for the rc=-15 case. We add gates *around* it, not inside it.
 - **No `tasks.cancelled_at`-aware predicate at the SQL UPDATE layer** (e.g., a CAS `WHERE cancelled_at IS NULL` on every `update_task`). Out of scope; a Python-level idempotence check at the call sites is sufficient for v1 and easier to audit.
 - **No retroactive cleanup of historical contradictory rows.** TASK-497 is one known instance; the founder unstuck it manually (TASK-497 transitioned to `failed-cancelled` on 2026-05-26 mid-day). Future occurrences are prevented by this spec; existing rows are not rewritten.
-- **No change to revisit eligibility.** Once a cancelled task is properly `failed-cancelled` (status FAILED + cancelled_at set), `grassland revisit` already accepts it. The bug was a row that *should* have been `failed-cancelled` instead reading as `blocked(delegated)`.
+- **No change to revisit eligibility.** Once a cancelled task is properly `failed-cancelled` (status FAILED + cancelled_at set), `happyranch revisit` already accepts it. The bug was a row that *should* have been `failed-cancelled` instead reading as `blocked(delegated)`.
 - **No new failure_kind for "post-cancel completion."** The completion is *dropped*, not failed — the task was already terminal-by-cancel. A dropped completion produces no new audit row (the existing `task_cancelled` row is the founder-of-record); a debug log is sufficient.
 
 ## 5. Design — three layered guards
@@ -293,7 +293,7 @@ If TASK-497 had a parent (it didn't — it was a root), Guard B would skip the c
 
 - Use `fake_claude_plan_env` to script a manager session that sleeps ~3 seconds and then POSTs a `delegate→worker` completion.
 - Submit a root task, wait for `session_start` audit.
-- Concurrently call `grassland cancel <task-id>` mid-session.
+- Concurrently call `happyranch cancel <task-id>` mid-session.
 - Wait for the manager session to exit (it will POST late).
 - Assertions:
   - The HTTP POST to `/completion` returned 409 `task_not_active` (Guard A).

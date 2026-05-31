@@ -15,7 +15,7 @@ from src.models import TaskRecord, TaskStatus, BlockKind
 
 
 def _mk_listener(tmp_path: Path):
-    db = Database(tmp_path / "grassland.db")
+    db = Database(tmp_path / "happyranch.db")
     audit = AuditLogger(db)
     loop = asyncio.new_event_loop()
 

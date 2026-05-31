@@ -1,4 +1,4 @@
-# Grassland web — architecture notes
+# HappyRanch web — architecture notes
 
 Localhost React SPA bundled into the FastAPI daemon. See
 `docs/superpowers/specs/2026-05-14-web-ui-design.md` for the full web-UI

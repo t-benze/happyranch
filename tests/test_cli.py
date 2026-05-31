@@ -177,7 +177,7 @@ def test_cmd_tasks_shows_assigned_agent_column(capsys):
     """The table must surface which agent owns each task so the founder can
     see at a glance whether a root task is being handled by EH or a worker
     (and, for child tasks, which worker). Without this, distinguishing EH
-    orchestrations from actual worker runs requires drilling into `grassland details`.
+    orchestrations from actual worker runs requires drilling into `happyranch details`.
     """
     from src.cli import cmd_tasks
 
@@ -236,7 +236,7 @@ def test_cmd_tasks_idle_daemon_prints_friendly_message(capsys):
             cmd_tasks(args)
     out = capsys.readouterr().out
     assert "No active runtime" in out
-    assert "grassland use" in out
+    assert "happyranch use" in out
 
 
 def test_cmd_details_handles_404(capsys):
@@ -270,7 +270,7 @@ def test_cmd_run_submits_and_returns_without_streaming(capsys):
     fake.stream.assert_not_called()
     out = capsys.readouterr().out
     assert "TASK-001" in out
-    assert "grassland tail TASK-001" in out
+    assert "happyranch tail TASK-001" in out
 
 
 def test_cmd_run_reads_brief_from_file(tmp_path, capsys):
@@ -352,7 +352,7 @@ def test_cmd_run_idle_daemon_prints_friendly_message(capsys):
             cmd_run(args)
     out = capsys.readouterr().out
     assert "No active runtime" in out
-    assert "grassland use" in out
+    assert "happyranch use" in out
 
 
 def test_cmd_tail_handles_stream_error(capsys):
@@ -399,7 +399,7 @@ def test_cmd_report_completion_posts_with_session_id():
 def test_cmd_report_completion_from_file_posts_loaded_body(tmp_path):
     """--from-file lets agents submit a completion as a single-line command.
     Multi-line bash (backslash continuations) breaks Claude Code's
-    Bash(grassland:*) allow rule because newlines separate subcommands."""
+    Bash(happyranch:*) allow rule because newlines separate subcommands."""
     import json
     from src.cli import cmd_report_completion
 
@@ -1271,7 +1271,7 @@ def test_cmd_tasks_shows_block_kind_when_present(capsys):
 def test_cmd_tasks_renders_team_column(capsys):
     """Regression: the task-list table must read the `team` column, not the
     retired `type` column. Rendering a payload that matches the real API
-    response (no `type` key) used to raise KeyError and crash `grassland tasks`.
+    response (no `type` key) used to raise KeyError and crash `happyranch tasks`.
     """
     from src.cli import cmd_tasks
     from argparse import Namespace
@@ -1734,7 +1734,7 @@ def test_cmd_revisit_submits_without_streaming_on_yes(capsys, monkeypatch):
     fake.stream.assert_not_called()
     out = capsys.readouterr().out
     assert "TASK-072" in out
-    assert "grassland tail TASK-072" in out
+    assert "happyranch tail TASK-072" in out
 
 
 def test_cmd_revisit_reads_note_from_file(tmp_path, capsys, monkeypatch):
@@ -1921,7 +1921,7 @@ def test_cmd_details_shows_footer_only_when_predecessor_has_revisits(capsys):
 
 
 def test_cmd_details_renders_dispatched_from(capsys):
-    """When a task was dispatched from a talk, `grassland details` must show:
+    """When a task was dispatched from a talk, `happyranch details` must show:
     - a `Dispatched from:` header line with the source talk id
     - the dispatcher agent + role pulled from the task_dispatched audit row
     The line appears after the (optional) revisit header and before the
@@ -2019,7 +2019,7 @@ def test_cmd_details_renders_workflow_chain(capsys):
 
 
 def test_cmd_dispatch_happy_path(tmp_path):
-    """`grassland dispatch --from-file ...` POSTs to /talks/{talk_id}/dispatch with
+    """`happyranch dispatch --from-file ...` POSTs to /talks/{talk_id}/dispatch with
     body shaped {brief, target_agent?, team?} — talk_id stays in the URL path
     and is NOT echoed in the request body."""
     import json
@@ -2149,26 +2149,26 @@ def test_cmd_tasks_suffixes_revisit_rows(capsys):
 
 
 def test_resolve_org_explicit_flag_wins(monkeypatch) -> None:
-    monkeypatch.setenv("GRASSLAND_ORG_SLUG", "from-env")
+    monkeypatch.setenv("HAPPYRANCH_ORG_SLUG", "from-env")
     available = ["alpha", "beta"]
     slug = resolve_org_slug(args_org="from-flag", available=available)
     assert slug == "from-flag"
 
 
 def test_resolve_org_env_var(monkeypatch) -> None:
-    monkeypatch.setenv("GRASSLAND_ORG_SLUG", "from-env")
+    monkeypatch.setenv("HAPPYRANCH_ORG_SLUG", "from-env")
     slug = resolve_org_slug(args_org=None, available=["alpha", "from-env"])
     assert slug == "from-env"
 
 
 def test_resolve_org_auto_infer_single(monkeypatch) -> None:
-    monkeypatch.delenv("GRASSLAND_ORG_SLUG", raising=False)
+    monkeypatch.delenv("HAPPYRANCH_ORG_SLUG", raising=False)
     slug = resolve_org_slug(args_org=None, available=["alpha"])
     assert slug == "alpha"
 
 
 def test_resolve_org_zero_orgs_errors(monkeypatch, capsys) -> None:
-    monkeypatch.delenv("GRASSLAND_ORG_SLUG", raising=False)
+    monkeypatch.delenv("HAPPYRANCH_ORG_SLUG", raising=False)
     with pytest.raises(SystemExit):
         resolve_org_slug(args_org=None, available=[])
     err = capsys.readouterr().err
@@ -2176,7 +2176,7 @@ def test_resolve_org_zero_orgs_errors(monkeypatch, capsys) -> None:
 
 
 def test_resolve_org_multi_errors(monkeypatch, capsys) -> None:
-    monkeypatch.delenv("GRASSLAND_ORG_SLUG", raising=False)
+    monkeypatch.delenv("HAPPYRANCH_ORG_SLUG", raising=False)
     with pytest.raises(SystemExit):
         resolve_org_slug(args_org=None, available=["alpha", "beta"])
     err = capsys.readouterr().err
@@ -2184,7 +2184,7 @@ def test_resolve_org_multi_errors(monkeypatch, capsys) -> None:
     assert "beta" in err
 
 
-# ── grassland orgs family (Task 20) ────────────────────────────────
+# ── happyranch orgs family (Task 20) ────────────────────────────────
 
 
 def test_orgs_list_subcommand():
@@ -2308,10 +2308,10 @@ def test_cmd_orgs_unload_basic(capsys):
 
 
 def test_cmd_run_resolves_org_explicit_flag(monkeypatch):
-    """An explicit --org wins over GRASSLAND_ORG_SLUG and over the available list."""
+    """An explicit --org wins over HAPPYRANCH_ORG_SLUG and over the available list."""
     from src.cli import cmd_run
 
-    monkeypatch.setenv("GRASSLAND_ORG_SLUG", "from-env")
+    monkeypatch.setenv("HAPPYRANCH_ORG_SLUG", "from-env")
     fake = MagicMock()
     # /api/v1/orgs reply for _fetch_available_orgs
     fake.get.return_value.status_code = 200
@@ -2331,10 +2331,10 @@ def test_cmd_run_resolves_org_explicit_flag(monkeypatch):
 
 
 def test_cmd_run_resolves_org_via_env_var(monkeypatch):
-    """When --org is unset, GRASSLAND_ORG_SLUG is used."""
+    """When --org is unset, HAPPYRANCH_ORG_SLUG is used."""
     from src.cli import cmd_run
 
-    monkeypatch.setenv("GRASSLAND_ORG_SLUG", "from-env")
+    monkeypatch.setenv("HAPPYRANCH_ORG_SLUG", "from-env")
     fake = MagicMock()
     fake.get.return_value.status_code = 200
     fake.get.return_value.json.return_value = {
@@ -2356,7 +2356,7 @@ def test_cmd_run_resolves_org_auto_infer_single(monkeypatch):
     """No flag, no env, single registered org => auto-infer."""
     from src.cli import cmd_run
 
-    monkeypatch.delenv("GRASSLAND_ORG_SLUG", raising=False)
+    monkeypatch.delenv("HAPPYRANCH_ORG_SLUG", raising=False)
     fake = MagicMock()
     fake.get.return_value.status_code = 200
     fake.get.return_value.json.return_value = {"orgs": [{"slug": "solo"}]}
@@ -2376,7 +2376,7 @@ def test_cmd_run_multi_org_no_flag_no_env_errors(monkeypatch, capsys):
     """Multiple orgs and no flag/env => exit 1 with the available slug list."""
     from src.cli import cmd_run
 
-    monkeypatch.delenv("GRASSLAND_ORG_SLUG", raising=False)
+    monkeypatch.delenv("HAPPYRANCH_ORG_SLUG", raising=False)
     fake = MagicMock()
     fake.get.return_value.status_code = 200
     fake.get.return_value.json.return_value = {

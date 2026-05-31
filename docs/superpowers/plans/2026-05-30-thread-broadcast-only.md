@@ -813,10 +813,10 @@ cd web && npm run build
           "This invocation was minted because a new message was posted to this\n"
           "thread. Every participant gets an invocation on every message — that\n"
           "does NOT mean every participant should reply.\n\n"
-          "Default behavior: call `grassland threads decline --from-file <payload>`\n"
+          "Default behavior: call `happyranch threads decline --from-file <payload>`\n"
           "with no reason. Your invocation is consumed silently; no transcript\n"
           "entry is written.\n\n"
-          "Reply (with `grassland threads reply --from-file <payload>`) only when\n"
+          "Reply (with `happyranch threads reply --from-file <payload>`) only when\n"
           "ALL of the following hold:\n"
           "- The latest message contains a question, request, or hand-off that\n"
           "  you can uniquely answer based on your role.\n"
@@ -1046,7 +1046,7 @@ cd web && npm run build
 
 - [ ] **Step 7: Regenerate OpenAPI snapshot.**
   ```bash
-  GRASSLAND_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py -v
+  HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py -v
   uv run pytest tests/contract/test_openapi_snapshot.py -v
   ```
   Expected: first run regenerates; second confirms snapshot matches.
@@ -1147,7 +1147,7 @@ cd web && npm run build
 
 - [ ] **Step 8: Regenerate OpenAPI snapshot.**
   ```bash
-  GRASSLAND_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py -v
+  HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py -v
   uv run pytest tests/contract/test_openapi_snapshot.py -v
   ```
 
@@ -1593,10 +1593,10 @@ cd web && npm run build
 - [ ] **Smoke-test the daemon + UI together.**
   ```bash
   scripts/daemon.sh restart
-  grassland web
+  happyranch web
   ```
   Compose a fresh 3-agent thread, send a message, observe that:
-  - All three agents get pinged (check `grassland threads show THR-NNN`).
+  - All three agents get pinged (check `happyranch threads show THR-NNN`).
   - The status strip in the web UI shows three "pending" entries under your message.
   - Trigger a manual decline via `curl` if needed; watch the strip flip to "declined".
 

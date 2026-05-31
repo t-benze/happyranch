@@ -3,7 +3,7 @@
 In production the daemon serves the React build from ``web/dist/``. The mount
 location is resolvable in two ways, in order:
 
-1. ``GRASSLAND_WEB_DIST`` environment variable (used by tests).
+1. ``HAPPYRANCH_WEB_DIST`` environment variable (used by tests).
 2. ``<repo>/web/dist`` relative to this source file.
 
 If neither resolves, the daemon renders a small placeholder telling the founder
@@ -34,10 +34,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
 _PLACEHOLDER_HTML = """<!doctype html>
-<html><head><meta charset="utf-8"><title>Grassland — web UI not built</title>
+<html><head><meta charset="utf-8"><title>HappyRanch — web UI not built</title>
 <style>body{font-family:system-ui;background:#0b0d10;color:#e6e6e6;padding:3rem;max-width:42rem;margin:0 auto;line-height:1.5}
 code{background:#1a1d22;padding:.15rem .4rem;border-radius:.25rem}</style></head>
-<body><h1>Grassland web UI is not built</h1>
+<body><h1>HappyRanch web UI is not built</h1>
 <p>Run the following from the repo root, then refresh:</p>
 <pre><code>scripts/build_web.sh</code></pre>
 <p>Or, for development, run <code>npm run dev</code> in the <code>web/</code> directory.</p>
@@ -46,7 +46,7 @@ code{background:#1a1d22;padding:.15rem .4rem;border-radius:.25rem}</style></head
 
 
 def _resolve_dist_dir() -> Path | None:
-    override = os.environ.get("GRASSLAND_WEB_DIST")
+    override = os.environ.get("HAPPYRANCH_WEB_DIST")
     if override:
         p = Path(override)
         return p if p.is_dir() else None

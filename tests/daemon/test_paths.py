@@ -10,8 +10,8 @@ from src.daemon import paths as paths_mod
 
 @pytest.fixture
 def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setenv("GRASSLAND_DAEMON_HOME", str(tmp_path / ".grassland"))
-    return tmp_path / ".grassland"
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / ".happyranch"))
+    return tmp_path / ".happyranch"
 
 
 def test_daemon_home_returns_env_override(tmp_home: Path) -> None:

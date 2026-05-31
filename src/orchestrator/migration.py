@@ -1,6 +1,6 @@
 """One-shot: <runtime>/teams.yaml + agent_enrollments → <runtime>/org/.
 
-Run via: grassland migrate-to-org-runtime <runtime-path> --slug <slug> --i-have-a-backup [--apply]
+Run via: happyranch migrate-to-org-runtime <runtime-path> --slug <slug> --i-have-a-backup [--apply]
 """
 from __future__ import annotations
 
@@ -93,8 +93,8 @@ def migrate_to_org_runtime(
     Steps:
       1. Validate flags.
       2. Detect already-migrated → return early.
-      3. Validate slug consistency with existing grassland.yaml (if any).
-      4. Plan / apply: write grassland.yaml, create org/ skeleton, move teams.yaml,
+      3. Validate slug consistency with existing happyranch.yaml (if any).
+      4. Plan / apply: write happyranch.yaml, create org/ skeleton, move teams.yaml,
          export enrollments, drop agent_enrollments table.
     """
     if not i_have_a_backup:
@@ -103,20 +103,20 @@ def migrate_to_org_runtime(
             "--i-have-a-backup) to acknowledge that you've backed up the runtime folder."
         )
     runtime_path = runtime_path.resolve()
-    marker = runtime_path / "grassland.yaml"
+    marker = runtime_path / "happyranch.yaml"
     if not marker.exists():
         raise ValueError(f"{marker} missing — not a valid pre-cut runtime")
     existing = _load_existing_marker(marker)
     existing_slug = existing.get("slug")
     if existing_slug and existing_slug != slug:
         raise ValueError(
-            f"grassland.yaml slug ({existing_slug!r}) disagrees with --slug ({slug!r})"
+            f"happyranch.yaml slug ({existing_slug!r}) disagrees with --slug ({slug!r})"
         )
     org_dir = runtime_path / "org"
     teams_old = runtime_path / "teams.yaml"
     teams_new = org_dir / "teams.yaml"
 
-    db_path = runtime_path / "grassland.db"
+    db_path = runtime_path / "happyranch.db"
     table_present = False
     rows: list[tuple] = []
     if db_path.exists():
@@ -144,7 +144,7 @@ def migrate_to_org_runtime(
 
     planned: list[str] = []
     if not existing_slug:
-        planned.append(f"write grassland.yaml with slug={slug}, schema_version=1")
+        planned.append(f"write happyranch.yaml with slug={slug}, schema_version=1")
     planned.append(f"create org/ skeleton at {org_dir}")
     if teams_old.exists():
         planned.append(f"move teams.yaml → {teams_new}")
@@ -166,7 +166,7 @@ def migrate_to_org_runtime(
         )
 
     # APPLY ----------------------------------------------------------------
-    # 1. Write/update grassland.yaml.
+    # 1. Write/update happyranch.yaml.
     if not existing_slug:
         payload = {
             "slug": slug,

@@ -16,7 +16,7 @@ from src.infrastructure.database import Database
 
 
 def _mk_listener(tmp_path: Path):
-    db = Database(tmp_path / "grassland.db")
+    db = Database(tmp_path / "happyranch.db")
     audit = AuditLogger(db)
     loop = asyncio.new_event_loop()
     listener = FeishuEventListener(
@@ -106,7 +106,7 @@ def test_script_request_revisit_is_verb_mismatch(tmp_path):
     assert row["consumed_at"] is None
 
     # Audit row uses the script-specific action (not the generic
-    # escalation_reply_rejected) so `grassland audit --action script_*`
+    # escalation_reply_rejected) so `happyranch audit --action script_*`
     # surfaces this rejection.
     audit_rows = db.get_audit_logs(task_id="SR-1")
     actions = {r["action"] for r in audit_rows}

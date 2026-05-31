@@ -3,7 +3,7 @@
 **Date:** 2026-05-23
 **Status:** Draft, pending implementation plan.
 **Relates to:**
-- `docs/superpowers/specs/2026-04-21-opc-revisit-design.md` — the unblock path after a script runs (`grassland revisit <task-id>` with an extended header that surfaces the SR output).
+- `docs/superpowers/specs/2026-04-21-opc-revisit-design.md` — the unblock path after a script runs (`happyranch revisit <task-id>` with an extended header that surfaces the SR output).
 - `docs/superpowers/specs/2026-05-13-threads-design.md` — agent-initiated → founder-review pattern; route shape, SSE conventions, and web feature scaffold reused.
 - `protocol/skills/dispatch/SKILL.md`, `protocol/skills/manage-repo/SKILL.md` — sibling `--from-file` agent callback skills; matching the same single-line invocation discipline.
 - `docs/superpowers/specs/2026-05-14-web-ui-design.md` — three-layer web architecture (lib/api → features/<domain> → components) and OpenAPI snapshot contract.
@@ -18,7 +18,7 @@ The new primitive — **script requests** — is symmetric with threads/talks/di
 
 1. The agent submits an `SR-NNN` row containing the full script text, an interpreter, a rationale, and a working-directory hint.
 2. The founder reviews via CLI or web and either **runs** it (daemon spawns the subprocess, captures stdout/stderr/exit-code, streams output back live) or **rejects** it with a reason.
-3. The agent self-blocks its task referencing the SR-NNN; once the founder has the output, they unblock the work with `grassland revisit <task-id>`, which now surfaces SR outputs in its context header.
+3. The agent self-blocks its task referencing the SR-NNN; once the founder has the output, they unblock the work with `happyranch revisit <task-id>`, which now surfaces SR outputs in its context header.
 
 Use case examples:
 
@@ -34,7 +34,7 @@ Use case examples:
 - Founder-edits-before-run. If the script is wrong, founder rejects with a reason and the agent re-submits. Editing in place re-opens authorship-ambiguity questions ("whose script ran?") we don't want to litigate in v1.
 - Scheduled / cron runs. v1 is on-demand only.
 - Per-script secrets injection (e.g., "fetch X from a vault and substitute"). Daemon runs with whatever env it was launched with; founder is expected to keep credentials in their shell env.
-- Auto-unblock on script completion. The agent self-blocks; the founder uses the existing `grassland revisit` primitive to unblock. No new "task wakes itself" channel.
+- Auto-unblock on script completion. The agent self-blocks; the founder uses the existing `happyranch revisit` primitive to unblock. No new "task wakes itself" channel.
 - Agent-readable output without revisit. Workers cannot poll for their own SR's output mid-task and decide what to do with it — that would re-introduce blocking semantics. Revisit is the only path back into the agent.
 - Script libraries / templates. Each submission is one-shot.
 - Cross-org script submission. SRs are per-org, same as every other primitive.
@@ -49,7 +49,7 @@ Use case examples:
 
 ### 3.1 New table — `script_requests`
 
-Idempotent `CREATE TABLE IF NOT EXISTS` on daemon startup, per-org DB (`<runtime>/orgs/<slug>/grassland.db`):
+Idempotent `CREATE TABLE IF NOT EXISTS` on daemon startup, per-org DB (`<runtime>/orgs/<slug>/happyranch.db`):
 
 ```sql
 CREATE TABLE IF NOT EXISTS script_requests (
@@ -157,8 +157,8 @@ Per-org directory `<runtime>/orgs/<slug>/scripts/` (created on first SR):
 New skill, summarized:
 
 - **When to use:** an executor permission denial (Claude `--allowedTools` reject, opencode `permission.bash` deny, Codex sandbox block); OR a command the agent knows from its `allow_rules` frontmatter that it can't run; OR an operation that genuinely needs founder-grade credentials (`gh` push scopes, `aws`, `stripe`, `ssh` to prod). Should NOT be used for anything the agent could just `chmod +x` and run in its own workspace.
-- **Single-line callback discipline:** write `/tmp/script-<random>.json` with the payload, invoke `grassland scripts submit --from-file /tmp/script-<random>.json` as a single bash line. Same rationale as `report-completion` (Claude permission matcher splits multi-line bash on newlines/`&&`/`;`/`|`).
-- **Lifecycle expectation:** after submit, the agent must self-block the task — finish its session with `report-completion` carrying `status="blocked"` and `summary="Awaiting SR-NNN: <title>"`. The orchestrator's manager will see the block and escalate to the founder. Once the founder runs the SR, they use `grassland revisit <task-id>` to spawn a fresh root with the SR output available in context.
+- **Single-line callback discipline:** write `/tmp/script-<random>.json` with the payload, invoke `happyranch scripts submit --from-file /tmp/script-<random>.json` as a single bash line. Same rationale as `report-completion` (Claude permission matcher splits multi-line bash on newlines/`&&`/`;`/`|`).
+- **Lifecycle expectation:** after submit, the agent must self-block the task — finish its session with `report-completion` carrying `status="blocked"` and `summary="Awaiting SR-NNN: <title>"`. The orchestrator's manager will see the block and escalate to the founder. Once the founder runs the SR, they use `happyranch revisit <task-id>` to spawn a fresh root with the SR output available in context.
 
 Cross-references added to `protocol/skills/start-task/SKILL.md` ("if you hit a permission wall, see `scripts/`") and to the executor adapter docs (manage-repo, manage-agent siblings).
 
@@ -182,7 +182,7 @@ Required: `task_id`, `session_id`, `title`, `rationale`, `script`, `interpreter`
 
 `task_id` and `session_id` are both supplied by the agent (the start-task skill bakes them into the session context, same as `report-completion` / `compose-as-agent`). Agents can run concurrent sessions per the project invariants, so the daemon CANNOT auto-derive `task_id` from "find the active session for this agent" — there may be more than one. Daemon-side validation in §5.1 verifies the session ownership chain.
 
-### 4.3 CLI command — `grassland scripts submit`
+### 4.3 CLI command — `happyranch scripts submit`
 
 Single-line, `--from-file`-only. No flag-form for the payload (consistent with `report-completion`, `manage-repo`, `dispatch`). Output:
 
@@ -194,7 +194,7 @@ Exit 0 on 201 from the daemon; non-zero with a human-readable error otherwise.
 
 ### 4.4 Allow-rule impact
 
-None. The baseline `grassland` prefix already covers `grassland scripts submit`. No agent frontmatter or `.claude/settings.json` edits needed.
+None. The baseline `happyranch` prefix already covers `happyranch scripts submit`. No agent frontmatter or `.claude/settings.json` edits needed.
 
 ## 5. HTTP API
 
@@ -276,7 +276,7 @@ Response 202:
   "id": "SR-019",
   "status": "running",
   "started_at": "2026-05-23T10:18:44Z",
-  "cwd_resolved": "/Users/founder/grassland-runtime/orgs/hk-tour/workspaces/engineering_head/repos/web-app",
+  "cwd_resolved": "/Users/founder/happyranch-runtime/orgs/hk-tour/workspaces/engineering_head/repos/web-app",
   "timeout_seconds": 600,
   "events_url": "/api/v1/orgs/hk-tour/scripts/SR-019/events"
 }
@@ -388,9 +388,9 @@ On clean daemon shutdown (FastAPI lifespan exit), in-flight script subprocesses 
 
 ## 7. Founder CLI
 
-All under `grassland scripts ...`. Talks to the daemon over HTTP using the existing bearer-token client.
+All under `happyranch scripts ...`. Talks to the daemon over HTTP using the existing bearer-token client.
 
-### 7.1 `grassland scripts list [--status pending|all|...] [--agent X] [--task TASK-NNN] [--limit N]`
+### 7.1 `happyranch scripts list [--status pending|all|...] [--agent X] [--task TASK-NNN] [--limit N]`
 
 Default `--status pending`. Output (tabular):
 
@@ -401,7 +401,7 @@ SR-018   payment_agt       TASK-088    running   12s      Stripe refund for orde
 SR-017   qa_engineer       TASK-085    completed 1h       Bulk update test fixtures
 ```
 
-### 7.2 `grassland scripts show SR-NNN`
+### 7.2 `happyranch scripts show SR-NNN`
 
 Prints full record:
 
@@ -423,13 +423,13 @@ Script:
   gh pr close 247 --comment 'Approved and closed per review thread THR-014.'
 
 Founder actions:
-  grassland scripts run SR-019 [--cwd PATH] [--timeout-seconds N]
-  grassland scripts reject SR-019 --reason "..."
+  happyranch scripts run SR-019 [--cwd PATH] [--timeout-seconds N]
+  happyranch scripts reject SR-019 --reason "..."
 ```
 
-For terminal SRs, append the captured output (head of stdout/stderr, with a footer pointing at `grassland scripts output SR-019` for the full read).
+For terminal SRs, append the captured output (head of stdout/stderr, with a footer pointing at `happyranch scripts output SR-019` for the full read).
 
-### 7.3 `grassland scripts run SR-NNN [--cwd PATH] [--timeout-seconds N]`
+### 7.3 `happyranch scripts run SR-NNN [--cwd PATH] [--timeout-seconds N]`
 
 TTY-gated confirmation (no `--yes` bypass — script execution is one of the most dangerous operations in the system, and we want a beat of human attention every time):
 
@@ -438,7 +438,7 @@ About to execute SR-019:
   Agent:       engineering_head
   Task:        TASK-091
   Interpreter: bash
-  Cwd:         /Users/founder/grassland-runtime/orgs/hk-tour/workspaces/engineering_head/repos/web-app
+  Cwd:         /Users/founder/happyranch-runtime/orgs/hk-tour/workspaces/engineering_head/repos/web-app
   Timeout:     300s
 
 Script:
@@ -455,17 +455,17 @@ Output is streamed live via the SSE endpoint. The terminal event determines the 
 
 If stdin is not a TTY, the command fails with `error: scripts run requires a TTY (interactive confirmation). Use the web UI to run non-interactively.` — this is intentional friction; non-TTY automation paths should go through web instead.
 
-### 7.4 `grassland scripts reject SR-NNN [--reason TEXT]`
+### 7.4 `happyranch scripts reject SR-NNN [--reason TEXT]`
 
 If `--reason` is omitted, prompt for it (multi-line, end with `.` on its own line, mirrors existing CLI prompt patterns). Empty reason rejected at CLI before the HTTP call.
 
-### 7.5 `grassland scripts output SR-NNN [--stream stdout|stderr|both] [--max-bytes N]`
+### 7.5 `happyranch scripts output SR-NNN [--stream stdout|stderr|both] [--max-bytes N]`
 
 Plain text dump to stdout. For `--stream both` (default), prints `--- stdout ---\n<...>\n--- stderr ---\n<...>`. Hits `GET /output` under the hood.
 
 ### 7.6 Help integration
 
-`grassland --help` and `grassland scripts --help` updated. `skills/grassland/SKILL.md` (the founder-facing skill at `~/.claude/skills/grassland`) gains a "Script requests" section mirroring the existing "Threads", "Talks", "KB" sections.
+`happyranch --help` and `happyranch scripts --help` updated. `skills/happyranch/SKILL.md` (the founder-facing skill at `~/.claude/skills/happyranch`) gains a "Script requests" section mirroring the existing "Threads", "Talks", "KB" sections.
 
 ## 8. Web UI
 
@@ -514,7 +514,7 @@ Same model as threads: bearer fetched once from `/auth/bootstrap`, attached to H
 
 ### 9.1 Revisit-header extension
 
-`_revisit_header_if_applicable(orch, task_id)` in `src/orchestrator/run_step.py` already prepends a 5-6 line context header pointing at `grassland details` / `grassland audit` / `grassland recall` for the frozen predecessor.
+`_revisit_header_if_applicable(orch, task_id)` in `src/orchestrator/run_step.py` already prepends a 5-6 line context header pointing at `happyranch details` / `happyranch audit` / `happyranch recall` for the frozen predecessor.
 
 Extension: if the predecessor task's audit log contains any `script_submitted` events, append:
 
@@ -524,8 +524,8 @@ This task previously submitted script requests:
   - SR-020 (rejected) — Stripe refund for order #44912
 
 Read the outputs / rejection reasons before continuing:
-  grassland scripts show SR-019
-  grassland scripts output SR-019
+  happyranch scripts show SR-019
+  happyranch scripts output SR-019
 ```
 
 Only completed/failed/rejected SRs are listed (pending/running shouldn't exist on a frozen predecessor in practice — if they do, surface them in the header too with a `[still pending — founder action needed]` marker).
@@ -554,7 +554,7 @@ No "founder cannot submit" check is needed — the founder has no session_id for
 
 | Scenario | Behavior |
 |---|---|
-| Agent submits but never self-blocks | SR stays `pending`; founder sees it in `grassland scripts list` and can run/reject independently of any task state. The agent's task proceeds as if the script weren't needed (which is wrong — but that's an agent-discipline issue, not a system bug). |
+| Agent submits but never self-blocks | SR stays `pending`; founder sees it in `happyranch scripts list` and can run/reject independently of any task state. The agent's task proceeds as if the script weren't needed (which is wrong — but that's an agent-discipline issue, not a system bug). |
 | Founder runs SR but the agent's task already completed | SR completes normally. Output is durable in DB + on disk. Founder can revisit the (now-completed) task to feed the output back into a new session if needed. |
 | Founder rejects SR, agent never sees the reject | Same as above — agent discipline expects self-block + revisit; if the agent didn't self-block, the reject is just an audit row the founder reads. Spec-level fix: the `start-task` skill cross-reference will say "always self-block after `scripts submit`." |
 | Daemon crashes mid-run | On restart, the recovery scan in §6.6 transitions in-flight SRs to `failed` with `reason=killed_daemon_restart`. Partial output on disk is preserved. |
@@ -597,12 +597,12 @@ None. New table on existing DBs (idempotent `CREATE TABLE IF NOT EXISTS`). No da
 2. `POST /submit` route + bearer auth gate.
 3. Subprocess execution helper (`src/daemon/scripts_runner.py` — new module).
 4. `POST /run`, `POST /reject`, `GET /`, `GET /{id}`, `GET /{id}/output`, `GET /{id}/events`.
-5. `grassland scripts submit|list|show|run|reject|output` CLI commands.
+5. `happyranch scripts submit|list|show|run|reject|output` CLI commands.
 6. `protocol/skills/scripts/SKILL.md` + cross-references from `start-task` and adapter docs.
 7. Revisit-header extension in `_revisit_header_if_applicable`.
 8. Web `lib/api/scripts.ts` + `features/scripts/` (list, detail, run modal, reject modal, SSE output).
 9. Audit-page deep-link, agent-page recent-SRs section, task-drawer SRs-from-task section.
 10. Integration test with the dual-plan `fake_claude.sh` extension.
-11. README + `skills/grassland/SKILL.md` updates.
+11. README + `skills/happyranch/SKILL.md` updates.
 
 Each step is independently merge-safe — the partial state (e.g., daemon route exists but no CLI yet) doesn't break anything because no agent will start using `scripts submit` until the skill cross-reference is in.

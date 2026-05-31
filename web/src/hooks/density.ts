@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react';
 
 export type Density = 'comfortable' | 'compact';
-const KEY = 'grassland.density';
+const KEY = 'happyranch.density';
 
 function readInitial(): Density {
   const v = typeof window !== 'undefined' ? window.localStorage.getItem(KEY) : null;

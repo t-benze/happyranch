@@ -10,7 +10,7 @@ from src.infrastructure.database import Database
 
 @pytest.fixture()
 def db(tmp_path: Path) -> Database:
-    return Database(tmp_path / "grassland.db")
+    return Database(tmp_path / "happyranch.db")
 
 
 def test_mint_escalation_notification_defaults_to_escalation_kind(db: Database):

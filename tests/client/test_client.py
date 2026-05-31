@@ -17,9 +17,9 @@ from src.daemon import paths as paths_mod
 
 @pytest.fixture
 def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setenv("GRASSLAND_DAEMON_HOME", str(tmp_path / ".grassland"))
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / ".happyranch"))
     paths_mod.ensure_daemon_home()
-    return tmp_path / ".grassland"
+    return tmp_path / ".happyranch"
 
 
 def test_missing_port_raises_daemon_not_running(tmp_home: Path) -> None:

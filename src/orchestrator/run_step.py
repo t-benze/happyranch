@@ -660,8 +660,8 @@ def _revisit_header_if_applicable(orch: "Orchestrator", task_id: str) -> str | N
     if note:
         lines.append(f"Founder note: {note}")
     lines.append(
-        f"Inspect via: `grassland details {predecessor}`, "
-        f"`grassland audit {predecessor}`, `grassland recall {predecessor}`."
+        f"Inspect via: `happyranch details {predecessor}`, "
+        f"`happyranch audit {predecessor}`, `happyranch recall {predecessor}`."
     )
     lines.append(
         "You may reuse successful sub-tasks' artifacts (referenced by path in "
@@ -704,8 +704,8 @@ def _revisit_header_if_applicable(orch: "Orchestrator", task_id: str) -> str | N
                 except Exception:
                     payload_e = {}
             job_id = payload_e.get("script_request_id", "JOB-?")
-            lines.append(f"  grassland jobs show {job_id}")
-            lines.append(f"  grassland jobs output {job_id}")
+            lines.append(f"  happyranch jobs show {job_id}")
+            lines.append(f"  happyranch jobs output {job_id}")
 
     return "\n".join(lines) + "\n\n"
 
@@ -756,8 +756,8 @@ def _auto_revisit_header(payload: dict) -> str:
         f"Failure: {err_summary}",
         "Cascade chain (predecessor root -> failed task): "
         + " -> ".join(cascade),
-        f"Inspect via: `grassland details {predecessor}`, "
-        f"`grassland audit {predecessor}`, `grassland recall {predecessor}`.",
+        f"Inspect via: `happyranch details {predecessor}`, "
+        f"`happyranch audit {predecessor}`, `happyranch recall {predecessor}`.",
         "Re-evaluate the approach — the failure may be transient (worth "
         "the same plan with a fresh subprocess) or structural (a different "
         "decomposition is needed). Decide accordingly.",
@@ -815,8 +815,8 @@ def _blocked_jobs_resume_header_if_applicable(
     for jid in job_ids:
         status = outcomes.get(jid, "unknown")
         lines.append(f"  {jid}  {status}")
-        lines.append(f"          → grassland jobs show {jid}")
-        lines.append(f"          → grassland jobs output {jid}")
+        lines.append(f"          → happyranch jobs show {jid}")
+        lines.append(f"          → happyranch jobs output {jid}")
     lines.append("")
     lines.append("Re-read your task brief; decide whether to proceed, retry, or escalate.")
     lines.append("======================================")
@@ -1327,7 +1327,7 @@ def _classify_failure_kind(result, report, *, mode: str) -> str:
         ``session_timeout_seconds`` (executors.py:197 writes
         ``"Session timed out after {N} seconds"`` into ``result.error``).
       - ``no_callback`` — rc=0 but no completion callback (TASK-045 class:
-        agent exited clean without invoking ``grassland report-completion``).
+        agent exited clean without invoking ``happyranch report-completion``).
       - ``rate_limit`` — executor reported a provider rate limit on stdout/
         stderr/error (e.g., Claude's "hit your limit · resets at HH:MM").
       - ``executor_error`` — subprocess exited with non-zero ``returncode``;
@@ -1786,7 +1786,7 @@ def _session_failed_note(result, report) -> str:
     """Build an enriched `agent session failed` note.
 
     The pre-TASK-045 version wrote a bare constant string, so when the
-    Claude subprocess finished without calling `grassland report-completion`
+    Claude subprocess finished without calling `happyranch report-completion`
     there was no trace of WHY — rc, stderr, and stdout were all dropped
     on the floor. Now we surface rc and the tail of stderr (or stdout,
     if stderr is empty) so the next class-of-TASK-045 failure is

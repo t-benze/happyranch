@@ -93,13 +93,13 @@ def test_codex_adapter_bootstrap_creates_agents_md_and_skills_tree(test_settings
     assert ".claude/skills" not in body
     assert ".claude/settings.json" not in body
     assert "PreToolUse" not in body
-    assert "Bash(grassland:*)" not in body
+    assert "Bash(happyranch:*)" not in body
 
 
 def test_copy_skills_substitutes_org_slug(tmp_path: Path, monkeypatch) -> None:
     """`_copy_skills` must replace `{ORG_SLUG}` in every copied .md file with
     the adapter's own slug. Skills source is shared across orgs, but each
-    workspace ends up with its own org's slug baked into the example `grassland`
+    workspace ends up with its own org's slug baked into the example `happyranch`
     invocations so agent callbacks always carry `--org`.
     """
     from src.config import Settings
@@ -107,7 +107,7 @@ def test_copy_skills_substitutes_org_slug(tmp_path: Path, monkeypatch) -> None:
     proto = tmp_path / "protocol" / "skills" / "start-task"
     proto.mkdir(parents=True)
     (proto / "SKILL.md").write_text(
-        "Run: grassland report-completion --org {ORG_SLUG} --task-id ...\n"
+        "Run: happyranch report-completion --org {ORG_SLUG} --task-id ...\n"
     )
     monkeypatch.setattr(
         "src.orchestrator.workspace_adapters._SKILLS_SRC",
@@ -170,7 +170,7 @@ def test_opencode_json_strict_deny_default_with_opc_baseline(
     test_settings, tmp_dir, runtime,
 ):
     """opencode.json must default to ``bash.*: deny`` and explicitly allow
-    only sanctioned prefixes. The baseline ``grassland *`` is always allowed; an
+    only sanctioned prefixes. The baseline ``happyranch *`` is always allowed; an
     agent without per-agent extras gets exactly the baseline."""
     skills_root = test_settings.get_protocol_dir() / "skills"
     (skills_root / "start-task").mkdir(parents=True)
@@ -188,7 +188,7 @@ def test_opencode_json_strict_deny_default_with_opc_baseline(
     config = json.loads((workspace / "opencode.json").read_text())
     bash = config["permission"]["bash"]
     assert bash["*"] == "deny"
-    assert bash["grassland *"] == "allow"
+    assert bash["happyranch *"] == "allow"
     # No --dangerously-skip-permissions surrogate (e.g. global "*" allow).
     assert config["permission"].get("*") != "allow"
 
@@ -231,7 +231,7 @@ def test_opencode_json_includes_agent_specific_allow_rules(
     )
 
     bash = json.loads((workspace / "opencode.json").read_text())["permission"]["bash"]
-    assert bash["grassland *"] == "allow"
+    assert bash["happyranch *"] == "allow"
     assert bash["gh pr close *"] == "allow"
     assert bash["gh issue close *"] == "allow"
     # Guardrail: scopes that are NOT in allow_rules must not leak in.
@@ -297,9 +297,9 @@ def test_claude_md_includes_shared_assets_section(tmp_path: Path) -> None:
     adapter.write_claude_md(workspace, "dev_agent", "You are dev_agent.")
     content = (workspace / "CLAUDE.md").read_text()
     assert "## Shared Assets" in content
-    assert "grassland assets put" in content
-    assert "grassland assets list" in content
-    assert "grassland assets get" in content
+    assert "happyranch assets put" in content
+    assert "happyranch assets list" in content
+    assert "happyranch assets get" in content
 
 
 def test_codex_agents_md_includes_shared_assets_section(tmp_path: Path) -> None:
@@ -313,9 +313,9 @@ def test_codex_agents_md_includes_shared_assets_section(tmp_path: Path) -> None:
     adapter.write_agents_md(workspace, "dev_agent", "You are dev_agent.")
     content = (workspace / "AGENTS.md").read_text()
     assert "## Shared Assets" in content
-    assert "grassland assets put" in content
-    assert "grassland assets list" in content
-    assert "grassland assets get" in content
+    assert "happyranch assets put" in content
+    assert "happyranch assets list" in content
+    assert "happyranch assets get" in content
 
 
 def test_opencode_agents_md_includes_shared_assets_section(tmp_path: Path) -> None:
@@ -329,9 +329,9 @@ def test_opencode_agents_md_includes_shared_assets_section(tmp_path: Path) -> No
     adapter.write_agents_md(workspace, "dev_agent", "You are dev_agent.")
     content = (workspace / "AGENTS.md").read_text()
     assert "## Shared Assets" in content
-    assert "grassland assets put" in content
-    assert "grassland assets list" in content
-    assert "grassland assets get" in content
+    assert "happyranch assets put" in content
+    assert "happyranch assets list" in content
+    assert "happyranch assets get" in content
 
 
 def test_claude_md_warns_about_non_stop_commands(tmp_path: Path) -> None:
@@ -406,7 +406,7 @@ def test_claude_md_includes_thread_talk_dispatch_doctrine(tmp_path: Path) -> Non
     assert "thread_dispatch_must_be_self" in content
     assert "talk_dispatch_must_be_self" in content
     # The recommended alternative path: compose for cross-agent work.
-    assert "grassland threads compose" in content
+    assert "happyranch threads compose" in content
 
 
 def test_codex_agents_md_includes_thread_talk_dispatch_doctrine(tmp_path: Path) -> None:
@@ -447,7 +447,7 @@ def _assert_task_completion_format_section(content: str) -> None:
     assert "## Task Completion Format" in content
     # Routes the agent at the canonical source rather than restating the schema
     assert "start-task" in content
-    assert "grassland report-completion --from-file" in content
+    assert "happyranch report-completion --from-file" in content
     # Universal prose-summary items the agent should hit
     assert "Findings, risks, or concerns" in content
     assert "founder decision" in content

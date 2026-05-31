@@ -25,7 +25,7 @@ function stubBaseHandlers() {
 
 describe('ThreadsPage — write path', () => {
   test('NewThreadDialog posts compose body and navigates to the new thread', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     stubBaseHandlers();
     let body: unknown = null;
     server.use(
@@ -85,7 +85,7 @@ describe('ThreadsPage — write path', () => {
   });
 
   test('Composer posts a follow-up message', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     stubBaseHandlers();
     let body: unknown = null;
     server.use(

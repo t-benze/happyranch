@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 class WorkspaceNotInitialized(RuntimeError):
     """Raised when an agent workspace is missing required skill files.
 
-    Workspace bootstrap is an explicit, operator-driven step (`grassland init-agent`)
+    Workspace bootstrap is an explicit, operator-driven step (`happyranch init-agent`)
     rather than an implicit side-effect of task runs. If the orchestrator
     discovers the workspace isn't ready, it fails fast with an actionable
     message instead of silently rejecting the task.
@@ -96,7 +96,7 @@ class Orchestrator:
     def attach_sessions(self, tracker: "SessionTracker") -> None:
         """Daemon boot wires its SessionTracker so each spawned subprocess is
         registered as the active session for (task_id, agent) BEFORE the
-        agent's `grassland report-completion` callback can land. Without this, the
+        agent's `happyranch report-completion` callback can land. Without this, the
         completion endpoint rejects every callback as `unknown_session` (409)
         and the task fails silently with note="agent session failed"."""
         self._sessions = tracker
@@ -252,11 +252,11 @@ class Orchestrator:
         """Resolve the per-session timeout, walking task -> org -> settings.
 
         Per-task override lives on the `tasks` row's `session_timeout_seconds`
-        column — set by `grassland revisit --session-timeout-seconds` and inherited
+        column — set by `happyranch revisit --session-timeout-seconds` and inherited
         from parent on delegate / from predecessor root on revisit. Org
         override lives in `<runtime>/org/config.yaml`. Either being absent
         (or NULL) falls through to the next layer; the global Settings default
-        is the final floor and is itself overridable via GRASSLAND_SESSION_TIMEOUT_SECONDS.
+        is the final floor and is itself overridable via HAPPYRANCH_SESSION_TIMEOUT_SECONDS.
 
         ``agent_name`` is unused today but kept on the signature for callers
         and future per-agent overrides we don't have a mechanism for yet.
@@ -473,17 +473,17 @@ class Orchestrator:
         # The orchestrator relies on the start-task skill to bridge prompt →
         # agent work → completion callback. If the workspace was bootstrapped
         # before skills existed (or the user wiped it), the agent never calls
-        # `grassland report-completion` and the task silently rejects. Fail fast
+        # `happyranch report-completion` and the task silently rejects. Fail fast
         # with an actionable message instead.
         skill_marker = self._readiness_marker(workspace, provider)
         if not skill_marker.exists():
             raise WorkspaceNotInitialized(
                 f"workspace for {agent_name!r} is not initialized "
-                f"(missing {skill_marker}). Run `grassland init-agent {agent_name}` "
+                f"(missing {skill_marker}). Run `happyranch init-agent {agent_name}` "
                 f"to bootstrap it."
             )
 
-        # Workspace is initialized once at `grassland init-agent` — not per session.
+        # Workspace is initialized once at `happyranch init-agent` — not per session.
         # Brief is injected here:
         brief = task.brief if task else ""
         session_id = self._build_session_id()

@@ -223,7 +223,7 @@ The single new highlight.js theme CSS is imported once from `web/src/styles.css`
 
 ### 5.4 Draft persistence
 
-- Storage key: `grassland:draft:<org_slug>:<thread_id>`.
+- Storage key: `happyranch:draft:<org_slug>:<thread_id>`.
 - Hook: `useThreadDraft(threadId)` returns `{ draft, setDraft, clearDraft }`. Reads on mount, writes debounced 300 ms.
 - On successful `onSend`: `clearDraft()`. On failed send: draft stays.
 - Per-draft cap: 65,536 characters (`draft.length`). Larger drafts skip persistence silently (one `console.debug`, no UI). No cross-tab sync.

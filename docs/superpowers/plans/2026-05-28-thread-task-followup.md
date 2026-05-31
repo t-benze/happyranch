@@ -210,7 +210,7 @@ def test_reply_admits_task_followup_purpose(live_daemon, runtime):
     # Manually mint a TASK_FOLLOWUP invocation.
     from src.infrastructure.database import Database
     from src.models import ThreadInvocationPurpose
-    db = Database(runtime / "orgs" / "test" / "grassland.db")
+    db = Database(runtime / "orgs" / "test" / "happyranch.db")
     inv = db.mint_thread_invocation(
         thread_id=thread_id, agent_name="dev_agent",
         triggering_seq=seq, purpose=ThreadInvocationPurpose.TASK_FOLLOWUP,
@@ -306,7 +306,7 @@ def test_purpose_note_task_followup_renders_task_id_and_status():
     )
     assert "TASK-007" in note
     assert "completed" in note
-    assert "grassland details" in note
+    assert "happyranch details" in note
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -337,7 +337,7 @@ def _purpose_note(
         return (
             f"Task {task_id} that you dispatched from this thread reached "
             f"`{status}`. Compose a follow-up reply with the result (pull "
-            f"details via `grassland details {task_id}`), or decline if "
+            f"details via `happyranch details {task_id}`), or decline if "
             f"there is nothing substantive to add. Dispatching a new task "
             f"from this turn is not allowed; mention any new action in the "
             f"reply and let the founder loop in."
@@ -1092,14 +1092,14 @@ thread_id=$1; token=$2; agent=$3; org=$4; purpose=$5
 if [ "$purpose" = "task_followup" ]; then
   payload=$(mktemp)
   printf '{"thread_id":"%s","invocation_token":"%s","speaker":"%s","body_markdown":"task done, here is the link","in_response_to_seq":3}' "$thread_id" "$token" "$agent" > "$payload"
-  grassland threads reply --org "$org" --thread-id "$thread_id" --from-file "$payload"
+  happyranch threads reply --org "$org" --thread-id "$thread_id" --from-file "$payload"
 else
   # First turn: reply + dispatch
   dispatch_payload=$(mktemp); reply_payload=$(mktemp)
   printf '{"thread_id":"%s","invocation_token":"%s","dispatcher":"%s","brief":"do the thing"}' "$thread_id" "$token" "$agent" > "$dispatch_payload"
-  grassland threads dispatch --org "$org" --thread-id "$thread_id" --from-file "$dispatch_payload"
+  happyranch threads dispatch --org "$org" --thread-id "$thread_id" --from-file "$dispatch_payload"
   printf '{"thread_id":"%s","invocation_token":"%s","speaker":"%s","body_markdown":"dispatched, will report back","in_response_to_seq":1}' "$thread_id" "$token" "$agent" > "$reply_payload"
-  grassland threads reply --org "$org" --thread-id "$thread_id" --from-file "$reply_payload"
+  happyranch threads reply --org "$org" --thread-id "$thread_id" --from-file "$reply_payload"
 fi
 ''')
     fake_claude_thread_plan_env.chmod(0o755)
@@ -1109,7 +1109,7 @@ fi
 task_id=$1; session_id=$2; agent=$3; org=$4
 payload=$(mktemp)
 printf '{"task_id":"%s","session_id":"%s","status":"completed","output_summary":"report uploaded"}' "$task_id" "$session_id" > "$payload"
-grassland report-completion --from-file "$payload"
+happyranch report-completion --from-file "$payload"
 ''')
     fake_claude_plan_env.chmod(0o755)
 
@@ -1156,7 +1156,7 @@ n=$(cat "{counter}" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "{counter}"
 if [ "$n" = "1" ]; then exit 1; fi  # first attempt: no callback → auto-revisit
 payload=$(mktemp)
 printf '{{"task_id":"%s","session_id":"%s","status":"completed","output_summary":"after revisit"}}' "$task_id" "$session_id" > "$payload"
-grassland report-completion --from-file "$payload"
+happyranch report-completion --from-file "$payload"
 ''')
     fake_claude_plan_env.chmod(0o755)
     # Same thread plan as the prior test.
@@ -1252,9 +1252,9 @@ Expected: all integration tests pass, including the 3 new ones.
 
 ```bash
 # Replay the THR-002 shape:
-grassland threads compose --org family --recipients family_manager --subject "smoke followup" --body "please test"
+happyranch threads compose --org family --recipients family_manager --subject "smoke followup" --body "please test"
 # Wait for manager reply + dispatch + task completion
-grassland threads show <new-thread-id>
+happyranch threads show <new-thread-id>
 # Expect: founder, manager reply, system task_dispatched, system task_completed, manager followup reply
 ```
 

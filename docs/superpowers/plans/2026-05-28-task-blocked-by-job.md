@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a `blocked_on_job` task state so agents can self-block on N jobs and the system auto-resumes the task once every listed job is terminal — eliminating the manual `grassland revisit` step that today gates the unblock for `review_required=false` jobs.
+**Goal:** Add a `blocked_on_job` task state so agents can self-block on N jobs and the system auto-resumes the task once every listed job is terminal — eliminating the manual `happyranch revisit` step that today gates the unblock for `review_required=false` jobs.
 
 **Architecture:** State transitions stay inside `run_step_impl` (the orchestrator owns task state). The resume helper is read-only — predicate-check + enqueue. Three callers fire the helper: jobs-runner terminal hook, self-block submission (inside `run_step_impl`), startup-recovery scan. A new entry-state branch in `run_step_impl` step 1 admits `BLOCKED + BLOCKED_ON_JOB`; the existing CAS at step 3 atomically flips `blocked → in_progress` and writes the `task_resumed_from_jobs` audit row.
 
@@ -54,7 +54,7 @@ Report HIGH/CRITICAL findings to the user before proceeding. After each commit, 
 - `src/daemon/jobs_runner.py` — caller A terminal hook
 - `src/daemon/app.py` — caller C startup recovery scan
 - `protocol/skills/jobs/SKILL.md` — rewrite "After submitting" section
-- `src/cli.py` (or equivalent client) — extend `grassland details` output
+- `src/cli.py` (or equivalent client) — extend `happyranch details` output
 - `CLAUDE.md` — three documentation sections
 
 ---
@@ -1686,7 +1686,7 @@ def test_resume_header_rendered_after_audit_row(db_and_orch):
     assert "BLOCKED-JOBS-RESULTS" in header
     assert "JOB-1" in header
     assert "completed" in header
-    assert "grassland jobs show JOB-1" in header
+    assert "happyranch jobs show JOB-1" in header
 
 
 def test_resume_header_skipped_after_step_runs(db_and_orch):
@@ -1778,8 +1778,8 @@ def _blocked_jobs_resume_header_if_applicable(
     for jid in job_ids:
         status = outcomes.get(jid, "unknown")
         lines.append(f"  {jid}  {status}")
-        lines.append(f"          → grassland jobs show {jid}")
-        lines.append(f"          → grassland jobs output {jid}")
+        lines.append(f"          → happyranch jobs show {jid}")
+        lines.append(f"          → happyranch jobs output {jid}")
     lines.append("")
     lines.append("Re-read your task brief; decide whether to proceed, retry, or escalate.")
     lines.append("======================================")
@@ -2157,11 +2157,11 @@ with `status=blocked` and `waiting_on_job_ids` populated:
 The system resumes your task automatically once **every** listed job reaches a
 terminal state (`completed`, `failed`, or `rejected`). When you resume, your
 bootstrap doc will include a `BLOCKED-JOBS-RESULTS` section listing each job's
-status and `grassland jobs show JOB-NNN` / `grassland jobs output JOB-NNN`
+status and `happyranch jobs show JOB-NNN` / `happyranch jobs output JOB-NNN`
 commands to fetch full output. **You don't poll.**
 
 If you need to stay in-session for a fast `review_required=false` job, the
-existing `grassland jobs wait JOB-NNN --timeout-seconds 30` pattern still works.
+existing `happyranch jobs wait JOB-NNN --timeout-seconds 30` pattern still works.
 Prefer block-and-resume for any wait long enough to risk session timeout.
 ```
 
@@ -2174,10 +2174,10 @@ git commit -m "docs(jobs-skill): document block-on-jobs + auto-resume flow"
 
 ---
 
-## Task 18: Extend `grassland details` with blocked-on-jobs subsection
+## Task 18: Extend `happyranch details` with blocked-on-jobs subsection
 
 **Files:**
-- Modify: `src/cli.py` (or wherever `grassland details` is implemented)
+- Modify: `src/cli.py` (or wherever `happyranch details` is implemented)
 - Test: `tests/cli/test_details_blocked_on_jobs.py` (new)
 
 - [ ] **Step 1: Locate the details printer**
@@ -2192,7 +2192,7 @@ Create `tests/cli/test_details_blocked_on_jobs.py`:
 
 ```python
 def test_details_renders_blocked_on_jobs_subsection(...):
-    """`grassland details TASK-1` on a BLOCKED+BLOCKED_ON_JOB task shows the
+    """`happyranch details TASK-1` on a BLOCKED+BLOCKED_ON_JOB task shows the
     JOB-NNN list with each job's current status."""
     # Setup TASK-1 BLOCKED+BLOCKED_ON_JOB(["JOB-1", "JOB-2"]) with JOB-1=running, JOB-2=completed
     # Call the details handler, capture stdout
@@ -2218,7 +2218,7 @@ if task.block_kind == BlockKind.BLOCKED_ON_JOB:
 
 ```bash
 git add src/cli.py tests/cli/test_details_blocked_on_jobs.py
-git commit -m "feat(cli): render Blocked-on-jobs subsection in grassland details"
+git commit -m "feat(cli): render Blocked-on-jobs subsection in happyranch details"
 ```
 
 ---
@@ -2247,7 +2247,7 @@ def test_blocks_on_job_then_auto_resumes(daemon_with_org, fake_claude_plan_env):
     # Stage 1: agent submits a job (e.g. echo hi) + report-completion status=blocked
     #          with waiting_on_job_ids=[<JOB-id>].
     # Stage 2: agent sees BLOCKED-JOBS-RESULTS in prompt, asserts JOB output is
-    #          visible via grassland jobs show, then completes.
+    #          visible via happyranch jobs show, then completes.
     # Test: dispatch TASK; wait for terminal; assert task=completed AND the
     # agent's stage 2 was invoked.
 ```
@@ -2385,7 +2385,7 @@ The orchestrator-owned `TaskStatus` is `{pending, in_progress, blocked, complete
 Find the existing **"Non-obvious invariants:"** list in the "Jobs (founder-approved + agent-autonomous)" section. Append:
 
 ```markdown
-- **Auto-resume on terminal supersedes founder revisit for blocked-on-job tasks.** The original spec (§2) listed "no task wakes itself" as a non-goal; the 2026-05-28 task-blocked-by-job design reverses that. Agents now self-block with `waiting_on_job_ids` and resume automatically. The `grassland revisit` path remains valid as a founder-driven override (e.g., "give up on JOB-X, start over").
+- **Auto-resume on terminal supersedes founder revisit for blocked-on-job tasks.** The original spec (§2) listed "no task wakes itself" as a non-goal; the 2026-05-28 task-blocked-by-job design reverses that. Agents now self-block with `waiting_on_job_ids` and resume automatically. The `happyranch revisit` path remains valid as a founder-driven override (e.g., "give up on JOB-X, start over").
 ```
 
 - [ ] **Step 4: Add a new top-level section**
@@ -2413,7 +2413,7 @@ uv run pytest tests/ -v -m integration  # end-to-end
 Expected: every test passes. Run the contract test to confirm the OpenAPI snapshot still matches (no new public route was added; only request body fields changed, which the snapshot will catch):
 
 ```bash
-GRASSLAND_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py -v
+HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py -v
 ```
 
 If the snapshot diff is just the new `waiting_on_job_ids` field on `CompletionBody`, commit the updated snapshot:

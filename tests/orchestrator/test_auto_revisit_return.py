@@ -13,7 +13,7 @@ def _build_orch_with_task(tmp_path: Path, predecessor_root_status: str):
     from src.infrastructure.audit_logger import AuditLogger
     from src.models import TaskRecord, TaskStatus
 
-    db = Database(tmp_path / "grassland.db")
+    db = Database(tmp_path / "happyranch.db")
     db.insert_task(TaskRecord(
         id="TASK-1", brief="x", team="engineering",
         assigned_agent="manager", status=TaskStatus(predecessor_root_status),
@@ -64,7 +64,7 @@ def test_returns_false_when_task_cancelled(tmp_path: Path):
     from src.models import TaskRecord, TaskStatus
     from src.orchestrator.run_step import _maybe_spawn_auto_revisit
 
-    db = Database(tmp_path / "grassland.db")
+    db = Database(tmp_path / "happyranch.db")
     db.insert_task(TaskRecord(
         id="TASK-1", brief="x", team="engineering",
         assigned_agent="manager", status=TaskStatus.FAILED,

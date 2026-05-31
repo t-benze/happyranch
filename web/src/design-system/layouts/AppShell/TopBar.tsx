@@ -82,7 +82,7 @@ export function TopBar(): JSX.Element {
       role="banner"
       className="border-border bg-bg-subtle flex h-12 shrink-0 items-center gap-4 border-b px-4"
     >
-      <div className="text-fg font-semibold">Grassland</div>
+      <div className="text-fg font-semibold">HappyRanch</div>
       <Select
         value={activeSlug ?? undefined}
         onValueChange={(target) => {

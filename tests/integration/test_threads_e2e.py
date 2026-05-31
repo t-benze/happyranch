@@ -88,7 +88,7 @@ def test_compose_reply_archive_writes_transcript(
         'printf \'{"thread_id":"%s","invocation_token":"%s","speaker":"%s",'
         '"body_markdown":"hello from %s","in_response_to_seq":1}\' '
         '"$thread_id" "$token" "$agent" "$agent" > "$payload"\n'
-        'grassland threads reply --org "$org" --thread-id "$thread_id" --from-file "$payload"\n'
+        'happyranch threads reply --org "$org" --thread-id "$thread_id" --from-file "$payload"\n'
     )
     fake_claude_thread_plan_env.chmod(0o755)
 
@@ -137,7 +137,7 @@ def test_agent_dispatch_from_thread_creates_task(
     fake_claude_plan_env,
     fake_claude_thread_plan_env,
 ):
-    """Fake agent issues `grassland threads dispatch` from inside a thread invocation;
+    """Fake agent issues `happyranch threads dispatch` from inside a thread invocation;
     the system message lands AND the new task is enqueued + run by the daemon."""
     port = live_daemon
     base = f"http://127.0.0.1:{port}/api/v1/orgs/test"
@@ -157,7 +157,7 @@ def test_agent_dispatch_from_thread_creates_task(
         '  printf \'{"thread_id":"%s","invocation_token":"%s","speaker":"%s",'
         '"body_markdown":"already dispatched","in_response_to_seq":1}\' '
         '"$thread_id" "$token" "$agent" > "$payload"\n'
-        '  grassland threads reply --org "$org" --thread-id "$thread_id" --from-file "$payload"\n'
+        '  happyranch threads reply --org "$org" --thread-id "$thread_id" --from-file "$payload"\n'
         '  exit 0\n'
         'fi\n'
         'touch "$state_file"\n'
@@ -165,13 +165,13 @@ def test_agent_dispatch_from_thread_creates_task(
         'dispatch=$(mktemp)\n'
         'printf \'{"thread_id":"%s","invocation_token":"%s","dispatcher":"%s",'
         '"brief":"do the thing"}\' "$thread_id" "$token" "$agent" > "$dispatch"\n'
-        'grassland threads dispatch --org "$org" --thread-id "$thread_id" --from-file "$dispatch"\n'
+        'happyranch threads dispatch --org "$org" --thread-id "$thread_id" --from-file "$dispatch"\n'
         '\n'
         'reply=$(mktemp)\n'
         'printf \'{"thread_id":"%s","invocation_token":"%s","speaker":"%s",'
         '"body_markdown":"dispatched","in_response_to_seq":1}\' '
         '"$thread_id" "$token" "$agent" > "$reply"\n'
-        'grassland threads reply --org "$org" --thread-id "$thread_id" --from-file "$reply"\n'
+        'happyranch threads reply --org "$org" --thread-id "$thread_id" --from-file "$reply"\n'
     )
     fake_claude_thread_plan_env.chmod(0o755)
 
@@ -179,7 +179,7 @@ def test_agent_dispatch_from_thread_creates_task(
     fake_claude_plan_env.write_text(
         '#!/usr/bin/env bash\n'
         'task_id=$1; session_id=$2; agent=$3; org_slug=$4\n'
-        'grassland report-completion --org "$org_slug" \\\n'
+        'happyranch report-completion --org "$org_slug" \\\n'
         '  --task-id "$task_id" --session-id "$session_id" \\\n'
         '  --agent "$agent" --status completed --confidence 90 \\\n'
         '  --summary \'{"action":"done","summary":"ok"}\'\n'

@@ -14,7 +14,7 @@ _OPEN_TALK_STATUS = "open"
 
 
 def _read_marker(rt: Path) -> dict:
-    marker = rt / "grassland.yaml"
+    marker = rt / "happyranch.yaml"
     if not marker.exists():
         raise RuntimeError(f"{marker} does not exist — not a runtime directory")
     return yaml.safe_load(marker.read_text()) or {}
@@ -74,9 +74,9 @@ def migrate_to_multi_org(
 
     slug = marker.get("slug")
     if not slug:
-        raise RuntimeError(f"v1 marker at {rt}/grassland.yaml is missing 'slug'")
+        raise RuntimeError(f"v1 marker at {rt}/happyranch.yaml is missing 'slug'")
 
-    db_path = rt / "grassland.db"
+    db_path = rt / "happyranch.db"
     active = _list_active_tasks(db_path)
     if active:
         raise RuntimeError(
@@ -97,7 +97,7 @@ def migrate_to_multi_org(
             (str(rt / "workspaces"), str(new_org_root / "workspaces")),
             (str(rt / "kb"), str(new_org_root / "kb")),
             (str(rt / "talks"), str(new_org_root / "talks")),
-            (str(rt / "grassland.db"), str(new_org_root / "grassland.db")),
+            (str(rt / "happyranch.db"), str(new_org_root / "happyranch.db")),
         ],
         "would_rewrite_marker": True,
     }
@@ -112,7 +112,7 @@ def migrate_to_multi_org(
         if src.exists():
             shutil.move(str(src), str(new_org_root / src_name))
     if db_path.exists():
-        shutil.move(str(db_path), str(new_org_root / "grassland.db"))
+        shutil.move(str(db_path), str(new_org_root / "happyranch.db"))
 
     # Rewrite top-level marker (preserve created_at)
     new_marker = {
@@ -123,7 +123,7 @@ def migrate_to_multi_org(
             datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         ),
     }
-    (rt / "grassland.yaml").write_text(yaml.safe_dump(new_marker, sort_keys=False))
+    (rt / "happyranch.yaml").write_text(yaml.safe_dump(new_marker, sort_keys=False))
 
     plan["already_migrated"] = False
     return plan

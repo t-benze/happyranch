@@ -81,13 +81,13 @@ def test_blocks_on_job_then_auto_resumes(
     # ── 3. Write the two-stage fake_claude plan.
     #
     # The plan receives $1=task_id  $2=session_id  $3=agent  $4=org_slug.
-    # $GRASSLAND_DAEMON_HOME is inherited from the daemon process and points
+    # $HAPPYRANCH_DAEMON_HOME is inherited from the daemon process and points
     # at the test-isolated home directory set by the `tmp_home` fixture.
     # We use it to read daemon.port and daemon.token for the direct HTTP call
-    # that passes waiting_on_job_ids (the grassland CLI --from-file path does
+    # that passes waiting_on_job_ids (the happyranch CLI --from-file path does
     # not yet support this field).
     #
-    # Stage 2 uses grassland report-completion inline args (not --from-file)
+    # Stage 2 uses happyranch report-completion inline args (not --from-file)
     # to avoid the nested-JSON-in-single-quoted-printf escaping issue.
     # The --summary value is a JSON object that _parse_next_step parses via
     # the legacy prose path: json.loads('{"action":"done",...}') -> NextStep.
@@ -121,7 +121,7 @@ def test_blocks_on_job_then_auto_resumes(
             }}' "$task_id" "$session_id" > "$payload"
 
             submit_log="/tmp/blocked-by-job-submit-log-$$.txt"
-            grassland jobs submit --from-file "$payload" --org "$org_slug" > "$submit_log" 2>&1
+            happyranch jobs submit --from-file "$payload" --org "$org_slug" > "$submit_log" 2>&1
             cat "$submit_log" >&2
 
             job_id=$(grep -oE 'JOB-[0-9]+' "$submit_log" | head -1)
@@ -133,10 +133,10 @@ def test_blocks_on_job_then_auto_resumes(
             echo "Stage 1: submitted $job_id" >&2
 
             # Self-block with waiting_on_job_ids via direct HTTP call.
-            # The grassland CLI report-completion --from-file path does not yet
+            # The happyranch CLI report-completion --from-file path does not yet
             # expose waiting_on_job_ids; we POST to the daemon directly.
-            port=$(cat "$GRASSLAND_DAEMON_HOME/daemon.port")
-            token=$(cat "$GRASSLAND_DAEMON_HOME/daemon.token")
+            port=$(cat "$HAPPYRANCH_DAEMON_HOME/daemon.port")
+            token=$(cat "$HAPPYRANCH_DAEMON_HOME/daemon.token")
 
             completion_payload="/tmp/blocked-by-job-completion-$$.json"
             printf '{{
@@ -166,7 +166,7 @@ def test_blocks_on_job_then_auto_resumes(
             # Use inline args to avoid nested-JSON escaping issues with --from-file.
             # The --summary value is a JSON decision object; _parse_next_step parses
             # it via the legacy prose path when no decision field is provided.
-            grassland report-completion --org "$org_slug" \\
+            happyranch report-completion --org "$org_slug" \\
                 --task-id "$task_id" --session-id "$session_id" \\
                 --agent "$agent" --status completed --confidence 90 \\
                 --summary '{{"action":"done","summary":"completed after job unblock"}}'

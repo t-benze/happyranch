@@ -1035,7 +1035,7 @@ afterEach(() => {
 
 describe('Composer / drafts', () => {
   it('restores a saved draft on mount', () => {
-    localStorage.setItem('grassland:draft:test-org:THR-001', 'in-progress text');
+    localStorage.setItem('happyranch:draft:test-org:THR-001', 'in-progress text');
     // Note: useThreadDraft needs orgSlug. Composer reads it via useOrgSlug()
     // (the codebase already wires <OrgProvider> in routes; tests need it too).
     render(
@@ -1068,10 +1068,10 @@ describe('Composer / drafts', () => {
     await user.type(ta, 'hello');
     // Debounced write — wait the 300ms.
     await new Promise((r) => setTimeout(r, 320));
-    expect(localStorage.getItem('grassland:draft:test-org:THR-001')).toBe('hello');
+    expect(localStorage.getItem('happyranch:draft:test-org:THR-001')).toBe('hello');
     await user.keyboard('{Meta>}{Enter}{/Meta}');
     expect(NOOP_SEND).toHaveBeenCalled();
-    expect(localStorage.getItem('grassland:draft:test-org:THR-001')).toBeNull();
+    expect(localStorage.getItem('happyranch:draft:test-org:THR-001')).toBeNull();
   });
 });
 
@@ -1127,7 +1127,7 @@ interface DraftHandle {
 }
 
 function useThreadDraft(orgSlug: string, threadId: string): DraftHandle {
-  const key = `grassland:draft:${orgSlug}:${threadId}`;
+  const key = `happyranch:draft:${orgSlug}:${threadId}`;
   const [draft, setDraftState] = useState<string>(() => {
     try { return localStorage.getItem(key) ?? ''; } catch { return ''; }
   });
@@ -1702,7 +1702,7 @@ Expected: bundle written to `web/dist/`; ~+45 KB on the initial gz chunk vs main
 ```bash
 playwright-cli open --browser=chrome
 playwright-cli resize 1440 900
-playwright-cli goto "http://localhost:$(cat ~/.grassland/daemon.port)/orgs/tourism-org/threads/THR-003"
+playwright-cli goto "http://localhost:$(cat ~/.happyranch/daemon.port)/orgs/tourism-org/threads/THR-003"
 playwright-cli --raw eval "() => JSON.stringify({
   mainScrollLeft: document.querySelector('main')?.scrollLeft,
   asideWidth: document.querySelector('aside')?.clientWidth,
@@ -1743,11 +1743,11 @@ Expected: `overflowX: "auto"`, `preScrollLeft > 0`, `mainScrollLeft: 0`. Code bl
 - [ ] **Step 12.4: Smoke-test mermaid via the prototype sandbox**
 
 ```bash
-playwright-cli goto "http://localhost:$(cat ~/.grassland/daemon.port)/__prototypes/threads-v2"
+playwright-cli goto "http://localhost:$(cat ~/.happyranch/daemon.port)/__prototypes/threads-v2"
 playwright-cli --raw eval "() => Boolean(document.querySelector('.gl-prose-mermaid svg'))"
 ```
 
-If the prototype fixtures don't include a mermaid block, instead drop a temporary message into the dev daemon by calling `grassland threads compose` with a body that contains a ` ```mermaid\nflowchart LR; A-->B\n``` ` block, then load that thread.
+If the prototype fixtures don't include a mermaid block, instead drop a temporary message into the dev daemon by calling `happyranch threads compose` with a body that contains a ` ```mermaid\nflowchart LR; A-->B\n``` ` block, then load that thread.
 
 Expected: returns `true` (an SVG rendered).
 

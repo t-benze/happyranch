@@ -82,7 +82,7 @@ def test_content_team_pass_path_completes(
     # - For content_manager: checks a counter file to decide which step to emit.
     # - For content_writer: completes with a simple summary.
     # - For content_qa: completes with a PASS verdict.
-    # All agents use grassland report-completion --from-file <json>.
+    # All agents use happyranch report-completion --from-file <json>.
     plan.write_text(
         '#!/usr/bin/env bash\n'
         'set -e\n'
@@ -119,19 +119,19 @@ def test_content_team_pass_path_completes(
         '    # Substitute real task_id and session_id into the JSON\n'
         '    sed -i "" "s/__TID__/$task_id/g" "$tmpfile" 2>/dev/null || sed -i "s/__TID__/$task_id/g" "$tmpfile"\n'
         '    sed -i "" "s/__SID__/$session_id/g" "$tmpfile" 2>/dev/null || sed -i "s/__SID__/$session_id/g" "$tmpfile"\n'
-        '    grassland report-completion --org "$org_slug" --from-file "$tmpfile"\n'
+        '    happyranch report-completion --org "$org_slug" --from-file "$tmpfile"\n'
         '    rm -f "$tmpfile"\n'
         '\n'
         'elif [[ "$agent" == "content_writer" ]]; then\n'
         '    tmpfile=$(mktemp /tmp/completion-XXXXXX.json)\n'
         '    printf \'{"task_id":"%s","session_id":"%s","agent":"content_writer","status":"completed","summary":"Draft completed","confidence":85}\' "$task_id" "$session_id" > "$tmpfile"\n'
-        '    grassland report-completion --org "$org_slug" --from-file "$tmpfile"\n'
+        '    happyranch report-completion --org "$org_slug" --from-file "$tmpfile"\n'
         '    rm -f "$tmpfile"\n'
         '\n'
         'elif [[ "$agent" == "content_qa" ]]; then\n'
         '    tmpfile=$(mktemp /tmp/completion-XXXXXX.json)\n'
         '    printf \'{"task_id":"%s","session_id":"%s","agent":"content_qa","status":"completed","summary":"VERDICT: PASS - content is accurate","confidence":90}\' "$task_id" "$session_id" > "$tmpfile"\n'
-        '    grassland report-completion --org "$org_slug" --from-file "$tmpfile"\n'
+        '    happyranch report-completion --org "$org_slug" --from-file "$tmpfile"\n'
         '    rm -f "$tmpfile"\n'
         '\n'
         'else\n'
@@ -154,7 +154,7 @@ def test_content_team_pass_path_completes(
     body = r.json()
     assert body["task"]["status"] == "completed"
     # Note: artifact assertion is skipped — fake_claude.sh does not create artifact
-    # files on disk, so grassland recall --fetch-artifact would 404. The artifact
+    # files on disk, so happyranch recall --fetch-artifact would 404. The artifact
     # creation contract is verified by the unit tests (which control the full
     # CompletionReport). Tracking concern: if a later task adds artifact-writing
-    # to fake_claude.sh, add an grassland recall assertion here.
+    # to fake_claude.sh, add an happyranch recall assertion here.

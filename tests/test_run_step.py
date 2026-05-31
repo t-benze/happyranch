@@ -1284,8 +1284,8 @@ def test_revisit_header_includes_sr_summary(runtime, db):
     assert header is not None
     assert "SR-019" in header
     assert "Close PR #247" in header
-    assert "grassland jobs show SR-019" in header
-    assert "grassland jobs output SR-019" in header
+    assert "happyranch jobs show SR-019" in header
+    assert "happyranch jobs output SR-019" in header
 
 
 # ---- Cancel-race Guard B: post-_run_agent re-check ----

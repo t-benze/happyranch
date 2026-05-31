@@ -9,10 +9,10 @@ The workspace bootstrap docs (`CLAUDE.md` / `AGENTS.md`) and the `start-task` sk
 When you finish a task, write your completion payload to `/tmp/completion-<task_id>.json` and call back via:
 
 ```
-grassland report-completion --from-file /tmp/completion-<task_id>.json
+happyranch report-completion --from-file /tmp/completion-<task_id>.json
 ```
 
-The `--from-file` form is mandatory across executors — multi-line `grassland` invocations are blocked by the shared permission matcher.
+The `--from-file` form is mandatory across executors — multi-line `happyranch` invocations are blocked by the shared permission matcher.
 
 Payload shape (required keys: `task_id`, `session_id`, `agent`, `status`, `summary`; everything else optional):
 
@@ -145,20 +145,20 @@ See `docs/superpowers/specs/2026-05-30-inline-delegation-chain-design.md`.
 
 Durable lessons go through:
 ```
-grassland learning --agent <you> --session-id <sid> --task-id <task_id> --text "..."
+happyranch learning --agent <you> --session-id <sid> --task-id <task_id> --text "..."
 ```
 
-Cross-agent reference material — SOPs, partner-API quirks, founder rulings — belongs in the Knowledge Base (`grassland kb add --from-file ...`), not in `learnings.md`.
+Cross-agent reference material — SOPs, partner-API quirks, founder rulings — belongs in the Knowledge Base (`happyranch kb add --from-file ...`), not in `learnings.md`.
 
 ## Other agent-side callbacks
 
 | Command | Purpose |
 |---|---|
-| `grassland report-completion --from-file ...` | End-of-task callback (mandatory). |
-| `grassland learning --agent ... --session-id ... --task-id ... --text ...` | Durable per-agent operational lesson. |
-| `grassland manage-repo {add\|remove\|update} --agent ... --repo-name ... [--url ...]` | Add/remove/update a repo clone in your workspace. |
-| `grassland manage-agent --from-file ...` | (Team managers only) enroll/update/terminate an agent within your own team. |
-| `grassland kb add --agent ... --from-file ...` | Contribute a knowledge-base entry. |
-| `grassland kb update <slug> --agent ... --from-file ...` | Update an existing entry. |
-| `grassland dispatch --from-file ...` | (Talk-mode) Spawn a new task from inside an open talk. Workers may dispatch only to themselves; team managers may dispatch to any agent in their own team. Cross-team dispatch is forbidden. |
-| `grassland talk end --talk-id ... --from-file ...` | End an open talk; persists the transcript and extracts end-of-talk learnings. |
+| `happyranch report-completion --from-file ...` | End-of-task callback (mandatory). |
+| `happyranch learning --agent ... --session-id ... --task-id ... --text ...` | Durable per-agent operational lesson. |
+| `happyranch manage-repo {add\|remove\|update} --agent ... --repo-name ... [--url ...]` | Add/remove/update a repo clone in your workspace. |
+| `happyranch manage-agent --from-file ...` | (Team managers only) enroll/update/terminate an agent within your own team. |
+| `happyranch kb add --agent ... --from-file ...` | Contribute a knowledge-base entry. |
+| `happyranch kb update <slug> --agent ... --from-file ...` | Update an existing entry. |
+| `happyranch dispatch --from-file ...` | (Talk-mode) Spawn a new task from inside an open talk. Workers may dispatch only to themselves; team managers may dispatch to any agent in their own team. Cross-team dispatch is forbidden. |
+| `happyranch talk end --talk-id ... --from-file ...` | End an open talk; persists the transcript and extracts end-of-talk learnings. |

@@ -697,7 +697,7 @@ Expected: FAIL — snapshot is out of date because `/teams` and the new `POST /a
 - [ ] **Step 2: Regenerate the snapshot**
 
 ```bash
-GRASSLAND_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py -v
+HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py -v
 ```
 
 Expected: PASS — snapshot rewritten.
@@ -1999,7 +1999,7 @@ In the empty state for the Active tab (around line 79–82), replace:
 ```typescript
 <EmptyState
   title="No agents yet"
-  body="Run grassland agents init to bootstrap the team."
+  body="Run happyranch agents init to bootstrap the team."
 />
 ```
 
@@ -2081,7 +2081,7 @@ Expected: typecheck PASS, vitest PASS, build succeeds.
 
 ```bash
 scripts/daemon.sh restart
-grassland web
+happyranch web
 ```
 
 Manually:

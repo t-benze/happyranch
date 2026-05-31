@@ -11,7 +11,7 @@ describe('useDensity', () => {
   });
 
   it('reads persisted value', () => {
-    localStorage.setItem('grassland.density', 'compact');
+    localStorage.setItem('happyranch.density', 'compact');
     const { result } = renderHook(() => useDensity());
     expect(result.current.density).toBe('compact');
   });
@@ -20,11 +20,11 @@ describe('useDensity', () => {
     const { result } = renderHook(() => useDensity());
     act(() => result.current.setDensity('compact'));
     expect(result.current.density).toBe('compact');
-    expect(localStorage.getItem('grassland.density')).toBe('compact');
+    expect(localStorage.getItem('happyranch.density')).toBe('compact');
   });
 
   it('ignores invalid persisted value', () => {
-    localStorage.setItem('grassland.density', 'garbage');
+    localStorage.setItem('happyranch.density', 'garbage');
     const { result } = renderHook(() => useDensity());
     expect(result.current.density).toBe('comfortable');
   });

@@ -72,8 +72,8 @@ def test_claude_executor_launches_with_current_semantics(mock_subprocess, tmp_pa
     assert "auto" in cmd
     assert "--allowedTools" in cmd
     allowed = cmd[cmd.index("--allowedTools") + 1]
-    # Non-EH workspaces keep the narrow grassland allowlist.
-    assert "Bash(grassland *)" in allowed
+    # Non-EH workspaces keep the narrow happyranch allowlist.
+    assert "Bash(happyranch *)" in allowed
     assert "gh " not in allowed
 
 
@@ -95,7 +95,7 @@ def test_claude_executor_grants_engineering_head_gh_resolve_rules(
 
     cmd = mock_subprocess.Popen.call_args[0][0]
     allowed = cmd[cmd.index("--allowedTools") + 1]
-    assert "Bash(grassland *)" in allowed
+    assert "Bash(happyranch *)" in allowed
     assert "Bash(gh pr close *)" in allowed
     assert "Bash(gh pr comment *)" in allowed
     assert "Bash(gh issue close *)" in allowed
@@ -131,7 +131,7 @@ def test_codex_executor_launches_exec_with_explicit_sandbox(mock_subprocess, tmp
     assert "--json" in cmd
     assert cmd[-1] == "-"
     # `workspace-write` blocks localhost by default; the override is required
-    # so agents can call back into the daemon via `grassland report-completion`.
+    # so agents can call back into the daemon via `happyranch report-completion`.
     # See TASK-080 post-mortem in CLAUDE.md.
     assert "-c" in cmd
     c_index = cmd.index("-c")

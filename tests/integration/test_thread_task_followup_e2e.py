@@ -113,7 +113,7 @@ if [ "$purpose" = "task_followup" ]; then
     payload=$(mktemp)
     printf '{"thread_id":"%s","invocation_token":"%s","speaker":"%s","body_markdown":"followup: task done","in_response_to_seq":1}' \\
         "$thread_id" "$token" "$agent" > "$payload"
-    grassland threads reply --org "$org" --thread-id "$thread_id" --from-file "$payload"
+    happyranch threads reply --org "$org" --thread-id "$thread_id" --from-file "$payload"
     exit 0
 fi
 
@@ -128,7 +128,7 @@ if [ -f "$state_file" ]; then
     payload=$(mktemp)
     printf '{"thread_id":"%s","invocation_token":"%s","speaker":"%s","body_markdown":"already dispatched","in_response_to_seq":1}' \\
         "$thread_id" "$token" "$agent" > "$payload"
-    grassland threads reply --org "$org" --thread-id "$thread_id" --from-file "$payload"
+    happyranch threads reply --org "$org" --thread-id "$thread_id" --from-file "$payload"
     exit 0
 fi
 touch "$state_file"
@@ -137,13 +137,13 @@ touch "$state_file"
 dispatch=$(mktemp)
 printf '{"thread_id":"%s","invocation_token":"%s","dispatcher":"%s","brief":"do the thing"}' \\
     "$thread_id" "$token" "$agent" > "$dispatch"
-grassland threads dispatch --org "$org" --thread-id "$thread_id" --from-file "$dispatch"
+happyranch threads dispatch --org "$org" --thread-id "$thread_id" --from-file "$dispatch"
 
 # Reply to release the token cleanly (dispatch does NOT consume it).
 reply=$(mktemp)
 printf '{"thread_id":"%s","invocation_token":"%s","speaker":"%s","body_markdown":"dispatched, will report back","in_response_to_seq":1}' \\
     "$thread_id" "$token" "$agent" > "$reply"
-grassland threads reply --org "$org" --thread-id "$thread_id" --from-file "$reply"
+happyranch threads reply --org "$org" --thread-id "$thread_id" --from-file "$reply"
 """
 
 
@@ -183,7 +183,7 @@ def test_followup_fires_on_completed_thread_dispatched_task(
     fake_claude_plan_env.write_text(
         "#!/usr/bin/env bash\n"
         "task_id=$1; session_id=$2; agent=$3; org_slug=$4\n"
-        'grassland report-completion --org "$org_slug" \\\n'
+        'happyranch report-completion --org "$org_slug" \\\n'
         '  --task-id "$task_id" --session-id "$session_id" \\\n'
         '  --agent "$agent" --status completed --confidence 90 \\\n'
         "  --summary '{\"action\":\"done\",\"summary\":\"task finished ok\"}'\n"
@@ -271,7 +271,7 @@ def test_followup_fires_once_after_revisit(
         "  # First attempt: fail with a non-zero exit so auto-revisit fires.\n"
         "  exit 1\n"
         "fi\n"
-        'grassland report-completion --org "$org_slug" \\\n'
+        'happyranch report-completion --org "$org_slug" \\\n'
         '  --task-id "$task_id" --session-id "$session_id" \\\n'
         '  --agent "$agent" --status completed --confidence 90 \\\n'
         "  --summary '{\"action\":\"done\",\"summary\":\"after revisit\"}'\n"
@@ -377,7 +377,7 @@ def test_followup_skipped_when_thread_archived_before_task_terminal(
         'while [ ! -f "$go_file" ] && [ "$(date +%s)" -lt "$deadline" ]; do\n'
         "  sleep 0.2\n"
         "done\n"
-        'grassland report-completion --org "$org_slug" \\\n'
+        'happyranch report-completion --org "$org_slug" \\\n'
         '  --task-id "$task_id" --session-id "$session_id" \\\n'
         '  --agent "$agent" --status completed --confidence 90 \\\n'
         "  --summary '{\"action\":\"done\",\"summary\":\"late completion\"}'\n"

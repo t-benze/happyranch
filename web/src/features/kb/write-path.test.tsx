@@ -20,7 +20,7 @@ afterAll(() => {
 
 (FLAG_ON ? describe : describe.skip)('KB compose write path', () => {
   test('submits POST /kb and navigates to detail', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     let postedBody: Record<string, unknown> | null = null;
     server.use(
       http.get('/api/v1/orgs', () =>
@@ -80,7 +80,7 @@ afterAll(() => {
 describe('KB compose write path (flag off)', () => {
   test('Compose button is absent when flag is off', async () => {
     if (FLAG_ON) return;
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),

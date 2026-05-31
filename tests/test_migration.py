@@ -46,7 +46,7 @@ def _write_pre_migration_db(path: Path) -> None:
 
 
 def test_migration_maps_old_statuses(tmp_path: Path) -> None:
-    db_path = tmp_path / "grassland.db"
+    db_path = tmp_path / "happyranch.db"
     _write_pre_migration_db(db_path)
 
     # Trigger the migration by opening the DB through our class.
@@ -81,7 +81,7 @@ def test_migration_maps_old_statuses(tmp_path: Path) -> None:
 
 
 def test_migration_is_idempotent(tmp_path: Path) -> None:
-    db_path = tmp_path / "grassland.db"
+    db_path = tmp_path / "happyranch.db"
     _write_pre_migration_db(db_path)
     from src.infrastructure.database import Database
 
@@ -106,15 +106,15 @@ def _build_legacy_runtime(tmp_path: Path, *, with_enrollments: bool = True) -> P
     """Construct a pre-org-cut runtime at tmp_path/legacy."""
     rt_root = tmp_path / "legacy"
     rt_root.mkdir()
-    # grassland.yaml without slug (the pre-cut shape).
-    (rt_root / "grassland.yaml").write_text("")
+    # happyranch.yaml without slug (the pre-cut shape).
+    (rt_root / "happyranch.yaml").write_text("")
     (rt_root / "workspaces").mkdir()
     # teams.yaml at the OLD location (root, not under org/).
     (rt_root / "teams.yaml").write_text(
         "teams:\n  engineering:\n    manager: engineering_head\n    workers: [dev_agent]\n"
     )
     # SQLite with legacy agent_enrollments table.
-    db_path = rt_root / "grassland.db"
+    db_path = rt_root / "happyranch.db"
     conn = sqlite3.connect(db_path)
     conn.executescript("""
       CREATE TABLE agent_enrollments (
@@ -153,7 +153,7 @@ def test_dryrun_emits_planned_actions(tmp_path: Path) -> None:
     )
     assert isinstance(result, MigrationResult)
     assert result.applied is False
-    assert any("write grassland.yaml" in step for step in result.planned)
+    assert any("write happyranch.yaml" in step for step in result.planned)
     assert any("move teams.yaml" in step for step in result.planned)
     assert any("custom_dev" in step for step in result.planned)
     assert any("draft_writer" in step for step in result.planned)
@@ -172,7 +172,7 @@ def test_apply_writes_org_tree(tmp_path: Path) -> None:
     # The v0→v1 migration writes a v1-marker (schema_version=1, slug=<slug>);
     # RuntimeDir.load now refuses v1, so verify the layout directly via OrgPaths
     # rooted at rt_root and read the marker for slug.
-    marker = yaml.safe_load((rt_root / "grassland.yaml").read_text())
+    marker = yaml.safe_load((rt_root / "happyranch.yaml").read_text())
     assert marker["slug"] == "hk-tourism"
     paths = OrgPaths(root=rt_root)
     # teams.yaml moved.
@@ -204,7 +204,7 @@ def test_aborts_without_backup_flag(tmp_path: Path) -> None:
 
 def test_aborts_when_slug_disagrees_with_existing(tmp_path: Path) -> None:
     rt_root = _build_legacy_runtime(tmp_path)
-    (rt_root / "grassland.yaml").write_text("slug: existing\n")
+    (rt_root / "happyranch.yaml").write_text("slug: existing\n")
     with pytest.raises(ValueError, match="slug.*disagrees"):
         migrate_to_org_runtime(rt_root, slug="other", i_have_a_backup=True, apply=True)
 
@@ -222,7 +222,7 @@ def test_apply_preserves_description_field(tmp_path: Path) -> None:
 def test_strips_completion_contract_block(tmp_path: Path) -> None:
     rt_root = _build_legacy_runtime(tmp_path, with_enrollments=False)
     # Insert one enrollment whose system_prompt has the canonical contract block.
-    conn = sqlite3.connect(rt_root / "grassland.db")
+    conn = sqlite3.connect(rt_root / "happyranch.db")
     body = (
         "You are role_x.\n\nResponsibilities: do X.\n\n"
         "## Task completion report\n\n"

@@ -417,7 +417,7 @@ def _consume_open_feishu_notification(org, job_id: str) -> None:
     """Mark any open kind=job_request Feishu notification as consumed by
     'cli-fallback'.
 
-    Matches the pattern from `grassland resolve-escalation` / `grassland revisit`
+    Matches the pattern from `happyranch resolve-escalation` / `happyranch revisit`
     (see `src/daemon/routes/tasks.py`): a CLI/Web action wins the race against
     a later Feishu reply, which would otherwise hit `not_pending` in the
     listener and leave the row stale until reply_ttl_hours expiry.

@@ -37,4 +37,4 @@ def test_bootstrap_inlines_index_after_migration(adapter, tmp_path: Path):
     body = (ws / "CLAUDE.md").read_text()
     assert "LRN-001" in body
     assert "sample" in body
-    assert "grassland learning get" in body  # references new CLI
+    assert "happyranch learning get" in body  # references new CLI

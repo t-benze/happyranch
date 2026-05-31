@@ -308,7 +308,7 @@ def test_resume_header_rendered_after_audit_row(db_and_orch):
     assert "BLOCKED-JOBS-RESULTS" in header
     assert "JOB-1" in header
     assert "completed" in header
-    assert "grassland jobs show JOB-1" in header
+    assert "happyranch jobs show JOB-1" in header
 
 
 def test_resume_header_skipped_after_step_runs(db_and_orch):

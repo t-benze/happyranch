@@ -34,7 +34,7 @@ def _write_agent(paths: OrgPaths, name: str, allow_rules: list[str]) -> None:
 def test_baseline_only_when_agent_none(tmp_path: Path) -> None:
     paths = _make_paths(tmp_path)
     rules = allow_rules_for_agent(paths, None, cli=False)
-    assert rules == ["Bash(grassland:*)"]
+    assert rules == ["Bash(happyranch:*)"]
 
 
 def test_baseline_plus_extras_settings_form(tmp_path: Path) -> None:
@@ -42,7 +42,7 @@ def test_baseline_plus_extras_settings_form(tmp_path: Path) -> None:
     _write_agent(paths, "eh", ["gh pr close", "gh issue close"])
     rules = allow_rules_for_agent(paths, "eh", cli=False)
     assert rules == [
-        "Bash(grassland:*)",
+        "Bash(happyranch:*)",
         "Bash(gh pr close:*)",
         "Bash(gh issue close:*)",
     ]
@@ -52,28 +52,28 @@ def test_baseline_plus_extras_cli_form(tmp_path: Path) -> None:
     paths = _make_paths(tmp_path)
     _write_agent(paths, "eh", ["gh pr close"])
     rules = allow_rules_for_agent(paths, "eh", cli=True)
-    assert rules == ["Bash(grassland *)", "Bash(gh pr close *)"]
+    assert rules == ["Bash(happyranch *)", "Bash(gh pr close *)"]
 
 
 def test_unknown_agent_gets_baseline_only(tmp_path: Path) -> None:
     paths = _make_paths(tmp_path)
     rules = allow_rules_for_agent(paths, "ghost", cli=False)
-    assert rules == ["Bash(grassland:*)"]
+    assert rules == ["Bash(happyranch:*)"]
 
 
 def test_bash_prefixes_baseline_only_when_agent_none(tmp_path: Path) -> None:
     """opencode.json renders raw prefixes (no Bash() wrapping); the source of
-    truth (per-agent allow_rules + grassland baseline) is the same as the Claude
+    truth (per-agent allow_rules + happyranch baseline) is the same as the Claude
     surfaces."""
     paths = _make_paths(tmp_path)
-    assert bash_allow_prefixes_for_agent(paths, None) == ["grassland"]
+    assert bash_allow_prefixes_for_agent(paths, None) == ["happyranch"]
 
 
 def test_bash_prefixes_baseline_plus_extras(tmp_path: Path) -> None:
     paths = _make_paths(tmp_path)
     _write_agent(paths, "eh", ["gh pr close", "gh issue close"])
     assert bash_allow_prefixes_for_agent(paths, "eh") == [
-        "grassland",
+        "happyranch",
         "gh pr close",
         "gh issue close",
     ]
@@ -81,4 +81,4 @@ def test_bash_prefixes_baseline_plus_extras(tmp_path: Path) -> None:
 
 def test_bash_prefixes_unknown_agent_gets_baseline_only(tmp_path: Path) -> None:
     paths = _make_paths(tmp_path)
-    assert bash_allow_prefixes_for_agent(paths, "ghost") == ["grassland"]
+    assert bash_allow_prefixes_for_agent(paths, "ghost") == ["happyranch"]

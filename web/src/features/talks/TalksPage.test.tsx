@@ -48,7 +48,7 @@ function stubBaseHandlers() {
 
 describe('TalksPage', () => {
   test('renders the inbox and an empty pane when no talk is selected', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     stubBaseHandlers();
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/talks`, () =>
@@ -65,7 +65,7 @@ describe('TalksPage', () => {
   });
 
   test('renders an open talk detail with empty transcript', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     stubBaseHandlers();
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/talks`, () =>
@@ -84,7 +84,7 @@ describe('TalksPage', () => {
   });
 
   test('renders a closed talk transcript with both speakers', async () => {
-    sessionStorage.setItem('grassland.token', 'tok');
+    sessionStorage.setItem('happyranch.token', 'tok');
     stubBaseHandlers();
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/talks`, () =>

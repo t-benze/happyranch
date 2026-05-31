@@ -1,4 +1,4 @@
-"""Tests for the ``grassland assets`` CLI subcommand.
+"""Tests for the ``happyranch assets`` CLI subcommand.
 
 Mirrors the argparse-only + ``cmd_*`` mock pattern used in
 ``tests/test_cli_tokens.py`` — we exercise parser wiring directly and stub
