@@ -5,6 +5,7 @@
  */
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkBreaks from 'remark-breaks';
 import rehypeHighlight from 'rehype-highlight';
 import { Suspense, lazy, type ComponentProps } from 'react';
 
@@ -32,7 +33,7 @@ export function Markdown({ body }: { body: string }): JSX.Element {
   return (
     <div className="gl-prose">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkBreaks]}
         rehypePlugins={[[rehypeHighlight, { ignoreMissing: true, detect: true }]]}
         components={{ code: CodeOrMermaid }}
       >
