@@ -121,7 +121,7 @@ def test_task_record_parent_defaults_to_none():
 
 def test_completion_report_accepts_output_dir():
     r = CompletionReport(
-        task_id="T", session_id="S", agent="dev_agent", status="completed",
+        task_id="T", agent="dev_agent", status="completed",
         confidence=80, output_summary="done", output_dir="output/TASK-001",
     )
     assert r.output_dir == "output/TASK-001"
@@ -129,7 +129,7 @@ def test_completion_report_accepts_output_dir():
 
 def test_completion_report_output_dir_defaults_to_none():
     r = CompletionReport(
-        task_id="T", session_id="S", agent="dev_agent", status="completed",
+        task_id="T", agent="dev_agent", status="completed",
         confidence=80, output_summary="done",
     )
     assert r.output_dir is None
