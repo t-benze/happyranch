@@ -15,40 +15,6 @@ from src.runtime import RuntimeDir
 logger = logging.getLogger(__name__)
 
 
-class ThreadFinalizerRegistry:
-    """Tracks in-flight archive finalizers so we don't spawn duplicates."""
-
-    def __init__(self) -> None:
-        self._active: dict[tuple[str, str], asyncio.Task] = {}
-
-    def spawn_finalizer(
-        self,
-        slug: str,
-        thread_id: str,
-        *,
-        org_state,
-        close_out_wait_seconds: int = 300,
-    ) -> None:
-        from src.daemon.thread_archive_finalizer import finalize_thread as _fin
-
-        key = (slug, thread_id)
-        if key in self._active and not self._active[key].done():
-            return
-
-        async def _runner() -> None:
-            try:
-                await _fin(
-                    db=org_state.db,
-                    store=org_state.thread_store,
-                    thread_id=thread_id,
-                    close_out_wait_seconds=close_out_wait_seconds,
-                )
-            finally:
-                self._active.pop(key, None)
-
-        self._active[key] = asyncio.create_task(_runner())
-
-
 @dataclass
 class DaemonState:
     runtime: RuntimeDir | None
@@ -61,7 +27,6 @@ class DaemonState:
     broken_orgs: dict[str, str] = field(default_factory=dict)
     queue: TaskQueue = field(default_factory=TaskQueue)
     orgs_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    thread_finalizers: ThreadFinalizerRegistry = field(default_factory=ThreadFinalizerRegistry)
 
     @classmethod
     def idle(cls, settings: Settings) -> "DaemonState":

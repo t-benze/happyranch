@@ -90,7 +90,7 @@ const INCLUDED_PATHS = new Set<string>([
   'POST /api/v1/orgs/{slug}/threads/{thread_id}/invite',
   'POST /api/v1/orgs/{slug}/threads/{thread_id}/extend',
   'POST /api/v1/orgs/{slug}/threads/{thread_id}/archive',
-  'POST /api/v1/orgs/{slug}/threads/{thread_id}/abandon',
+  'POST /api/v1/orgs/{slug}/threads/{thread_id}/resume',
   // jobs — founder-facing
   'GET /api/v1/orgs/{slug}/jobs/',
   'GET /api/v1/orgs/{slug}/jobs/{job_id}',
@@ -139,7 +139,6 @@ const EXCLUDED_PATHS = new Map<string, string>([
   ['POST /api/v1/orgs/{slug}/threads/{thread_id}/reply', 'agent invocation token only'],
   ['POST /api/v1/orgs/{slug}/threads/{thread_id}/decline', 'agent invocation token only'],
   ['POST /api/v1/orgs/{slug}/threads/{thread_id}/dispatch', 'agent invocation token only'],
-  ['POST /api/v1/orgs/{slug}/threads/{thread_id}/close-out', 'agent invocation token only'],
   // agent-initiated thread compose (agent callback — not exercised from the Web UI)
   ['POST /api/v1/orgs/{slug}/threads/compose-as-agent', 'agent callback — not exercised from the Web UI'],
   // jobs agent callback

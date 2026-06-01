@@ -9,7 +9,6 @@ export const THREADS_SHORTCUTS: ShortcutEntry[] = [
   { keys: ['N'], description: 'New thread' },
   { keys: ['I'], description: 'Invite participant' },
   { keys: ['A'], description: 'Archive thread' },
-  { keys: ['X'], description: 'Abandon thread' },
   { keys: ['F'], description: 'Forward thread (compose new with quoted excerpt)' },
   { keys: ['R'], description: 'Focus composer' },
   { keys: ['Ctrl', 'Enter'], description: 'Send (in composer)' },

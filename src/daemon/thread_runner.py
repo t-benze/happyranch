@@ -1,7 +1,7 @@
 """Headless executor invocation for thread participation.
 
 Single-turn lifecycle: build prompt → spawn subprocess → wait for token to be
-consumed (via reply/decline/close-out callback) → exit. No NextStep loop.
+consumed (via reply/decline callback) → exit. No NextStep loop.
 """
 from __future__ import annotations
 
@@ -58,8 +58,6 @@ def _purpose_note(
 ) -> str:
     if purpose == "bootstrap":
         return "The founder has added you to this thread"
-    if purpose == "close_out":
-        return "This thread is being archived; provide a close-out"
     if purpose == "task_followup":
         payload = (triggering_message.system_payload or {}) if triggering_message else {}
         task_id = payload.get("task_id", "?")
@@ -107,7 +105,7 @@ def build_thread_prompt(
     messages: list[ThreadMessage],
     invocation_token: str,
     invoked_agent: str,
-    purpose: str,          # 'reply' | 'bootstrap' | 'close_out'
+    purpose: str,          # 'reply' | 'bootstrap'
     triggering_seq: int,
 ) -> str:
     triggering = next((m for m in messages if m.seq == triggering_seq), None)
@@ -131,9 +129,9 @@ def build_thread_prompt(
         f"---\n{history}\n\n"
         f"You have been invoked because:\n  {note}\n\n"
         f"Your invocation_token for this turn is: {invocation_token}\n"
-        f"Include this token in every callback payload (reply, decline, dispatch,\n"
-        f"close-out). It authorizes this single turn and is single-use for the\n"
-        f"terminal callback (reply/decline/close-out).\n\n"
+        f"Include this token in every callback payload (reply, decline,\n"
+        f"dispatch). It authorizes this single turn and is single-use for the\n"
+        f"terminal callback (reply/decline).\n\n"
         f"Consult `protocol/skills/thread/SKILL.md` and respond.\n"
     )
 

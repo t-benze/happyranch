@@ -15,8 +15,6 @@ import { useEffect, useState } from 'react';
 import type { ThreadDetailResponse, ThreadMessage, ThreadRecord } from '@/lib/api/types';
 import { MOCK_MESSAGES, MOCK_PARTICIPANTS, MOCK_THREADS } from '@/mocks';
 import type {
-  AbandonArgs,
-  AbandonResult,
   ArchiveArgs,
   ArchiveResult,
   ComposeArgs,
@@ -27,6 +25,8 @@ import type {
   InviteResult,
   MutationLike,
   QueryLike,
+  ResumeArgs,
+  ResumeResult,
   SendFollowUpArgs,
   SendFollowUpResult,
   ThreadsApi,
@@ -195,7 +195,6 @@ function useComposeThread(): MutationLike<ComposeArgs, ComposeResult> {
         turn_cap: 500,
         turns_used: 1,
         summary: null,
-        new_kb_slugs: null,
         transcript_path: null,
       };
       store.threads = [rec, ...store.threads];
@@ -310,14 +309,14 @@ function useArchiveThread(threadId: string): MutationLike<ArchiveArgs, ArchiveRe
   });
 }
 
-function useAbandonThread(threadId: string): MutationLike<AbandonArgs, AbandonResult> {
+function useResumeThread(threadId: string): MutationLike<ResumeArgs, ResumeResult> {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (body: AbandonArgs) => {
-      await sleep(150);
+    mutationFn: async () => {
+      await sleep(120);
       const idx = store.threads.findIndex((t) => t.thread_id === threadId);
       if (idx >= 0) {
-        store.threads[idx] = { ...store.threads[idx], status: 'abandoned' };
+        store.threads[idx] = { ...store.threads[idx], status: 'open' };
       }
       const seq = nextSeq(threadId);
       store.messages[threadId] = [
@@ -328,12 +327,12 @@ function useAbandonThread(threadId: string): MutationLike<AbandonArgs, AbandonRe
           kind: 'system',
           body_markdown: null,
           decline_reason: null,
-          system_payload: { event: 'abandoned', reason: body.reason },
-          created_at: '2026-05-15T12:00:00Z',
+          system_payload: { kind_tag: 'resumed' },
+          created_at: '2026-06-01T12:00:00Z',
           responder_status: [],
         },
       ];
-      return { thread_id: threadId, status: 'abandoned' };
+      return { thread_id: threadId, status: 'open' };
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['mock-thread', threadId] });
@@ -389,7 +388,7 @@ export const mockThreadsApi: ThreadsApi = {
   useSendFollowUp,
   useInviteAgent,
   useArchiveThread,
-  useAbandonThread,
+  useResumeThread,
   useExtendCap,
 };
 

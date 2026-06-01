@@ -39,7 +39,6 @@ class OrgConfig:
     feishu_notifications: FeishuNotificationsConfig | None = None
     threads_enabled: bool = True
     threads_default_turn_cap: int = 500
-    threads_close_out_wait_seconds: int = 300
     threads_invocation_timeout_seconds: int | None = None
 
     @classmethod
@@ -156,14 +155,6 @@ def _parse_threads(block: dict, path: str) -> dict:
                 f"{path}: threads.default_turn_cap must be a positive int, got {cap!r}"
             )
         kwargs["threads_default_turn_cap"] = cap
-
-    if "close_out_wait_seconds" in block:
-        w = block["close_out_wait_seconds"]
-        if not isinstance(w, int) or isinstance(w, bool) or w <= 0:
-            raise OrgConfigError(
-                f"{path}: threads.close_out_wait_seconds must be a positive int, got {w!r}"
-            )
-        kwargs["threads_close_out_wait_seconds"] = w
 
     if "invocation_timeout_seconds" in block:
         t = block["invocation_timeout_seconds"]

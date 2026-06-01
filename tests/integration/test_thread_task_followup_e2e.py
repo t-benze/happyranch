@@ -424,11 +424,11 @@ def test_followup_skipped_when_thread_archived_before_task_terminal(
     # 3. Archive the thread BEFORE signalling the task to complete.
     r = httpx.post(
         f"{base}/threads/{thread_id}/archive",
-        json={"summary": "archiving before task done", "request_close_outs": False},
+        json={"summary": "archiving before task done"},
         headers=_auth_headers(),
         timeout=10.0,
     )
-    assert r.status_code == 202, r.text
+    assert r.status_code == 200, r.text
 
     # 4. Signal the task to complete now.
     go_file.write_text("go\n")

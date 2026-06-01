@@ -164,9 +164,7 @@ class TalkRecord(BaseModel):
 
 class ThreadStatus(StrEnum):
     OPEN = "open"
-    ARCHIVING = "archiving"
     ARCHIVED = "archived"
-    ABANDONED = "abandoned"
 
 
 class ThreadMessageKind(StrEnum):
@@ -186,7 +184,6 @@ class ThreadInvocationStatus(StrEnum):
 class ThreadInvocationPurpose(StrEnum):
     REPLY = "reply"
     BOOTSTRAP = "bootstrap"
-    CLOSE_OUT = "close_out"
     TASK_FOLLOWUP = "task_followup"
 
 
@@ -201,10 +198,7 @@ class ThreadRecord(BaseModel):
     turn_cap: int = 500
     turns_used: int = 0
     summary: str | None = None
-    new_kb_slugs: list[str] = Field(default_factory=list)
-    new_learnings_total: int = 0
     transcript_path: str | None = None
-    archive_requested_at: datetime | None = None
     composed_by: str = "founder"
     composed_from_task_id: str | None = None
     composed_from_talk_id: str | None = None

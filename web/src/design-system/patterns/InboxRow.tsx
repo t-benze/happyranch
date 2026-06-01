@@ -21,7 +21,7 @@ interface InboxRowProps {
   subject: string;
   lastSpeaker?: { name: string; role: 'manager' | 'worker' | 'founder' };
   meta?: string;
-  status: 'open' | 'archiving' | 'archived' | 'abandoned';
+  status: 'open' | 'archived';
   needsYou: boolean;
   active: boolean;
   /** Destination URL for the row. Used as the `<a href>`. */
@@ -104,7 +104,7 @@ export const meta = {
   name: "InboxRow",
   layer: "pattern",
   import: "@/design-system/patterns/InboxRow",
-  variants: { status: ["open", "archiving", "archived", "abandoned"] },
+  variants: { status: ["open", "archived"] },
   consumes: ["components.inbox_row"],
   example: "<InboxRow threadId='THR-042' subject='Refund policy' status='open' needsYou={true} active={false} href='/orgs/demo/threads/THR-042' />",
 } as const;

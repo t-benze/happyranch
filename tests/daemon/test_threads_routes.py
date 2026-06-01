@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 # We use the existing daemon conftest fixtures: tmp_home, app, org_state, auth_headers.
@@ -468,16 +469,13 @@ def test_extend_rejects_non_increase(tmp_home, app, org_state, auth_headers):
 
 
 # ---------------------------------------------------------------------------
-# Task 27 — POST /threads/{id}/abandon
+# POST /threads/{id}/archive — synchronous
 # ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
-# Task 28 — POST /threads/{id}/archive (Phase A)
-# ---------------------------------------------------------------------------
-
-
-def test_archive_phase_a_transitions_to_archiving(tmp_home, app, org_state, auth_headers):
+def test_archive_completes_synchronously(tmp_home, app, org_state, auth_headers):
+    """Archive is synchronous: 200, status='archived', transcript_path populated,
+    no transitional 'archiving' state observable, no close-out invocations minted."""
     client = TestClient(app)
     _seed_agent(org_state, "dev_agent")
     _seed_agent(org_state, "qa_engineer")
@@ -490,139 +488,63 @@ def test_archive_phase_a_transitions_to_archiving(tmp_home, app, org_state, auth
     tid = r["thread_id"]
     resp = client.post(
         f"/api/v1/orgs/alpha/threads/{tid}/archive",
-        json={"summary": "wrapped up", "request_close_outs": True},
-        headers=auth_headers,
-    )
-    assert resp.status_code == 202
-    data = resp.json()
-    assert data["status"] == "archiving"
-    assert data["close_out_count"] == 2
-    from src.models import ThreadInvocationPurpose, ThreadInvocationStatus
-    invs = org_state.db.list_thread_invocations(tid)
-    close_outs = [inv for inv in invs if inv.purpose is ThreadInvocationPurpose.CLOSE_OUT]
-    assert len(close_outs) == 2
-    # The 2 original REPLY invocations got reaped; the 2 close-outs remain pending.
-    pending = [inv for inv in invs if inv.status is ThreadInvocationStatus.PENDING]
-    assert len(pending) == 2
-
-
-# ---------------------------------------------------------------------------
-# Task 30 — POST /threads/{id}/close-out
-# ---------------------------------------------------------------------------
-
-
-def test_close_out_writes_learnings_and_kb_slugs(tmp_home, app, org_state, auth_headers):
-    client = TestClient(app)
-    _seed_agent(org_state, "dev_agent")
-    r = client.post(
-        "/api/v1/orgs/alpha/threads",
-        json={"subject": "s", "recipients": ["dev_agent"],
-              "body_markdown": "hi"},
-        headers=auth_headers,
-    ).json()
-    tid = r["thread_id"]
-    client.post(
-        f"/api/v1/orgs/alpha/threads/{tid}/archive",
-        json={"summary": "done", "request_close_outs": True},
-        headers=auth_headers,
-    )
-    inv = next(
-        i for i in org_state.db.list_thread_invocations(tid)
-        if i.purpose.value == "close_out" and i.agent_name == "dev_agent"
-    )
-    # Seed a KB entry that the close-out can reference.
-    from src.infrastructure.kb_store import KBStore, KBEntry
-    kb_entry = KBEntry(
-        slug="thread-learning",
-        title="Thread learning",
-        type="reference",
-        topic="threads",
-        body="refunds beyond 30d are fine.",
-    )
-    KBStore(org_state.root / "kb").write_entry(kb_entry, agent="dev_agent")
-    resp = client.post(
-        f"/api/v1/orgs/alpha/threads/{tid}/close-out",
-        json={"thread_id": tid, "invocation_token": inv.invocation_token,
-              "agent": "dev_agent",
-              "learnings": [{"text": "refunds beyond 30d are fine."}],
-              "kb_slugs": ["thread-learning"]},
+        json={"summary": "wrapped up"},
         headers=auth_headers,
     )
     assert resp.status_code == 200, resp.text
-    assert "thread-learning" in org_state.db.get_thread(tid).new_kb_slugs
-    assert org_state.db.get_pending_invocation(inv.invocation_token) is None
+    data = resp.json()
+    assert data["status"] == "archived"
+    assert data["transcript_path"] is not None
+
+    # Follow-up GET shows the same terminal status.
+    detail = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}",
+        headers=auth_headers,
+    ).json()
+    assert detail["status"] == "archived"
 
 
-def test_close_out_does_not_append_learnings_when_consume_loses(tmp_home, app, org_state, auth_headers, monkeypatch):
-    """If consume_invocation returns False (race lost), the request must
-    return 409 WITHOUT appending to learnings.md.
 
-    We simulate the race by patching consume_invocation to return False.
-    Before the fix, _append_to_learnings_file would have already run; after
-    the fix, it must not.
-    """
+def test_archive_with_empty_summary_succeeds(tmp_home, app, org_state, auth_headers):
+    """Archive accepts an empty/omitted summary (no validation error)."""
     client = TestClient(app)
     _seed_agent(org_state, "dev_agent")
     r = client.post(
         "/api/v1/orgs/alpha/threads",
-        json={"subject": "s", "recipients": ["dev_agent"],
-              "body_markdown": "hi"},
+        json={"subject": "s", "recipients": ["dev_agent"], "body_markdown": "hi"},
         headers=auth_headers,
     ).json()
     tid = r["thread_id"]
-    client.post(
+    resp = client.post(
         f"/api/v1/orgs/alpha/threads/{tid}/archive",
-        json={"summary": "done", "request_close_outs": True},
+        json={},  # empty body — summary defaults to ""
         headers=auth_headers,
     )
-    inv = next(
-        i for i in org_state.db.list_thread_invocations(tid)
-        if i.purpose.value == "close_out" and i.agent_name == "dev_agent"
-    )
-
-    # Patch consume_invocation to lose the race.
-    monkeypatch.setattr(org_state.db, "consume_invocation", lambda token: False)
-
-    learnings_file = org_state.root / "workspaces" / "dev_agent" / "learnings.md"
-    before = learnings_file.read_text(encoding="utf-8") if learnings_file.exists() else ""
-
-    resp = client.post(
-        f"/api/v1/orgs/alpha/threads/{tid}/close-out",
-        json={"thread_id": tid, "invocation_token": inv.invocation_token,
-              "agent": "dev_agent",
-              "learnings": [{"text": "would-be lost on race"}],
-              "kb_slugs": []},
-        headers=auth_headers,
-    )
-    assert resp.status_code == 409
-    after = learnings_file.read_text(encoding="utf-8") if learnings_file.exists() else ""
-    assert after == before, "learnings.md should be unchanged when consume loses"
-    assert "would-be lost on race" not in after
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "archived"
+    # Thread row's summary should be empty string (not None or KeyError).
+    t = org_state.db.get_thread(tid)
+    assert t.summary == ""
 
 
-def test_abandon_reaps_pending_and_writes_no_transcript(tmp_home, app, org_state, auth_headers):
+def test_archive_payload_with_request_close_outs_silently_ignored(tmp_home, app, org_state, auth_headers):
+    """Legacy clients sending request_close_outs are not rejected — Pydantic
+    drops the unknown field silently; the field has no effect now."""
     client = TestClient(app)
     _seed_agent(org_state, "dev_agent")
     r = client.post(
         "/api/v1/orgs/alpha/threads",
-        json={"subject": "s", "recipients": ["dev_agent"],
-              "body_markdown": "hi"},
+        json={"subject": "s", "recipients": ["dev_agent"], "body_markdown": "hi"},
         headers=auth_headers,
     ).json()
     tid = r["thread_id"]
-    assert len(org_state.db.list_thread_invocations(tid)) == 1
     resp = client.post(
-        f"/api/v1/orgs/alpha/threads/{tid}/abandon",
-        json={"reason": "nothing useful"},
+        f"/api/v1/orgs/alpha/threads/{tid}/archive",
+        json={"summary": "done", "request_close_outs": False},
         headers=auth_headers,
     )
     assert resp.status_code == 200
-    t = org_state.db.get_thread(tid)
-    assert t.status.value == "abandoned"
-    assert t.transcript_path is None
-    from src.models import ThreadInvocationStatus
-    pending = org_state.db.list_thread_invocations(tid, status=ThreadInvocationStatus.PENDING)
-    assert pending == []
+    assert resp.json()["status"] == "archived"
 
 
 def test_tail_sse_endpoint_404_for_missing_thread(tmp_home, app, auth_headers):
@@ -754,3 +676,94 @@ def test_dispatch_rejects_task_followup_purpose(tmp_home, app, org_state, auth_h
     )
     assert resp.status_code == 400, resp.text
     assert resp.json()["detail"]["code"] == "wrong_invocation_purpose"
+
+
+# ---------------------------------------------------------------------------
+# POST /threads/{id}/resume — founder reopens an archived thread
+# ---------------------------------------------------------------------------
+
+
+def test_resume_flips_archived_to_open(tmp_home, app, org_state, auth_headers):
+    """Archive a thread, then resume it: status goes back to open, archived_at
+    + summary preserved, a 'resumed' system message appears."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"], "body_markdown": "hi"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+
+    # Synchronous archive — no manual finalize_thread call needed anymore.
+    client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/archive",
+        json={"summary": "wrapped up"},
+        headers=auth_headers,
+    )
+
+    pre = org_state.db.get_thread(tid)
+    assert pre.status.value == "archived"
+    pre_archived_at = pre.archived_at
+    assert pre_archived_at is not None
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/resume",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body == {"thread_id": tid, "status": "open"}
+
+    post = org_state.db.get_thread(tid)
+    assert post.status.value == "open"
+    assert post.archived_at == pre_archived_at
+    assert post.summary == "wrapped up"
+
+    # A 'resumed' system message was appended.
+    msgs = org_state.db.list_thread_messages(tid)
+    resumed_msgs = [
+        m for m in msgs
+        if m.kind.value == "system" and (m.system_payload or {}).get("kind_tag") == "resumed"
+    ]
+    assert len(resumed_msgs) == 1
+    assert resumed_msgs[0].speaker == "founder"
+
+
+def test_resume_is_idempotent_on_open_thread(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"], "body_markdown": "hi"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/resume",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body == {"thread_id": tid, "status": "open", "idempotent": True}
+
+    # No 'resumed' system message written on idempotent return.
+    msgs = org_state.db.list_thread_messages(tid)
+    resumed_msgs = [
+        m for m in msgs
+        if m.kind.value == "system" and (m.system_payload or {}).get("kind_tag") == "resumed"
+    ]
+    assert resumed_msgs == []
+
+
+def test_resume_404_on_missing_thread(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    resp = client.post(
+        "/api/v1/orgs/alpha/threads/THR-NEVER/resume",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "not_found"
+
+

@@ -2062,28 +2062,6 @@ def cmd_threads_dispatch(args: argparse.Namespace) -> None:
     print(f"ok: dispatched {resp['task_id']} from {resp['dispatched_from_thread_id']}")
 
 
-def cmd_threads_close_out(args: argparse.Namespace) -> None:
-    import json as _json
-    client = OpcClient.from_env()
-    slug = resolve_org_slug(
-        args_org=args.org, available=_fetch_available_orgs(client),
-    )
-    try:
-        body = _json.loads(Path(args.from_file).read_text())
-    except (OSError, ValueError) as exc:
-        print(f"Error reading {args.from_file}: {exc}")
-        sys.exit(1)
-    thread_id = args.thread_id or body.get("thread_id", "")
-    r = client.post(f"/api/v1/orgs/{slug}/threads/{thread_id}/close-out", json=body)
-    if not _ok(r):
-        return
-    resp = r.json()
-    print(
-        f"ok: close-out for {resp['agent']} on {resp['thread_id']} — "
-        f"{resp['new_learnings_count']} learnings, {len(resp['new_kb_slugs'])} kb slugs"
-    )
-
-
 def cmd_threads_show(args: argparse.Namespace) -> None:
     import json as _json
     client = OpcClient.from_env()
@@ -2163,21 +2141,6 @@ def cmd_threads_extend(args: argparse.Namespace) -> None:
     print(_json.dumps(r.json(), indent=2))
 
 
-def cmd_threads_abandon(args: argparse.Namespace) -> None:
-    import json as _json
-    client = OpcClient.from_env()
-    slug = resolve_org_slug(
-        args_org=args.org, available=_fetch_available_orgs(client),
-    )
-    r = client.post(
-        f"/api/v1/orgs/{slug}/threads/{args.thread_id}/abandon",
-        json={"reason": args.reason},
-    )
-    if not _ok(r):
-        return
-    print(_json.dumps(r.json(), indent=2))
-
-
 def cmd_threads_archive(args: argparse.Namespace) -> None:
     import json as _json
     client = OpcClient.from_env()
@@ -2191,6 +2154,20 @@ def cmd_threads_archive(args: argparse.Namespace) -> None:
         sys.exit(1)
     r = client.post(
         f"/api/v1/orgs/{slug}/threads/{args.thread_id}/archive", json=payload,
+    )
+    if not _ok(r):
+        return
+    print(_json.dumps(r.json(), indent=2))
+
+
+def cmd_threads_resume(args: argparse.Namespace) -> None:
+    import json as _json
+    client = OpcClient.from_env()
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
+    r = client.post(
+        f"/api/v1/orgs/{slug}/threads/{args.thread_id}/resume",
     )
     if not _ok(r):
         return
@@ -2976,7 +2953,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_web.set_defaults(func=cmd_web)
 
     # happyranch threads — agent-facing callbacks + founder compose/list
-    p_threads = sub.add_parser("threads", help="Thread operations (compose, reply, decline, dispatch, close-out)")
+    p_threads = sub.add_parser("threads", help="Thread operations (compose, reply, decline, dispatch)")
     p_threads.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
     p_threads.set_defaults(func=cmd_threads_tui)
     threads_sub = p_threads.add_subparsers(dest="threads_command", required=False)
@@ -3015,7 +2992,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_threads_list = threads_sub.add_parser("list", help="List threads")
     p_threads_list.add_argument("--org", default=None, help="Org slug")
-    p_threads_list.add_argument("--status", default=None, help="Filter by status (open|archiving|archived|abandoned)")
+    p_threads_list.add_argument("--status", default=None, help="Filter by status (open|archived)")
     p_threads_list.add_argument("--limit", type=int, default=50)
     p_threads_list.set_defaults(func=cmd_threads_list)
 
@@ -3036,12 +3013,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_threads_dispatch.add_argument("--thread-id", dest="thread_id", default=None)
     p_threads_dispatch.add_argument("--from-file", required=True)
     p_threads_dispatch.set_defaults(func=cmd_threads_dispatch)
-
-    p_threads_close_out = threads_sub.add_parser("close-out", help="Agent callback: submit thread close-out")
-    p_threads_close_out.add_argument("--org", default=None, help="Org slug")
-    p_threads_close_out.add_argument("--thread-id", dest="thread_id", default=None)
-    p_threads_close_out.add_argument("--from-file", required=True)
-    p_threads_close_out.set_defaults(func=cmd_threads_close_out)
 
     p_threads_show = threads_sub.add_parser("show", help="Show a thread's metadata + transcript")
     p_threads_show.add_argument("--org", default=None, help="Org slug")
@@ -3067,17 +3038,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_threads_extend.add_argument("--new-cap", dest="new_cap", type=int, required=True)
     p_threads_extend.set_defaults(func=cmd_threads_extend)
 
-    p_threads_abandon = threads_sub.add_parser("abandon", help="Founder: abandon a thread without close-outs")
-    p_threads_abandon.add_argument("--org", default=None, help="Org slug")
-    p_threads_abandon.add_argument("--thread-id", dest="thread_id", required=True)
-    p_threads_abandon.add_argument("--reason", required=True)
-    p_threads_abandon.set_defaults(func=cmd_threads_abandon)
-
     p_threads_archive = threads_sub.add_parser("archive", help="Founder: archive a thread (Phase A -> B)")
     p_threads_archive.add_argument("--org", default=None, help="Org slug")
     p_threads_archive.add_argument("--thread-id", dest="thread_id", required=True)
     p_threads_archive.add_argument("--from-file", dest="from_file", required=True)
     p_threads_archive.set_defaults(func=cmd_threads_archive)
+
+    p_threads_resume = threads_sub.add_parser(
+        "resume", help="Founder: reopen an archived thread",
+    )
+    p_threads_resume.add_argument("--org", default=None, help="Org slug")
+    p_threads_resume.add_argument("--thread-id", dest="thread_id", required=True)
+    p_threads_resume.set_defaults(func=cmd_threads_resume)
 
     p_threads_forward = threads_sub.add_parser("forward", help="Founder: forward a talk or thread into a new thread")
     p_threads_forward.add_argument("--org", default=None, help="Org slug")

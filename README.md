@@ -211,10 +211,11 @@ happyranch web --no-open           # print the URL only
 ```
 
 The localhost SPA renders the full threads inbox (compose / reply / invite /
-archive / abandon / extend / forward / SSE-driven live updates) and is the
+archive / extend / forward / resume / SSE-driven live updates) and is the
 single interactive interface for founders. Keyboard shortcuts: `N` new,
-`I` invite, `A` archive, `X` abandon, `F` forward, `R` focus composer,
-`Ctrl+Enter` send, `?` help. The dev server (`cd web && npm run dev`)
+`I` invite, `A` archive, `F` forward, `R` focus composer,
+`Ctrl+Enter` send, `?` help. Archived threads expose a "Resume thread" button
+to reopen them. The dev server (`cd web && npm run dev`)
 proxies to the daemon for hot-reload development.
 
 (The previous Textual TUI under `src/tui/` was removed in favor of the
@@ -231,15 +232,13 @@ happyranch threads send --org <slug> --thread-id THR-001 --from-file /tmp/send.j
 happyranch threads invite --org <slug> --thread-id THR-001 --agent qa
 happyranch threads forward --org <slug> --source TALK-008 --recipients alice,bob
 happyranch threads archive --org <slug> --thread-id THR-001 --from-file /tmp/arch.json
-happyranch threads abandon --org <slug> --thread-id THR-001 --reason "..."
+happyranch threads resume --org <slug> --thread-id THR-001
 happyranch threads extend --org <slug> --thread-id THR-001 --new-cap 1000
 ```
 
-When the founder archives a thread with `request_close_outs: true`, the daemon
-invokes every participant once more for a close-out turn — each agent submits
-any new `learnings` and `kb_slugs` for that thread. The transcript frontmatter
-records the per-thread totals, and per-agent learnings land in their
-`learnings.md` (or `learnings/` directory for migrated workspaces).
+Archive is synchronous: the daemon writes the transcript file and flips the
+thread to `archived` inside the POST handler. The founder can later reopen
+an archived thread with `happyranch threads resume --thread-id <id>`.
 
 Configure per-org:
 
@@ -248,7 +247,6 @@ Configure per-org:
 threads:
   enabled: true                       # default true
   default_turn_cap: 500               # total agent-turns budgeted per thread
-  close_out_wait_seconds: 300         # how long /archive Phase B waits for close-outs
   # invocation_timeout_seconds: null  # optional override of session_timeout for thread turns
 ```
 
@@ -259,7 +257,7 @@ happyranch threads --org <slug>
 ```
 
 Keybindings: `N` new, `R` reply, `F` forward, `I` invite, `A` archive,
-`X` abandon, `Enter` open selected, `Ctrl+R` refresh, `?` help, `Ctrl+C` quit.
+`Enter` open selected, `Ctrl+R` refresh, `?` help, `Ctrl+C` quit.
 The TUI subscribes to per-org SSE events so the inbox and the selected
 thread stay live without polling.
 

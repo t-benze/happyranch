@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json as _json
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -14,6 +15,7 @@ from src.daemon.runner import enqueue_task
 from src.daemon.state import DaemonState
 from src.daemon.thread_queue import ThreadJob
 from src.infrastructure.audit_logger import AuditLogger
+from src.infrastructure.thread_store import render_transcript_body
 from src.models import (
     ResponderStatusEntry,
     TalkStatus,
@@ -416,7 +418,6 @@ def _thread_row_to_dict(t: ThreadRecord) -> dict:
         "turn_cap": t.turn_cap,
         "turns_used": t.turns_used,
         "summary": t.summary,
-        "new_kb_slugs": t.new_kb_slugs,
         "transcript_path": t.transcript_path,
         "composed_by": t.composed_by,
         "composed_from_task_id": t.composed_from_task_id,
@@ -1066,32 +1067,24 @@ async def extend_thread_endpoint(
 
 
 class ArchiveBody(BaseModel):
-    summary: str
-    request_close_outs: bool = True
+    summary: str = ""
 
 
-@router.post("/threads/{thread_id}/archive", status_code=202)
+@router.post("/threads/{thread_id}/archive")
 async def archive_thread_endpoint(
-    slug: str, thread_id: str, body: ArchiveBody, org: OrgDep, request: Request,
+    slug: str, thread_id: str, body: ArchiveBody, org: OrgDep,
 ) -> dict:
-    state: DaemonState = request.app.state.daemon
     t = org.db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
     if t.status is ThreadStatus.ARCHIVED:
-        return {"thread_id": thread_id, "status": "archived",
-                "transcript_path": t.transcript_path, "idempotent": True}
-    if t.status is ThreadStatus.ABANDONED:
-        raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
-    if t.status is ThreadStatus.ARCHIVING:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "archive_in_progress",
-                    "archive_requested_at": t.archive_requested_at.isoformat() if t.archive_requested_at else None},
-        )
+        return {
+            "thread_id": thread_id, "status": "archived",
+            "transcript_path": t.transcript_path, "idempotent": True,
+        }
     summary = body.summary.strip()
 
-    close_out_tokens: list[str] = []
+    archived_at = datetime.now(timezone.utc)
     async with org.db_lock:
         org.db.reap_pending_invocations(
             thread_id,
@@ -1099,164 +1092,85 @@ async def archive_thread_endpoint(
             decline_reason="archive_started",
         )
         org.db.set_thread_status(
-            thread_id, status=ThreadStatus.ARCHIVING, summary=summary,
+            thread_id, status=ThreadStatus.ARCHIVED, summary=summary,
         )
         participants = [p.agent_name for p in org.db.list_thread_participants(thread_id)]
         sys_seq = org.db.append_thread_message(
             thread_id=thread_id, speaker="founder",
             kind=ThreadMessageKind.SYSTEM,
-            system_payload={"kind_tag": "archive_requested", "summary": summary},
+            system_payload={"kind_tag": "archived", "summary": summary},
         )
-        AuditLogger(org.db).log_thread_archive_requested(
-            thread_id, close_out_count=len(participants) if body.request_close_outs else 0,
-        )
-        if body.request_close_outs:
-            for name in participants:
-                inv = org.db.mint_thread_invocation(
-                    thread_id=thread_id, agent_name=name,
-                    triggering_seq=sys_seq, purpose=ThreadInvocationPurpose.CLOSE_OUT,
-                )
-                close_out_tokens.append(inv.invocation_token)
 
-    for token in close_out_tokens:
-        await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
-
-    # Phase B: spawn the background finalizer (wired in Task 29).
-    cfg = load_org_config(OrgPaths(root=org.root))
-    state.thread_finalizers.spawn_finalizer(
-        slug, thread_id,
-        org_state=org,
-        close_out_wait_seconds=cfg.threads_close_out_wait_seconds,
+    # Write transcript file synchronously (was the finalizer's job).
+    msgs = org.db.list_thread_messages(thread_id, limit=10000)
+    rendered = render_transcript_body(msgs)
+    transcript_path = org.thread_store.write_transcript(
+        thread_id=thread_id,
+        subject=t.subject,
+        started_at=t.started_at,
+        archived_at=archived_at,
+        participants=participants,
+        turns_used=t.turns_used,
+        forwarded_from_id=t.forwarded_from_id,
+        summary=summary,
+        rendered_transcript=rendered,
     )
+    async with org.db_lock:
+        org.db.set_thread_transcript_path(thread_id, str(transcript_path))
+        AuditLogger(org.db).log_thread_archived(
+            thread_id, turns_used=t.turns_used,
+        )
 
     await _publish_thread_event(
         org, slug,
         thread_id=thread_id, seq=sys_seq, speaker="founder",
-        kind="system", preview="archiving", status="archiving",
+        kind="system", preview="archived", status="archived",
     )
 
     return {
-        "thread_id": thread_id,
-        "status": "archiving",
-        "close_out_count": len(close_out_tokens),
-        "transcript_path": None,
+        "thread_id": thread_id, "status": "archived",
+        "transcript_path": str(transcript_path),
     }
 
 
 # ---------------------------------------------------------------------------
-# Task 27 — POST /threads/{id}/abandon
+# POST /threads/{id}/resume — founder reopens an archived thread
 # ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
-# Task 30 — POST /threads/{id}/close-out
-# ---------------------------------------------------------------------------
-
-
-class CloseOutLearning(BaseModel):
-    text: str
-
-
-class CloseOutBody(BaseModel):
-    thread_id: str
-    invocation_token: str
-    agent: str
-    learnings: list[CloseOutLearning] = []
-    kb_slugs: list[str] = []
-
-
-@router.post("/threads/{thread_id}/close-out")
-async def close_out_thread_endpoint(
-    slug: str, thread_id: str, body: CloseOutBody, org: OrgDep,
-) -> dict:
-    from src.infrastructure.kb_store import KBStore, NotFound as KBNotFound
-    from src.daemon.routes.agents import _append_to_learnings_file
-
-    t = org.db.get_thread(thread_id)
-    if t is None:
-        raise HTTPException(status_code=404, detail={"code": "not_found"})
-    if t.status not in {ThreadStatus.OPEN, ThreadStatus.ARCHIVING}:
-        raise HTTPException(status_code=400, detail={"code": "thread_already_finalized"})
-    _validate_invocation_token(
-        org, token=body.invocation_token,
-        expected_agent=body.agent, expected_thread_id=thread_id,
-        require_purposes=[ThreadInvocationPurpose.CLOSE_OUT],
-    )
-    if not org.db.is_thread_participant(thread_id, body.agent):
-        raise HTTPException(status_code=403, detail={"code": "not_participant"})
-
-    # Validate KB slugs exist (read-only, before acquiring any lock).
-    kb = KBStore(org.root / "kb")
-    for kb_slug in body.kb_slugs:
-        try:
-            kb.read_entry(kb_slug)
-        except KBNotFound:
-            raise HTTPException(
-                status_code=400,
-                detail={"code": "kb_slug_not_found", "slug": kb_slug},
-            )
-
-    # Atomic token consume + DB updates under the lock. File writes happen
-    # AFTER the lock to keep the critical section short, but ONLY if consume
-    # succeeded — which guarantees this request is the unique winner for
-    # this token.
-    async with org.db_lock:
-        if not org.db.consume_invocation(body.invocation_token):
-            raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
-        for kb_slug in body.kb_slugs:
-            org.db.add_thread_kb_slug(thread_id, kb_slug)
-        org.db.add_thread_learnings_count(thread_id, count=len(body.learnings))
-        AuditLogger(org.db).log_thread_close_out_received(
-            thread_id, agent=body.agent,
-            new_learnings_count=len(body.learnings),
-            new_kb_slugs=body.kb_slugs,
-        )
-
-    # Now safe: token is consumed, no other request can reach this point with
-    # the same token.
-    workspace = org.root / "workspaces" / body.agent
-    learnings_path = workspace / "learnings.md"
-    for entry in body.learnings:
-        _append_to_learnings_file(learnings_path, body.agent, entry.text)
-
-    await _publish_thread_event(
-        org, slug,
-        thread_id=thread_id, seq=None, speaker=body.agent,
-        kind="system", preview="close-out received", status=t.status.value,
-    )
-
-    return {
-        "thread_id": thread_id, "agent": body.agent,
-        "new_learnings_count": len(body.learnings),
-        "new_kb_slugs": body.kb_slugs,
-    }
-
-
-class AbandonBody(BaseModel):
-    reason: str
-
-
-@router.post("/threads/{thread_id}/abandon")
-async def abandon_thread_endpoint(
-    slug: str, thread_id: str, body: AbandonBody, org: OrgDep,
+@router.post("/threads/{thread_id}/resume")
+async def resume_thread_endpoint(
+    slug: str, thread_id: str, org: OrgDep,
 ) -> dict:
     t = org.db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
-    if t.status in {ThreadStatus.ARCHIVED, ThreadStatus.ABANDONED}:
-        return {"thread_id": thread_id, "status": t.status.value, "idempotent": True}
-    reason = body.reason.strip() or "abandoned"
-    async with org.db_lock:
-        org.db.set_thread_status(thread_id, status=ThreadStatus.ABANDONED)
-        org.db.reap_pending_invocations(
-            thread_id, purposes=None, decline_reason="thread_abandoned",
+    if t.status is ThreadStatus.OPEN:
+        return {"thread_id": thread_id, "status": "open", "idempotent": True}
+    if t.status is not ThreadStatus.ARCHIVED:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "thread_not_archived", "status": t.status.value},
         )
-        AuditLogger(org.db).log_thread_abandoned(thread_id, reason=reason)
+
+    prior_archived_at = (
+        t.archived_at.isoformat() if t.archived_at else None
+    )
+    async with org.db_lock:
+        org.db.set_thread_status(thread_id, status=ThreadStatus.OPEN)
+        sys_seq = org.db.append_thread_message(
+            thread_id=thread_id, speaker="founder",
+            kind=ThreadMessageKind.SYSTEM,
+            system_payload={"kind_tag": "resumed"},
+        )
+        AuditLogger(org.db).log_thread_resumed(
+            thread_id, prior_archived_at=prior_archived_at,
+        )
 
     await _publish_thread_event(
         org, slug,
-        thread_id=thread_id, seq=None, speaker="founder",
-        kind="system", preview="abandoned", status="abandoned",
+        thread_id=thread_id, seq=sys_seq, speaker="founder",
+        kind="system", preview="resumed", status="open",
     )
 
-    return {"thread_id": thread_id, "status": "abandoned"}
+    return {"thread_id": thread_id, "status": "open"}

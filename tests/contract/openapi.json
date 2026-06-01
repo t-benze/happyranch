@@ -1508,51 +1508,7 @@
         ]
       }
     },
-    "/api/v1/orgs/{slug}/threads/{thread_id}/abandon": {
-      "POST": {
-        "params": [
-          [
-            "authorization",
-            "header"
-          ],
-          [
-            "slug",
-            "path"
-          ],
-          [
-            "thread_id",
-            "path"
-          ]
-        ],
-        "responses": [
-          "200",
-          "422"
-        ]
-      }
-    },
     "/api/v1/orgs/{slug}/threads/{thread_id}/archive": {
-      "POST": {
-        "params": [
-          [
-            "authorization",
-            "header"
-          ],
-          [
-            "slug",
-            "path"
-          ],
-          [
-            "thread_id",
-            "path"
-          ]
-        ],
-        "responses": [
-          "202",
-          "422"
-        ]
-      }
-    },
-    "/api/v1/orgs/{slug}/threads/{thread_id}/close-out": {
       "POST": {
         "params": [
           [
@@ -1693,6 +1649,28 @@
       }
     },
     "/api/v1/orgs/{slug}/threads/{thread_id}/reply": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "thread_id",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/threads/{thread_id}/resume": {
       "POST": {
         "params": [
           [

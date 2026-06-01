@@ -30,7 +30,6 @@ def test_count_pending_turn_obligations_counts_reply_bootstrap_followup(tmp_path
         ThreadInvocationPurpose.REPLY,
         ThreadInvocationPurpose.BOOTSTRAP,
         ThreadInvocationPurpose.TASK_FOLLOWUP,
-        ThreadInvocationPurpose.CLOSE_OUT,  # must NOT be counted
     ):
         db.mint_thread_invocation(
             thread_id="THR-001", agent_name="alice",

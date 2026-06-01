@@ -68,16 +68,15 @@ export const extendThreadCap = (
 export const archiveThread = (
   slug: string,
   threadId: string,
-  body: { summary: string; request_close_outs?: boolean },
+  body: { summary: string },
 ): Promise<{ thread_id: string; status: string }> =>
   request(`/orgs/${slug}/threads/${threadId}/archive`, { method: 'POST', body });
 
-export const abandonThread = (
+export const resumeThread = (
   slug: string,
   threadId: string,
-  body: { reason: string },
-): Promise<{ thread_id: string; status: string }> =>
-  request(`/orgs/${slug}/threads/${threadId}/abandon`, { method: 'POST', body });
+): Promise<{ thread_id: string; status: string; idempotent?: boolean }> =>
+  request(`/orgs/${slug}/threads/${threadId}/resume`, { method: 'POST' });
 
 // SSE paths — pass to subscribeSSE
 export const threadInboxEventsPath = (slug: string): string =>

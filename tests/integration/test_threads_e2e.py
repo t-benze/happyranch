@@ -114,18 +114,18 @@ def test_compose_reply_archive_writes_transcript(
     )
     assert "hello from dev_agent" in reply["body_markdown"]
 
-    # Archive (no close-outs to keep this test focused on the happy path).
+    # Archive — now synchronous.
     r = httpx.post(
         f"{base}/threads/{thread_id}/archive",
-        json={"summary": "smoke wrap-up", "request_close_outs": False},
+        json={"summary": "smoke wrap-up"},
         headers=_auth_headers(),
         timeout=10.0,
     )
-    assert r.status_code == 202, r.text
-
-    # Wait for Phase B to finalize.
-    final = _wait_for_status(base, thread_id, status="archived", timeout=15.0)
-    assert final["transcript_path"]
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "archived"
+    assert body["transcript_path"]
+    final = body
     transcript = Path(final["transcript_path"]).read_text(encoding="utf-8")
     assert "smoke wrap-up" in transcript
     assert "hello from dev_agent" in transcript

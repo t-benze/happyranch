@@ -13,7 +13,7 @@ import { StatusBadge } from './StatusBadge';
 interface ThreadHeaderProps {
   threadId: string;
   subject: string;
-  status: 'open' | 'archiving' | 'archived' | 'abandoned';
+  status: 'open' | 'archived';
   participants: string[];
   turnsUsed: number;
   turnCap: number;
@@ -67,7 +67,7 @@ export const meta = {
   name: "ThreadHeader",
   layer: "pattern",
   import: "@/design-system/patterns/ThreadHeader",
-  variants: { status: ["open", "archiving", "archived", "abandoned"] },
+  variants: { status: ["open", "archived"] },
   consumes: ["layout.grid.threads_page"],
   example: "<ThreadHeader threadId='THR-042' subject='Refund policy' status='open' participants={['founder', 'compliance_head']} turnsUsed={3} turnCap={20} />",
 } as const;

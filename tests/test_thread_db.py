@@ -234,7 +234,7 @@ def test_reap_pending_invocations(tmp_path):
     )
     db.mint_thread_invocation(
         thread_id="THR-001", agent_name="c",
-        triggering_seq=2, purpose=ThreadInvocationPurpose.CLOSE_OUT,
+        triggering_seq=2, purpose=ThreadInvocationPurpose.TASK_FOLLOWUP,
     )
     reaped = db.reap_pending_invocations(
         "THR-001",
@@ -256,34 +256,30 @@ def test_increment_turns_used(tmp_path):
     assert t.turns_used == 3
 
 
-def test_set_thread_status_archiving(tmp_path):
+def test_set_thread_status_archived(tmp_path):
+    """ARCHIVED sets status + summary + archived_at in one call."""
     db = Database(tmp_path / "happyranch.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     db.set_thread_status(
         "THR-001",
-        status=ThreadStatus.ARCHIVING,
+        status=ThreadStatus.ARCHIVED,
         summary="done talking",
     )
     t = db.get_thread("THR-001")
-    assert t.status is ThreadStatus.ARCHIVING
+    assert t.status is ThreadStatus.ARCHIVED
     assert t.summary == "done talking"
-    assert t.archive_requested_at is not None
+    assert t.archived_at is not None
 
 
-def test_finalize_thread_archived(tmp_path):
+def test_set_thread_transcript_path(tmp_path):
     db = Database(tmp_path / "happyranch.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
-    db.set_thread_status("THR-001", status=ThreadStatus.ARCHIVING, summary="s")
-    db.finalize_thread_archived(
-        "THR-001",
-        transcript_path="/tmp/THR-001.md",
-        new_kb_slugs=["refund-policy"],
-    )
+    db.set_thread_status("THR-001", status=ThreadStatus.ARCHIVED, summary="s")
+    db.set_thread_transcript_path("THR-001", "/tmp/THR-001.md")
     t = db.get_thread("THR-001")
     assert t.status is ThreadStatus.ARCHIVED
     assert t.archived_at is not None
     assert t.transcript_path == "/tmp/THR-001.md"
-    assert t.new_kb_slugs == ["refund-policy"]
 
 
 def test_set_thread_turn_cap(tmp_path):
@@ -291,3 +287,39 @@ def test_set_thread_turn_cap(tmp_path):
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     db.set_thread_turn_cap("THR-001", new_cap=1000)
     assert db.get_thread("THR-001").turn_cap == 1000
+
+
+def test_set_thread_status_to_open_resumes_archived_thread(tmp_path):
+    """OPEN status on an archived thread leaves archived_at + summary intact."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-100", subject="x"))
+    # ARCHIVED sets summary + archived_at in one call (post-Task-13).
+    db.set_thread_status("THR-100", status=ThreadStatus.ARCHIVED, summary="done")
+    pre = db.get_thread("THR-100")
+    assert pre.status is ThreadStatus.ARCHIVED
+    assert pre.summary == "done"
+    assert pre.archived_at is not None
+    pre_archived_at = pre.archived_at
+
+    db.set_thread_status("THR-100", status=ThreadStatus.OPEN)
+
+    post = db.get_thread("THR-100")
+    assert post.status is ThreadStatus.OPEN
+    # archived_at + summary left intact as historical record
+    assert post.archived_at == pre_archived_at
+    assert post.summary == "done"
+
+
+def test_log_thread_resumed_writes_audit_row(tmp_path):
+    """Audit writer records the resume event with prior archived timestamp."""
+    from src.infrastructure.audit_logger import AuditLogger
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-100", subject="x"))
+    AuditLogger(db).log_thread_resumed(
+        "THR-100", prior_archived_at="2026-05-30T12:00:00+00:00",
+    )
+    rows = db.get_audit_logs("THR-100")
+    assert any(r["action"] == "thread_resumed" for r in rows)
+    resumed = next(r for r in rows if r["action"] == "thread_resumed")
+    assert resumed["payload"].get("prior_archived_at") == "2026-05-30T12:00:00+00:00"
+    assert resumed["agent"] == "founder"

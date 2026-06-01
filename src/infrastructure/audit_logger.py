@@ -807,62 +807,27 @@ class AuditLogger:
             },
         )
 
-    def log_thread_archive_requested(
-        self,
-        thread_id: str,
-        *,
-        close_out_count: int,
-    ) -> None:
-        self._db.insert_audit_log(
-            task_id=thread_id,
-            agent="founder",
-            action="thread_archive_requested",
-            payload={"close_out_count": close_out_count},
-        )
-
     def log_thread_archived(
         self,
         thread_id: str,
         *,
-        new_learnings_total: int,
-        new_kb_slugs: list[str],
         turns_used: int,
     ) -> None:
         self._db.insert_audit_log(
             task_id=thread_id,
             agent="founder",
             action="thread_archived",
-            payload={
-                "new_learnings_total": new_learnings_total,
-                "new_kb_slugs": new_kb_slugs,
-                "turns_used": turns_used,
-            },
+            payload={"turns_used": turns_used},
         )
 
-    def log_thread_abandoned(self, thread_id: str, *, reason: str) -> None:
-        self._db.insert_audit_log(
-            task_id=thread_id,
-            agent="founder",
-            action="thread_abandoned",
-            payload={"reason": reason},
-        )
-
-    def log_thread_close_out_received(
-        self,
-        thread_id: str,
-        *,
-        agent: str,
-        new_learnings_count: int,
-        new_kb_slugs: list[str],
+    def log_thread_resumed(
+        self, thread_id: str, *, prior_archived_at: str | None,
     ) -> None:
         self._db.insert_audit_log(
             task_id=thread_id,
-            agent=agent,
-            action="thread_close_out_received",
-            payload={
-                "new_learnings_count": new_learnings_count,
-                "new_kb_slugs": new_kb_slugs,
-            },
+            agent="founder",
+            action="thread_resumed",
+            payload={"prior_archived_at": prior_archived_at},
         )
 
     def log_thread_invocation_failed(

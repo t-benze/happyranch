@@ -6,6 +6,12 @@
 > Threads now broadcast every message to all participants; declines are silent.
 > See the new spec for the current routing model.
 
+> **Superseded in part by `2026-06-01-thread-close-out-removal-and-resume-design.md`.**
+> §5.10 close-out (Phase B), §5.10.1 close-out callback, §5.12 abandon,
+> and the `archiving` state are no longer accurate. Archive is now
+> synchronous; abandoned + archiving states are collapsed into `archived`;
+> close-out invocations are removed; founder can resume an archived thread.
+
 **Date:** 2026-05-13
 **Status:** Draft, pending implementation plan.
 **Relates to:** `docs/superpowers/specs/2026-04-21-talk-flow-design.md` (sibling primitive — 1:1 reflective ritual), `docs/superpowers/specs/2026-04-26-talk-dispatch-design.md` (agent task-dispatch precedent; thread dispatch mirrors this), `docs/superpowers/specs/2026-05-08-feishu-notification-design.md` (no Feishu surface for threads yet), `protocol/06-knowledge-base.md` (reused at archive).

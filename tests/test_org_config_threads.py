@@ -20,7 +20,6 @@ def test_threads_defaults_when_missing():
     cfg = _load("")
     assert cfg.threads_enabled is True
     assert cfg.threads_default_turn_cap == 500
-    assert cfg.threads_close_out_wait_seconds == 300
     assert cfg.threads_invocation_timeout_seconds is None
 
 
@@ -29,13 +28,11 @@ def test_threads_loaded_from_yaml():
     threads:
       enabled: false
       default_turn_cap: 200
-      close_out_wait_seconds: 120
       invocation_timeout_seconds: 900
     """)
     cfg = _load(text)
     assert cfg.threads_enabled is False
     assert cfg.threads_default_turn_cap == 200
-    assert cfg.threads_close_out_wait_seconds == 120
     assert cfg.threads_invocation_timeout_seconds == 900
 
 

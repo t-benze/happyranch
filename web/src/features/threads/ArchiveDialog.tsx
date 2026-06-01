@@ -22,28 +22,20 @@ interface Props {
 export function ArchiveDialog({ threadId, open, onClose }: Props): JSX.Element {
   const archive = useArchiveThread(threadId);
   const [summary, setSummary] = useState('');
-  const [requestCloseOuts, setRequestCloseOuts] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const summaryId = useId();
-  const closeOutsId = useId();
 
   useEffect(() => {
     if (!open) return;
     setSummary('');
-    setRequestCloseOuts(true);
     setErrorMsg(null);
   }, [open]);
 
   const submit = async () => {
     setErrorMsg(null);
-    if (!summary.trim()) {
-      setErrorMsg('Summary is required.');
-      return;
-    }
     try {
       await archive.mutateAsync({
         summary: summary.trim(),
-        request_close_outs: requestCloseOuts,
       });
       onClose();
     } catch (err) {
@@ -59,12 +51,12 @@ export function ArchiveDialog({ threadId, open, onClose }: Props): JSX.Element {
         <DialogHeader>
           <DialogTitle>Archive thread</DialogTitle>
           <DialogDescription className="sr-only">
-            Archive this thread with a founder summary; optionally request close-outs from participants.
+            Archive this thread. A summary will be saved to the transcript.
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-3">
           <FormField
-            label="Founder summary (will be saved to transcript)"
+            label="Founder summary (optional, will be saved to transcript)"
             htmlFor={summaryId}
             error={errorMsg ?? undefined}
           >
@@ -77,18 +69,6 @@ export function ArchiveDialog({ threadId, open, onClose }: Props): JSX.Element {
               className="input resize-y"
             />
           </FormField>
-          <label
-            htmlFor={closeOutsId}
-            className="text-text-primary flex items-center gap-2 text-xs"
-          >
-            <input
-              id={closeOutsId}
-              type="checkbox"
-              checked={requestCloseOuts}
-              onChange={(e) => setRequestCloseOuts(e.target.checked)}
-            />
-            Request close-outs from each participant
-          </label>
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
