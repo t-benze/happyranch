@@ -849,14 +849,6 @@ class AuditLogger:
             payload={"prior_archived_at": prior_archived_at},
         )
 
-    def log_thread_abandoned(self, thread_id: str, *, reason: str) -> None:
-        self._db.insert_audit_log(
-            task_id=thread_id,
-            agent="founder",
-            action="thread_abandoned",
-            payload={"reason": reason},
-        )
-
     def log_thread_invocation_failed(
         self,
         thread_id: str,

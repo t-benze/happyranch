@@ -2141,21 +2141,6 @@ def cmd_threads_extend(args: argparse.Namespace) -> None:
     print(_json.dumps(r.json(), indent=2))
 
 
-def cmd_threads_abandon(args: argparse.Namespace) -> None:
-    import json as _json
-    client = OpcClient.from_env()
-    slug = resolve_org_slug(
-        args_org=args.org, available=_fetch_available_orgs(client),
-    )
-    r = client.post(
-        f"/api/v1/orgs/{slug}/threads/{args.thread_id}/abandon",
-        json={"reason": args.reason},
-    )
-    if not _ok(r):
-        return
-    print(_json.dumps(r.json(), indent=2))
-
-
 def cmd_threads_archive(args: argparse.Namespace) -> None:
     import json as _json
     client = OpcClient.from_env()
@@ -3052,12 +3037,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_threads_extend.add_argument("--thread-id", dest="thread_id", required=True)
     p_threads_extend.add_argument("--new-cap", dest="new_cap", type=int, required=True)
     p_threads_extend.set_defaults(func=cmd_threads_extend)
-
-    p_threads_abandon = threads_sub.add_parser("abandon", help="Founder: abandon a thread without close-outs")
-    p_threads_abandon.add_argument("--org", default=None, help="Org slug")
-    p_threads_abandon.add_argument("--thread-id", dest="thread_id", required=True)
-    p_threads_abandon.add_argument("--reason", required=True)
-    p_threads_abandon.set_defaults(func=cmd_threads_abandon)
 
     p_threads_archive = threads_sub.add_parser("archive", help="Founder: archive a thread (Phase A -> B)")
     p_threads_archive.add_argument("--org", default=None, help="Org slug")
