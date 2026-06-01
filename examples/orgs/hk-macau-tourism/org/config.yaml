@@ -22,5 +22,4 @@
 threads:
   enabled: true
   default_turn_cap: 500
-  close_out_wait_seconds: 300
   # invocation_timeout_seconds: null  # falls through to session_timeout_seconds

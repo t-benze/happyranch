@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json as _json
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -14,6 +15,7 @@ from src.daemon.runner import enqueue_task
 from src.daemon.state import DaemonState
 from src.daemon.thread_queue import ThreadJob
 from src.infrastructure.audit_logger import AuditLogger
+from src.infrastructure.thread_store import render_transcript_body
 from src.models import (
     ResponderStatusEntry,
     TalkStatus,
@@ -1069,34 +1071,32 @@ class ArchiveBody(BaseModel):
     summary: str = ""
 
 
-@router.post("/threads/{thread_id}/archive", status_code=202)
+@router.post("/threads/{thread_id}/archive")
 async def archive_thread_endpoint(
-    slug: str, thread_id: str, body: ArchiveBody, org: OrgDep, request: Request,
+    slug: str, thread_id: str, body: ArchiveBody, org: OrgDep,
 ) -> dict:
-    state: DaemonState = request.app.state.daemon
     t = org.db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
     if t.status is ThreadStatus.ARCHIVED:
-        return {"thread_id": thread_id, "status": "archived",
-                "transcript_path": t.transcript_path, "idempotent": True}
+        return {
+            "thread_id": thread_id, "status": "archived",
+            "transcript_path": t.transcript_path, "idempotent": True,
+        }
     if t.status is ThreadStatus.ABANDONED:
         raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
-    if t.status is ThreadStatus.ARCHIVING:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "archive_in_progress",
-                    "archive_requested_at": t.archive_requested_at.isoformat() if t.archive_requested_at else None},
-        )
     summary = body.summary.strip()
 
-    close_out_tokens: list[str] = []
+    archived_at = datetime.now(timezone.utc)
     async with org.db_lock:
         org.db.reap_pending_invocations(
             thread_id,
             purposes=[ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP],
             decline_reason="archive_started",
         )
+        # Status flip first so set_thread_status writes archive_requested_at via
+        # its ARCHIVING branch — finalize_thread_archived below then flips to
+        # ARCHIVED and stamps archived_at.
         org.db.set_thread_status(
             thread_id, status=ThreadStatus.ARCHIVING, summary=summary,
         )
@@ -1104,40 +1104,46 @@ async def archive_thread_endpoint(
         sys_seq = org.db.append_thread_message(
             thread_id=thread_id, speaker="founder",
             kind=ThreadMessageKind.SYSTEM,
-            system_payload={"kind_tag": "archive_requested", "summary": summary},
+            system_payload={"kind_tag": "archived", "summary": summary},
         )
-        AuditLogger(org.db).log_thread_archive_requested(
-            thread_id, close_out_count=len(participants),
-        )
-        for name in participants:
-            inv = org.db.mint_thread_invocation(
-                thread_id=thread_id, agent_name=name,
-                triggering_seq=sys_seq, purpose=ThreadInvocationPurpose.CLOSE_OUT,
-            )
-            close_out_tokens.append(inv.invocation_token)
 
-    for token in close_out_tokens:
-        await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
-
-    # Phase B: spawn the background finalizer (wired in Task 29).
-    cfg = load_org_config(OrgPaths(root=org.root))
-    state.thread_finalizers.spawn_finalizer(
-        slug, thread_id,
-        org_state=org,
-        close_out_wait_seconds=cfg.threads_close_out_wait_seconds,
+    # Write transcript file synchronously (was the finalizer's job).
+    msgs = org.db.list_thread_messages(thread_id, limit=10000)
+    rendered = render_transcript_body(msgs)
+    transcript_path = org.thread_store.write_transcript(
+        thread_id=thread_id,
+        subject=t.subject,
+        started_at=t.started_at,
+        archived_at=archived_at,
+        participants=participants,
+        turns_used=t.turns_used,
+        new_learnings_total=t.new_learnings_total,
+        new_kb_slugs=t.new_kb_slugs,
+        forwarded_from_id=t.forwarded_from_id,
+        summary=summary,
+        rendered_transcript=rendered,
     )
+    async with org.db_lock:
+        org.db.finalize_thread_archived(
+            thread_id, transcript_path=str(transcript_path),
+            new_kb_slugs=t.new_kb_slugs,
+        )
+        AuditLogger(org.db).log_thread_archived(
+            thread_id,
+            new_learnings_total=t.new_learnings_total,
+            new_kb_slugs=t.new_kb_slugs,
+            turns_used=t.turns_used,
+        )
 
     await _publish_thread_event(
         org, slug,
         thread_id=thread_id, seq=sys_seq, speaker="founder",
-        kind="system", preview="archiving", status="archiving",
+        kind="system", preview="archived", status="archived",
     )
 
     return {
-        "thread_id": thread_id,
-        "status": "archiving",
-        "close_out_count": len(close_out_tokens),
-        "transcript_path": None,
+        "thread_id": thread_id, "status": "archived",
+        "transcript_path": str(transcript_path),
     }
 
 

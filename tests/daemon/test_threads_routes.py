@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 # We use the existing daemon conftest fixtures: tmp_home, app, org_state, auth_headers.
@@ -477,7 +478,9 @@ def test_extend_rejects_non_increase(tmp_home, app, org_state, auth_headers):
 # ---------------------------------------------------------------------------
 
 
-def test_archive_phase_a_transitions_to_archiving(tmp_home, app, org_state, auth_headers):
+def test_archive_completes_synchronously(tmp_home, app, org_state, auth_headers):
+    """Archive is synchronous: 200, status='archived', transcript_path populated,
+    no transitional 'archiving' state observable, no close-out invocations minted."""
     client = TestClient(app)
     _seed_agent(org_state, "dev_agent")
     _seed_agent(org_state, "qa_engineer")
@@ -493,17 +496,23 @@ def test_archive_phase_a_transitions_to_archiving(tmp_home, app, org_state, auth
         json={"summary": "wrapped up"},
         headers=auth_headers,
     )
-    assert resp.status_code == 202
+    assert resp.status_code == 200, resp.text
     data = resp.json()
-    assert data["status"] == "archiving"
-    assert data["close_out_count"] == 2
-    from src.models import ThreadInvocationPurpose, ThreadInvocationStatus
+    assert data["status"] == "archived"
+    assert data["transcript_path"] is not None
+
+    # Follow-up GET shows the same terminal status.
+    detail = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}",
+        headers=auth_headers,
+    ).json()
+    assert detail["status"] == "archived"
+
+    # No close-out invocations minted.
+    from src.models import ThreadInvocationPurpose
     invs = org_state.db.list_thread_invocations(tid)
     close_outs = [inv for inv in invs if inv.purpose is ThreadInvocationPurpose.CLOSE_OUT]
-    assert len(close_outs) == 2
-    # The 2 original REPLY invocations got reaped; the 2 close-outs remain pending.
-    pending = [inv for inv in invs if inv.status is ThreadInvocationStatus.PENDING]
-    assert len(pending) == 2
+    assert close_outs == []
 
 
 def test_archive_with_empty_summary_succeeds(tmp_home, app, org_state, auth_headers):
@@ -521,8 +530,8 @@ def test_archive_with_empty_summary_succeeds(tmp_home, app, org_state, auth_head
         json={},  # empty body — summary defaults to ""
         headers=auth_headers,
     )
-    assert resp.status_code == 202, resp.text
-    assert resp.json()["status"] == "archiving"
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "archived"
     # Thread row's summary should be empty string (not None or KeyError).
     t = org_state.db.get_thread(tid)
     assert t.summary == ""
@@ -530,7 +539,7 @@ def test_archive_with_empty_summary_succeeds(tmp_home, app, org_state, auth_head
 
 def test_archive_payload_with_request_close_outs_silently_ignored(tmp_home, app, org_state, auth_headers):
     """Legacy clients sending request_close_outs are not rejected — Pydantic
-    drops the unknown field silently; close-outs are always minted now."""
+    drops the unknown field silently; the field has no effect now."""
     client = TestClient(app)
     _seed_agent(org_state, "dev_agent")
     r = client.post(
@@ -544,9 +553,8 @@ def test_archive_payload_with_request_close_outs_silently_ignored(tmp_home, app,
         json={"summary": "done", "request_close_outs": False},
         headers=auth_headers,
     )
-    assert resp.status_code == 202
-    # Close-outs were still minted (the field is now ignored).
-    assert resp.json()["close_out_count"] == 1
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "archived"
 
 
 # ---------------------------------------------------------------------------
@@ -554,6 +562,7 @@ def test_archive_payload_with_request_close_outs_silently_ignored(tmp_home, app,
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skip(reason="close-out is removed in Task 7")
 def test_close_out_writes_learnings_and_kb_slugs(tmp_home, app, org_state, auth_headers):
     client = TestClient(app)
     _seed_agent(org_state, "dev_agent")
@@ -596,6 +605,7 @@ def test_close_out_writes_learnings_and_kb_slugs(tmp_home, app, org_state, auth_
     assert org_state.db.get_pending_invocation(inv.invocation_token) is None
 
 
+@pytest.mark.skip(reason="close-out is removed in Task 7")
 def test_close_out_does_not_append_learnings_when_consume_loses(tmp_home, app, org_state, auth_headers, monkeypatch):
     """If consume_invocation returns False (race lost), the request must
     return 409 WITHOUT appending to learnings.md.
@@ -816,21 +826,12 @@ def test_resume_flips_archived_to_open(tmp_home, app, org_state, auth_headers):
     ).json()
     tid = r["thread_id"]
 
-    # Force the thread to archived through the canonical archive+finalize flow,
-    # so archived_at and summary populate the same way they do in production.
-    from src.daemon.thread_archive_finalizer import finalize_thread
-    import asyncio
+    # Synchronous archive — no manual finalize_thread call needed anymore.
     client.post(
         f"/api/v1/orgs/alpha/threads/{tid}/archive",
-        json={"summary": "wrapped up", "request_close_outs": False},
+        json={"summary": "wrapped up"},
         headers=auth_headers,
     )
-    asyncio.run(finalize_thread(
-        db=org_state.db,
-        store=org_state.thread_store,
-        thread_id=tid,
-        close_out_wait_seconds=0,
-    ))
 
     pre = org_state.db.get_thread(tid)
     assert pre.status.value == "archived"
@@ -895,34 +896,6 @@ def test_resume_404_on_missing_thread(tmp_home, app, org_state, auth_headers):
     )
     assert resp.status_code == 404
     assert resp.json()["detail"]["code"] == "not_found"
-
-
-def test_resume_400_on_archiving_thread(tmp_home, app, org_state, auth_headers):
-    """A thread mid-archive (status='archiving', close-outs pending) must not
-    silently flip to OPEN."""
-    client = TestClient(app)
-    _seed_agent(org_state, "dev_agent")
-    r = client.post(
-        "/api/v1/orgs/alpha/threads",
-        json={"subject": "s", "recipients": ["dev_agent"], "body_markdown": "hi"},
-        headers=auth_headers,
-    ).json()
-    tid = r["thread_id"]
-    # Archive with close-outs requested → thread enters 'archiving' (no finalize call).
-    client.post(
-        f"/api/v1/orgs/alpha/threads/{tid}/archive",
-        json={"summary": "wrapped up", "request_close_outs": True},
-        headers=auth_headers,
-    )
-    assert org_state.db.get_thread(tid).status.value == "archiving"
-
-    resp = client.post(
-        f"/api/v1/orgs/alpha/threads/{tid}/resume",
-        headers=auth_headers,
-    )
-    assert resp.status_code == 400, resp.text
-    assert resp.json()["detail"]["code"] == "thread_not_archived"
-    assert resp.json()["detail"]["status"] == "archiving"
 
 
 def test_resume_400_on_abandoned_thread(tmp_home, app, org_state, auth_headers):
