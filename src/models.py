@@ -49,7 +49,7 @@ class TaskRecord(BaseModel):
     # delegation-chain-design.md.
     active_chain: str | None = None
     note: str | None = None
-    final_artifact_dir: str | None = None
+    final_output_dir: str | None = None
     orchestration_step_count: int = 0
     revision_count: int = 0
     # Per-task override for the agent-session subprocess timeout (seconds).
@@ -104,7 +104,7 @@ class CompletionReport(BaseModel):
     risks_flagged: list[str] = Field(default_factory=list)
     dependencies: list[str] = Field(default_factory=list)
     suggested_reviewer_focus: list[str] = Field(default_factory=list)
-    artifact_dir: str | None = None
+    output_dir: str | None = None
     waiting_on_job_ids: list[str] = Field(default_factory=list)
 
 
