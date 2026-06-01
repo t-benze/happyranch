@@ -1083,8 +1083,6 @@ async def archive_thread_endpoint(
             "thread_id": thread_id, "status": "archived",
             "transcript_path": t.transcript_path, "idempotent": True,
         }
-    if t.status is ThreadStatus.ABANDONED:
-        raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
     summary = body.summary.strip()
 
     archived_at = datetime.now(timezone.utc)
@@ -1145,41 +1143,6 @@ async def archive_thread_endpoint(
         "thread_id": thread_id, "status": "archived",
         "transcript_path": str(transcript_path),
     }
-
-
-# ---------------------------------------------------------------------------
-# Task 27 — POST /threads/{id}/abandon
-# ---------------------------------------------------------------------------
-
-
-class AbandonBody(BaseModel):
-    reason: str
-
-
-@router.post("/threads/{thread_id}/abandon")
-async def abandon_thread_endpoint(
-    slug: str, thread_id: str, body: AbandonBody, org: OrgDep,
-) -> dict:
-    t = org.db.get_thread(thread_id)
-    if t is None:
-        raise HTTPException(status_code=404, detail={"code": "not_found"})
-    if t.status in {ThreadStatus.ARCHIVED, ThreadStatus.ABANDONED}:
-        return {"thread_id": thread_id, "status": t.status.value, "idempotent": True}
-    reason = body.reason.strip() or "abandoned"
-    async with org.db_lock:
-        org.db.set_thread_status(thread_id, status=ThreadStatus.ABANDONED)
-        org.db.reap_pending_invocations(
-            thread_id, purposes=None, decline_reason="thread_abandoned",
-        )
-        AuditLogger(org.db).log_thread_abandoned(thread_id, reason=reason)
-
-    await _publish_thread_event(
-        org, slug,
-        thread_id=thread_id, seq=None, speaker="founder",
-        kind="system", preview="abandoned", status="abandoned",
-    )
-
-    return {"thread_id": thread_id, "status": "abandoned"}
 
 
 # ---------------------------------------------------------------------------

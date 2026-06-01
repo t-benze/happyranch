@@ -469,12 +469,7 @@ def test_extend_rejects_non_increase(tmp_home, app, org_state, auth_headers):
 
 
 # ---------------------------------------------------------------------------
-# Task 27 — POST /threads/{id}/abandon
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Task 28 — POST /threads/{id}/archive (Phase A)
+# POST /threads/{id}/archive — synchronous
 # ---------------------------------------------------------------------------
 
 
@@ -550,31 +545,6 @@ def test_archive_payload_with_request_close_outs_silently_ignored(tmp_home, app,
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "archived"
-
-
-def test_abandon_reaps_pending_and_writes_no_transcript(tmp_home, app, org_state, auth_headers):
-    client = TestClient(app)
-    _seed_agent(org_state, "dev_agent")
-    r = client.post(
-        "/api/v1/orgs/alpha/threads",
-        json={"subject": "s", "recipients": ["dev_agent"],
-              "body_markdown": "hi"},
-        headers=auth_headers,
-    ).json()
-    tid = r["thread_id"]
-    assert len(org_state.db.list_thread_invocations(tid)) == 1
-    resp = client.post(
-        f"/api/v1/orgs/alpha/threads/{tid}/abandon",
-        json={"reason": "nothing useful"},
-        headers=auth_headers,
-    )
-    assert resp.status_code == 200
-    t = org_state.db.get_thread(tid)
-    assert t.status.value == "abandoned"
-    assert t.transcript_path is None
-    from src.models import ThreadInvocationStatus
-    pending = org_state.db.list_thread_invocations(tid, status=ThreadInvocationStatus.PENDING)
-    assert pending == []
 
 
 def test_tail_sse_endpoint_404_for_missing_thread(tmp_home, app, auth_headers):
@@ -797,27 +767,3 @@ def test_resume_404_on_missing_thread(tmp_home, app, org_state, auth_headers):
     assert resp.json()["detail"]["code"] == "not_found"
 
 
-def test_resume_400_on_abandoned_thread(tmp_home, app, org_state, auth_headers):
-    """An abandoned thread must not be silently un-abandoned via /resume."""
-    client = TestClient(app)
-    _seed_agent(org_state, "dev_agent")
-    r = client.post(
-        "/api/v1/orgs/alpha/threads",
-        json={"subject": "s", "recipients": ["dev_agent"], "body_markdown": "hi"},
-        headers=auth_headers,
-    ).json()
-    tid = r["thread_id"]
-    client.post(
-        f"/api/v1/orgs/alpha/threads/{tid}/abandon",
-        json={"reason": "redirected"},
-        headers=auth_headers,
-    )
-    assert org_state.db.get_thread(tid).status.value == "abandoned"
-
-    resp = client.post(
-        f"/api/v1/orgs/alpha/threads/{tid}/resume",
-        headers=auth_headers,
-    )
-    assert resp.status_code == 400, resp.text
-    assert resp.json()["detail"]["code"] == "thread_not_archived"
-    assert resp.json()["detail"]["status"] == "abandoned"
