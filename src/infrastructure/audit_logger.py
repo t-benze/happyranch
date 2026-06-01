@@ -811,19 +811,13 @@ class AuditLogger:
         self,
         thread_id: str,
         *,
-        new_learnings_total: int,
-        new_kb_slugs: list[str],
         turns_used: int,
     ) -> None:
         self._db.insert_audit_log(
             task_id=thread_id,
             agent="founder",
             action="thread_archived",
-            payload={
-                "new_learnings_total": new_learnings_total,
-                "new_kb_slugs": new_kb_slugs,
-                "turns_used": turns_used,
-            },
+            payload={"turns_used": turns_used},
         )
 
     def log_thread_resumed(

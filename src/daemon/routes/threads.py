@@ -418,7 +418,6 @@ def _thread_row_to_dict(t: ThreadRecord) -> dict:
         "turn_cap": t.turn_cap,
         "turns_used": t.turns_used,
         "summary": t.summary,
-        "new_kb_slugs": t.new_kb_slugs,
         "transcript_path": t.transcript_path,
         "composed_by": t.composed_by,
         "composed_from_task_id": t.composed_from_task_id,
@@ -1112,22 +1111,14 @@ async def archive_thread_endpoint(
         archived_at=archived_at,
         participants=participants,
         turns_used=t.turns_used,
-        new_learnings_total=t.new_learnings_total,
-        new_kb_slugs=t.new_kb_slugs,
         forwarded_from_id=t.forwarded_from_id,
         summary=summary,
         rendered_transcript=rendered,
     )
     async with org.db_lock:
-        org.db.finalize_thread_archived(
-            thread_id, transcript_path=str(transcript_path),
-            new_kb_slugs=t.new_kb_slugs,
-        )
+        org.db.set_thread_transcript_path(thread_id, str(transcript_path))
         AuditLogger(org.db).log_thread_archived(
-            thread_id,
-            new_learnings_total=t.new_learnings_total,
-            new_kb_slugs=t.new_kb_slugs,
-            turns_used=t.turns_used,
+            thread_id, turns_used=t.turns_used,
         )
 
     await _publish_thread_event(

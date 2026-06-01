@@ -26,8 +26,6 @@ class ThreadStore:
         archived_at: datetime,
         participants: list[str],
         turns_used: int,
-        new_learnings_total: int,
-        new_kb_slugs: list[str],
         forwarded_from_id: str | None,
         summary: str,
         rendered_transcript: str,
@@ -40,8 +38,6 @@ class ThreadStore:
             "participants": participants,
             "forwarded_from_id": forwarded_from_id,
             "turns_used": turns_used,
-            "new_learnings_total": new_learnings_total,
-            "new_kb_slugs": new_kb_slugs,
         }
         fm_text = yaml.safe_dump(frontmatter, sort_keys=False).strip()
         body = (

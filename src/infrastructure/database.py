@@ -309,9 +309,7 @@ class Database:
                 turn_cap INTEGER NOT NULL DEFAULT 500,
                 turns_used INTEGER NOT NULL DEFAULT 0,
                 summary TEXT,
-                new_kb_slugs_json TEXT,
-                transcript_path TEXT,
-                archive_requested_at TEXT
+                transcript_path TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_threads_status ON threads(status);
             CREATE INDEX IF NOT EXISTS idx_threads_started ON threads(started_at);
@@ -513,12 +511,6 @@ class Database:
         try:
             self._conn.execute(
                 "ALTER TABLE tasks ADD COLUMN active_chain TEXT"
-            )
-        except sqlite3.OperationalError:
-            pass
-        try:
-            self._conn.execute(
-                "ALTER TABLE threads ADD COLUMN new_learnings_total INTEGER NOT NULL DEFAULT 0"
             )
         except sqlite3.OperationalError:
             pass
@@ -1818,10 +1810,10 @@ class Database:
             """INSERT INTO threads (
                 id, subject, started_at, archived_at, status,
                 forwarded_from_id, forwarded_from_kind,
-                turn_cap, turns_used, summary, new_kb_slugs_json,
-                transcript_path, archive_requested_at,
+                turn_cap, turns_used, summary,
+                transcript_path,
                 composed_by, composed_from_task_id, composed_from_talk_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 t.id,
                 t.subject,
@@ -1833,9 +1825,7 @@ class Database:
                 t.turn_cap,
                 t.turns_used,
                 t.summary,
-                json.dumps(t.new_kb_slugs) if t.new_kb_slugs else None,
                 t.transcript_path,
-                t.archive_requested_at.isoformat() if t.archive_requested_at else None,
                 t.composed_by,
                 t.composed_from_task_id,
                 t.composed_from_talk_id,
@@ -1856,10 +1846,7 @@ class Database:
             turn_cap=row["turn_cap"],
             turns_used=row["turns_used"],
             summary=row["summary"],
-            new_kb_slugs=json.loads(row["new_kb_slugs_json"]) if row["new_kb_slugs_json"] else [],
-            new_learnings_total=row["new_learnings_total"] if "new_learnings_total" in keys else 0,
             transcript_path=row["transcript_path"],
-            archive_requested_at=datetime.fromisoformat(row["archive_requested_at"]) if row["archive_requested_at"] else None,
             composed_by=row["composed_by"] if "composed_by" in keys else "founder",
             composed_from_task_id=row["composed_from_task_id"] if "composed_from_task_id" in keys else None,
             composed_from_talk_id=row["composed_from_talk_id"] if "composed_from_talk_id" in keys else None,
@@ -2286,22 +2273,13 @@ class Database:
         self._conn.commit()
 
     @_synchronized
-    def finalize_thread_archived(
-        self,
-        thread_id: str,
-        *,
-        transcript_path: str,
-        new_kb_slugs: list[str],
+    def set_thread_transcript_path(
+        self, thread_id: str, transcript_path: str,
     ) -> None:
+        """Persist the transcript path for an archived thread."""
         self._conn.execute(
-            "UPDATE threads SET status = 'archived', archived_at = ?, "
-            "transcript_path = ?, new_kb_slugs_json = ? WHERE id = ?",
-            (
-                _now().isoformat(),
-                transcript_path,
-                json.dumps(new_kb_slugs) if new_kb_slugs else None,
-                thread_id,
-            ),
+            "UPDATE threads SET transcript_path = ? WHERE id = ?",
+            (transcript_path, thread_id),
         )
         self._conn.commit()
 
@@ -2403,36 +2381,6 @@ class Database:
         # own @_synchronized acquisition. The cap UPDATE above is committed by
         # mint_thread_invocation's commit (SQLite commits all pending changes).
         return inv, new_cap
-
-    @_synchronized
-    def add_thread_kb_slug(self, thread_id: str, slug: str) -> None:
-        cursor = self._conn.execute(
-            "SELECT new_kb_slugs_json FROM threads WHERE id = ?", (thread_id,)
-        )
-        row = cursor.fetchone()
-        if row is None:
-            return
-        slugs = json.loads(row["new_kb_slugs_json"]) if row["new_kb_slugs_json"] else []
-        if slug in slugs:
-            return
-        slugs.append(slug)
-        self._conn.execute(
-            "UPDATE threads SET new_kb_slugs_json = ? WHERE id = ?",
-            (json.dumps(slugs), thread_id),
-        )
-        self._conn.commit()
-
-    @_synchronized
-    def add_thread_learnings_count(self, thread_id: str, *, count: int) -> None:
-        """Increment new_learnings_total on a thread. Called from close-out callback."""
-        if count <= 0:
-            return
-        self._conn.execute(
-            "UPDATE threads SET new_learnings_total = new_learnings_total + ? "
-            "WHERE id = ?",
-            (count, thread_id),
-        )
-        self._conn.commit()
 
     @_synchronized
     def insert_talk(self, talk: TalkRecord) -> None:
