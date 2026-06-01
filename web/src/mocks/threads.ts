@@ -68,18 +68,4 @@ export const MOCK_THREADS: ThreadRecord[] = [
     new_kb_slugs: ['refund-honored-group-a-2026-05-09'],
     transcript_path: 'threads/THR-004.md',
   },
-  {
-    thread_id: 'THR-005',
-    subject: 'Pricing review — late-summer SAR packages',
-    status: 'abandoned',
-    started_at: '2026-04-30T14:00:00Z',
-    archived_at: null,
-    forwarded_from_id: null,
-    forwarded_from_kind: null,
-    turn_cap: 500,
-    turns_used: 6,
-    summary: null,
-    new_kb_slugs: null,
-    transcript_path: null,
-  },
 ];

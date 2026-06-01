@@ -3,7 +3,7 @@
  *
  * Each thread has 3-8 messages with a mix of `kind: 'message'` (founder
  * and worker speakers), `kind: 'system'` events (invited, extended,
- * archive_requested, archived, abandoned), and at least one
+ * archive_requested, archived), and at least one
  * `kind: 'decline'` to exercise that bubble variant in `MessageBubble`.
  *
  * Timestamps are stable, in ascending order within each thread.
@@ -15,7 +15,6 @@ export const MOCK_PARTICIPANTS: Record<string, string[]> = {
   'THR-002': ['founder', 'ops_lead'],
   'THR-003': ['founder', 'support_lead', 'engineering_head'],
   'THR-004': ['founder', 'support_lead'],
-  'THR-005': ['founder', 'ops_lead'],
 };
 
 export const MOCK_MESSAGES: Record<string, ThreadMessage[]> = {
@@ -219,43 +218,6 @@ export const MOCK_MESSAGES: Record<string, ThreadMessage[]> = {
       decline_reason: null,
       system_payload: { event: 'archived' },
       created_at: '2026-05-09T18:22:00Z',
-    },
-  ],
-  'THR-005': [
-    {
-      seq: 1,
-      speaker: 'founder',
-      kind: 'message',
-      body_markdown:
-        'Quick pricing check: should we raise the late-summer SAR package by 8% to absorb the new ferry surcharge?',
-      responder_status: [],
-      decline_reason: null,
-      system_payload: null,
-      created_at: '2026-04-30T14:00:00Z',
-    },
-    {
-      seq: 2,
-      speaker: 'ops_lead',
-      kind: 'message',
-      body_markdown:
-        'Not in time for the current booking window. Better to keep prices flat and absorb this quarter, revisit in Q3.',
-      responder_status: [],
-      decline_reason: null,
-      system_payload: null,
-      created_at: '2026-04-30T15:45:00Z',
-    },
-    {
-      seq: 3,
-      speaker: 'founder',
-      kind: 'system',
-      body_markdown: null,
-      responder_status: [],
-      decline_reason: null,
-      system_payload: {
-        event: 'abandoned',
-        reason: 'pricing decision deferred to Q3 planning cycle',
-      },
-      created_at: '2026-05-01T09:00:00Z',
     },
   ],
 };

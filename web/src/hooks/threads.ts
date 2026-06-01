@@ -64,10 +64,6 @@ export const useArchiveThread: ReturnType<typeof useData>['threads']['useArchive
   threadId,
 ) => useData().threads.useArchiveThread(threadId);
 
-export const useAbandonThread: ReturnType<typeof useData>['threads']['useAbandonThread'] = (
-  threadId,
-) => useData().threads.useAbandonThread(threadId);
-
 export const useResumeThread: ReturnType<typeof useData>['threads']['useResumeThread'] = (
   threadId,
 ) => useData().threads.useResumeThread(threadId);

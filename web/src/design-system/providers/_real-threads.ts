@@ -23,7 +23,6 @@ import type {
   ThreadTailEvent,
 } from '@/lib/api/types';
 import type {
-  AbandonArgs,
   ArchiveArgs,
   ComposeArgs,
   ExtendArgs,
@@ -217,22 +216,6 @@ function useArchiveThread(threadId: string): MutationLike<
   });
 }
 
-function useAbandonThread(threadId: string): MutationLike<
-  AbandonArgs,
-  Awaited<ReturnType<typeof threadsApi.abandonThread>>
-> {
-  const slug = useRealOrgSlug();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (body: AbandonArgs) =>
-      threadsApi.abandonThread(slug, threadId, body),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
-      qc.invalidateQueries({ queryKey: ['threads', slug] });
-    },
-  });
-}
-
 function useResumeThread(threadId: string): MutationLike<
   ResumeArgs,
   Awaited<ReturnType<typeof threadsApi.resumeThread>>
@@ -277,7 +260,6 @@ export const realThreadsApi: ThreadsApi = {
   useSendFollowUp,
   useInviteAgent,
   useArchiveThread,
-  useAbandonThread,
   useResumeThread,
   useExtendCap,
 };

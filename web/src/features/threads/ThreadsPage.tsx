@@ -32,7 +32,6 @@ import {
   useThreadsInboxSSE,
   useThreadsList,
 } from '@/hooks/threads';
-import { AbandonDialog } from './AbandonDialog';
 import { ArchiveDialog } from './ArchiveDialog';
 import { ExtendDialog } from './ExtendDialog';
 import { InviteDialog } from './InviteDialog';
@@ -41,7 +40,7 @@ import { ResponderStatusStrip } from './ResponderStatusStrip';
 import { ResumeButton } from './ResumeButton';
 import { describeError } from './strings';
 
-const STATUS_TABS = ['open', 'archived', 'abandoned'] as const;
+const STATUS_TABS = ['open', 'archived'] as const;
 type StatusTab = (typeof STATUS_TABS)[number];
 
 export function ThreadsPage(): JSX.Element {
@@ -89,7 +88,6 @@ export function ThreadsPage(): JSX.Element {
   >(undefined);
   const [showInvite, setShowInvite] = useState(false);
   const [showArchive, setShowArchive] = useState(false);
-  const [showAbandon, setShowAbandon] = useState(false);
   const [showExtend, setShowExtend] = useState(false);
 
   const openNew = () => {
@@ -133,7 +131,7 @@ export function ThreadsPage(): JSX.Element {
     }
   };
 
-  // Keyboard shortcuts: N / I / A / X / F / R. Limited to when no input is
+  // Keyboard shortcuts: N / I / A / F / R. Limited to when no input is
   // focused. The `?` help trigger lives on the global `HelpDrawerHost`.
   // `isGPrefixArmed()` keeps `g i / g a / g d`-style chords from also
   // firing the bare-letter dialogs here.
@@ -146,7 +144,6 @@ export function ThreadsPage(): JSX.Element {
       if (e.key === 'n' || e.key === 'N') { e.preventDefault(); openNew(); }
       else if (threadId && (e.key === 'i' || e.key === 'I')) { e.preventDefault(); setShowInvite(true); }
       else if (threadId && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); setShowArchive(true); }
-      else if (threadId && (e.key === 'x' || e.key === 'X')) { e.preventDefault(); setShowAbandon(true); }
       else if (threadId && (e.key === 'f' || e.key === 'F')) { e.preventDefault(); openForward(); }
       else if (threadId && (e.key === 'r' || e.key === 'R') && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
@@ -244,7 +241,6 @@ export function ThreadsPage(): JSX.Element {
           messagesLoading={activeMessagesQuery.isLoading}
           onInvite={() => setShowInvite(true)}
           onArchive={() => setShowArchive(true)}
-          onAbandon={() => setShowAbandon(true)}
           onExtend={() => setShowExtend(true)}
           composer={
             <Composer
@@ -293,11 +289,6 @@ export function ThreadsPage(): JSX.Element {
             open={showArchive}
             onClose={() => setShowArchive(false)}
           />
-          <AbandonDialog
-            threadId={threadId}
-            open={showAbandon}
-            onClose={() => setShowAbandon(false)}
-          />
           <ExtendDialog
             threadId={threadId}
             currentCap={activeThread.data?.turn_cap ?? 500}
@@ -310,8 +301,8 @@ export function ThreadsPage(): JSX.Element {
   );
 }
 
-function threadStatusOrFallback(status: string): 'open' | 'archiving' | 'archived' | 'abandoned' {
-  if (status === 'open' || status === 'archiving' || status === 'archived' || status === 'abandoned') return status;
+function threadStatusOrFallback(status: string): 'open' | 'archiving' | 'archived' {
+  if (status === 'open' || status === 'archiving' || status === 'archived') return status;
   return 'open';
 }
 
@@ -333,7 +324,6 @@ interface DetailColumnProps {
   messagesLoading: boolean;
   onInvite: () => void;
   onArchive: () => void;
-  onAbandon: () => void;
   onExtend: () => void;
   composer: JSX.Element;
   /** Active org slug — used to build the cross-surface "View audit" link. */
@@ -348,7 +338,6 @@ function DetailColumn({
   messagesLoading,
   onInvite,
   onArchive,
-  onAbandon,
   onExtend,
   composer,
   slug,
@@ -383,7 +372,6 @@ function DetailColumn({
             <Button variant="ghost" size="sm" onClick={onInvite} disabled={!open} title="Invite (I)">Invite</Button>
             <Button variant="ghost" size="sm" onClick={onExtend} disabled={!open} title="Extend turn cap">Extend</Button>
             <Button variant="ghost" size="sm" onClick={onArchive} disabled={!open} title="Archive (A)">Archive</Button>
-            <Button variant="ghost" size="sm" onClick={onAbandon} disabled={!open} title="Abandon (X)">Abandon</Button>
             {thread.status === 'archived' && <ResumeButton threadId={thread.thread_id} />}
             {slug && thread.participants[0] && (
               <Link
@@ -477,8 +465,6 @@ function describeSystem(payload: Record<string, unknown> | null, slug?: string):
       return 'archive requested';
     case 'archived':
       return 'archived';
-    case 'abandoned':
-      return `abandoned${payload.reason ? `: ${payload.reason}` : ''}`;
     case 'task_dispatched': {
       const taskId = String(payload.task_id ?? '');
       const taskLink = slug && taskId

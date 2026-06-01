@@ -78,13 +78,6 @@ export const resumeThread = (
 ): Promise<{ thread_id: string; status: string; idempotent?: boolean }> =>
   request(`/orgs/${slug}/threads/${threadId}/resume`, { method: 'POST' });
 
-export const abandonThread = (
-  slug: string,
-  threadId: string,
-  body: { reason: string },
-): Promise<{ thread_id: string; status: string }> =>
-  request(`/orgs/${slug}/threads/${threadId}/abandon`, { method: 'POST', body });
-
 // SSE paths — pass to subscribeSSE
 export const threadInboxEventsPath = (slug: string): string =>
   `/orgs/${slug}/threads/events`;
