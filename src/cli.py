@@ -2197,6 +2197,20 @@ def cmd_threads_archive(args: argparse.Namespace) -> None:
     print(_json.dumps(r.json(), indent=2))
 
 
+def cmd_threads_resume(args: argparse.Namespace) -> None:
+    import json as _json
+    client = OpcClient.from_env()
+    slug = resolve_org_slug(
+        args_org=args.org, available=_fetch_available_orgs(client),
+    )
+    r = client.post(
+        f"/api/v1/orgs/{slug}/threads/{args.thread_id}/resume",
+    )
+    if not _ok(r):
+        return
+    print(_json.dumps(r.json(), indent=2))
+
+
 def cmd_threads_forward(args: argparse.Namespace) -> None:
     import json as _json
     from datetime import datetime
@@ -3078,6 +3092,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_threads_archive.add_argument("--thread-id", dest="thread_id", required=True)
     p_threads_archive.add_argument("--from-file", dest="from_file", required=True)
     p_threads_archive.set_defaults(func=cmd_threads_archive)
+
+    p_threads_resume = threads_sub.add_parser(
+        "resume", help="Founder: reopen an archived thread",
+    )
+    p_threads_resume.add_argument("--org", default=None, help="Org slug")
+    p_threads_resume.add_argument("--thread-id", dest="thread_id", required=True)
+    p_threads_resume.set_defaults(func=cmd_threads_resume)
 
     p_threads_forward = threads_sub.add_parser("forward", help="Founder: forward a talk or thread into a new thread")
     p_threads_forward.add_argument("--org", default=None, help="Org slug")
