@@ -22,7 +22,13 @@ interface HeartbeatProps {
 
 
 export function Heartbeat({ data, nowIdx }: HeartbeatProps): JSX.Element {
-  const maxSteps = Math.max(...data.map((b) => b.steps), 1);
+  // Bar height is driven by the combined "activity-or-outcome" signal so an
+  // hour with cascade-fails but no audit activity (failed > 0, steps == 0)
+  // still paints a visible red bar — `failed` is sourced from terminal task
+  // outcomes and may exceed `steps`.
+  const heightSignal = (b: HeartbeatBucket): number =>
+    Math.max(b.steps, b.failed ?? 0);
+  const maxSignal = Math.max(...data.map(heightSignal), 1);
   const H = 36;
   return (
     <div
@@ -30,8 +36,11 @@ export function Heartbeat({ data, nowIdx }: HeartbeatProps): JSX.Element {
       aria-label="Today's hourly activity"
     >
       {data.map((b, i) => {
-        const totalH = (b.steps / maxSteps) * H;
-        const failedH = b.steps > 0 ? ((b.failed ?? 0) / b.steps) * totalH : 0;
+        const signal = heightSignal(b);
+        const totalH = (signal / maxSignal) * H;
+        const failed = b.failed ?? 0;
+        const failedRatio = signal > 0 ? Math.min(failed / signal, 1) : 0;
+        const failedH = totalH * failedRatio;
         const okH = totalH - failedH;
         return (
           <svg
@@ -43,7 +52,7 @@ export function Heartbeat({ data, nowIdx }: HeartbeatProps): JSX.Element {
               i === nowIdx ? 'opacity-100' : 'opacity-70',
             )}
           >
-            {b.steps === 0 ? (
+            {signal === 0 ? (
               <rect x={0} y={H - 2} width={6} height={2} rx={1} className="fill-border-default" />
             ) : (
               <>

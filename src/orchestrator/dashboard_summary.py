@@ -182,32 +182,53 @@ def _tier_for_ratio(failed: int, total: int) -> Literal["ok", "warn", "bad"]:
 
 def compute_heartbeat_24h(db: Database, *, now: datetime) -> list[HeartbeatBucket]:
     """24 hourly buckets ending at `now`. Steps = session_start +
-    completion_report rows. Tier = ok/warn/bad by failed:total ratio."""
+    completion_report rows. Failed/completed counts come from terminal
+    task transitions (``tasks.completed_at`` bucketed by hour) so
+    orchestrator-side failures (timeouts, cascade-fail, daemon-restart) are
+    counted — agents only self-report ``completed``/``blocked`` via
+    ``completion_report``, so audit-log-driven failure counts under-report.
+    Tier = ok/warn/bad by failed:(completed+failed) ratio."""
     window_start = (now - timedelta(hours=24)).isoformat()
     rows = db.fetch_all_readonly(
-        "SELECT timestamp, action, payload FROM audit_log "
+        "SELECT timestamp FROM audit_log "
         "WHERE timestamp >= ? AND action IN ('session_start', 'completion_report') "
         "LIMIT 50000",
         (window_start,),
     )
     steps_by_hour: dict[int, int] = {h: 0 for h in range(24)}
     failed_by_hour: dict[int, int] = {h: 0 for h in range(24)}
-    completion_by_hour: dict[int, int] = {h: 0 for h in range(24)}
+    completed_by_hour: dict[int, int] = {h: 0 for h in range(24)}
     for r in rows:
         ts = datetime.fromisoformat(r["timestamp"])
+        steps_by_hour[ts.hour] += 1
+
+    # Bucket by ``updated_at`` rather than ``completed_at``: several
+    # transition paths set status=failed without populating completed_at
+    # (daemon-restart sweep in src/daemon/__main__.py, escalation rejection
+    # in src/daemon/routes/tasks.py). ``compute_narrative_counts_today``
+    # uses ``updated_at`` for the same query — matching it keeps the bar
+    # chart consistent with the "N tasks completed, M failed" narrative.
+    terminal_rows = db.fetch_all_readonly(
+        "SELECT status, updated_at FROM tasks "
+        "WHERE updated_at >= ? AND status IN ('completed', 'failed')",
+        (window_start,),
+    )
+    for r in terminal_rows:
+        ts = datetime.fromisoformat(r["updated_at"])
         h = ts.hour
-        steps_by_hour[h] += 1
-        if r["action"] == "completion_report":
-            completion_by_hour[h] += 1
-            payload = json.loads(r["payload"] or "{}")
-            if payload.get("status") == "failed":
-                failed_by_hour[h] += 1
+        if r["status"] == "failed":
+            failed_by_hour[h] += 1
+        else:
+            completed_by_hour[h] += 1
+
     return [
         HeartbeatBucket(
             hour=h,
             steps=steps_by_hour[h],
             failed=failed_by_hour[h],
-            tier=_tier_for_ratio(failed_by_hour[h], completion_by_hour[h]),
+            tier=_tier_for_ratio(
+                failed_by_hour[h], completed_by_hour[h] + failed_by_hour[h],
+            ),
         )
         for h in range(24)
     ]

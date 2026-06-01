@@ -169,24 +169,63 @@ def test_heartbeat_counts_steps_per_hour(db: Database) -> None:
 
 def test_heartbeat_tier_thresholds(db: Database) -> None:
     now = datetime(2026, 5, 30, 14, 30, 0, tzinfo=timezone.utc)
-    # 9 completion_reports with status=completed, 1 with status=failed → 10% fail = warn
+    # 9 completed + 1 failed terminal tasks at hour=11 → 10% fail = warn.
+    # The 10 session_start audit rows keep `steps` aligned with the activity.
     ts = now.replace(hour=11, minute=0, second=0, microsecond=0)
-    for _ in range(9):
+    for i in range(9):
         db._conn.execute(
-            "INSERT INTO audit_log (timestamp, task_id, agent, action, payload) "
-            'VALUES (?, \'T\', \'a\', \'completion_report\', \'{"status":"completed"}\')',
-            (ts.isoformat(),),
+            "INSERT INTO tasks (id, brief, assigned_agent, team, status, created_at, updated_at) "
+            "VALUES (?, 'b', 'a', 't', 'completed', ?, ?)",
+            (f"TASK-OK-{i}", ts.isoformat(), ts.isoformat()),
         )
     db._conn.execute(
-        "INSERT INTO audit_log (timestamp, task_id, agent, action, payload) "
-        'VALUES (?, \'T\', \'a\', \'completion_report\', \'{"status":"failed"}\')',
-        (ts.isoformat(),),
+        "INSERT INTO tasks (id, brief, assigned_agent, team, status, created_at, updated_at) "
+        "VALUES ('TASK-FAIL-1', 'b', 'a', 't', 'failed', ?, ?)",
+        (ts.isoformat(), ts.isoformat()),
     )
+    for _ in range(10):
+        db._conn.execute(
+            "INSERT INTO audit_log (timestamp, task_id, agent, action, payload) "
+            "VALUES (?, 'T', 'a', 'session_start', NULL)",
+            (ts.isoformat(),),
+        )
     db._conn.commit()
     buckets = compute_heartbeat_24h(db, now=now)
     bucket_11 = next(b for b in buckets if b.hour == 11)
     assert bucket_11.steps == 10
+    assert bucket_11.failed == 1
     assert bucket_11.tier == "warn"
+
+
+def test_heartbeat_counts_failed_from_terminal_tasks(db: Database) -> None:
+    """Failed tasks transitioned via _fail() / daemon-restart sweep / escalation
+    rejection never write a completion_report row, and several paths leave
+    completed_at NULL. The bucket's `failed` count must reflect terminal
+    status bucketed by `updated_at` so all three paths show up."""
+    now = datetime(2026, 5, 30, 14, 30, 0, tzinfo=timezone.utc)
+    ts = now.replace(hour=9, minute=15, second=0, microsecond=0)
+    # Mix: two with completed_at set, one with completed_at NULL (mirrors
+    # the daemon-restart-sweep path which only writes status+note).
+    db._conn.execute(
+        "INSERT INTO tasks (id, brief, assigned_agent, team, status, created_at, updated_at, completed_at) "
+        "VALUES ('TASK-A', 'b', 'a', 't', 'failed', ?, ?, ?)",
+        (ts.isoformat(), ts.isoformat(), ts.isoformat()),
+    )
+    db._conn.execute(
+        "INSERT INTO tasks (id, brief, assigned_agent, team, status, created_at, updated_at, completed_at) "
+        "VALUES ('TASK-B', 'b', 'a', 't', 'failed', ?, ?, ?)",
+        (ts.isoformat(), ts.isoformat(), ts.isoformat()),
+    )
+    db._conn.execute(
+        "INSERT INTO tasks (id, brief, assigned_agent, team, status, created_at, updated_at) "
+        "VALUES ('TASK-C', 'b', 'a', 't', 'failed', ?, ?)",
+        (ts.isoformat(), ts.isoformat()),
+    )
+    db._conn.commit()
+    buckets = compute_heartbeat_24h(db, now=now)
+    bucket_9 = next(b for b in buckets if b.hour == 9)
+    assert bucket_9.failed == 3
+    assert bucket_9.tier == "bad"
 
 
 from src.orchestrator.dashboard_summary import compute_recent_activity
