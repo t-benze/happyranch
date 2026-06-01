@@ -22,10 +22,13 @@ import { TalkTranscript } from './TalkTranscript';
 const STATUS_TABS = ['open', 'closed', 'abandoned'] as const;
 type StatusTab = (typeof STATUS_TABS)[number];
 
-/** Map talk status onto InboxRow's threads-style status enum. */
-function inboxStatus(s: TalkRecord['status']): 'open' | 'archived' | 'abandoned' {
-  if (s === 'closed') return 'archived';
-  return s;
+/** Map talk status onto InboxRow's threads-style status enum.
+ * InboxRow's `status` was narrowed to `'open' | 'archived'` after the
+ * thread close-out removal; talks' terminal states (closed + abandoned)
+ * both map to `'archived'` for visual consistency. */
+function inboxStatus(s: TalkRecord['status']): 'open' | 'archived' {
+  if (s === 'open') return 'open';
+  return 'archived';
 }
 
 export function TalksPage(): JSX.Element {

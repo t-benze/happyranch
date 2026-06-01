@@ -29,7 +29,7 @@ export type ReviewVerdict =
 
 export type TalkStatus = 'open' | 'closed' | 'abandoned';
 
-export type ThreadStatus = 'open' | 'archiving' | 'archived' | 'abandoned';
+export type ThreadStatus = 'open' | 'archived';
 
 export type ThreadMessageKind = 'message' | 'decline' | 'system';
 
@@ -39,7 +39,7 @@ export type ThreadInvocationStatus =
   | 'expired'
   | 'declined';
 
-export type ThreadInvocationPurpose = 'reply' | 'bootstrap' | 'close_out';
+export type ThreadInvocationPurpose = 'reply' | 'bootstrap';
 
 // ---------------------------------------------------------------------------
 // Tasks
@@ -158,7 +158,6 @@ export interface ThreadRecord {
   turn_cap: number;
   turns_used: number;
   summary: string | null;
-  new_kb_slugs: string[] | null;
   transcript_path: string | null;
 }
 

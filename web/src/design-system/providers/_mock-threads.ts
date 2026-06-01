@@ -195,7 +195,6 @@ function useComposeThread(): MutationLike<ComposeArgs, ComposeResult> {
         turn_cap: 500,
         turns_used: 1,
         summary: null,
-        new_kb_slugs: null,
         transcript_path: null,
       };
       store.threads = [rec, ...store.threads];

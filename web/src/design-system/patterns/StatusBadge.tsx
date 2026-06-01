@@ -9,7 +9,7 @@
  * Pure prop-driven.
  */
 
-export type ThreadStatus = 'open' | 'archiving' | 'archived' | 'abandoned';
+export type ThreadStatus = 'open' | 'archived';
 export type TaskStatus =
   | 'pending'
   | 'in_progress'
@@ -24,13 +24,11 @@ interface StatusBadgeProps {
 }
 
 // Reuse tokens to keep the palette tight. The mapping mirrors semantic
-// kinship: pending→archiving (yellow), in_progress→open (green),
-// completed→archived (grey), failed→abandoned (red).
+// kinship: in_progress→open (green), completed→archived (grey),
+// failed→abandoned tint (red).
 const STATUS_CLASS: Record<ThreadStatus | TaskStatus, string> = {
   open: 'bg-tier-green-tint text-status-open',
-  archiving: 'bg-tier-yellow-tint text-status-archiving',
   archived: 'border border-border-subtle bg-transparent text-status-archived',
-  abandoned: 'bg-tier-red-tint text-status-abandoned',
   pending: 'bg-tier-yellow-tint text-status-archiving',
   in_progress: 'bg-tier-green-tint text-status-open',
   blocked: 'bg-tier-yellow-tint text-status-blocked',
@@ -64,9 +62,7 @@ export const meta = {
   variants: {
     status: [
       "open",
-      "archiving",
       "archived",
-      "abandoned",
       "pending",
       "in_progress",
       "blocked",

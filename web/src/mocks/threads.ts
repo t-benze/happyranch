@@ -23,7 +23,6 @@ export const MOCK_THREADS: ThreadRecord[] = [
     turn_cap: 500,
     turns_used: 28,
     summary: null,
-    new_kb_slugs: null,
     transcript_path: null,
   },
   {
@@ -37,7 +36,6 @@ export const MOCK_THREADS: ThreadRecord[] = [
     turn_cap: 500,
     turns_used: 84,
     summary: null,
-    new_kb_slugs: null,
     transcript_path: null,
   },
   {
@@ -51,7 +49,6 @@ export const MOCK_THREADS: ThreadRecord[] = [
     turn_cap: 500,
     turns_used: 412,
     summary: null,
-    new_kb_slugs: null,
     transcript_path: null,
   },
   {
@@ -65,7 +62,6 @@ export const MOCK_THREADS: ThreadRecord[] = [
     turn_cap: 500,
     turns_used: 17,
     summary: 'Group A refund honored, KB updated; SOP unchanged.',
-    new_kb_slugs: ['refund-honored-group-a-2026-05-09'],
     transcript_path: 'threads/THR-004.md',
   },
 ];

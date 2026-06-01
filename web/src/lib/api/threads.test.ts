@@ -68,7 +68,6 @@ describe('threads api mirror', () => {
           turn_cap: 500,
           turns_used: 0,
           summary: null,
-          new_kb_slugs: null,
           transcript_path: null,
           participants: ['a'],
           messages: [],

@@ -152,7 +152,6 @@ function mkThread(id: string, subject: string) {
     turn_cap: 500,
     turns_used: 1,
     summary: null,
-    new_kb_slugs: null,
     transcript_path: null,
   };
 }

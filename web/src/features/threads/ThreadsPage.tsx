@@ -301,8 +301,8 @@ export function ThreadsPage(): JSX.Element {
   );
 }
 
-function threadStatusOrFallback(status: string): 'open' | 'archiving' | 'archived' {
-  if (status === 'open' || status === 'archiving' || status === 'archived') return status;
+function threadStatusOrFallback(status: string): 'open' | 'archived' {
+  if (status === 'open' || status === 'archived') return status;
   return 'open';
 }
 
@@ -465,6 +465,8 @@ function describeSystem(payload: Record<string, unknown> | null, slug?: string):
       return 'archive requested';
     case 'archived':
       return 'archived';
+    case 'resumed':
+      return 'resumed';
     case 'task_dispatched': {
       const taskId = String(payload.task_id ?? '');
       const taskLink = slug && taskId
