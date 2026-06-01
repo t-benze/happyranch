@@ -70,6 +70,10 @@ def _reset_lark_token_cache():
 @pytest.fixture
 def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / ".happyranch"))
+    # Bind an ephemeral port so a developer's production daemon (which holds
+    # 8765 by default) doesn't kill the integration suite with EADDRINUSE.
+    # Tests read the actual port from paths.port_file() so this is transparent.
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_PORT", "0")
     return tmp_path / ".happyranch"
 
 

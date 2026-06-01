@@ -33,12 +33,38 @@ def _sweep_on_startup(
     orchestrator: Orchestrator | None = None,
 ) -> None:
     """Post-restart recovery for a single org:
-      - in_progress rows → failed (we killed the subprocess)
+      - in_progress rows → failed (we killed the subprocess); route through
+        the unified auto-revisit primitive with failure_kind="daemon_restart"
+        — same machinery that handles session_timeout / executor_error etc.
+        The cascade-fail propagates upward; founder notification is suppressed
+        when an auto-revisit covers the work.
       - pending rows → re-enqueue (lost the original POST enqueue)
       - blocked(DELEGATED) with all children terminal → re-enqueue parent
+        (orphaned wake-up: the daemon died after a child terminated but
+        before the parent saw the signal — distinct from the in_progress
+        path above)
       - blocked(ESCALATED) → leave alone (founder owns these)
+
+    When ``orchestrator`` is None (test harnesses that don't construct one),
+    the in_progress branch degrades to mark-failed-and-audit only; no auto-
+    revisit, no cascade, no notify. Production always passes an orchestrator.
     """
+    # Imported lazily to avoid a startup-time cycle (run_step → daemon types).
+    from src.orchestrator.run_step import (
+        _enqueue_parent_if_waiting,
+        _maybe_spawn_auto_revisit,
+        _notify_failure_if_eligible,
+    )
+
     audit = AuditLogger(db)
+    # Per-restart dedup: a single daemon restart can force-fail multiple
+    # in-flight tasks across one lineage. Each would otherwise spawn an
+    # independent auto-revisit pointing at the same predecessor root, burning
+    # the per-kind cap and producing parallel retry trees. Spawn at most one
+    # auto-revisit per unique root per sweep; subsequent same-root failures
+    # still propagate their cascade with auto_revisit_spawned=True so the
+    # founder isn't pinged multiple times.
+    revisited_roots: set[str] = set()
 
     for task_id in db.get_nonterminal_task_ids():
         t = db.get_task(task_id)
@@ -47,24 +73,32 @@ def _sweep_on_startup(
         if t.status == TaskStatus.IN_PROGRESS:
             db.update_task(task_id, status=TaskStatus.FAILED, note="daemon restart")
             audit.log_daemon_restart_failure(task_id, t.assigned_agent or "daemon")
-            if orchestrator is not None:
-                orchestrator.notify_failed(
-                    task_id=task_id,
-                    agent=t.assigned_agent or "(unknown)",
+            if orchestrator is None:
+                continue
+            chain = db.walk_ancestors(task_id)
+            root_id = chain[-1].id if chain else task_id
+            if root_id in revisited_roots:
+                # Earlier iteration already auto-revisited this lineage.
+                spawned = True
+            else:
+                spawned = _maybe_spawn_auto_revisit(
+                    orchestrator, task_id,
+                    t.assigned_agent or "(unknown)",
                     failure_kind="daemon_restart",
-                    failure_note="daemon restarted mid-task",
+                    error_context={"reason": "daemon restarted mid-task"},
                 )
-            # Notify parent if this failure unblocks it
-            parent_id = t.parent_task_id
-            if parent_id is not None:
-                parent = db.get_task(parent_id)
-                if (parent is not None and parent.status == TaskStatus.BLOCKED
-                        and parent.block_kind == BlockKind.DELEGATED):
-                    children = [db.get_task(cid) for cid in db.get_children(parent_id)]
-                    if all(c is not None and c.status in {TaskStatus.COMPLETED,
-                                                         TaskStatus.FAILED}
-                           for c in children):
-                        queue.enqueue(slug, parent_id)
+                if spawned:
+                    revisited_roots.add(root_id)
+            _enqueue_parent_if_waiting(
+                orchestrator, task_id,
+                root_auto_revisit_spawned=spawned,
+            )
+            _notify_failure_if_eligible(
+                orchestrator, task_id,
+                failure_kind="daemon_restart",
+                failure_note="daemon restarted mid-task",
+                auto_revisit_spawned=spawned,
+            )
         elif t.status == TaskStatus.PENDING:
             queue.enqueue(slug, task_id)
         elif t.status == TaskStatus.BLOCKED and t.block_kind == BlockKind.DELEGATED:

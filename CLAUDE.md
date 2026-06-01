@@ -47,7 +47,7 @@ In the `protocol/` folder:
 ## Directory Layout
 
 ```
-~/projects/my-opc/                     # Source repo
+~/projects/happyranch/                 # Source repo
 |-- protocol/                          # System kernel docs (00, 05*, 06) + shared agent skills
 |-- scripts/daemon.sh                  # Launch the FastAPI daemon
 |-- src/
@@ -305,12 +305,16 @@ Auto-revisit on opaque agent failures (subprocess timeout, no-completion-callbac
 
 **Failure kinds** (`run_step._classify_failure_kind`): `session_timeout` (`error.startswith("Session timed out after")` — written by `executors.py:197`), `no_callback` (`success=True and report is None`, the TASK-045 class), `rate_limit` (substring `"hit your limit"` + `"reset"` OR `"rate limit"` in any of error / stdout_tail / stderr_tail), `executor_error` (non-zero `returncode`), `agent_exception` (exception escapes `_run_agent`). The triad `_SESSION_TIMEOUT_CLASS = {"session_timeout", "no_callback", "rate_limit"}` is a routing-class predicate exposed for future per-class policy; v1 routes all five kinds identically. `session_failed` is the defensive fallback for novel modes.
 
+A sixth kind, `daemon_restart`, is injected by `_sweep_on_startup` (`src/daemon/__main__.py`) — not by the classifier — when post-restart recovery force-fails an `IN_PROGRESS` task. The sweep routes through the same `_maybe_spawn_auto_revisit` → `_enqueue_parent_if_waiting` → `_notify_failure_if_eligible` triad as the in-process opaque-failure sites; this replaces an older asymmetric "wake the parent for a re-decision step" path that left the daemon-restart-failed sibling as a poisoned `FAILED` row in the children list, detonating the parent later via cascade-fail when an OTHER sibling completed (TASK-687).
+
 **Load-bearing invariants** (full catalog: spec §10):
 
 - **Per-kind cap, not global** — `_AUTO_REVISIT_CAP_PER_KIND = 2` in `run_step.py`. Same-kind exhausts independently; a chain that hits one `session_timeout` then one `executor_error` still has budget for another of each. Reverting to a global cap would mask real bugs behind transient infra noise.
-- **Call order at opaque-failure sites** — `_maybe_spawn_auto_revisit` MUST run BEFORE `_enqueue_parent_if_waiting` at both branches of `run_step_impl`, because the cascade-fail's notification gate threads through `root_auto_revisit_spawned`. The old order caused 13+ ceremonial founder Feishu pings (TALK-037).
+- **Call order at opaque-failure sites** — `_maybe_spawn_auto_revisit` MUST run BEFORE `_enqueue_parent_if_waiting` at both branches of `run_step_impl` AND inside the sweep's `IN_PROGRESS` branch, because the cascade-fail's notification gate threads through `root_auto_revisit_spawned`. The old order caused 13+ ceremonial founder Feishu pings (TALK-037).
 - **`failure_kind` lives top-level on `auto_revisit_of` audit payloads, NOT nested under `error_context`.** `_count_prior_auto_revisits_by_kind` does a flat lookup; nesting it would slow counting and require parser changes.
 - **Cascade still cascade-fails ancestors** even when `root_auto_revisit_spawned=True`; only the Feishu notification is suppressed. The new root via `revisit_of_task_id` is an independent retry tree, not a continuation of the old lineage.
+- **Sweep per-restart dedup** — a single daemon restart can force-fail multiple in-flight tasks across one lineage. `_sweep_on_startup` tracks a `revisited_roots: set[str]` so at most ONE auto-revisit is spawned per unique predecessor root per sweep; subsequent same-root failures still propagate their cascade with `auto_revisit_spawned=True` to keep founder notifications suppressed. Counter-style dedup via `_count_prior_auto_revisits_by_kind` does NOT catch this because the helper walks `walk_revisit_chain(root, ...)` which only sees audit rows ON the predecessor root, not on the newly-spawned siblings.
+- **Sweep degraded mode** — when `_sweep_on_startup(..., orchestrator=None)` (test convenience only — production always passes one), the `IN_PROGRESS` branch marks-failed-and-audits and skips auto-revisit / cascade / notify. Do not add a fallback to the legacy "wake the parent" path; the test wants the strict no-side-effect mode.
 
 ## Thread broadcast routing (addressing model)
 
@@ -398,7 +402,7 @@ CLI fallbacks (`happyranch resolve-escalation`, `happyranch revisit`) consume an
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **my-opc** (10386 symbols, 23435 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **happyranch** (13547 symbols, 30267 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -421,10 +425,10 @@ This project is indexed by GitNexus as **my-opc** (10386 symbols, 23435 relation
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/my-opc/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/my-opc/clusters` | All functional areas |
-| `gitnexus://repo/my-opc/processes` | All execution flows |
-| `gitnexus://repo/my-opc/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/happyranch/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/happyranch/clusters` | All functional areas |
+| `gitnexus://repo/happyranch/processes` | All execution flows |
+| `gitnexus://repo/happyranch/process/{name}` | Step-by-step execution trace |
 
 ## CLI
 

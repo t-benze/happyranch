@@ -1,74 +1,94 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
+
+from src.config import Settings
+from src.daemon.__main__ import _sweep_on_startup
+from src.daemon.queue import TaskQueue
+from src.infrastructure.database import Database
+from src.models import BlockKind, TaskRecord, TaskStatus
+from src.orchestrator._paths import OrgPaths
+from src.orchestrator.orchestrator import Orchestrator
+from src.orchestrator.teams import TeamsRegistry
+from src.runtime import RuntimeDir
 
 
 pytestmark = pytest.mark.integration
 
 
-def test_sweep_calls_notify_failed_not_escalated(tmp_path: Path):
-    """Daemon-restart sweep should classify mid-task failures as failures,
-    not escalations — APPROVE/REJECT don't make sense for FAILED tasks."""
-    from src.daemon.__main__ import _sweep_on_startup
-    from src.infrastructure.database import Database
-    from src.models import TaskRecord, TaskStatus
+def _real_orch(tmp_path: Path, slug: str = "acme") -> tuple[Database, Orchestrator, TaskQueue]:
+    """Construct a sweep-ready org with real Orchestrator + queue."""
+    runtime = RuntimeDir.init(tmp_path / "rt")
+    paths = OrgPaths(root=runtime.orgs_dir / slug)
+    paths.teams_config_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.teams_config_path.write_text(
+        "teams:\n"
+        "  engineering:\n"
+        "    manager: engineering_head\n"
+        "    workers: [dev_agent]\n"
+    )
+    db = Database(paths.db_path)
+    queue = TaskQueue()
+    orch = Orchestrator(
+        db=db, settings=Settings(), paths=paths, slug=slug,
+        teams=TeamsRegistry.load(paths.root),
+    )
+    orch._queue = queue
+    return db, orch, queue
 
-    db = Database(tmp_path / "happyranch.db")
+
+def test_sweep_writes_daemon_restart_failure_not_escalation(tmp_path: Path):
+    """Daemon-restart sweep must use the daemon_restart_failure audit action,
+    never the escalation action — APPROVE/REJECT don't make sense for
+    sweep-killed tasks."""
+    db, orch, queue = _real_orch(tmp_path)
     db.insert_task(TaskRecord(
         id="TASK-1", brief="x", team="engineering",
         assigned_agent="dev_agent", status=TaskStatus.IN_PROGRESS,
     ))
 
-    queue = MagicMock()
-    orchestrator = MagicMock()
+    _sweep_on_startup(db, queue, "acme", orch)
 
-    _sweep_on_startup(db, queue, "acme", orchestrator)
-
-    # Verify the new notify path was used, not the old one
-    assert orchestrator.notify_failed.called
-    assert not orchestrator.notify_escalated.called
-
-    kwargs = orchestrator.notify_failed.call_args.kwargs
-    assert kwargs["failure_kind"] == "daemon_restart"
-    assert kwargs["task_id"] == "TASK-1"
-    assert kwargs["agent"] == "dev_agent"  # task's assigned_agent
-
-    # Task is transitioned to FAILED
     task = db.get_task("TASK-1")
     assert task.status == TaskStatus.FAILED
 
-    # Audit row must use the new 'daemon_restart_failure' action, not 'escalation'
-    audit_rows = db.get_audit_logs("TASK-1")
-    actions = [r["action"] for r in audit_rows]
+    actions = [r["action"] for r in db.get_audit_logs("TASK-1")]
     assert "daemon_restart_failure" in actions, (
         f"expected 'daemon_restart_failure' audit row; got: {actions}"
     )
     assert "escalation" not in actions, (
-        f"'escalation' action must not appear for a daemon-restart failure; got: {actions}"
+        f"'escalation' must not appear for a daemon-restart failure; "
+        f"got: {actions}"
     )
 
 
 def test_sweep_uses_unknown_for_missing_assigned_agent(tmp_path: Path):
-    """If task.assigned_agent is None, notify_failed gets agent='(unknown)'."""
-    from src.daemon.__main__ import _sweep_on_startup
-    from src.infrastructure.database import Database
-    from src.models import TaskRecord, TaskStatus
-
-    db = Database(tmp_path / "happyranch.db")
+    """If task.assigned_agent is None, the auto-revisit payload records
+    agent='(unknown)' rather than crashing on the None."""
+    db, orch, queue = _real_orch(tmp_path)
+    # Root manager so cascade has a parent to walk to.
+    db.insert_task(TaskRecord(
+        id="TASK-ROOT", brief="root", team="engineering",
+        assigned_agent="engineering_head",
+        status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED,
+    ))
     db.insert_task(TaskRecord(
         id="TASK-2", brief="x", team="engineering",
-        assigned_agent=None,  # ← no assigned agent
+        assigned_agent=None, parent_task_id="TASK-ROOT",
         status=TaskStatus.IN_PROGRESS,
     ))
 
-    queue = MagicMock()
-    orchestrator = MagicMock()
+    _sweep_on_startup(db, queue, "acme", orch)
 
-    _sweep_on_startup(db, queue, "acme", orchestrator)
-
-    assert orchestrator.notify_failed.called
-    kwargs = orchestrator.notify_failed.call_args.kwargs
-    assert kwargs["agent"] == "(unknown)"
+    # Auto-revisit row's failed_agent reflects the (unknown) substitute.
+    revisits = [
+        t for t in (db.get_task(tid)
+                    for tid in db.get_nonterminal_task_ids())
+        if t is not None and t.revisit_of_task_id == "TASK-ROOT"
+    ]
+    assert len(revisits) == 1
+    ar_rows = db.get_audit_logs(revisits[0].id)
+    auto_row = next(r for r in ar_rows if r["action"] == "auto_revisit_of")
+    assert auto_row["payload"]["failed_agent"] == "(unknown)"
