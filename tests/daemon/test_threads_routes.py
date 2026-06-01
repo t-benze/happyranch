@@ -754,3 +754,101 @@ def test_dispatch_rejects_task_followup_purpose(tmp_home, app, org_state, auth_h
     )
     assert resp.status_code == 400, resp.text
     assert resp.json()["detail"]["code"] == "wrong_invocation_purpose"
+
+
+# ---------------------------------------------------------------------------
+# POST /threads/{id}/resume — founder reopens an archived thread
+# ---------------------------------------------------------------------------
+
+
+def test_resume_flips_archived_to_open(tmp_home, app, org_state, auth_headers):
+    """Archive a thread, then resume it: status goes back to open, archived_at
+    + summary preserved, a 'resumed' system message appears."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"], "body_markdown": "hi"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+
+    # Force the thread to archived through the canonical archive+finalize flow,
+    # so archived_at and summary populate the same way they do in production.
+    from src.daemon.thread_archive_finalizer import finalize_thread
+    import asyncio
+    client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/archive",
+        json={"summary": "wrapped up", "request_close_outs": False},
+        headers=auth_headers,
+    )
+    asyncio.run(finalize_thread(
+        db=org_state.db,
+        store=org_state.thread_store,
+        thread_id=tid,
+        close_out_wait_seconds=0,
+    ))
+
+    pre = org_state.db.get_thread(tid)
+    assert pre.status.value == "archived"
+    pre_archived_at = pre.archived_at
+    assert pre_archived_at is not None
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/resume",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body == {"thread_id": tid, "status": "open"}
+
+    post = org_state.db.get_thread(tid)
+    assert post.status.value == "open"
+    assert post.archived_at == pre_archived_at
+    assert post.summary == "wrapped up"
+
+    # A 'resumed' system message was appended.
+    msgs = org_state.db.list_thread_messages(tid)
+    resumed_msgs = [
+        m for m in msgs
+        if m.kind.value == "system" and (m.system_payload or {}).get("kind_tag") == "resumed"
+    ]
+    assert len(resumed_msgs) == 1
+    assert resumed_msgs[0].speaker == "founder"
+
+
+def test_resume_is_idempotent_on_open_thread(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"], "body_markdown": "hi"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/resume",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body == {"thread_id": tid, "status": "open", "idempotent": True}
+
+    # No 'resumed' system message written on idempotent return.
+    msgs = org_state.db.list_thread_messages(tid)
+    resumed_msgs = [
+        m for m in msgs
+        if m.kind.value == "system" and (m.system_payload or {}).get("kind_tag") == "resumed"
+    ]
+    assert resumed_msgs == []
+
+
+def test_resume_404_on_missing_thread(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    resp = client.post(
+        "/api/v1/orgs/alpha/threads/THR-NEVER/resume",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "not_found"

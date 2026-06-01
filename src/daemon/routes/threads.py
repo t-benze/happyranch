@@ -1260,3 +1260,41 @@ async def abandon_thread_endpoint(
     )
 
     return {"thread_id": thread_id, "status": "abandoned"}
+
+
+# ---------------------------------------------------------------------------
+# POST /threads/{id}/resume — founder reopens an archived thread
+# ---------------------------------------------------------------------------
+
+
+@router.post("/threads/{thread_id}/resume")
+async def resume_thread_endpoint(
+    slug: str, thread_id: str, org: OrgDep,
+) -> dict:
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    if t.status is ThreadStatus.OPEN:
+        return {"thread_id": thread_id, "status": "open", "idempotent": True}
+
+    prior_archived_at = (
+        t.archived_at.isoformat() if t.archived_at else None
+    )
+    async with org.db_lock:
+        org.db.set_thread_status(thread_id, status=ThreadStatus.OPEN)
+        sys_seq = org.db.append_thread_message(
+            thread_id=thread_id, speaker="founder",
+            kind=ThreadMessageKind.SYSTEM,
+            system_payload={"kind_tag": "resumed"},
+        )
+        AuditLogger(org.db).log_thread_resumed(
+            thread_id, prior_archived_at=prior_archived_at,
+        )
+
+    await _publish_thread_event(
+        org, slug,
+        thread_id=thread_id, seq=sys_seq, speaker="founder",
+        kind="system", preview="resumed", status="open",
+    )
+
+    return {"thread_id": thread_id, "status": "open"}
