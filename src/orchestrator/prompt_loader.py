@@ -1,8 +1,7 @@
 """File-based agent loader.
 
 Reads agents from <runtime>/org/agents/<name>.md (active) and
-<runtime>/org/agents/_pending/<name>.md (awaiting approval). Replaces
-the previous protocol-markdown parser and the agent_enrollments table.
+<runtime>/org/agents/_pending/<name>.md (awaiting approval).
 """
 from __future__ import annotations
 

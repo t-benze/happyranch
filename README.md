@@ -108,15 +108,6 @@ Slug resolution for per-org commands: explicit `--org <slug>` flag > `HAPPYRANCH
 
 The files under `org/` are the source of truth for that organization. You can hand-edit them between tasks (e.g., to refine an agent's system prompt) — the next `happyranch init-agent` regenerates the workspace bootstrap accordingly.
 
-### Migrating older runtimes
-
-| From | To | Command |
-|------|----|---------|
-| v0 (DB-backed agent enrollments) | v1 (file-based `<runtime>/org/`) | `happyranch migrate-to-org-runtime <path> --slug <slug> --i-have-a-backup --apply` |
-| v1 (single-org, flat) | v2 (multi-org, `orgs/<slug>/`) | `happyranch migrate-to-multi-org <path> --i-have-a-backup --apply` |
-
-Both migrations are TTY-gated and refuse `--yes` bypass. Make a backup first — the `--i-have-a-backup` flag is mandatory on purpose. Without `--apply`, both run dry and print the planned changes. A v0 runtime needs both migrations in sequence to reach v2.
-
 ## Commands
 
 Every per-org command takes `--org <slug>`; container-level commands do not.
@@ -130,7 +121,6 @@ Every per-org command takes `--org <slug>`; container-level commands do not.
 | `happyranch orgs` | List orgs in the active container |
 | `happyranch orgs init <slug> [--from <example-tree>]` | Materialize a new org |
 | `happyranch orgs unload <slug>` | Detach an org from the daemon (does not delete files) |
-| `happyranch migrate-to-multi-org <path> --i-have-a-backup --apply` | v1 -> v2 in place |
 
 ### Per-org
 

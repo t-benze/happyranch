@@ -1522,58 +1522,6 @@ def cmd_reject_agent(args: argparse.Namespace) -> None:
     print(f"Rejected: {args.name}")
 
 
-def cmd_backfill_enrollments(args: argparse.Namespace) -> None:
-    """Founder recovery op: import pre-existing workspaces into the enrollment
-    registry so `manage-agent update`/`terminate` can target them.
-
-    TTY-gated — no --yes bypass. Safe to re-run (idempotent); second call
-    reports all agents as already enrolled.
-    """
-    if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        print("happyranch backfill-enrollments requires an interactive terminal (no --yes bypass).")
-        sys.exit(1)
-
-    print("About to backfill the enrollment registry (founder-initiated).")
-    print("This imports workspaces that lack enrollment rows into the registry")
-    print("at status='approved'. No workspace files are modified.")
-    reply = input("Continue? [y/N] ").strip().lower()
-    if reply not in ("y", "yes"):
-        print("Aborted.")
-        sys.exit(1)
-
-    try:
-        client = OpcClient.from_env()
-    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
-        print(f"Error: {exc}")
-        sys.exit(1)
-
-    slug = resolve_org_slug(
-        args_org=args.org, available=_fetch_available_orgs(client),
-    )
-    r = client.post(f"/api/v1/orgs/{slug}/agents/backfill-enrollments", json={})
-    if not _ok(r):
-        return
-    body = r.json()
-    backfilled = body.get("backfilled", [])
-    already = body.get("skipped_already_enrolled", [])
-    unknown = body.get("skipped_unknown_prompt", [])
-    if backfilled:
-        print(f"Backfilled {len(backfilled)}:")
-        for entry in backfilled:
-            print(
-                f"  - {entry['name']} (executor={entry['executor']}, "
-                f"repos={entry['repos_count']})"
-            )
-    else:
-        print("Backfilled 0.")
-    if already:
-        print(f"Already enrolled (skipped): {', '.join(already)}")
-    if unknown:
-        print(
-            f"Unknown prompt (skipped — not in protocol loader): {', '.join(unknown)}"
-        )
-
-
 def cmd_recall(args: argparse.Namespace) -> None:
     """Fetch a task's brief, canonical outcome, and optionally artifact files.
 
@@ -2452,79 +2400,6 @@ def cmd_revisit(args: argparse.Namespace) -> None:
     print(f"Submitted {new_id}. Attach with: happyranch tail {new_id}")
 
 
-def cmd_migrate_to_org_runtime(args: argparse.Namespace) -> int:
-    """`happyranch migrate-to-org-runtime <path> --slug <slug> --i-have-a-backup [--apply]`."""
-    from src.orchestrator.migration import migrate_to_org_runtime
-    try:
-        result = migrate_to_org_runtime(
-            Path(args.runtime_path).expanduser().resolve(),
-            slug=args.slug,
-            i_have_a_backup=args.i_have_a_backup,
-            apply=args.apply,
-        )
-    except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
-    if result.already_migrated:
-        print(f"already migrated: {result.runtime_path}")
-        return 0
-    if not result.applied:
-        print(f"DRY-RUN — would apply {len(result.planned)} actions:")
-        for step in result.planned:
-            print(f"  - {step}")
-        print("\nRe-run with --apply to execute.")
-        return 0
-    print(f"migrated runtime: {result.runtime_path}")
-    print(f"slug: {result.slug}")
-    print(f"approved exports ({len(result.exported_approved)}): "
-          f"{', '.join(result.exported_approved) or '(none)'}")
-    print(f"pending exports ({len(result.exported_pending)}): "
-          f"{', '.join(result.exported_pending) or '(none)'}")
-    return 0
-
-
-def cmd_migrate_to_multi_org(args: argparse.Namespace) -> None:
-    """`happyranch migrate-to-multi-org <path> --i-have-a-backup [--apply]`."""
-    if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        print("refusing to migrate without an attached terminal", file=sys.stderr)
-        sys.exit(1)
-    from src.daemon.migration_multi_org import migrate_to_multi_org
-
-    rt = Path(args.path).expanduser().resolve()
-    print(f"about to migrate {rt} from schema v1 → v2")
-    print("this is a hard cut. there is no rollback path.")
-    if not args.apply:
-        print("(dry-run; pass --apply to execute)")
-    confirm = input("Continue? [y/N] ").strip().lower()
-    if confirm != "y":
-        print("aborted")
-        sys.exit(1)
-
-    try:
-        report = migrate_to_multi_org(
-            rt, apply=args.apply, i_have_a_backup=args.i_have_a_backup,
-        )
-    except RuntimeError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        sys.exit(1)
-
-    if report.get("already_migrated"):
-        print(f"{rt} is already at schema v2 — nothing to do")
-        return
-
-    if not args.apply:
-        print("would move:")
-        for src, dst in report["would_move"]:
-            print(f"  {src} → {dst}")
-        print("\nrun with --apply to execute")
-        return
-
-    print(f"migrated. new layout:")
-    print(f"  {rt}/orgs/{report['slug']}/")
-    print(f"\nnext step:")
-    print(f"  uv run happyranch init-agent --org {report['slug']}")
-
-
 # ── parser ───────────────────────────────────────────────────
 
 
@@ -2857,17 +2732,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_reject.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
     p_reject.add_argument("name", help="Agent name to reject")
     p_reject.set_defaults(func=cmd_reject_agent)
-
-    # happyranch backfill-enrollments — founder recovery op; TTY-gated; no --yes.
-    p_backfill = sub.add_parser(
-        "backfill-enrollments",
-        help=(
-            "Import pre-existing workspaces into the enrollment registry "
-            "(founder; TTY-gated)"
-        ),
-    )
-    p_backfill.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
-    p_backfill.set_defaults(func=cmd_backfill_enrollments)
 
     # happyranch recall
     p_recall = sub.add_parser(
@@ -3280,36 +3144,6 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_revisit.set_defaults(func=cmd_revisit)
-
-    # happyranch migrate-to-org-runtime — one-shot migration for pre-org-cut runtimes.
-    mig = sub.add_parser(
-        "migrate-to-org-runtime",
-        help="One-shot: migrate <runtime>/teams.yaml + agent_enrollments → <runtime>/org/.",
-    )
-    mig.add_argument("runtime_path")
-    mig.add_argument("--slug", required=True)
-    mig.add_argument("--i-have-a-backup", action="store_true",
-                     help="Mandatory acknowledgment that the runtime is backed up.")
-    mig.add_argument("--apply", action="store_true",
-                     help="Execute the migration. Without this, the command is a dry run.")
-    mig.set_defaults(func=cmd_migrate_to_org_runtime)
-
-    # happyranch migrate-to-multi-org — convert v1 single-org runtime → v2 multi-org container.
-    mig2 = sub.add_parser(
-        "migrate-to-multi-org",
-        help="convert a v1 single-org runtime into a v2 multi-org container",
-    )
-    mig2.add_argument("path")
-    mig2.add_argument(
-        "--i-have-a-backup",
-        action="store_true",
-        help="acknowledgment that you have backed up the runtime folder",
-    )
-    mig2.add_argument(
-        "--apply", action="store_true",
-        help="actually execute (default: dry-run)",
-    )
-    mig2.set_defaults(func=cmd_migrate_to_multi_org)
 
     return parser
 

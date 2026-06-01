@@ -85,8 +85,8 @@ class RuntimeDir:
         version = data.get("schema_version")
         if version != 2:
             raise ValueError(
-                f"runtime at {path} is schema_version {version!r} (single-org). "
-                f"run `happyranch migrate-to-multi-org {path} "
-                f"--i-have-a-backup --apply` to migrate."
+                f"runtime at {path} is schema_version {version!r}; "
+                f"only schema_version 2 (multi-org) is supported. "
+                f"re-init from scratch with `happyranch init <new-path>`."
             )
         return instance

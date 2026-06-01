@@ -37,7 +37,7 @@ In a multi-org container every per-org command needs a slug. Resolution order:
 2. `HAPPYRANCH_ORG_SLUG` env var (export once per shell — most ergonomic)
 3. Auto-infer (only when exactly one org exists in the container)
 
-Container-level commands (`init`, `use`, `orgs ...`, `migrate-to-multi-org`) take no `--org`.
+Container-level commands (`init`, `use`, `orgs ...`) take no `--org`.
 
 Examples below assume `HAPPYRANCH_ORG_SLUG` is set; if it isn't, append `--org <slug>` to each per-org call.
 
@@ -109,11 +109,6 @@ scripts/happyranch enrollments                                  # all enrollment
 scripts/happyranch enrollments --status pending                 # one of {pending,approved,rejected,terminated}
 scripts/happyranch approve-agent content_writer
 scripts/happyranch reject-agent  content_writer
-
-# One-shot: import pre-existing workspaces into the enrollment registry
-# (founder; TTY-gated). Run once after manually placing agent files in
-# `<runtime>/orgs/<slug>/org/agents/` outside the standard enroll flow.
-scripts/happyranch backfill-enrollments
 
 # Per-agent repos (founder-direct; agents usually go through manage-repo skill)
 scripts/happyranch manage-repo add    --agent dev_agent --repo-name docs --url https://github.com/t-benze/docs.git
@@ -313,12 +308,6 @@ scripts/happyranch use  /path/to/runtime
 scripts/happyranch orgs                                                  # alias for: happyranch orgs list
 scripts/happyranch orgs init <slug> --from examples/orgs/hk-macau-tourism
 scripts/happyranch orgs unload <slug>                                    # drops daemon state; does NOT delete files
-
-# Legacy migrations
-#   v0 (DB-backed enrollments) → v1 (file-based org/)
-scripts/happyranch migrate-to-org-runtime /path/to/runtime --slug hk-tourism --i-have-a-backup --apply
-#   v1 (single-org flat layout)  → v2 (multi-org container under orgs/<slug>/)
-scripts/happyranch migrate-to-multi-org  /path/to/runtime --i-have-a-backup --apply
 ```
 
 Per-org content lives under `<runtime>/orgs/<slug>/`:
@@ -379,7 +368,6 @@ scripts/happyranch init-agent                                   # bootstrap work
   - `use` — changes which container the daemon serves (affects all subsequent commands)
   - `orgs unload` — detaches an org from the daemon (files remain, but live state is dropped)
   - `approve-agent` / `reject-agent` — irreversible enrollment state changes
-  - `backfill-enrollments` — TTY-gated; rewrites the enrollment registry from on-disk workspaces
   - `manage-repo remove` / `manage-repo update` — mutates agent workspace config
   - `kb add` / `kb update` — writes to shared KB (visible to every agent in that org; hard to un-ring)
   - `kb add --force-new-sibling` — bypasses near-duplicate detection; only after reviewing the candidates the daemon returned
@@ -393,8 +381,6 @@ scripts/happyranch init-agent                                   # bootstrap work
   - `threads abandon` / `threads archive` / `threads forward` — irreversible thread terminal transitions / new-thread spawn
   - `scripts run` — TTY-gated; executes the SR body inside the daemon process with the daemon's env
   - `scripts reject` — irreversible terminal transition for an SR
-  - `migrate-to-org-runtime` — v0 → v1 rewrite; requires a backup and `--apply`
-  - `migrate-to-multi-org` — v1 → v2 rewrite; TTY-gated, refuses with active tasks or open talks
 - **Agent-callback subcommands — do NOT invoke by hand:**
   - `report-completion`, `progress`, `learning {add,update,promote,reindex}`, `manage-agent`, `manage-repo`, `dispatch`, `talk end`, `threads {reply,decline,dispatch,close-out}`, `scripts submit`
   - These run inside an agent session under the `Bash(happyranch:*)` allow rule. Invoking them manually falsifies audit data and review-verdict rows. Read-side verbs (learning `list|get|search`, `scripts list|show|output`, `talk list|show|status`) are safe for ad-hoc inspection.

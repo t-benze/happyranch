@@ -94,24 +94,6 @@
         ]
       }
     },
-    "/api/v1/orgs/{slug}/agents/backfill-enrollments": {
-      "POST": {
-        "params": [
-          [
-            "authorization",
-            "header"
-          ],
-          [
-            "slug",
-            "path"
-          ]
-        ],
-        "responses": [
-          "200",
-          "422"
-        ]
-      }
-    },
     "/api/v1/orgs/{slug}/agents/enrollments": {
       "GET": {
         "params": [

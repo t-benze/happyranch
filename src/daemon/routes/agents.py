@@ -810,21 +810,6 @@ async def reject_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
     return {"ok": True}
 
 
-@router.post("/agents/backfill-enrollments")
-def backfill_enrollments(slug: str, org: OrgDep) -> dict:
-    """Deprecated no-op. Previously imported pre-existing workspaces into the
-    SQLite enrollment registry; that registry is replaced by file-based agents.
-    Returns a success response with empty lists for backwards compatibility.
-    """
-    return {
-        "backfilled": [],
-        "skipped_already_enrolled": [],
-        "skipped_unknown_prompt": [],
-        "deprecated": True,
-        "note": "Backfill is now done via `happyranch migrate-to-org-runtime`. Pre-existing workspaces without org/agents/<name>.md should be reconstructed by the founder manually.",
-    }
-
-
 @router.post("/agents/{agent_name}/learnings")
 async def append_learning(
     slug: str, agent_name: str, body: LearningBody, org: OrgDep,

@@ -110,7 +110,6 @@ const INCLUDED_PATHS = new Set<string>([
   'GET /api/v1/orgs/{slug}/agents/enrollments',
   'POST /api/v1/orgs/{slug}/agents/{agent_name}/approve',
   'POST /api/v1/orgs/{slug}/agents/{agent_name}/reject',
-  'POST /api/v1/orgs/{slug}/agents/backfill-enrollments',
   'GET /api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries/',
   'GET /api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries/{id_or_slug}',
   'POST /api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries/search',

@@ -240,18 +240,6 @@ class Database:
                 created_at TEXT NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS agent_enrollments (
-                name TEXT PRIMARY KEY,
-                description TEXT NOT NULL,
-                system_prompt TEXT NOT NULL,
-                repos TEXT NOT NULL DEFAULT '{}',
-                executor TEXT NOT NULL DEFAULT 'claude',
-                allow_rules TEXT NOT NULL DEFAULT '[]',
-                status TEXT NOT NULL DEFAULT 'pending',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-
             CREATE TABLE IF NOT EXISTS talks (
                 id TEXT PRIMARY KEY,
                 agent_name TEXT NOT NULL,
@@ -437,8 +425,6 @@ class Database:
             # JSON). NULL for worker rows. Replaces the prose-in-output_summary
             # double-encoding contract — see TASK-071 post-mortem.
             "ALTER TABLE task_results ADD COLUMN decision_json TEXT",
-            "ALTER TABLE agent_enrollments ADD COLUMN executor TEXT NOT NULL DEFAULT 'claude'",
-            "ALTER TABLE agent_enrollments ADD COLUMN allow_rules TEXT NOT NULL DEFAULT '[]'",
             # crew → team rename (SQLite >= 3.25). Idempotent: fails on
             # DBs where the column is already `team` or already renamed.
             "ALTER TABLE tasks RENAME COLUMN crew TO team",
@@ -1538,105 +1524,6 @@ class Database:
         sql += " GROUP BY task_id ORDER BY task_id"
         rows = self._conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
-
-    # --- Agent Enrollments ---
-
-    @_synchronized
-    def insert_enrollment(
-        self,
-        name: str,
-        description: str,
-        system_prompt: str,
-        repos: dict[str, str] | None = None,
-        executor: str | None = None,
-        status: str = "pending",
-        allow_rules: list[str] | None = None,
-    ) -> None:
-        now = datetime.now(timezone.utc).isoformat()
-        self._conn.execute(
-            "INSERT INTO agent_enrollments (name, description, system_prompt, repos, executor, allow_rules, status, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (name, description, system_prompt, json.dumps(repos or {}), executor or "claude",
-             json.dumps(allow_rules or []), status, now, now),
-        )
-        self._conn.commit()
-
-    @_synchronized
-    def get_enrollment(self, name: str) -> dict | None:
-        row = self._conn.execute(
-            "SELECT * FROM agent_enrollments WHERE name = ?", (name,),
-        ).fetchone()
-        if row is None:
-            return None
-        d = dict(row)
-        d["allow_rules"] = json.loads(d.get("allow_rules") or "[]")
-        return d
-
-    @_synchronized
-    def list_enrollments(self, status: str | None = None) -> list[dict]:
-        if status:
-            rows = self._conn.execute(
-                "SELECT * FROM agent_enrollments WHERE status = ? ORDER BY created_at",
-                (status,),
-            ).fetchall()
-        else:
-            rows = self._conn.execute(
-                "SELECT * FROM agent_enrollments ORDER BY created_at",
-            ).fetchall()
-        return [dict(r) for r in rows]
-
-    # deprecated: use prompt_loader.list_agents
-    @_synchronized
-    def list_approved_agent_names(self) -> list[str]:
-        cur = self._conn.execute(
-            "SELECT name FROM agent_enrollments WHERE status='approved' ORDER BY name"
-        )
-        return [r["name"] for r in cur.fetchall()]
-
-    @_synchronized
-    def update_enrollment_status(self, name: str, status: str) -> None:
-        now = datetime.now(timezone.utc).isoformat()
-        self._conn.execute(
-            "UPDATE agent_enrollments SET status = ?, updated_at = ? WHERE name = ?",
-            (status, now, name),
-        )
-        self._conn.commit()
-
-    @_synchronized
-    def update_enrollment_fields(
-        self,
-        name: str,
-        description: str | None = None,
-        system_prompt: str | None = None,
-        repos: dict[str, str] | None = None,
-        executor: str | None = None,
-    ) -> None:
-        now = datetime.now(timezone.utc).isoformat()
-        updates = ["updated_at = ?"]
-        params: list = [now]
-        if description is not None:
-            updates.append("description = ?")
-            params.append(description)
-        if system_prompt is not None:
-            updates.append("system_prompt = ?")
-            params.append(system_prompt)
-        if repos is not None:
-            updates.append("repos = ?")
-            params.append(json.dumps(repos))
-        if executor is not None:
-            updates.append("executor = ?")
-            params.append(executor)
-        params.append(name)
-        self._conn.execute(
-            f"UPDATE agent_enrollments SET {', '.join(updates)} WHERE name = ?",
-            params,
-        )
-        self._conn.commit()
-
-    @_synchronized
-    def delete_enrollment(self, name: str) -> None:
-        self._conn.execute("DELETE FROM agent_enrollments WHERE name = ?", (name,))
-        self._conn.commit()
 
     # --- Talks ---
 

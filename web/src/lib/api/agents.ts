@@ -73,11 +73,6 @@ export const rejectAgent = (
 ): Promise<{ name: string }> =>
   request(`/orgs/${slug}/agents/${agentName}/reject`, { method: 'POST', body });
 
-export const backfillEnrollments = (
-  slug: string,
-): Promise<{ backfilled: number }> =>
-  request(`/orgs/${slug}/agents/backfill-enrollments`, { method: 'POST' });
-
 // ---------------------------------------------------------------------------
 // Per-agent learnings — READ ONLY (writes are agent-subprocess only)
 // ---------------------------------------------------------------------------

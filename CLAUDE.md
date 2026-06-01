@@ -76,7 +76,7 @@ In the `protocol/` folder:
     `-- assets/                        # org-shared blob store (put/list/get via `happyranch assets`)
 ```
 
-HTTP routes: per-org under `/api/v1/orgs/<slug>/...`; container-level under `/api/v1/runtime` and `/api/v1/orgs`. Legacy v1 (single-org flat layout) migrates in place via `happyranch migrate-to-multi-org` — TTY-gated, refuses with active tasks or open talks. Even older v0 (DB-backed agent enrollments) migrates first via `happyranch migrate-to-org-runtime`.
+HTTP routes: per-org under `/api/v1/orgs/<slug>/...`; container-level under `/api/v1/runtime` and `/api/v1/orgs`. Only `schema_version: 2` is supported — older single-org (v1) and DB-backed enrollment (v0) runtimes are rejected at startup with a re-init hint.
 
 ## Configuration
 
@@ -156,7 +156,7 @@ Both surfaces are generated from `allow_rules_for_agent(agent_name, cli=...)` in
 
 `AgentDef` (`src/orchestrator/agent_def.py`) is the in-memory representation of an agent file: markdown-with-YAML-frontmatter, parsed/rendered by `parse_agent_text` / `render_agent_text`. Fields: `name`, `team`, `role` (worker|manager), `executor` (claude|codex|opencode), `description`, `allow_rules`, `repos`, `enrolled_by`, `enrolled_at_task`, `enrolled_at`, `system_prompt` (body). **No `session_timeout_seconds` field** — see resolution above.
 
-`src/orchestrator/prompt_loader.py` is the only API for reading/writing agent files: `load_agent`, `list_agents`, `list_pending`, `write_pending_agent`, `approve_agent`, `reject_agent`. Routes (`src/daemon/routes/agents.py`) and the orchestrator all read through this module against the per-org root. **Do NOT reach into the legacy `agent_enrollments` SQLite table** for new code paths — it remains in the schema for backward compat with v0 runtimes only.
+`src/orchestrator/prompt_loader.py` is the only API for reading/writing agent files: `load_agent`, `list_agents`, `list_pending`, `write_pending_agent`, `approve_agent`, `reject_agent`. Routes (`src/daemon/routes/agents.py`) and the orchestrator all read through this module against the per-org root.
 
 `TeamsRegistry` (`src/orchestrator/teams.py`) is seeded from `teams.yaml` and auto-persists on `add_worker` / `remove_worker`. There is no `DEFAULT_LAYOUT` — an org without `teams.yaml` is treated as empty.
 
@@ -246,7 +246,7 @@ scripts/build_web.sh       # build web/dist/ (npm ci + vite build)
 happyranch web [--no-open]        # open the SPA in the default browser
 ```
 
-Slug resolution for per-org commands: explicit `--org <slug>` > `HAPPYRANCH_ORG_SLUG` env > auto-infer (only when the container has exactly one org) > error. Container-level commands (`happyranch init`, `happyranch use`, `happyranch orgs ...`, `happyranch migrate-to-multi-org`) take no `--org`.
+Slug resolution for per-org commands: explicit `--org <slug>` > `HAPPYRANCH_ORG_SLUG` env > auto-infer (only when the container has exactly one org) > error. Container-level commands (`happyranch init`, `happyranch use`, `happyranch orgs ...`) take no `--org`.
 
 **Full founder-facing CLI** — tasks, agents, KB, threads, talks, audit, assets, runtime, migrations — is documented in `skills/happyranch/SKILL.md` (symlinked at `~/.claude/skills/happyranch`).
 

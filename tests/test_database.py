@@ -198,82 +198,6 @@ def test_query_audit_logs_parses_payload_json(db) -> None:
     assert rows[0]["payload"] == {"duration_seconds": 30}
 
 
-def test_insert_enrollment(db):
-    db.insert_enrollment(
-        name="content_writer",
-        description="Writes destination guides",
-        system_prompt="You are the Content Writer...",
-        repos={"web-content": "https://github.com/t-benze/web-content.git"},
-        executor="codex",
-    )
-    e = db.get_enrollment("content_writer")
-    assert e is not None
-    assert e["name"] == "content_writer"
-    assert e["description"] == "Writes destination guides"
-    assert e["status"] == "pending"
-    assert e["repos"] == '{"web-content": "https://github.com/t-benze/web-content.git"}'
-    assert e["executor"] == "codex"
-
-
-def test_insert_enrollment_defaults_executor_to_claude(db):
-    db.insert_enrollment("x", "desc", "prompt")
-    e = db.get_enrollment("x")
-    assert e["executor"] == "claude"
-
-
-def test_get_enrollment_missing(db):
-    assert db.get_enrollment("ghost") is None
-
-
-def test_list_enrollments_by_status(db):
-    db.insert_enrollment("a", "desc a", "prompt a")
-    db.insert_enrollment("b", "desc b", "prompt b")
-    db.update_enrollment_status("a", "approved")
-    pending = db.list_enrollments(status="pending")
-    assert len(pending) == 1
-    assert pending[0]["name"] == "b"
-    approved = db.list_enrollments(status="approved")
-    assert len(approved) == 1
-    assert approved[0]["name"] == "a"
-    all_e = db.list_enrollments()
-    assert len(all_e) == 2
-
-
-def test_list_approved_agent_names(db):
-    db.insert_enrollment("alpha", "desc", "prompt")
-    db.insert_enrollment("beta", "desc", "prompt")
-    db.update_enrollment_status("beta", "approved")
-    result = db.list_approved_agent_names()
-    assert result == ["beta"]
-
-
-def test_update_enrollment_status(db):
-    db.insert_enrollment("x", "desc", "prompt")
-    db.update_enrollment_status("x", "approved")
-    assert db.get_enrollment("x")["status"] == "approved"
-
-
-def test_update_enrollment_fields(db):
-    db.insert_enrollment("x", "old desc", "old prompt")
-    db.update_enrollment_fields(
-        "x",
-        description="new desc",
-        system_prompt="new prompt",
-        repos={"r": "u"},
-        executor="codex",
-    )
-    e = db.get_enrollment("x")
-    assert e["description"] == "new desc"
-    assert e["system_prompt"] == "new prompt"
-    assert e["executor"] == "codex"
-
-
-def test_delete_enrollment(db):
-    db.insert_enrollment("x", "desc", "prompt")
-    db.delete_enrollment("x")
-    assert db.get_enrollment("x") is None
-
-
 def test_insert_task_with_parent_round_trips(db):
     parent = TaskRecord(id="TASK-001", brief="root")
     child = TaskRecord(
@@ -868,17 +792,6 @@ def test_insert_task_succeeds_on_legacy_schema_with_type_column(tmp_path):
             estimated_cost REAL,
             artifact_dir TEXT,
             created_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS agent_enrollments (
-            name TEXT PRIMARY KEY,
-            description TEXT NOT NULL,
-            system_prompt TEXT NOT NULL,
-            repos TEXT NOT NULL DEFAULT '{}',
-            executor TEXT NOT NULL DEFAULT 'claude',
-            allow_rules TEXT NOT NULL DEFAULT '[]',
-            status TEXT NOT NULL DEFAULT 'pending',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS talks (
             id TEXT PRIMARY KEY,

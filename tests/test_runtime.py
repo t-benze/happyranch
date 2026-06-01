@@ -77,13 +77,13 @@ def test_init_writes_v2_marker_without_slug(tmp_path: Path) -> None:
 
 
 def test_load_refuses_schema_v1(tmp_path: Path) -> None:
-    """A v1 marker (with slug) is rejected with a clear migration message."""
+    """A v1 marker (with slug) is rejected with a re-init hint."""
     root = tmp_path / "legacy"
     root.mkdir()
     (root / "happyranch.yaml").write_text(
         "slug: hk-tourism\nschema_version: 1\ncreated_at: 2026-04-01T00:00:00Z\n"
     )
-    with pytest.raises(ValueError, match="migrate-to-multi-org"):
+    with pytest.raises(ValueError, match="schema_version 2"):
         RuntimeDir.load(root)
 
 
