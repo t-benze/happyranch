@@ -852,3 +852,57 @@ def test_resume_404_on_missing_thread(tmp_home, app, org_state, auth_headers):
     )
     assert resp.status_code == 404
     assert resp.json()["detail"]["code"] == "not_found"
+
+
+def test_resume_400_on_archiving_thread(tmp_home, app, org_state, auth_headers):
+    """A thread mid-archive (status='archiving', close-outs pending) must not
+    silently flip to OPEN."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"], "body_markdown": "hi"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    # Archive with close-outs requested → thread enters 'archiving' (no finalize call).
+    client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/archive",
+        json={"summary": "wrapped up", "request_close_outs": True},
+        headers=auth_headers,
+    )
+    assert org_state.db.get_thread(tid).status.value == "archiving"
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/resume",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"]["code"] == "thread_not_archived"
+    assert resp.json()["detail"]["status"] == "archiving"
+
+
+def test_resume_400_on_abandoned_thread(tmp_home, app, org_state, auth_headers):
+    """An abandoned thread must not be silently un-abandoned via /resume."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"], "body_markdown": "hi"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/abandon",
+        json={"reason": "redirected"},
+        headers=auth_headers,
+    )
+    assert org_state.db.get_thread(tid).status.value == "abandoned"
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/resume",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"]["code"] == "thread_not_archived"
+    assert resp.json()["detail"]["status"] == "abandoned"

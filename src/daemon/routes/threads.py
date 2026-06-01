@@ -1276,6 +1276,11 @@ async def resume_thread_endpoint(
         raise HTTPException(status_code=404, detail={"code": "not_found"})
     if t.status is ThreadStatus.OPEN:
         return {"thread_id": thread_id, "status": "open", "idempotent": True}
+    if t.status is not ThreadStatus.ARCHIVED:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "thread_not_archived", "status": t.status.value},
+        )
 
     prior_archived_at = (
         t.archived_at.isoformat() if t.archived_at else None
