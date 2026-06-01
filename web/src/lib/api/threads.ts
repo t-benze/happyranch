@@ -68,7 +68,7 @@ export const extendThreadCap = (
 export const archiveThread = (
   slug: string,
   threadId: string,
-  body: { summary: string; request_close_outs?: boolean },
+  body: { summary: string },
 ): Promise<{ thread_id: string; status: string }> =>
   request(`/orgs/${slug}/threads/${threadId}/archive`, { method: 'POST', body });
 

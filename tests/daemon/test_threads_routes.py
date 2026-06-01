@@ -490,7 +490,7 @@ def test_archive_phase_a_transitions_to_archiving(tmp_home, app, org_state, auth
     tid = r["thread_id"]
     resp = client.post(
         f"/api/v1/orgs/alpha/threads/{tid}/archive",
-        json={"summary": "wrapped up", "request_close_outs": True},
+        json={"summary": "wrapped up"},
         headers=auth_headers,
     )
     assert resp.status_code == 202
@@ -504,6 +504,49 @@ def test_archive_phase_a_transitions_to_archiving(tmp_home, app, org_state, auth
     # The 2 original REPLY invocations got reaped; the 2 close-outs remain pending.
     pending = [inv for inv in invs if inv.status is ThreadInvocationStatus.PENDING]
     assert len(pending) == 2
+
+
+def test_archive_with_empty_summary_succeeds(tmp_home, app, org_state, auth_headers):
+    """Archive accepts an empty/omitted summary (no validation error)."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"], "body_markdown": "hi"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/archive",
+        json={},  # empty body — summary defaults to ""
+        headers=auth_headers,
+    )
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["status"] == "archiving"
+    # Thread row's summary should be empty string (not None or KeyError).
+    t = org_state.db.get_thread(tid)
+    assert t.summary == ""
+
+
+def test_archive_payload_with_request_close_outs_silently_ignored(tmp_home, app, org_state, auth_headers):
+    """Legacy clients sending request_close_outs are not rejected — Pydantic
+    drops the unknown field silently; close-outs are always minted now."""
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"], "body_markdown": "hi"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/archive",
+        json={"summary": "done", "request_close_outs": False},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 202
+    # Close-outs were still minted (the field is now ignored).
+    assert resp.json()["close_out_count"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -523,7 +566,7 @@ def test_close_out_writes_learnings_and_kb_slugs(tmp_home, app, org_state, auth_
     tid = r["thread_id"]
     client.post(
         f"/api/v1/orgs/alpha/threads/{tid}/archive",
-        json={"summary": "done", "request_close_outs": True},
+        json={"summary": "done"},
         headers=auth_headers,
     )
     inv = next(
@@ -572,7 +615,7 @@ def test_close_out_does_not_append_learnings_when_consume_loses(tmp_home, app, o
     tid = r["thread_id"]
     client.post(
         f"/api/v1/orgs/alpha/threads/{tid}/archive",
-        json={"summary": "done", "request_close_outs": True},
+        json={"summary": "done"},
         headers=auth_headers,
     )
     inv = next(

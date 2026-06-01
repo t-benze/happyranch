@@ -1066,8 +1066,7 @@ async def extend_thread_endpoint(
 
 
 class ArchiveBody(BaseModel):
-    summary: str
-    request_close_outs: bool = True
+    summary: str = ""
 
 
 @router.post("/threads/{thread_id}/archive", status_code=202)
@@ -1108,15 +1107,14 @@ async def archive_thread_endpoint(
             system_payload={"kind_tag": "archive_requested", "summary": summary},
         )
         AuditLogger(org.db).log_thread_archive_requested(
-            thread_id, close_out_count=len(participants) if body.request_close_outs else 0,
+            thread_id, close_out_count=len(participants),
         )
-        if body.request_close_outs:
-            for name in participants:
-                inv = org.db.mint_thread_invocation(
-                    thread_id=thread_id, agent_name=name,
-                    triggering_seq=sys_seq, purpose=ThreadInvocationPurpose.CLOSE_OUT,
-                )
-                close_out_tokens.append(inv.invocation_token)
+        for name in participants:
+            inv = org.db.mint_thread_invocation(
+                thread_id=thread_id, agent_name=name,
+                triggering_seq=sys_seq, purpose=ThreadInvocationPurpose.CLOSE_OUT,
+            )
+            close_out_tokens.append(inv.invocation_token)
 
     for token in close_out_tokens:
         await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=token))
