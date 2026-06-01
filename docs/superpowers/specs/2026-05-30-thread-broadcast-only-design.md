@@ -95,11 +95,11 @@ If you are unsure: decline. The thread can always be re-engaged by another
 message.
 ```
 
-Injected by a new section in the thread-invocation prompt builder (`src/daemon/thread_runner.py`, around the "You are participating in thread …" block at line 109). Gated to `purpose=REPLY` only — not BOOTSTRAP (new participant should engage on first turn), not CLOSE_OUT (distinct submission flow, no reply/decline choice), not TASK_FOLLOWUP (agent has an explicit obligation to report).
+Injected by a new section in the thread-invocation prompt builder (`src/daemon/thread_runner.py`, around the "You are participating in thread …" block at line 109). Gated to `purpose=REPLY` only — not BOOTSTRAP (new participant should engage on first turn), not TASK_FOLLOWUP (agent has an explicit obligation to report).
 
 This parallels the recent self-dispatch doctrine (`_thread_talk_dispatch_doctrine_section()` in `workspace_adapters.py`, shipped via PR #40) but lives in a different surface: the dispatch rule is invariant across all agent work and goes in the bootstrap doc; the decline doctrine only matters when an agent is deciding whether to reply right now, so it goes in the per-invocation prompt where it's most visible.
 
-The skill file (`protocol/skills/thread/SKILL.md`) retains operational mechanics: payload shapes for `reply`/`decline`/`dispatch`/`close-out`, the `--from-file` requirement, invocation-token handling. The judgment rule (when to reply vs. decline) moves out of the skill and into the invocation prompt.
+The skill file (`protocol/skills/thread/SKILL.md`) retains operational mechanics: payload shapes for `reply`/`decline`/`dispatch`, the `--from-file` requirement, invocation-token handling. The judgment rule (when to reply vs. decline) moves out of the skill and into the invocation prompt.
 
 ## 6. Decline semantics
 
@@ -121,7 +121,7 @@ The `kind='decline'` value and `decline_reason` column become deprecated. Old da
 
 ## 7. Turn-cap accounting
 
-New rule: `threads.turns_used` increments by exactly 1 for every `thread_messages` row inserted with `kind='message'`. Everything else (invocation minting, decline consumption, archive, invite, close-out) is free.
+New rule: `threads.turns_used` increments by exactly 1 for every `thread_messages` row inserted with `kind='message'`. Everything else (invocation minting, decline consumption, archive, invite) is free.
 
 Projection at send-time simplifies from:
 ```

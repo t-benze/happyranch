@@ -212,7 +212,7 @@ Integration tests are excluded by default because they spawn a real daemon and f
 `tests/integration/fake_claude.sh` recognizes two prompt shapes and routes to two plan-env vars:
 
 - **Task invocations** — extracts `task_id` / `session_id` from the start-task SKILL's `Parameters:` block and sources `$FAKE_CLAUDE_PLAN` with `(task_id, session_id, agent, org_slug)`.
-- **Thread invocations** — detects the `Your invocation_token for this turn is: …` line, extracts `THR-NNN` + token + purpose (reply / bootstrap / close_out), and sources `$FAKE_CLAUDE_THREAD_PLAN` with `(thread_id, token, agent, org_slug, purpose)`. Agent name comes from `${PWD##*/}` because the thread prompt's first line is "You are participating in thread …" rather than "You are <agent>." — keep that derivation if you touch the script.
+- **Thread invocations** — detects the `Your invocation_token for this turn is: …` line, extracts `THR-NNN` + token + purpose (reply / bootstrap), and sources `$FAKE_CLAUDE_THREAD_PLAN` with `(thread_id, token, agent, org_slug, purpose)`. Agent name comes from `${PWD##*/}` because the thread prompt's first line is "You are participating in thread …" rather than "You are <agent>." — keep that derivation if you touch the script.
 
 Two env vars / two fixtures (`fake_claude_plan_env` and `fake_claude_thread_plan_env`) keep the two flows independent. A test that exercises BOTH a thread invocation AND a dispatched task (e.g., `tests/integration/test_threads_e2e.py::test_agent_dispatch_from_thread_creates_task`) sets both plans.
 
@@ -256,7 +256,7 @@ Slug resolution for per-org commands: explicit `--org <slug>` > `HAPPYRANCH_ORG_
 - `happyranch progress` — long-running mid-task heartbeat
 - `happyranch learning {add,update,promote,reindex}` on migrated workspaces; legacy `happyranch learning --text` on pre-migration
 - `happyranch manage-agent`, `happyranch manage-repo`, `happyranch dispatch`
-- `happyranch threads {reply,decline,dispatch,close-out}`
+- `happyranch threads {reply,decline,dispatch}`
 
 All use `--from-file <path>` — see "Agent permission model" for why.
 
