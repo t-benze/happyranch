@@ -30,8 +30,8 @@ Agents are dynamic — a manager can propose new agents via the `manage-agent` s
 ## Setup
 
 ```bash
-git clone https://github.com/t-benze/my-opc.git
-cd my-opc
+git clone https://github.com/t-benze/happyranch.git
+cd happyranch
 uv sync
 uv run pytest tests/ -v
 ```

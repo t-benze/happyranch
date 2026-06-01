@@ -1,7 +1,7 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **my-opc** (10386 symbols, 23435 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **happyranch** (13547 symbols, 30267 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -24,10 +24,10 @@ This project is indexed by GitNexus as **my-opc** (10386 symbols, 23435 relation
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/my-opc/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/my-opc/clusters` | All functional areas |
-| `gitnexus://repo/my-opc/processes` | All execution flows |
-| `gitnexus://repo/my-opc/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/happyranch/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/happyranch/clusters` | All functional areas |
+| `gitnexus://repo/happyranch/processes` | All execution flows |
+| `gitnexus://repo/happyranch/process/{name}` | Step-by-step execution trace |
 
 ## CLI
 
