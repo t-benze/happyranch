@@ -508,11 +508,6 @@ def test_archive_completes_synchronously(tmp_home, app, org_state, auth_headers)
     ).json()
     assert detail["status"] == "archived"
 
-    # No close-out invocations minted.
-    from src.models import ThreadInvocationPurpose
-    invs = org_state.db.list_thread_invocations(tid)
-    close_outs = [inv for inv in invs if inv.purpose is ThreadInvocationPurpose.CLOSE_OUT]
-    assert close_outs == []
 
 
 def test_archive_with_empty_summary_succeeds(tmp_home, app, org_state, auth_headers):

@@ -857,24 +857,6 @@ class AuditLogger:
             payload={"reason": reason},
         )
 
-    def log_thread_close_out_received(
-        self,
-        thread_id: str,
-        *,
-        agent: str,
-        new_learnings_count: int,
-        new_kb_slugs: list[str],
-    ) -> None:
-        self._db.insert_audit_log(
-            task_id=thread_id,
-            agent=agent,
-            action="thread_close_out_received",
-            payload={
-                "new_learnings_count": new_learnings_count,
-                "new_kb_slugs": new_kb_slugs,
-            },
-        )
-
     def log_thread_invocation_failed(
         self,
         thread_id: str,

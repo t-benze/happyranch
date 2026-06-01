@@ -234,7 +234,7 @@ def test_reap_pending_invocations(tmp_path):
     )
     db.mint_thread_invocation(
         thread_id="THR-001", agent_name="c",
-        triggering_seq=2, purpose=ThreadInvocationPurpose.CLOSE_OUT,
+        triggering_seq=2, purpose=ThreadInvocationPurpose.TASK_FOLLOWUP,
     )
     reaped = db.reap_pending_invocations(
         "THR-001",

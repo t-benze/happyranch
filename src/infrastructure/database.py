@@ -2202,8 +2202,7 @@ class Database:
     def count_pending_turn_obligations(self, thread_id: str) -> int:
         """Count pending invocations that represent future turn obligations.
 
-        REPLY, BOOTSTRAP, TASK_FOLLOWUP count. CLOSE_OUT is excluded
-        (per threads spec §5.10.1).
+        REPLY, BOOTSTRAP, TASK_FOLLOWUP count.
 
         No current callers in production routes — kept as a documented API.
         After the broadcast-only routing change (spec §7, "invite is free"),
