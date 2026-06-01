@@ -72,6 +72,12 @@ export const archiveThread = (
 ): Promise<{ thread_id: string; status: string }> =>
   request(`/orgs/${slug}/threads/${threadId}/archive`, { method: 'POST', body });
 
+export const resumeThread = (
+  slug: string,
+  threadId: string,
+): Promise<{ thread_id: string; status: string; idempotent?: boolean }> =>
+  request(`/orgs/${slug}/threads/${threadId}/resume`, { method: 'POST' });
+
 export const abandonThread = (
   slug: string,
   threadId: string,

@@ -30,6 +30,7 @@ import type {
   InviteArgs,
   MutationLike,
   QueryLike,
+  ResumeArgs,
   SendFollowUpArgs,
   ThreadsApi,
 } from './DataContext';
@@ -232,6 +233,21 @@ function useAbandonThread(threadId: string): MutationLike<
   });
 }
 
+function useResumeThread(threadId: string): MutationLike<
+  ResumeArgs,
+  Awaited<ReturnType<typeof threadsApi.resumeThread>>
+> {
+  const slug = useRealOrgSlug();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => threadsApi.resumeThread(slug, threadId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
+      qc.invalidateQueries({ queryKey: ['threads', slug] });
+    },
+  });
+}
+
 function useExtendCap(threadId: string): MutationLike<
   ExtendArgs,
   Awaited<ReturnType<typeof threadsApi.extendThreadCap>>
@@ -262,5 +278,6 @@ export const realThreadsApi: ThreadsApi = {
   useInviteAgent,
   useArchiveThread,
   useAbandonThread,
+  useResumeThread,
   useExtendCap,
 };

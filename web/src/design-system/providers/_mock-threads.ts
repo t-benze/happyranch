@@ -27,6 +27,8 @@ import type {
   InviteResult,
   MutationLike,
   QueryLike,
+  ResumeArgs,
+  ResumeResult,
   SendFollowUpArgs,
   SendFollowUpResult,
   ThreadsApi,
@@ -343,6 +345,39 @@ function useAbandonThread(threadId: string): MutationLike<AbandonArgs, AbandonRe
   });
 }
 
+function useResumeThread(threadId: string): MutationLike<ResumeArgs, ResumeResult> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      await sleep(120);
+      const idx = store.threads.findIndex((t) => t.thread_id === threadId);
+      if (idx >= 0) {
+        store.threads[idx] = { ...store.threads[idx], status: 'open' };
+      }
+      const seq = nextSeq(threadId);
+      store.messages[threadId] = [
+        ...(store.messages[threadId] ?? []),
+        {
+          seq,
+          speaker: 'founder',
+          kind: 'system',
+          body_markdown: null,
+          decline_reason: null,
+          system_payload: { kind_tag: 'resumed' },
+          created_at: '2026-06-01T12:00:00Z',
+          responder_status: [],
+        },
+      ];
+      return { thread_id: threadId, status: 'open' };
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mock-thread', threadId] });
+      qc.invalidateQueries({ queryKey: ['mock-thread-messages', threadId] });
+      qc.invalidateQueries({ queryKey: ['mock-threads'] });
+    },
+  });
+}
+
 function useExtendCap(threadId: string): MutationLike<ExtendArgs, ExtendResult> {
   const qc = useQueryClient();
   return useMutation({
@@ -390,6 +425,7 @@ export const mockThreadsApi: ThreadsApi = {
   useInviteAgent,
   useArchiveThread,
   useAbandonThread,
+  useResumeThread,
   useExtendCap,
 };
 

@@ -38,6 +38,7 @@ import { ExtendDialog } from './ExtendDialog';
 import { InviteDialog } from './InviteDialog';
 import { NewThreadDialog } from './NewThreadDialog';
 import { ResponderStatusStrip } from './ResponderStatusStrip';
+import { ResumeButton } from './ResumeButton';
 import { describeError } from './strings';
 
 const STATUS_TABS = ['open', 'archived', 'abandoned'] as const;
@@ -383,6 +384,7 @@ function DetailColumn({
             <Button variant="ghost" size="sm" onClick={onExtend} disabled={!open} title="Extend turn cap">Extend</Button>
             <Button variant="ghost" size="sm" onClick={onArchive} disabled={!open} title="Archive (A)">Archive</Button>
             <Button variant="ghost" size="sm" onClick={onAbandon} disabled={!open} title="Abandon (X)">Abandon</Button>
+            {thread.status === 'archived' && <ResumeButton threadId={thread.thread_id} />}
             {slug && thread.participants[0] && (
               <Link
                 to={`/orgs/${slug}/audit?agent=${encodeURIComponent(thread.participants[0])}`}

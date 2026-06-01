@@ -68,6 +68,10 @@ export const useAbandonThread: ReturnType<typeof useData>['threads']['useAbandon
   threadId,
 ) => useData().threads.useAbandonThread(threadId);
 
+export const useResumeThread: ReturnType<typeof useData>['threads']['useResumeThread'] = (
+  threadId,
+) => useData().threads.useResumeThread(threadId);
+
 export const useExtendCap: ReturnType<typeof useData>['threads']['useExtendCap'] = (
   threadId,
 ) => useData().threads.useExtendCap(threadId);
