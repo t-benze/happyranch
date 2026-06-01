@@ -807,19 +807,6 @@ class AuditLogger:
             },
         )
 
-    def log_thread_archive_requested(
-        self,
-        thread_id: str,
-        *,
-        close_out_count: int,
-    ) -> None:
-        self._db.insert_audit_log(
-            task_id=thread_id,
-            agent="founder",
-            action="thread_archive_requested",
-            payload={"close_out_count": close_out_count},
-        )
-
     def log_thread_archived(
         self,
         thread_id: str,

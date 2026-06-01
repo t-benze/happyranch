@@ -1092,11 +1092,8 @@ async def archive_thread_endpoint(
             purposes=[ThreadInvocationPurpose.REPLY, ThreadInvocationPurpose.BOOTSTRAP],
             decline_reason="archive_started",
         )
-        # Status flip first so set_thread_status writes archive_requested_at via
-        # its ARCHIVING branch — finalize_thread_archived below then flips to
-        # ARCHIVED and stamps archived_at.
         org.db.set_thread_status(
-            thread_id, status=ThreadStatus.ARCHIVING, summary=summary,
+            thread_id, status=ThreadStatus.ARCHIVED, summary=summary,
         )
         participants = [p.agent_name for p in org.db.list_thread_participants(thread_id)]
         sys_seq = org.db.append_thread_message(

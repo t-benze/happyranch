@@ -164,9 +164,7 @@ class TalkRecord(BaseModel):
 
 class ThreadStatus(StrEnum):
     OPEN = "open"
-    ARCHIVING = "archiving"
     ARCHIVED = "archived"
-    ABANDONED = "abandoned"
 
 
 class ThreadMessageKind(StrEnum):

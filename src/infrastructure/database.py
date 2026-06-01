@@ -2271,17 +2271,11 @@ class Database:
         summary: str | None = None,
     ) -> None:
         now = _now().isoformat()
-        if status is ThreadStatus.ARCHIVING:
+        if status is ThreadStatus.ARCHIVED:
             self._conn.execute(
                 "UPDATE threads SET status = ?, summary = COALESCE(?, summary), "
-                "archive_requested_at = ? WHERE id = ?",
+                "archived_at = COALESCE(archived_at, ?) WHERE id = ?",
                 (status.value, summary, now, thread_id),
-            )
-        elif status is ThreadStatus.ABANDONED:
-            self._conn.execute(
-                "UPDATE threads SET status = ?, archived_at = COALESCE(archived_at, ?) "
-                "WHERE id = ?",
-                (status.value, now, thread_id),
             )
         else:
             # OPEN (resume): plain status flip; archived_at + summary preserved as historical record.

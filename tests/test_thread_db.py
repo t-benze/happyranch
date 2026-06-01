@@ -256,24 +256,25 @@ def test_increment_turns_used(tmp_path):
     assert t.turns_used == 3
 
 
-def test_set_thread_status_archiving(tmp_path):
+def test_set_thread_status_archived(tmp_path):
+    """ARCHIVED sets status + summary + archived_at in one call."""
     db = Database(tmp_path / "happyranch.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     db.set_thread_status(
         "THR-001",
-        status=ThreadStatus.ARCHIVING,
+        status=ThreadStatus.ARCHIVED,
         summary="done talking",
     )
     t = db.get_thread("THR-001")
-    assert t.status is ThreadStatus.ARCHIVING
+    assert t.status is ThreadStatus.ARCHIVED
     assert t.summary == "done talking"
-    assert t.archive_requested_at is not None
+    assert t.archived_at is not None
 
 
 def test_finalize_thread_archived(tmp_path):
     db = Database(tmp_path / "happyranch.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
-    db.set_thread_status("THR-001", status=ThreadStatus.ARCHIVING, summary="s")
+    db.set_thread_status("THR-001", status=ThreadStatus.ARCHIVED, summary="s")
     db.finalize_thread_archived(
         "THR-001",
         transcript_path="/tmp/THR-001.md",
@@ -297,11 +298,8 @@ def test_set_thread_status_to_open_resumes_archived_thread(tmp_path):
     """OPEN status on an archived thread leaves archived_at + summary intact."""
     db = Database(tmp_path / "happyranch.db")
     db.insert_thread(ThreadRecord(id="THR-100", subject="x"))
-    # Canonical archive flow: ARCHIVING sets summary, finalize sets archived_at.
-    db.set_thread_status("THR-100", status=ThreadStatus.ARCHIVING, summary="done")
-    db.finalize_thread_archived(
-        "THR-100", transcript_path="/tmp/THR-100.md", new_kb_slugs=[],
-    )
+    # ARCHIVED sets summary + archived_at in one call (post-Task-13).
+    db.set_thread_status("THR-100", status=ThreadStatus.ARCHIVED, summary="done")
     pre = db.get_thread("THR-100")
     assert pre.status is ThreadStatus.ARCHIVED
     assert pre.summary == "done"

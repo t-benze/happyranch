@@ -2992,7 +2992,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_threads_list = threads_sub.add_parser("list", help="List threads")
     p_threads_list.add_argument("--org", default=None, help="Org slug")
-    p_threads_list.add_argument("--status", default=None, help="Filter by status (open|archiving|archived|abandoned)")
+    p_threads_list.add_argument("--status", default=None, help="Filter by status (open|archived)")
     p_threads_list.add_argument("--limit", type=int, default=50)
     p_threads_list.set_defaults(func=cmd_threads_list)
 
