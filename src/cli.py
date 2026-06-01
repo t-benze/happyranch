@@ -654,8 +654,8 @@ def _completion_payload_from_file(path: str) -> tuple[str, dict]:
         "dependencies": data.get("dependencies") or [],
         "suggested_reviewer_focus": data.get("reviewer_focus") or [],
     }
-    if data.get("artifact_dir"):
-        body["artifact_dir"] = data["artifact_dir"]
+    if data.get("output_dir"):
+        body["output_dir"] = data["output_dir"]
     # Worker-reported verdict for inline delegation chains. Free string;
     # omit when the task is not part of a chain or the worker has no verdict.
     if data.get("verdict") is not None:
@@ -720,8 +720,8 @@ def cmd_report_completion(args: argparse.Namespace) -> None:
             "dependencies": args.dependencies or [],
             "suggested_reviewer_focus": args.reviewer_focus or [],
         }
-        if args.artifact_dir:
-            body["artifact_dir"] = args.artifact_dir
+        if args.output_dir:
+            body["output_dir"] = args.output_dir
     r = client.post(f"/api/v1/orgs/{args.org}/tasks/{task_id}/completion", json=body)
     if not _ok(r):
         return
@@ -1523,7 +1523,7 @@ def cmd_reject_agent(args: argparse.Namespace) -> None:
 
 
 def cmd_recall(args: argparse.Namespace) -> None:
-    """Fetch a task's brief, canonical outcome, and optionally artifact files.
+    """Fetch a task's brief, canonical outcome, and optionally output files.
 
     Prints the daemon's JSON response as-is — agents consume it through the
     start-task skill, humans pipe it to ``jq``. A 404 is treated as an error
@@ -1542,8 +1542,8 @@ def cmd_recall(args: argparse.Namespace) -> None:
     params: dict[str, str] = {}
     if args.tree:
         params["tree"] = "true"
-    if args.fetch_artifact:
-        params["include_artifact"] = "true"
+    if args.fetch_output:
+        params["include_output"] = "true"
     r = client.get(f"/api/v1/orgs/{slug}/tasks/{args.task_id}/recall", params=params)
     if r.status_code == 404:
         print(f"Task {args.task_id} not found.")
@@ -2713,15 +2713,15 @@ def build_parser() -> argparse.ArgumentParser:
     # happyranch recall
     p_recall = sub.add_parser(
         "recall",
-        help="Recall a task: brief, outcome, optional artifact contents",
+        help="Recall a task: brief, outcome, optional output contents",
     )
     p_recall.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
     p_recall.add_argument("task_id", help="Task ID (e.g. TASK-001)")
     p_recall.add_argument("--tree", action="store_true",
                           help="Include the full subtree of child tasks")
-    p_recall.add_argument("--fetch-artifact", dest="fetch_artifact",
+    p_recall.add_argument("--fetch-output", dest="fetch_output",
                           action="store_true",
-                          help="Inline artifact file contents (capped at 200KB)")
+                          help="Inline output file contents (capped at 200KB)")
     p_recall.set_defaults(func=cmd_recall)
 
     p_rep = sub.add_parser("report-completion", help="Agent callback: report task completion")
@@ -2743,8 +2743,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_rep.add_argument("--risks", action="append", default=[])
     p_rep.add_argument("--dependencies", action="append", default=[])
     p_rep.add_argument("--reviewer-focus", action="append", default=[], dest="reviewer_focus")
-    p_rep.add_argument("--artifact-dir", dest="artifact_dir", default=None,
-                       help="Relative path to the artifact directory under the agent workspace")
+    p_rep.add_argument("--output-dir", dest="output_dir", default=None,
+                       help="Relative path to the output directory under the agent workspace")
     p_rep.set_defaults(func=cmd_report_completion)
 
     # ---- learning ----------------------------------------------------------

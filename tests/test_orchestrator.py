@@ -383,9 +383,9 @@ def test_task_history_newest_first(orchestrator, test_runtime):
     assert idx2 < idx1
 
 
-def test_read_completion_from_db_preserves_artifact_dir(orchestrator):
+def test_read_completion_from_db_preserves_output_dir(orchestrator):
     """Reconstructing a CompletionReport from task_results must include
-    artifact_dir so the daemon-callback path can persist tasks.final_artifact_dir."""
+    output_dir so the daemon-callback path can persist tasks.final_output_dir."""
     orchestrator.create_task("Write the report")
     orchestrator._db.insert_task_result(
         "TASK-001",
@@ -393,12 +393,12 @@ def test_read_completion_from_db_preserves_artifact_dir(orchestrator):
         "sess-xyz",
         output_summary="Report done",
         confidence_score=85,
-        artifact_dir="artifacts/TASK-001",
+        output_dir="output/TASK-001",
     )
 
     report = orchestrator._read_completion_from_db("TASK-001", "dev_agent", "sess-xyz")
     assert report is not None
-    assert report.artifact_dir == "artifacts/TASK-001"
+    assert report.output_dir == "output/TASK-001"
 
 
 def test_read_completion_from_db_hydrates_decision(orchestrator):

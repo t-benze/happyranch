@@ -30,7 +30,7 @@ class ScriptedRunAgent:
                          decision=NextStep(action="delegate", agent="content_writer", prompt="x"),
                          summary="delegating")
         scripted.enqueue("content_writer", summary="draft done",
-                         artifact_dir="artifacts/TASK-C1")
+                         output_dir="output/TASK-C1")
 
         monkeypatch.setattr(orch, "_run_agent", scripted)
 
@@ -52,7 +52,7 @@ class ScriptedRunAgent:
         *,
         decision: NextStep | None = None,
         summary: str = "",
-        artifact_dir: str | None = None,
+        output_dir: str | None = None,
         success: bool = True,
     ) -> None:
         """Pre-declare what _run_agent returns the next time `agent` is called."""
@@ -70,7 +70,7 @@ class ScriptedRunAgent:
                 confidence=90,
                 output_summary=summary,
                 decision=decision,
-                artifact_dir=artifact_dir,
+                output_dir=output_dir,
             )
         else:
             report = None

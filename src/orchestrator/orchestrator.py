@@ -367,7 +367,7 @@ class Orchestrator:
             risks_flagged=row.get("risks_flagged") or [],
             dependencies=[],
             suggested_reviewer_focus=[],
-            artifact_dir=row.get("artifact_dir"),
+            output_dir=row.get("output_dir"),
             waiting_on_job_ids=row.get("waiting_on_job_ids") or [],
         )
 
@@ -580,8 +580,8 @@ class Orchestrator:
             outcome = (t.note or "").replace("\n", " ").strip()[:160]
             lines.append(f"- **{t.id}** ({date_str}, {t.status.value}) — {brief}")
             lines.append(f"  - Outcome: {outcome}" if outcome else "  - Outcome: (none)")
-            if t.final_artifact_dir:
-                lines.append(f"  - Artifact: `{t.final_artifact_dir}`")
+            if t.final_output_dir:
+                lines.append(f"  - Output: `{t.final_output_dir}`")
         path.write_text(header + "\n".join(lines) + ("\n" if lines else ""))
 
     def _log_step_result(

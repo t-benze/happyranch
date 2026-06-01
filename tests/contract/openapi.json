@@ -1324,7 +1324,7 @@
             "header"
           ],
           [
-            "include_artifact",
+            "include_output",
             "query"
           ],
           [

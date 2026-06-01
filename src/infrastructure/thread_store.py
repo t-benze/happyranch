@@ -97,9 +97,9 @@ def render_transcript_body(messages: list) -> str:
                 summary = (payload.get("final_output_summary") or "").strip()
                 if summary:
                     rendered += f" · {summary[:240]}"
-                artifact = payload.get("final_artifact_dir")
-                if artifact:
-                    rendered += f" · `{artifact}`"
+                output = payload.get("final_output_dir")
+                if output:
+                    rendered += f" · `{output}`"
             elif tag == "task_failed":
                 tid = payload.get("task_id")
                 orig = payload.get("original_task_id")

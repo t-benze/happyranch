@@ -43,7 +43,7 @@ def test_build_prior_leg_context_includes_all_fields():
         confidence=92,
         output_summary="PR #180 looks good. All gates green.",
         verdict="APPROVE",
-        artifact_dir="workspaces/senior_dev/artifacts/TASK-579/",
+        output_dir="workspaces/senior_dev/output/TASK-579/",
     )
     out = build_prior_leg_context(child_task_id="TASK-579", report=report)
     assert "Prior leg:    TASK-579" in out
@@ -51,10 +51,10 @@ def test_build_prior_leg_context_includes_all_fields():
     assert "Verdict:      APPROVE" in out
     assert "Confidence:   92" in out
     assert "PR #180 looks good. All gates green." in out
-    assert "Artifact dir: workspaces/senior_dev/artifacts/TASK-579/" in out
+    assert "Output dir: workspaces/senior_dev/output/TASK-579/" in out
 
 
-def test_build_prior_leg_context_omits_artifact_dir_when_unset():
+def test_build_prior_leg_context_omits_output_dir_when_unset():
     report = CompletionReport(
         task_id="TASK-580",
         agent="dev_agent",
@@ -64,7 +64,7 @@ def test_build_prior_leg_context_omits_artifact_dir_when_unset():
     )
     out = build_prior_leg_context(child_task_id="TASK-580", report=report)
     assert "Verdict:      -" in out
-    assert "Artifact dir:" not in out
+    assert "Output dir:" not in out
 
 
 def _legs_pair():

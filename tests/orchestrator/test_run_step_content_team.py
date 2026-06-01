@@ -81,7 +81,7 @@ def test_pass_path_completes_task(paths: OrgPaths, db: Database, monkeypatch) ->
     scripted.enqueue(
         "content_writer",
         summary="draft.md written",
-        artifact_dir=f"artifacts/{tid}",
+        output_dir=f"output/{tid}",
     )
     # CM step 2: delegate to content_qa
     scripted.enqueue(

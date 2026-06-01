@@ -209,14 +209,14 @@ def test_insert_task_with_parent_round_trips(db):
     assert got.parent_task_id == "TASK-001"
 
 
-def test_insert_task_result_stores_artifact_dir(db):
+def test_insert_task_result_stores_output_dir(db):
     db.insert_task_result(
         task_id="TASK-001", agent="dev_agent", session_id="s1",
         output_summary="done", confidence_score=80,
-        artifact_dir="artifacts/TASK-001",
+        output_dir="output/TASK-001",
     )
     rows = db.get_task_results("TASK-001")
-    assert rows[0]["artifact_dir"] == "artifacts/TASK-001"
+    assert rows[0]["output_dir"] == "output/TASK-001"
 
 
 def test_insert_task_result_artifact_optional(db):
@@ -225,7 +225,7 @@ def test_insert_task_result_artifact_optional(db):
         output_summary="done", confidence_score=80,
     )
     rows = db.get_task_results("TASK-002")
-    assert rows[0]["artifact_dir"] is None
+    assert rows[0]["output_dir"] is None
 
 
 def test_insert_task_result_persists_decision_json(db):
@@ -260,18 +260,18 @@ def test_update_task_sets_final_summary_and_artifact(db):
     db.update_task(
         "TASK-010",
         note="Produced Q1 report",
-        final_artifact_dir="artifacts/TASK-010",
+        final_output_dir="output/TASK-010",
     )
     got = db.get_task("TASK-010")
     assert got.note == "Produced Q1 report"
-    assert got.final_artifact_dir == "artifacts/TASK-010"
+    assert got.final_output_dir == "output/TASK-010"
 
 
 def test_final_fields_default_to_none(db):
     db.insert_task(TaskRecord(id="TASK-011", brief="b"))
     got = db.get_task("TASK-011")
     assert got.note is None
-    assert got.final_artifact_dir is None
+    assert got.final_output_dir is None
 
 
 def test_get_children_returns_direct_children_only(db):
@@ -298,7 +298,7 @@ def test_get_recall_payload_returns_task_with_children(db):
     db.update_task(
         "TASK-001",
         note="All done",
-        final_artifact_dir="artifacts/TASK-001",
+        final_output_dir="output/TASK-001",
     )
     payload = db.get_recall_payload("TASK-001")
     assert payload is not None
@@ -306,7 +306,7 @@ def test_get_recall_payload_returns_task_with_children(db):
     assert payload["parent_task_id"] is None
     assert payload["brief"] == "root"
     assert payload["output_summary"] == "All done"
-    assert payload["artifact_dir"] == "artifacts/TASK-001"
+    assert payload["output_dir"] == "output/TASK-001"
     assert payload["children"] == ["TASK-002"]
 
 
@@ -748,7 +748,7 @@ def test_insert_task_succeeds_on_legacy_schema_with_type_column(tmp_path):
             completed_at TEXT,
             parent_task_id TEXT,
             final_output_summary TEXT,
-            final_artifact_dir TEXT,
+            final_output_dir TEXT,
             block_kind TEXT,
             note TEXT,
             orchestration_step_count INTEGER DEFAULT 0,
@@ -790,7 +790,7 @@ def test_insert_task_succeeds_on_legacy_schema_with_type_column(tmp_path):
             duration_seconds INTEGER,
             token_count INTEGER,
             estimated_cost REAL,
-            artifact_dir TEXT,
+            output_dir TEXT,
             created_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS talks (
