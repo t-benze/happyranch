@@ -336,7 +336,7 @@ To enroll an agent that runs on Codex or opencode instead of Claude, the manager
   "system_prompt": "You are the Dev Agent. Your responsibilities are...",
   "executor": "codex",
   "repos": {
-    "my-opc": "https://github.com/t-benze/my-opc.git"
+    "happyranch": "https://github.com/t-benze/happyranch.git"
   }
 }
 ```
