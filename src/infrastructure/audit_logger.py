@@ -839,6 +839,16 @@ class AuditLogger:
             },
         )
 
+    def log_thread_resumed(
+        self, thread_id: str, *, prior_archived_at: str | None,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=thread_id,
+            agent="founder",
+            action="thread_resumed",
+            payload={"prior_archived_at": prior_archived_at},
+        )
+
     def log_thread_abandoned(self, thread_id: str, *, reason: str) -> None:
         self._db.insert_audit_log(
             task_id=thread_id,

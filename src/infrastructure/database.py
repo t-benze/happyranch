@@ -2285,6 +2285,7 @@ class Database:
                 (status.value, now, thread_id),
             )
         else:
+            # OPEN (resume): plain status flip; archived_at + summary preserved as historical record.
             self._conn.execute(
                 "UPDATE threads SET status = ? WHERE id = ?",
                 (status.value, thread_id),
