@@ -10,6 +10,7 @@ from src.orchestrator.workspace_adapters import (
     ClaudeWorkspaceAdapter,
     CodexWorkspaceAdapter,
     OpencodeWorkspaceAdapter,
+    PiWorkspaceAdapter,
 )
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,7 @@ class ContextBuilder:
         self._claude = ClaudeWorkspaceAdapter(settings, paths, slug=slug)
         self._codex = CodexWorkspaceAdapter(settings, paths, slug=slug)
         self._opencode = OpencodeWorkspaceAdapter(settings, paths, slug=slug)
+        self._pi = PiWorkspaceAdapter(settings, paths, slug=slug)
 
     def _adapter(self, provider: str = "claude"):
         if provider == "claude":
@@ -31,6 +33,8 @@ class ContextBuilder:
             return self._codex
         if provider == "opencode":
             return self._opencode
+        if provider == "pi":
+            return self._pi
         raise ValueError(f"unknown workspace provider: {provider}")
 
     def write_settings_json(self, workspace: Path, repo_names: list[str] | None = None) -> None:

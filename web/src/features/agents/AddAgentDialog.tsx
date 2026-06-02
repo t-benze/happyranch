@@ -38,7 +38,7 @@ function defaultTeamForName(name: string): string {
 }
 
 type Role = 'worker' | 'manager';
-type Executor = 'claude' | 'codex' | 'opencode';
+type Executor = 'claude' | 'codex' | 'opencode' | 'pi';
 
 interface Props {
   open: boolean;
@@ -219,6 +219,7 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
               <option value="claude">claude</option>
               <option value="codex">codex</option>
               <option value="opencode">opencode</option>
+              <option value="pi">pi</option>
             </select>
           </div>
 

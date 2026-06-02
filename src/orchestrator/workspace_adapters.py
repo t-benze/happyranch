@@ -37,11 +37,9 @@ def _resolve_skills_src(settings: Settings) -> Path:
 def _copy_skills_tree(src: Path, dst: Path, *, slug: str) -> None:
     """Copy each skill directory from ``src`` into ``dst``, replacing existing copies.
 
-    Used by both Claude (``<ws>/.claude/skills/``) and Codex
-    (``<ws>/.agents/skills/``) workspaces. Codex CLI ≥0.125 discovers skills by
-    walking ``.agents/skills/`` from the working directory up to the repo root,
-    so the destination differs by platform but the source — ``protocol/skills/``
-    — is shared.
+    Used by Claude (``<ws>/.claude/skills/``) and AGENTS.md-backed providers
+    (``<ws>/.agents/skills/``). The destination differs by platform but the
+    source — ``protocol/skills/`` — is shared.
 
     Every ``.md`` file has ``{ORG_SLUG}`` substituted with ``slug`` so example
     ``happyranch`` invocations carry the per-workspace ``--org`` automatically. Other
@@ -784,3 +782,25 @@ class OpencodeWorkspaceAdapter:
         self.write_agents_md(workspace, agent_name, system_prompt)
         self._copy_skills(workspace)
         self.write_opencode_json(workspace, agent_name=agent_name)
+
+
+class PiWorkspaceAdapter:
+    """Bootstrap and maintain Pi workspaces.
+
+    Pi reads ``AGENTS.md`` and uses the same shared skill tree layout as
+    Codex. Keep this as a named adapter so Pi-specific bootstrap files can be
+    added later without changing ContextBuilder's provider contract.
+    """
+
+    provider_name = "pi"
+
+    def __init__(self, settings: Settings, paths: "OrgPaths", *, slug: str) -> None:
+        self._codex_adapter = CodexWorkspaceAdapter(settings, paths, slug=slug)
+
+    def ensure_workspace_ready(
+        self,
+        workspace: Path,
+        agent_name: str,
+        system_prompt: str,
+    ) -> None:
+        self._codex_adapter.ensure_workspace_ready(workspace, agent_name, system_prompt)

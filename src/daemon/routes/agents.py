@@ -108,7 +108,7 @@ class ManageAgentBody(BaseModel):
     description: str | None = None
     system_prompt: str | None = None
     repos: dict[str, str] | None = None
-    executor: Literal["claude", "codex", "opencode"] | None = None
+    executor: Literal["claude", "codex", "opencode", "pi"] | None = None
     allow_rules: list[str] | None = None
     target_team: str | None = None
 
@@ -136,7 +136,7 @@ class FounderCreateAgentBody(BaseModel):
     role: Literal["worker", "manager"]
     team: str | None = None
     new_team: str | None = None
-    executor: Literal["claude", "codex", "opencode"] = "claude"
+    executor: Literal["claude", "codex", "opencode", "pi"] = "claude"
     description: str
     system_prompt: str
     allow_rules: list[str] | None = None

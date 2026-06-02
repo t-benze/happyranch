@@ -155,6 +155,18 @@ def _parse_opencode_usage(stdout: str) -> TokenUsage | None:
     )
 
 
+def _parse_pi_usage(stdout: str) -> TokenUsage | None:
+    """Preserve Pi JSON output for token-usage forensics.
+
+    Pi's headless JSON schema is not pinned by this project yet. Store the
+    raw JSON payload so successful sessions still leave an auditable usage row
+    without pretending we know the token field mapping.
+    """
+    if not stdout or not stdout.strip():
+        return None
+    return TokenUsage(usage_raw_json=stdout[:_TAIL_BYTES])
+
+
 def _run_command(
     cmd: list[str],
     workspace: Path,
@@ -366,6 +378,43 @@ class OpencodeExecutor:
             timeout_seconds,
             on_started=on_started,
             usage_parser=_parse_opencode_usage,
+        )
+
+
+class PiExecutor:
+    """Headless Pi invocation.
+
+    Pi reads ``AGENTS.md`` from the workspace and supports print mode via
+    ``-p``. It does not currently provide a HappyRanch-managed permission
+    surface like Codex sandbox flags or opencode.json, so process containment
+    must be supplied outside this executor if required.
+    """
+
+    def __init__(self, pi_cli_path: str) -> None:
+        self._cli_path = pi_cli_path
+
+    def run(
+        self,
+        workspace: Path,
+        prompt: str,
+        session_id: str | None = None,
+        timeout_seconds: int = 1800,
+        on_started: Callable[[int], None] | None = None,
+    ) -> ExecutorResult:
+        cmd = [
+            self._cli_path,
+            "-p",
+            prompt,
+            "--mode",
+            "json",
+        ]
+        return _run_command(
+            cmd,
+            workspace,
+            session_id,
+            timeout_seconds,
+            on_started=on_started,
+            usage_parser=_parse_pi_usage,
         )
 
 
