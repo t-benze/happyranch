@@ -258,3 +258,58 @@ def test_build_delta_prompt_excludes_old_history_includes_new():
     # It must NOT re-ship the full transcript header / participant roster.
     assert "Full message history follows" not in prompt
     assert "Participants:" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_same_participant_invocations_serialize(tmp_path, monkeypatch):
+    """Two pending invocations for the same Claude participant must NOT run
+    their subprocesses concurrently — the per-(thread, agent) lock serializes
+    the read→run→update path so resumed-session state can't race (Codex P2)."""
+    import asyncio
+    import threading
+    import time
+
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(thread_id="THR-001", speaker="founder",
+                             kind=ThreadMessageKind.MESSAGE, body_markdown="m1")
+    db.append_thread_message(thread_id="THR-001", speaker="founder",
+                             kind=ThreadMessageKind.MESSAGE, body_markdown="m2")
+    inv1 = db.mint_thread_invocation(thread_id="THR-001", agent_name="alice",
+                                     triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY)
+    inv2 = db.mint_thread_invocation(thread_id="THR-001", agent_name="alice",
+                                     triggering_seq=2, purpose=ThreadInvocationPurpose.REPLY)
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    counter = {"now": 0, "max": 0}
+    clock = threading.Lock()
+
+    class _SlowExec:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, **kwargs):
+            with clock:
+                counter["now"] += 1
+                counter["max"] = max(counter["max"], counter["now"])
+            time.sleep(0.1)
+            with clock:
+                counter["now"] -= 1
+            r = FakeExecutorResult(success=True)
+            r.agent_session_id = "sess-x"
+            return r
+
+    import src.daemon.thread_runner as runner_mod
+    monkeypatch.setattr(runner_mod, "_build_executor_for_provider",
+                        lambda provider, settings, paths: _SlowExec())
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await asyncio.gather(
+        run_invocation(org_state=org, invocation_token=inv1.invocation_token, settings=Settings()),
+        run_invocation(org_state=org, invocation_token=inv2.invocation_token, settings=Settings()),
+    )
+    # Serialized: at most one subprocess in flight for (THR-001, alice) at a time.
+    assert counter["max"] == 1

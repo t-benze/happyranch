@@ -344,7 +344,7 @@ Claude-backed thread participants reuse their Claude session across turns instea
 - **Turn 1 captures but does not audit reuse.** No stored id → full prompt, capture `result.agent_session_id`, persist — but `agent_session_reused` fires only when an actual `--resume` happened (`resume_sid` truthy at persist time).
 - **`--resume` may fork a new session id.** Always persist `result.agent_session_id` from each successful turn, not the id passed in.
 - **`ExecutorResult.agent_session_id` is distinct from `ExecutorResult.session_id`.** The latter is the HappyRanch `sess-<uuid>` for SessionTracker/`/cancel`; never conflate them.
-- **Concurrency safety comes from per-`(thread, agent)` serialization** (the thread queue), giving at most one in-flight invocation per session. Don't add per-participant parallelism.
+- **Concurrency safety comes from an explicit per-`(thread, agent)` `asyncio.Lock`** in `run_invocation` (`_session_lock`), NOT from the queue — the daemon runs a 4-worker thread pool (`app.py`, `thread_worker_loop`) that drains each org's queue concurrently, so two pending turns for the same Claude participant CAN dispatch in parallel. The lock wraps the read→run→update path so at most one resumed turn per `(thread, agent)` is in flight; without it both turns `--resume` the same session (undefined) and race `last_resumed_seq`. The guard is a `nullcontext` for non-Claude executors (no session state). Don't remove the lock or move state mutation outside it.
 - **Two-place schema add** — the columns are in BOTH the `thread_participants` CREATE TABLE (fresh DBs) and the idempotent ALTER block (existing DBs).
 
 ## Thread task-followup (system bridges task terminal → thread)
