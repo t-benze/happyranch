@@ -746,6 +746,50 @@ class AuditLogger:
             },
         )
 
+    def log_agent_session_reused(
+        self,
+        thread_id: str,
+        *,
+        agent_name: str,
+        executor: str,
+        agent_session_id: str,
+        triggering_seq: int,
+    ) -> None:
+        """Informational: a thread turn successfully resumed an agent session."""
+        self._db.insert_audit_log(
+            task_id=thread_id,
+            agent=agent_name,
+            action="agent_session_reused",
+            payload={
+                "executor": executor,
+                "agent_session_id": agent_session_id,
+                "triggering_seq": triggering_seq,
+            },
+        )
+
+    def log_agent_session_evicted_fallback(
+        self,
+        thread_id: str,
+        *,
+        agent_name: str,
+        executor: str,
+        stale_session_id: str,
+        error: str,
+    ) -> None:
+        """Fires when a resume reported session-not-found and we rebuilt a fresh
+        full-context session. Watch frequency: high rates mean the agent CLI's
+        local session TTL is shorter than our typical inter-turn gap."""
+        self._db.insert_audit_log(
+            task_id=thread_id,
+            agent=agent_name,
+            action="agent_session_evicted_fallback",
+            payload={
+                "executor": executor,
+                "stale_session_id": stale_session_id,
+                "error": error[:500],
+            },
+        )
+
     def log_thread_task_followup_enqueued(
         self,
         thread_id: str,
