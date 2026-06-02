@@ -94,7 +94,7 @@ def test_parse_rejects_invalid_executor() -> None:
         parse_agent_text(text, expected_name="x")
 
 
-@pytest.mark.parametrize("executor", ["claude", "codex", "opencode"])
+@pytest.mark.parametrize("executor", ["claude", "codex", "opencode", "pi"])
 def test_parse_accepts_supported_executors(executor: str) -> None:
     text = (
         "---\n"

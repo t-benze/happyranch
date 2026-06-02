@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from src.config import Settings
-from src.orchestrator.executors import ClaudeExecutor, CodexExecutor, OpencodeExecutor, ExecutorResult
+from src.orchestrator.executors import ClaudeExecutor, CodexExecutor, OpencodeExecutor, PiExecutor, ExecutorResult
 
 
 def _make_completed_proc(stdout: str, returncode: int = 0):
@@ -99,3 +99,16 @@ def test_opencode_executor_attaches_token_usage(tmp_path: Path):
     assert r.success
     assert r.token_usage is not None
     assert r.token_usage.input_tokens == 300
+
+
+def test_pi_executor_preserves_raw_json_usage_when_schema_is_unrecognized(tmp_path: Path):
+    workspace = tmp_path / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    fake_proc = _make_completed_proc(stdout='{"type":"result","model":"pi-model"}\n')
+    with patch("src.orchestrator.executors.subprocess.Popen", return_value=fake_proc):
+        ex = PiExecutor("pi")
+        r = ex.run(workspace, prompt="hi", session_id="sess-x")
+    assert r.success
+    assert r.token_usage is not None
+    assert r.token_usage.input_tokens is None
+    assert "pi-model" in (r.token_usage.usage_raw_json or "")

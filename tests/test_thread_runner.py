@@ -106,3 +106,15 @@ async def test_run_invocation_no_callback_silent_decline(tmp_path, monkeypatch):
     # The invocation row itself transitions to a terminal failed/timeout status.
     inv_after = db.get_invocation_any_status(inv.invocation_token)
     assert inv_after.status.value in {"failed", "timeout"}
+
+
+def test_thread_runner_builds_pi_executor():
+    import src.daemon.thread_runner as runner_mod
+
+    executor = runner_mod._build_executor_for_provider(
+        "pi",
+        Settings(pi_cli_path="pi-test"),
+        paths=None,
+    )
+
+    assert executor.__class__.__name__ == "PiExecutor"

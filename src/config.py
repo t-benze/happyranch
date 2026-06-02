@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     # opencode executor
     opencode_cli_path: str = "opencode"
 
+    # Pi executor
+    pi_cli_path: str = "pi"
+
     # Protocol docs (relative to project_root)
     protocol_dir: str = "protocol"
 

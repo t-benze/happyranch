@@ -267,6 +267,25 @@ def test_ensure_workspace_ready_can_bootstrap_codex_workspace(test_settings, tmp
     assert "PreToolUse" not in body
 
 
+def test_ensure_workspace_ready_can_bootstrap_pi_workspace(test_settings, tmp_path, runtime):
+    skills_root = test_settings.get_protocol_dir() / "skills"
+    (skills_root / "start-task").mkdir(parents=True)
+    (skills_root / "start-task" / "SKILL.md").write_text("# start-task\n")
+
+    workspace = tmp_path / "workspace"
+    ContextBuilder(test_settings, runtime, slug="test").ensure_workspace_ready(
+        workspace,
+        "dev_agent",
+        "system prompt",
+        provider="pi",
+    )
+
+    assert (workspace / "AGENTS.md").exists()
+    assert (workspace / ".agents" / "skills" / "start-task" / "SKILL.md").exists()
+    assert not (workspace / "CLAUDE.md").exists()
+    assert not (workspace / ".claude").exists()
+
+
 def test_claude_md_drops_task_brief_and_completion_report(test_settings, tmp_path, runtime):
     workspace = tmp_path / "workspace"
     ContextBuilder(test_settings, runtime, slug="test").write_claude_md(workspace, "dev_agent", "system prompt")
