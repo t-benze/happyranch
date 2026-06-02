@@ -422,6 +422,13 @@ async def run_invocation(
                 purpose=inv.purpose.value,
                 reason=str(exc),
             )
+            # Clear the live "working" indicator: invocation_started already fired,
+            # and a runner crash never reaches a route that publishes a terminal
+            # event, so emit a seq-bearing settled event here to trigger refetch.
+            await _publish_invocation_event(
+                org_state, thread_id=inv.thread_id, agent_name=inv.agent_name,
+                seq=inv.triggering_seq, kind="invocation_settled", status="failed",
+            )
             return
 
         # Persist the (possibly forked / freshly-minted) session id + delta watermark.
@@ -447,6 +454,15 @@ async def run_invocation(
         if after is None:
             return
         if after.status in {ThreadInvocationStatus.CONSUMED, ThreadInvocationStatus.DECLINED}:
+            # A reply (CONSUMED) already publishes a seq-bearing message event via
+            # the reply route, which clears the indicator. A silent decline only
+            # publishes decline_status with seq=null (ignored by the tail consumer),
+            # so emit a settled event here to clear the "working" indicator live.
+            if after.status is ThreadInvocationStatus.DECLINED:
+                await _publish_invocation_event(
+                    org_state, thread_id=inv.thread_id, agent_name=inv.agent_name,
+                    seq=inv.triggering_seq, kind="invocation_settled", status="declined",
+                )
             return
 
         # Subprocess exited without consuming → auto-decline.

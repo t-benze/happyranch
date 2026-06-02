@@ -369,3 +369,90 @@ async def test_same_participant_invocations_serialize(tmp_path, monkeypatch):
     )
     # Serialized: at most one subprocess in flight for (THR-001, alice) at a time.
     assert counter["max"] == 1
+
+
+class _RecordingBus:
+    """Captures events published to any thread topic."""
+    def __init__(self):
+        self.events = []
+
+    async def publish(self, topic, event):
+        self.events.append(event)
+
+
+class _OrgWithBus(FakeOrgState):
+    def __init__(self, db, root, bus):
+        super().__init__(db=db, root=root)
+        self.event_bus = bus
+
+
+def _seed_thread_with_invocation(tmp_path):
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(thread_id="THR-001", speaker="founder",
+                             kind=ThreadMessageKind.MESSAGE, body_markdown="hi")
+    inv = db.mint_thread_invocation(thread_id="THR-001", agent_name="alice",
+                                    triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY)
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+    return db, inv
+
+
+@pytest.mark.asyncio
+async def test_decline_publishes_settled_event(tmp_path, monkeypatch):
+    """A silent decline must publish a seq-bearing invocation_settled event so
+    the live 'working' indicator clears (decline_status carries seq=null)."""
+    db, inv = _seed_thread_with_invocation(tmp_path)
+    bus = _RecordingBus()
+
+    import src.daemon.thread_runner as runner_mod
+
+    class _DeclineExec:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, **kwargs):
+            # Mimic the agent calling `happyranch threads decline` mid-session.
+            db.mark_invocation_declined(inv.invocation_token, decline_reason="nothing to add")
+            return FakeExecutorResult(success=True)
+
+    monkeypatch.setattr(runner_mod, "_build_executor_for_provider",
+                        lambda provider, settings, paths: _DeclineExec())
+    org = _OrgWithBus(db=db, root=tmp_path, bus=bus)
+    await run_invocation(org_state=org, invocation_token=inv.invocation_token, settings=Settings())
+
+    settled = [e for e in bus.events if e["kind"] == "invocation_settled"]
+    assert settled, "decline must publish invocation_settled"
+    assert settled[0]["seq"] == 1
+    assert settled[0]["status"] == "declined"
+
+
+@pytest.mark.asyncio
+async def test_runner_crash_publishes_settled_event(tmp_path, monkeypatch):
+    """If the executor raises after invocation_started fired, the crash handler
+    must publish invocation_settled so the indicator doesn't stick on 'working'."""
+    db, inv = _seed_thread_with_invocation(tmp_path)
+    bus = _RecordingBus()
+
+    import src.daemon.thread_runner as runner_mod
+
+    class _BoomExec:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, **kwargs):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(runner_mod, "_build_executor_for_provider",
+                        lambda provider, settings, paths: _BoomExec())
+    org = _OrgWithBus(db=db, root=tmp_path, bus=bus)
+    await run_invocation(org_state=org, invocation_token=inv.invocation_token, settings=Settings())
+
+    kinds = [e["kind"] for e in bus.events]
+    assert "invocation_started" in kinds
+    assert "invocation_settled" in kinds
+    # And the invocation is recorded failed.
+    after = db.get_invocation_any_status(inv.invocation_token)
+    assert after.status.value == "failed"
