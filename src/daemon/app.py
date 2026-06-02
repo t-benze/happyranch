@@ -89,12 +89,15 @@ async def _lifespan(app: FastAPI):
     # Recover any jobs left in 'running' state from a previous daemon process.
     _now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     _logger = logging.getLogger("happyranch.daemon")
-    from src.daemon.jobs_runner import migrate_filesystem_layout
+    from src.daemon.jobs_runner import migrate_artifacts_layout, migrate_filesystem_layout
     for org in state.orgs.values():
         # Rename <org_root>/scripts/ → jobs/ (and SR-* → JOB-*) BEFORE the
         # recovery scan reads any stdout_path/stderr_path. The DB-side
         # rename already happened in Database init; this realigns disk.
         migrate_filesystem_layout(org.root)
+        # 2026-06-02 rename: rehome on-disk assets/ → artifacts/ and
+        # per-workspace artifacts/ → output/ before any mkdir.
+        migrate_artifacts_layout(org.root)
         OrgPaths(org.root).artifacts_dir.mkdir(exist_ok=True)
         recovered = org.db.recover_orphaned_running_jobs(now_iso=_now_iso)
         if recovered:

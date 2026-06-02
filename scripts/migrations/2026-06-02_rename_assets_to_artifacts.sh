@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
-# Run the 2026-06-02 assets→artifacts + per-agent artifacts→output rename
-# against every per-org SQLite DB + filesystem dir in the active runtime
-# container.
+# Optional fail-safe for the 2026-06-02 assets→artifacts + per-agent
+# artifacts→output rename. The daemon's lifespan now performs the same
+# rename idempotently on startup (see src/daemon/app.py +
+# src/infrastructure/database.py), so a normal upgrade does NOT require
+# running this script.
+#
+# Run this with the daemon stopped if you want to preview the changes against
+# a copy of the runtime, or to migrate by hand before the first daemon start.
 #
 # Usage:
 #   scripts/migrations/2026-06-02_rename_assets_to_artifacts.sh [<runtime-dir>]
 #
 # Defaults to ~/.local/share/happyranch-runtime when no path is given.
-# STOP THE DAEMON FIRST: scripts/daemon.sh stop
 set -euo pipefail
 
 RUNTIME="${1:-$HOME/.local/share/happyranch-runtime}"
@@ -74,4 +78,4 @@ for org_dir in "${ORG_DIRS[@]}"; do
     echo
 done
 
-echo "done. Restart the daemon: scripts/daemon.sh start"
+echo "done."

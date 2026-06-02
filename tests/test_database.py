@@ -1234,3 +1234,87 @@ def test_update_task_active_chain_sets_and_clears(db):
 
     db.update_task_active_chain("TASK-1", None)
     assert db.get_task("TASK-1").active_chain is None
+
+
+def test_legacy_artifact_columns_renamed_and_path_strings_rewritten(tmp_path):
+    """2026-06-02 rename: an un-migrated runtime with the OLD column names
+    (`final_artifact_dir`, `artifact_dir`) and OLD `artifacts/...` path
+    strings must come out of `Database()` init with the NEW columns and
+    rewritten paths. This is the daemon-startup-self-migration path that
+    replaces the external migration script's column-rename + path rewrite.
+    """
+    import sqlite3
+
+    db_path = tmp_path / "legacy_artifacts.db"
+
+    # Build the pre-rename schema. Only the columns that the rename touches
+    # are reproduced verbatim — Database() init will add the rest via its
+    # idempotent ALTER list.
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'pending',
+            assigned_agent TEXT,
+            team TEXT NOT NULL DEFAULT 'engineering',
+            brief TEXT NOT NULL,
+            revision_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT,
+            parent_task_id TEXT,
+            final_output_summary TEXT,
+            final_artifact_dir TEXT
+        );
+        CREATE TABLE task_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            agent TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'completed',
+            output_summary TEXT,
+            decision_json TEXT,
+            confidence_score INTEGER,
+            learnings TEXT,
+            risks_flagged TEXT,
+            duration_seconds INTEGER,
+            token_count INTEGER,
+            estimated_cost REAL,
+            artifact_dir TEXT,
+            created_at TEXT NOT NULL
+        );
+    """)
+    conn.execute(
+        "INSERT INTO tasks (id, status, brief, created_at, updated_at, final_artifact_dir) "
+        "VALUES (?, 'completed', 'b', '2026-06-02T00:00:00Z', '2026-06-02T00:00:00Z', 'artifacts/TASK-1')",
+        ("TASK-1",),
+    )
+    conn.execute(
+        "INSERT INTO task_results (task_id, agent, session_id, artifact_dir, created_at) "
+        "VALUES ('TASK-1', 'dev_agent', 'sess-1', 'artifacts/TASK-1', '2026-06-02T00:00:00Z')"
+    )
+    conn.commit()
+    conn.close()
+
+    db = Database(db_path)
+
+    task_cols = {row[1] for row in db._conn.execute("PRAGMA table_info(tasks)").fetchall()}
+    result_cols = {row[1] for row in db._conn.execute("PRAGMA table_info(task_results)").fetchall()}
+
+    assert "final_output_dir" in task_cols
+    assert "final_artifact_dir" not in task_cols
+    assert "output_dir" in result_cols
+    assert "artifact_dir" not in result_cols
+
+    final_dir = db._conn.execute("SELECT final_output_dir FROM tasks WHERE id='TASK-1'").fetchone()[0]
+    output_dir = db._conn.execute("SELECT output_dir FROM task_results WHERE task_id='TASK-1'").fetchone()[0]
+    assert final_dir == "output/TASK-1"
+    assert output_dir == "output/TASK-1"
+
+    db.close()
+
+    # Second init must be a no-op (paths already rewritten, columns already renamed).
+    db2 = Database(db_path)
+    final_dir2 = db2._conn.execute("SELECT final_output_dir FROM tasks WHERE id='TASK-1'").fetchone()[0]
+    assert final_dir2 == "output/TASK-1"
+    db2.close()

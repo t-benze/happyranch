@@ -417,8 +417,6 @@ class Database:
         )
         for ddl in (
             "ALTER TABLE tasks ADD COLUMN final_output_summary TEXT",
-            "ALTER TABLE tasks ADD COLUMN final_output_dir TEXT",
-            "ALTER TABLE task_results ADD COLUMN output_dir TEXT",
             # Manager-only structured decision payload (serialized NextStep
             # JSON). NULL for worker rows. Replaces the prose-in-output_summary
             # double-encoding contract — see TASK-071 post-mortem.
@@ -426,6 +424,11 @@ class Database:
             # crew → team rename (SQLite >= 3.25). Idempotent: fails on
             # DBs where the column is already `team` or already renamed.
             "ALTER TABLE tasks RENAME COLUMN crew TO team",
+            # Per-agent output-dir rename (2026-06-02). Idempotent: fails on DBs
+            # where the column is already `final_output_dir`/`output_dir` (fresh or
+            # already-renamed). See docs/superpowers/plans/2026-06-01-rename-assets-to-artifacts.md.
+            "ALTER TABLE tasks RENAME COLUMN final_artifact_dir TO final_output_dir",
+            "ALTER TABLE task_results RENAME COLUMN artifact_dir TO output_dir",
             # Talk-originated jobs (mirrors tasks.dispatched_from_talk_id).
             # When set, the job was submitted via the talk-path; jobs.task_id
             # then holds the TALK-NNN scope id (consistent with audit_log's
@@ -441,6 +444,22 @@ class Database:
         try:
             self._conn.execute(
                 "UPDATE tasks SET team='engineering' WHERE team='product_engineering'"
+            )
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass
+
+        # Path-string rewrite: stored relative paths under 'artifacts/' point at the
+        # pre-rename per-agent dir. Rewrite to 'output/' so recall resolves correctly.
+        # Idempotent: re-running matches no rows once paths have been rewritten.
+        try:
+            self._conn.execute(
+                "UPDATE tasks SET final_output_dir = 'output/' || substr(final_output_dir, length('artifacts/') + 1) "
+                "WHERE final_output_dir LIKE 'artifacts/%'"
+            )
+            self._conn.execute(
+                "UPDATE task_results SET output_dir = 'output/' || substr(output_dir, length('artifacts/') + 1) "
+                "WHERE output_dir LIKE 'artifacts/%'"
             )
             self._conn.commit()
         except sqlite3.OperationalError:

@@ -1,9 +1,14 @@
--- One-shot sweep for the 2026-06-02 assets→artifacts + per-agent artifacts→output rename.
--- Run once per per-org SQLite DB at <runtime>/orgs/<slug>/happyranch.db.
+-- Optional fail-safe for the 2026-06-02 assets→artifacts + per-agent
+-- artifacts→output rename. The daemon's lifespan now performs the same
+-- column-rename + path-string rewrite idempotently on startup (see
+-- src/infrastructure/database.py), so a normal upgrade does NOT require
+-- running this SQL.
+--
+-- Run once per per-org SQLite DB at <runtime>/orgs/<slug>/happyranch.db if
+-- you want to preview the changes against a copy of the runtime, or to
+-- migrate by hand with the daemon stopped before the first daemon start.
 -- Safe to re-run only after the column-rename has happened (the shell wrapper
 -- probes for the OLD column and skips the SQL if it's already gone).
---
--- Stop the daemon before running: `scripts/daemon.sh stop`
 
 BEGIN;
 
