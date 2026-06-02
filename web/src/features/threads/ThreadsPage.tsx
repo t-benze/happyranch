@@ -39,6 +39,17 @@ import { NewThreadDialog } from './NewThreadDialog';
 import { ResponderStatusStrip } from './ResponderStatusStrip';
 import { ResumeButton } from './ResumeButton';
 import { describeError } from './strings';
+import { ThreadActivityFooter } from './ThreadActivityFooter';
+
+function useNowMs(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [active]);
+  return now;
+}
 
 const STATUS_TABS = ['open', 'archived'] as const;
 type StatusTab = (typeof STATUS_TABS)[number];
@@ -75,6 +86,15 @@ export function ThreadsPage(): JSX.Element {
     if (activeMessagesQuery.data) return activeMessagesQuery.data.messages;
     return activeThread.data?.messages ?? [];
   }, [activeMessagesQuery.data, activeThread.data]);
+
+  const anyWorking = useMemo(
+    () =>
+      messages.some((m) =>
+        (m.responder_status ?? []).some((s) => s.status === 'working'),
+      ),
+    [messages],
+  );
+  const nowMs = useNowMs(anyWorking);
 
   // Send mutation lives at the page level so the Composer pattern is pure.
   const sendFollowUp = useSendFollowUp(threadId ?? '');
@@ -239,6 +259,7 @@ export function ThreadsPage(): JSX.Element {
           thread={activeThread.data}
           messages={messages}
           messagesLoading={activeMessagesQuery.isLoading}
+          nowMs={nowMs}
           onInvite={() => setShowInvite(true)}
           onArchive={() => setShowArchive(true)}
           onExtend={() => setShowExtend(true)}
@@ -322,6 +343,7 @@ interface DetailColumnProps {
     | undefined;
   messages: ThreadMessage[];
   messagesLoading: boolean;
+  nowMs: number;
   onInvite: () => void;
   onArchive: () => void;
   onExtend: () => void;
@@ -336,6 +358,7 @@ function DetailColumn({
   thread,
   messages,
   messagesLoading,
+  nowMs,
   onInvite,
   onArchive,
   onExtend,
@@ -386,8 +409,9 @@ function DetailColumn({
         }
       />
       <div className="flex-1 overflow-hidden">
-        <MessageTranscript messages={messages} loading={messagesLoading} slug={slug} />
+        <MessageTranscript messages={messages} loading={messagesLoading} slug={slug} nowMs={nowMs} />
       </div>
+      <ThreadActivityFooter messages={messages} nowMs={nowMs} />
       <footer className="border-border-default bg-surface-sunken border-t p-3">
         {composer}
       </footer>
@@ -400,9 +424,10 @@ interface TranscriptProps {
   loading: boolean;
   /** Active org slug — used to build cross-surface task links in system messages. */
   slug?: string;
+  nowMs?: number;
 }
 
-function MessageTranscript({ messages, loading, slug }: TranscriptProps): JSX.Element {
+function MessageTranscript({ messages, loading, slug, nowMs }: TranscriptProps): JSX.Element {
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -432,7 +457,7 @@ function MessageTranscript({ messages, loading, slug }: TranscriptProps): JSX.El
             systemDescription={m.kind === 'system' ? describeSystem(m.system_payload, slug) : undefined}
           />
           {m.kind === 'message' && (
-            <ResponderStatusStrip statuses={m.responder_status ?? []} />
+            <ResponderStatusStrip statuses={m.responder_status ?? []} nowMs={nowMs} />
           )}
         </div>
       ))}
