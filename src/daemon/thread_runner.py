@@ -100,6 +100,30 @@ def _decline_by_default_doctrine() -> str:
     )
 
 
+# Best-effort markers for "the resume target no longer exists in the agent CLI's
+# local session store" (TTL eviction / workspace move). Verify against the running
+# CLI during integration — a miss is safe (degrades to a normal failure, never a
+# wrong answer).
+_SESSION_NOT_FOUND_MARKERS = (
+    "no conversation found",
+    "session not found",
+    "no session found",
+    "could not find session",
+    "no such session",
+)
+
+
+def _is_session_not_found(result) -> bool:
+    blob = " ".join(
+        filter(None, [
+            getattr(result, "error", "") or "",
+            getattr(result, "stderr_tail", "") or "",
+            getattr(result, "stdout_tail", "") or "",
+        ])
+    ).lower()
+    return any(marker in blob for marker in _SESSION_NOT_FOUND_MARKERS)
+
+
 def build_thread_prompt(
     *,
     thread: ThreadRecord,
@@ -227,16 +251,6 @@ async def run_invocation(
     participants = org_state.db.list_thread_participants(inv.thread_id)
     messages = org_state.db.list_thread_messages(inv.thread_id, limit=10000)
 
-    prompt = build_thread_prompt(
-        thread=thread,
-        participants=participants,
-        messages=messages,
-        invocation_token=invocation_token,
-        invoked_agent=inv.agent_name,
-        purpose=inv.purpose.value,
-        triggering_seq=inv.triggering_seq,
-    )
-
     workspace = org_state.root / "workspaces" / inv.agent_name
 
     # Read agent.yaml to pick the executor.
@@ -269,27 +283,72 @@ async def run_invocation(
     except Exception:
         pass
 
+    # --- Agent session resume (issue #53) ---
+    # Only Claude supports --resume; other executors always run full-context.
+    is_claude = executor_name == "claude"
+    stored_sid, last_seq = (
+        org_state.db.get_thread_session(inv.thread_id, inv.agent_name)
+        if is_claude else (None, 0)
+    )
+    resume_sid: str | None = None
+    if is_claude and stored_sid:
+        new_messages = [m for m in messages if m.seq > last_seq]
+        triggering = next((m for m in messages if m.seq == inv.triggering_seq), None)
+        prompt = build_thread_delta_prompt(
+            thread=thread, new_messages=new_messages,
+            invocation_token=invocation_token, invoked_agent=inv.agent_name,
+            purpose=inv.purpose.value, triggering_seq=inv.triggering_seq,
+            triggering_message=triggering,
+        )
+        resume_sid = stored_sid
+        shown_seqs = [m.seq for m in new_messages]
+    else:
+        prompt = build_thread_prompt(
+            thread=thread, participants=participants, messages=messages,
+            invocation_token=invocation_token, invoked_agent=inv.agent_name,
+            purpose=inv.purpose.value, triggering_seq=inv.triggering_seq,
+        )
+        shown_seqs = [m.seq for m in messages]
+
     org_state.db.stamp_invocation_started(invocation_token, session_id=None)
+    audit = AuditLogger(org_state.db)
+
+    def _invoke(run_prompt: str, resume: str | None):
+        run_kwargs = dict(
+            workspace=Path(workspace), prompt=run_prompt,
+            session_id=None, timeout_seconds=timeout,
+        )
+        if resume:
+            run_kwargs["resume_session_id"] = resume
+        return executor.run(**run_kwargs)
 
     # Spawn subprocess in a thread pool (executors are synchronous).
     try:
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None,
-            lambda: executor.run(
-                workspace=Path(workspace),
-                prompt=prompt,
-                session_id=None,
-                timeout_seconds=timeout,
-            ),
-        )
+        result = await loop.run_in_executor(None, lambda: _invoke(prompt, resume_sid))
+
+        if (is_claude and resume_sid and not result.success
+                and _is_session_not_found(result)):
+            audit.log_agent_session_evicted_fallback(
+                inv.thread_id, agent_name=inv.agent_name, executor="claude",
+                stale_session_id=resume_sid,
+                error=str(getattr(result, "error", "") or ""),
+            )
+            full_prompt = build_thread_prompt(
+                thread=thread, participants=participants, messages=messages,
+                invocation_token=invocation_token, invoked_agent=inv.agent_name,
+                purpose=inv.purpose.value, triggering_seq=inv.triggering_seq,
+            )
+            shown_seqs = [m.seq for m in messages]
+            resume_sid = None
+            result = await loop.run_in_executor(None, lambda: _invoke(full_prompt, None))
     except Exception as exc:
         org_state.db.fail_invocation(
             invocation_token,
             status=ThreadInvocationStatus.FAILED,
             decline_reason=f"runner_crash: {exc}",
         )
-        AuditLogger(org_state.db).log_thread_invocation_failed(
+        audit.log_thread_invocation_failed(
             inv.thread_id,
             agent=inv.agent_name,
             token=invocation_token,
@@ -297,6 +356,24 @@ async def run_invocation(
             reason=str(exc),
         )
         return
+
+    # Persist the (possibly forked / freshly-minted) session id + delta watermark.
+    # Advanced only on a successful subprocess — a failed turn leaves the watermark
+    # so the next resume re-includes the skipped messages.
+    if is_claude and result.success and getattr(result, "agent_session_id", None):
+        new_watermark = max(shown_seqs) if shown_seqs else last_seq
+        new_watermark = max(new_watermark, last_seq)
+        org_state.db.update_thread_session(
+            inv.thread_id, inv.agent_name,
+            agent_session_id=result.agent_session_id,
+            last_resumed_seq=new_watermark,
+        )
+        if resume_sid:
+            audit.log_agent_session_reused(
+                inv.thread_id, agent_name=inv.agent_name, executor="claude",
+                agent_session_id=result.agent_session_id,
+                triggering_seq=inv.triggering_seq,
+            )
 
     # Inspect post-subprocess token state.
     after = org_state.db.get_invocation_any_status(invocation_token)
