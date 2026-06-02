@@ -90,7 +90,7 @@ own tier; managers saw worker tiers but the tier didn't gate delegation).
 
 ### Approach: executor-native sandboxing + system prompt guardrails
 
-Agents run through their configured executor. Claude sessions use `claude --permission-mode auto` plus a narrow `Bash(happyranch:*)` allow rule for callbacks. Codex sessions use `codex exec` with the configured sandbox mode. Permissions are otherwise generous — agents can read, write, and execute within their workspace.
+Agents run through their configured executor. Claude sessions use `claude --permission-mode auto` plus a narrow `Bash(happyranch:*)` allow rule for callbacks. Codex sessions use `codex exec` with the configured sandbox mode. opencode sessions use `opencode.json` for bash permission mapping. Pi sessions use `pi -p ... --mode json` and have no HappyRanch-managed sandbox or permission file. Permissions are otherwise generous — agents can read, write, and execute within their workspace.
 
 **Founder-concern boundaries** (the only things that truly need restricting) are enforced through two layers:
 

@@ -192,4 +192,4 @@ Parameters:
 
 ## Permission walls
 
-If your executor refuses a command (Claude `--allowedTools`, opencode `permission.bash`, Codex sandbox), and the operation genuinely needs founder-grade credentials, see `protocol/skills/scripts/SKILL.md`. Submit the script for founder review, then self-block your task referencing the SR-NNN.
+If your executor refuses a command (Claude `--allowedTools`, opencode `permission.bash`, Codex sandbox), and the operation genuinely needs founder-grade credentials, see `protocol/skills/scripts/SKILL.md`. Pi has no HappyRanch-managed command-refusal surface; use the same script-review path for founder-grade operations even if Pi itself would run the command. Submit the script for founder review, then self-block your task referencing the SR-NNN.

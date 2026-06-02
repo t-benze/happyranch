@@ -23,6 +23,7 @@ from src.orchestrator.executors import (
     ClaudeExecutor,
     CodexExecutor,
     OpencodeExecutor,
+    PiExecutor,
 )
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,7 @@ _EXECUTOR_MAP = {
     "claude": "claude",
     "codex": "codex",
     "opencode": "opencode",
+    "pi": "pi",
 }
 
 
@@ -146,6 +148,10 @@ def _build_executor_for_provider(provider: str, settings: Settings, paths):
     if provider == "opencode":
         return OpencodeExecutor(
             opencode_cli_path=settings.opencode_cli_path,
+        )
+    if provider == "pi":
+        return PiExecutor(
+            pi_cli_path=settings.pi_cli_path,
         )
     return ClaudeExecutor(
         claude_cli_path=settings.claude_cli_path,

@@ -10,6 +10,7 @@ from src.orchestrator.executors import (
     CodexExecutor,
     ExecutorResult,
     OpencodeExecutor,
+    PiExecutor,
 )
 from src.orchestrator._paths import OrgPaths
 from src.runtime import RuntimeDir
@@ -175,6 +176,12 @@ def test_settings_exposes_opencode_executor_defaults() -> None:
     assert settings.opencode_cli_path == "opencode"
 
 
+def test_settings_exposes_pi_executor_defaults() -> None:
+    settings = Settings(project_root=Path("/tmp/project"))
+
+    assert settings.pi_cli_path == "pi"
+
+
 @patch("src.orchestrator.executors.subprocess")
 def test_opencode_executor_launches_run_with_workspace_dir(mock_subprocess, tmp_path):
     workspace = tmp_path / "dev_agent"
@@ -202,6 +209,30 @@ def test_opencode_executor_launches_run_with_workspace_dir(mock_subprocess, tmp_
     assert cmd[cmd.index("--prompt") + 1] == "Implement Alipay support"
     # Permission discipline lives in opencode.json — bypass flag must NOT be present.
     assert "--dangerously-skip-permissions" not in cmd
+
+
+@patch("src.orchestrator.executors.subprocess")
+def test_pi_executor_launches_print_mode_with_json_events(mock_subprocess, tmp_path):
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+
+    mock_subprocess.Popen.return_value = _popen_mock(stdout='{"type":"result"}\n')
+
+    executor = PiExecutor(pi_cli_path="pi")
+    result = executor.run(
+        workspace=workspace,
+        prompt="Implement Alipay support",
+        timeout_seconds=30,
+    )
+
+    assert result.success is True
+    assert result.session_id is not None
+
+    cmd = mock_subprocess.Popen.call_args[0][0]
+    assert cmd[:2] == ["pi", "-p"]
+    assert cmd[cmd.index("-p") + 1] == "Implement Alipay support"
+    assert "--mode" in cmd
+    assert cmd[cmd.index("--mode") + 1] == "json"
 
 
 @patch("src.orchestrator.executors.subprocess")

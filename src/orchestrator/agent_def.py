@@ -20,7 +20,7 @@ class AgentParseError(ValueError):
 
 
 Role = Literal["worker", "manager"]
-Executor = Literal["claude", "codex", "opencode"]
+Executor = Literal["claude", "codex", "opencode", "pi"]
 
 
 @dataclass(frozen=True)
@@ -95,9 +95,9 @@ def parse_agent_text(text: str, *, expected_name: str) -> AgentDef:
         raise AgentParseError(f"role must be 'worker' or 'manager', got {role!r}")
 
     executor = fm["executor"]
-    if executor not in ("claude", "codex", "opencode"):
+    if executor not in ("claude", "codex", "opencode", "pi"):
         raise AgentParseError(
-            f"executor must be 'claude', 'codex', or 'opencode', got {executor!r}"
+            f"executor must be 'claude', 'codex', 'opencode', or 'pi', got {executor!r}"
         )
 
     raw_rules = fm.get("allow_rules") or []

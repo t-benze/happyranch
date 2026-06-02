@@ -35,7 +35,7 @@ export interface CreateAgentBody {
   role: 'worker' | 'manager';
   team?: string;
   new_team?: string;
-  executor: 'claude' | 'codex' | 'opencode';
+  executor: 'claude' | 'codex' | 'opencode' | 'pi';
   description: string;
   system_prompt: string;
   allow_rules?: string[];

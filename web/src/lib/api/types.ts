@@ -237,7 +237,7 @@ export interface AgentSummary {
   name: string;
   team: string | null;
   role: 'manager' | 'worker' | null;
-  executor: 'claude' | 'codex' | 'opencode' | null;
+  executor: 'claude' | 'codex' | 'opencode' | 'pi' | null;
   description: string | null;
 }
 
@@ -245,7 +245,7 @@ export interface AgentEnrollment {
   name: string;
   team: string;
   role: 'manager' | 'worker';
-  executor: 'claude' | 'codex' | 'opencode';
+  executor: 'claude' | 'codex' | 'opencode' | 'pi';
   description: string;
   status: 'pending' | 'approved';
   enrolled_by: string | null;

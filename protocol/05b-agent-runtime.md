@@ -12,7 +12,7 @@ Each agent in the organization is not just an LLM call — it's a full coding-ag
 
 ### Per-agent executor selection
 
-Agents run through a configured coding-agent CLI. Today the runtime supports Claude Code (`claude -p` with `--permission-mode auto`) and Codex (`codex exec --json -`). This gives every agent full coding-agent capabilities: file system access, shell commands, web search, and git operations. Executor selection is stored per workspace in `agent.yaml`, so some agents can stay on Claude while others use Codex.
+Agents run through a configured coding-agent CLI. Today the runtime supports Claude Code (`claude -p` with `--permission-mode auto`), Codex (`codex exec --json -`), opencode (`opencode run`), and Pi (`pi -p ... --mode json`). This gives every agent full coding-agent capabilities: file system access, shell commands, web search, and git operations. Executor selection is stored per workspace in `agent.yaml`, so agents can run on different executors in the same org.
 
 Each agent's configuration specifies context and workspace:
 
@@ -31,7 +31,7 @@ agent_config:
 
 ### Context injection via executor bootstrap docs
 
-The orchestrator assembles each agent's context into an executor-specific bootstrap file placed in the workspace root. Claude workspaces use `CLAUDE.md`; Codex workspaces use `AGENTS.md`. This file is regenerated at the start of every session. It includes:
+The orchestrator assembles each agent's context into an executor-specific bootstrap file placed in the workspace root. Claude workspaces use `CLAUDE.md`; Codex, opencode, and Pi workspaces use `AGENTS.md`. This file is regenerated at the start of every session. It includes:
 - Agent system prompt (role, accountability contract)
 - Relevant org charter sections
 - Pointer to the agent's persistent learnings file
@@ -39,7 +39,7 @@ The orchestrator assembles each agent's context into an executor-specific bootst
 
 ### Permission enforcement and callbacks
 
-Claude workspaces have a `.claude/settings.json` that configures Claude Code's auto-allowed tools. Codex workspaces do not use that file. Across executors, agents call back through the same single-line `happyranch ... --from-file` contract. Agents can read, write, and execute freely within their workspace and the cloned codebase, subject to the executor's sandbox mode and the orchestrator's workflow rules.
+Claude workspaces have a `.claude/settings.json` that configures Claude Code's auto-allowed tools. Codex, opencode, and Pi workspaces do not use that file. Across executors, agents call back through the same single-line `happyranch ... --from-file` contract. Agents can read, write, and execute freely within their workspace and the cloned codebase, subject to the executor's sandbox mode and the orchestrator's workflow rules. Pi has no HappyRanch-managed sandbox or permission file in this integration.
 
 **Only founder-concern boundaries are restricted** (as defined in the org charter):
 - No `git push` to `main` / production deploy
