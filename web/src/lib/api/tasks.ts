@@ -31,7 +31,7 @@ export const getTask = (slug: string, taskId: string): Promise<TaskDetailRespons
 export const recallTask = (
   slug: string,
   taskId: string,
-  params?: { tree?: boolean; include_artifact?: boolean },
+  params?: { tree?: boolean; include_output?: boolean },
 ): Promise<TaskRecallNode> =>
   request(`/orgs/${slug}/tasks/${taskId}/recall`, { params });
 
