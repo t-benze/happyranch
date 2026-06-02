@@ -82,28 +82,46 @@ message posted
    entry's DB status is `pending`, emit `working` if `started_at` is set else
    `queued`; pass `started_at` through. Terminal mappings stay in `_wire_status`.
 
-4. **SSE events on the existing `thread_topic(thread_id)`** — payload shape:
-   `{"type": "invocation_started" | "invocation_settled", "thread_id": ...,
-   "agent_name": ..., "triggering_seq": int, "status": <wire status>}`.
-   Publish sites:
-   - **`invocation_started`** — in `run_invocation`
-     (`src/daemon/thread_runner.py`) immediately after
-     `stamp_invocation_started`. Guarded: only publish when
-     `getattr(org_state, "event_bus", None)` is present and the runner has the
-     main asyncio loop available (it is `async def`, so `await
-     org_state.event_bus.publish(...)` is direct). Test `FakeOrgState` has no
-     `event_bus` → guard makes it a silent no-op.
-   - **`invocation_settled`** — two sites:
-     - The **decline route** (`POST /threads/{id}/decline`) — currently the only
-       transition with no SSE publish. Add a publish after `mark_invocation_declined`.
-     - `run_invocation`'s auto-decline / fail / timeout tail (after
-       `fail_invocation`), guarded the same way.
-   - The **reply route** already publishes a new-message thread event, which the
-     UI already refetches on; that refetch surfaces `replied`. No new publish on
-     reply.
+3a. **`GET /threads/{id}/messages` parity (root-cause fix).** This endpoint —
+   the *primary* source the strip renders from (`useThreadMessages`; the thread
+   detail is only a fallback before it resolves) — currently calls
+   `_msg_to_dict(m)` with **no `responders`**, so `responder_status` is always
+   `[]` there. That is why the strip looks clueless even before the
+   queued/working split. Build `responders_by_seq =
+   list_invocations_for_thread_grouped_by_seq(thread_id)` and pass
+   `responders=...` to `_msg_to_dict` for `kind == message`, exactly as
+   `get_thread_endpoint` already does. Without this, invalidating
+   `['thread-messages']` refreshes nothing.
 
-   `invocation_started` / `invocation_settled` are NOT in `_TERMINAL_TYPES`, so
-   they don't close the SSE stream.
+4. **SSE events on the existing `thread_topic(thread_id)`.** Payload shape (note
+   the `seq` field carries the **triggering message seq** — see why below):
+   `{"thread_id": ..., "seq": <triggering_seq:int>, "kind":
+   "invocation_started" | "invocation_settled", "agent_name": ..., "status":
+   <wire status>}`. Published **directly** to `thread_topic` (NOT via
+   `_publish_thread_event`, which also fans out to the inbox topic — we don't
+   want invocation churn lighting up the threads-list badge).
+
+   Publish sites — both in `run_invocation` (`src/daemon/thread_runner.py`),
+   both guarded by `if getattr(org_state, "event_bus", None):` (the runner is
+   `async def`, so `await org_state.event_bus.publish(...)` is direct; the test
+   `FakeOrgState` has no `event_bus`, so the guard makes both silent no-ops):
+   - **`invocation_started`** — immediately after `stamp_invocation_started`.
+   - **`invocation_settled`** — in the auto-decline / fail / timeout tail (after
+     `fail_invocation`).
+
+   **No route changes.** The reply route already publishes a new-message event,
+   and the decline route already publishes a `decline_status` event — both
+   surface the terminal state on the next refetch. The two `run_invocation`
+   publishes are the *only* new ones: they cover the subprocess-start transition
+   (previously unpublished) and the no-callback fail/timeout terminal
+   (previously unpublished).
+
+   These events are NOT in `_TERMINAL_TYPES`, so they don't close the SSE stream.
+
+   > **Pre-existing quirk (out of scope):** the decline route publishes with
+   > `seq=None`, which the client tail consumer drops (`if (ev.seq == null)
+   > return;`). So declines don't currently live-update either. We do not fix
+   > that here; we sidestep it by giving the new events a non-null `seq`.
 
 ## Frontend changes
 
@@ -126,10 +144,14 @@ message posted
    `working` entry exists**, and clears when none do. Drives both the strip timers
    and the footer. No per-entry timers.
 
-5. **SSE handling** — the existing thread-tail SSE consumer
-   (`useThreadTailSSE`) invalidates / refetches the thread-detail query on
-   `invocation_started` and `invocation_settled` event types (it already refetches
-   on message events).
+5. **SSE handling — no consumer change required.** The existing
+   `useThreadTailSSE` (`web/src/design-system/providers/_real-threads.ts`)
+   already invalidates `['thread-messages', slug, threadId]` for any seq-bearing
+   non-message event (the `else` branch). Because the new events carry
+   `seq=<triggering_seq>` and have no `body_markdown`, they hit that branch and
+   trigger a refetch of the messages (which embed `responder_status`). A provider
+   test locks this behavior so a future consumer refactor can't silently break
+   the working indicator.
 
 ## Error handling / edge cases
 
@@ -151,10 +173,10 @@ message posted
 - `list_invocations_for_thread_grouped_by_seq` returns `started_at` per entry.
 - Route projection: `pending` + `started_at` set → `working`; `pending` + null →
   `queued`; `consumed` → `replied`; `declined`/`failed`/`timeout` unchanged.
-- `started_at` present in each responder entry on `GET /threads/{id}`.
-- Decline route publishes an `invocation_settled` event.
-- `run_invocation` publishes `invocation_started` after stamping; guarded no-op
-  when `org_state` has no `event_bus` (the existing `FakeOrgState` test path).
+- `started_at` present in each responder entry on the messages projection.
+- `run_invocation` publishes `invocation_started` after stamping and
+  `invocation_settled` on the fail/timeout tail; both are guarded no-ops when
+  `org_state` has no `event_bus` (the existing `FakeOrgState` test path).
 
 **Frontend**
 - `ResponderStatusStrip`: renders `queued`, and `working 45s` given a
@@ -174,11 +196,12 @@ message posted
 ## Files touched
 
 - `src/infrastructure/database.py` — `started_at` in the grouped query.
-- `src/models.py` — `ResponderStatusEntry.started_at`.
-- `src/daemon/routes/threads.py` — projection split; decline-route publish.
+- `src/models.py` — `ResponderStatusEntry.started_at` + widened status enum.
+- `src/daemon/routes/threads.py` — projection split (`pending`→`queued`/`working`) + `started_at` passthrough.
 - `src/daemon/thread_runner.py` — `invocation_started` + tail `invocation_settled` publishes.
-- `web/src/lib/api/types.ts` — type + status union.
-- `web/src/features/threads/ResponderStatusStrip.tsx` — `queued`/`working` rendering.
+- `web/src/lib/api/types.ts` — `started_at` field + status union.
+- `web/src/features/threads/ResponderStatusStrip.tsx` — `queued`/`working` rendering + elapsed.
 - `web/src/features/threads/ThreadActivityFooter.tsx` — new.
-- `web/src/features/threads/ThreadsPage.tsx` — footer mount + elapsed ticker + SSE invalidate wiring.
-- Tests alongside each.
+- `web/src/features/threads/ThreadsPage.tsx` — footer mount + elapsed ticker.
+- `web/src/design-system/providers/_real-threads.test.ts` (or existing provider test) — lock the invalidate-on-invocation-event behavior.
+- Tests alongside each. No client SSE consumer code change.
