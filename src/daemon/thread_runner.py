@@ -29,6 +29,36 @@ from src.orchestrator.executors import (
 
 logger = logging.getLogger(__name__)
 
+
+async def _publish_invocation_event(
+    org_state, *, thread_id: str, agent_name: str, seq: int, kind: str, status: str
+) -> None:
+    """Publish an invocation lifecycle event to the thread tail topic.
+
+    Guarded no-op when org_state has no event_bus (test harness). Published
+    directly to thread_topic (NOT the inbox topic) so invocation churn doesn't
+    light up the threads-list badge. `seq` carries the triggering message seq so
+    the existing client tail consumer refetches the messages (which embed
+    responder_status)."""
+    bus = getattr(org_state, "event_bus", None)
+    if bus is None:
+        return
+    try:
+        from src.daemon.event_bus import thread_topic
+        await bus.publish(
+            thread_topic(thread_id),
+            {
+                "thread_id": thread_id,
+                "seq": seq,
+                "kind": kind,
+                "agent_name": agent_name,
+                "status": status,
+            },
+        )
+    except Exception as exc:  # event delivery must never break the turn
+        logger.warning("invocation event publish failed: %s", exc)
+
+
 _EXECUTOR_MAP = {
     "claude": "claude",
     "codex": "codex",
@@ -344,6 +374,10 @@ async def run_invocation(
             shown_seqs = [m.seq for m in messages]
 
         org_state.db.stamp_invocation_started(invocation_token, session_id=None)
+        await _publish_invocation_event(
+            org_state, thread_id=inv.thread_id, agent_name=inv.agent_name,
+            seq=inv.triggering_seq, kind="invocation_started", status="working",
+        )
         audit = AuditLogger(org_state.db)
 
         def _invoke(run_prompt: str, resume: str | None):
@@ -437,4 +471,8 @@ async def run_invocation(
             purpose=inv.purpose.value,
             reason=reason,
             kind="thread_invocation_failed",
+        )
+        await _publish_invocation_event(
+            org_state, thread_id=inv.thread_id, agent_name=inv.agent_name,
+            seq=inv.triggering_seq, kind="invocation_settled", status="failed",
         )

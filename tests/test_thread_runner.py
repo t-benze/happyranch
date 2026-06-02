@@ -261,6 +261,62 @@ def test_build_delta_prompt_excludes_old_history_includes_new():
 
 
 @pytest.mark.asyncio
+async def test_run_invocation_publishes_started_and_settled(tmp_path, monkeypatch):
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    published: list[tuple[str, dict]] = []
+
+    class _Bus:
+        async def publish(self, topic, event):
+            published.append((topic, event))
+
+    import src.daemon.thread_runner as runner_mod
+
+    class _FakeExec:
+        def __init__(self, **kwargs):
+            pass
+        def run(self, **kwargs):
+            return FakeExecutorResult(success=True)   # no callback → auto-decline
+
+    monkeypatch.setattr(
+        runner_mod, "_build_executor_for_provider",
+        lambda provider, settings, paths: _FakeExec(),
+    )
+
+    class OrgWithBus(FakeOrgState):
+        def __init__(self, db, root):
+            super().__init__(db=db, root=root)
+            self.event_bus = _Bus()
+
+    org = OrgWithBus(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv.invocation_token, settings=Settings(),
+    )
+
+    kinds = [ev["kind"] for _, ev in published]
+    assert "invocation_started" in kinds
+    assert "invocation_settled" in kinds
+    started = next(ev for _, ev in published if ev["kind"] == "invocation_started")
+    assert started["thread_id"] == "THR-001"
+    assert started["agent_name"] == "alice"
+    assert started["seq"] == 1
+    assert started["status"] == "working"
+
+
+@pytest.mark.asyncio
 async def test_same_participant_invocations_serialize(tmp_path, monkeypatch):
     """Two pending invocations for the same Claude participant must NOT run
     their subprocesses concurrently — the per-(thread, agent) lock serializes
