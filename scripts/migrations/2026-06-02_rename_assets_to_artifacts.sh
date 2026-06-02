@@ -49,6 +49,8 @@ for org_dir in "${ORG_DIRS[@]}"; do
                 echo "  moved $(basename "$ws")/artifacts → output"
             elif [[ -d "$ws/artifacts" && -d "$ws/output" ]]; then
                 echo "  WARNING: $(basename "$ws") has both artifacts/ and output/ — manual resolution required" >&2
+            else
+                echo "  $(basename "$ws"): artifacts/ already renamed (or absent), skipping"
             fi
         done
     fi
@@ -64,7 +66,7 @@ for org_dir in "${ORG_DIRS[@]}"; do
             echo "  sweeping $db"
             sqlite3 "$db" < "$SQL_FILE"
         else
-            echo "  DB already migrated, skipping SQL"
+            echo "  column already renamed (or table not yet created), skipping SQL"
         fi
     else
         echo "  no DB at $db, skipping SQL" >&2
