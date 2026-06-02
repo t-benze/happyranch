@@ -225,8 +225,9 @@ class ThreadMessage(BaseModel):
 
 class ResponderStatusEntry(BaseModel):
     agent_name: str
-    status: Literal["pending", "replied", "declined", "failed"]
+    status: Literal["queued", "working", "replied", "declined", "failed"]
     responded_at: str | None
+    started_at: str | None = None
 
 
 class ThreadInvocation(BaseModel):

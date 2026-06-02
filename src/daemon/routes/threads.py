@@ -425,6 +425,26 @@ def _thread_row_to_dict(t: ThreadRecord) -> dict:
     }
 
 
+def _responder_entry(e: dict) -> ResponderStatusEntry:
+    """Build one responder-status wire entry from a grouped invocation dict.
+
+    Splits the DB `pending` state into `queued` (no subprocess yet) vs
+    `working` (subprocess started — `started_at` set). Terminal states go
+    through `_wire_status` (consumed→replied, timeout→failed).
+    """
+    db_status = e["status"]
+    if db_status == "pending":
+        wire = "working" if e.get("started_at") else "queued"
+    else:
+        wire = _wire_status(db_status)
+    return ResponderStatusEntry(
+        agent_name=e["agent_name"],
+        status=wire,
+        responded_at=e["consumed_at"],
+        started_at=e.get("started_at"),
+    )
+
+
 def _msg_to_dict(m, responders: list[dict] | None = None) -> dict:
     d = {
         "seq": m.seq,
@@ -437,12 +457,7 @@ def _msg_to_dict(m, responders: list[dict] | None = None) -> dict:
     }
     if responders is not None:
         d["responder_status"] = [
-            ResponderStatusEntry(
-                agent_name=e["agent_name"],
-                status=_wire_status(e["status"]),
-                responded_at=e["consumed_at"],
-            ).model_dump(mode="json")
-            for e in responders
+            _responder_entry(e).model_dump(mode="json") for e in responders
         ]
     else:
         d["responder_status"] = []
@@ -546,7 +561,18 @@ async def list_thread_messages_endpoint(
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
     msgs = org.db.list_thread_messages(thread_id, since_seq=since_seq, limit=min(limit, 1000))
-    return {"messages": [_msg_to_dict(m) for m in msgs]}
+    responders_by_seq = org.db.list_invocations_for_thread_grouped_by_seq(thread_id)
+    return {
+        "messages": [
+            _msg_to_dict(
+                m,
+                responders=responders_by_seq.get(m.seq)
+                if m.kind == ThreadMessageKind.MESSAGE
+                else None,
+            )
+            for m in msgs
+        ]
+    }
 
 
 # ---------------------------------------------------------------------------
