@@ -166,12 +166,18 @@ export interface ThreadDetailResponse extends ThreadRecord {
   messages: ThreadMessage[];
 }
 
-export type ResponderStatus = "pending" | "replied" | "declined" | "failed";
+export type ResponderStatus =
+  | 'queued'
+  | 'working'
+  | 'replied'
+  | 'declined'
+  | 'failed';
 
 export interface ResponderStatusEntry {
   agent_name: string;
   status: ResponderStatus;
   responded_at: string | null;
+  started_at: string | null;
 }
 
 export interface ThreadMessage {
