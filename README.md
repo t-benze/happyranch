@@ -6,7 +6,7 @@ A canonical sample org shipped at `examples/orgs/hk-macau-tourism/` runs a one-p
 
 ## How It Works
 
-HappyRanch runs as a local **HTTP daemon** that dispatches tasks to AI agents running as coding-agent CLI sessions. The `happyranch` CLI is a thin client that talks to the daemon. Each agent has a persistent workspace and a defined role within its org. Executor selection is per-agent: agents may run on [Claude Code](https://docs.anthropic.com/en/docs/claude-code), Codex, or opencode.
+HappyRanch runs as a local **HTTP daemon** that dispatches tasks to AI agents running as coding-agent CLI sessions. The `happyranch` CLI is a thin client that talks to the daemon. Each agent has a persistent workspace and a defined role within its org. Executor selection is per-agent: agents may run on [Claude Code](https://docs.anthropic.com/en/docs/claude-code), Codex, opencode, or Pi.
 
 A single runtime container hosts **multiple orgs** under `<runtime>/orgs/<slug>/`, each with its own DB, workspaces, KB, and talks. One daemon serves them all concurrently.
 
@@ -26,6 +26,7 @@ Agents are dynamic — a manager can propose new agents via the `manage-agent` s
   - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)
   - Codex CLI
   - opencode CLI
+  - Pi CLI
 
 ## Setup
 
@@ -322,7 +323,7 @@ happyranch reject-agent  --org <slug> content_writer
 
 Agent names must be lowercase with underscores only (e.g., `content_writer`, `seo_agent`).
 
-To enroll an agent that runs on Codex or opencode instead of Claude, the manager's `manage-agent` payload sets `executor` accordingly:
+To enroll an agent that runs on Codex, opencode, or Pi instead of Claude, the manager's `manage-agent` payload sets `executor` accordingly:
 
 ```json
 {
@@ -339,7 +340,7 @@ To enroll an agent that runs on Codex or opencode instead of Claude, the manager
 }
 ```
 
-After approval, the new workspace will have `executor: codex` (or `opencode`) in `agent.yaml` and will be bootstrapped with `AGENTS.md` instead of a Claude-only workspace surface.
+After approval, the new workspace will have `executor: codex` (or `opencode` or `pi`) in `agent.yaml` and will be bootstrapped with `AGENTS.md` instead of a Claude-only workspace surface.
 
 ### Managing the daemon
 
@@ -362,6 +363,7 @@ Operational settings use the `HAPPYRANCH_` env prefix. Runtime paths are derived
 | `HAPPYRANCH_CLAUDE_CLI_PATH` | `claude` | Path to Claude Code CLI |
 | `HAPPYRANCH_CODEX_CLI_PATH` | `codex` | Path to Codex CLI |
 | `HAPPYRANCH_OPENCODE_CLI_PATH` | `opencode` | Path to opencode CLI |
+| `HAPPYRANCH_PI_CLI_PATH` | `pi` | Path to Pi CLI |
 | `HAPPYRANCH_PERMISSION_MODE` | `auto` | Claude Code permission mode |
 | `HAPPYRANCH_MAX_ORCHESTRATION_STEPS` | `50` | Max manager decision steps before escalation |
 | `HAPPYRANCH_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout (30 min) — global default; see overrides below |
@@ -379,7 +381,7 @@ repos:
   docs: https://github.com/user/docs.git
 ```
 
-`executor` may be `claude`, `codex`, or `opencode`. If omitted in an older workspace, it defaults to `claude`.
+`executor` may be `claude`, `codex`, `opencode`, or `pi`. If omitted in an older workspace, it defaults to `claude`.
 
 Repos are cloned into the agent's workspace on `happyranch init-agent` and auto-pulled before each task.
 
@@ -501,10 +503,11 @@ The bot replies with a confirmation card containing the new task ID and an `happ
 Each agent runs in its own persistent workspace inside the org directory. After `happyranch init-agent`, each workspace contains:
 
 - `agent.yaml` — per-agent config (`executor`, repos, ...)
-- `CLAUDE.md` (Claude) or `AGENTS.md` (Codex/opencode) — agent identity, system prompt, available repos
+- `CLAUDE.md` (Claude) or `AGENTS.md` (Codex/opencode/Pi) — agent identity, system prompt, available repos
 - `.claude/settings.json` + `.claude/skills/` (Claude) — permissions and skills
-- `.agents/skills/` (Codex/opencode) — shared skills tree
+- `.agents/skills/` (Codex/opencode/Pi) — shared skills tree
 - `opencode.json` (opencode only) — `permission.bash` map
+- Pi has no HappyRanch-managed sandbox or permission file; use external containment for Pi-backed agents when command/tool restriction matters.
 - `repos/` — git clones of repositories from `agent.yaml` (auto-pulled before each task)
 - `learnings/` — agent-written insights from past tasks, one file per entry (`LRN-NNN-<slug>.md`) with YAML frontmatter. A regenerated `_index.md` is inlined into the bootstrap doc. Write via `happyranch learning add --from-file <path>`; read via `happyranch learning list|get|search`; promote durable cross-agent rules to the shared KB via `happyranch learning promote <LRN-NNN> --kb-slug <slug>`. Workspaces created before this layout existed continue to use a flat `learnings.md`; the founder runs a one-shot migration task to switch a workspace over.
 - `task_history.md` — rolling per-agent task history

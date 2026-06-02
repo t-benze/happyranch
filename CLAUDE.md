@@ -31,7 +31,7 @@ In the `protocol/` folder:
 ## Tech Stack
 - **Language**: Python 3.11+ (currently running 3.13)
 - **Package manager**: `uv`
-- **Agent executor**: Per-agent. Claude Code (`claude -p ... --permission-mode auto`), Codex (`codex exec --json -`), and opencode (`opencode run`) are supported — no third-party agent framework dependency.
+- **Agent executor**: Per-agent. Claude Code (`claude -p ... --permission-mode auto`), Codex (`codex exec --json -`), opencode (`opencode run`), and Pi (`pi -p ... --mode json`) are supported — no third-party agent framework dependency.
 - **Daemon**: FastAPI HTTP service (`src/daemon/`) — serves orchestrator work, SSE task events, agent callbacks
 - **CLI**: Thin HTTP client (`src/client/`) that talks to the daemon over localhost
 - **Web UI**: Localhost SPA bundled into the daemon (`web/` → built to `web/dist/` → served at `/`). React 18 + TypeScript strict + Tailwind v4 + TanStack Query v5 + React Router v6. Auth via the same bearer token at `~/.happyranch/daemon.token`, fetched once via `GET /api/v1/auth/bootstrap` (localhost-gated). Architecture: `web/ARCHITECTURE.md`. Spec: `docs/superpowers/specs/2026-05-14-web-ui-design.md`. Launch with `happyranch web`.
@@ -87,6 +87,7 @@ Operational settings use the `HAPPYRANCH_` env prefix. Runtime paths are derived
 | `HAPPYRANCH_CLAUDE_CLI_PATH` | `claude` | Path to Claude Code CLI |
 | `HAPPYRANCH_CODEX_CLI_PATH` | `codex` | Path to Codex CLI |
 | `HAPPYRANCH_OPENCODE_CLI_PATH` | `opencode` | Path to opencode CLI |
+| `HAPPYRANCH_PI_CLI_PATH` | `pi` | Path to Pi CLI |
 | `HAPPYRANCH_PERMISSION_MODE` | `auto` | Claude Code permission mode |
 | `HAPPYRANCH_PROTOCOL_DIR` | `protocol` | Protocol docs dirname (relative to project root) |
 | `HAPPYRANCH_MAX_ORCHESTRATION_STEPS` | `50` | Max manager decision steps before escalation |
@@ -105,19 +106,22 @@ Positive integers only; `<= 0` or non-int raises at parse time. The `agent_name`
 
 ### Agent executors
 
-Each workspace declares an `executor` in `agent.yaml`: `claude`, `codex`, or `opencode`. Missing values default to `claude`. All three share the same `protocol/skills/` tree. Workspace differences:
+Each workspace declares an `executor` in `agent.yaml`: `claude`, `codex`, `opencode`, or `pi`. Missing values default to `claude`. All four share the same `protocol/skills/` tree. Workspace differences:
 
 | | bootstrap doc | skills dir | permission surface |
 |--|--|--|--|
 | Claude | `CLAUDE.md` | `.claude/skills/` | `permissions.allow` in `.claude/settings.json` **AND** `--allowedTools` on CLI (both required, see below) |
 | Codex | `AGENTS.md` | `.agents/skills/` | sandbox flags on CLI |
 | opencode | `AGENTS.md` | `.agents/skills/` | `opencode.json` `permission.bash` map |
+| Pi | `AGENTS.md` | `.agents/skills/` | no HappyRanch-managed sandbox; use external containment if needed |
 
 **Codex sandbox**: `CodexExecutor.run` passes `-c sandbox_workspace_write.network_access=true` on every invocation. The `workspace-write` sandbox blocks localhost by default, which would kill the agent's `happyranch report-completion` callback to `127.0.0.1`. Do not remove this flag without re-architecting the callback path away from localhost sockets.
 
 **opencode permissions**: `OpencodeWorkspaceAdapter.write_opencode_json` writes a strict default — `{"permission": {"bash": {"*": "deny", "happyranch *": "allow", ...per-agent allow_rules...}}}`. **Do not pass `--dangerously-skip-permissions` on the CLI** — it bypasses `opencode.json` and erases the per-prefix discipline.
 
-Enrolling a non-Claude worker: set `"executor": "codex"` (or `"opencode"`) in the `happyranch manage-agent --from-file` payload. Founder approval (`happyranch approve-agent`) bootstraps the right surface for the chosen executor. See `protocol/skills/manage-agent/SKILL.md` for full payload shapes.
+**Pi permissions**: `PiExecutor.run` invokes `pi -p ... --mode json` from the agent workspace. Pi does not provide a HappyRanch-managed permission file or sandbox flag in this integration; rely on external containment for Pi-backed agents when command/tool restriction matters.
+
+Enrolling a non-Claude worker: set `"executor": "codex"` (or `"opencode"` or `"pi"`) in the `happyranch manage-agent --from-file` payload. Founder approval (`happyranch approve-agent`) bootstraps the right surface for the chosen executor. See `protocol/skills/manage-agent/SKILL.md` for full payload shapes.
 
 Repos are configured per agent in `agent.yaml`:
 ```yaml
@@ -154,7 +158,7 @@ Both surfaces are generated from `allow_rules_for_agent(agent_name, cli=...)` in
 
 ## Org content APIs
 
-`AgentDef` (`src/orchestrator/agent_def.py`) is the in-memory representation of an agent file: markdown-with-YAML-frontmatter, parsed/rendered by `parse_agent_text` / `render_agent_text`. Fields: `name`, `team`, `role` (worker|manager), `executor` (claude|codex|opencode), `description`, `allow_rules`, `repos`, `enrolled_by`, `enrolled_at_task`, `enrolled_at`, `system_prompt` (body). **No `session_timeout_seconds` field** — see resolution above.
+`AgentDef` (`src/orchestrator/agent_def.py`) is the in-memory representation of an agent file: markdown-with-YAML-frontmatter, parsed/rendered by `parse_agent_text` / `render_agent_text`. Fields: `name`, `team`, `role` (worker|manager), `executor` (claude|codex|opencode|pi), `description`, `allow_rules`, `repos`, `enrolled_by`, `enrolled_at_task`, `enrolled_at`, `system_prompt` (body). **No `session_timeout_seconds` field** — see resolution above.
 
 `src/orchestrator/prompt_loader.py` is the only API for reading/writing agent files: `load_agent`, `list_agents`, `list_pending`, `write_pending_agent`, `approve_agent`, `reject_agent`. Routes (`src/daemon/routes/agents.py`) and the orchestrator all read through this module against the per-org root.
 
@@ -283,7 +287,7 @@ in the same org. Implementation: `src/infrastructure/artifact_store.py` +
 
 **Load-bearing invariants** (full catalog: plan §Non-obvious):
 
-- **CLI-only access by design** — Codex (`workspace-write` sandbox) and Opencode (bash deny-by-default) block direct writes outside the agent's workspace; only the `happyranch` baseline allow-rule works across all three executors. Don't add a "just `cat`/`cp` it" agent skill.
+- **CLI-only access by design** — Codex (`workspace-write` sandbox) and Opencode (bash deny-by-default) block direct writes outside the agent's workspace; only the `happyranch` baseline allow-rule works across sandboxed executors. Pi has no HappyRanch-managed sandbox in this integration. Don't add a "just `cat`/`cp` it" agent skill.
 - **Audit `task_id` overload** — `artifact_put` writes `f"artifact:{name}"` (the `artifact:` prefix is mandatory) so artifact names like `TASK-123` or `TALK-7` can't pollute the task/talk scopes consumed by `Database.get_audit_logs(task_id)`. Historical `asset_put` rows (written before the 2026-06-01 rename) remain in the DB with `action="asset_put"` and `task_id="asset:<name>"` — these are forward-only and are not migrated. Founders browsing the audit log on migrated orgs will see both `asset_put` and `artifact_put` values. Reads (`list`/`get`) are unaudited by design.
 - **Not the KB** — artifacts are blobs. KB is for typed/structured knowledge (frontmatter, slug, type, topic). Don't dump markdown content into `artifacts/` that should be a KB entry.
 - **Dir created at fresh-org init AND idempotently at lifespan startup** for orgs that pre-date the feature. Both code paths are required.

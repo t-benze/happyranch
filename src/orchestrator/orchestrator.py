@@ -29,6 +29,7 @@ from src.orchestrator.executors import (
     CodexExecutor,
     ExecutorResult,
     OpencodeExecutor,
+    PiExecutor,
 )
 from src.orchestrator.org_config import load_org_config
 from src.orchestrator.teams import TeamsRegistry
@@ -274,10 +275,10 @@ class Orchestrator:
     def _readiness_marker(self, workspace: Path, provider: str) -> Path:
         if provider == "codex":
             return workspace / "AGENTS.md"
-        if provider == "opencode":
-            # opencode reads AGENTS.md and discovers skills via .agents/skills/.
-            # AGENTS.md alone is sufficient as the readiness signal — its
-            # presence implies the adapter ran and copied the skills tree.
+        if provider in {"opencode", "pi"}:
+            # These providers read AGENTS.md and use the shared .agents/skills/
+            # tree. AGENTS.md alone is sufficient as the readiness signal —
+            # its presence implies the adapter ran and copied the skills tree.
             return workspace / "AGENTS.md"
         return workspace / ".claude" / "skills" / "start-task" / "SKILL.md"
 
@@ -290,6 +291,10 @@ class Orchestrator:
         if provider == "opencode":
             return OpencodeExecutor(
                 opencode_cli_path=self._settings.opencode_cli_path,
+            )
+        if provider == "pi":
+            return PiExecutor(
+                pi_cli_path=self._settings.pi_cli_path,
             )
         return ClaudeExecutor(
             claude_cli_path=self._settings.claude_cli_path,
@@ -312,10 +317,11 @@ class Orchestrator:
                 f"You are {agent_name}. Use the injected task parameters directly to handle this task.\n"
             )
         else:
-            # Both Claude and opencode have an in-context start-task skill —
+            # Claude, opencode, and Pi have an in-context start-task skill —
             # Claude via auto-loaded ``.claude/skills/``, opencode via its
             # built-in ``skill`` tool that lists and loads skills from
-            # ``.agents/skills/`` on demand. The same nudge works for both.
+            # ``.agents/skills/`` on demand, and Pi via AGENTS.md. The same
+            # nudge works for all three.
             intro = (
                 f"You are {agent_name}. Use the start-task skill to handle this task.\n"
             )
@@ -506,8 +512,8 @@ class Orchestrator:
 
         # Capture pid into SessionTracker the moment Popen returns so the
         # /cancel route can SIGTERM the subprocess mid-session without racing
-        # the set_active() call above. Works for both Claude and Codex
-        # executors because both delegate to executors._run_command.
+        # the set_active() call above. Works for every executor because they
+        # delegate to executors._run_command.
         def _on_started(pid: int) -> None:
             if self._sessions is not None:
                 self._sessions.set_pid(task_id, agent_name, pid)
