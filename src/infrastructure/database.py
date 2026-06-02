@@ -319,6 +319,8 @@ class Database:
                 agent_name TEXT NOT NULL,
                 added_at TEXT NOT NULL,
                 added_by TEXT NOT NULL,
+                agent_session_id TEXT,
+                last_resumed_seq INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (thread_id, agent_name),
                 FOREIGN KEY (thread_id) REFERENCES threads(id)
             );
@@ -488,6 +490,13 @@ class Database:
             # next leg without consuming the manager's orchestration_step_count.
             # NULL for non-chain or non-verdict workers.
             "ALTER TABLE task_results ADD COLUMN verdict TEXT",
+            # Thread agent-session resume (issue #53). agent_session_id holds the
+            # resumable agent session for this (thread, agent); NULL = none yet /
+            # evicted. last_resumed_seq is the highest thread message seq the stored
+            # session has been shown — the delta watermark, advanced only on a
+            # successful turn.
+            "ALTER TABLE thread_participants ADD COLUMN agent_session_id TEXT",
+            "ALTER TABLE thread_participants ADD COLUMN last_resumed_seq INTEGER NOT NULL DEFAULT 0",
         ):
             try:
                 self._conn.execute(ddl)
@@ -1914,6 +1923,42 @@ class Database:
             )
             for r in cursor.fetchall()
         ]
+
+    @_synchronized
+    def get_thread_session(
+        self, thread_id: str, agent_name: str
+    ) -> tuple[str | None, int]:
+        """Return (agent_session_id, last_resumed_seq) for a (thread, agent).
+
+        Returns (None, 0) when the participant row is absent — the safe
+        turn-1 default that drives a full-context first invocation.
+        """
+        cursor = self._conn.execute(
+            "SELECT agent_session_id, last_resumed_seq FROM thread_participants "
+            "WHERE thread_id = ? AND agent_name = ?",
+            (thread_id, agent_name),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return (None, 0)
+        return (row["agent_session_id"], row["last_resumed_seq"] or 0)
+
+    @_synchronized
+    def update_thread_session(
+        self,
+        thread_id: str,
+        agent_name: str,
+        *,
+        agent_session_id: str | None,
+        last_resumed_seq: int,
+    ) -> None:
+        """Persist the resumable session id + delta watermark for a participant."""
+        self._conn.execute(
+            "UPDATE thread_participants SET agent_session_id = ?, last_resumed_seq = ? "
+            "WHERE thread_id = ? AND agent_name = ?",
+            (agent_session_id, last_resumed_seq, thread_id, agent_name),
+        )
+        self._conn.commit()
 
     @_synchronized
     def append_thread_message(

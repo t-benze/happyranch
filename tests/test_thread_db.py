@@ -323,3 +323,29 @@ def test_log_thread_resumed_writes_audit_row(tmp_path):
     resumed = next(r for r in rows if r["action"] == "thread_resumed")
     assert resumed["payload"].get("prior_archived_at") == "2026-05-30T12:00:00+00:00"
     assert resumed["agent"] == "founder"
+
+
+def test_thread_session_defaults_and_roundtrip(tmp_path):
+    from src.infrastructure.database import Database
+    from src.models import ThreadRecord
+
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+
+    # Default state: no stored session, watermark 0.
+    assert db.get_thread_session("THR-001", "alice") == (None, 0)
+
+    # Unknown participant also returns the safe default (no row).
+    assert db.get_thread_session("THR-001", "ghost") == (None, 0)
+
+    db.update_thread_session(
+        "THR-001", "alice", agent_session_id="sess-123", last_resumed_seq=7
+    )
+    assert db.get_thread_session("THR-001", "alice") == ("sess-123", 7)
+
+    # Eviction clears the id but the accessor still returns a safe tuple.
+    db.update_thread_session(
+        "THR-001", "alice", agent_session_id=None, last_resumed_seq=0
+    )
+    assert db.get_thread_session("THR-001", "alice") == (None, 0)
