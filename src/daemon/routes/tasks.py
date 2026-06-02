@@ -68,9 +68,9 @@ def _task_to_dict(t: TaskRecord) -> dict:
     return d
 
 
-# Artifacts are fully inlined into the recall response when an agent asks for
+# Outputs are fully inlined into the recall response when an agent asks for
 # them, so cap the total to keep one recall under a comfortable prompt budget.
-MAX_ARTIFACT_BYTES = 200 * 1024
+MAX_OUTPUT_BYTES = 200 * 1024
 
 
 class SubmitTask(BaseModel):
@@ -178,23 +178,23 @@ def get_task(task_id: str, org: OrgDep) -> dict:
     }
 
 
-def _read_artifact(
-    workspaces_dir: Path, assigned_agent: str | None, artifact_dir: str | None,
+def _read_output(
+    workspaces_dir: Path, assigned_agent: str | None, output_dir: str | None,
 ) -> dict | None:
-    """Return {files, truncated} for the artifact folder, or None if unresolvable.
+    """Return {files, truncated} for the output folder, or None if unresolvable.
 
     Files are read as text; anything that fails decoding (binaries) is skipped.
-    If the total inlined payload would exceed MAX_ARTIFACT_BYTES we flip to a
+    If the total inlined payload would exceed MAX_OUTPUT_BYTES we flip to a
     path-only listing with truncated=True so the agent still sees the inventory.
     """
-    if not assigned_agent or not artifact_dir:
+    if not assigned_agent or not output_dir:
         return None
-    # artifact_dir is agent-supplied via the completion callback. Absolute paths
+    # output_dir is agent-supplied via the completion callback. Absolute paths
     # and `..` segments would let a buggy/malicious agent disclose arbitrary
     # readable files on the host, so confine the result to the assigned agent's
     # workspace by resolving both paths and checking containment.
     agent_root = (workspaces_dir / assigned_agent).resolve()
-    base = (agent_root / artifact_dir).resolve()
+    base = (agent_root / output_dir).resolve()
     if not base.is_relative_to(agent_root):
         return None
     if not base.exists():
@@ -208,7 +208,7 @@ def _read_artifact(
         except (OSError, UnicodeDecodeError):
             continue
         total += len(text.encode("utf-8"))
-        if total > MAX_ARTIFACT_BYTES:
+        if total > MAX_OUTPUT_BYTES:
             return {
                 "files": [{"path": str(f.relative_to(base))} for f in all_files],
                 "truncated": True,
@@ -218,21 +218,21 @@ def _read_artifact(
 
 
 def _recall_node(
-    org: OrgState, task_id: str, tree: bool, include_artifact: bool,
+    org: OrgState, task_id: str, tree: bool, include_output: bool,
 ) -> dict | None:
     payload = org.db.get_recall_payload(task_id)
     if payload is None:
         return None
-    if include_artifact:
-        payload["artifact"] = _read_artifact(
+    if include_output:
+        payload["output"] = _read_output(
             org.root / "workspaces",
             payload.get("assigned_agent"),
-            payload.get("artifact_dir"),
+            payload.get("output_dir"),
         )
     if tree:
         child_ids = payload["children"]
         payload["children"] = [
-            _recall_node(org, cid, tree=True, include_artifact=include_artifact)
+            _recall_node(org, cid, tree=True, include_output=include_output)
             for cid in child_ids
         ]
     return payload
@@ -243,9 +243,9 @@ def recall_task(
     task_id: str,
     org: OrgDep,
     tree: bool = False,
-    include_artifact: bool = False,
+    include_output: bool = False,
 ) -> dict:
-    node = _recall_node(org, task_id, tree=tree, include_artifact=include_artifact)
+    node = _recall_node(org, task_id, tree=tree, include_output=include_output)
     if node is None:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     return node
@@ -269,7 +269,7 @@ class CompletionBody(BaseModel):
     risks_flagged: list[str] = []
     dependencies: list[str] = []
     suggested_reviewer_focus: list[str] = []
-    artifact_dir: str | None = None
+    output_dir: str | None = None
     waiting_on_job_ids: list[str] = []
 
 
@@ -357,7 +357,7 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
             decision_json=decision_json,
             confidence_score=body.confidence,
             risks_flagged=body.risks_flagged,
-            artifact_dir=body.artifact_dir,
+            output_dir=body.output_dir,
             waiting_on_job_ids=body.waiting_on_job_ids or None,
             verdict=body.verdict,
         )

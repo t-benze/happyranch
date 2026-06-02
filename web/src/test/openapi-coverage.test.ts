@@ -143,10 +143,10 @@ const EXCLUDED_PATHS = new Map<string, string>([
   ['POST /api/v1/orgs/{slug}/threads/compose-as-agent', 'agent callback — not exercised from the Web UI'],
   // jobs agent callback
   ['POST /api/v1/orgs/{slug}/jobs/submit', 'agent callback (matches /report-completion pattern)'],
-  // Assets — agent-facing v1 (CLI only). Founder UI deferred until needed.
-  ['POST /api/v1/orgs/{slug}/assets', 'agent-facing v1 — CLI only, founder UI deferred'],
-  ['GET /api/v1/orgs/{slug}/assets', 'agent-facing v1 — CLI only, founder UI deferred'],
-  ['GET /api/v1/orgs/{slug}/assets/{name}', 'agent-facing v1 — CLI only, founder UI deferred'],
+  // Artifacts — agent-facing v1 (CLI only). Founder UI deferred until needed.
+  ['POST /api/v1/orgs/{slug}/artifacts', 'agent-facing v1 — CLI only, founder UI deferred'],
+  ['GET /api/v1/orgs/{slug}/artifacts', 'agent-facing v1 — CLI only, founder UI deferred'],
+  ['GET /api/v1/orgs/{slug}/artifacts/{name}', 'agent-facing v1 — CLI only, founder UI deferred'],
 ]);
 
 describe('openapi coverage', () => {

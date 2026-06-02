@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from pathlib import Path
 
@@ -370,3 +371,103 @@ def test_filesystem_migration_noop_when_neither_exists(tmp_path: Path) -> None:
     migrate_filesystem_layout(org_root)
     # Function does not pre-create jobs/; it's lazy. So jobs/ should not exist.
     assert not (org_root / "jobs").exists()
+
+
+# ---------------------------------------------------------------------------
+# 2026-06-02 assets→artifacts + per-agent artifacts→output rename
+# ---------------------------------------------------------------------------
+
+
+def test_artifacts_migration_moves_both_dirs(tmp_path: Path) -> None:
+    """Both org-shared assets/ and per-agent workspaces/<agent>/artifacts/ are
+    renamed when sources exist and destinations don't."""
+    from src.daemon.jobs_runner import migrate_artifacts_layout
+
+    org_root = tmp_path / "org"
+    (org_root / "assets").mkdir(parents=True)
+    (org_root / "assets" / "blob.bin").write_text("payload\n")
+    (org_root / "workspaces" / "dev_agent" / "artifacts" / "TASK-1").mkdir(parents=True)
+    (org_root / "workspaces" / "dev_agent" / "artifacts" / "TASK-1" / "report.md").write_text("ok\n")
+    (org_root / "workspaces" / "qa_engineer" / "artifacts" / "TASK-2").mkdir(parents=True)
+
+    migrate_artifacts_layout(org_root)
+
+    assert not (org_root / "assets").exists()
+    assert (org_root / "artifacts" / "blob.bin").read_text() == "payload\n"
+
+    assert not (org_root / "workspaces" / "dev_agent" / "artifacts").exists()
+    assert (org_root / "workspaces" / "dev_agent" / "output" / "TASK-1" / "report.md").read_text() == "ok\n"
+
+    assert not (org_root / "workspaces" / "qa_engineer" / "artifacts").exists()
+    assert (org_root / "workspaces" / "qa_engineer" / "output" / "TASK-2").is_dir()
+
+
+def test_artifacts_migration_noop_when_sources_absent(tmp_path: Path) -> None:
+    """A fresh org without legacy assets/ or per-agent artifacts/ is a no-op."""
+    from src.daemon.jobs_runner import migrate_artifacts_layout
+
+    org_root = tmp_path / "org"
+    org_root.mkdir()
+    (org_root / "workspaces" / "dev_agent").mkdir(parents=True)
+
+    migrate_artifacts_layout(org_root)
+
+    # Function does not pre-create artifacts/ or output/; it's lazy.
+    assert not (org_root / "artifacts").exists()
+    assert not (org_root / "workspaces" / "dev_agent" / "output").exists()
+
+
+def test_artifacts_migration_noop_when_already_migrated(tmp_path: Path) -> None:
+    """If artifacts/ and output/ already exist (already-migrated runtime),
+    do nothing. Legacy assets/ + per-agent artifacts/ are absent."""
+    from src.daemon.jobs_runner import migrate_artifacts_layout
+
+    org_root = tmp_path / "org"
+    (org_root / "artifacts").mkdir(parents=True)
+    (org_root / "artifacts" / "blob.bin").write_text("already\n")
+    (org_root / "workspaces" / "dev_agent" / "output" / "TASK-1").mkdir(parents=True)
+    (org_root / "workspaces" / "dev_agent" / "output" / "TASK-1" / "r.md").write_text("done\n")
+
+    migrate_artifacts_layout(org_root)
+
+    assert (org_root / "artifacts" / "blob.bin").read_text() == "already\n"
+    assert (org_root / "workspaces" / "dev_agent" / "output" / "TASK-1" / "r.md").read_text() == "done\n"
+
+
+def test_artifacts_migration_skips_when_both_old_and_new_exist(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """Conflict state: when BOTH old and new dirs exist (partial migration
+    or manual reconciliation in progress), the helper MUST skip to avoid
+    destroying data. The old dir stays put for the operator to resolve.
+    A WARNING must be logged for each conflict case so operators aren't
+    left with no indication that data is stranded."""
+    from src.daemon.jobs_runner import migrate_artifacts_layout
+
+    org_root = tmp_path / "org"
+    (org_root / "assets").mkdir(parents=True)
+    (org_root / "assets" / "old.bin").write_text("old\n")
+    (org_root / "artifacts").mkdir(parents=True)
+    (org_root / "artifacts" / "new.bin").write_text("new\n")
+
+    (org_root / "workspaces" / "dev_agent" / "artifacts" / "TASK-1").mkdir(parents=True)
+    (org_root / "workspaces" / "dev_agent" / "artifacts" / "TASK-1" / "old.md").write_text("old\n")
+    (org_root / "workspaces" / "dev_agent" / "output" / "TASK-2").mkdir(parents=True)
+    (org_root / "workspaces" / "dev_agent" / "output" / "TASK-2" / "new.md").write_text("new\n")
+
+    with caplog.at_level(logging.WARNING, logger="happyranch.daemon"):
+        migrate_artifacts_layout(org_root)
+
+    # Both old and new shared dirs preserved untouched.
+    assert (org_root / "assets" / "old.bin").read_text() == "old\n"
+    assert (org_root / "artifacts" / "new.bin").read_text() == "new\n"
+
+    # Both old and new per-agent dirs preserved untouched.
+    assert (org_root / "workspaces" / "dev_agent" / "artifacts" / "TASK-1" / "old.md").read_text() == "old\n"
+    assert (org_root / "workspaces" / "dev_agent" / "output" / "TASK-2" / "new.md").read_text() == "new\n"
+
+    # One WARNING per conflict case (org-shared + per-workspace = 2 total).
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) >= 2
+    assert "both" in warnings[0].message.lower()
+    assert "skipping move" in warnings[0].message.lower()
+    assert "both" in warnings[1].message.lower()
+    assert "skipping move" in warnings[1].message.lower()

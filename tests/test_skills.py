@@ -46,10 +46,10 @@ def test_start_task_skill_documents_memory_consult() -> None:
     assert "Consult memory" in body
 
 
-def test_start_task_skill_documents_artifact_convention() -> None:
+def test_start_task_skill_documents_output_dir() -> None:
     body = (SKILLS_ROOT / "start-task" / "SKILL.md").read_text()
-    assert "artifacts/" in body
-    assert "artifact_dir" in body
+    assert "output/" in body
+    assert "output_dir" in body
 
 
 def test_start_task_skill_documents_kb_consult() -> None:

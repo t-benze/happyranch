@@ -38,5 +38,5 @@ class OrgPaths:
         return self.root / "happyranch.db"
 
     @property
-    def assets_dir(self) -> Path:
-        return self.root / "assets"
+    def artifacts_dir(self) -> Path:
+        return self.root / "artifacts"

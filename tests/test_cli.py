@@ -442,7 +442,7 @@ def test_cmd_report_completion_from_file_posts_loaded_body(tmp_path):
     assert body["suggested_reviewer_focus"] == ["signature canonicalization"]
 
 
-def test_completion_payload_from_file_accepts_artifact_dir(tmp_path):
+def test_completion_payload_from_file_accepts_output_dir(tmp_path):
     import json as _json
     from src.cli import _completion_payload_from_file
 
@@ -453,14 +453,14 @@ def test_completion_payload_from_file_accepts_artifact_dir(tmp_path):
         "agent": "dev_agent",
         "status": "completed",
         "summary": "done",
-        "artifact_dir": "artifacts/TASK-001",
+        "output_dir": "output/TASK-001",
     }))
     task_id, body = _completion_payload_from_file(str(path))
     assert task_id == "TASK-001"
-    assert body["artifact_dir"] == "artifacts/TASK-001"
+    assert body["output_dir"] == "output/TASK-001"
 
 
-def test_completion_payload_from_file_artifact_optional(tmp_path):
+def test_completion_payload_from_file_output_dir_optional(tmp_path):
     import json as _json
     from src.cli import _completion_payload_from_file
 
@@ -470,7 +470,7 @@ def test_completion_payload_from_file_artifact_optional(tmp_path):
         "status": "completed", "summary": "done",
     }))
     _, body = _completion_payload_from_file(str(path))
-    assert body.get("artifact_dir") is None
+    assert body.get("output_dir") is None
 
 
 def test_completion_payload_from_file_passes_decision_through(tmp_path):
@@ -1118,11 +1118,11 @@ def test_reject_agent_parser():
 
 def test_cli_recall_parses_flags():
     parser = build_parser()
-    args = parser.parse_args(["recall", "TASK-001", "--tree", "--fetch-artifact"])
+    args = parser.parse_args(["recall", "TASK-001", "--tree", "--fetch-output"])
     assert args.command == "recall"
     assert args.task_id == "TASK-001"
     assert args.tree is True
-    assert args.fetch_artifact is True
+    assert args.fetch_output is True
 
 
 def test_cli_recall_defaults():
@@ -1130,7 +1130,7 @@ def test_cli_recall_defaults():
     args = parser.parse_args(["recall", "TASK-001"])
     assert args.task_id == "TASK-001"
     assert args.tree is False
-    assert args.fetch_artifact is False
+    assert args.fetch_output is False
 
 
 def test_cmd_recall_prints_payload(capsys):
@@ -1144,7 +1144,7 @@ def test_cmd_recall_prints_payload(capsys):
     with patch("src.cli.OpcClient.from_env", return_value=fake), \
          patch("src.cli._fetch_available_orgs", return_value=["alpha"]):
         cmd_recall(argparse.Namespace(
-            org=None, task_id="TASK-001", tree=False, fetch_artifact=False,
+            org=None, task_id="TASK-001", tree=False, fetch_output=False,
         ))
     fake.get.assert_called_once_with(
         "/api/v1/orgs/alpha/tasks/TASK-001/recall", params={},
@@ -1153,7 +1153,7 @@ def test_cmd_recall_prints_payload(capsys):
     assert _json.loads(out)["task_id"] == "TASK-001"
 
 
-def test_cmd_recall_forwards_tree_and_artifact_params():
+def test_cmd_recall_forwards_tree_and_output_params():
     import argparse
     from src.cli import cmd_recall
 
@@ -1163,11 +1163,11 @@ def test_cmd_recall_forwards_tree_and_artifact_params():
     with patch("src.cli.OpcClient.from_env", return_value=fake), \
          patch("src.cli._fetch_available_orgs", return_value=["alpha"]):
         cmd_recall(argparse.Namespace(
-            org=None, task_id="TASK-001", tree=True, fetch_artifact=True,
+            org=None, task_id="TASK-001", tree=True, fetch_output=True,
         ))
     fake.get.assert_called_once_with(
         "/api/v1/orgs/alpha/tasks/TASK-001/recall",
-        params={"tree": "true", "include_artifact": "true"},
+        params={"tree": "true", "include_output": "true"},
     )
 
 
@@ -1181,7 +1181,7 @@ def test_cmd_recall_404_exits(capsys):
          patch("src.cli._fetch_available_orgs", return_value=["alpha"]):
         with pytest.raises(SystemExit):
             cmd_recall(argparse.Namespace(
-                org=None, task_id="TASK-404", tree=False, fetch_artifact=False,
+                org=None, task_id="TASK-404", tree=False, fetch_output=False,
             ))
     assert "not found" in capsys.readouterr().out.lower()
 

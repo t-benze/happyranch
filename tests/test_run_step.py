@@ -113,11 +113,11 @@ def test_run_step_transitions_pending_to_in_progress_and_increments_count(
 
 
 def _make_report(output_summary: str, status: str = "completed",
-                 artifact_dir: str | None = None):
+                 output_dir: str | None = None):
     from src.models import CompletionReport
     return CompletionReport(
         task_id="T-IGNORED", agent="engineering_head", status=status,
-        confidence=80, output_summary=output_summary, artifact_dir=artifact_dir,
+        confidence=80, output_summary=output_summary, output_dir=output_dir,
     )
 
 
@@ -172,7 +172,7 @@ def test_run_step_done_completes_task_and_enqueues_parent(
     def fake_run_agent(task_id, agent, prompt, on_session_started=None):
         return _make_result(), _make_report(
             output_summary=json.dumps({"action": "done", "summary": "Looks great"}),
-            artifact_dir="artifacts/run-1",
+            output_dir="output/run-1",
         )
     monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
 
@@ -181,7 +181,7 @@ def test_run_step_done_completes_task_and_enqueues_parent(
     child = db.get_task("T-CHD")
     assert child.status == TaskStatus.COMPLETED
     assert child.note == "Looks great"
-    assert child.final_artifact_dir == "artifacts/run-1"
+    assert child.final_output_dir == "output/run-1"
 
     # Parent should be enqueued
     assert q.qsize() == 1
@@ -764,7 +764,7 @@ def test_run_step_worker_completion_is_done_not_parsed_as_eh_decision(
     def fake_run_agent(task_id, agent, prompt, on_session_started=None):
         return _make_result(), _make_report(
             output_summary="Shipped the PR — see branch feat/x",
-            artifact_dir="artifacts/run-1",
+            output_dir="output/run-1",
         )
     monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
 
@@ -774,7 +774,7 @@ def test_run_step_worker_completion_is_done_not_parsed_as_eh_decision(
     assert child.status == TaskStatus.COMPLETED
     assert child.block_kind is None
     assert child.note == "Shipped the PR — see branch feat/x"
-    assert child.final_artifact_dir == "artifacts/run-1"
+    assert child.final_output_dir == "output/run-1"
     # Parent wakes on the child terminal.
     assert q.get_nowait() == ("test", "T-PAR")
 
@@ -930,12 +930,12 @@ def test_complete_idempotent_on_terminal_task(runtime, db):
                    completed_at=now)
 
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
-    _complete(orch, "T-1", note="looks great", artifact_dir="artifacts/run-1")
+    _complete(orch, "T-1", note="looks great", output_dir="output/run-1")
 
     t = db.get_task("T-1")
     assert t.status == TaskStatus.FAILED
     assert t.note == "cancelled by founder: stop"
-    assert t.final_artifact_dir is None  # unchanged
+    assert t.final_output_dir is None  # unchanged
 
 
 def test_run_step_revisit_header_injected_on_first_step(

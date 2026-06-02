@@ -27,7 +27,7 @@ Payload shape (required keys: `task_id`, `session_id`, `agent`, `status`, `summa
   "risks": ["<concern the reviewer should look at hardest>"],
   "dependencies": ["<work this depends on or blocks>"],
   "reviewer_focus": ["<which file(s) or aspect to review first>"],
-  "artifact_dir": "artifacts/<task_id>"
+  "output_dir": "output/<task_id>"
 }
 ```
 
@@ -133,7 +133,7 @@ A manager can declare a multi-leg workflow in one decision via `decision.then` (
 }
 ```
 
-The orchestrator spawns the first leg, then auto-advances to the next leg on each child terminal whose `verdict` matches the leg's `expect_verdict`. Any mismatch (or `status=blocked`) clears the chain and wakes the manager. The final leg's match wakes the manager too — chains do not auto-`done`. Each subsequent leg's brief is auto-suffixed with a "Prior leg context" block (the upstream worker's summary + verdict + artifact_dir).
+The orchestrator spawns the first leg, then auto-advances to the next leg on each child terminal whose `verdict` matches the leg's `expect_verdict`. Any mismatch (or `status=blocked`) clears the chain and wakes the manager. The final leg's match wakes the manager too — chains do not auto-`done`. Each subsequent leg's brief is auto-suffixed with a "Prior leg context" block (the upstream worker's summary + verdict + output_dir).
 
 Step-budget effect: declaring a chain consumes one orchestration step; auto-advances do NOT consume steps. A clean small-item workflow (`dev → senior_dev[APPROVE] → qa_engineer[PASS]`) costs 2 steps (declare + final wake) instead of 4.
 

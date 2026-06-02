@@ -49,7 +49,7 @@ class TaskRecord(BaseModel):
     # delegation-chain-design.md.
     active_chain: str | None = None
     note: str | None = None
-    final_artifact_dir: str | None = None
+    final_output_dir: str | None = None
     orchestration_step_count: int = 0
     revision_count: int = 0
     # Per-task override for the agent-session subprocess timeout (seconds).
@@ -104,7 +104,7 @@ class CompletionReport(BaseModel):
     risks_flagged: list[str] = Field(default_factory=list)
     dependencies: list[str] = Field(default_factory=list)
     suggested_reviewer_focus: list[str] = Field(default_factory=list)
-    artifact_dir: str | None = None
+    output_dir: str | None = None
     waiting_on_job_ids: list[str] = Field(default_factory=list)
 
 
@@ -265,7 +265,7 @@ class JobRecord(BaseModel):
     # Scope id of the submission context. For task-originated jobs this is a
     # TASK-NNN id; for talk-originated jobs (``submitted_from_talk_id`` set)
     # this is overloaded to hold the TALK-NNN id — same pattern as
-    # ``audit_log.task_id`` and ``asset_put``'s ``f"asset:{name}"``. Keeping
+    # ``audit_log.task_id`` and ``artifact_put``'s ``f"artifact:{name}"``. Keeping
     # one column avoids plumbing a ``scope_id`` everywhere it's already in use.
     task_id:          str
     # Set when the job was submitted from a talk (talk-path auth). NULL on

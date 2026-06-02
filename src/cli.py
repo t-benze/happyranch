@@ -654,8 +654,8 @@ def _completion_payload_from_file(path: str) -> tuple[str, dict]:
         "dependencies": data.get("dependencies") or [],
         "suggested_reviewer_focus": data.get("reviewer_focus") or [],
     }
-    if data.get("artifact_dir"):
-        body["artifact_dir"] = data["artifact_dir"]
+    if data.get("output_dir"):
+        body["output_dir"] = data["output_dir"]
     # Worker-reported verdict for inline delegation chains. Free string;
     # omit when the task is not part of a chain or the worker has no verdict.
     if data.get("verdict") is not None:
@@ -720,8 +720,8 @@ def cmd_report_completion(args: argparse.Namespace) -> None:
             "dependencies": args.dependencies or [],
             "suggested_reviewer_focus": args.reviewer_focus or [],
         }
-        if args.artifact_dir:
-            body["artifact_dir"] = args.artifact_dir
+        if args.output_dir:
+            body["output_dir"] = args.output_dir
     r = client.post(f"/api/v1/orgs/{args.org}/tasks/{task_id}/completion", json=body)
     if not _ok(r):
         return
@@ -1523,7 +1523,7 @@ def cmd_reject_agent(args: argparse.Namespace) -> None:
 
 
 def cmd_recall(args: argparse.Namespace) -> None:
-    """Fetch a task's brief, canonical outcome, and optionally artifact files.
+    """Fetch a task's brief, canonical outcome, and optionally output files.
 
     Prints the daemon's JSON response as-is — agents consume it through the
     start-task skill, humans pipe it to ``jq``. A 404 is treated as an error
@@ -1542,8 +1542,8 @@ def cmd_recall(args: argparse.Namespace) -> None:
     params: dict[str, str] = {}
     if args.tree:
         params["tree"] = "true"
-    if args.fetch_artifact:
-        params["include_artifact"] = "true"
+    if args.fetch_output:
+        params["include_output"] = "true"
     r = client.get(f"/api/v1/orgs/{slug}/tasks/{args.task_id}/recall", params=params)
     if r.status_code == 404:
         print(f"Task {args.task_id} not found.")
@@ -1710,12 +1710,12 @@ def cmd_kb_reindex(args: argparse.Namespace) -> None:
     print("ok: reindexed")
 
 
-def cmd_assets_put(args: argparse.Namespace) -> None:
+def cmd_artifacts_put(args: argparse.Namespace) -> None:
     client = OpcClient.from_env()
     org_slug = resolve_org_slug(
         args_org=args.org, available=_fetch_available_orgs(client),
     )
-    info = client.put_asset(
+    info = client.put_artifact(
         slug=org_slug,
         local_path=args.local_path,
         name=args.name,
@@ -1724,26 +1724,26 @@ def cmd_assets_put(args: argparse.Namespace) -> None:
     print(f"uploaded {info['name']} ({info['size_bytes']}B)")
 
 
-def cmd_assets_list(args: argparse.Namespace) -> None:
+def cmd_artifacts_list(args: argparse.Namespace) -> None:
     client = OpcClient.from_env()
     org_slug = resolve_org_slug(
         args_org=args.org, available=_fetch_available_orgs(client),
     )
-    body = client.list_assets(slug=org_slug)
-    assets = body["assets"]
-    if not assets:
-        print("no assets")
+    body = client.list_artifacts(slug=org_slug)
+    artifacts = body["artifacts"]
+    if not artifacts:
+        print("no artifacts")
         return
-    for a in assets:
+    for a in artifacts:
         print(f"{a['name']}\t{a['size_bytes']}\t{a['modified_at']}")
 
 
-def cmd_assets_get(args: argparse.Namespace) -> None:
+def cmd_artifacts_get(args: argparse.Namespace) -> None:
     client = OpcClient.from_env()
     org_slug = resolve_org_slug(
         args_org=args.org, available=_fetch_available_orgs(client),
     )
-    data = client.get_asset(slug=org_slug, name=args.name)
+    data = client.get_artifact(slug=org_slug, name=args.name)
     args.output.write_bytes(data)
     print(f"saved {len(data)}B to {args.output}")
 
@@ -2713,15 +2713,15 @@ def build_parser() -> argparse.ArgumentParser:
     # happyranch recall
     p_recall = sub.add_parser(
         "recall",
-        help="Recall a task: brief, outcome, optional artifact contents",
+        help="Recall a task: brief, outcome, optional output contents",
     )
     p_recall.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
     p_recall.add_argument("task_id", help="Task ID (e.g. TASK-001)")
     p_recall.add_argument("--tree", action="store_true",
                           help="Include the full subtree of child tasks")
-    p_recall.add_argument("--fetch-artifact", dest="fetch_artifact",
+    p_recall.add_argument("--fetch-output", dest="fetch_output",
                           action="store_true",
-                          help="Inline artifact file contents (capped at 200KB)")
+                          help="Inline output file contents (capped at 200KB)")
     p_recall.set_defaults(func=cmd_recall)
 
     p_rep = sub.add_parser("report-completion", help="Agent callback: report task completion")
@@ -2743,8 +2743,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_rep.add_argument("--risks", action="append", default=[])
     p_rep.add_argument("--dependencies", action="append", default=[])
     p_rep.add_argument("--reviewer-focus", action="append", default=[], dest="reviewer_focus")
-    p_rep.add_argument("--artifact-dir", dest="artifact_dir", default=None,
-                       help="Relative path to the artifact directory under the agent workspace")
+    p_rep.add_argument("--output-dir", dest="output_dir", default=None,
+                       help="Relative path to the output directory under the agent workspace")
     p_rep.set_defaults(func=cmd_report_completion)
 
     # ---- learning ----------------------------------------------------------
@@ -2879,26 +2879,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_kb_reindex.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
     p_kb_reindex.set_defaults(func=cmd_kb_reindex)
 
-    # happyranch assets ...
-    p_assets = sub.add_parser("assets", help="Org-shared asset blobs (put/list/get)")
-    assets_sub = p_assets.add_subparsers(dest="assets_cmd", required=True)
+    # happyranch artifacts ...
+    p_artifacts = sub.add_parser("artifacts", help="Org-shared artifact blobs (put/list/get)")
+    artifacts_sub = p_artifacts.add_subparsers(dest="artifacts_cmd", required=True)
 
-    p_assets_put = assets_sub.add_parser("put", help="Upload a local file to the org's shared assets")
-    p_assets_put.add_argument("local_path", type=Path, help="Local file to upload")
-    p_assets_put.add_argument("--name", default=None, help="Override stored filename (default: local basename)")
-    p_assets_put.add_argument("--agent", required=True, help="Agent name for audit attribution")
-    p_assets_put.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
-    p_assets_put.set_defaults(func=cmd_assets_put)
+    p_artifacts_put = artifacts_sub.add_parser("put", help="Upload a local file to the org's shared artifacts")
+    p_artifacts_put.add_argument("local_path", type=Path, help="Local file to upload")
+    p_artifacts_put.add_argument("--name", default=None, help="Override stored filename (default: local basename)")
+    p_artifacts_put.add_argument("--agent", required=True, help="Agent name for audit attribution")
+    p_artifacts_put.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
+    p_artifacts_put.set_defaults(func=cmd_artifacts_put)
 
-    p_assets_list = assets_sub.add_parser("list", help="List asset names and sizes")
-    p_assets_list.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
-    p_assets_list.set_defaults(func=cmd_assets_list)
+    p_artifacts_list = artifacts_sub.add_parser("list", help="List artifact names and sizes")
+    p_artifacts_list.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
+    p_artifacts_list.set_defaults(func=cmd_artifacts_list)
 
-    p_assets_get = assets_sub.add_parser("get", help="Download an asset by name")
-    p_assets_get.add_argument("name", help="Asset name to download")
-    p_assets_get.add_argument("--output", type=Path, required=True, help="Local path to write the asset bytes to")
-    p_assets_get.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
-    p_assets_get.set_defaults(func=cmd_assets_get)
+    p_artifacts_get = artifacts_sub.add_parser("get", help="Download an artifact by name")
+    p_artifacts_get.add_argument("name", help="Artifact name to download")
+    p_artifacts_get.add_argument("--output", type=Path, required=True, help="Local path to write the artifact bytes to")
+    p_artifacts_get.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
+    p_artifacts_get.set_defaults(func=cmd_artifacts_get)
 
     # happyranch talk ...
     p_talk = sub.add_parser("talk", help="Founder↔agent conversation flow")

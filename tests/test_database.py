@@ -209,23 +209,23 @@ def test_insert_task_with_parent_round_trips(db):
     assert got.parent_task_id == "TASK-001"
 
 
-def test_insert_task_result_stores_artifact_dir(db):
+def test_insert_task_result_stores_output_dir(db):
     db.insert_task_result(
         task_id="TASK-001", agent="dev_agent", session_id="s1",
         output_summary="done", confidence_score=80,
-        artifact_dir="artifacts/TASK-001",
+        output_dir="output/TASK-001",
     )
     rows = db.get_task_results("TASK-001")
-    assert rows[0]["artifact_dir"] == "artifacts/TASK-001"
+    assert rows[0]["output_dir"] == "output/TASK-001"
 
 
-def test_insert_task_result_artifact_optional(db):
+def test_insert_task_result_output_dir_optional(db):
     db.insert_task_result(
         task_id="TASK-002", agent="dev_agent", session_id="s2",
         output_summary="done", confidence_score=80,
     )
     rows = db.get_task_results("TASK-002")
-    assert rows[0]["artifact_dir"] is None
+    assert rows[0]["output_dir"] is None
 
 
 def test_insert_task_result_persists_decision_json(db):
@@ -255,23 +255,23 @@ def test_insert_task_result_decision_json_optional(db):
     assert row["decision_json"] is None
 
 
-def test_update_task_sets_final_summary_and_artifact(db):
+def test_update_task_sets_final_summary_and_output_dir(db):
     db.insert_task(TaskRecord(id="TASK-010", brief="b"))
     db.update_task(
         "TASK-010",
         note="Produced Q1 report",
-        final_artifact_dir="artifacts/TASK-010",
+        final_output_dir="output/TASK-010",
     )
     got = db.get_task("TASK-010")
     assert got.note == "Produced Q1 report"
-    assert got.final_artifact_dir == "artifacts/TASK-010"
+    assert got.final_output_dir == "output/TASK-010"
 
 
 def test_final_fields_default_to_none(db):
     db.insert_task(TaskRecord(id="TASK-011", brief="b"))
     got = db.get_task("TASK-011")
     assert got.note is None
-    assert got.final_artifact_dir is None
+    assert got.final_output_dir is None
 
 
 def test_get_children_returns_direct_children_only(db):
@@ -298,7 +298,7 @@ def test_get_recall_payload_returns_task_with_children(db):
     db.update_task(
         "TASK-001",
         note="All done",
-        final_artifact_dir="artifacts/TASK-001",
+        final_output_dir="output/TASK-001",
     )
     payload = db.get_recall_payload("TASK-001")
     assert payload is not None
@@ -306,7 +306,7 @@ def test_get_recall_payload_returns_task_with_children(db):
     assert payload["parent_task_id"] is None
     assert payload["brief"] == "root"
     assert payload["output_summary"] == "All done"
-    assert payload["artifact_dir"] == "artifacts/TASK-001"
+    assert payload["output_dir"] == "output/TASK-001"
     assert payload["children"] == ["TASK-002"]
 
 
@@ -748,7 +748,7 @@ def test_insert_task_succeeds_on_legacy_schema_with_type_column(tmp_path):
             completed_at TEXT,
             parent_task_id TEXT,
             final_output_summary TEXT,
-            final_artifact_dir TEXT,
+            final_output_dir TEXT,
             block_kind TEXT,
             note TEXT,
             orchestration_step_count INTEGER DEFAULT 0,
@@ -790,7 +790,7 @@ def test_insert_task_succeeds_on_legacy_schema_with_type_column(tmp_path):
             duration_seconds INTEGER,
             token_count INTEGER,
             estimated_cost REAL,
-            artifact_dir TEXT,
+            output_dir TEXT,
             created_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS talks (
@@ -1234,3 +1234,87 @@ def test_update_task_active_chain_sets_and_clears(db):
 
     db.update_task_active_chain("TASK-1", None)
     assert db.get_task("TASK-1").active_chain is None
+
+
+def test_legacy_artifact_columns_renamed_and_path_strings_rewritten(tmp_path):
+    """2026-06-02 rename: an un-migrated runtime with the OLD column names
+    (`final_artifact_dir`, `artifact_dir`) and OLD `artifacts/...` path
+    strings must come out of `Database()` init with the NEW columns and
+    rewritten paths. This is the daemon-startup-self-migration path that
+    replaces the external migration script's column-rename + path rewrite.
+    """
+    import sqlite3
+
+    db_path = tmp_path / "legacy_artifacts.db"
+
+    # Build the pre-rename schema. Only the columns that the rename touches
+    # are reproduced verbatim — Database() init will add the rest via its
+    # idempotent ALTER list.
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'pending',
+            assigned_agent TEXT,
+            team TEXT NOT NULL DEFAULT 'engineering',
+            brief TEXT NOT NULL,
+            revision_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT,
+            parent_task_id TEXT,
+            final_output_summary TEXT,
+            final_artifact_dir TEXT
+        );
+        CREATE TABLE task_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            agent TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'completed',
+            output_summary TEXT,
+            decision_json TEXT,
+            confidence_score INTEGER,
+            learnings TEXT,
+            risks_flagged TEXT,
+            duration_seconds INTEGER,
+            token_count INTEGER,
+            estimated_cost REAL,
+            artifact_dir TEXT,
+            created_at TEXT NOT NULL
+        );
+    """)
+    conn.execute(
+        "INSERT INTO tasks (id, status, brief, created_at, updated_at, final_artifact_dir) "
+        "VALUES (?, 'completed', 'b', '2026-06-02T00:00:00Z', '2026-06-02T00:00:00Z', 'artifacts/TASK-1')",
+        ("TASK-1",),
+    )
+    conn.execute(
+        "INSERT INTO task_results (task_id, agent, session_id, artifact_dir, created_at) "
+        "VALUES ('TASK-1', 'dev_agent', 'sess-1', 'artifacts/TASK-1', '2026-06-02T00:00:00Z')"
+    )
+    conn.commit()
+    conn.close()
+
+    db = Database(db_path)
+
+    task_cols = {row[1] for row in db._conn.execute("PRAGMA table_info(tasks)").fetchall()}
+    result_cols = {row[1] for row in db._conn.execute("PRAGMA table_info(task_results)").fetchall()}
+
+    assert "final_output_dir" in task_cols
+    assert "final_artifact_dir" not in task_cols
+    assert "output_dir" in result_cols
+    assert "artifact_dir" not in result_cols
+
+    final_dir = db._conn.execute("SELECT final_output_dir FROM tasks WHERE id='TASK-1'").fetchone()[0]
+    output_dir = db._conn.execute("SELECT output_dir FROM task_results WHERE task_id='TASK-1'").fetchone()[0]
+    assert final_dir == "output/TASK-1"
+    assert output_dir == "output/TASK-1"
+
+    db.close()
+
+    # Second init must be a no-op (paths already rewritten, columns already renamed).
+    db2 = Database(db_path)
+    final_dir2 = db2._conn.execute("SELECT final_output_dir FROM tasks WHERE id='TASK-1'").fetchone()[0]
+    assert final_dir2 == "output/TASK-1"
+    db2.close()

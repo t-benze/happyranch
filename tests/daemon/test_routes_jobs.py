@@ -1463,7 +1463,7 @@ def test_submit_partial_task_binding_rejected(client_with_runtime):
 def test_submit_talk_path_audit_scope_is_talk_id(client_with_runtime):
     """job_submitted audit row's task_id column carries the TALK-NNN scope.
 
-    Mirrors manage-agent / asset_put audit-overloading. Lets the founder run
+    Mirrors manage-agent / artifact_put audit-overloading. Lets the founder run
     `happyranch audit TALK-NNN` and see the job submission events without
     needing a separate query path.
     """

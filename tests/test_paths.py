@@ -5,6 +5,6 @@ from pathlib import Path
 from src.orchestrator._paths import OrgPaths
 
 
-def test_assets_dir_is_under_root(tmp_path: Path) -> None:
+def test_artifacts_dir_is_under_root(tmp_path: Path) -> None:
     paths = OrgPaths(root=tmp_path)
-    assert paths.assets_dir == tmp_path / "assets"
+    assert paths.artifacts_dir == tmp_path / "artifacts"

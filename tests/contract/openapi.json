@@ -420,7 +420,7 @@
         ]
       }
     },
-    "/api/v1/orgs/{slug}/assets": {
+    "/api/v1/orgs/{slug}/artifacts": {
       "GET": {
         "params": [
           [
@@ -462,7 +462,7 @@
         ]
       }
     },
-    "/api/v1/orgs/{slug}/assets/{name}": {
+    "/api/v1/orgs/{slug}/artifacts/{name}": {
       "GET": {
         "params": [
           [
@@ -1324,7 +1324,7 @@
             "header"
           ],
           [
-            "include_artifact",
+            "include_output",
             "query"
           ],
           [

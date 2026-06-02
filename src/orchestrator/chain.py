@@ -120,8 +120,8 @@ def build_prior_leg_context(*, child_task_id: str, report: CompletionReport) -> 
     # Indent multi-line summary by two spaces for readability.
     for line in report.output_summary.splitlines() or [""]:
         lines.append(f"  {line}")
-    if report.artifact_dir:
+    if report.output_dir:
         lines.append("")
-        lines.append(f"Artifact dir: {report.artifact_dir}")
+        lines.append(f"Output dir: {report.output_dir}")
     lines.append("---")
     return "\n".join(lines)

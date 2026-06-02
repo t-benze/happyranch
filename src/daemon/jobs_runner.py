@@ -9,6 +9,7 @@ keyed by SR id, used by the daemon shutdown path to SIGTERM/SIGKILL on exit.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import shutil
 import signal
@@ -45,6 +46,49 @@ def migrate_filesystem_layout(org_root: Path | str) -> None:
     for entry in jobs_dir.iterdir():
         if entry.name.startswith("SR-"):
             entry.rename(jobs_dir / ("JOB-" + entry.name[len("SR-"):]))
+
+
+def migrate_artifacts_layout(org_root: Path | str) -> None:
+    """Idempotent on-disk migration for the 2026-06-02 assets→artifacts +
+    per-agent artifacts→output rename. Safe to re-run.
+
+    - ``<org_root>/assets/`` → ``<org_root>/artifacts/``
+    - ``<org_root>/workspaces/*/artifacts/`` → ``<org_root>/workspaces/*/output/``
+
+    Skips when source absent or destination exists. Logs each action. Without
+    this, an upgraded daemon starting against an un-migrated runtime would
+    create an empty ``artifacts/`` dir beside the populated ``assets/``,
+    stranding the old store from ``happyranch artifacts list/get``.
+    """
+    org_root = Path(org_root)
+    logger = logging.getLogger("happyranch.daemon")
+    old_shared = org_root / "assets"
+    new_shared = org_root / "artifacts"
+    if old_shared.is_dir() and not new_shared.exists():
+        shutil.move(str(old_shared), str(new_shared))
+        logger.info("migrated org-shared store: %s → %s", old_shared, new_shared)
+    elif old_shared.is_dir() and new_shared.exists():
+        logger.warning(
+            "migrate_artifacts_layout: both %s and %s exist — skipping move. "
+            "Resolve manually (merge contents or remove one) before restarting the daemon.",
+            old_shared, new_shared,
+        )
+    workspaces = org_root / "workspaces"
+    if workspaces.is_dir():
+        for ws in workspaces.iterdir():
+            if not ws.is_dir():
+                continue
+            old_per_agent = ws / "artifacts"
+            new_per_agent = ws / "output"
+            if old_per_agent.is_dir() and not new_per_agent.exists():
+                shutil.move(str(old_per_agent), str(new_per_agent))
+                logger.info("migrated per-agent dir: %s → %s", old_per_agent, new_per_agent)
+            elif old_per_agent.is_dir() and new_per_agent.exists():
+                logger.warning(
+                    "migrate_artifacts_layout: both %s and %s exist — skipping move. "
+                    "Resolve manually before restarting the daemon.",
+                    old_per_agent, new_per_agent,
+                )
 
 
 # In-flight registry; shutdown handler walks this to clean up.

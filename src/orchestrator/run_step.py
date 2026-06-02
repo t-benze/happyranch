@@ -311,7 +311,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         _complete(
             orch, task_id,
             note=decision.summary or report.output_summary,
-            artifact_dir=report.artifact_dir,
+            output_dir=report.output_dir,
         )
         _enqueue_parent_if_waiting(orch, task_id)
         _maybe_post_thread_followup(
@@ -969,7 +969,7 @@ def _is_already_terminal(orch: "Orchestrator", task_id: str) -> bool:
     )
 
 
-def _complete(orch: "Orchestrator", task_id: str, *, note: str, artifact_dir: str | None = None) -> None:
+def _complete(orch: "Orchestrator", task_id: str, *, note: str, output_dir: str | None = None) -> None:
     from datetime import datetime, timezone
     # Idempotence guard: /cancel may have already taken this task to FAILED
     # between Popen return and here. Don't resurrect a cancelled task back to
@@ -982,7 +982,7 @@ def _complete(orch: "Orchestrator", task_id: str, *, note: str, artifact_dir: st
         status=TaskStatus.COMPLETED,
         block_kind=None,
         note=note,
-        final_artifact_dir=artifact_dir,
+        final_output_dir=output_dir,
         completed_at=datetime.now(timezone.utc).isoformat(),
     )
     _log_verdict_if_delegated(orch, task_id, success=True)
@@ -1702,7 +1702,7 @@ def _maybe_post_thread_followup(
         "root_task_id": original.id,
         "status": actual_status.value,
         "final_output_summary": terminal_task.note or "",
-        "final_artifact_dir": terminal_task.final_artifact_dir,
+        "final_output_dir": terminal_task.final_output_dir,
         "cancelled": terminal_task.cancelled_at is not None,
         "revisit_chain_length": len(chain) if chain else 1,
     }

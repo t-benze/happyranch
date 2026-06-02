@@ -138,7 +138,7 @@ You may be invoked with the prompt-header line:
 This is a `task_followup` turn — the runtime injects it when a task you previously
 dispatched from this thread reaches a terminal state. The thread now contains a
 `task_completed` or `task_failed` system message with the task id, final summary,
-and artifact dir (if any).
+and output dir (if any).
 
 **What to do:** Reply with the result-bearing follow-up you owe the founder. Use
 `happyranch details TASK-NNN` to read the full task record. If there is nothing

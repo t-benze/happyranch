@@ -301,7 +301,7 @@ def test_completion_preserves_empty_risks_flagged(
     assert latest["risks_flagged"] == []
 
 
-def test_completion_persists_artifact_dir(
+def test_completion_persists_output_dir(
     tmp_home, app, daemon_state, org_state, auth_headers,
 ) -> None:
     sub = TestClient(app).post(
@@ -318,13 +318,13 @@ def test_completion_persists_artifact_dir(
             "session_id": "sess-a", "agent": "dev_agent",
             "status": "completed", "confidence": 80,
             "output_summary": "Wrote Q1 report",
-            "artifact_dir": f"artifacts/{task_id}",
+            "output_dir": f"output/{task_id}",
         },
         headers=auth_headers,
     )
     assert r.status_code == 200
     rows = org_state.db.get_task_results(task_id)
-    assert rows[-1]["artifact_dir"] == f"artifacts/{task_id}"
+    assert rows[-1]["output_dir"] == f"output/{task_id}"
 
 
 def test_completion_persists_decision_json_for_engineering_head(
@@ -526,14 +526,14 @@ def test_recall_returns_task_payload(tmp_home, app, daemon_state, org_state, aut
         "TASK-001",
         status=TaskStatus.COMPLETED,
         note="Report delivered",
-        final_artifact_dir="artifacts/TASK-001",
+        final_output_dir="output/TASK-001",
     )
     r = TestClient(app).get("/api/v1/orgs/alpha/tasks/TASK-001/recall", headers=auth_headers)
     assert r.status_code == 200
     body = r.json()
     assert body["task_id"] == "TASK-001"
     assert body["output_summary"] == "Report delivered"
-    assert body["artifact_dir"] == "artifacts/TASK-001"
+    assert body["output_dir"] == "output/TASK-001"
     assert body["children"] == []
 
 
@@ -593,40 +593,40 @@ def test_recall_tree_includes_descendants(
     assert body["children"][0]["children"] == []
 
 
-def test_recall_include_artifact_reads_files(
+def test_recall_include_output_reads_files(
     tmp_home, app, daemon_state, org_state, auth_headers,
 ) -> None:
     from src.models import TaskRecord
     ws = org_state.root / "workspaces" / "dev_agent"
-    artifact = ws / "artifacts" / "TASK-001"
-    artifact.mkdir(parents=True)
-    (artifact / "report.md").write_text("# Q1 report\n\nAll good.")
+    output = ws / "output" / "TASK-001"
+    output.mkdir(parents=True)
+    (output / "report.md").write_text("# Q1 report\n\nAll good.")
     org_state.db.insert_task(TaskRecord(
         id="TASK-001", brief="b",
         assigned_agent="dev_agent",
     ))
     org_state.db.update_task(
-        "TASK-001", final_artifact_dir="artifacts/TASK-001",
+        "TASK-001", final_output_dir="output/TASK-001",
     )
     r = TestClient(app).get(
         "/api/v1/orgs/alpha/tasks/TASK-001/recall",
-        params={"include_artifact": "true"},
+        params={"include_output": "true"},
         headers=auth_headers,
     )
     assert r.status_code == 200
     body = r.json()
-    assert body["artifact"] == {
+    assert body["output"] == {
         "files": [{"path": "report.md", "content": "# Q1 report\n\nAll good."}],
         "truncated": False,
     }
 
 
-def test_recall_rejects_absolute_artifact_path(
+def test_recall_rejects_absolute_output_path(
     tmp_home, app, daemon_state, org_state, auth_headers,
 ) -> None:
-    """artifact_dir comes from an agent-supplied completion payload. A buggy or
+    """output_dir comes from an agent-supplied completion payload. A buggy or
     malicious agent that stores an absolute path must not be able to read
-    arbitrary files on the host via /recall?include_artifact=true."""
+    arbitrary files on the host via /recall?include_output=true."""
     from src.models import TaskRecord
     secret = tmp_home / "secret.txt"
     secret.write_text("DO NOT LEAK")
@@ -635,29 +635,29 @@ def test_recall_rejects_absolute_artifact_path(
         assigned_agent="dev_agent",
     ))
     org_state.db.update_task(
-        "TASK-001", final_artifact_dir=str(tmp_home),
+        "TASK-001", final_output_dir=str(tmp_home),
     )
     r = TestClient(app).get(
         "/api/v1/orgs/alpha/tasks/TASK-001/recall",
-        params={"include_artifact": "true"},
+        params={"include_output": "true"},
         headers=auth_headers,
     )
     assert r.status_code == 200
     body = r.json()
     # Must not expose files from outside the assigned agent's workspace.
-    # Either the endpoint returns no artifact payload at all, or an empty one —
+    # Either the endpoint returns no output payload at all, or an empty one —
     # but it must never contain secret.txt.
-    artifact = body.get("artifact")
-    contents = "" if not artifact else "".join(
-        f.get("content", "") for f in artifact.get("files", [])
+    output = body.get("output")
+    contents = "" if not output else "".join(
+        f.get("content", "") for f in output.get("files", [])
     )
     assert "DO NOT LEAK" not in contents
 
 
-def test_recall_rejects_parent_traversal_artifact_path(
+def test_recall_rejects_parent_traversal_output_path(
     tmp_home, app, daemon_state, org_state, auth_headers,
 ) -> None:
-    """A `..` in artifact_dir must not let an agent read another agent's
+    """A `..` in output_dir must not let an agent read another agent's
     workspace."""
     from src.models import TaskRecord
     workspaces = org_state.root / "workspaces"
@@ -671,18 +671,18 @@ def test_recall_rejects_parent_traversal_artifact_path(
         assigned_agent="dev_agent",
     ))
     org_state.db.update_task(
-        "TASK-001", final_artifact_dir="../other_agent/secrets",
+        "TASK-001", final_output_dir="../other_agent/secrets",
     )
     r = TestClient(app).get(
         "/api/v1/orgs/alpha/tasks/TASK-001/recall",
-        params={"include_artifact": "true"},
+        params={"include_output": "true"},
         headers=auth_headers,
     )
     assert r.status_code == 200
     body = r.json()
-    artifact = body.get("artifact")
-    contents = "" if not artifact else "".join(
-        f.get("content", "") for f in artifact.get("files", [])
+    output = body.get("output")
+    contents = "" if not output else "".join(
+        f.get("content", "") for f in output.get("files", [])
     )
     assert "SUPERSECRET" not in contents
 

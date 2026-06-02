@@ -144,7 +144,7 @@ def test_thread_store_renders_task_completed_system_message():
             "original_task_id": "TASK-007",
             "status": "completed",
             "final_output_summary": "PDF uploaded to Drive",
-            "final_artifact_dir": None,
+            "final_output_dir": None,
             "cancelled": False,
             "revisit_chain_length": 1,
         },
@@ -166,7 +166,7 @@ def test_thread_store_renders_task_failed_with_cancelled_and_revisits():
             "original_task_id": "TASK-031",
             "status": "failed",
             "final_output_summary": "",
-            "final_artifact_dir": None,
+            "final_output_dir": None,
             "cancelled": True,
             "revisit_chain_length": 3,
         },
@@ -242,7 +242,7 @@ def test_thread_store_task_completed_blockquote_wraps_all_lines():
             "task_id": "TASK-7", "original_task_id": "TASK-7",
             "status": "completed",
             "final_output_summary": "PDF uploaded",
-            "final_artifact_dir": "/reports/TASK-7/",
+            "final_output_dir": "/reports/TASK-7/",
             "cancelled": False, "revisit_chain_length": 1,
         },
         created_at=datetime(2026, 5, 28, tzinfo=timezone.utc),
@@ -665,7 +665,7 @@ def test_completed_thread_dispatched_task_fires_followup_via_complete(orch_with_
     orch = orch_with_db
     _seed_dispatched_root(orch)
     from src.orchestrator.run_step import _complete, _maybe_post_thread_followup
-    _complete(orch, "TASK-1", note="done", artifact_dir=None)
+    _complete(orch, "TASK-1", note="done", output_dir=None)
     _maybe_post_thread_followup(orch, "TASK-1",
                                 status=TaskStatus.COMPLETED, auto_revisit_spawned=False)
     invs = orch._db.list_thread_invocations("THR-1")

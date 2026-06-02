@@ -119,19 +119,20 @@ def test_task_record_parent_defaults_to_none():
     assert t.parent_task_id is None
 
 
-def test_completion_report_accepts_artifact_dir():
+def test_completion_report_accepts_output_dir():
     r = CompletionReport(
-        task_id="TASK-001", agent="dev_agent", status="completed",
-        confidence=80, output_summary="done", artifact_dir="artifacts/TASK-001",
+        task_id="T", agent="dev_agent", status="completed",
+        confidence=80, output_summary="done", output_dir="output/TASK-001",
     )
-    assert r.artifact_dir == "artifacts/TASK-001"
+    assert r.output_dir == "output/TASK-001"
 
 
-def test_completion_report_artifact_defaults_to_none():
+def test_completion_report_output_dir_defaults_to_none():
     r = CompletionReport(
-        task_id="T", agent="a", status="completed", confidence=0, output_summary="",
+        task_id="T", agent="dev_agent", status="completed",
+        confidence=80, output_summary="done",
     )
-    assert r.artifact_dir is None
+    assert r.output_dir is None
 
 
 def test_task_status_has_five_values():

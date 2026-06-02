@@ -210,7 +210,7 @@ class Database:
                 completed_at TEXT,
                 parent_task_id TEXT,
                 final_output_summary TEXT,
-                final_artifact_dir TEXT
+                final_output_dir TEXT
             );
 
             CREATE TABLE IF NOT EXISTS audit_log (
@@ -236,7 +236,7 @@ class Database:
                 duration_seconds INTEGER,
                 token_count INTEGER,
                 estimated_cost REAL,
-                artifact_dir TEXT,
+                output_dir TEXT,
                 created_at TEXT NOT NULL
             );
 
@@ -415,10 +415,11 @@ class Database:
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id)"
         )
+        # NOTE: the for-loop below contains DDL (RENAME COLUMN) that has no
+        # explicit commit; the commit() following the UPDATE team='engineering'
+        # block durably persists those DDLs. Don't insert returning code between.
         for ddl in (
             "ALTER TABLE tasks ADD COLUMN final_output_summary TEXT",
-            "ALTER TABLE tasks ADD COLUMN final_artifact_dir TEXT",
-            "ALTER TABLE task_results ADD COLUMN artifact_dir TEXT",
             # Manager-only structured decision payload (serialized NextStep
             # JSON). NULL for worker rows. Replaces the prose-in-output_summary
             # double-encoding contract — see TASK-071 post-mortem.
@@ -426,6 +427,11 @@ class Database:
             # crew → team rename (SQLite >= 3.25). Idempotent: fails on
             # DBs where the column is already `team` or already renamed.
             "ALTER TABLE tasks RENAME COLUMN crew TO team",
+            # Per-agent output-dir rename (2026-06-02). Idempotent: fails on DBs
+            # where the column is already `final_output_dir`/`output_dir` (fresh or
+            # already-renamed). See docs/superpowers/plans/2026-06-01-rename-assets-to-artifacts.md.
+            "ALTER TABLE tasks RENAME COLUMN final_artifact_dir TO final_output_dir",
+            "ALTER TABLE task_results RENAME COLUMN artifact_dir TO output_dir",
             # Talk-originated jobs (mirrors tasks.dispatched_from_talk_id).
             # When set, the job was submitted via the talk-path; jobs.task_id
             # then holds the TALK-NNN scope id (consistent with audit_log's
@@ -441,6 +447,22 @@ class Database:
         try:
             self._conn.execute(
                 "UPDATE tasks SET team='engineering' WHERE team='product_engineering'"
+            )
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass
+
+        # Path-string rewrite: stored relative paths under 'artifacts/' point at the
+        # pre-rename per-agent dir. Rewrite to 'output/' so recall resolves correctly.
+        # Idempotent: re-running matches no rows once paths have been rewritten.
+        try:
+            self._conn.execute(
+                "UPDATE tasks SET final_output_dir = 'output/' || substr(final_output_dir, length('artifacts/') + 1) "
+                "WHERE final_output_dir LIKE 'artifacts/%'"
+            )
+            self._conn.execute(
+                "UPDATE task_results SET output_dir = 'output/' || substr(output_dir, length('artifacts/') + 1) "
+                "WHERE output_dir LIKE 'artifacts/%'"
             )
             self._conn.commit()
         except sqlite3.OperationalError:
@@ -689,7 +711,7 @@ class Database:
             active_chain=row["active_chain"],
             note=row["note"],
             orchestration_step_count=row["orchestration_step_count"] or 0,
-            final_artifact_dir=row["final_artifact_dir"],
+            final_output_dir=row["final_output_dir"],
             cancelled_at=row["cancelled_at"],
             last_heartbeat=row["last_heartbeat"],
             session_timeout_seconds=row["session_timeout_seconds"],
@@ -757,7 +779,7 @@ class Database:
                 blocked_on_job_ids=row["blocked_on_job_ids"],
                 note=row["note"],
                 orchestration_step_count=row["orchestration_step_count"] or 0,
-                final_artifact_dir=row["final_artifact_dir"],
+                final_output_dir=row["final_output_dir"],
                 cancelled_at=row["cancelled_at"],
                 last_heartbeat=row["last_heartbeat"],
                 session_timeout_seconds=row["session_timeout_seconds"],
@@ -866,7 +888,7 @@ class Database:
             "created_at": created_at,
             "completed_at": completed_at,
             "output_summary": task.note,
-            "artifact_dir": task.final_artifact_dir,
+            "output_dir": task.final_output_dir,
             "children": self.get_children(task.id),
         }
 
@@ -904,7 +926,7 @@ class Database:
                 blocked_on_job_ids=row["blocked_on_job_ids"],
                 note=row["note"],
                 orchestration_step_count=row["orchestration_step_count"] or 0,
-                final_artifact_dir=row["final_artifact_dir"],
+                final_output_dir=row["final_output_dir"],
                 cancelled_at=row["cancelled_at"],
                 last_heartbeat=row["last_heartbeat"],
                 session_timeout_seconds=row["session_timeout_seconds"],
@@ -917,7 +939,7 @@ class Database:
         allowed = {
             "status", "assigned_agent", "revision_count", "completed_at",
             "block_kind", "blocked_on_job_ids", "note", "orchestration_step_count",
-            "final_artifact_dir", "cancelled_at", "last_heartbeat",
+            "final_output_dir", "cancelled_at", "last_heartbeat",
         }
         # NOTE: filter on membership, not on None-ness — block_kind must be
         # resettable to NULL when a task unblocks.
@@ -1265,7 +1287,7 @@ class Database:
         duration_seconds: int | None = None,
         token_count: int | None = None,
         estimated_cost: float | None = None,
-        artifact_dir: str | None = None,
+        output_dir: str | None = None,
         decision_json: str | None = None,
         waiting_on_job_ids: list[str] | None = None,
         verdict: str | None = None,
@@ -1274,7 +1296,7 @@ class Database:
             """INSERT INTO task_results
                (task_id, agent, session_id, status, output_summary, decision_json,
                 confidence_score, learnings, risks_flagged, duration_seconds,
-                token_count, estimated_cost, artifact_dir, waiting_on_job_ids,
+                token_count, estimated_cost, output_dir, waiting_on_job_ids,
                 verdict, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
@@ -1290,7 +1312,7 @@ class Database:
                 duration_seconds,
                 token_count,
                 estimated_cost,
-                artifact_dir,
+                output_dir,
                 json.dumps(waiting_on_job_ids) if waiting_on_job_ids is not None else None,
                 verdict,
                 datetime.now(timezone.utc).isoformat(),
@@ -1380,7 +1402,7 @@ class Database:
             confidence=row["confidence_score"] or 0,
             output_summary=row["output_summary"] or "",
             verdict=row["verdict"] if "verdict" in keys else None,
-            artifact_dir=row["artifact_dir"] if "artifact_dir" in keys else None,
+            output_dir=row["output_dir"] if "output_dir" in keys else None,
             risks_flagged=(
                 json.loads(row["risks_flagged"])
                 if row["risks_flagged"]
