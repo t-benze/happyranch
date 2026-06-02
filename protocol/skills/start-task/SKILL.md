@@ -24,14 +24,14 @@ Parameters:
 
 2. **Consult memory.** Before planning:
 
-   1. Read `task_history.md` in your workspace root. It lists your recent tasks with briefs, outcomes, and (when present) artifact paths.
+   1. Read `task_history.md` in your workspace root. It lists your recent tasks with briefs, outcomes, and (when present) output dir paths.
    2. **Consult per-agent learnings.** If `learnings/_index.md` exists in your workspace, scan it for entries relevant to the current brief and fetch full bodies with `happyranch learning get --org {ORG_SLUG} --agent <your_agent_name> <LRN-NNN-or-slug>`. Pre-migration workspaces have a flat `learnings.md` inlined into your bootstrap doc instead.
    3. If the current brief references prior work — phrases like "follow up on", "continue", "the report from last week", a specific date, or an explicit `TASK-xxx` — identify the matching entry and fetch the details:
 
       ```bash
       happyranch recall --org {ORG_SLUG} <task_id>                       # brief + final summary
       happyranch recall --org {ORG_SLUG} <task_id> --tree                # include the full subtree of child tasks
-      happyranch recall --org {ORG_SLUG} <task_id> --fetch-artifact      # inline artifact bodies (capped at 200KB)
+      happyranch recall --org {ORG_SLUG} <task_id> --fetch-output      # inline output file bodies (capped at 200KB)
       ```
    4. If the brief does not reference prior work, skip step 3. Do not pull history speculatively.
 
@@ -60,7 +60,7 @@ Parameters:
 
 4. **Plan and execute.** Treat `role_guidance` as your primary instruction when present; otherwise treat `brief` as the full instruction. If repo writes are needed, invoke the **make-worktree** skill first.
 
-   If the task produces a standalone document (report, plan, analysis), write its files under `artifacts/<task_id>/` in your workspace root — **not** inside any repo or worktree. Capture the relative path (e.g. `artifacts/TASK-001`) and include it as `artifact_dir` in your completion payload so future sessions can retrieve it via `happyranch recall --org {ORG_SLUG} <task_id>`.
+   If the task produces a standalone document (report, plan, analysis), write its files under `output/<task_id>/` in your workspace root — **not** inside any repo or worktree. Capture the relative path (e.g. `output/TASK-001`) and include it as `output_dir` in your completion payload so future sessions can retrieve it via `happyranch recall --org {ORG_SLUG} <task_id>`.
 
    If during the task you realize you need async input from another agent
    (and you're not yet blocked), consult `protocol/skills/thread/SKILL.md`
@@ -136,13 +136,13 @@ Parameters:
      "risks": ["<concern>"],
      "dependencies": ["<assumption>"],
      "reviewer_focus": ["<where to look hardest>"],
-     "artifact_dir": "artifacts/<task_id>"
+     "output_dir": "output/<task_id>"
    }
    ```
 
    For a blocker, set `"status": "blocked"`, `"confidence": 0`, and put the
    reason in `summary`. Optional keys (`risks`, `dependencies`,
-   `reviewer_focus`, `confidence`, `artifact_dir`) may be omitted.
+   `reviewer_focus`, `confidence`, `output_dir`) may be omitted.
 
    - If your role is to issue a verdict (code review, QA, design review, etc.), include `"verdict": "<value>"` in your payload. Free string; your team's workflow KB entry documents the vocabulary. Optional — workers without verdicts simply omit the field.
 

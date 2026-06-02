@@ -33,7 +33,7 @@ Contribute when any is true:
 ## What does not belong
 
 - **Agent-private operational learnings** → `learnings/` in your workspace.
-- **Task progress notes or drafts** → `artifacts/<task_id>/`.
+- **Task progress notes or drafts** → `output/<task_id>/`.
 - **Mirrors of `protocol/` docs.** The authoritative copy is in `protocol/`;
   the KB complements, never duplicates.
 - **Fast-changing state** (prices, current partner list, promotions).

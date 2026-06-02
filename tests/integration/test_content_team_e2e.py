@@ -153,8 +153,8 @@ def test_content_team_pass_path_completes(
     r = httpx.get(f"{base}/tasks/{task_id}", headers=_auth_headers(), timeout=5.0)
     body = r.json()
     assert body["task"]["status"] == "completed"
-    # Note: artifact assertion is skipped — fake_claude.sh does not create artifact
-    # files on disk, so happyranch recall --fetch-artifact would 404. The artifact
+    # Note: output_dir assertion is skipped — fake_claude.sh does not create output
+    # files on disk, so happyranch recall --fetch-output would 404. The output_dir
     # creation contract is verified by the unit tests (which control the full
-    # CompletionReport). Tracking concern: if a later task adds artifact-writing
+    # CompletionReport). Tracking concern: if a later task adds output-writing
     # to fake_claude.sh, add an happyranch recall assertion here.

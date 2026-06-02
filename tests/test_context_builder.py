@@ -311,5 +311,5 @@ def test_generated_claude_md_contains_task_recall_section(tmp_path):
     assert "## Task Recall" in body
     assert "happyranch recall" in body
     assert "--tree" in body
-    assert "--fetch-artifact" in body
+    assert "--fetch-output" in body
     assert "task_history.md" in body
