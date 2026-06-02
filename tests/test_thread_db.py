@@ -349,3 +349,30 @@ def test_thread_session_defaults_and_roundtrip(tmp_path):
         "THR-001", "alice", agent_session_id=None, last_resumed_seq=0
     )
     assert db.get_thread_session("THR-001", "alice") == (None, 0)
+
+
+def test_grouped_invocations_include_started_at(tmp_path):
+    from src.infrastructure.database import Database
+    from src.models import ThreadRecord, ThreadInvocationPurpose, ThreadMessageKind
+
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+
+    grouped = db.list_invocations_for_thread_grouped_by_seq("THR-001")
+    entry = grouped[1][0]
+    assert entry["agent_name"] == "alice"
+    assert entry["status"] == "pending"
+    assert entry["started_at"] is None        # not started yet
+
+    db.stamp_invocation_started(inv.invocation_token, session_id=None)
+    grouped2 = db.list_invocations_for_thread_grouped_by_seq("THR-001")
+    assert grouped2[1][0]["started_at"] is not None
