@@ -69,10 +69,10 @@ scripts/happyranch details TASK-001 --full   # untruncated per-step output summa
 scripts/happyranch tasks
 scripts/happyranch tasks --limit 50
 
-# Recall — fetch a past task's brief, final summary, and (optionally) artifacts
+# Recall — fetch a past task's brief, final summary, and (optionally) output files
 scripts/happyranch recall TASK-001                              # brief + final summary
 scripts/happyranch recall TASK-001 --tree                       # include the full subtree of child tasks
-scripts/happyranch recall TASK-001 --fetch-artifact             # inline artifact file contents (capped at 200KB)
+scripts/happyranch recall TASK-001 --fetch-output               # inline output file bodies (capped at ~200KB)
 
 # Revisit — founder-initiated: spawn a NEW root task that inherits the brief of a terminal predecessor.
 # TTY-gated; no --yes bypass; prompts for confirmation before POSTing.
@@ -144,22 +144,22 @@ scripts/happyranch kb reindex
 
 `kb add` / `kb update` payload files use YAML frontmatter (`slug`, `title`, `type`, `topic`, optional `tags`, `source_task`) followed by a markdown body. There is no separate `kb precedent` subcommand any longer — founder rulings flow through plain `kb add` with `source_task: <task-id>` in the frontmatter so the link back to the escalation is preserved.
 
-## Shared Assets
+## Shared Artifacts
 
-Org-wide blob store at `<runtime>/orgs/<slug>/assets/`. Flat directory (no nesting in v1) for persistent artifacts produced by agents — reports, exports, screenshots, PDFs. Files survive across tasks and are visible to every agent in the org.
+Org-wide blob store at `<runtime>/orgs/<slug>/artifacts/`. Flat directory (no nesting in v1) for persistent artifacts produced by agents — reports, exports, screenshots, PDFs. Files survive across tasks and are visible to every agent in the org.
 
 ```bash
-scripts/happyranch assets put <local-path> --agent <you> [--name <name>] [--org <slug>]
-scripts/happyranch assets list [--org <slug>]
-scripts/happyranch assets get <name> --output <local-path> [--org <slug>]
+scripts/happyranch artifacts put <local-path> --agent <you> [--name <name>] [--org <slug>]
+scripts/happyranch artifacts list [--org <slug>]
+scripts/happyranch artifacts get <name> --output <local-path> [--org <slug>]
 ```
 
 - Names match `[A-Za-z0-9._-]+`, max 200 chars; slash-bearing names rejected.
 - Size cap: 10 MB per file. Larger uploads return HTTP 413.
 - `put` is idempotent (overwrites by default). No version history.
-- `put` is audited (`action="asset_put"`); `list` and `get` are not.
+- `put` is audited (`action="artifact_put"`); `list` and `get` are not.
 - All access goes through `happyranch` — direct filesystem writes don't work uniformly across Claude/Codex/Opencode executors (sandboxes block writes outside the agent workspace).
-- Not the KB. KB is for typed knowledge (slug + frontmatter); assets are opaque blobs.
+- Not the KB. KB is for typed knowledge (slug + frontmatter); artifacts are opaque blobs.
 
 ## Founder Escalation Resolution
 
@@ -332,7 +332,7 @@ scripts/happyranch tail TASK-001                                # attach to live
 ```bash
 scripts/happyranch recall TASK-012                              # brief + completion summary
 scripts/happyranch recall TASK-012 --tree                       # include the full subtree of child tasks
-scripts/happyranch recall TASK-012 --fetch-artifact             # inline all artifact bodies (capped at 200KB)
+scripts/happyranch recall TASK-012 --fetch-output               # inline output file bodies (capped at ~200KB)
 ```
 
 **Diagnose a failed task**

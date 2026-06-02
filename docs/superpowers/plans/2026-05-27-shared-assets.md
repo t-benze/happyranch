@@ -1,5 +1,10 @@
 # Shared Assets Implementation Plan
 
+> **2026-06-02 note:** This feature was renamed to "artifacts" — see
+> `docs/superpowers/plans/2026-06-01-rename-assets-to-artifacts.md`. The
+> design below is otherwise current; substitute `assets` → `artifacts`,
+> `AssetStore` → `ArtifactStore`, `asset_put` → `artifact_put` when reading.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add an org-shared `assets/` directory where any agent can deposit persistent artifacts (reports, exports, screenshots, PDFs) that survive across tasks and are visible to every other agent in the same org.

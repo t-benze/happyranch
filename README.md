@@ -135,7 +135,7 @@ Every per-org command takes `--org <slug>`; container-level commands do not.
 | `happyranch init-agent --org <slug> [name]` | Initialize agent workspaces (all or one) |
 | `happyranch audit --org <slug> TASK-ID [--json]` | View audit log (or filter by `--agent`, `--action`, `--since`, `--limit`) |
 | `happyranch tokens --org <slug> [--task-id X --agent Y --since DATE --limit N]` | Per-session token usage; `--by-agent` / `--by-task` for rollups |
-| `happyranch recall --org <slug> TASK-ID [--tree] [--fetch-artifact <relpath>]` | Fetch task brief + artifact tree/content |
+| `happyranch recall --org <slug> TASK-ID [--tree] [--fetch-output]` | Fetch task brief, output tree, and (optionally) output file bodies |
 
 The CLI does not take a runtime path — every command operates on whichever container is currently active. Use `happyranch use` to switch.
 

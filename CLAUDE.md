@@ -73,7 +73,7 @@ In the `protocol/` folder:
     |-- talks/                         # TALK-NNN.md
     |-- threads/                       # THR-NNN.md
     |-- jobs/                          # JOB-NNN.{out,err,script} (full captured output + frozen script body)
-    `-- assets/                        # org-shared blob store (put/list/get via `happyranch assets`)
+    `-- artifacts/                     # org-shared blob store (put/list/get via `happyranch artifacts`)
 ```
 
 HTTP routes: per-org under `/api/v1/orgs/<slug>/...`; container-level under `/api/v1/runtime` and `/api/v1/orgs`. Only `schema_version: 2` is supported — older single-org (v1) and DB-backed enrollment (v0) runtimes are rejected at startup with a re-init hint.
@@ -196,7 +196,7 @@ Example decision payload:
 - **Auto-advances do NOT consume orchestration steps.** Declaring a chain costs 1 step; the final-leg wake costs 1 step. A clean 3-leg workflow costs 2 steps instead of 4 (one manager wake per leg).
 - **Final-leg match still wakes the manager.** Chains never auto-`done`; the manager reviews the outcome and decides. Don't add a chain-terminal auto-done shortcut without re-litigating this in the spec.
 - **Mismatch or blocked child clears `active_chain` and wakes the manager.** `compute_advance_action` returns `kind="wake"` with `reason ∈ {"child_blocked", "verdict_mismatch", "chain_complete"}`. The orchestrator logs a `chain_auto_advance` or `chain_wake_manager` audit row accordingly.
-- **Non-first legs receive a "Prior leg context" suffix.** `build_prior_leg_context` appends the upstream worker's summary, verdict, confidence, and `artifact_dir` to the leg's manager-authored brief. Don't pre-embed upstream context in the authored prompt.
+- **Non-first legs receive a "Prior leg context" suffix.** `build_prior_leg_context` appends the upstream worker's summary, verdict, confidence, and `output_dir` to the leg's manager-authored brief. Don't pre-embed upstream context in the authored prompt.
 - **Chain state is serialized JSON on `tasks.active_chain`.** `ChainState` holds `step_index`, `first_leg_expect_verdict`, `legs`, and `step_audit_id` (the audit row that spawned the chain, used for crash recovery). Written before the child is enqueued so a crash leaves the chain visible.
 - **`active_chain` is exposed in the task detail response.** `GET /api/v1/orgs/{slug}/tasks/{id}` returns a `parsed_active_chain` field (`ChainState` deserialized, or null). The web UI renders a "Current workflow chain" strip from it.
 
@@ -248,7 +248,7 @@ happyranch web [--no-open]        # open the SPA in the default browser
 
 Slug resolution for per-org commands: explicit `--org <slug>` > `HAPPYRANCH_ORG_SLUG` env > auto-infer (only when the container has exactly one org) > error. Container-level commands (`happyranch init`, `happyranch use`, `happyranch orgs ...`) take no `--org`.
 
-**Full founder-facing CLI** — tasks, agents, KB, threads, talks, audit, assets, runtime, migrations — is documented in `skills/happyranch/SKILL.md` (symlinked at `~/.claude/skills/happyranch`).
+**Full founder-facing CLI** — tasks, agents, KB, threads, talks, audit, artifacts, runtime, migrations — is documented in `skills/happyranch/SKILL.md` (symlinked at `~/.claude/skills/happyranch`).
 
 **Agent-side callbacks** (invoked by skills inside agent sessions; do NOT invoke by hand — they falsify audit data):
 
@@ -274,18 +274,18 @@ Per-agent under `<runtime>/orgs/<slug>/workspaces/<agent>/learnings/`, one `LRN-
 - **Cross-refs validated at write time** — `related_to` / `supersedes` against existing IDs (unknown → 400); self-refs rejected. `supersedes` is the canonical evolve-a-rule primitive.
 - **Promotion to KB is one-way** — `happyranch learning promote <LRN-NNN> --kb-slug <slug>` replaces the body with a 2-line pointer stub and locks the entry.
 
-## Shared Assets (org-wide blob store)
+## Shared Artifacts (org-wide blob store)
 
-Per-org at `<runtime>/orgs/<slug>/assets/`. Flat directory of opaque files —
+Per-org at `<runtime>/orgs/<slug>/artifacts/`. Flat directory of opaque files —
 persistent artifacts produced by any agent and visible to every other agent
-in the same org. Implementation: `src/infrastructure/asset_store.py` +
-`src/daemon/routes/assets.py`. CLI: `happyranch assets {put,list,get}`.
+in the same org. Implementation: `src/infrastructure/artifact_store.py` +
+`src/daemon/routes/artifacts.py`. CLI: `happyranch artifacts {put,list,get}`.
 
 **Load-bearing invariants** (full catalog: plan §Non-obvious):
 
 - **CLI-only access by design** — Codex (`workspace-write` sandbox) and Opencode (bash deny-by-default) block direct writes outside the agent's workspace; only the `happyranch` baseline allow-rule works across all three executors. Don't add a "just `cat`/`cp` it" agent skill.
-- **Audit `task_id` overload** — `asset_put` writes `f"asset:{name}"` (the `asset:` prefix is mandatory) so asset names like `TASK-123` or `TALK-7` can't pollute the task/talk scopes consumed by `Database.get_audit_logs(task_id)`. Reads (`list`/`get`) are unaudited by design.
-- **Not the KB** — assets are blobs. KB is for typed/structured knowledge (frontmatter, slug, type, topic). Don't dump markdown content into `assets/` that should be a KB entry.
+- **Audit `task_id` overload** — `artifact_put` writes `f"artifact:{name}"` (the `artifact:` prefix is mandatory) so artifact names like `TASK-123` or `TALK-7` can't pollute the task/talk scopes consumed by `Database.get_audit_logs(task_id)`. Historical `asset_put` rows (written before the 2026-06-01 rename) remain in the DB with `action="asset_put"` and `task_id="asset:<name>"` — these are forward-only and are not migrated. Reads (`list`/`get`) are unaudited by design.
+- **Not the KB** — artifacts are blobs. KB is for typed/structured knowledge (frontmatter, slug, type, topic). Don't dump markdown content into `artifacts/` that should be a KB entry.
 - **Dir created at fresh-org init AND idempotently at lifespan startup** for orgs that pre-date the feature. Both code paths are required.
 
 ## Revisit (founder recovery)
@@ -361,7 +361,7 @@ Routes under `/api/v1/orgs/{slug}/jobs/`: `POST /submit` (agent callback; auth v
 
 - **Agent identity is derived from auth context, never echoed from the payload's `agent` field.** Source: `task.assigned_agent` (task path) or `talk.agent_name` (talk path). Prevents mis-attribution.
 - **Two mutually-exclusive auth paths** — (task_id + session_id) XOR talk_id, enforced by `SubmitBody._exactly_one_auth_path` and inline in dual-router endpoints (`/{id}`, `/tail`, `/stop`, `/wait`) via `_enforce_session_or_bearer`. Mirrors `manage-agent` / `threads.compose`.
-- **`task_id` column is overloaded as scope id** — TASK-NNN on task path, TALK-NNN on talk path. Same overload as `audit_log.task_id` and `asset_put`'s `f"asset:{name}"`. The `submitted_from_talk_id` column is the explicit flag; downstream code passes `record.task_id` through without branching.
+- **`task_id` column is overloaded as scope id** — TASK-NNN on task path, TALK-NNN on talk path. Same overload as `audit_log.task_id` and `artifact_put`'s `f"artifact:{name}"`. The `submitted_from_talk_id` column is the explicit flag; downstream code passes `record.task_id` through without branching.
 - **Shutdown awaits runner tasks** — `terminate_all_inflight` SIGTERMs then `asyncio.wait_for(gather(*runners), timeout=5)` so rows reach terminal before per-org DBs close. `recover_orphaned_running_jobs` at lifespan startup is the complementary safety net.
 - **Output capture is two-layer** — full streams to disk (no v1 size cap), 65 KB head per stream mirrored to `stdout_head`/`stderr_head` DB columns for fast rendering. `GET /output` reads disk; the drawer + audit deep-link show DB head.
 - **`review_required` and `persistent` are honor-system on submit.** The daemon does not introspect the script against `allow_rules`. Misclassification is recoverable via founder stop + audit + talk + learning. Don't add daemon-side validation without re-litigating the design tradeoff in the spec.
