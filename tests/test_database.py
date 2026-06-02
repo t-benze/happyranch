@@ -219,7 +219,7 @@ def test_insert_task_result_stores_output_dir(db):
     assert rows[0]["output_dir"] == "output/TASK-001"
 
 
-def test_insert_task_result_artifact_optional(db):
+def test_insert_task_result_output_dir_optional(db):
     db.insert_task_result(
         task_id="TASK-002", agent="dev_agent", session_id="s2",
         output_summary="done", confidence_score=80,
@@ -255,7 +255,7 @@ def test_insert_task_result_decision_json_optional(db):
     assert row["decision_json"] is None
 
 
-def test_update_task_sets_final_summary_and_artifact(db):
+def test_update_task_sets_final_summary_and_output_dir(db):
     db.insert_task(TaskRecord(id="TASK-010", brief="b"))
     db.update_task(
         "TASK-010",

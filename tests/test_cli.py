@@ -460,7 +460,7 @@ def test_completion_payload_from_file_accepts_output_dir(tmp_path):
     assert body["output_dir"] == "output/TASK-001"
 
 
-def test_completion_payload_from_file_artifact_optional(tmp_path):
+def test_completion_payload_from_file_output_dir_optional(tmp_path):
     import json as _json
     from src.cli import _completion_payload_from_file
 
