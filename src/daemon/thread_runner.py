@@ -138,6 +138,44 @@ def build_thread_prompt(
     )
 
 
+def build_thread_delta_prompt(
+    *,
+    thread: ThreadRecord,
+    new_messages: list[ThreadMessage],
+    invocation_token: str,
+    invoked_agent: str,
+    purpose: str,
+    triggering_seq: int,
+    triggering_message: "ThreadMessage | None",
+) -> str:
+    """Turn 2+ prompt for a resumed agent session (issue #53).
+
+    The full transcript, participant roster, and workspace bootstrap doc are
+    already in the resumed session's memory — we ship only the messages newer
+    than the stored watermark plus the per-turn doctrine, purpose note, and
+    single-use invocation token. ``new_messages`` is the delta the caller
+    computed (seq > last_resumed_seq).
+    """
+    note = _purpose_note(
+        purpose, triggering_seq, invoked_agent,
+        triggering_message=triggering_message,
+    )
+    doctrine = _decline_by_default_doctrine() if purpose == "reply" else ""
+    delta = "\n".join(_render_message(m) for m in new_messages)
+    return (
+        f"{doctrine}"
+        f"Continuing thread {thread.id}: \"{thread.subject}\". "
+        f"New activity since your last turn follows.\n\n"
+        f"---\n{delta}\n\n"
+        f"You have been invoked because:\n  {note}\n\n"
+        f"Your invocation_token for this turn is: {invocation_token}\n"
+        f"Include this token in every callback payload (reply, decline,\n"
+        f"dispatch). It authorizes this single turn and is single-use for the\n"
+        f"terminal callback (reply/decline).\n\n"
+        f"Consult `protocol/skills/thread/SKILL.md` and respond.\n"
+    )
+
+
 def _build_executor_for_provider(provider: str, settings: Settings, paths):
     """Construct the right executor for a given provider string."""
     if provider == "codex":

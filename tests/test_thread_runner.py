@@ -118,3 +118,32 @@ def test_thread_runner_builds_pi_executor():
     )
 
     assert executor.__class__.__name__ == "PiExecutor"
+
+
+def test_build_delta_prompt_excludes_old_history_includes_new():
+    from datetime import datetime, timezone
+    from src.daemon.thread_runner import build_thread_delta_prompt
+    from src.models import ThreadRecord, ThreadMessage, ThreadMessageKind
+
+    thread = ThreadRecord(
+        id="THR-001", subject="Refund policy",
+        started_at=datetime(2026, 5, 13, tzinfo=timezone.utc),
+    )
+    new_msgs = [
+        ThreadMessage(
+            thread_id="THR-001", seq=12, speaker="bob",
+            kind=ThreadMessageKind.MESSAGE, body_markdown="brand new point",
+        ),
+    ]
+    triggering = new_msgs[0]
+    prompt = build_thread_delta_prompt(
+        thread=thread, new_messages=new_msgs,
+        invocation_token="TOK-XYZ", invoked_agent="alice",
+        purpose="reply", triggering_seq=12, triggering_message=triggering,
+    )
+    assert "brand new point" in prompt
+    assert "TOK-XYZ" in prompt
+    assert "Decline-by-Default" in prompt
+    # It must NOT re-ship the full transcript header / participant roster.
+    assert "Full message history follows" not in prompt
+    assert "Participants:" not in prompt
