@@ -102,7 +102,7 @@ class OpcClient:
         r.raise_for_status()
         return r.json()["rollup"]
 
-    def put_asset(
+    def put_artifact(
         self,
         *,
         slug: str,
@@ -110,9 +110,9 @@ class OpcClient:
         name: str | None,
         agent: str,
     ) -> dict:
-        """Upload a local file to the org's shared assets store.
+        """Upload a local file to the org's shared artifacts store.
 
-        Calls ``POST /api/v1/orgs/{slug}/assets`` with multipart form data.
+        Calls ``POST /api/v1/orgs/{slug}/artifacts`` with multipart form data.
         Raises on non-2xx.
         """
         params: dict[str, str] = {"agent": agent}
@@ -121,28 +121,28 @@ class OpcClient:
         with local_path.open("rb") as fh:
             files = {"file": (name or local_path.name, fh, "application/octet-stream")}
             r = self._client.post(
-                f"/api/v1/orgs/{slug}/assets",
+                f"/api/v1/orgs/{slug}/artifacts",
                 files=files,
                 params=params,
             )
         r.raise_for_status()
         return r.json()
 
-    def list_assets(self, *, slug: str) -> dict:
-        """Return the org's asset listing.
+    def list_artifacts(self, *, slug: str) -> dict:
+        """Return the org's artifact listing.
 
-        Calls ``GET /api/v1/orgs/{slug}/assets``. Raises on non-2xx.
+        Calls ``GET /api/v1/orgs/{slug}/artifacts``. Raises on non-2xx.
         """
-        r = self._client.get(f"/api/v1/orgs/{slug}/assets")
+        r = self._client.get(f"/api/v1/orgs/{slug}/artifacts")
         r.raise_for_status()
         return r.json()
 
-    def get_asset(self, *, slug: str, name: str) -> bytes:
-        """Download an asset by name and return its raw bytes.
+    def get_artifact(self, *, slug: str, name: str) -> bytes:
+        """Download an artifact by name and return its raw bytes.
 
-        Calls ``GET /api/v1/orgs/{slug}/assets/{name}``. Raises on non-2xx.
+        Calls ``GET /api/v1/orgs/{slug}/artifacts/{name}``. Raises on non-2xx.
         """
-        r = self._client.get(f"/api/v1/orgs/{slug}/assets/{name}")
+        r = self._client.get(f"/api/v1/orgs/{slug}/artifacts/{name}")
         r.raise_for_status()
         return r.content
 

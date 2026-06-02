@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from src.daemon.dispatcher import Dispatcher
 from src.daemon.routes import (
     agents,
-    assets,
+    artifacts,
     audit,
     auth,
     dashboard,
@@ -95,7 +95,7 @@ async def _lifespan(app: FastAPI):
         # recovery scan reads any stdout_path/stderr_path. The DB-side
         # rename already happened in Database init; this realigns disk.
         migrate_filesystem_layout(org.root)
-        OrgPaths(org.root).assets_dir.mkdir(exist_ok=True)
+        OrgPaths(org.root).artifacts_dir.mkdir(exist_ok=True)
         recovered = org.db.recover_orphaned_running_jobs(now_iso=_now_iso)
         if recovered:
             _logger.warning(
@@ -159,7 +159,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(threads.router, prefix="/api/v1/orgs/{slug}", tags=["threads"])
     app.include_router(jobs.router, prefix="/api/v1/orgs/{slug}", tags=["jobs"])
     app.include_router(jobs.dual_router, prefix="/api/v1/orgs/{slug}", tags=["jobs"])
-    app.include_router(assets.router, prefix="/api/v1/orgs/{slug}", tags=["assets"])
+    app.include_router(artifacts.router, prefix="/api/v1/orgs/{slug}", tags=["artifacts"])
     app.include_router(dashboard.router, prefix="/api/v1/orgs/{slug}", tags=["dashboard"])
     from src.daemon.routes import web_static
     web_static.register(app)

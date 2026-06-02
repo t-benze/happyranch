@@ -265,7 +265,7 @@ class JobRecord(BaseModel):
     # Scope id of the submission context. For task-originated jobs this is a
     # TASK-NNN id; for talk-originated jobs (``submitted_from_talk_id`` set)
     # this is overloaded to hold the TALK-NNN id — same pattern as
-    # ``audit_log.task_id`` and ``asset_put``'s ``f"asset:{name}"``. Keeping
+    # ``audit_log.task_id`` and ``artifact_put``'s ``f"artifact:{name}"``. Keeping
     # one column avoids plumbing a ``scope_id`` everywhere it's already in use.
     task_id:          str
     # Set when the job was submitted from a talk (talk-path auth). NULL on

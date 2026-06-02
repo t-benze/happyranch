@@ -285,7 +285,7 @@ def test_codex_agents_md_does_not_inline_completion_contract(test_settings, tmp_
     assert "escalate" not in body
 
 
-def test_claude_md_includes_shared_assets_section(tmp_path: Path) -> None:
+def test_claude_md_includes_shared_artifacts_section(tmp_path: Path) -> None:
     # Adjust adapter construction to match the existing test fixtures.
     from src.config import Settings
     from src.orchestrator._paths import OrgPaths
@@ -296,13 +296,13 @@ def test_claude_md_includes_shared_assets_section(tmp_path: Path) -> None:
     workspace = tmp_path / "workspaces" / "dev_agent"
     adapter.write_claude_md(workspace, "dev_agent", "You are dev_agent.")
     content = (workspace / "CLAUDE.md").read_text()
-    assert "## Shared Assets" in content
-    assert "happyranch assets put" in content
-    assert "happyranch assets list" in content
-    assert "happyranch assets get" in content
+    assert "## Shared Artifacts" in content
+    assert "happyranch artifacts put" in content
+    assert "happyranch artifacts list" in content
+    assert "happyranch artifacts get" in content
 
 
-def test_codex_agents_md_includes_shared_assets_section(tmp_path: Path) -> None:
+def test_codex_agents_md_includes_shared_artifacts_section(tmp_path: Path) -> None:
     from src.config import Settings
     from src.orchestrator._paths import OrgPaths
     from src.orchestrator.workspace_adapters import CodexWorkspaceAdapter
@@ -312,13 +312,13 @@ def test_codex_agents_md_includes_shared_assets_section(tmp_path: Path) -> None:
     workspace = tmp_path / "workspaces" / "dev_agent"
     adapter.write_agents_md(workspace, "dev_agent", "You are dev_agent.")
     content = (workspace / "AGENTS.md").read_text()
-    assert "## Shared Assets" in content
-    assert "happyranch assets put" in content
-    assert "happyranch assets list" in content
-    assert "happyranch assets get" in content
+    assert "## Shared Artifacts" in content
+    assert "happyranch artifacts put" in content
+    assert "happyranch artifacts list" in content
+    assert "happyranch artifacts get" in content
 
 
-def test_opencode_agents_md_includes_shared_assets_section(tmp_path: Path) -> None:
+def test_opencode_agents_md_includes_shared_artifacts_section(tmp_path: Path) -> None:
     from src.config import Settings
     from src.orchestrator._paths import OrgPaths
     from src.orchestrator.workspace_adapters import OpencodeWorkspaceAdapter
@@ -328,10 +328,10 @@ def test_opencode_agents_md_includes_shared_assets_section(tmp_path: Path) -> No
     workspace = tmp_path / "workspaces" / "dev_agent"
     adapter.write_agents_md(workspace, "dev_agent", "You are dev_agent.")
     content = (workspace / "AGENTS.md").read_text()
-    assert "## Shared Assets" in content
-    assert "happyranch assets put" in content
-    assert "happyranch assets list" in content
-    assert "happyranch assets get" in content
+    assert "## Shared Artifacts" in content
+    assert "happyranch artifacts put" in content
+    assert "happyranch artifacts list" in content
+    assert "happyranch artifacts get" in content
 
 
 def test_claude_md_warns_about_non_stop_commands(tmp_path: Path) -> None:

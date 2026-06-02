@@ -455,21 +455,21 @@ def test_log_job_run_result_notify_failed(db):
     assert r["payload"]["status"] == "failed"
 
 
-def test_log_asset_put_writes_event(db) -> None:
+def test_log_artifact_put_writes_event(db) -> None:
     logger = AuditLogger(db)
-    logger.log_asset_put(name="report.pdf", size_bytes=11, agent="dev_agent")
+    logger.log_artifact_put(name="report.pdf", size_bytes=11, agent="dev_agent")
 
-    rows = db.get_audit_logs_by_action("asset_put")
+    rows = db.get_audit_logs_by_action("artifact_put")
     assert len(rows) == 1
     row = rows[0]
-    assert row["task_id"] == "asset:report.pdf"  # namespaced to avoid collision with TASK-/TALK-/SR- ids
+    assert row["task_id"] == "artifact:report.pdf"  # namespaced to avoid collision with TASK-/TALK-/SR- ids
     assert row["agent"] == "dev_agent"
-    assert row["action"] == "asset_put"
+    assert row["action"] == "artifact_put"
     assert row["payload"] == {"name": "report.pdf", "size_bytes": 11}
 
 
-def test_log_asset_put_does_not_collide_with_task_id(tmp_path) -> None:
-    """Asset names like 'TASK-123' must NOT pollute task-scoped audit history."""
+def test_log_artifact_put_does_not_collide_with_task_id(tmp_path) -> None:
+    """Artifact names like 'TASK-123' must NOT pollute task-scoped audit history."""
     from src.infrastructure.database import Database
     from src.infrastructure.audit_logger import AuditLogger
 
@@ -478,18 +478,18 @@ def test_log_asset_put_does_not_collide_with_task_id(tmp_path) -> None:
 
     # Write a session_start row for a real task
     logger.log_session_start("TASK-123", "dev_agent", "/some/workspace")
-    # Upload an asset whose name collides with the task id
-    logger.log_asset_put(name="TASK-123", size_bytes=42, agent="dev_agent")
+    # Upload an artifact whose name collides with the task id
+    logger.log_artifact_put(name="TASK-123", size_bytes=42, agent="dev_agent")
 
-    # get_audit_logs("TASK-123") must return ONLY the task's row, not the asset
+    # get_audit_logs("TASK-123") must return ONLY the task's row, not the artifact
     rows = db.get_audit_logs("TASK-123")
     actions = [r["action"] for r in rows]
     assert actions == ["session_start"]
 
-    # The asset audit is under the namespaced scope
-    asset_rows = db.get_audit_logs("asset:TASK-123")
-    assert len(asset_rows) == 1
-    assert asset_rows[0]["action"] == "asset_put"
+    # The artifact audit is under the namespaced scope
+    artifact_rows = db.get_audit_logs("artifact:TASK-123")
+    assert len(artifact_rows) == 1
+    assert artifact_rows[0]["action"] == "artifact_put"
 
 
 def test_log_chain_auto_advance_writes_expected_payload(db):

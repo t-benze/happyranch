@@ -135,25 +135,25 @@ def _learnings_bootstrap_section(workspace: Path) -> list[str]:
     ]
 
 
-def _shared_assets_section() -> list[str]:
+def _shared_artifacts_section() -> list[str]:
     return [
-        "## Shared Assets (org-wide)\n",
-        "Path: `<runtime>/orgs/<slug>/assets/`. Drop persistent artifacts your work",
+        "## Shared Artifacts (org-wide)\n",
+        "Path: `<runtime>/orgs/<slug>/artifacts/`. Drop persistent files your work",
         "produces — generated reports, exports, screenshots, PDFs, images. Files",
         "here survive across tasks and are visible to every agent in this org.\n",
         "Use cases: a generated PDF report another agent needs to attach to a",
         "customer reply; a CSV export the founder will want to review; a screenshot",
         "captured during QA that the bug-triage agent should see.\n",
         "**Not** the KB. KB is for durable cross-agent *knowledge* (rules,",
-        "references, founder rulings). Assets are for *files and binary artifacts*.",
+        "references, founder rulings). Artifacts are for *files and binary blobs*.",
         "Don't put scratch work here — use your workspace `repos/`, learning",
-        "entries, or task artifacts for transient state.\n",
+        "entries, or task output for transient state.\n",
         "All access is via `happyranch`. Direct filesystem reads/writes won't work",
         "uniformly across executors — use the CLI:\n",
         "```",
-        "happyranch assets put <local-path> --agent <you> [--name <name>]",
-        "happyranch assets list",
-        "happyranch assets get <name> --output <local-path>",
+        "happyranch artifacts put <local-path> --agent <you> [--name <name>]",
+        "happyranch artifacts list",
+        "happyranch artifacts get <name> --output <local-path>",
         "```\n",
         "Naming convention: prefix with your agent name + ISO date for",
         "traceability, e.g. `dev_agent-YYYY-MM-DD-perf-report.pdf`. Names must",
@@ -254,7 +254,7 @@ _RESERVED_AGENT_BODY_HEADERS: frozenset[str] = frozenset({
     "Persistent Files",
     "Your Learnings",
     "Knowledge Base (shared across agents)",
-    "Shared Assets (org-wide)",
+    "Shared Artifacts (org-wide)",
     "Thread and Talk Dispatch are Self-Only",
     "Long-running and non-stop commands",
     "Task Completion Format",
@@ -578,7 +578,7 @@ class ClaudeWorkspaceAdapter:
             "optional `tags`, `source_task`) followed by a markdown body. `type` is a",
             "freeform label (e.g. `reference`, `ruling`, `sop`) used for grouping.",
             callback_note + "\n",
-            *_shared_assets_section(),
+            *_shared_artifacts_section(),
             *_thread_talk_dispatch_doctrine_section(),
             *_non_stop_command_warning_section(),
             *_task_completion_format_section(),
@@ -653,7 +653,7 @@ class CodexWorkspaceAdapter:
         """
         _assert_no_reserved_headers_in_body(agent_name, system_prompt)
         workspace.mkdir(parents=True, exist_ok=True)
-        # Shared bootstrap sections (KB, learnings, assets) are assembled in
+        # Shared bootstrap sections (KB, learnings, artifacts) are assembled in
         # Claude's _build_sections and flow through here unchanged.
         sections = ClaudeWorkspaceAdapter(self._settings, self._paths, slug=self._slug)._build_sections(
             agent_name,
