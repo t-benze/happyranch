@@ -331,6 +331,22 @@ Every `kind=message` written to a thread mints a `REPLY` invocation for every pa
 - **Doctrine is prompt-injected, not skill-embedded** — the reply-vs-decline judgment is in the thread-invocation prompt's "Decline-by-Default" section (purpose `REPLY` only), not in `protocol/skills/thread/SKILL.md`. The skill covers operational mechanics only.
 - **Agent replies enforce the same turn_cap as founder `/send`.** The reply endpoint (consumed by REPLY/BOOTSTRAP/TASK_FOLLOWUP invocations) projects `turns_used + 1` against `turn_cap` before the DB lock and raises `429 turn_cap_exceeded` if it would exceed. Without this, agent ping-pong can blow past the cap silently.
 
+## Thread agent-session resume (turn 2+ via `--resume`)
+
+Claude-backed thread participants reuse their Claude session across turns instead of re-shipping the full transcript + workspace `CLAUDE.md` every invocation. Per-`(thread, agent)` state lives in two columns on `thread_participants`: `agent_session_id` (the resumable session; executor-neutral name) and `last_resumed_seq` (the delta watermark). Issue #53. Implementation: `src/daemon/thread_runner.py` (`build_thread_delta_prompt`, `_is_session_not_found`, resume wiring in `run_invocation`), `src/orchestrator/executors.py` (`ClaudeExecutor.run` `resume_session_id` param + `ExecutorResult.agent_session_id` + `_parse_claude_session_id`), `src/infrastructure/database.py` (`get_thread_session` / `update_thread_session`), `src/infrastructure/audit_logger.py` (`log_agent_session_reused` / `log_agent_session_evicted_fallback`). Plan: `docs/superpowers/plans/2026-06-02-thread-claude-session-resume.md`.
+
+**Load-bearing invariants:**
+
+- **Claude-only.** Resume is gated on `executor_name == "claude"` in `run_invocation`. codex/opencode/pi participants always run full-context and never read/write the session columns. The storage + audit names are generic (`agent_session_id`, not `claude_session_id`) so adding other executors later is additive — see the appendix in the plan for the two session-ownership models (callee-assigned: Claude/Codex/opencode; caller-assigned via `--session-id`: Pi).
+- **`agent_session_id` is an optimization, never a correctness dependency.** The SQLite transcript is canonical. A parse miss, an eviction, or any non-Claude executor silently falls back to a full-context fresh session.
+- **`last_resumed_seq` advances ONLY on a successful subprocess.** A failed/timed-out turn leaves the watermark untouched so the next successful resume re-includes the messages the broken turn skipped. The delta is `messages with seq > last_resumed_seq`; the watermark is set to `max(shown_seqs, last_seq)`.
+- **Eviction fallback runs the executor a second time within one `run_invocation`, then clears `resume_sid`.** Because the failed resume never consumed the single-use invocation token, the full-context retry can still consume it. The fallback path audits `agent_session_evicted_fallback` and (because `resume_sid` is now None) does NOT also audit `agent_session_reused`. Detection is `_is_session_not_found` — a best-effort substring match on error/stderr/stdout; verify the markers against the real Claude CLI.
+- **Turn 1 captures but does not audit reuse.** No stored id → full prompt, capture `result.agent_session_id`, persist — but `agent_session_reused` fires only when an actual `--resume` happened (`resume_sid` truthy at persist time).
+- **`--resume` may fork a new session id.** Always persist `result.agent_session_id` from each successful turn, not the id passed in.
+- **`ExecutorResult.agent_session_id` is distinct from `ExecutorResult.session_id`.** The latter is the HappyRanch `sess-<uuid>` for SessionTracker/`/cancel`; never conflate them.
+- **Concurrency safety comes from per-`(thread, agent)` serialization** (the thread queue), giving at most one in-flight invocation per session. Don't add per-participant parallelism.
+- **Two-place schema add** — the columns are in BOTH the `thread_participants` CREATE TABLE (fresh DBs) and the idempotent ALTER block (existing DBs).
+
 ## Thread task-followup (system bridges task terminal → thread)
 
 When a task dispatched from a thread reaches its true terminal state, `_maybe_post_thread_followup` (`src/orchestrator/run_step.py`) appends a `task_completed` or `task_failed` SYSTEM message to the originating thread and mints a fresh invocation with purpose `TASK_FOLLOWUP` so the dispatching agent can compose the result-bearing reply it promised. Spec: `docs/superpowers/specs/2026-05-28-thread-task-followup-design.md`.
