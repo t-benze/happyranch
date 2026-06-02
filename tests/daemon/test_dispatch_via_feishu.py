@@ -9,7 +9,7 @@ import pytest
 
 @pytest.fixture()
 def org_with_engineering_team(tmp_path: Path):
-    from src.infrastructure.database import Database
+    from runtime.infrastructure.database import Database
     db = Database(tmp_path / "happyranch.db")
     org = MagicMock()
     org.db = db
@@ -29,7 +29,7 @@ def org_with_engineering_team(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_dispatch_via_feishu_creates_task(org_with_engineering_team):
-    from src.daemon.routes.tasks import dispatch_via_feishu, DispatchIntent
+    from runtime.daemon.routes.tasks import dispatch_via_feishu, DispatchIntent
     org, state, db = org_with_engineering_team
     intent = DispatchIntent(team="engineering", brief="fix the thing")
     task_id, team = await dispatch_via_feishu(
@@ -44,7 +44,7 @@ async def test_dispatch_via_feishu_creates_task(org_with_engineering_team):
 
 @pytest.mark.asyncio
 async def test_dispatch_via_feishu_rejects_empty_brief(org_with_engineering_team):
-    from src.daemon.routes.tasks import dispatch_via_feishu, DispatchError, DispatchIntent
+    from runtime.daemon.routes.tasks import dispatch_via_feishu, DispatchError, DispatchIntent
     org, state, _ = org_with_engineering_team
     intent = DispatchIntent(team="engineering", brief="   ")
     with pytest.raises(DispatchError) as exc:
@@ -56,7 +56,7 @@ async def test_dispatch_via_feishu_rejects_empty_brief(org_with_engineering_team
 
 @pytest.mark.asyncio
 async def test_dispatch_via_feishu_rejects_unknown_team(org_with_engineering_team):
-    from src.daemon.routes.tasks import dispatch_via_feishu, DispatchError, DispatchIntent
+    from runtime.daemon.routes.tasks import dispatch_via_feishu, DispatchError, DispatchIntent
     org, state, _ = org_with_engineering_team
     intent = DispatchIntent(team="nonexistent", brief="x")
     with pytest.raises(DispatchError) as exc:
@@ -69,7 +69,7 @@ async def test_dispatch_via_feishu_rejects_unknown_team(org_with_engineering_tea
 
 @pytest.mark.asyncio
 async def test_dispatch_via_feishu_falls_back_to_default_team_when_none(org_with_engineering_team):
-    from src.daemon.routes.tasks import dispatch_via_feishu, DispatchIntent
+    from runtime.daemon.routes.tasks import dispatch_via_feishu, DispatchIntent
     org, state, _ = org_with_engineering_team
     intent = DispatchIntent(team=None, brief="auto-team")
     task_id, team = await dispatch_via_feishu(

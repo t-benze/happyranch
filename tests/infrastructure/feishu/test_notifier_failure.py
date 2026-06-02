@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from src.infrastructure.audit_logger import AuditLogger
-from src.infrastructure.database import Database
-from src.infrastructure.feishu.notifier import EscalationNotifier
-from src.orchestrator.org_config import FeishuNotificationsConfig
+from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.infrastructure.database import Database
+from runtime.infrastructure.feishu.notifier import EscalationNotifier
+from runtime.orchestrator.org_config import FeishuNotificationsConfig
 
 
 class _FakeClient:
@@ -33,7 +33,7 @@ def setup(tmp_path: Path):
         slug="acme", db=db, audit=audit, client=client, config=cfg,
     )
     # Insert a task so the notifier can render its brief
-    from src.models import TaskRecord, TaskStatus
+    from runtime.models import TaskRecord, TaskStatus
     db.insert_task(TaskRecord(
         id="TASK-9", brief="ferry scraper update", team="engineering",
         assigned_agent="dev_agent", status=TaskStatus.FAILED,

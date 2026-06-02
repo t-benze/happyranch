@@ -14,9 +14,9 @@ import json
 import os
 from pathlib import Path
 
-from src.config import Settings
-from src.daemon.app import create_app
-from src.daemon.state import DaemonState
+from runtime.config import Settings
+from runtime.daemon.app import create_app
+from runtime.daemon.state import DaemonState
 
 SNAPSHOT_PATH = Path(__file__).parent / "openapi.json"
 

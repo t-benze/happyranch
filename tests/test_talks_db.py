@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from src.infrastructure.database import Database
-from src.models import TalkRecord, TalkStatus
+from runtime.infrastructure.database import Database
+from runtime.models import TalkRecord, TalkStatus
 
 
 def test_talks_table_exists(db: Database):

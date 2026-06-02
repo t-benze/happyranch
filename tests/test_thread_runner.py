@@ -3,10 +3,10 @@ from __future__ import annotations
 import pytest
 from datetime import datetime, timezone
 
-from src.config import Settings
-from src.daemon.thread_runner import build_thread_prompt, run_invocation
-from src.infrastructure.database import Database
-from src.models import (
+from runtime.config import Settings
+from runtime.daemon.thread_runner import build_thread_prompt, run_invocation
+from runtime.infrastructure.database import Database
+from runtime.models import (
     ThreadInvocationPurpose,
     ThreadMessage,
     ThreadMessageKind,
@@ -79,7 +79,7 @@ async def test_run_invocation_no_callback_silent_decline(tmp_path, monkeypatch):
     (ws / "agent.yaml").write_text("executor: claude\n")
 
     # Replace the executor builder so .run() returns immediately without callback.
-    import src.daemon.thread_runner as runner_mod
+    import runtime.daemon.thread_runner as runner_mod
 
     class _FakeExec:
         def __init__(self, **kwargs):
@@ -109,7 +109,7 @@ async def test_run_invocation_no_callback_silent_decline(tmp_path, monkeypatch):
 
 
 def test_thread_runner_builds_pi_executor():
-    import src.daemon.thread_runner as runner_mod
+    import runtime.daemon.thread_runner as runner_mod
 
     executor = runner_mod._build_executor_for_provider(
         "pi",

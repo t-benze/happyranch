@@ -7,14 +7,14 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from src.daemon.event_bus import EventBus
-from src.daemon.routes.jobs import (
+from runtime.daemon.event_bus import EventBus
+from runtime.daemon.routes.jobs import (
     reject_job_from_notification,
     run_job_from_notification,
 )
-from src.daemon.sessions import SessionTracker
-from src.infrastructure.database import Database
-from src.models import (
+from runtime.daemon.sessions import SessionTracker
+from runtime.infrastructure.database import Database
+from runtime.models import (
     JobInterpreter,
     JobRecord,
     JobStatus,
@@ -96,7 +96,7 @@ async def test_run_helper_transitions_to_running(scripts_test_org, monkeypatch):
     _insert_pending_sr(org)
 
     async def _fake_spawn(**kw):
-        from src.daemon.jobs_runner import JobRunResult
+        from runtime.daemon.jobs_runner import JobRunResult
         return JobRunResult(
             status="completed", exit_code=0, duration_ms=10,
             stdout_head="ok", stderr_head=None,
@@ -104,7 +104,7 @@ async def test_run_helper_transitions_to_running(scripts_test_org, monkeypatch):
             truncated_stdout=False, truncated_stderr=False,
             reason=None,
         )
-    monkeypatch.setattr("src.daemon.routes.jobs._spawn_job", _fake_spawn)
+    monkeypatch.setattr("runtime.daemon.routes.jobs._spawn_job", _fake_spawn)
 
     result = await run_job_from_notification(
         org, job_id="SR-001",
@@ -170,7 +170,7 @@ async def test_run_terminal_calls_notify_job_run_result_when_notification_exists
     org.orchestrator = _MockOrchestrator()
 
     async def _fake_spawn(**kw):
-        from src.daemon.jobs_runner import JobRunResult
+        from runtime.daemon.jobs_runner import JobRunResult
         return JobRunResult(
             status="completed", exit_code=0, duration_ms=42,
             stdout_head="hello", stderr_head=None,
@@ -178,7 +178,7 @@ async def test_run_terminal_calls_notify_job_run_result_when_notification_exists
             truncated_stdout=False, truncated_stderr=False,
             reason=None,
         )
-    monkeypatch.setattr("src.daemon.routes.jobs._spawn_job", _fake_spawn)
+    monkeypatch.setattr("runtime.daemon.routes.jobs._spawn_job", _fake_spawn)
 
     await run_job_from_notification(org, job_id="SR-001")
 
@@ -213,7 +213,7 @@ async def test_run_terminal_skips_follow_up_when_no_notification(
     org.orchestrator = _MockOrchestrator()
 
     async def _fake_spawn(**kw):
-        from src.daemon.jobs_runner import JobRunResult
+        from runtime.daemon.jobs_runner import JobRunResult
         return JobRunResult(
             status="completed", exit_code=0, duration_ms=10,
             stdout_head=None, stderr_head=None,
@@ -221,7 +221,7 @@ async def test_run_terminal_skips_follow_up_when_no_notification(
             truncated_stdout=False, truncated_stderr=False,
             reason=None,
         )
-    monkeypatch.setattr("src.daemon.routes.jobs._spawn_job", _fake_spawn)
+    monkeypatch.setattr("runtime.daemon.routes.jobs._spawn_job", _fake_spawn)
 
     await run_job_from_notification(org, job_id="SR-001")
     for _ in range(20):

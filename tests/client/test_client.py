@@ -7,12 +7,12 @@ import pytest
 from fastapi import FastAPI, Header
 from fastapi.testclient import TestClient
 
-from src.client.client import (
+from cli.client.client import (
     DaemonNotRunning,
     DaemonStateInconsistent,
     OpcClient,
 )
-from src.daemon import paths as paths_mod
+from runtime.daemon import paths as paths_mod
 
 
 @pytest.fixture

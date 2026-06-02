@@ -9,8 +9,8 @@ import pytest
 
 @pytest.fixture()
 def org_with_failed_task(tmp_path: Path):
-    from src.infrastructure.database import Database
-    from src.models import TaskRecord, TaskStatus
+    from runtime.infrastructure.database import Database
+    from runtime.models import TaskRecord, TaskStatus
 
     db = Database(tmp_path / "happyranch.db")
     db.insert_task(TaskRecord(
@@ -30,7 +30,7 @@ def org_with_failed_task(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_revisit_from_notification_spawns_new_root(org_with_failed_task):
-    from src.daemon.routes.tasks import revisit_from_notification
+    from runtime.daemon.routes.tasks import revisit_from_notification
     org, state, db = org_with_failed_task
     result = await revisit_from_notification(
         org, state,
@@ -59,8 +59,8 @@ async def test_revisit_from_notification_spawns_new_root(org_with_failed_task):
 @pytest.mark.asyncio
 async def test_revisit_from_notification_raises_when_ineligible(org_with_failed_task):
     from fastapi import HTTPException
-    from src.daemon.routes.tasks import revisit_from_notification
-    from src.models import TaskStatus
+    from runtime.daemon.routes.tasks import revisit_from_notification
+    from runtime.models import TaskStatus
     org, state, db = org_with_failed_task
     db.update_task("TASK-1", status=TaskStatus.IN_PROGRESS)
     with pytest.raises(HTTPException) as exc:

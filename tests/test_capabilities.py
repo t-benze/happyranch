@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from src.models import StepRecord
-from src.orchestrator.capabilities import build_capabilities_prompt
+from runtime.models import StepRecord
+from runtime.orchestrator.capabilities import build_capabilities_prompt
 
 
 def test_prompt_does_not_duplicate_brief():

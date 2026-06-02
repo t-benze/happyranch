@@ -9,7 +9,7 @@ import pytest
 
 def _run(args: list[str], cwd: Path = None) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, "-m", "src.cli"] + args,
+        [sys.executable, "-m", "cli.main"] + args,
         capture_output=True, text=True, cwd=cwd,
     )
 
@@ -44,7 +44,7 @@ def test_cmd_learning_list_calls_correct_route(monkeypatch):
             return FakeResponse()
         def close(self): pass
 
-    from src import cli
+    from cli import main as cli
     monkeypatch.setattr(cli.OpcClient, "from_env", classmethod(lambda c: FakeClient()))
     monkeypatch.setattr(cli, "_fetch_available_orgs", lambda c: ["my-org"])
     args = type("A", (), dict(
@@ -70,7 +70,7 @@ def test_cmd_learning_add_reads_yaml_and_posts(monkeypatch, tmp_path):
             return FakeResponse()
         def close(self): pass
 
-    from src import cli
+    from cli import main as cli
     monkeypatch.setattr(cli.OpcClient, "from_env", classmethod(lambda c: FakeClient()))
     monkeypatch.setattr(cli, "_fetch_available_orgs", lambda c: ["o"])
     payload_path = tmp_path / "p.yaml"
@@ -107,7 +107,7 @@ def test_cmd_learning_promote_posts_correct_path(monkeypatch):
             return FakeResponse()
         def close(self): pass
 
-    from src import cli
+    from cli import main as cli
     monkeypatch.setattr(cli.OpcClient, "from_env", classmethod(lambda c: FakeClient()))
     monkeypatch.setattr(cli, "_fetch_available_orgs", lambda c: ["o"])
     args = type("A", (), dict(
@@ -119,7 +119,7 @@ def test_cmd_learning_promote_posts_correct_path(monkeypatch):
 
 
 def test_read_yaml_payload_rejects_non_dict(tmp_path, capsys):
-    from src import cli
+    from cli import main as cli
     bad = tmp_path / "list.yaml"
     bad.write_text("- one\n- two\n")
     with pytest.raises(SystemExit) as exc:
@@ -130,7 +130,7 @@ def test_read_yaml_payload_rejects_non_dict(tmp_path, capsys):
 
 
 def test_read_yaml_payload_empty_file_returns_empty_dict(tmp_path):
-    from src import cli
+    from cli import main as cli
     empty = tmp_path / "empty.yaml"
     empty.write_text("")
     assert cli._read_yaml_payload(str(empty)) == {}

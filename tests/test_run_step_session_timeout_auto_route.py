@@ -16,13 +16,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.config import Settings
-from src.infrastructure.audit_logger import AuditLogger
-from src.infrastructure.database import Database
-from src.models import BlockKind, TaskRecord, TaskStatus
-from src.orchestrator._paths import OrgPaths
-from src.orchestrator.teams import TeamsRegistry
-from src.runtime import RuntimeDir
+from runtime.config import Settings
+from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.infrastructure.database import Database
+from runtime.models import BlockKind, TaskRecord, TaskStatus
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.teams import TeamsRegistry
+from runtime.runtime import RuntimeDir
 
 
 @pytest.fixture
@@ -51,7 +51,7 @@ def db(runtime: OrgPaths) -> Database:
 
 def _result(*, success=False, error=None, returncode=None,
             stdout_tail="", stderr_tail=""):
-    from src.orchestrator.executors import ExecutorResult
+    from runtime.orchestrator.executors import ExecutorResult
     return ExecutorResult(
         success=success, duration_seconds=1, session_id="sess",
         returncode=returncode, stdout_tail=stdout_tail,
@@ -60,20 +60,20 @@ def _result(*, success=False, error=None, returncode=None,
 
 
 def test_classify_session_timeout():
-    from src.orchestrator.run_step import _classify_failure_kind
+    from runtime.orchestrator.run_step import _classify_failure_kind
     r = _result(error="Session timed out after 5400 seconds")
     assert _classify_failure_kind(r, None, mode="session_failure") == "session_timeout"
 
 
 def test_classify_no_callback():
     """rc=0 (success=True) but report=None — the TASK-045 class."""
-    from src.orchestrator.run_step import _classify_failure_kind
+    from runtime.orchestrator.run_step import _classify_failure_kind
     r = _result(success=True, returncode=0, stdout_tail="wrote some files")
     assert _classify_failure_kind(r, None, mode="session_failure") == "no_callback"
 
 
 def test_classify_rate_limit_in_stderr():
-    from src.orchestrator.run_step import _classify_failure_kind
+    from runtime.orchestrator.run_step import _classify_failure_kind
     r = _result(
         success=False,
         stderr_tail="Error: hit your limit · resets at 6:30pm Pacific.",
@@ -83,7 +83,7 @@ def test_classify_rate_limit_in_stderr():
 
 def test_classify_rate_limit_phrase():
     """Generic 'rate limit' substring in stdout also classifies."""
-    from src.orchestrator.run_step import _classify_failure_kind
+    from runtime.orchestrator.run_step import _classify_failure_kind
     r = _result(
         success=False, returncode=1,
         stderr_tail="HTTP 429: rate limit exceeded for org_xyz",
@@ -92,20 +92,20 @@ def test_classify_rate_limit_phrase():
 
 
 def test_classify_executor_error_nonzero_rc():
-    from src.orchestrator.run_step import _classify_failure_kind
+    from runtime.orchestrator.run_step import _classify_failure_kind
     r = _result(success=False, returncode=137,
                 stderr_tail="killed (signal 9)")
     assert _classify_failure_kind(r, None, mode="session_failure") == "executor_error"
 
 
 def test_classify_agent_exception_mode():
-    from src.orchestrator.run_step import _classify_failure_kind
+    from runtime.orchestrator.run_step import _classify_failure_kind
     assert _classify_failure_kind(None, None, mode="exception") == "agent_exception"
 
 
 def test_classify_fallback_to_session_failed():
     """Defensive fallback when no signal matches — kind stays generic."""
-    from src.orchestrator.run_step import _classify_failure_kind
+    from runtime.orchestrator.run_step import _classify_failure_kind
     r = _result(success=False)   # error=None, rc=None, no diagnostics
     assert _classify_failure_kind(r, None, mode="session_failure") == "session_failed"
 
@@ -113,7 +113,7 @@ def test_classify_fallback_to_session_failed():
 def test_classify_timeout_beats_rate_limit_string():
     """If both signals are present, session_timeout wins — the executor's
     own TimeoutExpired prefix is the authoritative signal."""
-    from src.orchestrator.run_step import _classify_failure_kind
+    from runtime.orchestrator.run_step import _classify_failure_kind
     r = _result(
         error="Session timed out after 5400 seconds",
         stdout_tail="(some hit your limit · resets text earlier in session)",
@@ -153,7 +153,7 @@ def test_log_auto_revisit_of_includes_failure_kind(tmp_path: Path):
 def test_count_prior_auto_revisits_by_kind_isolates_kinds(tmp_path: Path):
     """Two session_timeouts and one executor_error on the same chain →
     timeout count is 2, executor_error count is 1, no cross-contamination."""
-    from src.orchestrator.run_step import _count_prior_auto_revisits_by_kind
+    from runtime.orchestrator.run_step import _count_prior_auto_revisits_by_kind
 
     db = Database(tmp_path / "g.db")
     db.insert_task(TaskRecord(id="T-ROOT", brief="b",
@@ -200,7 +200,7 @@ def test_count_walks_past_old_20_hop_truncation_window(tmp_path: Path):
     entries could fall out of the count window and the per-kind cap would be
     silently exceeded. After the fix the counter must see every same-kind
     auto-revisit, even when the chain exceeds 20 entries."""
-    from src.orchestrator.run_step import _count_prior_auto_revisits_by_kind
+    from runtime.orchestrator.run_step import _count_prior_auto_revisits_by_kind
 
     db = Database(tmp_path / "g.db")
     # Build a 25-entry chain (5 beyond the old 20-hop default).
@@ -244,14 +244,14 @@ def test_count_returns_cap_on_pathological_chain(tmp_path: Path):
     """If the revisit chain somehow exceeds _CHAIN_HOP_LIMIT_FOR_COUNTING
     (200), the counter must refuse to spawn (return == cap). Refusing is
     safer than silently undercounting — the cap is the contract."""
-    from src.orchestrator.run_step import (
+    from runtime.orchestrator.run_step import (
         _AUTO_REVISIT_CAP_PER_KIND,
         _count_prior_auto_revisits_by_kind,
     )
 
     db = MagicMock()
     # Simulate walk_revisit_chain raising LineageTooDeep at the call site.
-    from src.infrastructure.database import LineageTooDeep
+    from runtime.infrastructure.database import LineageTooDeep
     db.walk_revisit_chain.side_effect = LineageTooDeep("chain too deep")
 
     orch = MagicMock()
@@ -271,7 +271,7 @@ def test_count_returns_cap_on_pathological_chain(tmp_path: Path):
 def test_count_ignores_pre_spec_audit_rows_without_failure_kind(tmp_path: Path):
     """Auto-revisit rows written by pre-B.1 code have no failure_kind in
     payload — they must count as 0 against every kind. Spec §10."""
-    from src.orchestrator.run_step import _count_prior_auto_revisits_by_kind
+    from runtime.orchestrator.run_step import _count_prior_auto_revisits_by_kind
 
     db = Database(tmp_path / "g.db")
     db.insert_task(TaskRecord(id="T-ROOT", brief="b",
@@ -323,8 +323,8 @@ class _SlugQueue:
 def test_per_kind_cap_blocks_third_same_kind(runtime, db):
     """Two prior session_timeout auto-revisits → third session_timeout
     attempt is refused (returns False)."""
-    from src.orchestrator.orchestrator import Orchestrator
-    from src.orchestrator.run_step import _maybe_spawn_auto_revisit
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _maybe_spawn_auto_revisit
 
     db.insert_task(TaskRecord(id="T-ROOT", brief="b",
                               assigned_agent="engineering_head",
@@ -364,8 +364,8 @@ def test_per_kind_cap_blocks_third_same_kind(runtime, db):
 def test_per_kind_cap_admits_different_kind_after_session_timeout(runtime, db):
     """Two prior session_timeouts do NOT exhaust the budget for executor_error
     — that kind has its own per-kind cap. Spec §5.1 second row."""
-    from src.orchestrator.orchestrator import Orchestrator
-    from src.orchestrator.run_step import _maybe_spawn_auto_revisit
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _maybe_spawn_auto_revisit
 
     db.insert_task(TaskRecord(id="T-ROOT", brief="b",
                               assigned_agent="engineering_head",
@@ -421,8 +421,8 @@ def test_cascade_fail_suppressed_when_root_auto_revisit_spawned(runtime, db):
     auto-revisit fires (silent retry). The intermediate manager parent
     T-MID must be cascade-failed BUT its Feishu notification must be
     suppressed because the work is already being retried at the root."""
-    from src.orchestrator.orchestrator import Orchestrator
-    from src.orchestrator.run_step import _enqueue_parent_if_waiting
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
 
     db.insert_task(TaskRecord(id="T-ROOT", brief="root", team="engineering",
                               assigned_agent="engineering_head",
@@ -470,8 +470,8 @@ def test_cascade_fail_notifies_when_no_root_auto_revisit(runtime, db):
     DOES fire its Feishu notification — gated only by the standard
     feishu_notifications config. Here we configure notify_on_failure=true
     to confirm the gate threads through correctly."""
-    from src.orchestrator.orchestrator import Orchestrator
-    from src.orchestrator.run_step import _enqueue_parent_if_waiting
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
 
     db.insert_task(TaskRecord(id="T-ROOT", brief="root", team="engineering",
                               assigned_agent="engineering_head",

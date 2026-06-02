@@ -70,7 +70,7 @@ def _make_dispatch_event(*, text: str, event_id: str = "evt_dispatch_1"):
 def _build_org(tmp_path, test_settings, *, allow_dispatch: bool, monkeypatch, base_url):
     """Build an OrgState with the given allow_dispatch flag, with the lark
     SDK pointed at the fake Feishu server."""
-    import src.daemon.org_state as org_state_mod
+    import runtime.daemon.org_state as org_state_mod
     monkeypatch.setitem(org_state_mod._REGION_TO_DOMAIN, "feishu", base_url)
 
     root = tmp_path / "orgs" / "test"
@@ -105,13 +105,13 @@ def _build_org(tmp_path, test_settings, *, allow_dispatch: bool, monkeypatch, ba
         "you are the engineering head.\n"
     )
 
-    from src.daemon.org_state import OrgState
+    from runtime.daemon.org_state import OrgState
     return OrgState.load(slug="test", root=root, settings=test_settings)
 
 
 def _start_listener_without_websocket(org, state, loop, monkeypatch):
     """Construct + register the listener but monkeypatch start() so no real WS opens."""
-    from src.daemon.feishu_listener import (
+    from runtime.daemon.feishu_listener import (
         FeishuEventListener, maybe_start_feishu_listener_for_org,
     )
     monkeypatch.setattr(FeishuEventListener, "start", lambda self: None)

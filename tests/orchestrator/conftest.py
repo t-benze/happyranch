@@ -7,12 +7,12 @@ from typing import Any
 
 import pytest
 
-from src.infrastructure.database import Database
-from src.models import BlockKind, CompletionReport, NextStep, TaskStatus
-from src.orchestrator._paths import OrgPaths
-from src.orchestrator.orchestrator import Orchestrator
-from src.orchestrator.executors import ExecutorResult
-from src.runtime import RuntimeDir
+from runtime.infrastructure.database import Database
+from runtime.models import BlockKind, CompletionReport, NextStep, TaskStatus
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.orchestrator import Orchestrator
+from runtime.orchestrator.executors import ExecutorResult
+from runtime.runtime import RuntimeDir
 
 
 # ---------------------------------------------------------------------------

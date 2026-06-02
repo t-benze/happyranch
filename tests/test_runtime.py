@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from src.runtime import RuntimeDir
+from runtime.runtime import RuntimeDir
 
 
 # ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from src.daemon.thread_queue import ThreadQueue, ThreadJob
+from runtime.daemon.thread_queue import ThreadQueue, ThreadJob
 
 
 async def test_queue_enqueue_then_get():

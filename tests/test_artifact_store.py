@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from src.infrastructure.artifact_store import (
+from runtime.infrastructure.artifact_store import (
     ArtifactStore,
     ArtifactTooLarge,
     InvalidArtifactName,

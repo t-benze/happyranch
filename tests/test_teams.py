@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from src.orchestrator._paths import OrgPaths
-from src.orchestrator.teams import TeamManager, TeamsRegistry
-from src.runtime import RuntimeDir
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.teams import TeamManager, TeamsRegistry
+from runtime.runtime import RuntimeDir
 
 
 def _runtime(tmp_path: Path) -> OrgPaths:

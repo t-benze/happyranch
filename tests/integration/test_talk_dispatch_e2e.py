@@ -11,7 +11,7 @@ Conftest surprise notes:
   ``runtime`` (Path) — there is no ``integration_daemon`` /
   ``runtime_path`` pair as the plan skeleton suggested.
 - Tests talk to the daemon via raw ``httpx`` + a small ``_auth_headers``
-  helper that reads the bearer token from ``src.daemon.paths``.
+  helper that reads the bearer token from ``runtime.daemon.paths``.
 - Workspace bootstrap is done by the file-local ``seed_workspace``
   helper from ``tests/integration/conftest.py``; we reuse it for
   ``dev_agent`` here.
@@ -28,7 +28,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from src.orchestrator.agent_def import AgentDef, render_agent_text
+from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 from tests.integration.conftest import seed_workspace
 
 
@@ -36,7 +36,7 @@ pytestmark = pytest.mark.integration
 
 
 def _auth_headers() -> dict:
-    from src.daemon import paths
+    from runtime.daemon import paths
 
     return {"Authorization": f"Bearer {paths.read_token()}"}
 

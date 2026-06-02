@@ -9,8 +9,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from src.infrastructure.database import Database
-from src.orchestrator.dashboard_summary import (
+from runtime.infrastructure.database import Database
+from runtime.orchestrator.dashboard_summary import (
     compute_narrative_counts_today,
     compute_org_age_days,
     compute_spend_today,
@@ -139,7 +139,7 @@ def test_narrative_counts_populated(db: Database, mock_kb_store: _MockKbStore) -
     assert counts.spend_today_usd == pytest.approx(2.50)
 
 
-from src.orchestrator.dashboard_summary import compute_heartbeat_24h
+from runtime.orchestrator.dashboard_summary import compute_heartbeat_24h
 
 
 def test_heartbeat_empty_returns_24_zero_buckets(db: Database) -> None:
@@ -228,7 +228,7 @@ def test_heartbeat_counts_failed_from_terminal_tasks(db: Database) -> None:
     assert bucket_9.tier == "bad"
 
 
-from src.orchestrator.dashboard_summary import compute_recent_activity
+from runtime.orchestrator.dashboard_summary import compute_recent_activity
 
 
 def test_recent_activity_empty(db: Database) -> None:
@@ -290,7 +290,7 @@ def test_recent_activity_extracts_verdict(db: Database) -> None:
     assert by_kind["review_verdict"].verdict == "fail"
 
 
-from src.orchestrator.dashboard_summary import compute_updates_this_week
+from runtime.orchestrator.dashboard_summary import compute_updates_this_week
 
 
 def test_updates_this_week_empty(db: Database, mock_kb_store: _MockKbStore) -> None:
@@ -328,7 +328,7 @@ def test_updates_this_week_combines_kb_and_learnings(
         assert rows[i].timestamp >= rows[i + 1].timestamp
 
 
-from src.orchestrator.dashboard_summary import (
+from runtime.orchestrator.dashboard_summary import (
     compute_escalations_open, compute_active_by_team,
 )
 
@@ -375,7 +375,7 @@ def test_active_by_team_groups_in_progress(db: Database) -> None:
     assert by_team["content"].count == 1
 
 
-from src.orchestrator.dashboard_summary import (
+from runtime.orchestrator.dashboard_summary import (
     compute_org_pulse_7d, compose_dashboard_summary,
 )
 
@@ -390,7 +390,7 @@ class _MockTeamsRegistry:
         return sorted(self._layout.keys())
 
     def manager_for_team(self, team: str):
-        from src.orchestrator.teams import TeamManager
+        from runtime.orchestrator.teams import TeamManager
         mgr, workers = self._layout[team]
         return TeamManager(name=mgr, team=team, workers=tuple(workers))
 

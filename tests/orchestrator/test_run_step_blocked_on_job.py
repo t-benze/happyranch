@@ -7,10 +7,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.infrastructure.audit_logger import AuditLogger
-from src.infrastructure.database import Database
-from src.models import BlockKind, TaskRecord, TaskStatus
-from src.orchestrator.run_step import run_step_impl, _blocked_jobs_resume_header_if_applicable
+from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.infrastructure.database import Database
+from runtime.models import BlockKind, TaskRecord, TaskStatus
+from runtime.orchestrator.run_step import run_step_impl, _blocked_jobs_resume_header_if_applicable
 
 
 @pytest.fixture
@@ -174,7 +174,7 @@ def test_no_audit_when_entry_state_is_pending(db_and_orch):
     assert len(resumed) == 0
 
 
-from src.models import CompletionReport
+from runtime.models import CompletionReport
 
 
 def test_block_on_jobs_branch_transitions_in_place(db_and_orch):

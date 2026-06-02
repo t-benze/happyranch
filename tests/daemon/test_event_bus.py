@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from src.daemon.event_bus import EventBus
+from runtime.daemon.event_bus import EventBus
 
 
 @pytest.mark.asyncio
@@ -81,12 +81,12 @@ async def test_late_subscriber_to_finished_task_gets_synthesized_terminal() -> N
 
 
 def test_terminal_types_include_new_events():
-    from src.daemon.event_bus import _TERMINAL_TYPES
+    from runtime.daemon.event_bus import _TERMINAL_TYPES
     assert "task_failed" in _TERMINAL_TYPES
     assert "task_blocked" in _TERMINAL_TYPES
     assert "task_complete" in _TERMINAL_TYPES
 
 
 def test_job_topic_format():
-    from src.daemon.event_bus import job_topic
+    from runtime.daemon.event_bus import job_topic
     assert job_topic("JOB-019") == "job:JOB-019"

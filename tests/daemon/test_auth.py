@@ -6,8 +6,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from src.daemon import paths as paths_mod
-from src.daemon.auth import require_token
+from runtime.daemon import paths as paths_mod
+from runtime.daemon.auth import require_token
 
 
 @pytest.fixture

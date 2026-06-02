@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.models import TokenUsage
+from runtime.models import TokenUsage
 
 
 def test_token_usage_all_fields_optional():

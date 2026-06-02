@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from src.config import Settings
-from src.orchestrator._paths import OrgPaths
-from src.orchestrator.workspace_adapters import ClaudeWorkspaceAdapter
+from runtime.config import Settings
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.workspace_adapters import ClaudeWorkspaceAdapter
 
 
 @pytest.fixture

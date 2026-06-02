@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.infrastructure.feishu.client import FeishuClient, FeishuSendError
+from runtime.infrastructure.feishu.client import FeishuClient, FeishuSendError
 
 
 def _ok_response(message_id: str = "om_test") -> MagicMock:

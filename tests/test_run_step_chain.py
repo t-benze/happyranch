@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from src.infrastructure.audit_logger import AuditLogger
-from src.models import BlockKind, ChainLeg, NextStep, TaskRecord, TaskStatus
-from src.orchestrator.run_step import _validate_delegate
+from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.models import BlockKind, ChainLeg, NextStep, TaskRecord, TaskStatus
+from runtime.orchestrator.run_step import _validate_delegate
 
 
 def _orch_with_workspaces_present():
@@ -68,7 +68,7 @@ def test_validate_delegate_rejects_chain_leg_with_missing_workspace():
 def test_cross_team_chain_guard_rejects_off_team_leg():
     """If any leg targets an agent not on the manager's team, the whole
     chain is rejected via the existing feedback mechanism."""
-    from src.orchestrator.run_step import _chain_legs_off_team
+    from runtime.orchestrator.run_step import _chain_legs_off_team
 
     teams = MagicMock()
     teams.team_for_manager.return_value = "engineering"
@@ -90,7 +90,7 @@ def test_cross_team_chain_guard_rejects_off_team_leg():
 
 
 def test_cross_team_chain_guard_passes_when_all_legs_on_team():
-    from src.orchestrator.run_step import _chain_legs_off_team
+    from runtime.orchestrator.run_step import _chain_legs_off_team
     teams = MagicMock()
     teams.team_for_manager.return_value = "engineering"
     teams.team_for_agent.return_value = "engineering"
@@ -102,7 +102,7 @@ def test_cross_team_chain_guard_passes_when_all_legs_on_team():
 
 def test_cross_team_chain_guard_first_leg_off_team():
     """First leg's off-team membership is also caught by the new helper."""
-    from src.orchestrator.run_step import _chain_legs_off_team
+    from runtime.orchestrator.run_step import _chain_legs_off_team
     teams = MagicMock()
     teams.team_for_manager.return_value = "engineering"
     teams.team_for_agent.side_effect = lambda name: {
@@ -121,8 +121,8 @@ def test_chain_persistence_writes_active_chain_with_step_audit_id(tmp_path):
     the orchestrator persists ChainState on the parent before/with the first
     leg spawn. This test verifies the persistence API shape; the orchestrator
     wire-up is tested in integration tests (Task 14)."""
-    from src.infrastructure.database import Database
-    from src.orchestrator.chain import ChainState
+    from runtime.infrastructure.database import Database
+    from runtime.orchestrator.chain import ChainState
 
     db = Database(tmp_path / "x.db")
     db.insert_task(TaskRecord(id="TASK-1", brief="parent"))
@@ -144,7 +144,7 @@ def test_chain_persistence_writes_active_chain_with_step_audit_id(tmp_path):
 def test_insert_audit_log_returns_row_id(tmp_path):
     """Database.insert_audit_log should return the inserted row's id (lastrowid).
     This is the audit_row_id the chain-persistence code uses for step_audit_id."""
-    from src.infrastructure.database import Database
+    from runtime.infrastructure.database import Database
     db = Database(tmp_path / "x.db")
     rid = db.insert_audit_log(
         task_id="TASK-1", agent="orchestrator",
@@ -156,8 +156,8 @@ def test_insert_audit_log_returns_row_id(tmp_path):
 
 
 def test_log_orchestration_step_returns_audit_row_id(tmp_path):
-    from src.infrastructure.database import Database
-    from src.infrastructure.audit_logger import AuditLogger
+    from runtime.infrastructure.database import Database
+    from runtime.infrastructure.audit_logger import AuditLogger
     db = Database(tmp_path / "x.db")
     rid = AuditLogger(db).log_orchestration_step("TASK-1", 1, {"action": "done"})
     assert isinstance(rid, int)
@@ -181,8 +181,8 @@ def test_chain_branch_auto_advances_on_verdict_match(tmp_path):
     """When a chain leg's worker reports a matching verdict and a next leg
     exists, the orchestrator spawns the next leg instead of waking the parent.
     Parent's orchestration_step_count is NOT bumped."""
-    from src.infrastructure.database import Database
-    from src.orchestrator.chain import ChainState
+    from runtime.infrastructure.database import Database
+    from runtime.orchestrator.chain import ChainState
 
     db = Database(tmp_path / "x.db")
     db.insert_task(TaskRecord(id="TASK-001", team="engineering", brief="parent"))
@@ -209,7 +209,7 @@ def test_chain_branch_auto_advances_on_verdict_match(tmp_path):
         output_summary="built PR #1", verdict=None,  # first leg ungated
     )
 
-    from src.orchestrator.run_step import _advance_chain_for_completed_child
+    from runtime.orchestrator.run_step import _advance_chain_for_completed_child
     outcome = _advance_chain_for_completed_child(
         orch=_orch_with_db(db),
         parent_task_id="TASK-001",
@@ -231,8 +231,8 @@ def test_chain_branch_auto_advances_on_verdict_match(tmp_path):
 
 def test_chain_branch_wakes_parent_on_verdict_mismatch(tmp_path):
     """Mismatched verdict aborts the chain; helper returns 'wake' and clears active_chain."""
-    from src.infrastructure.database import Database
-    from src.orchestrator.chain import ChainState
+    from runtime.infrastructure.database import Database
+    from runtime.orchestrator.chain import ChainState
 
     db = Database(tmp_path / "x.db")
     db.insert_task(TaskRecord(id="TASK-001", team="engineering", brief="parent"))
@@ -256,7 +256,7 @@ def test_chain_branch_wakes_parent_on_verdict_mismatch(tmp_path):
         output_summary="needs changes", verdict="REQUEST_CHANGES",
     )
 
-    from src.orchestrator.run_step import _advance_chain_for_completed_child
+    from runtime.orchestrator.run_step import _advance_chain_for_completed_child
     outcome = _advance_chain_for_completed_child(
         orch=_orch_with_db(db),
         parent_task_id="TASK-001",
@@ -270,8 +270,8 @@ def test_chain_branch_wakes_parent_on_verdict_mismatch(tmp_path):
 def test_chain_final_leg_wakes_manager_and_clears_chain(tmp_path):
     """When the LAST leg matches its expected verdict, parent wakes (not
     auto-done) and active_chain is cleared."""
-    from src.infrastructure.database import Database
-    from src.orchestrator.chain import ChainState
+    from runtime.infrastructure.database import Database
+    from runtime.orchestrator.chain import ChainState
 
     db = Database(tmp_path / "x.db")
     db.insert_task(TaskRecord(id="TASK-P", team="engineering", brief="p"))
@@ -295,7 +295,7 @@ def test_chain_final_leg_wakes_manager_and_clears_chain(tmp_path):
         output_summary="all green", verdict="PASS",
     )
 
-    from src.orchestrator.run_step import _advance_chain_for_completed_child
+    from runtime.orchestrator.run_step import _advance_chain_for_completed_child
     out = _advance_chain_for_completed_child(
         orch=_orch_with_db(db),
         parent_task_id="TASK-P",
@@ -308,8 +308,8 @@ def test_chain_final_leg_wakes_manager_and_clears_chain(tmp_path):
 def test_chain_step_count_not_bumped_on_auto_advance(tmp_path):
     """The whole point of chains: auto-advancing legs must NOT consume the
     parent's orchestration_step_count budget."""
-    from src.infrastructure.database import Database
-    from src.orchestrator.chain import ChainState
+    from runtime.infrastructure.database import Database
+    from runtime.orchestrator.chain import ChainState
 
     db = Database(tmp_path / "x.db")
     db.insert_task(TaskRecord(id="TASK-P", team="engineering", brief="p"))
@@ -341,7 +341,7 @@ def test_chain_step_count_not_bumped_on_auto_advance(tmp_path):
             status="completed", confidence_score=80, output_summary="ok",
             verdict=verdict,
         )
-        from src.orchestrator.run_step import _advance_chain_for_completed_child
+        from runtime.orchestrator.run_step import _advance_chain_for_completed_child
         _advance_chain_for_completed_child(
             orch=_orch_with_db(db),
             parent_task_id="TASK-P",
@@ -357,9 +357,9 @@ def test_chain_summary_appended_to_prior_steps_when_chain_just_cleared(tmp_path)
     wakes, its `prior_steps` history includes a synthetic summary entry so
     the manager can read what happened without re-deriving from raw child
     task records."""
-    from src.infrastructure.database import Database
-    from src.orchestrator.run_step import _build_prior_steps_from_db
-    from src.models import TaskStatus
+    from runtime.infrastructure.database import Database
+    from runtime.orchestrator.run_step import _build_prior_steps_from_db
+    from runtime.models import TaskStatus
 
     db = Database(tmp_path / "x.db")
     db.insert_task(TaskRecord(id="TASK-P", team="engineering", brief="p"))
@@ -408,9 +408,9 @@ def test_chain_summary_appended_to_prior_steps_when_chain_just_cleared(tmp_path)
 def test_chain_summary_not_appended_when_no_chain_ran(tmp_path):
     """When the parent has no chain_auto_advance audit rows, no synthetic
     chain summary is appended — the existing per-child steps stand alone."""
-    from src.infrastructure.database import Database
-    from src.orchestrator.run_step import _build_prior_steps_from_db
-    from src.models import TaskStatus
+    from runtime.infrastructure.database import Database
+    from runtime.orchestrator.run_step import _build_prior_steps_from_db
+    from runtime.models import TaskStatus
 
     db = Database(tmp_path / "x.db")
     db.insert_task(TaskRecord(id="TASK-P", team="engineering", brief="p"))
@@ -431,11 +431,11 @@ def test_cascade_fail_clears_active_chain(tmp_path):
     """When a chain leg's child fails, the cascade-fail path must clear the
     parent's active_chain so the FAILED parent doesn't carry a stale chain
     pointer (would render confusingly in CLI/Web UI)."""
-    from src.infrastructure.database import Database
-    from src.orchestrator.chain import ChainState
-    from src.orchestrator._paths import OrgPaths
-    from src.models import TaskStatus, BlockKind
-    from src.orchestrator.run_step import _enqueue_parent_if_waiting
+    from runtime.infrastructure.database import Database
+    from runtime.orchestrator.chain import ChainState
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.models import TaskStatus, BlockKind
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
 
     db = Database(tmp_path / "x.db")
     db.insert_task(TaskRecord(id="TASK-P", team="engineering", brief="p", parent_task_id=None))
@@ -474,10 +474,10 @@ def test_cascade_fail_clears_active_chain(tmp_path):
 def test_chain_cleared_on_cascade_fail(tmp_path):
     """When a chain leg fails (not completes), the parent's active_chain
     must be cleared so the UI doesn't render a stale chain strip."""
-    from src.infrastructure.database import Database
-    from src.orchestrator.chain import ChainState
-    from src.orchestrator.run_step import _fail
-    from src.models import TaskStatus
+    from runtime.infrastructure.database import Database
+    from runtime.orchestrator.chain import ChainState
+    from runtime.orchestrator.run_step import _fail
+    from runtime.models import TaskStatus
 
     db = Database(tmp_path / "x.db")
     db.insert_task(TaskRecord(id="TASK-P", team="engineering", brief="p", parent_task_id=None))
@@ -503,9 +503,9 @@ def test_chain_summary_filters_to_most_recent_chain_only(tmp_path):
     """When a parent has audit rows from multiple SEQUENTIAL chains, the
     summary covers ONLY the most-recent chain (identified by
     chain_origin_step_audit_id), not a conflated union."""
-    from src.infrastructure.database import Database
-    from src.orchestrator.run_step import _summarize_recent_chain
-    from src.models import TaskStatus
+    from runtime.infrastructure.database import Database
+    from runtime.orchestrator.run_step import _summarize_recent_chain
+    from runtime.models import TaskStatus
 
     db = Database(tmp_path / "x.db")
     db.insert_task(TaskRecord(id="TASK-P", team="engineering", brief="p"))
@@ -547,9 +547,9 @@ def test_chain_summary_suppressed_when_manager_decision_landed_after_chain(tmp_p
     must NOT re-append the stale chain summary. The marker is: an
     `orchestration_step` audit row with id > max chain_auto_advance id means
     the manager has moved on."""
-    from src.infrastructure.database import Database
-    from src.orchestrator.run_step import _summarize_recent_chain
-    from src.models import TaskStatus
+    from runtime.infrastructure.database import Database
+    from runtime.orchestrator.run_step import _summarize_recent_chain
+    from runtime.models import TaskStatus
 
     db = Database(tmp_path / "x.db")
     db.insert_task(TaskRecord(id="TASK-P", team="engineering", brief="p"))

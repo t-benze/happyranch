@@ -9,9 +9,9 @@ import pytest
 def _build_orch_with_task(tmp_path: Path, predecessor_root_status: str):
     """Helper builds the minimal orchestrator state needed to drive
     _maybe_spawn_auto_revisit. Returns (orch, failed_task_id, agent)."""
-    from src.infrastructure.database import Database
-    from src.infrastructure.audit_logger import AuditLogger
-    from src.models import TaskRecord, TaskStatus
+    from runtime.infrastructure.database import Database
+    from runtime.infrastructure.audit_logger import AuditLogger
+    from runtime.models import TaskRecord, TaskStatus
 
     db = Database(tmp_path / "happyranch.db")
     db.insert_task(TaskRecord(
@@ -28,7 +28,7 @@ def _build_orch_with_task(tmp_path: Path, predecessor_root_status: str):
 
 
 def test_returns_true_when_spawned(tmp_path: Path):
-    from src.orchestrator.run_step import _maybe_spawn_auto_revisit
+    from runtime.orchestrator.run_step import _maybe_spawn_auto_revisit
     orch, failed_id, agent = _build_orch_with_task(tmp_path, "failed")
     spawned = _maybe_spawn_auto_revisit(
         orch, failed_id, agent,
@@ -39,7 +39,7 @@ def test_returns_true_when_spawned(tmp_path: Path):
 
 
 def test_returns_false_when_no_chain(tmp_path: Path):
-    from src.orchestrator.run_step import _maybe_spawn_auto_revisit
+    from runtime.orchestrator.run_step import _maybe_spawn_auto_revisit
     orch = MagicMock()
     orch._db.walk_ancestors.return_value = []  # no chain → False
     spawned = _maybe_spawn_auto_revisit(
@@ -59,10 +59,10 @@ def test_returns_false_when_task_cancelled(tmp_path: Path):
     must honour it, else every cancel respawns a new root immediately."""
     from datetime import datetime, timezone
 
-    from src.infrastructure.database import Database
-    from src.infrastructure.audit_logger import AuditLogger
-    from src.models import TaskRecord, TaskStatus
-    from src.orchestrator.run_step import _maybe_spawn_auto_revisit
+    from runtime.infrastructure.database import Database
+    from runtime.infrastructure.audit_logger import AuditLogger
+    from runtime.models import TaskRecord, TaskStatus
+    from runtime.orchestrator.run_step import _maybe_spawn_auto_revisit
 
     db = Database(tmp_path / "happyranch.db")
     db.insert_task(TaskRecord(
@@ -102,7 +102,7 @@ def test_returns_false_when_task_cancelled(tmp_path: Path):
 
 
 def test_returns_false_when_cap_hit(tmp_path: Path, monkeypatch):
-    from src.orchestrator.run_step import (
+    from runtime.orchestrator.run_step import (
         _AUTO_REVISIT_CAP_PER_KIND,
         _maybe_spawn_auto_revisit,
     )
