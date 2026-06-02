@@ -67,6 +67,12 @@ def migrate_artifacts_layout(org_root: Path | str) -> None:
     if old_shared.is_dir() and not new_shared.exists():
         shutil.move(str(old_shared), str(new_shared))
         logger.info("migrated org-shared store: %s → %s", old_shared, new_shared)
+    elif old_shared.is_dir() and new_shared.exists():
+        logger.warning(
+            "migrate_artifacts_layout: both %s and %s exist — skipping move. "
+            "Resolve manually (merge contents or remove one) before restarting the daemon.",
+            old_shared, new_shared,
+        )
     workspaces = org_root / "workspaces"
     if workspaces.is_dir():
         for ws in workspaces.iterdir():
@@ -77,6 +83,12 @@ def migrate_artifacts_layout(org_root: Path | str) -> None:
             if old_per_agent.is_dir() and not new_per_agent.exists():
                 shutil.move(str(old_per_agent), str(new_per_agent))
                 logger.info("migrated per-agent dir: %s → %s", old_per_agent, new_per_agent)
+            elif old_per_agent.is_dir() and new_per_agent.exists():
+                logger.warning(
+                    "migrate_artifacts_layout: both %s and %s exist — skipping move. "
+                    "Resolve manually before restarting the daemon.",
+                    old_per_agent, new_per_agent,
+                )
 
 
 # In-flight registry; shutdown handler walks this to clean up.

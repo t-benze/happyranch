@@ -1,12 +1,11 @@
--- Optional fail-safe for the 2026-06-02 assets→artifacts + per-agent
--- artifacts→output rename. The daemon's lifespan now performs the same
--- column-rename + path-string rewrite idempotently on startup (see
--- src/infrastructure/database.py), so a normal upgrade does NOT require
--- running this SQL.
+-- This script is OPTIONAL. The daemon's lifespan now performs the same
+-- rename idempotently on startup, so a simple daemon restart against an
+-- un-migrated runtime is the supported upgrade path.
 --
--- Run once per per-org SQLite DB at <runtime>/orgs/<slug>/happyranch.db if
--- you want to preview the changes against a copy of the runtime, or to
--- migrate by hand with the daemon stopped before the first daemon start.
+-- Run this script (with the daemon STOPPED) only if you want to:
+--   - Preview the migration against a copy of the runtime before upgrade.
+--   - Manually migrate a runtime when the daemon isn't available.
+--
 -- Safe to re-run only after the column-rename has happened (the shell wrapper
 -- probes for the OLD column and skips the SQL if it's already gone).
 

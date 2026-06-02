@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from pathlib import Path
 
@@ -433,10 +434,12 @@ def test_artifacts_migration_noop_when_already_migrated(tmp_path: Path) -> None:
     assert (org_root / "workspaces" / "dev_agent" / "output" / "TASK-1" / "r.md").read_text() == "done\n"
 
 
-def test_artifacts_migration_skips_when_both_old_and_new_exist(tmp_path: Path) -> None:
+def test_artifacts_migration_skips_when_both_old_and_new_exist(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     """Conflict state: when BOTH old and new dirs exist (partial migration
     or manual reconciliation in progress), the helper MUST skip to avoid
-    destroying data. The old dir stays put for the operator to resolve."""
+    destroying data. The old dir stays put for the operator to resolve.
+    A WARNING must be logged for each conflict case so operators aren't
+    left with no indication that data is stranded."""
     from src.daemon.jobs_runner import migrate_artifacts_layout
 
     org_root = tmp_path / "org"
@@ -450,7 +453,8 @@ def test_artifacts_migration_skips_when_both_old_and_new_exist(tmp_path: Path) -
     (org_root / "workspaces" / "dev_agent" / "output" / "TASK-2").mkdir(parents=True)
     (org_root / "workspaces" / "dev_agent" / "output" / "TASK-2" / "new.md").write_text("new\n")
 
-    migrate_artifacts_layout(org_root)
+    with caplog.at_level(logging.WARNING, logger="happyranch.daemon"):
+        migrate_artifacts_layout(org_root)
 
     # Both old and new shared dirs preserved untouched.
     assert (org_root / "assets" / "old.bin").read_text() == "old\n"
@@ -459,3 +463,11 @@ def test_artifacts_migration_skips_when_both_old_and_new_exist(tmp_path: Path) -
     # Both old and new per-agent dirs preserved untouched.
     assert (org_root / "workspaces" / "dev_agent" / "artifacts" / "TASK-1" / "old.md").read_text() == "old\n"
     assert (org_root / "workspaces" / "dev_agent" / "output" / "TASK-2" / "new.md").read_text() == "new\n"
+
+    # One WARNING per conflict case (org-shared + per-workspace = 2 total).
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) >= 2
+    assert "both" in warnings[0].message.lower()
+    assert "skipping move" in warnings[0].message.lower()
+    assert "both" in warnings[1].message.lower()
+    assert "skipping move" in warnings[1].message.lower()

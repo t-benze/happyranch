@@ -415,6 +415,9 @@ class Database:
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id)"
         )
+        # NOTE: the for-loop below contains DDL (RENAME COLUMN) that has no
+        # explicit commit; the commit() following the UPDATE team='engineering'
+        # block durably persists those DDLs. Don't insert returning code between.
         for ddl in (
             "ALTER TABLE tasks ADD COLUMN final_output_summary TEXT",
             # Manager-only structured decision payload (serialized NextStep

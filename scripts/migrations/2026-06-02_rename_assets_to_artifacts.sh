@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# Optional fail-safe for the 2026-06-02 assets→artifacts + per-agent
-# artifacts→output rename. The daemon's lifespan now performs the same
-# rename idempotently on startup (see src/daemon/app.py +
-# src/infrastructure/database.py), so a normal upgrade does NOT require
-# running this script.
+# This script is OPTIONAL. The daemon's lifespan now performs the same
+# rename idempotently on startup, so a simple daemon restart against an
+# un-migrated runtime is the supported upgrade path.
 #
-# Run this with the daemon stopped if you want to preview the changes against
-# a copy of the runtime, or to migrate by hand before the first daemon start.
+# Run this script (with the daemon STOPPED) only if you want to:
+#   - Preview the migration against a copy of the runtime before upgrade.
+#   - Manually migrate a runtime when the daemon isn't available.
 #
 # Usage:
 #   scripts/migrations/2026-06-02_rename_assets_to_artifacts.sh [<runtime-dir>]
