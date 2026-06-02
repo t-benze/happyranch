@@ -64,8 +64,10 @@ def test_responder_status_present_on_get(client, org_slug, three_agent_thread):
     statuses = kickoff["responder_status"]
     agents = sorted(s["agent_name"] for s in statuses)
     assert agents == ["alpha", "bravo", "charlie"]
-    assert all(s["status"] == "pending" for s in statuses)
+    # pending invocations that haven't spawned a subprocess read as "queued".
+    assert all(s["status"] == "queued" for s in statuses)
     assert all(s["responded_at"] is None for s in statuses)
+    assert all(s["started_at"] is None for s in statuses)
 
 
 def test_responder_status_reflects_replied_state(
@@ -139,3 +141,36 @@ def test_responder_status_maps_timeout_to_failed(
     alpha_entry = next(s for s in kickoff["responder_status"] if s["agent_name"] == "alpha")
     assert alpha_entry["status"] == "failed"
     assert alpha_entry["responded_at"] is not None
+
+
+def test_started_invocation_reads_as_working_on_messages_endpoint(
+    client, org_slug, three_agent_thread, db,
+):
+    """A pending invocation with started_at set reads as 'working', and the
+    /messages endpoint (the strip's primary source) carries responder_status."""
+    thread_id = three_agent_thread
+    row = db._conn.execute(
+        "SELECT invocation_token FROM thread_invocations "
+        "WHERE thread_id = ? AND agent_name = 'alpha' LIMIT 1",
+        (thread_id,),
+    ).fetchone()
+    db.stamp_invocation_started(row["invocation_token"], session_id=None)
+
+    r = client.get(f"/api/v1/orgs/{org_slug}/threads/{thread_id}/messages")
+    assert r.status_code == 200, r.text
+    kickoff = r.json()["messages"][0]
+    statuses = {s["agent_name"]: s for s in kickoff["responder_status"]}
+    assert statuses["alpha"]["status"] == "working"
+    assert statuses["alpha"]["started_at"] is not None
+    assert statuses["bravo"]["status"] == "queued"
+
+
+def test_messages_endpoint_has_responder_parity_with_detail(
+    client, org_slug, three_agent_thread,
+):
+    """Regression: /messages must include responder_status, not []."""
+    thread_id = three_agent_thread
+    r = client.get(f"/api/v1/orgs/{org_slug}/threads/{thread_id}/messages")
+    kickoff = r.json()["messages"][0]
+    assert kickoff["kind"] == "message"
+    assert len(kickoff["responder_status"]) == 3

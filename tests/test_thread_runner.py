@@ -51,6 +51,9 @@ class FakeExecutorResult:
         self.returncode = 0
         self.session_id = "sess-x"
         self.duration_seconds = 1
+        self.agent_session_id = None
+        self.stdout_tail = ""
+        self.stderr_tail = ""
 
 
 class FakeOrgState:
@@ -118,3 +121,338 @@ def test_thread_runner_builds_pi_executor():
     )
 
     assert executor.__class__.__name__ == "PiExecutor"
+
+
+class _ResumeRecordingExec:
+    """Fake executor that records run() kwargs and returns scripted results."""
+    def __init__(self, scripted):
+        self._scripted = list(scripted)
+        self.calls = []
+    def run(self, **kwargs):
+        self.calls.append(kwargs)
+        return self._scripted.pop(0)
+
+
+def _ok_result(agent_session_id="claude-new"):
+    r = FakeExecutorResult(success=True)
+    r.agent_session_id = agent_session_id
+    return r
+
+
+@pytest.mark.asyncio
+async def test_turn1_full_prompt_captures_session_id(tmp_path, monkeypatch):
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(thread_id="THR-001", speaker="founder",
+                             kind=ThreadMessageKind.MESSAGE, body_markdown="hello")
+    inv = db.mint_thread_invocation(thread_id="THR-001", agent_name="alice",
+                                    triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY)
+    ws = tmp_path / "workspaces" / "alice"; ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    import src.daemon.thread_runner as runner_mod
+    fake = _ResumeRecordingExec([_ok_result("claude-sess-001")])
+    monkeypatch.setattr(runner_mod, "_build_executor_for_provider",
+                        lambda provider, settings, paths: fake)
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(org_state=org, invocation_token=inv.invocation_token, settings=Settings())
+
+    assert "resume_session_id" not in fake.calls[0]
+    sid, seq = db.get_thread_session("THR-001", "alice")
+    assert sid == "claude-sess-001"
+    assert seq == 1
+
+
+@pytest.mark.asyncio
+async def test_turn2_resumes_with_delta(tmp_path, monkeypatch):
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(thread_id="THR-001", speaker="founder",
+                             kind=ThreadMessageKind.MESSAGE, body_markdown="m1")
+    db.append_thread_message(thread_id="THR-001", speaker="bob",
+                             kind=ThreadMessageKind.MESSAGE, body_markdown="m2 newest")
+    db.update_thread_session("THR-001", "alice", agent_session_id="claude-prior", last_resumed_seq=1)
+    inv = db.mint_thread_invocation(thread_id="THR-001", agent_name="alice",
+                                    triggering_seq=2, purpose=ThreadInvocationPurpose.REPLY)
+    ws = tmp_path / "workspaces" / "alice"; ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    import src.daemon.thread_runner as runner_mod
+    fake = _ResumeRecordingExec([_ok_result("claude-prior")])
+    monkeypatch.setattr(runner_mod, "_build_executor_for_provider",
+                        lambda provider, settings, paths: fake)
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(org_state=org, invocation_token=inv.invocation_token, settings=Settings())
+
+    assert fake.calls[0].get("resume_session_id") == "claude-prior"
+    delta_prompt = fake.calls[0]["prompt"]
+    assert "m2 newest" in delta_prompt
+    assert "m1" not in delta_prompt
+    _, seq = db.get_thread_session("THR-001", "alice")
+    assert seq == 2
+    actions = {r["action"] for r in db.get_audit_logs("THR-001")}
+    assert "agent_session_reused" in actions
+
+
+@pytest.mark.asyncio
+async def test_resume_not_found_falls_back_to_full(tmp_path, monkeypatch):
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(thread_id="THR-001", speaker="founder",
+                             kind=ThreadMessageKind.MESSAGE, body_markdown="m1")
+    db.update_thread_session("THR-001", "alice", agent_session_id="claude-evicted", last_resumed_seq=0)
+    inv = db.mint_thread_invocation(thread_id="THR-001", agent_name="alice",
+                                    triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY)
+    ws = tmp_path / "workspaces" / "alice"; ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    evicted = FakeExecutorResult(success=False, error="No conversation found for session claude-evicted")
+    evicted.returncode = 1
+    evicted.stderr_tail = "No conversation found"
+    evicted.agent_session_id = None
+
+    import src.daemon.thread_runner as runner_mod
+    fake = _ResumeRecordingExec([evicted, _ok_result("claude-fresh")])
+    monkeypatch.setattr(runner_mod, "_build_executor_for_provider",
+                        lambda provider, settings, paths: fake)
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(org_state=org, invocation_token=inv.invocation_token, settings=Settings())
+
+    assert len(fake.calls) == 2
+    assert fake.calls[0].get("resume_session_id") == "claude-evicted"
+    assert "resume_session_id" not in fake.calls[1]
+    assert "Full message history follows" in fake.calls[1]["prompt"]
+    sid, _ = db.get_thread_session("THR-001", "alice")
+    assert sid == "claude-fresh"
+    actions = {r["action"] for r in db.get_audit_logs("THR-001")}
+    assert "agent_session_evicted_fallback" in actions
+
+
+def test_build_delta_prompt_excludes_old_history_includes_new():
+    from datetime import datetime, timezone
+    from src.daemon.thread_runner import build_thread_delta_prompt
+    from src.models import ThreadRecord, ThreadMessage, ThreadMessageKind
+
+    thread = ThreadRecord(
+        id="THR-001", subject="Refund policy",
+        started_at=datetime(2026, 5, 13, tzinfo=timezone.utc),
+    )
+    new_msgs = [
+        ThreadMessage(
+            thread_id="THR-001", seq=12, speaker="bob",
+            kind=ThreadMessageKind.MESSAGE, body_markdown="brand new point",
+        ),
+    ]
+    triggering = new_msgs[0]
+    prompt = build_thread_delta_prompt(
+        thread=thread, new_messages=new_msgs,
+        invocation_token="TOK-XYZ", invoked_agent="alice",
+        purpose="reply", triggering_seq=12, triggering_message=triggering,
+    )
+    assert "brand new point" in prompt
+    assert "TOK-XYZ" in prompt
+    assert "Decline-by-Default" in prompt
+    # It must NOT re-ship the full transcript header / participant roster.
+    assert "Full message history follows" not in prompt
+    assert "Participants:" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_run_invocation_publishes_started_and_settled(tmp_path, monkeypatch):
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    published: list[tuple[str, dict]] = []
+
+    class _Bus:
+        async def publish(self, topic, event):
+            published.append((topic, event))
+
+    import src.daemon.thread_runner as runner_mod
+
+    class _FakeExec:
+        def __init__(self, **kwargs):
+            pass
+        def run(self, **kwargs):
+            return FakeExecutorResult(success=True)   # no callback → auto-decline
+
+    monkeypatch.setattr(
+        runner_mod, "_build_executor_for_provider",
+        lambda provider, settings, paths: _FakeExec(),
+    )
+
+    class OrgWithBus(FakeOrgState):
+        def __init__(self, db, root):
+            super().__init__(db=db, root=root)
+            self.event_bus = _Bus()
+
+    org = OrgWithBus(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv.invocation_token, settings=Settings(),
+    )
+
+    kinds = [ev["kind"] for _, ev in published]
+    assert "invocation_started" in kinds
+    assert "invocation_settled" in kinds
+    started = next(ev for _, ev in published if ev["kind"] == "invocation_started")
+    assert started["thread_id"] == "THR-001"
+    assert started["agent_name"] == "alice"
+    assert started["seq"] == 1
+    assert started["status"] == "working"
+
+
+@pytest.mark.asyncio
+async def test_same_participant_invocations_serialize(tmp_path, monkeypatch):
+    """Two pending invocations for the same Claude participant must NOT run
+    their subprocesses concurrently — the per-(thread, agent) lock serializes
+    the read→run→update path so resumed-session state can't race (Codex P2)."""
+    import asyncio
+    import threading
+    import time
+
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(thread_id="THR-001", speaker="founder",
+                             kind=ThreadMessageKind.MESSAGE, body_markdown="m1")
+    db.append_thread_message(thread_id="THR-001", speaker="founder",
+                             kind=ThreadMessageKind.MESSAGE, body_markdown="m2")
+    inv1 = db.mint_thread_invocation(thread_id="THR-001", agent_name="alice",
+                                     triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY)
+    inv2 = db.mint_thread_invocation(thread_id="THR-001", agent_name="alice",
+                                     triggering_seq=2, purpose=ThreadInvocationPurpose.REPLY)
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    counter = {"now": 0, "max": 0}
+    clock = threading.Lock()
+
+    class _SlowExec:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, **kwargs):
+            with clock:
+                counter["now"] += 1
+                counter["max"] = max(counter["max"], counter["now"])
+            time.sleep(0.1)
+            with clock:
+                counter["now"] -= 1
+            r = FakeExecutorResult(success=True)
+            r.agent_session_id = "sess-x"
+            return r
+
+    import src.daemon.thread_runner as runner_mod
+    monkeypatch.setattr(runner_mod, "_build_executor_for_provider",
+                        lambda provider, settings, paths: _SlowExec())
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await asyncio.gather(
+        run_invocation(org_state=org, invocation_token=inv1.invocation_token, settings=Settings()),
+        run_invocation(org_state=org, invocation_token=inv2.invocation_token, settings=Settings()),
+    )
+    # Serialized: at most one subprocess in flight for (THR-001, alice) at a time.
+    assert counter["max"] == 1
+
+
+class _RecordingBus:
+    """Captures events published to any thread topic."""
+    def __init__(self):
+        self.events = []
+
+    async def publish(self, topic, event):
+        self.events.append(event)
+
+
+class _OrgWithBus(FakeOrgState):
+    def __init__(self, db, root, bus):
+        super().__init__(db=db, root=root)
+        self.event_bus = bus
+
+
+def _seed_thread_with_invocation(tmp_path):
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(thread_id="THR-001", speaker="founder",
+                             kind=ThreadMessageKind.MESSAGE, body_markdown="hi")
+    inv = db.mint_thread_invocation(thread_id="THR-001", agent_name="alice",
+                                    triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY)
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+    return db, inv
+
+
+@pytest.mark.asyncio
+async def test_decline_publishes_settled_event(tmp_path, monkeypatch):
+    """A silent decline must publish a seq-bearing invocation_settled event so
+    the live 'working' indicator clears (decline_status carries seq=null)."""
+    db, inv = _seed_thread_with_invocation(tmp_path)
+    bus = _RecordingBus()
+
+    import src.daemon.thread_runner as runner_mod
+
+    class _DeclineExec:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, **kwargs):
+            # Mimic the agent calling `happyranch threads decline` mid-session.
+            db.mark_invocation_declined(inv.invocation_token, decline_reason="nothing to add")
+            return FakeExecutorResult(success=True)
+
+    monkeypatch.setattr(runner_mod, "_build_executor_for_provider",
+                        lambda provider, settings, paths: _DeclineExec())
+    org = _OrgWithBus(db=db, root=tmp_path, bus=bus)
+    await run_invocation(org_state=org, invocation_token=inv.invocation_token, settings=Settings())
+
+    settled = [e for e in bus.events if e["kind"] == "invocation_settled"]
+    assert settled, "decline must publish invocation_settled"
+    assert settled[0]["seq"] == 1
+    assert settled[0]["status"] == "declined"
+
+
+@pytest.mark.asyncio
+async def test_runner_crash_publishes_settled_event(tmp_path, monkeypatch):
+    """If the executor raises after invocation_started fired, the crash handler
+    must publish invocation_settled so the indicator doesn't stick on 'working'."""
+    db, inv = _seed_thread_with_invocation(tmp_path)
+    bus = _RecordingBus()
+
+    import src.daemon.thread_runner as runner_mod
+
+    class _BoomExec:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, **kwargs):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(runner_mod, "_build_executor_for_provider",
+                        lambda provider, settings, paths: _BoomExec())
+    org = _OrgWithBus(db=db, root=tmp_path, bus=bus)
+    await run_invocation(org_state=org, invocation_token=inv.invocation_token, settings=Settings())
+
+    kinds = [e["kind"] for e in bus.events]
+    assert "invocation_started" in kinds
+    assert "invocation_settled" in kinds
+    # And the invocation is recorded failed.
+    after = db.get_invocation_any_status(inv.invocation_token)
+    assert after.status.value == "failed"

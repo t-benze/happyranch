@@ -323,3 +323,56 @@ def test_log_thread_resumed_writes_audit_row(tmp_path):
     resumed = next(r for r in rows if r["action"] == "thread_resumed")
     assert resumed["payload"].get("prior_archived_at") == "2026-05-30T12:00:00+00:00"
     assert resumed["agent"] == "founder"
+
+
+def test_thread_session_defaults_and_roundtrip(tmp_path):
+    from src.infrastructure.database import Database
+    from src.models import ThreadRecord
+
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+
+    # Default state: no stored session, watermark 0.
+    assert db.get_thread_session("THR-001", "alice") == (None, 0)
+
+    # Unknown participant also returns the safe default (no row).
+    assert db.get_thread_session("THR-001", "ghost") == (None, 0)
+
+    db.update_thread_session(
+        "THR-001", "alice", agent_session_id="sess-123", last_resumed_seq=7
+    )
+    assert db.get_thread_session("THR-001", "alice") == ("sess-123", 7)
+
+    # Eviction clears the id but the accessor still returns a safe tuple.
+    db.update_thread_session(
+        "THR-001", "alice", agent_session_id=None, last_resumed_seq=0
+    )
+    assert db.get_thread_session("THR-001", "alice") == (None, 0)
+
+
+def test_grouped_invocations_include_started_at(tmp_path):
+    from src.infrastructure.database import Database
+    from src.models import ThreadRecord, ThreadInvocationPurpose, ThreadMessageKind
+
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+
+    grouped = db.list_invocations_for_thread_grouped_by_seq("THR-001")
+    entry = grouped[1][0]
+    assert entry["agent_name"] == "alice"
+    assert entry["status"] == "pending"
+    assert entry["started_at"] is None        # not started yet
+
+    db.stamp_invocation_started(inv.invocation_token, session_id=None)
+    grouped2 = db.list_invocations_for_thread_grouped_by_seq("THR-001")
+    assert grouped2[1][0]["started_at"] is not None

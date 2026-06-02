@@ -407,3 +407,49 @@ def test_timeout_leaves_returncode_none_and_preserves_error(
     assert result.success is False
     assert result.returncode is None
     assert "timed out" in (result.error or "").lower()
+
+
+@patch("src.orchestrator.executors.subprocess")
+def test_claude_executor_captures_session_id_from_json(mock_subprocess, tmp_path, runtime):
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+    mock_subprocess.Popen.return_value = _popen_mock(
+        stdout='{"type":"result","result":"ok","session_id":"claude-abc-123",'
+               '"usage":{"input_tokens":10,"output_tokens":5},"model":"claude"}',
+    )
+    executor = ClaudeExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings(), paths=runtime)
+    result = executor.run(workspace=workspace, prompt="x", timeout_seconds=30)
+
+    assert result.success is True
+    assert result.agent_session_id == "claude-abc-123"
+    # The HappyRanch session id is unchanged and distinct.
+    assert result.session_id != "claude-abc-123"
+
+
+@patch("src.orchestrator.executors.subprocess")
+def test_claude_executor_appends_resume_flag_when_requested(mock_subprocess, tmp_path, runtime):
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+    mock_subprocess.Popen.return_value = _popen_mock(
+        stdout='{"type":"result","session_id":"claude-new-999"}',
+    )
+    executor = ClaudeExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings(), paths=runtime)
+    result = executor.run(
+        workspace=workspace, prompt="delta only", timeout_seconds=30,
+        resume_session_id="claude-prior-555",
+    )
+
+    cmd = mock_subprocess.Popen.call_args[0][0]
+    assert "--resume" in cmd
+    assert cmd[cmd.index("--resume") + 1] == "claude-prior-555"
+    assert result.agent_session_id == "claude-new-999"
+
+
+@patch("src.orchestrator.executors.subprocess")
+def test_claude_executor_omits_resume_flag_by_default(mock_subprocess, tmp_path, runtime):
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+    mock_subprocess.Popen.return_value = _popen_mock(stdout='{"session_id":"s"}')
+    executor = ClaudeExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings(), paths=runtime)
+    executor.run(workspace=workspace, prompt="x", timeout_seconds=30)
+    assert "--resume" not in mock_subprocess.Popen.call_args[0][0]

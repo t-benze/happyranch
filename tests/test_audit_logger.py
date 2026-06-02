@@ -513,3 +513,29 @@ def test_log_chain_auto_advance_writes_expected_payload(db):
     assert payload["triggering_child_id"] == "TASK-2"
     assert payload["triggering_verdict"] == "APPROVE"
     assert payload["chain_origin_step_audit_id"] == 4521
+
+
+def test_log_agent_session_reused_and_evicted(tmp_path):
+    from src.infrastructure.database import Database
+    from src.infrastructure.audit_logger import AuditLogger
+
+    db = Database(tmp_path / "happyranch.db")
+    audit = AuditLogger(db)
+
+    audit.log_agent_session_reused(
+        "THR-001", agent_name="alice", executor="claude",
+        agent_session_id="sess-abc", triggering_seq=4,
+    )
+    audit.log_agent_session_evicted_fallback(
+        "THR-001", agent_name="alice", executor="claude",
+        stale_session_id="sess-old", error="No conversation found",
+    )
+
+    rows = db.get_audit_logs("THR-001")
+    actions = {r["action"] for r in rows}
+    assert "agent_session_reused" in actions
+    assert "agent_session_evicted_fallback" in actions
+    reused = next(r for r in rows if r["action"] == "agent_session_reused")
+    assert reused["payload"]["agent_session_id"] == "sess-abc"
+    assert reused["payload"]["triggering_seq"] == 4
+    assert reused["payload"]["executor"] == "claude"

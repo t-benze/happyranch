@@ -101,6 +101,25 @@ function useThreadsInboxSSE(): void {
   }, [slug, qc]);
 }
 
+/**
+ * Decide how a thread-tail SSE event affects the messages cache:
+ * - 'append'     — a full ThreadMessage from replay (carries `body_markdown`)
+ * - 'invalidate' — a seq-bearing preview or invocation-lifecycle event
+ *   (`invocation_started` / `invocation_settled`): refetch the canonical
+ *   messages so `responder_status` (queued/working/replied/…) updates live.
+ *   The live "agent working on a reply" indicator depends on THIS branch
+ *   firing for invocation events — keep seq-bearing non-message events routed
+ *   here if you refactor the consumer.
+ * - 'ignore'     — no seq (e.g. `decline_status` events published with seq=null)
+ */
+export function classifyTailEvent(
+  ev: { seq?: number | null; body_markdown?: unknown },
+): 'append' | 'invalidate' | 'ignore' {
+  if (ev.seq == null) return 'ignore';
+  if ('body_markdown' in ev) return 'append';
+  return 'invalidate';
+}
+
 function useThreadTailSSE(threadId: string | undefined): void {
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
@@ -118,13 +137,14 @@ function useThreadTailSSE(threadId: string | undefined): void {
       signal: ctl.signal,
       query,
       onMessage: (ev) => {
-        // The first batch of events (replay) is full ThreadMessage objects
-        // (kind ∈ {message, decline, system}). Subsequent live events are
-        // ThreadTailEvent previews. Both carry seq.
-        if (ev.seq == null) return;
-        sinceSeqRef.current = Math.max(sinceSeqRef.current, ev.seq);
+        // Replay events are full ThreadMessage objects (kind ∈ {message,
+        // decline, system}); live events are ThreadTailEvent previews or
+        // invocation-lifecycle events. See classifyTailEvent.
+        const action = classifyTailEvent(ev);
+        if (action === 'ignore') return;
+        sinceSeqRef.current = Math.max(sinceSeqRef.current, ev.seq as number);
 
-        if ('body_markdown' in ev) {
+        if (action === 'append') {
           // Full ThreadMessage from replay — append to cache.
           qc.setQueryData<{ messages: ThreadMessage[] }>(
             ['thread-messages', slug, threadId],
@@ -140,7 +160,8 @@ function useThreadTailSSE(threadId: string | undefined): void {
             },
           );
         } else {
-          // Preview from live channel — invalidate to fetch the canonical row.
+          // Preview or invocation-lifecycle event — invalidate to refetch the
+          // canonical rows (responder_status, incl. queued/working, lives there).
           qc.invalidateQueries({ queryKey: ['thread-messages', slug, threadId] });
         }
       },

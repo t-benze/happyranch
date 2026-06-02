@@ -37,6 +37,11 @@ class ExecutorResult:
     stderr_tail: str = ""
     error: str | None = None
     token_usage: TokenUsage | None = None
+    # The agent CLI's own session id, parsed from its structured output. Distinct
+    # from `session_id` (the HappyRanch sess-<uuid> used for SessionTracker). Used
+    # to resume thread sessions via `--resume` (issue #53). None for executors that
+    # don't emit one and on parse failure.
+    agent_session_id: str | None = None
 
 
 _TAIL_BYTES = 2000
@@ -71,6 +76,24 @@ def _parse_claude_usage(stdout: str) -> TokenUsage | None:
         model=obj.get("model"),
         usage_raw_json=json.dumps(usage),
     )
+
+
+def _parse_claude_session_id(stdout: str) -> str | None:
+    """Extract `.session_id` from Claude Code's `--output-format json` stdout.
+
+    Best-effort: returns None on empty/invalid/missing-field output. The session
+    id is an optimization (resume), never a correctness dependency.
+    """
+    if not stdout or not stdout.strip():
+        return None
+    try:
+        obj = json.loads(stdout.strip())
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    sid = obj.get("session_id")
+    return sid if isinstance(sid, str) and sid else None
 
 
 def _parse_codex_usage(stdout: str) -> TokenUsage | None:
@@ -175,6 +198,7 @@ def _run_command(
     input_text: str | None = None,
     on_started: Callable[[int], None] | None = None,
     usage_parser: Callable[[str], "TokenUsage | None"] | None = None,
+    session_id_parser: Callable[[str], "str | None"] | None = None,
 ) -> ExecutorResult:
     sid = session_id or f"sess-{uuid.uuid4().hex}"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -233,6 +257,13 @@ def _run_command(
         except Exception as exc:  # parser must never break the task
             logger.warning("usage parser raised: %s", exc)
             token_usage = None
+    agent_session_id: str | None = None
+    if session_id_parser is not None:
+        try:
+            agent_session_id = session_id_parser(full_stdout)
+        except Exception as exc:  # parser must never break the task
+            logger.warning("session-id parser raised: %s", exc)
+            agent_session_id = None
     return ExecutorResult(
         success=True,
         duration_seconds=int(time.monotonic() - start_time),
@@ -241,6 +272,7 @@ def _run_command(
         stdout_tail=stdout_tail,
         stderr_tail=stderr_tail,
         token_usage=token_usage,
+        agent_session_id=agent_session_id,
     )
 
 
@@ -258,6 +290,7 @@ class ClaudeExecutor:
         session_id: str | None = None,
         timeout_seconds: int = 1800,
         on_started: Callable[[int], None] | None = None,
+        resume_session_id: str | None = None,
     ) -> ExecutorResult:
         # The workspace's .claude/settings.json `permissions.allow` list is not
         # honoured in headless `-p` mode (observed empirically: Claude Code
@@ -282,6 +315,11 @@ class ClaudeExecutor:
             "--output-format",
             "json",
         ]
+        # Resume an existing session (issue #53) for thread turn 2+: the system
+        # prompt + transcript stay in session memory and only the delta is shipped.
+        # Resume may fork a new id; the caller reads ExecutorResult.agent_session_id.
+        if resume_session_id:
+            cmd += ["--resume", resume_session_id]
         return _run_command(
             cmd,
             workspace,
@@ -289,6 +327,7 @@ class ClaudeExecutor:
             timeout_seconds,
             on_started=on_started,
             usage_parser=_parse_claude_usage,
+            session_id_parser=_parse_claude_session_id,
         )
 
 
