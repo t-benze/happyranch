@@ -6,10 +6,10 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from src.config import Settings
-from src.daemon.app import create_app
-from src.daemon.state import DaemonState
-from src.runtime import RuntimeDir
+from runtime.config import Settings
+from runtime.daemon.app import create_app
+from runtime.daemon.state import DaemonState
+from runtime.runtime import RuntimeDir
 
 
 def _seed_org(org_root: Path) -> None:
@@ -23,7 +23,7 @@ def auth(monkeypatch, tmp_path):
     home = tmp_path / "happyranch-home"
     home.mkdir()
     monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(home))
-    from src.daemon import paths
+    from runtime.daemon import paths
     token = paths.ensure_token()
     return {"Authorization": f"Bearer {token}"}
 
@@ -44,8 +44,8 @@ def test_list_orgs_returns_loaded(tmp_path: Path, auth) -> None:
 def test_list_orgs_surfaces_broken_orgs(tmp_path: Path, auth) -> None:
     """A drifted org appears under 'broken' so the founder isn't left guessing."""
     from datetime import datetime, timezone
-    from src.orchestrator._paths import OrgPaths
-    from src.orchestrator.agent_def import AgentDef, render_agent_text
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
     rt = RuntimeDir.init(tmp_path / "rt")
     _seed_org(rt.orgs_dir / "alpha")
@@ -123,7 +123,7 @@ def test_unload_org_refuses_with_active_tasks(tmp_path: Path, auth) -> None:
     Without this guard the dispatcher drops their re-enqueues as 'unknown
     org' and any in-flight agent callback hits a 404 because OrgDep can no
     longer resolve the slug."""
-    from src.models import TaskRecord, TaskStatus
+    from runtime.models import TaskRecord, TaskStatus
     rt = RuntimeDir.init(tmp_path / "rt")
     _seed_org(rt.orgs_dir / "alpha")
     state = DaemonState.from_runtime(rt, Settings())
@@ -144,7 +144,7 @@ def test_unload_org_refuses_with_active_tasks(tmp_path: Path, auth) -> None:
 def test_unload_org_refuses_with_blocked_tasks(tmp_path: Path, auth) -> None:
     """blocked is non-terminal — a blocked-escalated task is waiting on the
     founder. Unloading the org would make `happyranch resolve-escalation` hit a 404."""
-    from src.models import BlockKind, TaskRecord, TaskStatus
+    from runtime.models import BlockKind, TaskRecord, TaskStatus
     rt = RuntimeDir.init(tmp_path / "rt")
     _seed_org(rt.orgs_dir / "alpha")
     state = DaemonState.from_runtime(rt, Settings())

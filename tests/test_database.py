@@ -3,8 +3,8 @@ import time
 
 import pytest
 
-from src.infrastructure.database import Database, LineageTooDeep
-from src.models import TaskRecord, TaskStatus
+from runtime.infrastructure.database import Database, LineageTooDeep
+from runtime.models import TaskRecord, TaskStatus
 
 
 def test_init_creates_tables(db):
@@ -315,8 +315,8 @@ def test_get_recall_payload_missing_task_returns_none(db):
 
 
 def test_update_task_writes_block_kind_and_note(tmp_path):
-    from src.infrastructure.database import Database
-    from src.models import TaskRecord, TaskStatus, BlockKind
+    from runtime.infrastructure.database import Database
+    from runtime.models import TaskRecord, TaskStatus, BlockKind
 
     db = Database(tmp_path / "happyranch.db")
     db.insert_task(TaskRecord(id="TASK-001", brief="x"))
@@ -337,8 +337,8 @@ def test_update_task_writes_block_kind_and_note(tmp_path):
 def test_update_task_can_clear_block_kind_to_none(tmp_path):
     """When a task unblocks, block_kind and note must be nulled — the existing
     update_task `v is not None` filter would silently drop these writes."""
-    from src.infrastructure.database import Database
-    from src.models import TaskRecord, TaskStatus, BlockKind
+    from runtime.infrastructure.database import Database
+    from runtime.models import TaskRecord, TaskStatus, BlockKind
 
     db = Database(tmp_path / "happyranch.db")
     db.insert_task(TaskRecord(id="TASK-001", brief="x"))
@@ -352,8 +352,8 @@ def test_update_task_can_clear_block_kind_to_none(tmp_path):
 
 
 def test_get_nonterminal_task_ids_includes_blocked(tmp_path):
-    from src.infrastructure.database import Database
-    from src.models import TaskRecord, TaskStatus, BlockKind
+    from runtime.infrastructure.database import Database
+    from runtime.models import TaskRecord, TaskStatus, BlockKind
 
     db = Database(tmp_path / "happyranch.db")
     for tid, status, bk in [
@@ -372,8 +372,8 @@ def test_get_nonterminal_task_ids_includes_blocked(tmp_path):
 
 
 def test_list_blocked_with_kind(tmp_path):
-    from src.infrastructure.database import Database
-    from src.models import TaskRecord, TaskStatus, BlockKind
+    from runtime.infrastructure.database import Database
+    from runtime.models import TaskRecord, TaskStatus, BlockKind
 
     db = Database(tmp_path / "happyranch.db")
     db.insert_task(TaskRecord(id="T-1", brief="x"))
@@ -434,7 +434,7 @@ def test_revisit_of_task_id_column_exists(db):
 
 def test_migration_idempotent_over_restart(tmp_path):
     """Opening a Database twice on the same file must not raise."""
-    from src.infrastructure.database import Database
+    from runtime.infrastructure.database import Database
     path = tmp_path / "restart.db"
     db1 = Database(path)
     db1.close()
@@ -541,7 +541,7 @@ def test_update_task_cannot_change_revisit_of_task_id(db):
 def test_backfill_populates_revisit_of_task_id_from_audit_log(tmp_path):
     """Simulates a pre-feature revisit row: tasks has the column but no value,
     audit_log has the revisit_of entry. Reopening the DB must backfill."""
-    from src.infrastructure.database import Database
+    from runtime.infrastructure.database import Database
 
     path = tmp_path / "backfill.db"
     db = Database(path)
@@ -577,7 +577,7 @@ def test_backfill_populates_revisit_of_task_id_from_audit_log(tmp_path):
 def test_backfill_does_not_overwrite_existing_value(tmp_path):
     """If revisit_of_task_id is already set, backfill must leave it alone —
     idempotent guard against audit-entry drift."""
-    from src.infrastructure.database import Database
+    from runtime.infrastructure.database import Database
     path = tmp_path / "no-overwrite.db"
     db = Database(path)
     db.insert_task(TaskRecord(id="TASK-001", brief="pre"))
@@ -601,7 +601,7 @@ def test_backfill_does_not_overwrite_existing_value(tmp_path):
 
 def test_backfill_is_a_noop_when_nothing_to_backfill(tmp_path):
     """Opening a DB with no revisit_of audit entries must not raise."""
-    from src.infrastructure.database import Database
+    from runtime.infrastructure.database import Database
     path = tmp_path / "clean.db"
     db = Database(path)
     db.insert_task(TaskRecord(id="TASK-001", brief="x"))
@@ -638,7 +638,7 @@ def test_walk_revisit_chain_missing_task_returns_empty(db):
 
 def test_walk_revisit_chain_raises_when_over_limit(db):
     """Defensive bound matching walk_ancestors."""
-    from src.infrastructure.database import LineageTooDeep
+    from runtime.infrastructure.database import LineageTooDeep
     db.insert_task(TaskRecord(id="TASK-000", brief="orig"))
     prev = "TASK-000"
     for i in range(1, 25):
@@ -727,8 +727,8 @@ def test_insert_task_succeeds_on_legacy_schema_with_type_column(tmp_path):
     """Simulate an upgraded DB that still has the legacy `type NOT NULL` column.
     insert_task must supply a sentinel value so the NOT NULL constraint is satisfied."""
     import sqlite3
-    from src.infrastructure.database import Database
-    from src.models import TaskRecord
+    from runtime.infrastructure.database import Database
+    from runtime.models import TaskRecord
 
     db_path = tmp_path / "legacy.db"
 
@@ -825,7 +825,7 @@ def test_insert_task_succeeds_on_legacy_schema_with_type_column(tmp_path):
 
 def test_fresh_db_has_no_legacy_type_column(tmp_path):
     """Fresh DBs must not have the legacy type column — flag stays False."""
-    from src.infrastructure.database import Database
+    from runtime.infrastructure.database import Database
 
     db = Database(tmp_path / "fresh.db")
     assert db._tasks_has_legacy_type_column is False
@@ -833,8 +833,8 @@ def test_fresh_db_has_no_legacy_type_column(tmp_path):
 
 
 def test_task_round_trips_dispatched_from_talk_id(tmp_path):
-    from src.infrastructure.database import Database
-    from src.models import TaskRecord
+    from runtime.infrastructure.database import Database
+    from runtime.models import TaskRecord
 
     db = Database(tmp_path / "happyranch.db")
     task = TaskRecord(
@@ -851,8 +851,8 @@ def test_task_round_trips_dispatched_from_talk_id(tmp_path):
 
 
 def test_task_round_trips_dispatched_from_talk_id_when_null(tmp_path):
-    from src.infrastructure.database import Database
-    from src.models import TaskRecord
+    from runtime.infrastructure.database import Database
+    from runtime.models import TaskRecord
 
     db = Database(tmp_path / "happyranch.db")
     task = TaskRecord(id="TASK-001", brief="normal task", team="engineering")
@@ -863,7 +863,7 @@ def test_task_round_trips_dispatched_from_talk_id_when_null(tmp_path):
 
 
 def test_idempotent_dispatched_from_talk_id_migration(tmp_path):
-    from src.infrastructure.database import Database
+    from runtime.infrastructure.database import Database
 
     db_path = tmp_path / "happyranch.db"
     Database(db_path)            # first init creates the column
@@ -871,8 +871,8 @@ def test_idempotent_dispatched_from_talk_id_migration(tmp_path):
 
 
 def test_dispatched_from_talk_id_index_queryable(tmp_path):
-    from src.infrastructure.database import Database
-    from src.models import TaskRecord
+    from runtime.infrastructure.database import Database
+    from runtime.models import TaskRecord
 
     db = Database(tmp_path / "happyranch.db")
     db.insert_task(TaskRecord(
@@ -1025,7 +1025,7 @@ def test_list_open_notifications_for_task(tmp_path):
 
 def test_mint_escalation_notification_accepts_script_request_kind(tmp_path):
     from datetime import datetime, timedelta, timezone
-    from src.infrastructure.database import Database
+    from runtime.infrastructure.database import Database
 
     db = Database(tmp_path / "happyranch.db")
     db.mint_escalation_notification(
@@ -1044,7 +1044,7 @@ def test_mint_escalation_notification_accepts_script_request_kind(tmp_path):
 
 def test_get_latest_notification_for_sr_returns_most_recent(tmp_path):
     from datetime import datetime, timedelta, timezone
-    from src.infrastructure.database import Database
+    from runtime.infrastructure.database import Database
 
     db = Database(tmp_path / "happyranch.db")
     now = datetime.now(timezone.utc)
@@ -1065,7 +1065,7 @@ def test_get_latest_notification_for_sr_returns_most_recent(tmp_path):
 
 
 def test_get_latest_notification_for_sr_returns_none_when_missing(tmp_path):
-    from src.infrastructure.database import Database
+    from runtime.infrastructure.database import Database
     db = Database(tmp_path / "happyranch.db")
     assert db.get_latest_notification_for_sr("SR-999", kind="job_request") is None
 
@@ -1074,7 +1074,7 @@ def test_get_latest_notification_for_sr_finds_consumed_rows(tmp_path):
     """The terminal-result follow-up needs the parent message_id even after
     the original APPROVE consumed the row."""
     from datetime import datetime, timedelta, timezone
-    from src.infrastructure.database import Database
+    from runtime.infrastructure.database import Database
 
     db = Database(tmp_path / "happyranch.db")
     db.mint_escalation_notification(
@@ -1097,7 +1097,7 @@ def test_get_latest_notification_for_sr_finds_consumed_rows(tmp_path):
 
 def test_try_escalate_succeeds_on_pending_task(db):
     """CAS happy path: PENDING task transitions to BLOCKED(ESCALATED)."""
-    from src.models import BlockKind
+    from runtime.models import BlockKind
     db.insert_task(TaskRecord(id="T-1", brief="x"))
     ok = db.try_escalate("T-1", reason="needs founder")
     assert ok is True
@@ -1143,7 +1143,7 @@ def test_try_escalate_rejects_missing_task(db):
 def test_try_delegate_succeeds_on_pending_parent(db):
     """CAS happy path: parent transitions to BLOCKED(DELEGATED) AND child
     is inserted in one atomic RLock acquisition."""
-    from src.models import BlockKind
+    from runtime.models import BlockKind
     db.insert_task(TaskRecord(id="T-PAR", brief="parent",
                               assigned_agent="engineering_head"))
     child = TaskRecord(

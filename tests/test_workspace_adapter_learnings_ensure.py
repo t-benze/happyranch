@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.config import Settings
-from src.orchestrator.workspace_adapters import PersistentWorkspaceSetup
+from runtime.config import Settings
+from runtime.orchestrator.workspace_adapters import PersistentWorkspaceSetup
 
 
 def _setup(tmp_path: Path) -> tuple[PersistentWorkspaceSetup, Path]:

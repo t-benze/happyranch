@@ -8,15 +8,15 @@ from unittest.mock import patch
 
 import pytest
 
-from src.config import Settings
-from src.daemon.queue import TaskQueue
-from src.daemon.agent_config import load_agent_config
-from src.infrastructure.database import Database
-from src.models import TaskRecord, TaskStatus
-from src.orchestrator._paths import OrgPaths
-from src.orchestrator.orchestrator import Orchestrator
-from src.orchestrator.teams import TeamsRegistry
-from src.runtime import RuntimeDir
+from runtime.config import Settings
+from runtime.daemon.queue import TaskQueue
+from runtime.daemon.agent_config import load_agent_config
+from runtime.infrastructure.database import Database
+from runtime.models import TaskRecord, TaskStatus
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.orchestrator import Orchestrator
+from runtime.orchestrator.teams import TeamsRegistry
+from runtime.runtime import RuntimeDir
 
 
 def _seed_teams(paths: OrgPaths) -> None:
@@ -85,8 +85,8 @@ async def test_full_delegation_roundtrip(tmp_path: Path, monkeypatch):
     call_log: list[tuple[str, str]] = []
     def fake_run_agent(task_id, agent, prompt, on_session_started=None):
         call_log.append((task_id, agent))
-        from src.orchestrator.executors import ExecutorResult
-        from src.models import CompletionReport
+        from runtime.orchestrator.executors import ExecutorResult
+        from runtime.models import CompletionReport
         if agent == "engineering_head":
             # First EH pass delegates; second is `done`.
             past_eh_calls = sum(1 for (_t, a) in call_log if a == "engineering_head")
@@ -152,8 +152,8 @@ async def test_escalation_roundtrip(tmp_path: Path, monkeypatch):
     dispatcher = _LocalDispatcher(orch)
 
     def fake_run_agent(task_id, agent, prompt, on_session_started=None):
-        from src.orchestrator.executors import ExecutorResult
-        from src.models import CompletionReport
+        from runtime.orchestrator.executors import ExecutorResult
+        from runtime.models import CompletionReport
         # First EH call: escalate. Second EH call (after founder resolves):
         # done.
         past = sum(1 for _ in db.get_audit_logs(task_id)
@@ -176,7 +176,7 @@ async def test_escalation_roundtrip(tmp_path: Path, monkeypatch):
     # Task should now be blocked(escalated)
     t = db.get_task("TASK-001")
     assert t.status == TaskStatus.BLOCKED
-    from src.models import BlockKind
+    from runtime.models import BlockKind
     assert t.block_kind == BlockKind.ESCALATED
     assert t.note == "needs founder"
 
@@ -195,11 +195,11 @@ async def test_init_agents_uses_enrollment_executor_for_workspace_bootstrap(
     monkeypatch,
 ):
     from fastapi.testclient import TestClient
-    from src.daemon.app import create_app
-    from src.daemon.state import DaemonState
-    from src.daemon.paths import ensure_token
-    from src.daemon import runtimes as runtimes_mod
-    from src.orchestrator.agent_def import AgentDef, render_agent_text
+    from runtime.daemon.app import create_app
+    from runtime.daemon.state import DaemonState
+    from runtime.daemon.paths import ensure_token
+    from runtime.daemon import runtimes as runtimes_mod
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
     from datetime import datetime, timezone
 
     rt, paths = _make_org_paths(tmp_path)
@@ -222,7 +222,7 @@ async def test_init_agents_uses_enrollment_executor_for_workspace_bootstrap(
     state = DaemonState.from_runtime(rt, settings)
     app = create_app(state)
 
-    with patch("src.daemon.routes.agents.ContextBuilder") as MockCB:
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
         mock_ctx = MockCB.return_value
         mock_ctx.clone_repo.return_value = True
         mock_ctx.ensure_workspace_ready.return_value = None
@@ -247,12 +247,12 @@ async def test_approve_agent_uses_provider_specific_workspace_bootstrap(
     monkeypatch,
 ):
     from fastapi.testclient import TestClient
-    from src.daemon.app import create_app
-    from src.daemon.state import DaemonState
-    from src.daemon.paths import ensure_token
-    from src.daemon import runtimes as runtimes_mod
-    from src.orchestrator import prompt_loader
-    from src.orchestrator.agent_def import AgentDef
+    from runtime.daemon.app import create_app
+    from runtime.daemon.state import DaemonState
+    from runtime.daemon.paths import ensure_token
+    from runtime.daemon import runtimes as runtimes_mod
+    from runtime.orchestrator import prompt_loader
+    from runtime.orchestrator.agent_def import AgentDef
     from datetime import datetime, timezone
 
     rt, paths = _make_org_paths(tmp_path)
@@ -274,7 +274,7 @@ async def test_approve_agent_uses_provider_specific_workspace_bootstrap(
     state = DaemonState.from_runtime(rt, settings)
     app = create_app(state)
 
-    with patch("src.daemon.routes.agents.ContextBuilder") as MockCB:
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
         mock_ctx = MockCB.return_value
         mock_ctx.clone_repo.return_value = True
         mock_ctx.ensure_workspace_ready.return_value = None

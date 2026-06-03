@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from src.orchestrator._paths import OrgPaths
-from src.orchestrator.org_config import OrgConfigError, load_org_config
-from src.runtime import RuntimeDir
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.org_config import OrgConfigError, load_org_config
+from runtime.runtime import RuntimeDir
 
 
 def _runtime(tmp_path: Path) -> OrgPaths:
@@ -77,7 +77,7 @@ def _write_config(paths: OrgPaths, body: str) -> None:
 def test_feishu_notifications_missing_block_returns_none(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     _write_config(runtime, "session_timeout_seconds: 1800\n")
-    from src.orchestrator.org_config import load_org_config
+    from runtime.orchestrator.org_config import load_org_config
     cfg = load_org_config(runtime)
     assert cfg.feishu_notifications is None
 
@@ -91,7 +91,7 @@ feishu_notifications:
   region: feishu
   chat_id: oc_xxx
 """)
-    from src.orchestrator.org_config import load_org_config
+    from runtime.orchestrator.org_config import load_org_config
     cfg = load_org_config(runtime)
     assert cfg.feishu_notifications is None
 
@@ -108,7 +108,7 @@ feishu_notifications:
   app_secret: secret_x
   reply_ttl_hours: 48
 """)
-    from src.orchestrator.org_config import load_org_config, FeishuNotificationsConfig
+    from runtime.orchestrator.org_config import load_org_config, FeishuNotificationsConfig
     cfg = load_org_config(runtime)
     f = cfg.feishu_notifications
     assert f is not None
@@ -131,7 +131,7 @@ feishu_notifications:
   app_id: cli_test
   app_secret: secret_test
 """)
-    from src.orchestrator.org_config import load_org_config
+    from runtime.orchestrator.org_config import load_org_config
     cfg = load_org_config(runtime)
     assert cfg.feishu_notifications.reply_ttl_hours == 72
 
@@ -147,7 +147,7 @@ feishu_notifications:
   app_id: cli_test
   app_secret: secret_test
 """)
-    from src.orchestrator.org_config import load_org_config
+    from runtime.orchestrator.org_config import load_org_config
     try:
         load_org_config(runtime)
     except OrgConfigError as exc:
@@ -167,7 +167,7 @@ feishu_notifications:
   app_id: cli_test
   app_secret: secret_test
 """)
-    from src.orchestrator.org_config import load_org_config
+    from runtime.orchestrator.org_config import load_org_config
     try:
         load_org_config(runtime)
     except OrgConfigError as exc:
@@ -186,7 +186,7 @@ feishu_notifications:
   app_id: cli_test
   app_secret: secret_test
 """)
-    from src.orchestrator.org_config import load_org_config
+    from runtime.orchestrator.org_config import load_org_config
     try:
         load_org_config(runtime)
     except OrgConfigError as exc:
@@ -207,7 +207,7 @@ feishu_notifications:
   app_secret: secret_test
   reply_ttl_hours: 9999
 """)
-    from src.orchestrator.org_config import load_org_config
+    from runtime.orchestrator.org_config import load_org_config
     try:
         load_org_config(runtime)
     except OrgConfigError as exc:
@@ -226,7 +226,7 @@ feishu_notifications:
   chat_id: oc_xxx
   app_secret: s
 """)
-    from src.orchestrator.org_config import load_org_config
+    from runtime.orchestrator.org_config import load_org_config
     try:
         load_org_config(runtime)
     except OrgConfigError as exc:
@@ -245,7 +245,7 @@ feishu_notifications:
   chat_id: oc_xxx
   app_id: cli_x
 """)
-    from src.orchestrator.org_config import load_org_config
+    from runtime.orchestrator.org_config import load_org_config
     try:
         load_org_config(runtime)
     except OrgConfigError as exc:

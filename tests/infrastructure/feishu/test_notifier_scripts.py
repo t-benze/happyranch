@@ -6,16 +6,16 @@ from pathlib import Path
 
 import pytest
 
-from src.infrastructure.audit_logger import AuditLogger
-from src.infrastructure.database import Database
-from src.infrastructure.feishu.notifier import (
+from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.infrastructure.database import Database
+from runtime.infrastructure.feishu.notifier import (
     EscalationNotifier,
     _build_job_request_body,
     _build_job_result_body,
     _SCRIPT_PREVIEW_CAP,
     _RESULT_OUTPUT_PREVIEW_CAP,
 )
-from src.orchestrator.org_config import FeishuNotificationsConfig
+from runtime.orchestrator.org_config import FeishuNotificationsConfig
 
 
 def test_request_body_renders_all_fields():

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from src.orchestrator.executors import _parse_claude_usage
+from runtime.orchestrator.executors import _parse_claude_usage
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -71,7 +71,7 @@ def test_parse_claude_usage_usage_field_is_not_a_dict():
     assert u.usage_raw_json is not None
 
 
-from src.orchestrator.executors import _parse_codex_usage
+from runtime.orchestrator.executors import _parse_codex_usage
 
 
 def _codex_fixture() -> str:
@@ -119,7 +119,7 @@ def test_parse_codex_usage_empty_stdout():
     assert _parse_codex_usage("") is None
 
 
-from src.orchestrator.executors import _parse_opencode_usage
+from runtime.orchestrator.executors import _parse_opencode_usage
 
 
 def _opencode_fixture() -> str:

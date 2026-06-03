@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from src.orchestrator.agent_def import (
+from runtime.orchestrator.agent_def import (
     AgentDef,
     AgentParseError,
     parse_agent_text,

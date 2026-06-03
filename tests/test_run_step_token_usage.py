@@ -17,10 +17,10 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from src.infrastructure.audit_logger import AuditLogger
-from src.infrastructure.database import Database
-from src.models import TokenUsage
-from src.orchestrator.executors import ExecutorResult
+from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.infrastructure.database import Database
+from runtime.models import TokenUsage
+from runtime.orchestrator.executors import ExecutorResult
 
 
 def test_orchestrator_log_session_end_passes_token_usage():

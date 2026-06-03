@@ -1,7 +1,7 @@
 import pytest
 from pathlib import Path
-from src.infrastructure.database import Database
-from src.models import (
+from runtime.infrastructure.database import Database
+from runtime.models import (
     ThreadInvocationPurpose,
     ThreadInvocationStatus,
     ThreadMessageKind,
@@ -90,8 +90,8 @@ def test_count_pending_turn_obligations_excludes_non_pending(tmp_path):
 
 
 def test_purpose_note_task_followup_renders_task_id_and_status():
-    from src.daemon.thread_runner import _purpose_note
-    from src.models import ThreadMessage, ThreadMessageKind
+    from runtime.daemon.thread_runner import _purpose_note
+    from runtime.models import ThreadMessage, ThreadMessageKind
     from datetime import datetime, timezone
 
     triggering = ThreadMessage(
@@ -120,7 +120,7 @@ def test_purpose_note_task_followup_renders_task_id_and_status():
 
 
 def _make_system_msg(seq: int, payload: dict) -> "ThreadMessage":
-    from src.models import ThreadMessage, ThreadMessageKind
+    from runtime.models import ThreadMessage, ThreadMessageKind
     from datetime import datetime, timezone
 
     return ThreadMessage(
@@ -134,7 +134,7 @@ def _make_system_msg(seq: int, payload: dict) -> "ThreadMessage":
 
 
 def test_thread_store_renders_task_completed_system_message():
-    from src.infrastructure.thread_store import render_transcript_body
+    from runtime.infrastructure.thread_store import render_transcript_body
 
     msg = _make_system_msg(
         7,
@@ -156,7 +156,7 @@ def test_thread_store_renders_task_completed_system_message():
 
 
 def test_thread_store_renders_task_failed_with_cancelled_and_revisits():
-    from src.infrastructure.thread_store import render_transcript_body
+    from runtime.infrastructure.thread_store import render_transcript_body
 
     msg = _make_system_msg(
         31,
@@ -179,8 +179,8 @@ def test_thread_store_renders_task_failed_with_cancelled_and_revisits():
 
 
 def test_thread_forward_renders_task_completed_and_failed():
-    from src.daemon.thread_forward import build_forward_body_from_thread
-    from src.models import ThreadMessage, ThreadMessageKind
+    from cli.thread_forward import build_forward_body_from_thread
+    from runtime.models import ThreadMessage, ThreadMessageKind
     from datetime import datetime, timezone
 
     def _sys(seq: int, payload: dict) -> ThreadMessage:
@@ -230,8 +230,8 @@ def test_thread_forward_renders_task_completed_and_failed():
 
 def test_thread_store_task_completed_blockquote_wraps_all_lines():
     """Every rendered line of the system message must be inside the blockquote (start with '> ')."""
-    from src.infrastructure.thread_store import render_transcript_body
-    from src.models import ThreadMessage, ThreadMessageKind
+    from runtime.infrastructure.thread_store import render_transcript_body
+    from runtime.models import ThreadMessage, ThreadMessageKind
     from datetime import datetime, timezone
 
     msg = ThreadMessage(
@@ -293,7 +293,7 @@ def test_bump_thread_turn_cap_unknown_thread_raises(tmp_path):
 
 def test_log_thread_task_followup_enqueued_writes_audit_row(tmp_path):
     db = _fresh_db(tmp_path)
-    from src.infrastructure.audit_logger import AuditLogger
+    from runtime.infrastructure.audit_logger import AuditLogger
     audit = AuditLogger(db)
     audit.log_thread_task_followup_enqueued(
         thread_id="THR-1", original_task_id="TASK-1", terminal_task_id="TASK-7",
@@ -311,7 +311,7 @@ def test_log_thread_task_followup_enqueued_writes_audit_row(tmp_path):
 
 def test_log_thread_followup_skipped_writes_reason_and_extras(tmp_path):
     db = _fresh_db(tmp_path)
-    from src.infrastructure.audit_logger import AuditLogger
+    from runtime.infrastructure.audit_logger import AuditLogger
     audit = AuditLogger(db)
     audit.log_thread_followup_skipped(
         thread_id="THR-1", original_task_id="TASK-1", terminal_task_id="TASK-1",
@@ -327,7 +327,7 @@ def test_log_thread_followup_skipped_writes_reason_and_extras(tmp_path):
 
 def test_log_thread_turn_cap_auto_extended_writes_new_cap(tmp_path):
     db = _fresh_db(tmp_path)
-    from src.infrastructure.audit_logger import AuditLogger
+    from runtime.infrastructure.audit_logger import AuditLogger
     audit = AuditLogger(db)
     audit.log_thread_turn_cap_auto_extended(
         thread_id="THR-1", original_task_id="TASK-1",
@@ -348,12 +348,12 @@ def test_log_thread_turn_cap_auto_extended_writes_new_cap(tmp_path):
 
 import pytest as _pytest
 
-from src.config import Settings
-from src.models import TaskRecord, TaskStatus, ThreadRecord, ThreadStatus
-from src.orchestrator._paths import OrgPaths
-from src.orchestrator.orchestrator import Orchestrator
-from src.orchestrator.teams import TeamsRegistry
-from src.runtime import RuntimeDir
+from runtime.config import Settings
+from runtime.models import TaskRecord, TaskStatus, ThreadRecord, ThreadStatus
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.orchestrator import Orchestrator
+from runtime.orchestrator.teams import TeamsRegistry
+from runtime.runtime import RuntimeDir
 
 
 @_pytest.fixture
@@ -405,7 +405,7 @@ def _payload(row: dict) -> dict:
     (TaskStatus.FAILED,    False, True,  True),   # row 4: founder-cancelled
 ])
 def test_fire_predicate_truth_table(orch_with_db, status, spawned, cancelled, should_fire):
-    from src.orchestrator.run_step import _maybe_post_thread_followup
+    from runtime.orchestrator.run_step import _maybe_post_thread_followup
     orch = orch_with_db
     _seed_dispatched_root(orch)
     if cancelled:
@@ -419,7 +419,7 @@ def test_fire_predicate_truth_table(orch_with_db, status, spawned, cancelled, sh
 
 def test_non_root_task_does_not_fire(orch_with_db):
     """Only root tasks fire. Child terminals must NOT spawn followups."""
-    from src.orchestrator.run_step import _maybe_post_thread_followup
+    from runtime.orchestrator.run_step import _maybe_post_thread_followup
     orch = orch_with_db
     _seed_dispatched_root(orch)
     orch._db.insert_task(TaskRecord(
@@ -434,7 +434,7 @@ def test_non_root_task_does_not_fire(orch_with_db):
 
 def test_walks_revisit_chain_to_find_thread(orch_with_db):
     """Revisit root doesn't carry dispatched_from_thread_id; walk backward to find it."""
-    from src.orchestrator.run_step import _maybe_post_thread_followup
+    from runtime.orchestrator.run_step import _maybe_post_thread_followup
     orch = orch_with_db
     _seed_dispatched_root(orch, task_id="TASK-1")
     orch._db.update_task("TASK-1", status=TaskStatus.FAILED)
@@ -451,7 +451,7 @@ def test_walks_revisit_chain_to_find_thread(orch_with_db):
 
 
 def test_thread_not_open_skips_with_audit(orch_with_db):
-    from src.orchestrator.run_step import _maybe_post_thread_followup
+    from runtime.orchestrator.run_step import _maybe_post_thread_followup
     orch = orch_with_db
     _seed_dispatched_root(orch)
     orch._db.set_thread_status("THR-1", status=ThreadStatus.ARCHIVED)
@@ -466,7 +466,7 @@ def test_thread_not_open_skips_with_audit(orch_with_db):
 
 def test_dispatcher_unresolved_skips_with_audit(orch_with_db):
     """If task_dispatched audit row is missing, audit + skip."""
-    from src.orchestrator.run_step import _maybe_post_thread_followup
+    from runtime.orchestrator.run_step import _maybe_post_thread_followup
     orch = orch_with_db
     # Insert thread + dispatched task but NO audit row.
     orch._db.insert_thread(ThreadRecord(id="THR-X", subject="t"))
@@ -484,7 +484,7 @@ def test_dispatcher_unresolved_skips_with_audit(orch_with_db):
 
 
 def test_turn_cap_auto_extends_when_projected_over(orch_with_db):
-    from src.orchestrator.run_step import _maybe_post_thread_followup
+    from runtime.orchestrator.run_step import _maybe_post_thread_followup
     orch = orch_with_db
     _seed_dispatched_root(orch)
     # Set the cap tight: turns_used=0, pending=0, so projected = 0 + 0 + 1 = 1 > 0 → bump.
@@ -498,7 +498,7 @@ def test_turn_cap_auto_extends_when_projected_over(orch_with_db):
 
 def test_no_dispatched_from_thread_no_op(orch_with_db):
     """Tasks that didn't come from a thread must produce no audit / no invocation."""
-    from src.orchestrator.run_step import _maybe_post_thread_followup
+    from runtime.orchestrator.run_step import _maybe_post_thread_followup
     orch = orch_with_db
     orch._db.insert_task(TaskRecord(
         id="TASK-N", brief="b", team="ops", assigned_agent="alice",
@@ -527,7 +527,7 @@ def orch_with_thread_queue(tmp_path: Path):
     """
     import asyncio
     import threading
-    from src.daemon.thread_queue import ThreadQueue
+    from runtime.daemon.thread_queue import ThreadQueue
 
     rt = RuntimeDir.init(tmp_path / "runtime")
     paths = OrgPaths(root=rt.orgs_dir / "test")
@@ -563,7 +563,7 @@ def test_cancel_in_progress_thread_dispatched_task_fires_followup(orch_with_thre
                          status=TaskStatus.FAILED,
                          cancelled_at=datetime.now(timezone.utc).isoformat())
     # The cancel-race guard branch in run_step would call:
-    from src.orchestrator.run_step import _maybe_post_thread_followup
+    from runtime.orchestrator.run_step import _maybe_post_thread_followup
     _maybe_post_thread_followup(orch, "TASK-1",
                                 status=TaskStatus.FAILED, auto_revisit_spawned=False)
     # Followup minted.
@@ -583,7 +583,7 @@ def test_cancel_blocked_thread_dispatched_task_fires_followup(orch_with_thread_q
     orch._db.update_task("TASK-1",
                          status=TaskStatus.FAILED,
                          cancelled_at=datetime.now(timezone.utc).isoformat())
-    from src.orchestrator.run_step import _maybe_post_thread_followup
+    from runtime.orchestrator.run_step import _maybe_post_thread_followup
     _maybe_post_thread_followup(orch, "TASK-1",
                                 status=TaskStatus.FAILED, auto_revisit_spawned=False)
     invs = orch._db.list_thread_invocations("THR-1")
@@ -593,7 +593,7 @@ def test_cancel_blocked_thread_dispatched_task_fires_followup(orch_with_thread_q
 
 def test_lineage_too_deep_skips_with_audit(orch_with_db):
     """Pathologically deep revisit chain raises LineageTooDeep → audit-skip, no crash."""
-    from src.infrastructure.database import LineageTooDeep
+    from runtime.infrastructure.database import LineageTooDeep
     orch = orch_with_db
     _seed_dispatched_root(orch)
     orch._db.update_task("TASK-1", status=TaskStatus.COMPLETED)
@@ -601,7 +601,7 @@ def test_lineage_too_deep_skips_with_audit(orch_with_db):
     def _raise(*args, **kwargs):
         raise LineageTooDeep("too deep")
     orch._db.walk_revisit_chain = _raise
-    from src.orchestrator.run_step import _maybe_post_thread_followup
+    from runtime.orchestrator.run_step import _maybe_post_thread_followup
     # Must not raise.
     _maybe_post_thread_followup(orch, "TASK-1",
                                 status=TaskStatus.COMPLETED, auto_revisit_spawned=False)
@@ -616,7 +616,7 @@ def test_lineage_too_deep_skips_with_audit(orch_with_db):
 def test_helper_enqueues_invocation_to_thread_queue(orch_with_thread_queue):
     """Successful fire must put a ThreadJob on the org's thread queue."""
     import asyncio
-    from src.orchestrator.run_step import _maybe_post_thread_followup
+    from runtime.orchestrator.run_step import _maybe_post_thread_followup
 
     orch, thread_queue, main_loop = orch_with_thread_queue
     _seed_dispatched_root(orch)
@@ -641,7 +641,7 @@ def test_no_thread_queue_wired_writes_enqueue_unavailable_audit(orch_with_db):
     """When no thread_queue is wired (plain test orchestrator), the helper must
     write a thread_followup_skipped row with reason='enqueue_unavailable' and
     still mint the invocation (so the operator can see it)."""
-    from src.orchestrator.run_step import _maybe_post_thread_followup
+    from runtime.orchestrator.run_step import _maybe_post_thread_followup
     orch = orch_with_db  # no attach_thread_queue call
     _seed_dispatched_root(orch)
     orch._db.update_task("TASK-1", status=TaskStatus.COMPLETED)
@@ -664,7 +664,7 @@ def test_completed_thread_dispatched_task_fires_followup_via_complete(orch_with_
     """End-to-end at the _complete + helper interaction: COMPLETED root → followup minted."""
     orch = orch_with_db
     _seed_dispatched_root(orch)
-    from src.orchestrator.run_step import _complete, _maybe_post_thread_followup
+    from runtime.orchestrator.run_step import _complete, _maybe_post_thread_followup
     _complete(orch, "TASK-1", note="done", output_dir=None)
     _maybe_post_thread_followup(orch, "TASK-1",
                                 status=TaskStatus.COMPLETED, auto_revisit_spawned=False)
@@ -687,7 +687,7 @@ def test_site_d_cancel_race_fires_task_failed_not_completed(orch_with_db):
     passes status=COMPLETED, but the persisted row is FAILED+cancelled_at.
     The helper must read DB-actual status, not the caller's claim, and emit
     task_failed accordingly."""
-    from src.orchestrator.run_step import _maybe_post_thread_followup
+    from runtime.orchestrator.run_step import _maybe_post_thread_followup
     from datetime import datetime, timezone
 
     orch = orch_with_db
@@ -834,7 +834,7 @@ def test_cancel_pending_thread_dispatched_task_fires_followup(orch_with_thread_q
         status=TaskStatus.FAILED,
         cancelled_at=datetime.now(timezone.utc).isoformat(),
     )
-    from src.orchestrator.run_step import _maybe_post_thread_followup
+    from runtime.orchestrator.run_step import _maybe_post_thread_followup
     _maybe_post_thread_followup(
         orch, "TASK-1",
         status=TaskStatus.FAILED, auto_revisit_spawned=False,

@@ -69,7 +69,7 @@ chmod 600 <runtime>/orgs/<slug>/org/config.yaml
 Restart the daemon. On startup, look for log lines like:
 
 ```
-INFO src.daemon.feishu_listener: started Feishu event listener for org=<slug>
+INFO runtime.daemon.feishu_listener: started Feishu event listener for org=<slug>
 ```
 
 ## 6. Test

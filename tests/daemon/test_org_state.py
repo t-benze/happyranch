@@ -5,12 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from src.config import Settings
-from src.daemon.org_state import OrgState
-from src.orchestrator import prompt_loader
-from src.orchestrator._paths import OrgPaths
-from src.orchestrator.agent_def import AgentDef, render_agent_text
-from src.orchestrator.org_validation import OrgConsistencyError
+from runtime.config import Settings
+from runtime.daemon.org_state import OrgState
+from runtime.orchestrator import prompt_loader
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+from runtime.orchestrator.org_validation import OrgConsistencyError
 
 
 def _seed_org(org_root: Path) -> None:

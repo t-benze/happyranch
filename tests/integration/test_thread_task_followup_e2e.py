@@ -16,7 +16,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from src.daemon import paths as paths_mod
+from runtime.daemon import paths as paths_mod
 from tests.integration.conftest import seed_workspace
 
 

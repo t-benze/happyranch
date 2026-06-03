@@ -3,12 +3,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.orchestrator._paths import OrgPaths
-from src.orchestrator.workspace_adapters import (
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.workspace_adapters import (
     allow_rules_for_agent,
     bash_allow_prefixes_for_agent,
 )
-from src.runtime import RuntimeDir
+from runtime.runtime import RuntimeDir
 
 
 def _make_paths(tmp_path: Path) -> OrgPaths:

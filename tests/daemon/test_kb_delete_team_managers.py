@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from src.infrastructure.kb_store import KBEntry, KBStore
+from runtime.infrastructure.kb_store import KBEntry, KBStore
 
 
 _MINIMAL_MD = "# Test entry\n\nBody.\n"

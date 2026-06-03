@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from src.models import ChainLeg, CompletionReport
-from src.orchestrator.chain import (
+from runtime.models import ChainLeg, CompletionReport
+from runtime.orchestrator.chain import (
     AdvanceAction,
     ChainState,
     build_prior_leg_context,

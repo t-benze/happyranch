@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from src.daemon.agent_config import (
+from runtime.daemon.agent_config import (
     add_repo,
     load_agent_config,
     remove_repo,

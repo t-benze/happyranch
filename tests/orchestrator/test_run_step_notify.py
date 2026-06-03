@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from src.models import BlockKind, TaskStatus
-from src.orchestrator import run_step as run_step_mod
+from runtime.models import BlockKind, TaskStatus
+from runtime.orchestrator import run_step as run_step_mod
 
 
 def test_max_steps_path_calls_notify_escalated():

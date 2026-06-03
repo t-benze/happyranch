@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from src.infrastructure.database import Database
+from runtime.infrastructure.database import Database
 
 
 @pytest.fixture()

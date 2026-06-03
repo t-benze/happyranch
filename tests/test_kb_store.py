@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from src.infrastructure.kb_store import (
+from runtime.infrastructure.kb_store import (
     KBEntry,
     KBStore,
     SlugExists,

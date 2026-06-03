@@ -10,7 +10,7 @@ import argparse
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from src.cli import build_parser
+from cli.main import build_parser
 
 
 def _parse(*args: str) -> argparse.Namespace:
@@ -65,7 +65,7 @@ def test_artifacts_get_parses(tmp_path: Path) -> None:
 
 
 def test_cmd_artifacts_put_invokes_client(tmp_path: Path, capsys) -> None:
-    from src.cli import cmd_artifacts_put
+    from cli.main import cmd_artifacts_put
 
     local = tmp_path / "report.pdf"
     local.write_bytes(b"hello")
@@ -77,8 +77,8 @@ def test_cmd_artifacts_put_invokes_client(tmp_path: Path, capsys) -> None:
         "modified_at": "2026-05-27T00:00:00Z",
     }
 
-    with patch("src.cli.OpcClient.from_env", return_value=fake), \
-         patch("src.cli._fetch_available_orgs", return_value=["demo"]):
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli.main._fetch_available_orgs", return_value=["demo"]):
         args = argparse.Namespace(
             org="demo",
             local_path=local,
@@ -99,7 +99,7 @@ def test_cmd_artifacts_put_invokes_client(tmp_path: Path, capsys) -> None:
 
 
 def test_cmd_artifacts_put_with_name_override(tmp_path: Path) -> None:
-    from src.cli import cmd_artifacts_put
+    from cli.main import cmd_artifacts_put
 
     local = tmp_path / "report.pdf"
     local.write_bytes(b"data")
@@ -111,8 +111,8 @@ def test_cmd_artifacts_put_with_name_override(tmp_path: Path) -> None:
         "modified_at": "2026-05-27T00:00:00Z",
     }
 
-    with patch("src.cli.OpcClient.from_env", return_value=fake), \
-         patch("src.cli._fetch_available_orgs", return_value=["demo"]):
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli.main._fetch_available_orgs", return_value=["demo"]):
         args = argparse.Namespace(
             org="demo",
             local_path=local,
@@ -133,7 +133,7 @@ def test_cmd_artifacts_put_with_name_override(tmp_path: Path) -> None:
 
 
 def test_cmd_artifacts_list_invokes_client(capsys) -> None:
-    from src.cli import cmd_artifacts_list
+    from cli.main import cmd_artifacts_list
 
     fake = MagicMock()
     fake.list_artifacts.return_value = {
@@ -143,8 +143,8 @@ def test_cmd_artifacts_list_invokes_client(capsys) -> None:
         ]
     }
 
-    with patch("src.cli.OpcClient.from_env", return_value=fake), \
-         patch("src.cli._fetch_available_orgs", return_value=["demo"]):
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli.main._fetch_available_orgs", return_value=["demo"]):
         args = argparse.Namespace(org="demo")
         cmd_artifacts_list(args)
 
@@ -155,13 +155,13 @@ def test_cmd_artifacts_list_invokes_client(capsys) -> None:
 
 
 def test_cmd_artifacts_list_empty(capsys) -> None:
-    from src.cli import cmd_artifacts_list
+    from cli.main import cmd_artifacts_list
 
     fake = MagicMock()
     fake.list_artifacts.return_value = {"artifacts": []}
 
-    with patch("src.cli.OpcClient.from_env", return_value=fake), \
-         patch("src.cli._fetch_available_orgs", return_value=["demo"]):
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli.main._fetch_available_orgs", return_value=["demo"]):
         args = argparse.Namespace(org="demo")
         cmd_artifacts_list(args)
 
@@ -173,15 +173,15 @@ def test_cmd_artifacts_list_empty(capsys) -> None:
 
 
 def test_cmd_artifacts_get_writes_to_output(tmp_path: Path, capsys) -> None:
-    from src.cli import cmd_artifacts_get
+    from cli.main import cmd_artifacts_get
 
     out = tmp_path / "downloaded.bin"
 
     fake = MagicMock()
     fake.get_artifact.return_value = b"contents"
 
-    with patch("src.cli.OpcClient.from_env", return_value=fake), \
-         patch("src.cli._fetch_available_orgs", return_value=["demo"]):
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli.main._fetch_available_orgs", return_value=["demo"]):
         args = argparse.Namespace(org="demo", name="a.txt", output=out)
         cmd_artifacts_get(args)
 

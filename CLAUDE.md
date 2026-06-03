@@ -32,14 +32,14 @@ In the `protocol/` folder:
 - **Language**: Python 3.11+ (currently running 3.13)
 - **Package manager**: `uv`
 - **Agent executor**: Per-agent. Claude Code (`claude -p ... --permission-mode auto`), Codex (`codex exec --json -`), opencode (`opencode run`), and Pi (`pi -p ... --mode json`) are supported — no third-party agent framework dependency.
-- **Daemon**: FastAPI HTTP service (`src/daemon/`) — serves orchestrator work, SSE task events, agent callbacks
-- **CLI**: Thin HTTP client (`src/client/`) that talks to the daemon over localhost
+- **Daemon**: FastAPI HTTP service (`runtime/daemon/`) — serves orchestrator work, SSE task events, agent callbacks
+- **CLI**: Thin HTTP client (`cli/client/`) that talks to the daemon over localhost
 - **Web UI**: Localhost SPA bundled into the daemon (`web/` → built to `web/dist/` → served at `/`). React 18 + TypeScript strict + Tailwind v4 + TanStack Query v5 + React Router v6. Auth via the same bearer token at `~/.happyranch/daemon.token`, fetched once via `GET /api/v1/auth/bootstrap` (localhost-gated). Architecture: `web/ARCHITECTURE.md`. Spec: `docs/superpowers/specs/2026-05-14-web-ui-design.md`. Launch with `happyranch web`.
 - **Agent workflow**: Shared workspace skills (`protocol/skills/`) — `start-task`, `make-worktree`, `manage-repo`, `manage-agent`, `dispatch`, `jobs`, `talk`, `thread`. The orchestrator prompt references the same SOPs across all executors.
-- **Orchestrator**: Custom Python application. `run_step` is the only primitive — each invocation advances one task by one subprocess call; an async `TaskQueue` + worker pool (`src/daemon/queue.py`) drives re-enqueues across steps. The team manager drives decisions. Implicit `review_verdict` audit rows are written when a delegation terminates (approved / rejected) — the founder reviews those via `happyranch audit` to identify which agents need attention.
+- **Orchestrator**: Custom Python application. `run_step` is the only primitive — each invocation advances one task by one subprocess call; an async `TaskQueue` + worker pool (`runtime/daemon/queue.py`) drives re-enqueues across steps. The team manager drives decisions. Implicit `review_verdict` audit rows are written when a delegation terminates (approved / rejected) — the founder reviews those via `happyranch audit` to identify which agents need attention.
 - **Data models**: Pydantic v2 + pydantic-settings
 - **Database**: SQLite with WAL mode, per-org under `<runtime>/orgs/<slug>/happyranch.db`. Schema covers audit logs and task state, plus per-feature tables (token usage, Feishu correlation, threads) documented in the corresponding specs under `docs/superpowers/specs/`.
-- **Feishu integration**: `lark-oapi>=1.6,<2` (official ByteDance SDK) — outbound `im.v1.message.create` via `src/infrastructure/feishu/`; inbound WS subscription to `im.message.receive_v1` via `src/daemon/feishu_listener.py`.
+- **Feishu integration**: `lark-oapi>=1.6,<2` (official ByteDance SDK) — outbound `im.v1.message.create` via `runtime/infrastructure/feishu/`; inbound WS subscription to `im.message.receive_v1` via `runtime/daemon/feishu_listener.py`.
 - **Knowledge base**: File-backed markdown under `<runtime>/orgs/<slug>/kb/` with atomic writes, substring/tag search, `_index.md` regeneration. No vector store yet.
 - **LLM**: Provider depends on the selected executor
 - **Hosting**: Local Mac Mini
@@ -50,12 +50,16 @@ In the `protocol/` folder:
 ~/projects/happyranch/                 # Source repo
 |-- protocol/                          # System kernel docs (00, 05*, 06) + shared agent skills
 |-- scripts/daemon.sh                  # Launch the FastAPI daemon
-|-- src/
-|   |-- cli.py                         # `happyranch` command — HTTP client
+|-- cli/                               # `happyranch` command — HTTP client (extracted from the daemon package)
+|   |-- main.py                        # `happyranch` command entry point (argparse)
 |   |-- client/                        # httpx-based client + SSE streaming
+|   `-- thread_forward.py              # CLI-only forwarded-context presentation helper
+|-- runtime/
 |   |-- daemon/                        # FastAPI app, routes, queue, sessions, Feishu listener
 |   |-- orchestrator/                  # run_step, executors, capabilities, performance, prompt_loader
-|   `-- infrastructure/                # database, audit_logger, kb_store, talk_store, learnings_store, feishu/
+|   |-- infrastructure/                # database, audit_logger, kb_store, talk_store, learnings_store, feishu/
+|   |-- models.py                      # shared pydantic DTOs (ThreadMessage, ...)
+|   `-- runtime.py                     # RuntimeDir + daemon-token path locators (port_file, read_token, ...)
 |-- tests/                             # Unit + integration (with fake CLIs)
 `-- examples/orgs/hk-macau-tourism/    # Canonical sample org tree
 
@@ -80,7 +84,7 @@ HTTP routes: per-org under `/api/v1/orgs/<slug>/...`; container-level under `/ap
 
 ## Configuration
 
-Operational settings (`Settings` in `src/config.py`) resolve from, highest precedence first: (1) `HAPPYRANCH_`-prefixed **env vars**, (2) **`<daemon-home>/config.yaml`** (default `~/.happyranch/config.yaml`; honors `HAPPYRANCH_DAEMON_HOME`; keys are field names *without* the prefix, e.g. `queue_workers: 6`), (3) code defaults. There is **no `.env` support** — `settings_customise_sources` drops the dotenv source and adds `YamlConfigSettingsSource` (resolved per-instantiation, so tests can redirect via `HAPPYRANCH_DAEMON_HOME`). The home resolver is inlined in `config.py` (`_daemon_home`) rather than importing `src.daemon.paths`, to keep `config` free of a `daemon` dependency. Missing file → defaults (no raise). Do not confuse this daemon-level `config.yaml` with each org's `<runtime>/orgs/<slug>/org/config.yaml` (per-org settings, loaded by `src/orchestrator/org_config.py`). Runtime paths are derived from the runtime directory.
+Operational settings (`Settings` in `runtime/config.py`) resolve from, highest precedence first: (1) `HAPPYRANCH_`-prefixed **env vars**, (2) **`<daemon-home>/config.yaml`** (default `~/.happyranch/config.yaml`; honors `HAPPYRANCH_DAEMON_HOME`; keys are field names *without* the prefix, e.g. `queue_workers: 6`), (3) code defaults. There is **no `.env` support** — `settings_customise_sources` drops the dotenv source and adds `YamlConfigSettingsSource` (resolved per-instantiation, so tests can redirect via `HAPPYRANCH_DAEMON_HOME`). The home resolver is inlined in `config.py` (`_daemon_home`) rather than importing `runtime.daemon.paths`, to keep `config` free of a `daemon` dependency. Missing file → defaults (no raise). Do not confuse this daemon-level `config.yaml` with each org's `<runtime>/orgs/<slug>/org/config.yaml` (per-org settings, loaded by `runtime/orchestrator/org_config.py`). Runtime paths are derived from the runtime directory.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -100,7 +104,7 @@ Operational settings (`Settings` in `src/config.py`) resolve from, highest prece
 `Orchestrator._resolve_session_timeout(agent_name, task_id=...)` walks three layers, highest precedence first:
 
 1. **Task override** — `tasks.session_timeout_seconds` column, set via `happyranch revisit ... --session-timeout-seconds N` and inherited by every child spawned from that task.
-2. **Org override** — `session_timeout_seconds:` in `<runtime>/orgs/<slug>/org/config.yaml` (loaded by `src/orchestrator/org_config.py`).
+2. **Org override** — `session_timeout_seconds:` in `<runtime>/orgs/<slug>/org/config.yaml` (loaded by `runtime/orchestrator/org_config.py`).
 3. **Code default** — `Settings.session_timeout_seconds` (1800s; overridable via `HAPPYRANCH_SESSION_TIMEOUT_SECONDS`).
 
 Positive integers only; `<= 0` or non-int raises at parse time. The `agent_name` argument is unused (kept for call-site symmetry); legacy `session_timeout_seconds` in agent frontmatter is silently ignored.
@@ -143,7 +147,7 @@ Per-agent extras are declared in agent frontmatter (`<runtime>/orgs/<slug>/org/a
 1. `.claude/settings.json` `permissions.allow` — written by `ClaudeWorkspaceAdapter.write_settings_json` (used by interactive sessions; surfaces intent).
 2. `--allowedTools` on the CLI — passed by `ClaudeExecutor.run` for headless sessions.
 
-Both surfaces are generated from `allow_rules_for_agent(agent_name, cli=...)` in `src/orchestrator/workspace_adapters.py` (settings uses `Bash(<cmd>:*)`; CLI uses `Bash(<cmd> *)`). **Do not hand-edit either** — `happyranch init-agent` rewrites them. The two-surface requirement exists because Claude Code 2.1.x ignores `permissions.allow` in headless `-p` mode; without the CLI flag, the agent's first `happyranch ...` call is blocked and the task silently rejects.
+Both surfaces are generated from `allow_rules_for_agent(agent_name, cli=...)` in `runtime/orchestrator/workspace_adapters.py` (settings uses `Bash(<cmd>:*)`; CLI uses `Bash(<cmd> *)`). **Do not hand-edit either** — `happyranch init-agent` rewrites them. The two-surface requirement exists because Claude Code 2.1.x ignores `permissions.allow` in headless `-p` mode; without the CLI flag, the agent's first `happyranch ...` call is blocked and the task silently rejects.
 
 **When adding new orchestrator capabilities, keep them under the `happyranch` binary** so they stay inside the baseline allow rule. Only add a raw-tool prefix when the operation genuinely cannot be wrapped in `happyranch` (e.g., third-party CLI for external infra we don't own).
 
@@ -155,15 +159,15 @@ Both surfaces are generated from `allow_rules_for_agent(agent_name, cli=...)` in
 
 **Docs split** — `README.md` is for end users (setup, CLI commands, configuration). `CLAUDE.md` (this file) is for developers and AI agents working on the codebase. Design docs in `protocol/` and specs in `docs/superpowers/specs/` are the source of truth for behavior — keep agent system prompts in sync.
 
-**Starting a new feature** — Read the relevant design doc first (e.g., `protocol/05c-orchestrator.md`). Follow existing patterns in `src/orchestrator/`. Write tests alongside implementation.
+**Starting a new feature** — Read the relevant design doc first (e.g., `protocol/05c-orchestrator.md`). Follow existing patterns in `runtime/orchestrator/`. Write tests alongside implementation.
 
 ## Org content APIs
 
-`AgentDef` (`src/orchestrator/agent_def.py`) is the in-memory representation of an agent file: markdown-with-YAML-frontmatter, parsed/rendered by `parse_agent_text` / `render_agent_text`. Fields: `name`, `team`, `role` (worker|manager), `executor` (claude|codex|opencode|pi), `description`, `allow_rules`, `repos`, `enrolled_by`, `enrolled_at_task`, `enrolled_at`, `system_prompt` (body). **No `session_timeout_seconds` field** — see resolution above.
+`AgentDef` (`runtime/orchestrator/agent_def.py`) is the in-memory representation of an agent file: markdown-with-YAML-frontmatter, parsed/rendered by `parse_agent_text` / `render_agent_text`. Fields: `name`, `team`, `role` (worker|manager), `executor` (claude|codex|opencode|pi), `description`, `allow_rules`, `repos`, `enrolled_by`, `enrolled_at_task`, `enrolled_at`, `system_prompt` (body). **No `session_timeout_seconds` field** — see resolution above.
 
-`src/orchestrator/prompt_loader.py` is the only API for reading/writing agent files: `load_agent`, `list_agents`, `list_pending`, `write_pending_agent`, `approve_agent`, `reject_agent`. Routes (`src/daemon/routes/agents.py`) and the orchestrator all read through this module against the per-org root.
+`runtime/orchestrator/prompt_loader.py` is the only API for reading/writing agent files: `load_agent`, `list_agents`, `list_pending`, `write_pending_agent`, `approve_agent`, `reject_agent`. Routes (`runtime/daemon/routes/agents.py`) and the orchestrator all read through this module against the per-org root.
 
-`TeamsRegistry` (`src/orchestrator/teams.py`) is seeded from `teams.yaml` and auto-persists on `add_worker` / `remove_worker`. There is no `DEFAULT_LAYOUT` — an org without `teams.yaml` is treated as empty.
+`TeamsRegistry` (`runtime/orchestrator/teams.py`) is seeded from `teams.yaml` and auto-persists on `add_worker` / `remove_worker`. There is no `DEFAULT_LAYOUT` — an org without `teams.yaml` is treated as empty.
 
 ## Task status vocabularies
 
@@ -180,7 +184,7 @@ Full schema with worked examples lives in `protocol/00-completion-contract.md` (
 
 ## Inline delegation chains
 
-A manager can declare a multi-leg workflow in one `delegate` decision using `NextStep.then` (list of `ChainLeg`) and optional per-leg `expect_verdict` gates. The orchestrator auto-advances to the next leg whenever a child terminates COMPLETED with a matching verdict, without consuming the manager's step budget. Spec: `docs/superpowers/specs/2026-05-30-inline-delegation-chain-design.md`. Protocol: `protocol/00-completion-contract.md` ("Inline delegation chains"). Implementation: `src/orchestrator/chain.py` (pure-logic state model + helpers) wired from `src/orchestrator/run_step.py`.
+A manager can declare a multi-leg workflow in one `delegate` decision using `NextStep.then` (list of `ChainLeg`) and optional per-leg `expect_verdict` gates. The orchestrator auto-advances to the next leg whenever a child terminates COMPLETED with a matching verdict, without consuming the manager's step budget. Spec: `docs/superpowers/specs/2026-05-30-inline-delegation-chain-design.md`. Protocol: `protocol/00-completion-contract.md` ("Inline delegation chains"). Implementation: `runtime/orchestrator/chain.py` (pure-logic state model + helpers) wired from `runtime/orchestrator/run_step.py`.
 
 Example decision payload:
 ```json
@@ -267,11 +271,11 @@ All use `--from-file <path>` — see "Agent permission model" for why.
 
 ## Knowledge Base
 
-Per-org under `<runtime>/orgs/<slug>/kb/` (orgs do not share a KB). One entry shape — `KBEntry.type` is freeform; route validation only enforces non-empty `slug/title/type/topic`. The dedicated `kb precedent` route was removed; founder rulings flow through plain `happyranch kb add` with `source_task: <task-id>` in frontmatter. Implementation: `src/infrastructure/kb_store.py` + `src/daemon/routes/kb.py` (atomic writes, `kb_lock`, substring/tag search, `_index.md` regen). Full rules: `protocol/06-knowledge-base.md`. The context builder injects a "Knowledge Base" section into every agent's bootstrap doc; `start-task` has explicit consult + contribute steps.
+Per-org under `<runtime>/orgs/<slug>/kb/` (orgs do not share a KB). One entry shape — `KBEntry.type` is freeform; route validation only enforces non-empty `slug/title/type/topic`. The dedicated `kb precedent` route was removed; founder rulings flow through plain `happyranch kb add` with `source_task: <task-id>` in frontmatter. Implementation: `runtime/infrastructure/kb_store.py` + `runtime/daemon/routes/kb.py` (atomic writes, `kb_lock`, substring/tag search, `_index.md` regen). Full rules: `protocol/06-knowledge-base.md`. The context builder injects a "Knowledge Base" section into every agent's bootstrap doc; `start-task` has explicit consult + contribute steps.
 
 ## Per-Agent Learnings
 
-Per-agent under `<runtime>/orgs/<slug>/workspaces/<agent>/learnings/`, one `LRN-NNN-<slug>.md` per entry. Full spec: `docs/superpowers/specs/2026-05-13-per-agent-learnings-structural-upgrade-design.md`. Implementation: `src/infrastructure/learnings_store.py` + the `/agents/{name}/learnings/entries/...` block in `src/daemon/routes/agents.py`. CLI: `happyranch learning list|get|search|add|update|promote|reindex`.
+Per-agent under `<runtime>/orgs/<slug>/workspaces/<agent>/learnings/`, one `LRN-NNN-<slug>.md` per entry. Full spec: `docs/superpowers/specs/2026-05-13-per-agent-learnings-structural-upgrade-design.md`. Implementation: `runtime/infrastructure/learnings_store.py` + the `/agents/{name}/learnings/entries/...` block in `runtime/daemon/routes/agents.py`. CLI: `happyranch learning list|get|search|add|update|promote|reindex`.
 
 **Load-bearing invariants** (full catalog: spec §Non-obvious):
 
@@ -283,8 +287,8 @@ Per-agent under `<runtime>/orgs/<slug>/workspaces/<agent>/learnings/`, one `LRN-
 
 Per-org at `<runtime>/orgs/<slug>/artifacts/`. Flat directory of opaque files —
 persistent artifacts produced by any agent and visible to every other agent
-in the same org. Implementation: `src/infrastructure/artifact_store.py` +
-`src/daemon/routes/artifacts.py`. CLI: `happyranch artifacts {put,list,get}`.
+in the same org. Implementation: `runtime/infrastructure/artifact_store.py` +
+`runtime/daemon/routes/artifacts.py`. CLI: `happyranch artifacts {put,list,get}`.
 
 **Load-bearing invariants** (full catalog: plan §Non-obvious):
 
@@ -310,7 +314,7 @@ Auto-revisit on opaque agent failures (subprocess timeout, no-completion-callbac
 
 **Failure kinds** (`run_step._classify_failure_kind`): `session_timeout` (`error.startswith("Session timed out after")` — written by `executors.py:197`), `no_callback` (`success=True and report is None`, the TASK-045 class), `rate_limit` (substring `"hit your limit"` + `"reset"` OR `"rate limit"` in any of error / stdout_tail / stderr_tail), `executor_error` (non-zero `returncode`), `agent_exception` (exception escapes `_run_agent`). The triad `_SESSION_TIMEOUT_CLASS = {"session_timeout", "no_callback", "rate_limit"}` is a routing-class predicate exposed for future per-class policy; v1 routes all five kinds identically. `session_failed` is the defensive fallback for novel modes.
 
-A sixth kind, `daemon_restart`, is injected by `_sweep_on_startup` (`src/daemon/__main__.py`) — not by the classifier — when post-restart recovery force-fails an `IN_PROGRESS` task. The sweep routes through the same `_maybe_spawn_auto_revisit` → `_enqueue_parent_if_waiting` → `_notify_failure_if_eligible` triad as the in-process opaque-failure sites; this replaces an older asymmetric "wake the parent for a re-decision step" path that left the daemon-restart-failed sibling as a poisoned `FAILED` row in the children list, detonating the parent later via cascade-fail when an OTHER sibling completed (TASK-687).
+A sixth kind, `daemon_restart`, is injected by `_sweep_on_startup` (`runtime/daemon/__main__.py`) — not by the classifier — when post-restart recovery force-fails an `IN_PROGRESS` task. The sweep routes through the same `_maybe_spawn_auto_revisit` → `_enqueue_parent_if_waiting` → `_notify_failure_if_eligible` triad as the in-process opaque-failure sites; this replaces an older asymmetric "wake the parent for a re-decision step" path that left the daemon-restart-failed sibling as a poisoned `FAILED` row in the children list, detonating the parent later via cascade-fail when an OTHER sibling completed (TASK-687).
 
 **Load-bearing invariants** (full catalog: spec §10):
 
@@ -334,7 +338,7 @@ Every `kind=message` written to a thread mints a `REPLY` invocation for every pa
 
 ## Thread agent-session resume (turn 2+ via `--resume`)
 
-Claude-backed thread participants reuse their Claude session across turns instead of re-shipping the full transcript + workspace `CLAUDE.md` every invocation. Per-`(thread, agent)` state lives in two columns on `thread_participants`: `agent_session_id` (the resumable session; executor-neutral name) and `last_resumed_seq` (the delta watermark). Issue #53. Implementation: `src/daemon/thread_runner.py` (`build_thread_delta_prompt`, `_is_session_not_found`, resume wiring in `run_invocation`), `src/orchestrator/executors.py` (`ClaudeExecutor.run` `resume_session_id` param + `ExecutorResult.agent_session_id` + `_parse_claude_session_id`), `src/infrastructure/database.py` (`get_thread_session` / `update_thread_session`), `src/infrastructure/audit_logger.py` (`log_agent_session_reused` / `log_agent_session_evicted_fallback`). Plan: `docs/superpowers/plans/2026-06-02-thread-claude-session-resume.md`.
+Claude-backed thread participants reuse their Claude session across turns instead of re-shipping the full transcript + workspace `CLAUDE.md` every invocation. Per-`(thread, agent)` state lives in two columns on `thread_participants`: `agent_session_id` (the resumable session; executor-neutral name) and `last_resumed_seq` (the delta watermark). Issue #53. Implementation: `runtime/daemon/thread_runner.py` (`build_thread_delta_prompt`, `_is_session_not_found`, resume wiring in `run_invocation`), `runtime/orchestrator/executors.py` (`ClaudeExecutor.run` `resume_session_id` param + `ExecutorResult.agent_session_id` + `_parse_claude_session_id`), `runtime/infrastructure/database.py` (`get_thread_session` / `update_thread_session`), `runtime/infrastructure/audit_logger.py` (`log_agent_session_reused` / `log_agent_session_evicted_fallback`). Plan: `docs/superpowers/plans/2026-06-02-thread-claude-session-resume.md`.
 
 **Load-bearing invariants:**
 
@@ -350,7 +354,7 @@ Claude-backed thread participants reuse their Claude session across turns instea
 
 ## Thread task-followup (system bridges task terminal → thread)
 
-When a task dispatched from a thread reaches its true terminal state, `_maybe_post_thread_followup` (`src/orchestrator/run_step.py`) appends a `task_completed` or `task_failed` SYSTEM message to the originating thread and mints a fresh invocation with purpose `TASK_FOLLOWUP` so the dispatching agent can compose the result-bearing reply it promised. Spec: `docs/superpowers/specs/2026-05-28-thread-task-followup-design.md`.
+When a task dispatched from a thread reaches its true terminal state, `_maybe_post_thread_followup` (`runtime/orchestrator/run_step.py`) appends a `task_completed` or `task_failed` SYSTEM message to the originating thread and mints a fresh invocation with purpose `TASK_FOLLOWUP` so the dispatching agent can compose the result-bearing reply it promised. Spec: `docs/superpowers/specs/2026-05-28-thread-task-followup-design.md`.
 
 **Load-bearing invariants** (full catalog: spec §Non-obvious):
 
@@ -369,12 +373,12 @@ coordination surfaces; iterative work lives in task trees." Spec:
 **Load-bearing invariants** (full catalog: spec §Non-obvious):
 
 - **Applies to managers AND workers uniformly.** Pre-2026-05-28 managers were exempted; THR-010 surfaced the exemption as a footgun. Don't re-introduce a manager carve-out under a different name — the self-only check supersedes the prior `target_not_in_team` branch (now removed).
-- **Doctrine is system-prompt-injected** via `_thread_talk_dispatch_doctrine_section()` in `src/orchestrator/workspace_adapters.py`. The reserved header `"Thread and Talk Dispatch are Self-Only"` is registered in `_RESERVED_AGENT_BODY_HEADERS` so an agent `.md` body cannot author a colliding section. Don't duplicate via a per-org KB entry.
-- **Shared error hint at `src/daemon/routes/_doctrine.py`** (`SELF_DISPATCH_HINT`). Both threads + talks routes import it; keep wording in sync.
+- **Doctrine is system-prompt-injected** via `_thread_talk_dispatch_doctrine_section()` in `runtime/orchestrator/workspace_adapters.py`. The reserved header `"Thread and Talk Dispatch are Self-Only"` is registered in `_RESERVED_AGENT_BODY_HEADERS` so an agent `.md` body cannot author a colliding section. Don't duplicate via a per-org KB entry.
+- **Shared error hint at `runtime/daemon/routes/_doctrine.py`** (`SELF_DISPATCH_HINT`). Both threads + talks routes import it; keep wording in sync.
 
 ## Jobs (founder-approved + agent-autonomous)
 
-Per-org `jobs` SQLite table; per-org files at `<runtime>/orgs/<slug>/jobs/JOB-NNN.{out,err,script}`. Spec: `docs/superpowers/specs/2026-05-26-jobs-design.md`. Implementation: `src/daemon/routes/jobs.py` (HTTP), `src/daemon/jobs_runner.py` (subprocess + stream pumps + shutdown cleanup), `src/infrastructure/database.py` (table + state-transition methods), `src/infrastructure/audit_logger.py` (`log_job_*` methods).
+Per-org `jobs` SQLite table; per-org files at `<runtime>/orgs/<slug>/jobs/JOB-NNN.{out,err,script}`. Spec: `docs/superpowers/specs/2026-05-26-jobs-design.md`. Implementation: `runtime/daemon/routes/jobs.py` (HTTP), `runtime/daemon/jobs_runner.py` (subprocess + stream pumps + shutdown cleanup), `runtime/infrastructure/database.py` (table + state-transition methods), `runtime/infrastructure/audit_logger.py` (`log_job_*` methods).
 
 Routes under `/api/v1/orgs/{slug}/jobs/`: `POST /submit` (agent callback; auth via session-binding chain OR talk-path), `GET /`, `GET /{id}`, `POST /{id}/run`, `POST /{id}/reject`, `GET /{id}/output`, `GET /{id}/events` (SSE). The `submit` route is in the OpenAPI EXCLUDED set; everything else is mirrored in `web/src/lib/api/jobs.ts`.
 
@@ -390,7 +394,7 @@ Routes under `/api/v1/orgs/{slug}/jobs/`: `POST /submit` (agent callback; auth v
 
 ## Task blocked-by-job (system auto-resumes from job terminals)
 
-Per-org `tasks.blocked_on_job_ids` (JSON text column) + new `BlockKind.BLOCKED_ON_JOB`. Spec: `docs/superpowers/specs/2026-05-28-task-blocked-by-job-design.md`. Implementation across `src/orchestrator/run_step.py` (entry-state branch + block-on-jobs branch in self-blocked handler + CAS-win audit + read-only `_maybe_resume_blocked_task` helper + `_blocked_jobs_resume_header_if_applicable`), `src/daemon/jobs_runner.py` (caller A bridge via `fire_resume_check_for_job`), and `src/daemon/app.py` (caller C startup recovery scan).
+Per-org `tasks.blocked_on_job_ids` (JSON text column) + new `BlockKind.BLOCKED_ON_JOB`. Spec: `docs/superpowers/specs/2026-05-28-task-blocked-by-job-design.md`. Implementation across `runtime/orchestrator/run_step.py` (entry-state branch + block-on-jobs branch in self-blocked handler + CAS-win audit + read-only `_maybe_resume_blocked_task` helper + `_blocked_jobs_resume_header_if_applicable`), `runtime/daemon/jobs_runner.py` (caller A bridge via `fire_resume_check_for_job`), and `runtime/daemon/app.py` (caller C startup recovery scan).
 
 **Load-bearing invariants** (full catalog: spec §Non-obvious):
 
@@ -405,8 +409,8 @@ Per-org opt-in via `feishu_notifications` in `<runtime>/orgs/<slug>/org/config.y
 
 **Entry points:**
 
-- **Outbound** — `Orchestrator.notify_escalated` / `notify_failed`, loop-aware fire-and-forget. `EscalationNotifier` (`src/infrastructure/feishu/notifier.py`) mints `escalation_notifications` rows keyed by Feishu `message_id`. Send failures audit `escalation_notify_failed` and are swallowed; no row minted on send failure.
-- **Inbound** — `FeishuEventListener` (`src/daemon/feishu_listener.py`), one WS connection per org. WS thread runs `lark.ws.Client.start()` (blocking) and bridges to the asyncio loop via `asyncio.run_coroutine_threadsafe`. Wired from FastAPI lifespan and `DaemonState.add_org`.
+- **Outbound** — `Orchestrator.notify_escalated` / `notify_failed`, loop-aware fire-and-forget. `EscalationNotifier` (`runtime/infrastructure/feishu/notifier.py`) mints `escalation_notifications` rows keyed by Feishu `message_id`. Send failures audit `escalation_notify_failed` and are swallowed; no row minted on send failure.
+- **Inbound** — `FeishuEventListener` (`runtime/daemon/feishu_listener.py`), one WS connection per org. WS thread runs `lark.ws.Client.start()` (blocking) and bridges to the asyncio loop via `asyncio.run_coroutine_threadsafe`. Wired from FastAPI lifespan and `DaemonState.add_org`.
 
 **Reply routing** (8-step pipeline in `_handle_event_async`, updating `processed_event_ids.outcome` on every branch): dedup → chat-id filter → require `root_id` (reply branch) OR `allow_dispatch=true` (top-level dispatch) → drop bot-self → resolve via `resolve_escalation_in_process` / `revisit_from_notification` / `dispatch_via_feishu` → consume row + audit. Trust boundary is `chat_id` only — no per-Feishu-user authorization in v1.
 

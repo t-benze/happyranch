@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from src.infrastructure.artifact_store import MAX_ARTIFACT_BYTES
+from runtime.infrastructure.artifact_store import MAX_ARTIFACT_BYTES
 
 
 # ---------------------------------------------------------------------------

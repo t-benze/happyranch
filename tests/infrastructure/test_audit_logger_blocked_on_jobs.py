@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from src.infrastructure.audit_logger import AuditLogger
-from src.infrastructure.database import Database
+from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.infrastructure.database import Database
 
 
 @pytest.fixture

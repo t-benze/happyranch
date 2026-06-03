@@ -9,8 +9,8 @@ import pytest
 
 
 def _build_org_state(tmp_path: Path):
-    from src.infrastructure.database import Database
-    from src.models import TaskRecord, TaskStatus
+    from runtime.infrastructure.database import Database
+    from runtime.models import TaskRecord, TaskStatus
 
     db = Database(tmp_path / "happyranch.db")
     db.insert_task(TaskRecord(
@@ -36,7 +36,7 @@ def _build_org_state(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_revisit_with_cli_actor_consumes_failure_notification(tmp_path: Path):
-    from src.daemon.routes.tasks import revisit_from_notification
+    from runtime.daemon.routes.tasks import revisit_from_notification
     org, state, db = _build_org_state(tmp_path)
 
     await revisit_from_notification(
@@ -52,7 +52,7 @@ async def test_revisit_with_cli_actor_consumes_failure_notification(tmp_path: Pa
 async def test_revisit_with_feishu_actor_does_not_consume(tmp_path: Path):
     """The listener consumes the row separately at step 8r. The helper
     must NOT also try to consume — would race with the listener consume."""
-    from src.daemon.routes.tasks import revisit_from_notification
+    from runtime.daemon.routes.tasks import revisit_from_notification
     org, state, db = _build_org_state(tmp_path)
 
     await revisit_from_notification(
@@ -70,7 +70,7 @@ async def test_revisit_with_cli_actor_does_not_consume_escalation_kind(tmp_path:
     """Only kind='failure' notifications should be consumed via the
     cli-fallback path. kind='escalation' rows are owned by
     resolve_escalation_in_process's own consume hook — leave them alone."""
-    from src.daemon.routes.tasks import revisit_from_notification
+    from runtime.daemon.routes.tasks import revisit_from_notification
     org, state, db = _build_org_state(tmp_path)
     # Add an escalation notification for the same task
     db.mint_escalation_notification(

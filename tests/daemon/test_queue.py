@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from src.daemon.queue import TaskQueue
+from runtime.daemon.queue import TaskQueue
 
 
 def test_enqueue_takes_slug_and_id() -> None:
@@ -66,7 +66,7 @@ async def test_queue_start_workers_spawns_n_tasks_and_stop_cancels_them():
 
 
 def test_daemon_state_carries_a_task_queue(daemon_state):
-    from src.daemon.queue import TaskQueue
+    from runtime.daemon.queue import TaskQueue
     assert isinstance(daemon_state.queue, TaskQueue)
 
 
@@ -74,8 +74,8 @@ def test_org_state_terminal_event_map_covers_new_statuses():
     """BLOCKED is intentionally absent — block_kind decides whether it reads
     as terminal for a late subscriber (ESCALATED yes, DELEGATED no). The map
     moved to OrgState in the multi-org refactor (per-org event bus)."""
-    from src.daemon.org_state import OrgState
-    from src.models import TaskStatus
+    from runtime.daemon.org_state import OrgState
+    from runtime.models import TaskStatus
     assert OrgState._TERMINAL_STATUS_TO_EVENT == {
         TaskStatus.COMPLETED: "task_complete",
         TaskStatus.FAILED: "task_failed",
@@ -87,9 +87,9 @@ async def test_heartbeat_initial_tap_writes_last_heartbeat(daemon_state, org_sta
     """The heartbeat coroutine taps tasks.last_heartbeat synchronously at
     start (before its first sleep), so even short-lived tasks leave a
     non-null marker proving the worker actually picked them up."""
-    from src.daemon.dispatcher import Dispatcher
-    from src.daemon.queue import TaskQueue
-    from src.models import TaskRecord
+    from runtime.daemon.dispatcher import Dispatcher
+    from runtime.daemon.queue import TaskQueue
+    from runtime.models import TaskRecord
 
     org_state.db.insert_task(TaskRecord(id="T-HB", brief="x"))
     dispatcher = Dispatcher(daemon_state)
@@ -118,9 +118,9 @@ async def test_worker_loop_stamps_heartbeat_and_cancels_after_run_step(
     import time
     from unittest.mock import MagicMock
 
-    from src.daemon.dispatcher import Dispatcher
-    from src.daemon.queue import TaskQueue
-    from src.models import TaskRecord
+    from runtime.daemon.dispatcher import Dispatcher
+    from runtime.daemon.queue import TaskQueue
+    from runtime.models import TaskRecord
 
     org_state.db.insert_task(TaskRecord(id="T-HB", brief="x"))
 
@@ -149,7 +149,7 @@ def test_synthesize_terminal_event_rules(org_state):
     """P1 regression: BLOCKED(DELEGATED) is non-terminal for event purposes —
     the parent resumes when children finish. Only BLOCKED(ESCALATED) should
     surface as task_blocked to a late subscriber."""
-    from src.models import BlockKind, TaskRecord, TaskStatus
+    from runtime.models import BlockKind, TaskRecord, TaskStatus
 
     def make(task_id: str, status: TaskStatus,
              block_kind: BlockKind | None = None):

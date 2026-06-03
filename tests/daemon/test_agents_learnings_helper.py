@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from src.daemon.routes.agents import _append_to_learnings_file
+from runtime.daemon.routes.agents import _append_to_learnings_file
 
 
 def test_append_creates_header_on_first_write(tmp_path: Path):

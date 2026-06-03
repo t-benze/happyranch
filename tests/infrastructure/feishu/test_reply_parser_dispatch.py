@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.infrastructure.feishu.reply_parser import (
+from runtime.infrastructure.feishu.reply_parser import (
     DispatchIntent,
     parse_top_level_message,
 )

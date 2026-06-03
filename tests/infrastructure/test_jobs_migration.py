@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from src.infrastructure.database import Database
+from runtime.infrastructure.database import Database
 
 
 def _seed_legacy_scripts_db(db_path: Path) -> None:
@@ -329,7 +329,7 @@ def test_migration_rolls_back_on_partial_failure(tmp_path: Path) -> None:
 
 def test_filesystem_migration_moves_files(tmp_path: Path) -> None:
     """The on-disk scripts/ dir must be renamed to jobs/, files renamed SR-* → JOB-*."""
-    from src.daemon.jobs_runner import migrate_filesystem_layout
+    from runtime.daemon.jobs_runner import migrate_filesystem_layout
 
     org_root = tmp_path / "org"
     scripts_dir = org_root / "scripts"
@@ -351,7 +351,7 @@ def test_filesystem_migration_moves_files(tmp_path: Path) -> None:
 
 def test_filesystem_migration_noop_when_jobs_dir_exists(tmp_path: Path) -> None:
     """If jobs/ already exists (post-migration restart), do nothing."""
-    from src.daemon.jobs_runner import migrate_filesystem_layout
+    from runtime.daemon.jobs_runner import migrate_filesystem_layout
 
     org_root = tmp_path / "org"
     jobs_dir = org_root / "jobs"
@@ -364,7 +364,7 @@ def test_filesystem_migration_noop_when_jobs_dir_exists(tmp_path: Path) -> None:
 
 def test_filesystem_migration_noop_when_neither_exists(tmp_path: Path) -> None:
     """A fresh org with neither scripts/ nor jobs/ is a no-op (jobs_runner creates as needed)."""
-    from src.daemon.jobs_runner import migrate_filesystem_layout
+    from runtime.daemon.jobs_runner import migrate_filesystem_layout
 
     org_root = tmp_path / "org"
     org_root.mkdir()
@@ -381,7 +381,7 @@ def test_filesystem_migration_noop_when_neither_exists(tmp_path: Path) -> None:
 def test_artifacts_migration_moves_both_dirs(tmp_path: Path) -> None:
     """Both org-shared assets/ and per-agent workspaces/<agent>/artifacts/ are
     renamed when sources exist and destinations don't."""
-    from src.daemon.jobs_runner import migrate_artifacts_layout
+    from runtime.daemon.jobs_runner import migrate_artifacts_layout
 
     org_root = tmp_path / "org"
     (org_root / "assets").mkdir(parents=True)
@@ -404,7 +404,7 @@ def test_artifacts_migration_moves_both_dirs(tmp_path: Path) -> None:
 
 def test_artifacts_migration_noop_when_sources_absent(tmp_path: Path) -> None:
     """A fresh org without legacy assets/ or per-agent artifacts/ is a no-op."""
-    from src.daemon.jobs_runner import migrate_artifacts_layout
+    from runtime.daemon.jobs_runner import migrate_artifacts_layout
 
     org_root = tmp_path / "org"
     org_root.mkdir()
@@ -420,7 +420,7 @@ def test_artifacts_migration_noop_when_sources_absent(tmp_path: Path) -> None:
 def test_artifacts_migration_noop_when_already_migrated(tmp_path: Path) -> None:
     """If artifacts/ and output/ already exist (already-migrated runtime),
     do nothing. Legacy assets/ + per-agent artifacts/ are absent."""
-    from src.daemon.jobs_runner import migrate_artifacts_layout
+    from runtime.daemon.jobs_runner import migrate_artifacts_layout
 
     org_root = tmp_path / "org"
     (org_root / "artifacts").mkdir(parents=True)
@@ -440,7 +440,7 @@ def test_artifacts_migration_skips_when_both_old_and_new_exist(tmp_path: Path, c
     destroying data. The old dir stays put for the operator to resolve.
     A WARNING must be logged for each conflict case so operators aren't
     left with no indication that data is stranded."""
-    from src.daemon.jobs_runner import migrate_artifacts_layout
+    from runtime.daemon.jobs_runner import migrate_artifacts_layout
 
     org_root = tmp_path / "org"
     (org_root / "assets").mkdir(parents=True)

@@ -53,7 +53,7 @@ def test_escalation_via_run_step_sends_feishu_message(
     # before OrgState.load builds the SDK client. The dict is populated at
     # module-import time from lark.FEISHU_DOMAIN, so patching the lark module
     # global alone wouldn't help — we need to patch the captured dict entry.
-    import src.daemon.org_state as org_state_mod
+    import runtime.daemon.org_state as org_state_mod
     monkeypatch.setitem(org_state_mod._REGION_TO_DOMAIN, "feishu", base_url)
 
     root = tmp_path / "orgs" / "test"
@@ -69,11 +69,11 @@ def test_escalation_via_run_step_sends_feishu_message(
         "  app_secret: secret_test\n"
     )
 
-    from src.daemon.org_state import OrgState
+    from runtime.daemon.org_state import OrgState
     org = OrgState.load(slug="test", root=root, settings=test_settings)
     assert org.notifier is not None
 
-    from src.models import TaskRecord
+    from runtime.models import TaskRecord
     org.db.insert_task(TaskRecord(
         id="TASK-1", team="engineering", brief="Add Alipay support",
     ))
@@ -116,7 +116,7 @@ def test_escalation_with_feishu_disabled_is_silent(
 ):
     base_url, state = fake_feishu
 
-    import src.daemon.org_state as org_state_mod
+    import runtime.daemon.org_state as org_state_mod
     monkeypatch.setitem(org_state_mod._REGION_TO_DOMAIN, "feishu", base_url)
 
     root = tmp_path / "orgs" / "test"
@@ -124,11 +124,11 @@ def test_escalation_with_feishu_disabled_is_silent(
     (root / "org").mkdir()
     (root / "org" / "config.yaml").write_text("session_timeout_seconds: 1800\n")
 
-    from src.daemon.org_state import OrgState
+    from runtime.daemon.org_state import OrgState
     org = OrgState.load(slug="test", root=root, settings=test_settings)
     assert org.notifier is None
 
-    from src.models import TaskRecord
+    from runtime.models import TaskRecord
     org.db.insert_task(TaskRecord(id="TASK-2", team="engineering", brief="b"))
     org.db._conn.execute(
         "UPDATE tasks SET orchestration_step_count = ? WHERE id = ?",

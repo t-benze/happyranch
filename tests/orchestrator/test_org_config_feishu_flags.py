@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from src.orchestrator._paths import OrgPaths
-from src.orchestrator.org_config import OrgConfigError, load_org_config
-from src.runtime import RuntimeDir
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.org_config import OrgConfigError, load_org_config
+from runtime.runtime import RuntimeDir
 
 
 def _make_paths(tmp_path: Path) -> OrgPaths:

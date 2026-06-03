@@ -40,7 +40,7 @@ def test_list_tasks_filter_by_assigned_agent(
     """?assigned_agent= filters the inbox so the agent detail drawer can
     render an agent-scoped recent-task list."""
     from datetime import datetime, timezone
-    from src.models import TaskRecord
+    from runtime.models import TaskRecord
 
     org_state.db.insert_task(TaskRecord(
         id="TASK-A", brief="alpha", team="engineering",
@@ -70,7 +70,7 @@ def test_list_tasks_cursor_pagination(
     """`?before=<task_id>` returns the page strictly older than that task,
     and `next_cursor` is null when the page is not full."""
     from datetime import datetime, timezone, timedelta
-    from src.models import TaskRecord
+    from runtime.models import TaskRecord
 
     base = datetime(2026, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
     for i, name in enumerate(["TASK-P1", "TASK-P2", "TASK-P3"]):
@@ -212,8 +212,8 @@ def test_completion_callback_plus_audit_logger_does_not_duplicate_row(
     which silently re-wrote the same row. Both writes are real and converge at
     `task_results`. The fix: log_completion_report only audits — the callback
     is the single source of truth."""
-    from src.infrastructure.audit_logger import AuditLogger
-    from src.models import CompletionReport
+    from runtime.infrastructure.audit_logger import AuditLogger
+    from runtime.models import CompletionReport
 
     sub = TestClient(app).post(
         "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
@@ -406,7 +406,7 @@ def test_completion_rejects_cancelled_task(
     Mirrors the validation order in src/daemon/routes/scripts.py:64-90.
     """
     from datetime import datetime, timezone
-    from src.models import TaskStatus
+    from runtime.models import TaskStatus
 
     sub = TestClient(app).post(
         "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
@@ -450,7 +450,7 @@ def test_completion_rejects_already_completed_task(
 ) -> None:
     """Guard A: terminal-status check fires even without cancelled_at (e.g., a
     completed task receiving a duplicate callback). 409 task_not_active."""
-    from src.models import TaskStatus
+    from runtime.models import TaskStatus
 
     sub = TestClient(app).post(
         "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
@@ -495,7 +495,7 @@ def test_progress_rejects_cancelled_task(
     """Guard A applied to /progress for symmetry. A late progress beat from a
     cancelled session is noise + symptomatic of the same race."""
     from datetime import datetime, timezone
-    from src.models import TaskStatus
+    from runtime.models import TaskStatus
 
     sub = TestClient(app).post(
         "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
@@ -518,7 +518,7 @@ def test_progress_rejects_cancelled_task(
 
 
 def test_recall_returns_task_payload(tmp_home, app, daemon_state, org_state, auth_headers) -> None:
-    from src.models import TaskRecord, TaskStatus
+    from runtime.models import TaskRecord, TaskStatus
     org_state.db.insert_task(
         TaskRecord(id="TASK-001", brief="Review Q1")
     )
@@ -551,7 +551,7 @@ def test_recall_idle_returns_409(tmp_home, app_idle, auth_headers) -> None:
 def test_recall_payload_includes_revisit_of_task_id(
     tmp_home, app, daemon_state, org_state, auth_headers,
 ) -> None:
-    from src.models import TaskRecord
+    from runtime.models import TaskRecord
     db = org_state.db
     db.insert_task(TaskRecord(id="TASK-001", brief="P"))
     db.insert_task(TaskRecord(
@@ -571,7 +571,7 @@ def test_recall_payload_includes_revisit_of_task_id(
 def test_recall_tree_includes_descendants(
     tmp_home, app, daemon_state, org_state, auth_headers,
 ) -> None:
-    from src.models import TaskRecord
+    from runtime.models import TaskRecord
     org_state.db.insert_task(
         TaskRecord(id="TASK-001", brief="root")
     )
@@ -596,7 +596,7 @@ def test_recall_tree_includes_descendants(
 def test_recall_include_output_reads_files(
     tmp_home, app, daemon_state, org_state, auth_headers,
 ) -> None:
-    from src.models import TaskRecord
+    from runtime.models import TaskRecord
     ws = org_state.root / "workspaces" / "dev_agent"
     output = ws / "output" / "TASK-001"
     output.mkdir(parents=True)
@@ -627,7 +627,7 @@ def test_recall_rejects_absolute_output_path(
     """output_dir comes from an agent-supplied completion payload. A buggy or
     malicious agent that stores an absolute path must not be able to read
     arbitrary files on the host via /recall?include_output=true."""
-    from src.models import TaskRecord
+    from runtime.models import TaskRecord
     secret = tmp_home / "secret.txt"
     secret.write_text("DO NOT LEAK")
     org_state.db.insert_task(TaskRecord(
@@ -659,7 +659,7 @@ def test_recall_rejects_parent_traversal_output_path(
 ) -> None:
     """A `..` in output_dir must not let an agent read another agent's
     workspace."""
-    from src.models import TaskRecord
+    from runtime.models import TaskRecord
     workspaces = org_state.root / "workspaces"
     # dev_agent workspace must exist so `dev_agent/..` can resolve through it.
     (workspaces / "dev_agent").mkdir(parents=True)
@@ -694,7 +694,7 @@ def test_events_unknown_task_returns_404(tmp_home, app, auth_headers) -> None:
 
 
 def test_resolve_escalation_requires_rationale(tmp_home, app, org_state, auth_headers):
-    from src.models import BlockKind, TaskRecord, TaskStatus
+    from runtime.models import BlockKind, TaskRecord, TaskStatus
     org_state.db.insert_task(TaskRecord(
         id="TASK-045", brief="x",
     ))
@@ -722,7 +722,7 @@ def test_events_stream_yields_completion(tmp_home, app, daemon_state, org_state,
     # Set the task to a terminal status so history_loader synthesizes a
     # task_complete event on subscribe — the stream closes immediately without
     # needing to publish into an empty bus.
-    from src.models import TaskStatus
+    from runtime.models import TaskStatus
     org_state.db.update_task(task_id, status=TaskStatus.COMPLETED)
 
     with TestClient(app).stream(
@@ -736,7 +736,7 @@ def test_events_stream_yields_completion(tmp_home, app, daemon_state, org_state,
 def test_resolve_escalation_rejects_non_blocked_task(client_with_runtime):
     """Under the new model, the precondition is (status=BLOCKED AND
     block_kind=ESCALATED). A task that is merely BLOCKED(DELEGATED) must 409."""
-    from src.models import TaskRecord, TaskStatus, BlockKind
+    from runtime.models import TaskRecord, TaskStatus, BlockKind
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-1", brief="x"))
     state.db.update_task("T-1", status=TaskStatus.BLOCKED,
@@ -751,7 +751,7 @@ def test_resolve_escalation_rejects_non_blocked_task(client_with_runtime):
 
 
 def test_resolve_escalation_approve_resumes_task(client_with_runtime):
-    from src.models import TaskRecord, TaskStatus, BlockKind
+    from runtime.models import TaskRecord, TaskStatus, BlockKind
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-1", brief="x"))
     state.db.update_task("T-1", status=TaskStatus.BLOCKED,
@@ -775,7 +775,7 @@ def test_resolve_escalation_approve_resumes_task(client_with_runtime):
 
 
 def test_resolve_escalation_reject_transitions_to_failed(client_with_runtime):
-    from src.models import TaskRecord, TaskStatus, BlockKind
+    from runtime.models import TaskRecord, TaskStatus, BlockKind
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-1", brief="x"))
     state.db.update_task("T-1", status=TaskStatus.BLOCKED,
@@ -796,7 +796,7 @@ def test_resolve_escalation_overwrites_note_with_rationale(client_with_runtime):
     result summary shown to a resumed parent EH. After founder resolution the
     note must reflect the disposition/rationale, not the stale escalation
     reason the task parked with."""
-    from src.models import TaskRecord, TaskStatus, BlockKind
+    from runtime.models import TaskRecord, TaskStatus, BlockKind
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-1", brief="x"))
     state.db.update_task("T-1", status=TaskStatus.BLOCKED,
@@ -817,7 +817,7 @@ def test_resolve_escalation_overwrites_note_with_rationale(client_with_runtime):
 def test_resolve_escalation_approve_reenqueues_child_not_parent(client_with_runtime):
     """Approve resumes the child itself; parent stays blocked(DELEGATED) and
     will be woken later when the child reaches a true terminal."""
-    from src.models import TaskRecord, TaskStatus, BlockKind
+    from runtime.models import TaskRecord, TaskStatus, BlockKind
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-PAR", brief="p"))
     state.db.update_task("T-PAR", status=TaskStatus.BLOCKED,
@@ -852,7 +852,7 @@ def test_resolve_escalation_approve_reenqueues_child_not_parent(client_with_runt
 def test_resolve_escalation_reject_cascades_to_parent(client_with_runtime):
     """Reject on a child fails it and cascade-fails the parent (existing
     `_enqueue_parent_if_waiting` behavior on FAILED siblings)."""
-    from src.models import TaskRecord, TaskStatus, BlockKind
+    from runtime.models import TaskRecord, TaskStatus, BlockKind
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-PAR", brief="p"))
     state.db.update_task("T-PAR", status=TaskStatus.BLOCKED,
@@ -888,7 +888,7 @@ def test_cancel_404_when_task_missing(client_with_runtime):
 
 
 def test_cancel_409_when_already_terminal(client_with_runtime):
-    from src.models import TaskRecord, TaskStatus
+    from runtime.models import TaskRecord, TaskStatus
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-DONE", brief="x"))
     state.db.update_task("T-DONE", status=TaskStatus.COMPLETED, note="ok")
@@ -899,7 +899,7 @@ def test_cancel_409_when_already_terminal(client_with_runtime):
 
 
 def test_cancel_marks_task_failed_with_cancelled_at_and_note(client_with_runtime):
-    from src.models import TaskRecord, TaskStatus
+    from runtime.models import TaskRecord, TaskStatus
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-1", brief="x"))
 
@@ -922,7 +922,7 @@ def test_cancel_marks_task_failed_with_cancelled_at_and_note(client_with_runtime
 def test_cancel_cascades_down_subtree(client_with_runtime):
     """Default cascade=True must cancel every non-terminal descendant and
     leave already-terminal siblings untouched."""
-    from src.models import TaskRecord, TaskStatus, BlockKind
+    from runtime.models import TaskRecord, TaskStatus, BlockKind
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-P", brief="parent"))
     state.db.update_task(
@@ -960,7 +960,7 @@ def test_cancel_cascades_down_subtree(client_with_runtime):
 
 
 def test_cancel_no_cascade_cancels_only_target(client_with_runtime):
-    from src.models import TaskRecord, TaskStatus
+    from runtime.models import TaskRecord, TaskStatus
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-P", brief="parent"))
     state.db.insert_task(TaskRecord(
@@ -984,8 +984,8 @@ def test_cancel_sigterms_live_pids_and_returns_them(client_with_runtime, monkeyp
     that the route reads from iter_task_pids, calls os.kill(pid, SIGTERM),
     and clears the tracker entry on the way out."""
     import signal as _signal
-    from src.daemon.routes import tasks as tasks_route
-    from src.models import TaskRecord
+    from runtime.daemon.routes import tasks as tasks_route
+    from runtime.models import TaskRecord
 
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-1", brief="x"))
@@ -1012,7 +1012,7 @@ def test_cancel_sigterms_live_pids_and_returns_them(client_with_runtime, monkeyp
 
 
 def test_cancel_records_audit_entry(client_with_runtime):
-    from src.models import TaskRecord
+    from runtime.models import TaskRecord
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-1", brief="x"))
 
@@ -1031,7 +1031,7 @@ def test_revisit_creates_new_root_from_failed_predecessor(
 ) -> None:
     """Revisit a failed root: new root inherits brief/task_type, both audit
     entries are written, predecessor row stays exactly as it was."""
-    from src.models import TaskRecord, TaskStatus
+    from runtime.models import TaskRecord, TaskStatus
     db = org_state.db
     db.insert_task(TaskRecord(
         id="TASK-052", brief="Add Alipay support",
@@ -1092,7 +1092,7 @@ def test_revisit_walks_cascade_to_root(
     tmp_home, app, daemon_state, org_state, auth_headers,
 ) -> None:
     """Flag a leaf; endpoint walks parent_task_id to the predecessor root."""
-    from src.models import TaskRecord, TaskStatus
+    from runtime.models import TaskRecord, TaskStatus
     db = org_state.db
     db.insert_task(TaskRecord(id="TASK-052", brief="root"))
     db.insert_task(TaskRecord(
@@ -1118,7 +1118,7 @@ def test_revisit_walks_cascade_to_root(
 def test_revisit_handles_cancelled_predecessor(
     tmp_home, app, daemon_state, org_state, auth_headers,
 ) -> None:
-    from src.models import TaskRecord, TaskStatus
+    from runtime.models import TaskRecord, TaskStatus
     db = org_state.db
     db.insert_task(TaskRecord(id="TASK-052", brief="x"))
     db.update_task(
@@ -1137,7 +1137,7 @@ def test_revisit_handles_cancelled_predecessor(
 def test_revisit_handles_escalated_predecessor(
     tmp_home, app, daemon_state, org_state, auth_headers,
 ) -> None:
-    from src.models import BlockKind, TaskRecord, TaskStatus
+    from runtime.models import BlockKind, TaskRecord, TaskStatus
     db = org_state.db
     db.insert_task(TaskRecord(id="TASK-052", brief="x"))
     db.update_task(
@@ -1160,7 +1160,7 @@ def test_revisit_handles_escalated_predecessor(
 def test_revisit_handles_completed_predecessor(
     tmp_home, app, daemon_state, org_state, auth_headers,
 ) -> None:
-    from src.models import TaskRecord, TaskStatus
+    from runtime.models import TaskRecord, TaskStatus
     db = org_state.db
     db.insert_task(TaskRecord(id="TASK-052", brief="x"))
     db.update_task("TASK-052", status=TaskStatus.COMPLETED, note="ok")
@@ -1192,7 +1192,7 @@ def test_revisit_rejects_ineligible_predecessor(
     tmp_home, app, daemon_state, org_state, auth_headers, status, block_kind, note,
 ) -> None:
     """Revisit must reject predecessors whose history isn't final yet."""
-    from src.models import BlockKind, TaskRecord, TaskStatus
+    from runtime.models import BlockKind, TaskRecord, TaskStatus
     db = org_state.db
     db.insert_task(TaskRecord(id="TASK-052", brief="x"))
     bk = BlockKind(block_kind) if block_kind else None
@@ -1218,7 +1218,7 @@ def test_revisit_lineage_too_deep_returns_500(
     tmp_home, app, daemon_state, org_state, auth_headers,
 ) -> None:
     """A 21-hop ancestor chain is pathological; the endpoint guards with 500."""
-    from src.models import TaskRecord, TaskStatus
+    from runtime.models import TaskRecord, TaskStatus
     db = org_state.db
     db.insert_task(TaskRecord(id="TASK-000", brief="root"))
     db.update_task("TASK-000", status=TaskStatus.FAILED)
@@ -1242,7 +1242,7 @@ def test_revisit_concurrent_on_same_predecessor_both_succeed(
 ) -> None:
     """Two sequential POSTs against the same failed predecessor both succeed;
     predecessor ends with two revisit_spawned audit entries."""
-    from src.models import TaskRecord, TaskStatus
+    from runtime.models import TaskRecord, TaskStatus
     db = org_state.db
     db.insert_task(TaskRecord(id="TASK-052", brief="x"))
     db.update_task("TASK-052", status=TaskStatus.FAILED)
@@ -1265,7 +1265,7 @@ def test_revisit_a_revisit_chain_of_chains(
     tmp_home, app, daemon_state, org_state, auth_headers,
 ) -> None:
     """TASK-P → TASK-N (via revisit) → TASK-N' (revisit of TASK-N)."""
-    from src.models import TaskRecord, TaskStatus
+    from runtime.models import TaskRecord, TaskStatus
     db = org_state.db
     db.insert_task(TaskRecord(id="TASK-052", brief="x"))
     db.update_task("TASK-052", status=TaskStatus.FAILED)
@@ -1289,7 +1289,7 @@ def test_revisit_writes_revisit_of_task_id_on_new_root(
 ) -> None:
     """The new root's revisit_of_task_id column must equal the predecessor
     root's id. This is what makes the link queryable without audit-log scans."""
-    from src.models import TaskRecord, TaskStatus
+    from runtime.models import TaskRecord, TaskStatus
     db = org_state.db
     db.insert_task(TaskRecord(
         id="TASK-052", brief="Add Alipay support",
@@ -1312,7 +1312,7 @@ def test_revisit_persists_session_timeout_seconds_from_payload(
 ) -> None:
     """Founder passes --session-timeout-seconds; the value is persisted on the
     new root verbatim and shadows the predecessor's value."""
-    from src.models import TaskRecord, TaskStatus
+    from runtime.models import TaskRecord, TaskStatus
     db = org_state.db
     db.insert_task(TaskRecord(
         id="TASK-052", brief="b", session_timeout_seconds=600,
@@ -1335,7 +1335,7 @@ def test_revisit_inherits_session_timeout_from_predecessor_when_omitted(
 ) -> None:
     """Omitted payload → new root inherits the predecessor's value, so a
     second revisit of an already-bumped task keeps the bump."""
-    from src.models import TaskRecord, TaskStatus
+    from runtime.models import TaskRecord, TaskStatus
     db = org_state.db
     db.insert_task(TaskRecord(
         id="TASK-052", brief="b", session_timeout_seconds=5400,
@@ -1357,7 +1357,7 @@ def test_revisit_rejects_non_positive_session_timeout(
     tmp_home, app, daemon_state, org_state, auth_headers,
 ) -> None:
     """0 / negative / non-int values are 422 from the pydantic validator."""
-    from src.models import TaskRecord, TaskStatus
+    from runtime.models import TaskRecord, TaskStatus
     db = org_state.db
     db.insert_task(TaskRecord(id="TASK-052", brief="b"))
     db.update_task("TASK-052", status=TaskStatus.FAILED, note="rc=1")
@@ -1389,7 +1389,7 @@ def test_get_task_includes_revisit_chain_and_direct_revisits(
     tmp_home, app, daemon_state, org_state, auth_headers,
 ) -> None:
     """GET /tasks/{id} must surface the full revisit context for the CLI."""
-    from src.models import TaskRecord
+    from runtime.models import TaskRecord
     db = org_state.db
     db.insert_task(TaskRecord(id="TASK-001", brief="P"))
     db.insert_task(TaskRecord(
@@ -1433,7 +1433,7 @@ def test_get_task_does_not_crash_on_long_revisit_chain(
     500 once the chain exceeds walk_revisit_chain's defensive max_hops. The
     route opts into truncation so the response stays usable even at depth.
     """
-    from src.models import TaskRecord
+    from runtime.models import TaskRecord
     db = org_state.db
     # Build a chain 25 deep — well past the default max_hops=20.
     db.insert_task(TaskRecord(id="TASK-000", brief="orig"))
@@ -1563,7 +1563,7 @@ def test_get_task_includes_blocked_on_jobs_when_blocked(
     blocking job when the task is in BLOCKED+BLOCKED_ON_JOB state."""
     import json as _json
     from datetime import datetime, timezone
-    from src.models import BlockKind, JobInterpreter, JobRecord, JobStatus, TaskRecord, TaskStatus
+    from runtime.models import BlockKind, JobInterpreter, JobRecord, JobStatus, TaskRecord, TaskStatus
 
     db = org_state.db
     db.insert_task(TaskRecord(
@@ -1626,7 +1626,7 @@ def test_get_task_blocked_on_jobs_is_none_for_non_blocked_task(
 ) -> None:
     """blocked_on_jobs is None (not an empty list) for tasks not in
     BLOCKED+BLOCKED_ON_JOB state, so callers can distinguish the two cases."""
-    from src.models import TaskRecord
+    from runtime.models import TaskRecord
 
     org_state.db.insert_task(TaskRecord(
         id="TASK-PLAIN", brief="normal task", team="engineering",
@@ -1651,7 +1651,7 @@ def test_task_detail_includes_parsed_active_chain(
     """When a task has active_chain set, the detail response surfaces it as a
     parsed dict (not a raw JSON string) so the web UI and CLI can render it."""
     import json as _json
-    from src.models import TaskRecord
+    from runtime.models import TaskRecord
 
     db = org_state.db
     db.insert_task(TaskRecord(
@@ -1685,7 +1685,7 @@ def test_task_detail_active_chain_is_null_when_no_chain(
     tmp_home, app, daemon_state, org_state, auth_headers,
 ) -> None:
     """Tasks without an active chain return active_chain: null (not missing key)."""
-    from src.models import TaskRecord
+    from runtime.models import TaskRecord
 
     org_state.db.insert_task(TaskRecord(
         id="TASK-NO-CHAIN", brief="plain task", team="engineering",

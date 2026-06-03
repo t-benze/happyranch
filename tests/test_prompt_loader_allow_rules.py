@@ -3,9 +3,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.orchestrator import prompt_loader
-from src.orchestrator._paths import OrgPaths
-from src.runtime import RuntimeDir
+from runtime.orchestrator import prompt_loader
+from runtime.orchestrator._paths import OrgPaths
+from runtime.runtime import RuntimeDir
 
 
 def _make_paths(tmp_path: Path) -> OrgPaths:

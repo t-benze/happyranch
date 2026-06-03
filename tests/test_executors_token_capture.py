@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from src.config import Settings
-from src.orchestrator.executors import ClaudeExecutor, CodexExecutor, OpencodeExecutor, PiExecutor, ExecutorResult
+from runtime.config import Settings
+from runtime.orchestrator.executors import ClaudeExecutor, CodexExecutor, OpencodeExecutor, PiExecutor, ExecutorResult
 
 
 def _make_completed_proc(stdout: str, returncode: int = 0):
@@ -27,10 +27,10 @@ def test_claude_executor_attaches_token_usage_on_success(tmp_path: Path, monkeyp
 
     fixture = (Path(__file__).parent / "fixtures" / "usage_claude.json").read_text()
     fake_proc = _make_completed_proc(stdout=fixture)
-    with patch("src.orchestrator.executors.subprocess.Popen", return_value=fake_proc):
+    with patch("runtime.orchestrator.executors.subprocess.Popen", return_value=fake_proc):
         # allow_rules_for_agent reads from <runtime>/org/agents/<name>.md;
         # short-circuit it for this isolated unit test.
-        with patch("src.orchestrator.workspace_adapters.allow_rules_for_agent", return_value=["Bash(happyranch *)"]):
+        with patch("runtime.orchestrator.workspace_adapters.allow_rules_for_agent", return_value=["Bash(happyranch *)"]):
             ex = ClaudeExecutor(
                 claude_cli_path="claude",
                 permission_mode="auto",
@@ -54,8 +54,8 @@ def test_claude_executor_passes_output_format_json_flag(tmp_path: Path):
         captured_cmd.extend(cmd)
         return fake_proc
 
-    with patch("src.orchestrator.executors.subprocess.Popen", side_effect=_capture_popen):
-        with patch("src.orchestrator.workspace_adapters.allow_rules_for_agent", return_value=[]):
+    with patch("runtime.orchestrator.executors.subprocess.Popen", side_effect=_capture_popen):
+        with patch("runtime.orchestrator.workspace_adapters.allow_rules_for_agent", return_value=[]):
             ex = ClaudeExecutor("claude", "auto", Settings(), paths=None)
             ex.run(workspace, prompt="hi", session_id="sess-x")
     assert "--output-format" in captured_cmd
@@ -67,8 +67,8 @@ def test_claude_executor_token_usage_is_none_on_subprocess_failure(tmp_path: Pat
     workspace = tmp_path / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
     fake_proc = _make_completed_proc(stdout="{}", returncode=1)
-    with patch("src.orchestrator.executors.subprocess.Popen", return_value=fake_proc):
-        with patch("src.orchestrator.workspace_adapters.allow_rules_for_agent", return_value=[]):
+    with patch("runtime.orchestrator.executors.subprocess.Popen", return_value=fake_proc):
+        with patch("runtime.orchestrator.workspace_adapters.allow_rules_for_agent", return_value=[]):
             ex = ClaudeExecutor("claude", "auto", Settings(), paths=None)
             r = ex.run(workspace, prompt="hi", session_id="sess-x")
     assert not r.success
@@ -80,7 +80,7 @@ def test_codex_executor_attaches_token_usage(tmp_path: Path):
     workspace.mkdir(parents=True)
     fixture = (Path(__file__).parent / "fixtures" / "usage_codex.jsonl").read_text()
     fake_proc = _make_completed_proc(stdout=fixture)
-    with patch("src.orchestrator.executors.subprocess.Popen", return_value=fake_proc):
+    with patch("runtime.orchestrator.executors.subprocess.Popen", return_value=fake_proc):
         ex = CodexExecutor("codex", sandbox_mode="workspace-write")
         r = ex.run(workspace, prompt="hi", session_id="sess-x")
     assert r.success
@@ -93,7 +93,7 @@ def test_opencode_executor_attaches_token_usage(tmp_path: Path):
     workspace.mkdir(parents=True)
     fixture = (Path(__file__).parent / "fixtures" / "usage_opencode.json").read_text()
     fake_proc = _make_completed_proc(stdout=fixture)
-    with patch("src.orchestrator.executors.subprocess.Popen", return_value=fake_proc):
+    with patch("runtime.orchestrator.executors.subprocess.Popen", return_value=fake_proc):
         ex = OpencodeExecutor("opencode")
         r = ex.run(workspace, prompt="hi", session_id="sess-x")
     assert r.success
@@ -105,7 +105,7 @@ def test_pi_executor_preserves_raw_json_usage_when_schema_is_unrecognized(tmp_pa
     workspace = tmp_path / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
     fake_proc = _make_completed_proc(stdout='{"type":"result","model":"pi-model"}\n')
-    with patch("src.orchestrator.executors.subprocess.Popen", return_value=fake_proc):
+    with patch("runtime.orchestrator.executors.subprocess.Popen", return_value=fake_proc):
         ex = PiExecutor("pi")
         r = ex.run(workspace, prompt="hi", session_id="sess-x")
     assert r.success

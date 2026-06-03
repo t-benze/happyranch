@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from src.daemon.queue import TaskQueue
+from runtime.daemon.queue import TaskQueue
 
 
 class _RecordingDispatcher:

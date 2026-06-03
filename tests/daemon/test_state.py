@@ -6,12 +6,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from src.config import Settings
-from src.daemon.state import DaemonState
-from src.orchestrator._paths import OrgPaths
-from src.orchestrator.agent_def import AgentDef, render_agent_text
-from src.orchestrator.org_validation import OrgConsistencyError
-from src.runtime import RuntimeDir
+from runtime.config import Settings
+from runtime.daemon.state import DaemonState
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+from runtime.orchestrator.org_validation import OrgConsistencyError
+from runtime.runtime import RuntimeDir
 
 
 def _seed_org(org_root: Path) -> None:
