@@ -63,28 +63,13 @@ class Database:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
-        self._tasks_has_legacy_type_column: bool = False
         self._migrate_jobs_table_if_needed()
         self._create_tables()
-        self._detect_legacy_columns()
 
     @property
     def path(self) -> Path:
         """Alias for ``db_path``. Convenience for callers that prefer ``.path``."""
         return self.db_path
-
-    def _detect_legacy_columns(self) -> None:
-        """Detect legacy columns that may still exist on upgraded DBs.
-
-        Called once after _create_tables() completes. Fresh DBs never have the
-        ``type`` column (dropped in the Task-4 schema refactor). Runtimes
-        created before that change retain it as ``TEXT NOT NULL`` with no SQL
-        default — insert_task must supply a sentinel value or SQLite raises
-        IntegrityError.
-        """
-        cursor = self._conn.execute("PRAGMA table_info(tasks)")
-        columns = {row[1] for row in cursor.fetchall()}
-        self._tasks_has_legacy_type_column = "type" in columns
 
     def _migrate_jobs_table_if_needed(self) -> None:
         """Rename legacy ``script_requests`` table to ``jobs`` and ripple the
@@ -521,6 +506,11 @@ class Database:
             "ALTER TABLE thread_participants ADD COLUMN agent_session_id TEXT",
             "ALTER TABLE thread_participants ADD COLUMN last_resumed_seq INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'task'",
+            # Legacy cleanup: drop the dead `type` column (dropped from the
+            # current schema in the Task-4 refactor; never read, only a
+            # "general" sentinel was written). Idempotent via the try/except
+            # below — DROP of an absent column raises OperationalError.
+            "ALTER TABLE tasks DROP COLUMN type",
         ):
             try:
                 self._conn.execute(ddl)
@@ -671,31 +661,15 @@ class Database:
             task.session_timeout_seconds,
             task.task_type,
         )
-        if self._tasks_has_legacy_type_column:
-            # Legacy DBs (created before the Task-4 schema refactor) retain a
-            # `type TEXT NOT NULL` column with no SQL default. Supply a sentinel
-            # value to satisfy the NOT NULL constraint without re-adding the
-            # column to the current schema.
-            # params[0] = id; insert type="general" after id, then the rest.
-            self._conn.execute(
-                """INSERT INTO tasks (id, type, status, assigned_agent, team, brief,
-                   revision_count, created_at, updated_at, completed_at, parent_task_id,
-                   revisit_of_task_id, dispatched_from_talk_id, dispatched_from_thread_id,
-                   block_kind, note,
-                   orchestration_step_count, session_timeout_seconds)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (params[0], "general") + params[1:-1],
-            )
-        else:
-            self._conn.execute(
-                """INSERT INTO tasks (id, status, assigned_agent, team, brief,
-                   revision_count, created_at, updated_at, completed_at, parent_task_id,
-                   revisit_of_task_id, dispatched_from_talk_id, dispatched_from_thread_id,
-                   block_kind, note,
-                   orchestration_step_count, session_timeout_seconds, task_type)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                params,
-            )
+        self._conn.execute(
+            """INSERT INTO tasks (id, status, assigned_agent, team, brief,
+               revision_count, created_at, updated_at, completed_at, parent_task_id,
+               revisit_of_task_id, dispatched_from_talk_id, dispatched_from_thread_id,
+               block_kind, note,
+               orchestration_step_count, session_timeout_seconds, task_type)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            params,
+        )
         self._conn.commit()
 
     @_synchronized
