@@ -1330,3 +1330,14 @@ def test_legacy_artifact_columns_renamed_and_path_strings_rewritten(tmp_path):
     final_dir2 = db2._conn.execute("SELECT final_output_dir FROM tasks WHERE id='TASK-1'").fetchone()[0]
     assert final_dir2 == "output/TASK-1"
     db2.close()
+
+
+def test_task_type_round_trips(tmp_path):
+    from src.infrastructure.database import Database
+    from src.models import TaskRecord
+    db = Database(tmp_path / "rt.db")
+    db.insert_task(TaskRecord(id="TASK-001", brief="root", task_type="task"))
+    db.insert_task(TaskRecord(id="TASK-002", brief="child", task_type="subtask"))
+    assert db.get_task("TASK-001").task_type == "task"
+    assert db.get_task("TASK-002").task_type == "subtask"
+    db.close()

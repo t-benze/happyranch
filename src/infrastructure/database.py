@@ -204,6 +204,7 @@ class Database:
                 assigned_agent TEXT,
                 team TEXT NOT NULL DEFAULT 'engineering',
                 brief TEXT NOT NULL,
+                task_type TEXT NOT NULL DEFAULT 'task',
                 revision_count INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -519,6 +520,7 @@ class Database:
             # successful turn.
             "ALTER TABLE thread_participants ADD COLUMN agent_session_id TEXT",
             "ALTER TABLE thread_participants ADD COLUMN last_resumed_seq INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'task'",
         ):
             try:
                 self._conn.execute(ddl)
@@ -667,6 +669,7 @@ class Database:
             task.note,
             task.orchestration_step_count,
             task.session_timeout_seconds,
+            task.task_type,
         )
         if self._tasks_has_legacy_type_column:
             # Legacy DBs (created before the Task-4 schema refactor) retain a
@@ -681,7 +684,7 @@ class Database:
                    block_kind, note,
                    orchestration_step_count, session_timeout_seconds)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (params[0], "general") + params[1:],
+                (params[0], "general") + params[1:-1],
             )
         else:
             self._conn.execute(
@@ -689,8 +692,8 @@ class Database:
                    revision_count, created_at, updated_at, completed_at, parent_task_id,
                    revisit_of_task_id, dispatched_from_talk_id, dispatched_from_thread_id,
                    block_kind, note,
-                   orchestration_step_count, session_timeout_seconds)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   orchestration_step_count, session_timeout_seconds, task_type)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 params,
             )
         self._conn.commit()
@@ -724,6 +727,7 @@ class Database:
             cancelled_at=row["cancelled_at"],
             last_heartbeat=row["last_heartbeat"],
             session_timeout_seconds=row["session_timeout_seconds"],
+            task_type=row["task_type"],
         )
 
     @_synchronized
