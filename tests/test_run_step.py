@@ -1701,3 +1701,19 @@ def test_build_agent_prompt_non_manager_task_is_self_only(runtime, db):
     p = _build_agent_prompt(orch, t, "dev_agent")
     assert "Available Agents" not in p
     assert "dev_agent" in p
+
+
+def test_build_agent_prompt_manager_roster_includes_self(runtime, db):
+    """Spec §3: a manager may self-target. The roster must advertise self so the
+    manager knows it can delegate a sub-task to itself (it is not in teams.yaml
+    `workers`, so it would otherwise be absent)."""
+    from src.orchestrator.orchestrator import Orchestrator
+    from src.orchestrator.run_step import _build_agent_prompt
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    t = TaskRecord(id="T-1", brief="x", assigned_agent="engineering_head",
+                   task_type="task")
+    p = _build_agent_prompt(orch, t, "engineering_head")
+    assert "Available Agents" in p          # full roster prompt
+    assert "engineering_head" in p          # self advertised in the roster
+    assert "yourself" in p

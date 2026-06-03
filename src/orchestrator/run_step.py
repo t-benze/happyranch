@@ -563,6 +563,15 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
             candidate = prompt_loader.load_agent(orch._paths, name)
             desc = (candidate.description if candidate is not None else None) or name
             agents_for_prompt.append({"name": name, "description": desc})
+        # Self-targeting (spec §3): a manager may delegate a sub-task to itself
+        # to break its own work into a fresh bounded session. _list_candidate_agents
+        # only returns team workers (the manager is never in teams.yaml `workers`),
+        # so advertise self explicitly in the roster.
+        agents_for_prompt.append({
+            "name": agent,
+            "description": "yourself — delegate a sub-task to yourself to "
+                           "decompose your own work into a fresh bounded session",
+        })
     prior_steps = _build_prior_steps_from_db(orch, task.id)
     base = build_capabilities_prompt(
         agents=agents_for_prompt,
