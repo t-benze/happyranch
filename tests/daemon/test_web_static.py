@@ -4,10 +4,10 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from src.config import Settings
-from src.daemon import paths
-from src.daemon.app import create_app
-from src.daemon.state import DaemonState
+from runtime.config import Settings
+from runtime.daemon import paths
+from runtime.daemon.app import create_app
+from runtime.daemon.state import DaemonState
 
 
 @pytest.fixture

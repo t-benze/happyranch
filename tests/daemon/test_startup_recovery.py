@@ -2,15 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.config import Settings
-from src.daemon.__main__ import _sweep_on_startup
-from src.daemon.queue import TaskQueue
-from src.infrastructure.database import Database
-from src.models import BlockKind, TaskRecord, TaskStatus
-from src.orchestrator._paths import OrgPaths
-from src.orchestrator.orchestrator import Orchestrator
-from src.orchestrator.teams import TeamsRegistry
-from src.runtime import RuntimeDir
+from runtime.config import Settings
+from runtime.daemon.__main__ import _sweep_on_startup
+from runtime.daemon.queue import TaskQueue
+from runtime.infrastructure.database import Database
+from runtime.models import BlockKind, TaskRecord, TaskStatus
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.orchestrator import Orchestrator
+from runtime.orchestrator.teams import TeamsRegistry
+from runtime.runtime import RuntimeDir
 
 
 def _seed_org(tmp_path: Path, slug: str = "test") -> Database:
@@ -258,8 +258,8 @@ def test_lifespan_recovers_orphaned_running_jobs(tmp_home, daemon_state):
 
     from fastapi.testclient import TestClient
 
-    from src.daemon.app import create_app
-    from src.models import JobInterpreter, JobRecord, JobStatus
+    from runtime.daemon.app import create_app
+    from runtime.models import JobInterpreter, JobRecord, JobStatus
 
     org = daemon_state.orgs["alpha"]
     # Seed: insert a pending job then mark it running manually.
@@ -301,8 +301,8 @@ def test_terminate_all_inflight_awaits_runner_tasks(tmp_home, daemon_state):
     import asyncio
     from datetime import datetime, timezone
 
-    from src.daemon import jobs_runner
-    from src.models import JobInterpreter, JobRecord, JobStatus
+    from runtime.daemon import jobs_runner
+    from runtime.models import JobInterpreter, JobRecord, JobStatus
 
     org = daemon_state.orgs["alpha"]
     job = JobRecord(

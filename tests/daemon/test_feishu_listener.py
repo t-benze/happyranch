@@ -15,9 +15,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.daemon.feishu_listener import FeishuEventListener
-from src.infrastructure.audit_logger import AuditLogger
-from src.infrastructure.database import Database
+from runtime.daemon.feishu_listener import FeishuEventListener
+from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.infrastructure.database import Database
 
 
 def _event(
@@ -52,7 +52,7 @@ def _seed_notification(
     task_id: str = "TASK-1",
     expires_at: datetime | None = None,
 ) -> None:
-    from src.models import TaskRecord
+    from runtime.models import TaskRecord
     db.insert_task(TaskRecord(id=task_id, team="engineering", brief="b"))
     expires = expires_at or datetime.now(timezone.utc) + timedelta(hours=72)
     db.mint_escalation_notification(

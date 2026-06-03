@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from src.models import StepRecord
-from src.orchestrator.capabilities import build_capabilities_prompt
+from runtime.models import StepRecord
+from runtime.orchestrator.capabilities import build_capabilities_prompt
 
 
 def test_prompt_does_not_duplicate_brief():
@@ -173,7 +173,7 @@ def test_prompt_warns_that_prose_escalates():
 
 
 def test_self_only_prompt_omits_roster_and_names_self():
-    from src.orchestrator.capabilities import build_capabilities_prompt
+    from runtime.orchestrator.capabilities import build_capabilities_prompt
     p = build_capabilities_prompt(
         agents=[], step_number=1, max_steps=10,
         manager_name="dev_agent", self_only=True,

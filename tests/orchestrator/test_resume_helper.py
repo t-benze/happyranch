@@ -7,10 +7,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.infrastructure.audit_logger import AuditLogger
-from src.infrastructure.database import Database
-from src.models import BlockKind, TaskRecord, TaskStatus
-from src.orchestrator.run_step import _maybe_resume_blocked_task
+from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.infrastructure.database import Database
+from runtime.models import BlockKind, TaskRecord, TaskStatus
+from runtime.orchestrator.run_step import _maybe_resume_blocked_task
 
 
 def _make_orch(db: Database):

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.infrastructure.database import Database
+from runtime.infrastructure.database import Database
 
 
 def test_script_requests_table_exists(db: Database):
@@ -51,7 +51,7 @@ def test_next_job_id_monotonic(db: Database):
     assert db.next_job_id() == "JOB-006"
 
 
-from src.models import JobRecord, JobStatus, JobInterpreter
+from runtime.models import JobRecord, JobStatus, JobInterpreter
 
 
 def _make_record(id_: str = "JOB-001") -> JobRecord:

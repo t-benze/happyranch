@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from src.infrastructure.kb_store import KBEntry, KBStore
+from runtime.infrastructure.kb_store import KBEntry, KBStore
 
 
 def _seed_kb(org_root: Path, agent: str = "dev_agent") -> KBStore:

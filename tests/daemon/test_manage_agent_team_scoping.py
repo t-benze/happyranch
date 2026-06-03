@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from src.daemon.org_state import OrgState
-from src.models import TalkRecord
+from runtime.daemon.org_state import OrgState
+from runtime.models import TalkRecord
 
 
 def _seed_open_talk(org_state: OrgState, agent_name: str) -> str:

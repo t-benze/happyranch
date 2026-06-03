@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from src.daemon import paths as paths_mod
-from src.daemon import runtimes as reg
-from src.runtime import RuntimeDir
+from runtime.daemon import paths as paths_mod
+from runtime.daemon import runtimes as reg
+from runtime.runtime import RuntimeDir
 
 
 @pytest.fixture

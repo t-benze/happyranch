@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from src.models import TalkRecord, TalkStatus, TaskRecord, TaskStatus
+from runtime.models import TalkRecord, TalkStatus, TaskRecord, TaskStatus
 
 
 def _seed_agent(org_state, name: str, *, team: str = "engineering") -> None:

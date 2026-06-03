@@ -6,12 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from src.config import Settings
-from src.infrastructure.database import Database
-from src.models import BlockKind, TaskRecord, TaskStatus
-from src.orchestrator._paths import OrgPaths
-from src.orchestrator.teams import TeamsRegistry
-from src.runtime import RuntimeDir
+from runtime.config import Settings
+from runtime.infrastructure.database import Database
+from runtime.models import BlockKind, TaskRecord, TaskStatus
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.teams import TeamsRegistry
+from runtime.runtime import RuntimeDir
 
 
 @pytest.fixture
@@ -36,7 +36,7 @@ def db(runtime: OrgPaths) -> Database:
 
 
 def test_run_step_silent_noop_when_task_missing(runtime, db):
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
     settings = Settings(max_orchestration_steps=3)
     orch = Orchestrator(db=db, settings=settings, paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
     # Just must not raise
@@ -47,7 +47,7 @@ def test_run_step_noop_on_blocked_escalated(runtime, db):
     """A task in blocked(ESCALATED) isn't eligible for run_step — it waits
     for /resolve-escalation to transition it first. Second-hand enqueue
     must be silently ignored."""
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
     db.insert_task(TaskRecord(id="T-1", brief="x"))
     db.update_task("T-1", status=TaskStatus.BLOCKED, block_kind=BlockKind.ESCALATED,
                    note="halted")
@@ -59,7 +59,7 @@ def test_run_step_noop_on_blocked_escalated(runtime, db):
 
 
 def test_run_step_over_budget_parks_escalated(runtime, db):
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
     settings = Settings(max_orchestration_steps=3)
     db.insert_task(TaskRecord(
         id="T-1", brief="x", assigned_agent="engineering_head",
@@ -86,7 +86,7 @@ def test_run_step_transitions_pending_to_in_progress_and_increments_count(
 ):
     """On pickup, run_step must flip to in_progress, clear block fields,
     and increment the step counter exactly once — BEFORE invoking the agent."""
-    from src.orchestrator.orchestrator import Orchestrator, WorkspaceNotInitialized
+    from runtime.orchestrator.orchestrator import Orchestrator, WorkspaceNotInitialized
 
     db.insert_task(TaskRecord(
         id="T-1", brief="x", assigned_agent="engineering_head",
@@ -114,7 +114,7 @@ def test_run_step_transitions_pending_to_in_progress_and_increments_count(
 
 def _make_report(output_summary: str, status: str = "completed",
                  output_dir: str | None = None):
-    from src.models import CompletionReport
+    from runtime.models import CompletionReport
     return CompletionReport(
         task_id="T-IGNORED", agent="engineering_head", status=status,
         confidence=80, output_summary=output_summary, output_dir=output_dir,
@@ -122,7 +122,7 @@ def _make_report(output_summary: str, status: str = "completed",
 
 
 def _make_result(success: bool = True, duration: int = 1):
-    from src.orchestrator.executors import ExecutorResult
+    from runtime.orchestrator.executors import ExecutorResult
     return ExecutorResult(
         success=success, session_id="sess-x", duration_seconds=duration,
     )
@@ -151,7 +151,7 @@ def test_run_step_done_completes_task_and_enqueues_parent(
 ):
     import asyncio
     import json
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
 
     # Parent in blocked(DELEGATED), child in pending.
     db.insert_task(TaskRecord(id="T-PAR", brief="parent",
@@ -193,7 +193,7 @@ def test_run_step_escalate_parks_blocked_and_leaves_parent_parked(
 ):
     import asyncio
     import json
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
 
     db.insert_task(TaskRecord(id="T-PAR", brief="p",
                               assigned_agent="engineering_head"))
@@ -235,7 +235,7 @@ def test_run_step_delegate_spawns_child_and_blocks_self(
 ):
     import asyncio
     import json
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
 
     (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
 
@@ -280,7 +280,7 @@ def test_run_step_delegate_inherits_session_timeout(runtime, db, monkeypatch):
     revisit-time bump propagates down the whole lineage."""
     import asyncio
     import json
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
 
     (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
 
@@ -315,7 +315,7 @@ def test_run_step_invalid_delegate_fails_task(runtime, db, monkeypatch):
     notify the parent (which may itself be root — no-op in that case)."""
     import asyncio
     import json
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
 
     db.insert_task(TaskRecord(id="T-1", brief="x",
                               assigned_agent="engineering_head"))
@@ -348,7 +348,7 @@ def test_run_step_session_failure_cascades_to_parent_no_retry(
     test_run_step_opaque_failure_spawns_auto_revisit for the new tree.
     """
     import asyncio
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
 
     db.insert_task(TaskRecord(id="T-PAR", brief="p",
                               assigned_agent="engineering_head"))
@@ -394,7 +394,7 @@ def test_run_step_session_failure_cascades_up_chain(
     grandchild fails its parent, which fails its grandparent, and so on.
     """
     import asyncio
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
 
     db.insert_task(TaskRecord(id="T-ROOT", brief="r",
                               assigned_agent="engineering_head"))
@@ -440,8 +440,8 @@ def test_run_step_session_failure_note_includes_diagnostics(
     so post-mortems don't need to grep daemon.log. TASK-044/045 class of
     failure (subprocess exits without calling back) is the motivating case.
     """
-    from src.orchestrator.executors import ExecutorResult
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.executors import ExecutorResult
+    from runtime.orchestrator.orchestrator import Orchestrator
 
     db.insert_task(TaskRecord(id="T-1", brief="x",
                               assigned_agent="engineering_head"))
@@ -475,8 +475,8 @@ def test_run_step_opaque_failure_spawns_auto_revisit_with_error_context(
     revisit_of_task_id. The team manager owns the new root and can decide
     what to do next."""
     import asyncio
-    from src.orchestrator.executors import ExecutorResult
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.executors import ExecutorResult
+    from runtime.orchestrator.orchestrator import Orchestrator
 
     db.insert_task(TaskRecord(id="T-PAR", brief="parent brief",
                               team="engineering",
@@ -537,7 +537,7 @@ def test_run_step_opaque_failure_on_root_manager_spawns_auto_revisit(
     """Manager-level opaque failure (root task itself crashes) also
     triggers auto-revisit. Predecessor is the failed root itself."""
     import asyncio
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
 
     db.insert_task(TaskRecord(id="T-ROOT", brief="root brief",
                               team="engineering",
@@ -565,7 +565,7 @@ def test_run_step_opaque_failure_on_exception_spawns_auto_revisit(
 ):
     """Exception escaping _run_agent triggers auto-revisit with mode=exception."""
     import asyncio
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
 
     db.insert_task(TaskRecord(id="T-1", brief="x",
                               assigned_agent="engineering_head"))
@@ -595,7 +595,7 @@ def test_run_step_auto_revisit_capped_at_two(
     """After 2 prior auto-revisits in the chain, no more are spawned —
     the cascade still runs but the queue stays empty."""
     import asyncio
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
 
     # Chain: T-ORIG <- T-AR1 (auto-revisit of T-ORIG) <- T-AR2 (auto of T-AR1)
     # T-AR2 is the current task; if it fails, no more auto-revisits.
@@ -614,7 +614,7 @@ def test_run_step_auto_revisit_capped_at_two(
     # entries are the SAME kind as the new failure we'll trigger below
     # (_make_result(success=False) with no error/rc → classifier returns
     # "session_failed") so the per-kind cap (spec §5) is exhausted at 2.
-    from src.infrastructure.audit_logger import AuditLogger
+    from runtime.infrastructure.audit_logger import AuditLogger
     audit = AuditLogger(db)
     audit.log_auto_revisit_of(
         task_id="T-AR1", predecessor_root="T-ORIG",
@@ -652,7 +652,7 @@ def test_run_step_self_blocked_does_not_spawn_auto_revisit(
     """Self-blocked is a deliberate agent decision — not an opaque failure.
     No auto-revisit should be spawned."""
     import asyncio
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
 
     db.insert_task(TaskRecord(id="T-1", brief="x",
                               assigned_agent="engineering_head"))
@@ -677,8 +677,8 @@ def test_run_step_auto_revisit_header_injected_on_first_step(
     """The team manager's first prompt on the auto-revisit root must
     include AUTO-REVISIT CONTEXT with the structured error payload."""
     import asyncio
-    from src.orchestrator.orchestrator import Orchestrator
-    from src.orchestrator.run_step import _build_agent_prompt
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _build_agent_prompt
 
     db.insert_task(TaskRecord(id="T-PAR", brief="parent brief",
                               team="engineering",
@@ -689,7 +689,7 @@ def test_run_step_auto_revisit_header_injected_on_first_step(
         assigned_agent="engineering_head",
         revisit_of_task_id="T-PAR",
     ))
-    from src.infrastructure.audit_logger import AuditLogger
+    from runtime.infrastructure.audit_logger import AuditLogger
     AuditLogger(db).log_auto_revisit_of(
         task_id="T-NEW", predecessor_root="T-PAR",
         failed_task="T-CHD", failed_agent="dev_agent",
@@ -721,7 +721,7 @@ def test_run_step_auto_revisit_header_injected_on_first_step(
 
 def test_run_step_worker_self_blocked_fails_task(runtime, db, monkeypatch):
     import asyncio
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
 
     db.insert_task(TaskRecord(id="T-1", brief="x",
                               assigned_agent="engineering_head"))
@@ -745,7 +745,7 @@ def test_run_step_worker_completion_is_done_not_parsed_as_eh_decision(
     prose output_summary from a delegated worker must be treated as `done`,
     not escalated as "non-JSON EH decision"."""
     import asyncio
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
 
     # Parent (EH) delegated to dev_agent (worker).
     db.insert_task(TaskRecord(id="T-PAR", brief="p",
@@ -788,7 +788,7 @@ def test_run_step_delegated_worker_emits_review_verdict(
     (approved on COMPLETED, rejected on FAILED) must be logged — otherwise
     every delegated agent stays on stale performance data."""
     import asyncio
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
 
     db.insert_task(TaskRecord(id="T-PAR", brief="p",
                               assigned_agent="engineering_head"))
@@ -837,7 +837,7 @@ def test_run_step_root_eh_task_skips_review_verdict(runtime, db, monkeypatch):
     rows — the EH is not reviewing itself."""
     import asyncio
     import json
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
 
     db.insert_task(TaskRecord(id="T-ROOT", brief="r",
                               assigned_agent="engineering_head"))
@@ -861,7 +861,7 @@ def test_run_step_skips_task_with_cancelled_at(runtime, db, monkeypatch):
     call, no step-count increment. The row stays exactly as /cancel left it."""
     from datetime import datetime, timezone
 
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
 
     db.insert_task(TaskRecord(
         id="T-CNL", brief="x",
@@ -899,8 +899,8 @@ def test_fail_idempotent_on_terminal_task(runtime, db):
     """The post-Popen classifier must not overwrite the founder's note.
     After /cancel flips the row to FAILED, a stray _fail() call (from the
     run_step that was mid-flight when SIGTERM arrived) must no-op."""
-    from src.orchestrator.orchestrator import Orchestrator
-    from src.orchestrator.run_step import _fail
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _fail
 
     db.insert_task(TaskRecord(id="T-1", brief="x",
                               assigned_agent="dev_agent"))
@@ -921,8 +921,8 @@ def test_fail_idempotent_on_terminal_task(runtime, db):
 def test_complete_idempotent_on_terminal_task(runtime, db):
     """If the subprocess happened to finish cleanly just before SIGTERM,
     _complete must not resurrect the cancelled row back to COMPLETED."""
-    from src.orchestrator.orchestrator import Orchestrator
-    from src.orchestrator.run_step import _complete
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _complete
 
     db.insert_task(TaskRecord(id="T-1", brief="x",
                               assigned_agent="dev_agent"))
@@ -946,7 +946,7 @@ def test_run_step_revisit_header_injected_on_first_step(
 ):
     """New-root task with a revisit_of audit entry and no orchestration_step
     entry: EH prompt must start with the revisit context header."""
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
     db.insert_task(TaskRecord(
         id="TASK-072", brief="Add Alipay support",
         assigned_agent="engineering_head",
@@ -988,7 +988,7 @@ def test_run_step_revisit_header_absent_on_second_step(
 ):
     """After the first orchestration_step audit entry lands, the header must
     disappear — subsequent EH cycles see a vanilla capabilities prompt."""
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
     db.insert_task(TaskRecord(
         id="TASK-072", brief="x",
         assigned_agent="engineering_head",
@@ -1022,7 +1022,7 @@ def test_run_step_revisit_header_omits_note_line_when_none(
     runtime, db, monkeypatch,
 ):
     """founder_note == None => no 'Founder note:' line in the header."""
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
     db.insert_task(TaskRecord(
         id="TASK-072", brief="x",
         assigned_agent="engineering_head",
@@ -1053,7 +1053,7 @@ def test_run_step_resolved_escalation_header_injected_after_approve(
     """After /resolve-escalation --approve, the task is re-enqueued (PENDING).
     On the manager's next decision step, the prompt must start with the
     ESCALATION RESOLVED header so the manager sees the founder's verdict."""
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
     db.insert_task(TaskRecord(
         id="TASK-080", brief="Refund $800?",
         assigned_agent="engineering_head",
@@ -1088,7 +1088,7 @@ def test_run_step_resolved_escalation_header_absent_after_next_step(
     """Once the manager has taken a decision step after the resolution, the
     header must disappear — its trigger is `latest escalation_resolved id >
     latest orchestration_step id`."""
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
     db.insert_task(TaskRecord(
         id="TASK-081", brief="x",
         assigned_agent="engineering_head",
@@ -1133,7 +1133,7 @@ def test_run_step_concurrent_claim_spawns_only_one_agent(
     """
     import json
     import threading
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
 
     # Parent blocked(DELEGATED) with two children, both terminal → eligible
     # for exactly one EH decision step.
@@ -1211,15 +1211,15 @@ def test_revisit_header_includes_sr_summary(runtime, db):
     """When the predecessor task submitted SRs, revisit header lists them."""
     from datetime import datetime, timezone
 
-    from src.infrastructure.audit_logger import AuditLogger
-    from src.models import (
+    from runtime.infrastructure.audit_logger import AuditLogger
+    from runtime.models import (
         JobInterpreter,
         JobRecord,
         JobStatus,
         TaskRecord,
         TaskStatus,
     )
-    from src.orchestrator.run_step import _revisit_header_if_applicable
+    from runtime.orchestrator.run_step import _revisit_header_if_applicable
 
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     predecessor = TaskRecord(
@@ -1305,8 +1305,8 @@ def test_run_step_drops_delegate_when_cancelled_during_session(runtime, db, monk
     """
     import json
     from datetime import datetime, timezone
-    from src.orchestrator.orchestrator import Orchestrator
-    from src.models import TokenUsage
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.models import TokenUsage
 
     # Workspace must exist so _validate_delegate doesn't error out and
     # take us through the (already-idempotent) _fail path instead of the
@@ -1376,8 +1376,8 @@ def test_is_already_terminal_predicate(runtime, db):
     status hasn't yet flipped to FAILED.
     """
     from datetime import datetime, timezone
-    from src.orchestrator.orchestrator import Orchestrator
-    from src.orchestrator.run_step import _is_already_terminal
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _is_already_terminal
 
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test",
                         teams=TeamsRegistry.load(runtime.root))
@@ -1430,7 +1430,7 @@ def test_run_step_delegate_atomic_against_cancel_between_recheck_and_cas(
     """
     import json
     from datetime import datetime, timezone
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
 
     (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
 
@@ -1486,7 +1486,7 @@ def test_run_step_escalate_atomic_against_cancel_between_recheck_and_cas(
     cancelled row into BLOCKED(ESCALATED)."""
     import json
     from datetime import datetime, timezone
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
 
     db.insert_task(TaskRecord(
         id="T-ESC", brief="x", assigned_agent="engineering_head",
@@ -1527,7 +1527,7 @@ def test_run_step_escalate_atomic_against_cancel_between_recheck_and_cas(
 def test_non_manager_owner_of_task_type_emits_decision(runtime, db, monkeypatch):
     """A type=task owned by a NON-manager parses its decision (done here)."""
     import json
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
     db.insert_task(TaskRecord(
         id="T-1", brief="root", assigned_agent="dev_agent", task_type="task",
     ))
@@ -1552,7 +1552,7 @@ def test_subtask_owner_is_leaf_even_if_decision_present(runtime, db, monkeypatch
     """A type=subtask owner does NOT orchestrate: a delegate decision in its
     report is ignored and the task simply completes (leaf path)."""
     import json
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
     db.insert_task(TaskRecord(
         id="T-2", brief="leaf", assigned_agent="engineering_head",
         task_type="subtask",
@@ -1579,7 +1579,7 @@ def test_subtask_owner_is_leaf_even_if_decision_present(runtime, db, monkeypatch
 
 def test_delegated_child_is_typed_subtask(runtime, db, monkeypatch):
     import json
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
     (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
     db.insert_task(TaskRecord(
         id="T-1", brief="root", assigned_agent="engineering_head",
@@ -1606,7 +1606,7 @@ def test_delegated_child_is_typed_subtask(runtime, db, monkeypatch):
 def test_non_manager_self_delegation_is_allowed(runtime, db, monkeypatch):
     """dev_agent owns a type=task and delegates to ITSELF → child spawned."""
     import json
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
     (runtime.workspaces_dir / "dev_agent").mkdir(parents=True, exist_ok=True)
     db.insert_task(TaskRecord(id="T-1", brief="root",
                               assigned_agent="dev_agent", task_type="task"))
@@ -1631,7 +1631,7 @@ def test_non_manager_cross_agent_delegation_is_rejected(runtime, db, monkeypatch
     """dev_agent owning a type=task may NOT delegate to product_manager →
     feedback step, task re-enqueued PENDING, no child."""
     import json
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
     (runtime.workspaces_dir / "product_manager").mkdir(parents=True, exist_ok=True)
     db.insert_task(TaskRecord(id="T-1", brief="root",
                               assigned_agent="dev_agent", task_type="task"))
@@ -1655,7 +1655,7 @@ def test_manager_self_target_does_not_bump_revision_count(runtime, db, monkeypat
     """A manager re-delegating to ITSELF is sequencing, not a revise loop —
     revision_count must stay 0 so escalate-after-2-rounds doesn't misfire."""
     import json
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
     (runtime.workspaces_dir / "engineering_head").mkdir(parents=True, exist_ok=True)
     # One already-completed self-child makes engineering_head the worker-of-record.
     db.insert_task(TaskRecord(id="T-1", brief="root",
@@ -1682,8 +1682,8 @@ def test_manager_self_target_does_not_bump_revision_count(runtime, db, monkeypat
 
 
 def test_build_agent_prompt_leaf_subtask_is_empty(runtime, db):
-    from src.orchestrator.orchestrator import Orchestrator
-    from src.orchestrator.run_step import _build_agent_prompt
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _build_agent_prompt
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test",
                         teams=TeamsRegistry.load(runtime.root))
     t = TaskRecord(id="T-1", brief="x", assigned_agent="dev_agent",
@@ -1692,8 +1692,8 @@ def test_build_agent_prompt_leaf_subtask_is_empty(runtime, db):
 
 
 def test_build_agent_prompt_non_manager_task_is_self_only(runtime, db):
-    from src.orchestrator.orchestrator import Orchestrator
-    from src.orchestrator.run_step import _build_agent_prompt
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _build_agent_prompt
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test",
                         teams=TeamsRegistry.load(runtime.root))
     t = TaskRecord(id="T-1", brief="x", assigned_agent="dev_agent",
@@ -1707,8 +1707,8 @@ def test_build_agent_prompt_manager_roster_includes_self(runtime, db):
     """Spec §3: a manager may self-target. The roster must advertise self so the
     manager knows it can delegate a sub-task to itself (it is not in teams.yaml
     `workers`, so it would otherwise be absent)."""
-    from src.orchestrator.orchestrator import Orchestrator
-    from src.orchestrator.run_step import _build_agent_prompt
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _build_agent_prompt
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test",
                         teams=TeamsRegistry.load(runtime.root))
     t = TaskRecord(id="T-1", brief="x", assigned_agent="engineering_head",

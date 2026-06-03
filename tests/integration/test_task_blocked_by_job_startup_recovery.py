@@ -38,9 +38,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.config import Settings
-from src.infrastructure.database import Database
-from src.models import (
+from runtime.config import Settings
+from runtime.infrastructure.database import Database
+from runtime.models import (
     BlockKind,
     JobInterpreter,
     JobRecord,
@@ -48,9 +48,9 @@ from src.models import (
     TaskRecord,
     TaskStatus,
 )
-from src.orchestrator._paths import OrgPaths
-from src.orchestrator.teams import TeamsRegistry
-from src.runtime import RuntimeDir
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.teams import TeamsRegistry
+from runtime.runtime import RuntimeDir
 
 
 # ---------------------------------------------------------------------------
@@ -117,8 +117,8 @@ def test_startup_recovery_enqueues_blocked_task_after_job_crash(
     - The enqueue carries metadata trigger='startup_recovery',
       triggering_job_id=None.
     """
-    from src.orchestrator.orchestrator import Orchestrator
-    from src.orchestrator.run_step import _maybe_resume_blocked_task
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _maybe_resume_blocked_task
 
     org_paths = _make_runtime(tmp_path)
     db = Database(org_paths.db_path)
@@ -224,8 +224,8 @@ def test_startup_recovery_multi_job_all_crashed(tmp_path: Path) -> None:
     on the first call to _maybe_resume_blocked_task and the task is enqueued
     exactly once.
     """
-    from src.orchestrator.orchestrator import Orchestrator
-    from src.orchestrator.run_step import _maybe_resume_blocked_task
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _maybe_resume_blocked_task
 
     org_paths = _make_runtime(tmp_path)
     db = Database(org_paths.db_path)
@@ -299,8 +299,8 @@ def test_startup_recovery_run_step_writes_resumed_audit_row(
     We mock _run_agent to return a fake 'completed' result so run_step exits
     cleanly without touching the filesystem.
     """
-    from src.orchestrator.orchestrator import Orchestrator
-    from src.orchestrator.run_step import _maybe_resume_blocked_task
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _maybe_resume_blocked_task
 
     org_paths = _make_runtime(tmp_path)
 
@@ -355,8 +355,8 @@ def test_startup_recovery_run_step_writes_resumed_audit_row(
     # Step C: simulate run_step picking up the task (CAS transition).
     # We patch _run_agent so no subprocess is spawned and no filesystem
     # workspace is needed beyond the SKILL.md marker above.
-    from src.models import CompletionReport
-    from src.orchestrator.executors import ExecutorResult
+    from runtime.models import CompletionReport
+    from runtime.orchestrator.executors import ExecutorResult
 
     fake_report = CompletionReport(
         task_id="TASK-3",

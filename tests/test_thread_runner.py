@@ -3,10 +3,10 @@ from __future__ import annotations
 import pytest
 from datetime import datetime, timezone
 
-from src.config import Settings
-from src.daemon.thread_runner import build_thread_prompt, run_invocation
-from src.infrastructure.database import Database
-from src.models import (
+from runtime.config import Settings
+from runtime.daemon.thread_runner import build_thread_prompt, run_invocation
+from runtime.infrastructure.database import Database
+from runtime.models import (
     ThreadInvocationPurpose,
     ThreadMessage,
     ThreadMessageKind,
@@ -82,7 +82,7 @@ async def test_run_invocation_no_callback_silent_decline(tmp_path, monkeypatch):
     (ws / "agent.yaml").write_text("executor: claude\n")
 
     # Replace the executor builder so .run() returns immediately without callback.
-    import src.daemon.thread_runner as runner_mod
+    import runtime.daemon.thread_runner as runner_mod
 
     class _FakeExec:
         def __init__(self, **kwargs):
@@ -112,7 +112,7 @@ async def test_run_invocation_no_callback_silent_decline(tmp_path, monkeypatch):
 
 
 def test_thread_runner_builds_pi_executor():
-    import src.daemon.thread_runner as runner_mod
+    import runtime.daemon.thread_runner as runner_mod
 
     executor = runner_mod._build_executor_for_provider(
         "pi",
@@ -151,7 +151,7 @@ async def test_turn1_full_prompt_captures_session_id(tmp_path, monkeypatch):
     ws = tmp_path / "workspaces" / "alice"; ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
 
-    import src.daemon.thread_runner as runner_mod
+    import runtime.daemon.thread_runner as runner_mod
     fake = _ResumeRecordingExec([_ok_result("claude-sess-001")])
     monkeypatch.setattr(runner_mod, "_build_executor_for_provider",
                         lambda provider, settings, paths: fake)
@@ -179,7 +179,7 @@ async def test_turn2_resumes_with_delta(tmp_path, monkeypatch):
     ws = tmp_path / "workspaces" / "alice"; ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
 
-    import src.daemon.thread_runner as runner_mod
+    import runtime.daemon.thread_runner as runner_mod
     fake = _ResumeRecordingExec([_ok_result("claude-prior")])
     monkeypatch.setattr(runner_mod, "_build_executor_for_provider",
                         lambda provider, settings, paths: fake)
@@ -214,7 +214,7 @@ async def test_resume_not_found_falls_back_to_full(tmp_path, monkeypatch):
     evicted.stderr_tail = "No conversation found"
     evicted.agent_session_id = None
 
-    import src.daemon.thread_runner as runner_mod
+    import runtime.daemon.thread_runner as runner_mod
     fake = _ResumeRecordingExec([evicted, _ok_result("claude-fresh")])
     monkeypatch.setattr(runner_mod, "_build_executor_for_provider",
                         lambda provider, settings, paths: fake)
@@ -233,8 +233,8 @@ async def test_resume_not_found_falls_back_to_full(tmp_path, monkeypatch):
 
 def test_build_delta_prompt_excludes_old_history_includes_new():
     from datetime import datetime, timezone
-    from src.daemon.thread_runner import build_thread_delta_prompt
-    from src.models import ThreadRecord, ThreadMessage, ThreadMessageKind
+    from runtime.daemon.thread_runner import build_thread_delta_prompt
+    from runtime.models import ThreadRecord, ThreadMessage, ThreadMessageKind
 
     thread = ThreadRecord(
         id="THR-001", subject="Refund policy",
@@ -283,7 +283,7 @@ async def test_run_invocation_publishes_started_and_settled(tmp_path, monkeypatc
         async def publish(self, topic, event):
             published.append((topic, event))
 
-    import src.daemon.thread_runner as runner_mod
+    import runtime.daemon.thread_runner as runner_mod
 
     class _FakeExec:
         def __init__(self, **kwargs):
@@ -358,7 +358,7 @@ async def test_same_participant_invocations_serialize(tmp_path, monkeypatch):
             r.agent_session_id = "sess-x"
             return r
 
-    import src.daemon.thread_runner as runner_mod
+    import runtime.daemon.thread_runner as runner_mod
     monkeypatch.setattr(runner_mod, "_build_executor_for_provider",
                         lambda provider, settings, paths: _SlowExec())
 
@@ -407,7 +407,7 @@ async def test_decline_publishes_settled_event(tmp_path, monkeypatch):
     db, inv = _seed_thread_with_invocation(tmp_path)
     bus = _RecordingBus()
 
-    import src.daemon.thread_runner as runner_mod
+    import runtime.daemon.thread_runner as runner_mod
 
     class _DeclineExec:
         def __init__(self, **kwargs):
@@ -436,7 +436,7 @@ async def test_runner_crash_publishes_settled_event(tmp_path, monkeypatch):
     db, inv = _seed_thread_with_invocation(tmp_path)
     bus = _RecordingBus()
 
-    import src.daemon.thread_runner as runner_mod
+    import runtime.daemon.thread_runner as runner_mod
 
     class _BoomExec:
         def __init__(self, **kwargs):

@@ -7,9 +7,9 @@ import pytest
 
 
 def _build_orch(tmp_path: Path, *, cancelled: bool = False):
-    from src.infrastructure.database import Database
-    from src.infrastructure.audit_logger import AuditLogger
-    from src.models import TaskRecord, TaskStatus
+    from runtime.infrastructure.database import Database
+    from runtime.infrastructure.audit_logger import AuditLogger
+    from runtime.models import TaskRecord, TaskStatus
     from datetime import datetime, timezone
 
     db = Database(tmp_path / "happyranch.db")
@@ -44,8 +44,8 @@ def _make_org_config(*, notify_on_failure: bool = True, has_feishu: bool = True)
 
 
 def test_notify_failed_fires_when_eligible(tmp_path: Path, monkeypatch):
-    import src.orchestrator.run_step as rs
-    from src.orchestrator.run_step import _notify_failure_if_eligible
+    import runtime.orchestrator.run_step as rs
+    from runtime.orchestrator.run_step import _notify_failure_if_eligible
 
     orch = _build_orch(tmp_path)
     monkeypatch.setattr(rs, "load_org_config", lambda _paths: _make_org_config())
@@ -59,8 +59,8 @@ def test_notify_failed_fires_when_eligible(tmp_path: Path, monkeypatch):
 
 
 def test_no_notify_when_auto_revisit_spawned(tmp_path: Path, monkeypatch):
-    import src.orchestrator.run_step as rs
-    from src.orchestrator.run_step import _notify_failure_if_eligible
+    import runtime.orchestrator.run_step as rs
+    from runtime.orchestrator.run_step import _notify_failure_if_eligible
 
     orch = _build_orch(tmp_path)
     monkeypatch.setattr(rs, "load_org_config", lambda _paths: _make_org_config())
@@ -73,8 +73,8 @@ def test_no_notify_when_auto_revisit_spawned(tmp_path: Path, monkeypatch):
 
 
 def test_no_notify_when_cancelled(tmp_path: Path, monkeypatch):
-    import src.orchestrator.run_step as rs
-    from src.orchestrator.run_step import _notify_failure_if_eligible
+    import runtime.orchestrator.run_step as rs
+    from runtime.orchestrator.run_step import _notify_failure_if_eligible
 
     orch = _build_orch(tmp_path, cancelled=True)
     monkeypatch.setattr(rs, "load_org_config", lambda _paths: _make_org_config())
@@ -87,8 +87,8 @@ def test_no_notify_when_cancelled(tmp_path: Path, monkeypatch):
 
 
 def test_no_notify_when_config_disabled(tmp_path: Path, monkeypatch):
-    import src.orchestrator.run_step as rs
-    from src.orchestrator.run_step import _notify_failure_if_eligible
+    import runtime.orchestrator.run_step as rs
+    from runtime.orchestrator.run_step import _notify_failure_if_eligible
 
     orch = _build_orch(tmp_path)
     monkeypatch.setattr(
@@ -104,8 +104,8 @@ def test_no_notify_when_config_disabled(tmp_path: Path, monkeypatch):
 
 
 def test_no_notify_when_org_has_no_feishu_config(tmp_path: Path, monkeypatch):
-    import src.orchestrator.run_step as rs
-    from src.orchestrator.run_step import _notify_failure_if_eligible
+    import runtime.orchestrator.run_step as rs
+    from runtime.orchestrator.run_step import _notify_failure_if_eligible
 
     orch = _build_orch(tmp_path)
     monkeypatch.setattr(
@@ -122,8 +122,8 @@ def test_no_notify_when_org_has_no_feishu_config(tmp_path: Path, monkeypatch):
 
 def test_silent_when_load_org_config_raises(tmp_path: Path, monkeypatch):
     """Config-load failure must NEVER crash _fail. Gate fails silent."""
-    import src.orchestrator.run_step as rs
-    from src.orchestrator.run_step import _notify_failure_if_eligible
+    import runtime.orchestrator.run_step as rs
+    from runtime.orchestrator.run_step import _notify_failure_if_eligible
 
     orch = _build_orch(tmp_path)
     def boom(_paths):

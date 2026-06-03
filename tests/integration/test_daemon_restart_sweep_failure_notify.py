@@ -4,15 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from src.config import Settings
-from src.daemon.__main__ import _sweep_on_startup
-from src.daemon.queue import TaskQueue
-from src.infrastructure.database import Database
-from src.models import BlockKind, TaskRecord, TaskStatus
-from src.orchestrator._paths import OrgPaths
-from src.orchestrator.orchestrator import Orchestrator
-from src.orchestrator.teams import TeamsRegistry
-from src.runtime import RuntimeDir
+from runtime.config import Settings
+from runtime.daemon.__main__ import _sweep_on_startup
+from runtime.daemon.queue import TaskQueue
+from runtime.infrastructure.database import Database
+from runtime.models import BlockKind, TaskRecord, TaskStatus
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.orchestrator import Orchestrator
+from runtime.orchestrator.teams import TeamsRegistry
+from runtime.runtime import RuntimeDir
 
 
 pytestmark = pytest.mark.integration

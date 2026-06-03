@@ -6,8 +6,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from src.daemon.thread_runner import build_thread_prompt
-from src.models import (
+from runtime.daemon.thread_runner import build_thread_prompt
+from runtime.models import (
     ThreadMessage,
     ThreadMessageKind,
     ThreadParticipant,

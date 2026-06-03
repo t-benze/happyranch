@@ -4,8 +4,8 @@ import json as _json
 
 import pytest
 
-from src.orchestrator._paths import OrgPaths
-from src.orchestrator.agent_def import AgentDef, render_agent_text
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 from tests.daemon.conftest import open_talk_for
 
 

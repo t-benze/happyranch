@@ -16,7 +16,7 @@ cmd_start() {
         fi
         rm -f "$PID_FILE"
     fi
-    nohup uv run python -m src.daemon >> "$LOG_FILE" 2>&1 &
+    nohup uv run python -m runtime.daemon >> "$LOG_FILE" 2>&1 &
     bg_pid=$!
     # Wait up to 5s for port file to materialize
     for _ in 1 2 3 4 5; do

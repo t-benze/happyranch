@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from src.models import CompletionReport, JobInterpreter, JobRecord, JobStatus, TaskRecord, TaskStatus
+from runtime.models import CompletionReport, JobInterpreter, JobRecord, JobStatus, TaskRecord, TaskStatus
 
 
 # ---------------------------------------------------------------------------

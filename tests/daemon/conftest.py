@@ -4,12 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from src.config import Settings
-from src.daemon import paths as paths_mod
-from src.daemon.app import create_app
-from src.daemon.org_state import OrgState
-from src.daemon.state import DaemonState
-from src.runtime import RuntimeDir
+from runtime.config import Settings
+from runtime.daemon import paths as paths_mod
+from runtime.daemon.app import create_app
+from runtime.daemon.org_state import OrgState
+from runtime.daemon.state import DaemonState
+from runtime.runtime import RuntimeDir
 
 
 @pytest.fixture

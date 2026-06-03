@@ -5,14 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from src.orchestrator import prompt_loader
-from src.orchestrator._paths import OrgPaths
-from src.orchestrator.agent_def import AgentDef
-from src.orchestrator.org_validation import (
+from runtime.orchestrator import prompt_loader
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.agent_def import AgentDef
+from runtime.orchestrator.org_validation import (
     OrgConsistencyError,
     validate_team_membership,
 )
-from src.orchestrator.teams import TeamsRegistry
+from runtime.orchestrator.teams import TeamsRegistry
 
 
 def _seed_empty_org(org_root: Path) -> Path:
@@ -25,7 +25,7 @@ def _seed_empty_org(org_root: Path) -> Path:
 def _write_active(paths: OrgPaths, agent: AgentDef) -> None:
     target = paths.agents_dir / f"{agent.name}.md"
     target.parent.mkdir(parents=True, exist_ok=True)
-    from src.orchestrator.agent_def import render_agent_text
+    from runtime.orchestrator.agent_def import render_agent_text
     target.write_text(render_agent_text(agent))
 
 

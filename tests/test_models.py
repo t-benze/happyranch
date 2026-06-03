@@ -1,4 +1,4 @@
-from src.models import (
+from runtime.models import (
     ChainLeg,
     CompletionReport,
     NextStep,
@@ -136,19 +136,19 @@ def test_completion_report_output_dir_defaults_to_none():
 
 
 def test_task_status_has_five_values():
-    from src.models import TaskStatus
+    from runtime.models import TaskStatus
     assert {s.value for s in TaskStatus} == {
         "pending", "in_progress", "blocked", "completed", "failed",
     }
 
 
 def test_block_kind_has_delegated_and_escalated():
-    from src.models import BlockKind
+    from runtime.models import BlockKind
     assert {b.value for b in BlockKind} == {"delegated", "escalated", "blocked_on_job"}
 
 
 def test_task_record_has_new_columns():
-    from src.models import TaskRecord
+    from runtime.models import TaskRecord
     t = TaskRecord(id="TASK-001", brief="x")
     assert t.block_kind is None
     assert t.note is None
@@ -156,7 +156,7 @@ def test_task_record_has_new_columns():
 
 
 def test_task_record_accepts_block_kind():
-    from src.models import TaskRecord, TaskStatus, BlockKind
+    from runtime.models import TaskRecord, TaskStatus, BlockKind
     t = TaskRecord(
         id="TASK-001", brief="x",
         status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED,
@@ -185,7 +185,7 @@ def test_talk_record_defaults():
 
 
 def test_script_request_status_values():
-    from src.models import JobStatus
+    from runtime.models import JobStatus
     assert JobStatus.PENDING == "pending"
     assert JobStatus.REJECTED == "rejected"
     assert JobStatus.RUNNING == "running"
@@ -194,7 +194,7 @@ def test_script_request_status_values():
 
 
 def test_script_interpreter_values():
-    from src.models import JobInterpreter
+    from runtime.models import JobInterpreter
     assert JobInterpreter.BASH == "bash"
     assert JobInterpreter.SH == "sh"
     assert JobInterpreter.ZSH == "zsh"
@@ -202,7 +202,7 @@ def test_script_interpreter_values():
 
 
 def test_script_request_record_defaults():
-    from src.models import JobRecord, JobStatus, JobInterpreter
+    from runtime.models import JobRecord, JobStatus, JobInterpreter
     r = JobRecord(
         id="SR-001",
         task_id="TASK-001",

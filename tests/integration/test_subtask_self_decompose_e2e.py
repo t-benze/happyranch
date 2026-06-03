@@ -31,7 +31,7 @@ pytestmark = pytest.mark.integration
 
 
 def _auth_headers() -> dict:
-    from src.daemon import paths
+    from runtime.daemon import paths
     return {"Authorization": f"Bearer {paths.read_token()}"}
 
 

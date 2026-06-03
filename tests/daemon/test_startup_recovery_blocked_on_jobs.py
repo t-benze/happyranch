@@ -8,9 +8,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.infrastructure.audit_logger import AuditLogger
-from src.infrastructure.database import Database
-from src.models import BlockKind, JobInterpreter, JobRecord, JobStatus, TaskRecord, TaskStatus
+from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.infrastructure.database import Database
+from runtime.models import BlockKind, JobInterpreter, JobRecord, JobStatus, TaskRecord, TaskStatus
 
 
 def _make_orch(db: Database, slug: str = "org-a"):
@@ -59,7 +59,7 @@ def test_startup_recovery_resumes_tasks_with_all_terminal_jobs():
 
         orch = _make_orch(db)
 
-        from src.orchestrator.run_step import _maybe_resume_blocked_task
+        from runtime.orchestrator.run_step import _maybe_resume_blocked_task
         for task_id in db.list_tasks_blocked_on_jobs():
             _maybe_resume_blocked_task(
                 orch, task_id,
@@ -82,7 +82,7 @@ def test_startup_recovery_resumes_tasks_with_completed_jobs():
 
         orch = _make_orch(db)
 
-        from src.orchestrator.run_step import _maybe_resume_blocked_task
+        from runtime.orchestrator.run_step import _maybe_resume_blocked_task
         for task_id in db.list_tasks_blocked_on_jobs():
             _maybe_resume_blocked_task(
                 orch, task_id,
@@ -101,7 +101,7 @@ def test_startup_recovery_no_resume_for_running_jobs():
 
         orch = _make_orch(db)
 
-        from src.orchestrator.run_step import _maybe_resume_blocked_task
+        from runtime.orchestrator.run_step import _maybe_resume_blocked_task
         for task_id in db.list_tasks_blocked_on_jobs():
             _maybe_resume_blocked_task(
                 orch, task_id,
@@ -120,7 +120,7 @@ def test_startup_recovery_no_resume_for_pending_jobs():
 
         orch = _make_orch(db)
 
-        from src.orchestrator.run_step import _maybe_resume_blocked_task
+        from runtime.orchestrator.run_step import _maybe_resume_blocked_task
         for task_id in db.list_tasks_blocked_on_jobs():
             _maybe_resume_blocked_task(
                 orch, task_id,
@@ -140,7 +140,7 @@ def test_startup_recovery_multi_job_all_terminal():
 
         orch = _make_orch(db)
 
-        from src.orchestrator.run_step import _maybe_resume_blocked_task
+        from runtime.orchestrator.run_step import _maybe_resume_blocked_task
         for task_id in db.list_tasks_blocked_on_jobs():
             _maybe_resume_blocked_task(
                 orch, task_id,
@@ -160,7 +160,7 @@ def test_startup_recovery_multi_job_one_still_running():
 
         orch = _make_orch(db)
 
-        from src.orchestrator.run_step import _maybe_resume_blocked_task
+        from runtime.orchestrator.run_step import _maybe_resume_blocked_task
         for task_id in db.list_tasks_blocked_on_jobs():
             _maybe_resume_blocked_task(
                 orch, task_id,

@@ -4,7 +4,7 @@ import textwrap
 
 import pytest
 
-from src.orchestrator.org_config import OrgConfig, OrgConfigError
+from runtime.orchestrator.org_config import OrgConfig, OrgConfigError
 
 
 def _load(text: str) -> OrgConfig:

@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 
 def test_notify_failed_routes_to_notifier_send_failure():
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
     orch = Orchestrator.__new__(Orchestrator)
     notifier = MagicMock()
     notifier.send_failure = MagicMock()
@@ -32,7 +32,7 @@ def test_notify_failed_routes_to_notifier_send_failure():
 
 
 def test_notify_failed_when_notifier_none_is_silent():
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
     orch = Orchestrator.__new__(Orchestrator)
     orch._notifier = None
     # Must not raise

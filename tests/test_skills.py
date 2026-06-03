@@ -116,7 +116,7 @@ def test_talk_skill_documents_single_line_rationale() -> None:
 
 def test_skill_cli_commands_exist() -> None:
     """Every `happyranch <subcommand>` referenced by a skill must be a real subcommand."""
-    from src.cli import build_parser
+    from cli.main import build_parser
 
     parser = build_parser()
     subparsers_action = next(

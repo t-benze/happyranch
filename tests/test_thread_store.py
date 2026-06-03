@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from src.infrastructure.thread_store import ThreadStore, render_transcript_body
-from src.models import ThreadMessage, ThreadMessageKind
+from runtime.infrastructure.thread_store import ThreadStore, render_transcript_body
+from runtime.models import ThreadMessage, ThreadMessageKind
 
 
 def test_write_transcript_creates_file(tmp_path):

@@ -3,8 +3,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.config import Settings
-from src.orchestrator.executors import (
+from runtime.config import Settings
+from runtime.orchestrator.executors import (
     AgentExecutor,
     ClaudeExecutor,
     CodexExecutor,
@@ -12,8 +12,8 @@ from src.orchestrator.executors import (
     OpencodeExecutor,
     PiExecutor,
 )
-from src.orchestrator._paths import OrgPaths
-from src.runtime import RuntimeDir
+from runtime.orchestrator._paths import OrgPaths
+from runtime.runtime import RuntimeDir
 
 
 @pytest.fixture
@@ -21,7 +21,7 @@ def runtime(tmp_path: Path) -> OrgPaths:
     """A minimal OrgPaths with engineering_head.md pre-seeded."""
     rt = RuntimeDir.init(tmp_path / "rt")
     paths = OrgPaths(root=rt.orgs_dir / "x")
-    from src.orchestrator.agent_def import AgentDef, render_agent_text
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
     from datetime import datetime, timezone
     eh = AgentDef(
         name="engineering_head",
@@ -48,7 +48,7 @@ def _popen_mock(returncode: int = 0, stdout: str = "", stderr: str = "", pid: in
     return proc
 
 
-@patch("src.orchestrator.executors.subprocess")
+@patch("runtime.orchestrator.executors.subprocess")
 def test_claude_executor_launches_with_current_semantics(mock_subprocess, tmp_path, runtime):
     workspace = tmp_path / "dev_agent"
     workspace.mkdir()
@@ -78,7 +78,7 @@ def test_claude_executor_launches_with_current_semantics(mock_subprocess, tmp_pa
     assert "gh " not in allowed
 
 
-@patch("src.orchestrator.executors.subprocess")
+@patch("runtime.orchestrator.executors.subprocess")
 def test_claude_executor_grants_engineering_head_gh_resolve_rules(
     mock_subprocess, tmp_path, runtime,
 ):
@@ -106,7 +106,7 @@ def test_claude_executor_grants_engineering_head_gh_resolve_rules(
     assert "gh pr create" not in allowed
 
 
-@patch("src.orchestrator.executors.subprocess")
+@patch("runtime.orchestrator.executors.subprocess")
 def test_codex_executor_launches_exec_with_explicit_sandbox(mock_subprocess, tmp_path):
     workspace = tmp_path / "dev_agent"
     workspace.mkdir()
@@ -143,7 +143,7 @@ def test_codex_executor_launches_exec_with_explicit_sandbox(mock_subprocess, tmp
     ] == "Implement Alipay support"
 
 
-@patch("src.orchestrator.executors.subprocess")
+@patch("runtime.orchestrator.executors.subprocess")
 def test_codex_executor_returns_failure_on_nonzero_exit(mock_subprocess, tmp_path):
     workspace = tmp_path / "dev_agent"
     workspace.mkdir()
@@ -182,7 +182,7 @@ def test_settings_exposes_pi_executor_defaults() -> None:
     assert settings.pi_cli_path == "pi"
 
 
-@patch("src.orchestrator.executors.subprocess")
+@patch("runtime.orchestrator.executors.subprocess")
 def test_opencode_executor_launches_run_with_workspace_dir(mock_subprocess, tmp_path):
     workspace = tmp_path / "dev_agent"
     workspace.mkdir()
@@ -211,7 +211,7 @@ def test_opencode_executor_launches_run_with_workspace_dir(mock_subprocess, tmp_
     assert "--dangerously-skip-permissions" not in cmd
 
 
-@patch("src.orchestrator.executors.subprocess")
+@patch("runtime.orchestrator.executors.subprocess")
 def test_pi_executor_launches_print_mode_with_json_events(mock_subprocess, tmp_path):
     workspace = tmp_path / "dev_agent"
     workspace.mkdir()
@@ -235,7 +235,7 @@ def test_pi_executor_launches_print_mode_with_json_events(mock_subprocess, tmp_p
     assert cmd[cmd.index("--mode") + 1] == "json"
 
 
-@patch("src.orchestrator.executors.subprocess")
+@patch("runtime.orchestrator.executors.subprocess")
 def test_opencode_executor_returns_failure_on_nonzero_exit(mock_subprocess, tmp_path):
     workspace = tmp_path / "dev_agent"
     workspace.mkdir()
@@ -256,7 +256,7 @@ def test_opencode_executor_returns_failure_on_nonzero_exit(mock_subprocess, tmp_
     assert "permission denied" in (result.stderr_tail or "")
 
 
-@patch("src.orchestrator.executors.subprocess")
+@patch("runtime.orchestrator.executors.subprocess")
 def test_opencode_executor_timeout(mock_subprocess, tmp_path):
     import subprocess
 
@@ -280,7 +280,7 @@ def test_opencode_executor_timeout(mock_subprocess, tmp_path):
     assert proc.kill.called
 
 
-@patch("src.orchestrator.executors.subprocess")
+@patch("runtime.orchestrator.executors.subprocess")
 def test_codex_executor_timeout(mock_subprocess, tmp_path):
     import subprocess
 
@@ -310,7 +310,7 @@ def test_codex_executor_timeout(mock_subprocess, tmp_path):
     assert mock_process.kill.called
 
 
-@patch("src.orchestrator.executors.subprocess")
+@patch("runtime.orchestrator.executors.subprocess")
 def test_run_invokes_on_started_with_pid(mock_subprocess, tmp_path, runtime):
     """The /cancel feature depends on the executor handing the pid over to
     SessionTracker BEFORE communicate() blocks. Pin that contract for both
@@ -340,7 +340,7 @@ def test_run_invokes_on_started_with_pid(mock_subprocess, tmp_path, runtime):
 # session.
 
 
-@patch("src.orchestrator.executors.subprocess")
+@patch("runtime.orchestrator.executors.subprocess")
 def test_claude_executor_populates_returncode_and_stdout_tail_on_success(
     mock_subprocess, tmp_path, runtime,
 ):
@@ -360,7 +360,7 @@ def test_claude_executor_populates_returncode_and_stdout_tail_on_success(
     assert result.stderr_tail == ""
 
 
-@patch("src.orchestrator.executors.subprocess")
+@patch("runtime.orchestrator.executors.subprocess")
 def test_codex_executor_populates_returncode_and_stderr_tail_on_failure(
     mock_subprocess, tmp_path,
 ):
@@ -380,7 +380,7 @@ def test_codex_executor_populates_returncode_and_stderr_tail_on_failure(
     assert result.stdout_tail == ""
 
 
-@patch("src.orchestrator.executors.subprocess")
+@patch("runtime.orchestrator.executors.subprocess")
 def test_timeout_leaves_returncode_none_and_preserves_error(
     mock_subprocess, tmp_path,
 ):
@@ -409,7 +409,7 @@ def test_timeout_leaves_returncode_none_and_preserves_error(
     assert "timed out" in (result.error or "").lower()
 
 
-@patch("src.orchestrator.executors.subprocess")
+@patch("runtime.orchestrator.executors.subprocess")
 def test_claude_executor_captures_session_id_from_json(mock_subprocess, tmp_path, runtime):
     workspace = tmp_path / "dev_agent"
     workspace.mkdir()
@@ -426,7 +426,7 @@ def test_claude_executor_captures_session_id_from_json(mock_subprocess, tmp_path
     assert result.session_id != "claude-abc-123"
 
 
-@patch("src.orchestrator.executors.subprocess")
+@patch("runtime.orchestrator.executors.subprocess")
 def test_claude_executor_appends_resume_flag_when_requested(mock_subprocess, tmp_path, runtime):
     workspace = tmp_path / "dev_agent"
     workspace.mkdir()
@@ -445,7 +445,7 @@ def test_claude_executor_appends_resume_flag_when_requested(mock_subprocess, tmp
     assert result.agent_session_id == "claude-new-999"
 
 
-@patch("src.orchestrator.executors.subprocess")
+@patch("runtime.orchestrator.executors.subprocess")
 def test_claude_executor_omits_resume_flag_by_default(mock_subprocess, tmp_path, runtime):
     workspace = tmp_path / "dev_agent"
     workspace.mkdir()

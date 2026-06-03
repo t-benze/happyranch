@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.cli import build_parser
+from cli.main import build_parser
 
 
 def _parse(*args: str) -> argparse.Namespace:
@@ -82,12 +82,12 @@ def _mock_args(**overrides) -> argparse.Namespace:
 
 
 def test_cmd_tokens_calls_list_when_no_group_by(capsys):
-    from src.cli import cmd_tokens
+    from cli.main import cmd_tokens
 
     fake = MagicMock()
     fake.list_tokens.return_value = []
-    with patch("src.cli.OpcClient.from_env", return_value=fake), \
-         patch("src.cli._fetch_available_orgs", return_value=["myorg"]):
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli.main._fetch_available_orgs", return_value=["myorg"]):
         cmd_tokens(_mock_args())
     fake.list_tokens.assert_called_once()
     fake.aggregate_tokens.assert_not_called()
@@ -98,13 +98,13 @@ def test_cmd_tokens_calls_list_when_no_group_by(capsys):
 
 
 def test_cmd_tokens_forwards_explicit_limit_and_filters():
-    from src.cli import cmd_tokens
+    from cli.main import cmd_tokens
 
     fake = MagicMock()
     fake.list_tokens.return_value = []
     args = _mock_args(task_id="TASK-7", agent="dev", since="2026-05-01", limit=3)
-    with patch("src.cli.OpcClient.from_env", return_value=fake), \
-         patch("src.cli._fetch_available_orgs", return_value=["myorg"]):
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli.main._fetch_available_orgs", return_value=["myorg"]):
         cmd_tokens(args)
     fake.list_tokens.assert_called_once_with(
         slug="myorg", task_id="TASK-7", agent="dev",
@@ -113,12 +113,12 @@ def test_cmd_tokens_forwards_explicit_limit_and_filters():
 
 
 def test_cmd_tokens_calls_aggregate_when_by_agent():
-    from src.cli import cmd_tokens
+    from cli.main import cmd_tokens
 
     fake = MagicMock()
     fake.aggregate_tokens.return_value = []
-    with patch("src.cli.OpcClient.from_env", return_value=fake), \
-         patch("src.cli._fetch_available_orgs", return_value=["myorg"]):
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli.main._fetch_available_orgs", return_value=["myorg"]):
         cmd_tokens(_mock_args(by_agent=True))
     fake.aggregate_tokens.assert_called_once_with(
         slug="myorg", group_by="agent",
@@ -128,12 +128,12 @@ def test_cmd_tokens_calls_aggregate_when_by_agent():
 
 
 def test_cmd_tokens_calls_aggregate_when_by_task():
-    from src.cli import cmd_tokens
+    from cli.main import cmd_tokens
 
     fake = MagicMock()
     fake.aggregate_tokens.return_value = []
-    with patch("src.cli.OpcClient.from_env", return_value=fake), \
-         patch("src.cli._fetch_available_orgs", return_value=["myorg"]):
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli.main._fetch_available_orgs", return_value=["myorg"]):
         cmd_tokens(_mock_args(by_task=True))
     fake.aggregate_tokens.assert_called_once_with(
         slug="myorg", group_by="task",
@@ -143,7 +143,7 @@ def test_cmd_tokens_calls_aggregate_when_by_task():
 
 
 def test_cmd_tokens_default_view_renders_total_excluding_cache_reads(capsys):
-    from src.cli import cmd_tokens
+    from cli.main import cmd_tokens
 
     fake = MagicMock()
     fake.list_tokens.return_value = [
@@ -159,8 +159,8 @@ def test_cmd_tokens_default_view_renders_total_excluding_cache_reads(capsys):
             "created_at": "2026-05-05T14:22:11+00:00",
         },
     ]
-    with patch("src.cli.OpcClient.from_env", return_value=fake), \
-         patch("src.cli._fetch_available_orgs", return_value=["myorg"]):
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli.main._fetch_available_orgs", return_value=["myorg"]):
         cmd_tokens(_mock_args())
     out = capsys.readouterr().out
     assert "TASK-152" in out
@@ -173,41 +173,41 @@ def test_cmd_tokens_default_view_renders_total_excluding_cache_reads(capsys):
 
 
 def test_cmd_tokens_empty_default_view_message(capsys):
-    from src.cli import cmd_tokens
+    from cli.main import cmd_tokens
 
     fake = MagicMock()
     fake.list_tokens.return_value = []
-    with patch("src.cli.OpcClient.from_env", return_value=fake), \
-         patch("src.cli._fetch_available_orgs", return_value=["myorg"]):
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli.main._fetch_available_orgs", return_value=["myorg"]):
         cmd_tokens(_mock_args())
     assert "No token usage rows" in capsys.readouterr().out
 
 
 def test_cmd_tokens_json_flag_dumps_raw_rows(capsys):
-    from src.cli import cmd_tokens
+    from cli.main import cmd_tokens
 
     rows = [{"id": 1, "task_id": "T", "agent": "a", "executor": "claude",
              "input_tokens": 5, "output_tokens": 3, "cache_read_tokens": 0,
              "reasoning_tokens": None, "created_at": "2026-05-05T00:00:00+00:00"}]
     fake = MagicMock()
     fake.list_tokens.return_value = rows
-    with patch("src.cli.OpcClient.from_env", return_value=fake), \
-         patch("src.cli._fetch_available_orgs", return_value=["myorg"]):
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli.main._fetch_available_orgs", return_value=["myorg"]):
         cmd_tokens(_mock_args(json=True))
     parsed = _json.loads(capsys.readouterr().out)
     assert parsed == rows
 
 
 def test_cmd_tokens_json_flag_dumps_rollup(capsys):
-    from src.cli import cmd_tokens
+    from cli.main import cmd_tokens
 
     rollup = [{"agent": "dev", "sessions": 2, "input_tokens": 10,
                "output_tokens": 5, "cache_read_tokens": 1,
                "cache_creation_tokens": 0, "reasoning_tokens": 0}]
     fake = MagicMock()
     fake.aggregate_tokens.return_value = rollup
-    with patch("src.cli.OpcClient.from_env", return_value=fake), \
-         patch("src.cli._fetch_available_orgs", return_value=["myorg"]):
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli.main._fetch_available_orgs", return_value=["myorg"]):
         cmd_tokens(_mock_args(by_agent=True, json=True))
     parsed = _json.loads(capsys.readouterr().out)
     assert parsed == rollup

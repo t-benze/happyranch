@@ -5,11 +5,11 @@ from dataclasses import dataclass
 
 import pytest
 
-from src.infrastructure.audit_logger import AuditLogger
-from src.infrastructure.database import Database
-from src.infrastructure.feishu.client import FeishuSendError
-from src.infrastructure.feishu.notifier import EscalationNotifier
-from src.orchestrator.org_config import FeishuNotificationsConfig
+from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.infrastructure.database import Database
+from runtime.infrastructure.feishu.client import FeishuSendError
+from runtime.infrastructure.feishu.notifier import EscalationNotifier
+from runtime.orchestrator.org_config import FeishuNotificationsConfig
 
 
 @dataclass
@@ -31,7 +31,7 @@ def _cfg(chat_id: str = "oc_x") -> FeishuNotificationsConfig:
 
 
 def _seed_task(db: Database, task_id: str = "TASK-1") -> None:
-    from src.models import TaskRecord
+    from runtime.models import TaskRecord
     db.insert_task(TaskRecord(
         id=task_id,
         team="engineering",

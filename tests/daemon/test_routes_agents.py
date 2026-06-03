@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from src.orchestrator._paths import OrgPaths
+from runtime.orchestrator._paths import OrgPaths
 
 _EH_TASK = "TASK-100"
 _EH_SESSION = "sess-eh-test"
@@ -38,7 +38,7 @@ def test_list_agents_returns_full_shape(
     description. The performance-tier feature was removed; the audit log is
     the canonical record of agent outcomes."""
     from datetime import datetime, timezone
-    from src.orchestrator.agent_def import AgentDef
+    from runtime.orchestrator.agent_def import AgentDef
 
     ws = org_state.root / "workspaces" / "engineering_head"
     ws.mkdir(parents=True, exist_ok=True)
@@ -60,7 +60,7 @@ def test_list_agents_returns_full_shape(
     paths.agents_dir.mkdir(parents=True, exist_ok=True)
     (paths.agents_dir / "engineering_head.md").write_text(
         # use the canonical render helper so the file round-trips cleanly
-        __import__("src.orchestrator.agent_def", fromlist=["render_agent_text"])
+        __import__("runtime.orchestrator.agent_def", fromlist=["render_agent_text"])
             .render_agent_text(agent),
     )
 
@@ -84,7 +84,7 @@ def test_list_enrollments_returns_team_and_role(
     """Enrollment rows carry team/role/executor so the Pending tab can render
     without a second roundtrip."""
     from datetime import datetime, timezone
-    from src.orchestrator.agent_def import AgentDef, render_agent_text
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
     paths = _paths(org_state)
     paths.pending_agents_dir.mkdir(parents=True, exist_ok=True)
@@ -221,7 +221,7 @@ def test_manage_repo_add_creates_entry_and_clones(
     workspace.mkdir(parents=True)
     (workspace / "agent.yaml").write_text("repos: {}\n")
 
-    with patch("src.daemon.routes.agents.ContextBuilder") as MockCB:
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
         mock_ctx = MockCB.return_value
         mock_ctx.clone_repo.return_value = True
         mock_ctx.ensure_workspace_ready.return_value = None
@@ -236,7 +236,7 @@ def test_manage_repo_add_creates_entry_and_clones(
     mock_ctx.clone_repo.assert_called_once()
     mock_ctx.ensure_workspace_ready.assert_called_once()
 
-    from src.daemon.agent_config import load_agent_config
+    from runtime.daemon.agent_config import load_agent_config
     cfg = load_agent_config(workspace)
     assert cfg["repos"]["docs"] == "https://github.com/t-benze/docs.git"
 
@@ -266,7 +266,7 @@ def test_manage_repo_remove_deletes_entry_and_dir(
     repo_dir.mkdir(parents=True)
     (repo_dir / ".git").mkdir()  # fake git dir
 
-    with patch("src.daemon.routes.agents.ContextBuilder") as MockCB:
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
         mock_ctx = MockCB.return_value
         mock_ctx.ensure_workspace_ready.return_value = None
 
@@ -278,7 +278,7 @@ def test_manage_repo_remove_deletes_entry_and_dir(
     assert r.status_code == 200
     assert not repo_dir.exists()
 
-    from src.daemon.agent_config import load_agent_config
+    from runtime.daemon.agent_config import load_agent_config
     cfg = load_agent_config(workspace)
     assert "docs" not in cfg.get("repos", {})
 
@@ -308,7 +308,7 @@ def test_manage_repo_update_reclones(
     repo_dir.mkdir(parents=True)
     (repo_dir / ".git").mkdir()
 
-    with patch("src.daemon.routes.agents.ContextBuilder") as MockCB:
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
         mock_ctx = MockCB.return_value
         mock_ctx.clone_repo.return_value = True
         mock_ctx.ensure_workspace_ready.return_value = None
@@ -321,7 +321,7 @@ def test_manage_repo_update_reclones(
     assert r.status_code == 200
     mock_ctx.clone_repo.assert_called_once()
 
-    from src.daemon.agent_config import load_agent_config
+    from runtime.daemon.agent_config import load_agent_config
     cfg = load_agent_config(workspace)
     assert cfg["repos"]["docs"] == "https://new.git"
 
@@ -371,7 +371,7 @@ def test_manage_agent_enroll_creates_pending(
     )
     assert r.status_code == 200
     assert r.json()["status"] == "pending"
-    from src.orchestrator import prompt_loader
+    from runtime.orchestrator import prompt_loader
     agent = prompt_loader.load_pending_agent(_paths(org_state), "content_writer")
     assert agent is not None
     assert agent.executor == "codex"
@@ -398,7 +398,7 @@ def test_manage_agent_enroll_persists_description(
         headers=auth_headers,
     )
     assert r.status_code == 200
-    from src.orchestrator import prompt_loader
+    from runtime.orchestrator import prompt_loader
     pending = prompt_loader.load_pending_agent(_paths(org_state), "content_writer")
     assert pending is not None
     assert pending.description == desc
@@ -418,8 +418,8 @@ def test_manage_agent_enroll_duplicate_returns_409(
 ) -> None:
     _activate_eh_session(org_state)
     # Pre-seed a pending agent file so the duplicate check fires.
-    from src.orchestrator import prompt_loader
-    from src.orchestrator.agent_def import AgentDef
+    from runtime.orchestrator import prompt_loader
+    from runtime.orchestrator.agent_def import AgentDef
     from datetime import datetime, timezone
     agent = AgentDef(
         name="content_writer", team="content", role="worker", executor="claude",
@@ -463,7 +463,7 @@ def test_manage_agent_enroll_rejects_invalid_executor_at_boundary(
     )
     assert r.status_code == 422
     # The pending file must NOT have been created.
-    from src.orchestrator import prompt_loader
+    from runtime.orchestrator import prompt_loader
     assert prompt_loader.load_pending_agent(_paths(org_state), "rogue_agent") is None
 
 
@@ -488,7 +488,7 @@ def test_manage_agent_enroll_invalid_name_returns_422(
 
 def _seed_active_agent(org_state, name: str, team: str = "engineering", executor: str = "claude", system_prompt: str = "prompt\n") -> None:
     """Write an active agent file for testing update/terminate endpoints."""
-    from src.orchestrator.agent_def import AgentDef, render_agent_text
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
     from datetime import datetime, timezone
     agent = AgentDef(
         name=name, team=team, role="worker", executor=executor,
@@ -510,7 +510,7 @@ def test_manage_agent_update_changes_prompt(
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
 
-    with patch("src.daemon.routes.agents.ContextBuilder") as MockCB:
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
         mock_ctx = MockCB.return_value
         mock_ctx.ensure_workspace_ready.return_value = None
         r = TestClient(app).post(
@@ -526,7 +526,7 @@ def test_manage_agent_update_changes_prompt(
         headers=auth_headers,
     )
     assert r.status_code == 200
-    from src.orchestrator import prompt_loader
+    from runtime.orchestrator import prompt_loader
     updated = prompt_loader.load_agent(_paths(org_state), "dev_agent")
     assert updated is not None
     assert "new prompt" in updated.system_prompt
@@ -556,7 +556,7 @@ def test_manage_agent_update_persists_executor_to_workspace(
     )
     assert r.status_code == 200
 
-    from src.daemon.agent_config import load_agent_config
+    from runtime.daemon.agent_config import load_agent_config
 
     cfg = load_agent_config(workspace)
     assert cfg["executor"] == "codex"
@@ -584,7 +584,7 @@ def test_manage_agent_terminate_removes_workspace(
     )
     assert r.status_code == 200
     assert not workspace.exists()
-    from src.orchestrator import prompt_loader
+    from runtime.orchestrator import prompt_loader
     assert prompt_loader.load_agent(_paths(org_state), "dev_agent") is None
 
 
@@ -648,8 +648,8 @@ def test_approve_agent_bootstraps_workspace(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
     # Pre-seed a pending agent file.
-    from src.orchestrator import prompt_loader
-    from src.orchestrator.agent_def import AgentDef
+    from runtime.orchestrator import prompt_loader
+    from runtime.orchestrator.agent_def import AgentDef
     from datetime import datetime, timezone
     agent = AgentDef(
         name="content_writer", team="content", role="worker", executor="codex",
@@ -659,7 +659,7 @@ def test_approve_agent_bootstraps_workspace(
     )
     prompt_loader.write_pending_agent(_paths(org_state), agent)
 
-    with patch("src.daemon.routes.agents.ContextBuilder") as MockCB:
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
         mock_ctx = MockCB.return_value
         mock_ctx.clone_repo.return_value = True
         mock_ctx.ensure_workspace_ready.return_value = None
@@ -675,7 +675,7 @@ def test_approve_agent_bootstraps_workspace(
     workspace = org_state.root / "workspaces" / "content_writer"
     assert workspace.exists()
 
-    from src.daemon.agent_config import load_agent_config
+    from runtime.daemon.agent_config import load_agent_config
 
     cfg = load_agent_config(workspace)
     assert cfg["executor"] == "codex"
@@ -696,8 +696,8 @@ def test_approve_non_pending_returns_409(
 def test_reject_agent(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    from src.orchestrator import prompt_loader
-    from src.orchestrator.agent_def import AgentDef
+    from runtime.orchestrator import prompt_loader
+    from runtime.orchestrator.agent_def import AgentDef
     from datetime import datetime, timezone
     agent = AgentDef(
         name="content_writer", team="content", role="worker", executor="claude",
@@ -718,8 +718,8 @@ def test_reject_agent_removes_from_teams_yaml(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
     """Reject must undo the teams.yaml mutation that enrollment performed."""
-    from src.orchestrator import prompt_loader
-    from src.orchestrator.agent_def import AgentDef
+    from runtime.orchestrator import prompt_loader
+    from runtime.orchestrator.agent_def import AgentDef
     from datetime import datetime, timezone
 
     # Simulate a fully-enrolled pending agent: pending file + team membership.
@@ -747,8 +747,8 @@ def test_list_enrollments(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
     # Seed one pending and one active agent.
-    from src.orchestrator import prompt_loader
-    from src.orchestrator.agent_def import AgentDef
+    from runtime.orchestrator import prompt_loader
+    from runtime.orchestrator.agent_def import AgentDef
     from datetime import datetime, timezone
     def _make(name, team):
         return AgentDef(
@@ -760,7 +760,7 @@ def test_list_enrollments(
     paths = _paths(org_state)
     prompt_loader.write_pending_agent(paths, _make("b", "content"))
     paths.agents_dir.mkdir(parents=True, exist_ok=True)
-    from src.orchestrator.agent_def import render_agent_text
+    from runtime.orchestrator.agent_def import render_agent_text
     (paths.agents_dir / "a.md").write_text(render_agent_text(_make("a", "engineering")))
 
     r = TestClient(app).get(
@@ -775,7 +775,7 @@ def test_list_enrollments(
 
 def test_manage_agent_body_accepts_talk_id_alone() -> None:
     """talk_id alone (no task_id/session_id) validates."""
-    from src.daemon.routes.agents import ManageAgentBody
+    from runtime.daemon.routes.agents import ManageAgentBody
 
     body = ManageAgentBody(
         action="enroll",
@@ -791,7 +791,7 @@ def test_manage_agent_body_accepts_talk_id_alone() -> None:
 
 def test_manage_agent_body_accepts_task_and_session() -> None:
     """(task_id + session_id) still validates."""
-    from src.daemon.routes.agents import ManageAgentBody
+    from runtime.daemon.routes.agents import ManageAgentBody
 
     body = ManageAgentBody(
         action="enroll",
@@ -809,7 +809,7 @@ def test_manage_agent_body_rejects_both_paths() -> None:
     """Supplying both task/session and talk_id is a validation error."""
     import pytest
     from pydantic import ValidationError
-    from src.daemon.routes.agents import ManageAgentBody
+    from runtime.daemon.routes.agents import ManageAgentBody
 
     with pytest.raises(ValidationError):
         ManageAgentBody(
@@ -827,7 +827,7 @@ def test_manage_agent_body_rejects_neither_path() -> None:
     """Supplying neither is a validation error."""
     import pytest
     from pydantic import ValidationError
-    from src.daemon.routes.agents import ManageAgentBody
+    from runtime.daemon.routes.agents import ManageAgentBody
 
     with pytest.raises(ValidationError):
         ManageAgentBody(
@@ -842,7 +842,7 @@ def test_manage_agent_body_rejects_partial_task_path() -> None:
     """task_id without session_id (or vice versa) is a validation error."""
     import pytest
     from pydantic import ValidationError
-    from src.daemon.routes.agents import ManageAgentBody
+    from runtime.daemon.routes.agents import ManageAgentBody
 
     with pytest.raises(ValidationError):
         ManageAgentBody(
@@ -856,7 +856,7 @@ def test_manage_agent_body_rejects_partial_task_path() -> None:
 
 def _seed_eh_talk(org_state, talk_id: str = "TALK-700") -> str:
     """Helper: insert an open EH talk and return its id."""
-    from src.models import TalkRecord
+    from runtime.models import TalkRecord
 
     org_state.db.insert_talk(
         TalkRecord(id=talk_id, agent_name="engineering_head"),
@@ -882,7 +882,7 @@ def test_manage_agent_talk_path_enroll_creates_pending(
     )
     assert r.status_code == 200
     assert r.json()["status"] == "pending"
-    from src.orchestrator import prompt_loader
+    from runtime.orchestrator import prompt_loader
     agent = prompt_loader.load_pending_agent(_paths(org_state), "content_writer")
     assert agent is not None
     assert agent.executor == "codex"
@@ -897,7 +897,7 @@ def test_manage_agent_talk_path_update_changes_prompt(
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
 
-    with patch("src.daemon.routes.agents.ContextBuilder") as MockCB:
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
         mock_ctx = MockCB.return_value
         mock_ctx.ensure_workspace_ready.return_value = None
         r = TestClient(app).post(
@@ -911,7 +911,7 @@ def test_manage_agent_talk_path_update_changes_prompt(
             headers=auth_headers,
         )
     assert r.status_code == 200
-    from src.orchestrator import prompt_loader
+    from runtime.orchestrator import prompt_loader
     updated = prompt_loader.load_agent(_paths(org_state), "dev_agent")
     assert updated is not None
     assert "new prompt via talk" in updated.system_prompt
@@ -938,14 +938,14 @@ def test_manage_agent_talk_path_terminate_removes_workspace(
     )
     assert r.status_code == 200
     assert not workspace.exists()
-    from src.orchestrator import prompt_loader
+    from runtime.orchestrator import prompt_loader
     assert prompt_loader.load_agent(_paths(org_state), "dev_agent") is None
 
 
 def test_manage_agent_talk_path_non_eh_talk_returns_403(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    from src.models import TalkRecord
+    from runtime.models import TalkRecord
 
     org_state.db.insert_talk(
         TalkRecord(id="TALK-703", agent_name="dev_agent"),
@@ -967,7 +967,7 @@ def test_manage_agent_talk_path_non_eh_talk_returns_403(
 def test_manage_agent_talk_path_closed_talk_returns_403(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    from src.models import TalkRecord, TalkStatus
+    from runtime.models import TalkRecord, TalkStatus
 
     org_state.db.insert_talk(
         TalkRecord(
@@ -1091,8 +1091,8 @@ def test_manage_agent_failed_enrollment_does_not_log(
     """A 409 duplicate enrollment must not leave an audit row."""
     _activate_eh_session(org_state)
     # Pre-seed a pending agent file so the duplicate check fires.
-    from src.orchestrator import prompt_loader
-    from src.orchestrator.agent_def import AgentDef
+    from runtime.orchestrator import prompt_loader
+    from runtime.orchestrator.agent_def import AgentDef
     from datetime import datetime, timezone
     agent = AgentDef(
         name="content_writer", team="content", role="worker", executor="claude",
@@ -1128,7 +1128,7 @@ def test_manage_agent_failed_enrollment_does_not_log(
 
 def test_manage_agent_body_allow_rules_accepts_valid() -> None:
     """Valid allow_rules list with safe entries validates successfully."""
-    from src.daemon.routes.agents import ManageAgentBody
+    from runtime.daemon.routes.agents import ManageAgentBody
 
     body = ManageAgentBody(
         action="enroll",
@@ -1146,7 +1146,7 @@ def test_manage_agent_body_allow_rules_rejects_empty_string() -> None:
     """Empty string entry in allow_rules must be rejected with 422."""
     import pytest
     from pydantic import ValidationError
-    from src.daemon.routes.agents import ManageAgentBody
+    from runtime.daemon.routes.agents import ManageAgentBody
 
     with pytest.raises(ValidationError, match="non-empty"):
         ManageAgentBody(
@@ -1164,7 +1164,7 @@ def test_manage_agent_body_allow_rules_rejects_whitespace_only() -> None:
     """Whitespace-only entry in allow_rules must be rejected."""
     import pytest
     from pydantic import ValidationError
-    from src.daemon.routes.agents import ManageAgentBody
+    from runtime.daemon.routes.agents import ManageAgentBody
 
     with pytest.raises(ValidationError, match="non-empty"):
         ManageAgentBody(
@@ -1182,7 +1182,7 @@ def test_manage_agent_body_allow_rules_rejects_embedded_newline() -> None:
     """Entry with embedded newline must be rejected (newline = command separator)."""
     import pytest
     from pydantic import ValidationError
-    from src.daemon.routes.agents import ManageAgentBody
+    from runtime.daemon.routes.agents import ManageAgentBody
 
     with pytest.raises(ValidationError):
         ManageAgentBody(
@@ -1200,7 +1200,7 @@ def test_manage_agent_body_allow_rules_rejects_embedded_semicolon() -> None:
     """Entry with semicolon must be rejected (semicolon = command separator)."""
     import pytest
     from pydantic import ValidationError
-    from src.daemon.routes.agents import ManageAgentBody
+    from runtime.daemon.routes.agents import ManageAgentBody
 
     with pytest.raises(ValidationError):
         ManageAgentBody(
@@ -1218,7 +1218,7 @@ def test_manage_agent_body_allow_rules_rejects_leading_whitespace() -> None:
     """Entry with leading whitespace must be rejected."""
     import pytest
     from pydantic import ValidationError
-    from src.daemon.routes.agents import ManageAgentBody
+    from runtime.daemon.routes.agents import ManageAgentBody
 
     with pytest.raises(ValidationError, match="leading/trailing whitespace"):
         ManageAgentBody(
@@ -1234,7 +1234,7 @@ def test_manage_agent_body_allow_rules_rejects_leading_whitespace() -> None:
 
 def test_manage_agent_body_allow_rules_none_is_valid() -> None:
     """allow_rules=None (omitted) is accepted — means use protocol defaults."""
-    from src.daemon.routes.agents import ManageAgentBody
+    from runtime.daemon.routes.agents import ManageAgentBody
 
     body = ManageAgentBody(
         action="enroll",
@@ -1263,8 +1263,8 @@ def test_init_agents_targets_include_approved_enrollments(
     org_state,
 ) -> None:
     """init_agents target enumeration includes approved enrollments from agent files."""
-    from src.orchestrator import prompt_loader
-    from src.orchestrator.agent_def import AgentDef, render_agent_text
+    from runtime.orchestrator import prompt_loader
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
     from datetime import datetime, timezone
     agent = AgentDef(
         name="seo_agent", team="content", role="worker", executor="claude",
@@ -1283,7 +1283,7 @@ def test_init_agents_targets_none_teams_is_safe(org_state) -> None:
     """If teams is None the guard prevents a crash; workspace dirs are still used."""
     org_state.teams = None  # type: ignore[assignment]
     # No crash — org.teams is None but the guard `if org.teams is not None` handles it.
-    from src.orchestrator import prompt_loader
+    from runtime.orchestrator import prompt_loader
     paths = _paths(org_state)
     known: set[str] = set()
     if org_state.teams is not None:
@@ -1320,7 +1320,7 @@ def test_manage_agent_enroll_writes_pending_file(
     )
     assert r.status_code == 200
     assert r.json()["status"] == "pending"
-    from src.orchestrator import prompt_loader
+    from runtime.orchestrator import prompt_loader
     agent = prompt_loader.load_pending_agent(_paths(org_state), "seo_agent")
     assert agent is not None
     assert agent.name == "seo_agent"
@@ -1331,8 +1331,8 @@ def test_approve_agent_moves_file(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
     """approve moves the pending file to the active agents dir."""
-    from src.orchestrator import prompt_loader
-    from src.orchestrator.agent_def import AgentDef
+    from runtime.orchestrator import prompt_loader
+    from runtime.orchestrator.agent_def import AgentDef
     from datetime import datetime, timezone
 
     agent = AgentDef(
@@ -1349,7 +1349,7 @@ def test_approve_agent_moves_file(
     )
     prompt_loader.write_pending_agent(_paths(org_state), agent)
 
-    with patch("src.daemon.routes.agents.ContextBuilder") as MockCB:
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
         mock_ctx = MockCB.return_value
         mock_ctx.clone_repo.return_value = True
         mock_ctx.ensure_workspace_ready.return_value = None
@@ -1372,8 +1372,8 @@ def test_approve_agent_refuses_unknown_team(
     manage-agent enroll path already adds the team alongside the pending
     write, so this only triggers for out-of-band file writes.
     """
-    from src.orchestrator import prompt_loader
-    from src.orchestrator.agent_def import AgentDef
+    from runtime.orchestrator import prompt_loader
+    from runtime.orchestrator.agent_def import AgentDef
     from datetime import datetime, timezone
 
     agent = AgentDef(
@@ -1407,8 +1407,8 @@ def test_reject_agent_unlinks_file(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
     """reject removes the pending file."""
-    from src.orchestrator import prompt_loader
-    from src.orchestrator.agent_def import AgentDef
+    from runtime.orchestrator import prompt_loader
+    from runtime.orchestrator.agent_def import AgentDef
     from datetime import datetime, timezone
 
     agent = AgentDef(

@@ -9,15 +9,15 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from src.config import Settings
-from src.daemon.app import create_app
-from src.daemon.state import DaemonState
-from src.runtime import RuntimeDir
+from runtime.config import Settings
+from runtime.daemon.app import create_app
+from runtime.daemon.state import DaemonState
+from runtime.runtime import RuntimeDir
 
 
 def test_agent_writes_other_agent_reads(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / ".happyranch"))
-    from src.daemon import paths as paths_mod
+    from runtime.daemon import paths as paths_mod
     paths_mod.ensure_daemon_home()
     paths_mod.ensure_token()
     headers = {"Authorization": f"Bearer {paths_mod.read_token()}"}

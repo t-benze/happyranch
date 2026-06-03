@@ -12,7 +12,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from src.daemon import paths as paths_mod
+from runtime.daemon import paths as paths_mod
 from tests.integration.conftest import DEFAULT_TEST_SLUG
 
 pytestmark = pytest.mark.integration

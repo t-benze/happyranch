@@ -9,11 +9,11 @@ import pytest
 
 def _make_orchestrator(tmp_path: Path):
     """Build a minimal Orchestrator without invoking the full daemon stack."""
-    from src.orchestrator.orchestrator import Orchestrator
-    from src.orchestrator._paths import OrgPaths
-    from src.orchestrator.teams import TeamsRegistry
-    from src.config import Settings
-    from src.infrastructure.database import Database
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.teams import TeamsRegistry
+    from runtime.config import Settings
+    from runtime.infrastructure.database import Database
 
     root = tmp_path / "orgs" / "acme"
     root.mkdir(parents=True, exist_ok=True)

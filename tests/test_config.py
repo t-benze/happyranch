@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from src.config import Settings
+from runtime.config import Settings
 
 
 def test_missing_config_yaml_uses_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

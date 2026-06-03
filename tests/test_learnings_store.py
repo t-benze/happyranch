@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from src.infrastructure.learnings_store import (
+from runtime.infrastructure.learnings_store import (
     LearningEntry,
     LearningsStore,
     InvalidLearningId,

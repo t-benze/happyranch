@@ -5,13 +5,13 @@ from pathlib import Path
 import asyncio
 import pytest
 
-from src.config import Settings
-from src.infrastructure.database import Database
-from src.models import BlockKind, CompletionReport, NextStep, TaskRecord, TaskStatus
-from src.orchestrator._paths import OrgPaths
-from src.orchestrator.orchestrator import Orchestrator
-from src.orchestrator.teams import TeamsRegistry
-from src.runtime import RuntimeDir
+from runtime.config import Settings
+from runtime.infrastructure.database import Database
+from runtime.models import BlockKind, CompletionReport, NextStep, TaskRecord, TaskStatus
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.orchestrator import Orchestrator
+from runtime.orchestrator.teams import TeamsRegistry
+from runtime.runtime import RuntimeDir
 
 _LAYOUT: dict[str, dict[str, object]] = {
     "engineering": {
@@ -58,7 +58,7 @@ def db(paths: OrgPaths) -> Database:
 
 
 def _make_result(success: bool = True):
-    from src.orchestrator.executors import ExecutorResult
+    from runtime.orchestrator.executors import ExecutorResult
     return ExecutorResult(success=success, session_id="sess-x", duration_seconds=1)
 
 

@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import asyncio
 
-from src.config import Settings
-from src.infrastructure.database import Database
-from src.models import NextStep, TaskRecord, TaskStatus
-from src.orchestrator._paths import OrgPaths
-from src.orchestrator.orchestrator import Orchestrator
+from runtime.config import Settings
+from runtime.infrastructure.database import Database
+from runtime.models import NextStep, TaskRecord, TaskStatus
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.orchestrator import Orchestrator
 from tests.orchestrator.conftest import ScriptedRunAgent, run_task_to_completion
 
 
@@ -23,7 +23,7 @@ from tests.orchestrator.conftest import ScriptedRunAgent, run_task_to_completion
 
 def _make_orch(paths: OrgPaths, db: Database) -> Orchestrator:
     """Build an Orchestrator with a real async queue (needed by _enqueue_parent_if_waiting)."""
-    from src.orchestrator.teams import TeamsRegistry
+    from runtime.orchestrator.teams import TeamsRegistry
 
     class _SlugQueue:
         """Adapter so put_nowait(slug, task_id) works against a stdlib asyncio.Queue."""

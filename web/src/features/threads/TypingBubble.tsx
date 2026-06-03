@@ -1,0 +1,59 @@
+/**
+ * TypingBubble — an inline placeholder shown at the end of a thread
+ * transcript while an agent is composing (or queued to compose) its reply.
+ *
+ * Styled like a `worker` MessageBubble so it sits where the real reply will
+ * land, with an animated three-dot "typing" indicator. Two states:
+ *   - `working` — dots bounce, caption shows live elapsed (`replying… 5s`)
+ *   - `queued`  — dots dimmed + static, caption `queued`
+ *
+ * Pure prop-driven. The page computes the in-flight agent list and the
+ * shared `nowMs` tick; this component only renders.
+ */
+import { AgentChip } from '@/design-system/patterns/AgentChip';
+import { formatElapsed } from './ResponderStatusStrip';
+
+export function TypingBubble({
+  agentName,
+  status,
+  startedAt,
+  nowMs,
+}: {
+  agentName: string;
+  status: 'queued' | 'working';
+  startedAt: string | null;
+  nowMs?: number;
+}): JSX.Element {
+  const now = nowMs ?? Date.now();
+  const working = status === 'working';
+  const caption = working ? `replying… ${formatElapsed(startedAt, now)}`.trimEnd() : 'queued';
+
+  return (
+    <article
+      className="border-border-subtle bg-surface-raised rounded-lg border p-4"
+      aria-label={`${agentName} is ${working ? 'replying' : 'queued'}`}
+    >
+      <header className="text-caption mb-2 flex items-baseline gap-2">
+        <AgentChip name={agentName} role="worker" />
+        <span className="text-text-muted ml-auto">{caption}</span>
+      </header>
+      <TypingDots animate={working} />
+    </article>
+  );
+}
+
+function TypingDots({ animate }: { animate: boolean }): JSX.Element {
+  return (
+    <div
+      className={`text-text-muted flex items-center gap-1 ${animate ? '' : 'opacity-50'}`}
+      aria-hidden="true"
+    >
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          className={`inline-block h-2 w-2 rounded-full bg-current ${animate ? 'typing-dot' : ''}`}
+        />
+      ))}
+    </div>
+  );
+}
