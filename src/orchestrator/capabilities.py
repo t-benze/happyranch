@@ -9,6 +9,7 @@ def build_capabilities_prompt(
     max_steps: int,
     prior_steps: list[StepRecord] | None = None,
     manager_name: str = "team_manager",
+    self_only: bool = False,
 ) -> str:
     """Build the prompt sent to a team manager for each decision step.
 
@@ -21,8 +22,51 @@ def build_capabilities_prompt(
     address the manager by role in the prompt (e.g. "You are the Content Manager.").
     The default value is a generic placeholder for tests; live callers in
     ``run_step._build_agent_prompt`` always pass the actual manager name.
+    ``self_only`` suppresses the team roster and restricts delegation to self.
     """
     pretty = manager_name.replace("_", " ").title()  # "content_manager" -> "Content Manager"
+    if self_only:
+        me = manager_name
+        sections = [
+            "## Your Orchestration Capabilities\n",
+            f"You own this task ({me}). You can do the work yourself in this "
+            "session, OR break it into a sequence of sub-tasks that YOU "
+            "execute — each sub-task is a fresh session you'll be woken from "
+            "when it finishes, so you can decide the next step with a clean "
+            "context.\n",
+            "### Response Format (MANDATORY)\n",
+            "Your completion payload MUST include a top-level `decision` field "
+            "(a single JSON object). If you omit it, the task escalates to the "
+            "founder — the orchestrator will NOT infer intent from prose.\n",
+            "Choose EXACTLY ONE shape:\n",
+            "**delegate** -- spawn the next sub-task (assigned to YOURSELF):",
+            "```json",
+            f'{{"action": "delegate", "agent": "{me}", "prompt": "<instructions for the next sub-task>"}}',
+            "```",
+            "The `agent` MUST be yourself "
+            f"(`{me}`) — you may only delegate sub-tasks to yourself.\n",
+            "**done** -- the whole task is complete:",
+            "```json",
+            '{"action": "done", "summary": "<what was accomplished>"}',
+            "```\n",
+            "**escalate** -- needs founder attention:",
+            "```json",
+            '{"action": "escalate", "reason": "<why>"}',
+            "```\n",
+            "### Constraints\n",
+            f"- This is step {step_number} of maximum {max_steps}",
+            "- Org-specific authority limits come from your role_guidance / "
+            "system prompt — escalate anything outside them.",
+        ]
+        if prior_steps:
+            sections.append("\n### Prior Steps\n")
+            for step in prior_steps:
+                status = "OK" if step.success else "FAILED"
+                sections.append(
+                    f"**Step {step.step_number}** [{step.agent}] {step.action} -- "
+                    f"{step.result_summary} ({status})"
+                )
+        return "\n".join(sections)
     sections = [
         "## Your Orchestration Capabilities\n",
         f"You are the {pretty}. Analyze the brief above and decide what to do next.",

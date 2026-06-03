@@ -1679,3 +1679,25 @@ def test_manager_self_target_does_not_bump_revision_count(runtime, db, monkeypat
 
     orch.run_step("T-1")
     assert db.get_task("T-1").revision_count == 0
+
+
+def test_build_agent_prompt_leaf_subtask_is_empty(runtime, db):
+    from src.orchestrator.orchestrator import Orchestrator
+    from src.orchestrator.run_step import _build_agent_prompt
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    t = TaskRecord(id="T-1", brief="x", assigned_agent="dev_agent",
+                   task_type="subtask")
+    assert _build_agent_prompt(orch, t, "dev_agent") == ""
+
+
+def test_build_agent_prompt_non_manager_task_is_self_only(runtime, db):
+    from src.orchestrator.orchestrator import Orchestrator
+    from src.orchestrator.run_step import _build_agent_prompt
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    t = TaskRecord(id="T-1", brief="x", assigned_agent="dev_agent",
+                   task_type="task")
+    p = _build_agent_prompt(orch, t, "dev_agent")
+    assert "Available Agents" not in p
+    assert "dev_agent" in p

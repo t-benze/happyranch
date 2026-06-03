@@ -553,18 +553,16 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
     on the very first orchestration step (detected via audit log).
     """
     from src.orchestrator.capabilities import build_capabilities_prompt
-    if not orch.teams.is_team_manager(agent):
-        return ""
+    if task.task_type != "task":
+        return ""   # leaf sub-task: per-task instruction is the brief
     from src.orchestrator import prompt_loader
-    agent_names = _list_candidate_agents(orch, agent)
-    agents_for_prompt = []
-    for name in agent_names:
-        candidate = prompt_loader.load_agent(orch._paths, name)
-        desc = (candidate.description if candidate is not None else None) or name
-        agents_for_prompt.append({
-            "name": name,
-            "description": desc,
-        })
+    is_mgr = orch.teams.is_team_manager(agent)
+    agents_for_prompt: list[dict] = []
+    if is_mgr:
+        for name in _list_candidate_agents(orch, agent):
+            candidate = prompt_loader.load_agent(orch._paths, name)
+            desc = (candidate.description if candidate is not None else None) or name
+            agents_for_prompt.append({"name": name, "description": desc})
     prior_steps = _build_prior_steps_from_db(orch, task.id)
     base = build_capabilities_prompt(
         agents=agents_for_prompt,
@@ -572,6 +570,7 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
         max_steps=orch._settings.max_orchestration_steps,
         prior_steps=prior_steps,
         manager_name=agent,
+        self_only=not is_mgr,
     )
     headers: list[str] = []
     revisit = _revisit_header_if_applicable(orch, task.id)
