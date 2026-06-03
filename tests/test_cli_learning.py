@@ -46,7 +46,7 @@ def test_cmd_learning_list_calls_correct_route(monkeypatch):
 
     from cli import main as cli
     monkeypatch.setattr(cli.OpcClient, "from_env", classmethod(lambda c: FakeClient()))
-    monkeypatch.setattr(cli, "_fetch_available_orgs", lambda c: ["my-org"])
+    monkeypatch.setattr("cli._shared._fetch_available_orgs", lambda c: ["my-org"])
     args = type("A", (), dict(
         org="my-org", agent="dev_agent",
         topic="workflow", tag=None, promoted=False, not_promoted=False, json=False,
@@ -72,7 +72,7 @@ def test_cmd_learning_add_reads_yaml_and_posts(monkeypatch, tmp_path):
 
     from cli import main as cli
     monkeypatch.setattr(cli.OpcClient, "from_env", classmethod(lambda c: FakeClient()))
-    monkeypatch.setattr(cli, "_fetch_available_orgs", lambda c: ["o"])
+    monkeypatch.setattr("cli._shared._fetch_available_orgs", lambda c: ["o"])
     payload_path = tmp_path / "p.yaml"
     payload_path.write_text(
         "slug: x\n"
@@ -109,7 +109,7 @@ def test_cmd_learning_promote_posts_correct_path(monkeypatch):
 
     from cli import main as cli
     monkeypatch.setattr(cli.OpcClient, "from_env", classmethod(lambda c: FakeClient()))
-    monkeypatch.setattr(cli, "_fetch_available_orgs", lambda c: ["o"])
+    monkeypatch.setattr("cli._shared._fetch_available_orgs", lambda c: ["o"])
     args = type("A", (), dict(
         org="o", agent="dev_agent", id="LRN-001", kb_slug="kb-x",
     ))()
