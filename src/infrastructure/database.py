@@ -505,7 +505,6 @@ class Database:
             # successful turn.
             "ALTER TABLE thread_participants ADD COLUMN agent_session_id TEXT",
             "ALTER TABLE thread_participants ADD COLUMN last_resumed_seq INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'task'",
             # Legacy cleanup: drop the dead `type` column (dropped from the
             # current schema in the Task-4 refactor; never read, only a
             # "general" sentinel was written). Idempotent via the try/except
@@ -516,6 +515,26 @@ class Database:
                 self._conn.execute(ddl)
             except sqlite3.OperationalError:
                 pass
+        # task_type column + one-time provenance backfill. Coupled in a single
+        # try/except so the backfill UPDATE runs EXACTLY ONCE — when ADD COLUMN
+        # succeeds on the first upgrade. On later startups (and on fresh DBs,
+        # where CREATE TABLE already defines the column) ADD raises
+        # duplicate-column and the whole block is skipped. Existing rows with a
+        # parent were spawned from an ongoing task, so under the new model they
+        # are subtasks (leaf); roots keep the 'task' default. Without this
+        # backfill an in-flight pre-existing child would be mis-typed 'task' and
+        # run_step would parse its plain completion as a NextStep decision and
+        # escalate. (A task_type='task' row never has a parent, so the predicate
+        # is provenance-correct and safe even if it ever re-ran.)
+        try:
+            self._conn.execute(
+                "ALTER TABLE tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'task'"
+            )
+            self._conn.execute(
+                "UPDATE tasks SET task_type='subtask' WHERE parent_task_id IS NOT NULL"
+            )
+        except sqlite3.OperationalError:
+            pass
         # Index the reverse lookup (`WHERE revisit_of_task_id = ?`).
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tasks_revisit_of ON tasks(revisit_of_task_id)"

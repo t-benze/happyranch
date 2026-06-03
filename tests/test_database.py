@@ -759,6 +759,50 @@ def test_legacy_type_column_is_dropped_on_open(tmp_path):
     db.insert_task(TaskRecord(id="TASK-001", brief="legacy schema test"))
     got = db.get_task("TASK-001")
     assert got is not None and got.task_type == "task"
+
+
+def test_task_type_backfill_classifies_existing_children_as_subtask(tmp_path):
+    """Upgrade migration: a pre-existing DB with a root + delegated child (no
+    task_type column) must backfill the child (parent_task_id IS NOT NULL) to
+    'subtask' and the root to 'task'. Otherwise an in-flight legacy child would
+    be mis-typed 'task' and run_step would parse its completion as a decision."""
+    import sqlite3
+    from src.infrastructure.database import Database
+    from src.models import TaskRecord
+
+    db_path = tmp_path / "upgrade.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'pending',
+            assigned_agent TEXT,
+            team TEXT NOT NULL DEFAULT 'engineering',
+            brief TEXT NOT NULL,
+            revision_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT,
+            parent_task_id TEXT,
+            final_output_dir TEXT
+        )"""
+    )
+    # A root (no parent) and a delegated child (has parent) — no task_type col.
+    conn.execute(
+        "INSERT INTO tasks (id, status, team, brief, created_at, updated_at) "
+        "VALUES ('TASK-1', 'blocked', 'engineering', 'root', '2026-01-01', '2026-01-01')"
+    )
+    conn.execute(
+        "INSERT INTO tasks (id, status, team, brief, parent_task_id, created_at, updated_at) "
+        "VALUES ('TASK-2', 'pending', 'engineering', 'child', 'TASK-1', '2026-01-01', '2026-01-01')"
+    )
+    conn.commit()
+    conn.close()
+
+    db = Database(db_path)
+    assert db.get_task("TASK-1").task_type == "task"      # root
+    assert db.get_task("TASK-2").task_type == "subtask"   # delegated child
+    db.close()
     db.close()
 
 
