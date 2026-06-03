@@ -68,15 +68,18 @@ def test_validate_delegate_rejects_chain_leg_with_missing_workspace():
 def test_cross_team_chain_guard_rejects_off_team_leg():
     """If any leg targets an agent not on the manager's team, the whole
     chain is rejected via the existing feedback mechanism."""
-    from src.orchestrator.run_step import _chain_legs_off_team
+    from src.orchestrator.run_step import _legs_out_of_scope
 
     teams = MagicMock()
+    teams.is_team_manager.return_value = True
     teams.team_for_manager.return_value = "engineering"
     teams.team_for_agent.side_effect = lambda name: {
         "dev": "engineering",
         "sr": "engineering",
         "outsider": "content",
     }.get(name)
+    orch = MagicMock()
+    orch.teams = teams
 
     decision = NextStep(
         action="delegate", agent="dev", prompt="build",
@@ -85,35 +88,45 @@ def test_cross_team_chain_guard_rejects_off_team_leg():
             ChainLeg(agent="outsider", prompt="other"),
         ],
     )
-    off = _chain_legs_off_team(teams, manager="eh", decision=decision)
-    assert off == [("outsider", "content")]
+    out = _legs_out_of_scope(orch, owner="eh", decision=decision)
+    assert len(out) == 1
+    assert out[0][0] == "outsider"
+    assert "content" in out[0][1]
 
 
 def test_cross_team_chain_guard_passes_when_all_legs_on_team():
-    from src.orchestrator.run_step import _chain_legs_off_team
+    from src.orchestrator.run_step import _legs_out_of_scope
     teams = MagicMock()
+    teams.is_team_manager.return_value = True
     teams.team_for_manager.return_value = "engineering"
     teams.team_for_agent.return_value = "engineering"
+    orch = MagicMock()
+    orch.teams = teams
     decision = NextStep(action="delegate", agent="dev", prompt="x", then=[
         ChainLeg(agent="sr", prompt="y"),
     ])
-    assert _chain_legs_off_team(teams, manager="eh", decision=decision) == []
+    assert _legs_out_of_scope(orch, owner="eh", decision=decision) == []
 
 
 def test_cross_team_chain_guard_first_leg_off_team():
     """First leg's off-team membership is also caught by the new helper."""
-    from src.orchestrator.run_step import _chain_legs_off_team
+    from src.orchestrator.run_step import _legs_out_of_scope
     teams = MagicMock()
+    teams.is_team_manager.return_value = True
     teams.team_for_manager.return_value = "engineering"
     teams.team_for_agent.side_effect = lambda name: {
         "outsider": "content",
         "sr": "engineering",
     }.get(name)
+    orch = MagicMock()
+    orch.teams = teams
     decision = NextStep(action="delegate", agent="outsider", prompt="x", then=[
         ChainLeg(agent="sr", prompt="y"),
     ])
-    off = _chain_legs_off_team(teams, manager="eh", decision=decision)
-    assert off == [("outsider", "content")]
+    out = _legs_out_of_scope(orch, owner="eh", decision=decision)
+    assert len(out) == 1
+    assert out[0][0] == "outsider"
+    assert "content" in out[0][1]
 
 
 def test_chain_persistence_writes_active_chain_with_step_audit_id(tmp_path):

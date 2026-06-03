@@ -1601,3 +1601,51 @@ def test_delegated_child_is_typed_subtask(runtime, db, monkeypatch):
     children = db.get_children("T-1")
     assert len(children) == 1
     assert db.get_task(children[0]).task_type == "subtask"
+
+
+def test_non_manager_self_delegation_is_allowed(runtime, db, monkeypatch):
+    """dev_agent owns a type=task and delegates to ITSELF → child spawned."""
+    import json
+    from src.orchestrator.orchestrator import Orchestrator
+    (runtime.workspaces_dir / "dev_agent").mkdir(parents=True, exist_ok=True)
+    db.insert_task(TaskRecord(id="T-1", brief="root",
+                              assigned_agent="dev_agent", task_type="task"))
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10),
+                        paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    def fake(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(
+            output_summary=json.dumps(
+                {"action": "delegate", "agent": "dev_agent", "prompt": "phase 2"}))
+    monkeypatch.setattr(orch, "_run_agent", fake)
+
+    orch.run_step("T-1")
+    children = db.get_children("T-1")
+    assert len(children) == 1
+    assert db.get_task(children[0]).assigned_agent == "dev_agent"
+
+
+def test_non_manager_cross_agent_delegation_is_rejected(runtime, db, monkeypatch):
+    """dev_agent owning a type=task may NOT delegate to product_manager →
+    feedback step, task re-enqueued PENDING, no child."""
+    import json
+    from src.orchestrator.orchestrator import Orchestrator
+    (runtime.workspaces_dir / "product_manager").mkdir(parents=True, exist_ok=True)
+    db.insert_task(TaskRecord(id="T-1", brief="root",
+                              assigned_agent="dev_agent", task_type="task"))
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10),
+                        paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    def fake(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(
+            output_summary=json.dumps(
+                {"action": "delegate", "agent": "product_manager", "prompt": "x"}))
+    monkeypatch.setattr(orch, "_run_agent", fake)
+
+    orch.run_step("T-1")
+    assert db.get_children("T-1") == []
+    assert db.get_task("T-1").status == TaskStatus.PENDING   # re-enqueued for re-decide

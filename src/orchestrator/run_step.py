@@ -358,18 +358,24 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
                 status=TaskStatus.FAILED, auto_revisit_spawned=False,
             )
             return
-        # Cross-team delegation guard: a manager may only delegate to workers
-        # on its own team. Violations feed a feedback step back (not a hard
-        # fail) so the manager can correct its decision on the next step.
-        off_team_legs = _chain_legs_off_team(orch.teams, manager=agent, decision=decision)
-        if off_team_legs:
-            caller_team = orch.teams.team_for_manager(agent)
-            parts = [f"{name!r} is on team {team!r}" for name, team in off_team_legs]
-            feedback = (
-                f"Invalid delegation: you are on team {caller_team!r}, "
-                f"but {'; '.join(parts)}. "
-                "Pick workers on your own team, or escalate."
-            )
+        # Target-scope guard. Managers: own-team agents or self. Non-manager
+        # owners: self only. Violations feed a feedback step back (not a hard
+        # fail) so the owner can correct its decision next step.
+        out_of_scope = _legs_out_of_scope(orch, owner=agent, decision=decision)
+        if out_of_scope:
+            parts = [f"{name!r} ({reason})" for name, reason in out_of_scope]
+            if orch.teams.is_team_manager(agent):
+                caller_team = orch.teams.team_for_manager(agent)
+                feedback = (
+                    f"Invalid delegation: you are on team {caller_team!r}, but "
+                    f"{'; '.join(parts)}. Pick agents on your own team or "
+                    "yourself, or escalate."
+                )
+            else:
+                feedback = (
+                    f"Invalid delegation: {'; '.join(parts)}. You may only "
+                    f"delegate sub-tasks to yourself ({agent!r}), or escalate."
+                )
             db.insert_task_result(
                 task_id=task_id,
                 agent=agent,
@@ -382,8 +388,6 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             orch._audit.log_orchestration_step(
                 task_id, next_count, {"action": "feedback", "reason": feedback},
             )
-            # step already counted on claim (try_claim_for_step increments
-            # orchestration_step_count atomically before the agent runs).
             db.update_task(task_id, status=TaskStatus.PENDING, block_kind=None)
             if orch._queue is not None:
                 orch._queue.put_nowait(orch._slug, task_id)
@@ -500,28 +504,30 @@ def _validate_delegate(orch: "Orchestrator", decision) -> str | None:
     return None
 
 
-def _chain_legs_off_team(
-    teams,
-    manager: str,
-    decision,
-) -> list[tuple[str, str | None]]:
-    """Return [(agent_name, agent_team)] for every leg in ``decision`` whose
-    agent is NOT on ``manager``'s team. Empty list means all legs are on-team.
-    """
-    caller_team = teams.team_for_manager(manager)
-    if caller_team is None:
-        # Manager itself isn't registered — surface every leg as off-team.
-        all_agents = [decision.agent] + [leg.agent for leg in (decision.then or [])]
-        return [(a, teams.team_for_agent(a)) for a in all_agents if a]
+def _legs_out_of_scope(orch: "Orchestrator", owner: str, decision) -> list[tuple[str, str]]:
+    """Return [(agent_name, reason)] for delegation legs `owner` may not target.
 
-    off: list[tuple[str, str | None]] = []
-    for agent_name in [decision.agent] + [leg.agent for leg in (decision.then or [])]:
-        if not agent_name:
-            continue
-        agent_team = teams.team_for_agent(agent_name)
-        if agent_team is None or agent_team != caller_team:
-            off.append((agent_name, agent_team))
-    return off
+    - Manager owner: may target agents on its own team, or itself.
+    - Non-manager owner: may target ONLY itself (self-decomposition).
+
+    Empty list = all legs in scope.
+    """
+    targets = [decision.agent] + [leg.agent for leg in (decision.then or [])]
+    out: list[tuple[str, str]] = []
+    if orch.teams.is_team_manager(owner):
+        caller_team = orch.teams.team_for_manager(owner)
+        for a in targets:
+            if not a or a == owner:        # self always allowed
+                continue
+            t = orch.teams.team_for_agent(a)
+            if caller_team is None or t != caller_team:
+                out.append((a, f"on team {t!r}" if t else "not on a team"))
+    else:
+        for a in targets:
+            if not a or a == owner:
+                continue
+            out.append((a, "non-manager owners may only delegate to themselves"))
+    return out
 
 
 def _default_agent_for_root(orch: "Orchestrator", task) -> str:
