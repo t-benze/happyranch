@@ -87,7 +87,7 @@ def test_cmd_tokens_calls_list_when_no_group_by(capsys):
     fake = MagicMock()
     fake.list_tokens.return_value = []
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["myorg"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["myorg"]):
         cmd_tokens(_mock_args())
     fake.list_tokens.assert_called_once()
     fake.aggregate_tokens.assert_not_called()
@@ -104,7 +104,7 @@ def test_cmd_tokens_forwards_explicit_limit_and_filters():
     fake.list_tokens.return_value = []
     args = _mock_args(task_id="TASK-7", agent="dev", since="2026-05-01", limit=3)
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["myorg"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["myorg"]):
         cmd_tokens(args)
     fake.list_tokens.assert_called_once_with(
         slug="myorg", task_id="TASK-7", agent="dev",
@@ -118,7 +118,7 @@ def test_cmd_tokens_calls_aggregate_when_by_agent():
     fake = MagicMock()
     fake.aggregate_tokens.return_value = []
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["myorg"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["myorg"]):
         cmd_tokens(_mock_args(by_agent=True))
     fake.aggregate_tokens.assert_called_once_with(
         slug="myorg", group_by="agent",
@@ -133,7 +133,7 @@ def test_cmd_tokens_calls_aggregate_when_by_task():
     fake = MagicMock()
     fake.aggregate_tokens.return_value = []
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["myorg"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["myorg"]):
         cmd_tokens(_mock_args(by_task=True))
     fake.aggregate_tokens.assert_called_once_with(
         slug="myorg", group_by="task",
@@ -160,7 +160,7 @@ def test_cmd_tokens_default_view_renders_total_excluding_cache_reads(capsys):
         },
     ]
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["myorg"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["myorg"]):
         cmd_tokens(_mock_args())
     out = capsys.readouterr().out
     assert "TASK-152" in out
@@ -178,7 +178,7 @@ def test_cmd_tokens_empty_default_view_message(capsys):
     fake = MagicMock()
     fake.list_tokens.return_value = []
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["myorg"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["myorg"]):
         cmd_tokens(_mock_args())
     assert "No token usage rows" in capsys.readouterr().out
 
@@ -192,7 +192,7 @@ def test_cmd_tokens_json_flag_dumps_raw_rows(capsys):
     fake = MagicMock()
     fake.list_tokens.return_value = rows
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["myorg"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["myorg"]):
         cmd_tokens(_mock_args(json=True))
     parsed = _json.loads(capsys.readouterr().out)
     assert parsed == rows
@@ -207,7 +207,7 @@ def test_cmd_tokens_json_flag_dumps_rollup(capsys):
     fake = MagicMock()
     fake.aggregate_tokens.return_value = rollup
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["myorg"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["myorg"]):
         cmd_tokens(_mock_args(by_agent=True, json=True))
     parsed = _json.loads(capsys.readouterr().out)
     assert parsed == rollup

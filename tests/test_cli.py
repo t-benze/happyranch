@@ -166,7 +166,7 @@ def test_cmd_tasks_calls_list_endpoint(capsys):
         {"task_id": "TASK-001", "team": "engineering", "status": "approved", "brief": "x"},
     ]}
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         args = MagicMock(org=None, limit=20)
         cmd_tasks(args)
     fake.get.assert_called_once_with("/api/v1/orgs/alpha/tasks", params={"limit": 20})
@@ -201,7 +201,7 @@ def test_cmd_tasks_shows_assigned_agent_column(capsys):
         },
     ]}
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         args = MagicMock(org=None, limit=20)
         cmd_tasks(args)
 
@@ -230,7 +230,7 @@ def test_cmd_tasks_idle_daemon_prints_friendly_message(capsys):
     fake.get.return_value.status_code = 409
     fake.get.return_value.json.return_value = {"detail": {"code": "no_active_runtime"}}
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         args = MagicMock(org=None, limit=20)
         with pytest.raises(SystemExit):
             cmd_tasks(args)
@@ -245,7 +245,7 @@ def test_cmd_details_handles_404(capsys):
     fake = MagicMock()
     fake.get.return_value.status_code = 404
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         args = MagicMock(org=None, task_id="TASK-X")
         with pytest.raises(SystemExit):
             cmd_details(args)
@@ -262,7 +262,7 @@ def test_cmd_run_submits_and_returns_without_streaming(capsys):
     fake.post.return_value.json.return_value = {"task_id": "TASK-001"}
 
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         args = MagicMock(org=None, team=None, brief="x", brief_file=None)
         cmd_run(args)
 
@@ -284,7 +284,7 @@ def test_cmd_run_reads_brief_from_file(tmp_path, capsys):
     fake.post.return_value.status_code = 200
     fake.post.return_value.json.return_value = {"task_id": "TASK-002"}
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         args = MagicMock(org=None, team=None, brief=None, brief_file=str(brief_path))
         cmd_run(args)
 
@@ -300,7 +300,7 @@ def test_cmd_run_brief_file_missing(tmp_path, capsys):
     args = MagicMock(org=None, team=None, brief=None, brief_file=str(tmp_path / "nope.md"))
     fake = MagicMock()
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         with pytest.raises(SystemExit):
             cmd_run(args)
     out = capsys.readouterr().out
@@ -316,7 +316,7 @@ def test_cmd_run_brief_file_empty_rejected(tmp_path, capsys):
     brief_path.write_text("   \n\n", encoding="utf-8")
     fake = MagicMock()
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         args = MagicMock(org=None, team=None, brief=None, brief_file=str(brief_path))
         with pytest.raises(SystemExit):
             cmd_run(args)
@@ -331,7 +331,7 @@ def test_cmd_tail_streams_existing_task(capsys):
     fake = MagicMock()
     fake.stream.return_value = iter(['{"type": "task_complete"}'])
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         args = MagicMock(org=None, task_id="TASK-001")
         cmd_tail(args)
     assert "task_complete" in capsys.readouterr().out
@@ -346,7 +346,7 @@ def test_cmd_run_idle_daemon_prints_friendly_message(capsys):
     fake.post.return_value.status_code = 409
     fake.post.return_value.json.return_value = {"detail": {"code": "no_active_runtime"}}
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         args = MagicMock(org=None, team=None, brief="x", brief_file=None)
         with pytest.raises(SystemExit):
             cmd_run(args)
@@ -368,7 +368,7 @@ def test_cmd_tail_handles_stream_error(capsys):
         "not found", request=MagicMock(), response=response,
     )
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         args = MagicMock(org=None, task_id="TASK-X")
         with pytest.raises(SystemExit):
             cmd_tail(args)
@@ -678,7 +678,7 @@ def test_cmd_init_agent_surfaces_error_detail(capsys):
         '{"agent": "dev_agent", "phase": "error", "detail": "repo clone failed: fatal"}',
     ])
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         args = MagicMock(org=None, agent="dev_agent")
         cmd_init_agent(args)
     out = capsys.readouterr().out
@@ -732,7 +732,7 @@ def test_cmd_audit_sends_filters_and_prints_table(capsys):
         ],
     }
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         cmd_audit(MagicMock(
             org=None, task_id="TASK-001", agent=None, action=None,
             since=None, limit=3, json=False,
@@ -754,7 +754,7 @@ def test_cmd_audit_empty_result_message(capsys):
     fake.get.return_value.status_code = 200
     fake.get.return_value.json.return_value = {"entries": []}
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         cmd_audit(MagicMock(
             org=None, task_id=None, agent=None, action=None,
             since=None, limit=None, json=False,
@@ -773,7 +773,7 @@ def test_cmd_audit_json_flag_dumps_raw(capsys):
                 "timestamp": "2026-01-01T00:00:00+00:00"}]
     fake.get.return_value.json.return_value = {"entries": entries}
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         cmd_audit(MagicMock(
             org=None, task_id=None, agent=None, action=None,
             since=None, limit=None, json=True,
@@ -795,7 +795,7 @@ def test_cmd_init_agent_handles_stream_http_error(capsys):
         "conflict", request=MagicMock(), response=response,
     )
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         args = MagicMock(org=None, agent=None)
         with pytest.raises(SystemExit):
             cmd_init_agent(args)
@@ -1078,7 +1078,7 @@ def test_cmd_enrollments_lists(capsys):
         ],
     }
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         cmd_enrollments(MagicMock(org=None, status="pending"))
     out = capsys.readouterr().out
     assert "content_writer" in out
@@ -1101,7 +1101,7 @@ def test_cmd_approve_agent_posts(capsys):
     fake.post.return_value.status_code = 200
     fake.post.return_value.json.return_value = {"ok": True}
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         cmd_approve_agent(argparse.Namespace(org=None, name="content_writer"))
     fake.post.assert_called_once_with(
         "/api/v1/orgs/alpha/agents/content_writer/approve", json={},
@@ -1142,7 +1142,7 @@ def test_cmd_recall_prints_payload(capsys):
     fake.get.return_value.status_code = 200
     fake.get.return_value.json.return_value = {"task_id": "TASK-001", "brief": "hi"}
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         cmd_recall(argparse.Namespace(
             org=None, task_id="TASK-001", tree=False, fetch_output=False,
         ))
@@ -1161,7 +1161,7 @@ def test_cmd_recall_forwards_tree_and_output_params():
     fake.get.return_value.status_code = 200
     fake.get.return_value.json.return_value = {}
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         cmd_recall(argparse.Namespace(
             org=None, task_id="TASK-001", tree=True, fetch_output=True,
         ))
@@ -1178,7 +1178,7 @@ def test_cmd_recall_404_exits(capsys):
     fake = MagicMock()
     fake.get.return_value.status_code = 404
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         with pytest.raises(SystemExit):
             cmd_recall(argparse.Namespace(
                 org=None, task_id="TASK-404", tree=False, fetch_output=False,
@@ -1261,7 +1261,7 @@ def test_cmd_tasks_shows_block_kind_when_present(capsys):
     ]}
     client.get.return_value = response
     with patch("cli.main.OpcClient.from_env", return_value=client), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         cmd_tasks(Namespace(org=None, limit=10))
     out = capsys.readouterr().out
     assert "blocked(delegated)" in out or "blocked (delegated)" in out
@@ -1285,7 +1285,7 @@ def test_cmd_tasks_renders_team_column(capsys):
          "assigned_agent": "engineering_head", "brief": "Add Alipay"},
     ]}
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         cmd_tasks(Namespace(org=None, limit=20))
     out = capsys.readouterr().out
     assert "Team" in out
@@ -1337,7 +1337,7 @@ def test_cmd_talk_start_prints_id(capsys):
         "started_at": "2026-04-21T10:00:00+00:00",
     }
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         args = MagicMock(org=None, agent="dev_agent")
         cmd_talk_start(args)
     fake.post.assert_called_once_with(
@@ -1360,7 +1360,7 @@ def test_cmd_talk_start_conflict_exits_with_message(capsys):
         },
     }
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         args = MagicMock(org=None, agent="dev_agent")
         with pytest.raises(SystemExit):
             cmd_talk_start(args)
@@ -1406,7 +1406,7 @@ def test_cmd_talk_end_success(tmp_path, capsys):
         "transcript_path": "/r/talks/TALK-007.md",
     }
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         args = Namespace(org=None, talk_id="TALK-007", from_file=str(payload_path))
         cmd_talk_end(args)
     fake.post.assert_called_once_with(
@@ -1425,7 +1425,7 @@ def test_cmd_talk_end_missing_file(tmp_path, capsys):
     missing = tmp_path / "does-not-exist.json"
     fake = MagicMock()
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         args = Namespace(org=None, talk_id="TALK-007", from_file=str(missing))
         with pytest.raises(SystemExit):
             cmd_talk_end(args)
@@ -1489,7 +1489,7 @@ def test_cmd_talk_status_prints_open_talks(capsys):
         ]
     }
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         cmd_talk_status(Namespace(org=None, agent="dev_agent"))
     fake.get.assert_called_once_with(
         "/api/v1/orgs/alpha/talks", params={"status": "open", "agent": "dev_agent"}
@@ -1508,7 +1508,7 @@ def test_cmd_talk_status_empty(capsys):
     fake.get.return_value.status_code = 200
     fake.get.return_value.json.return_value = {"talks": []}
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         cmd_talk_status(Namespace(org=None, agent=None))
     out = capsys.readouterr().out
     assert "no open talks" in out
@@ -1534,7 +1534,7 @@ def test_cmd_talk_list_uses_limit(capsys):
         ]
     }
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         cmd_talk_list(Namespace(org=None, agent="dev_agent", limit=5))
     fake.get.assert_called_once_with(
         "/api/v1/orgs/alpha/talks", params={"limit": 5, "agent": "dev_agent"}
@@ -1563,7 +1563,7 @@ def test_cmd_talk_show_human(capsys):
         "new_kb_slugs": ["abc-123"],
     }
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         cmd_talk_show(Namespace(org=None, talk_id="TALK-007", json=False))
     out = capsys.readouterr().out
     assert "TALK-007" in out
@@ -1594,7 +1594,7 @@ def test_cmd_talk_show_json_mode(capsys):
     fake.get.return_value.status_code = 200
     fake.get.return_value.json.return_value = payload
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         cmd_talk_show(Namespace(org=None, talk_id="TALK-007", json=True))
     out = capsys.readouterr().out
     data = _json.loads(out)
@@ -1622,7 +1622,7 @@ def test_cmd_details_shows_note(capsys):
     }
     client.get.return_value = response
     with patch("cli.main.OpcClient.from_env", return_value=client), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         cmd_details(Namespace(org=None, task_id="T-1"))
     out = capsys.readouterr().out
     assert "Feature landed" in out
@@ -1653,7 +1653,7 @@ def test_cmd_details_full_flag_shows_untruncated_summary(capsys):
 
     # Default: truncated.
     with patch("cli.main.OpcClient.from_env", return_value=client), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         cmd_details(Namespace(org=None, task_id="T-1", full=False))
     out_default = capsys.readouterr().out
     assert long_summary not in out_default
@@ -1661,7 +1661,7 @@ def test_cmd_details_full_flag_shows_untruncated_summary(capsys):
 
     # --full: full text present.
     with patch("cli.main.OpcClient.from_env", return_value=client), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         cmd_details(Namespace(org=None, task_id="T-1", full=True))
     out_full = capsys.readouterr().out
     assert long_summary in out_full
@@ -1716,7 +1716,7 @@ def test_cmd_revisit_submits_without_streaming_on_yes(capsys, monkeypatch):
     monkeypatch.setattr("cli.main.sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("cli.main.sys.stdout.isatty", lambda: True)
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]), \
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]), \
          patch("builtins.input", return_value="y"):
         args = MagicMock(
             org=None,
@@ -1756,7 +1756,7 @@ def test_cmd_revisit_reads_note_from_file(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr("cli.main.sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("cli.main.sys.stdout.isatty", lambda: True)
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]), \
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]), \
          patch("builtins.input", return_value="y"):
         args = MagicMock(
             org=None,
@@ -1836,7 +1836,7 @@ def test_cmd_details_shows_revisit_header_chain_and_footer(capsys):
         "predecessor_prior_status": "failed-cancelled",
     }
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         args = MagicMock(org=None, task_id="TASK-072")
         cmd_details(args)
     out = capsys.readouterr().out
@@ -1878,7 +1878,7 @@ def test_cmd_details_omits_revisit_blocks_when_plain_task(capsys):
         "predecessor_prior_status": None,
     }
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         args = MagicMock(org=None, task_id="TASK-001")
         cmd_details(args)
     out = capsys.readouterr().out
@@ -1911,7 +1911,7 @@ def test_cmd_details_shows_footer_only_when_predecessor_has_revisits(capsys):
         "predecessor_prior_status": None,
     }
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         args = MagicMock(org=None, task_id="TASK-052")
         cmd_details(args)
     out = capsys.readouterr().out
@@ -1959,7 +1959,7 @@ def test_cmd_details_renders_dispatched_from(capsys):
         ],
     }
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         cmd_details(Namespace(org=None, task_id="TASK-042"))
     out = capsys.readouterr().out
     assert "Dispatched from: TALK-007" in out
@@ -2006,7 +2006,7 @@ def test_cmd_details_renders_workflow_chain(capsys):
         "audit_log": [],
     }
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         cmd_details(Namespace(org=None, task_id="TASK-050"))
     out = capsys.readouterr().out
     assert "Current workflow chain" in out
@@ -2134,7 +2134,7 @@ def test_cmd_tasks_suffixes_revisit_rows(capsys):
         },
     ]}
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["alpha"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         args = MagicMock(org=None, limit=20)
         cmd_tasks(args)
     out = capsys.readouterr().out
