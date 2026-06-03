@@ -37,6 +37,11 @@ class TaskRecord(BaseModel):
     status: TaskStatus = TaskStatus.PENDING
     assigned_agent: str | None = None
     team: str = "engineering"
+    # Provenance, NOT a behavior label: "subtask" iff spawned from an ongoing
+    # task; "task" otherwise (founder-dispatched root). The orchestration gate
+    # in run_step keys on this — see
+    # docs/superpowers/specs/2026-06-03-subtask-composite-task-design.md.
+    task_type: Literal["task", "subtask"] = "task"
     brief: str
     parent_task_id: str | None = None
     revisit_of_task_id: str | None = None

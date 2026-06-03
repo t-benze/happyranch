@@ -1236,6 +1236,18 @@ def test_update_task_active_chain_sets_and_clears(db):
     assert db.get_task("TASK-1").active_chain is None
 
 
+def test_task_type_defaults_to_task():
+    from src.models import TaskRecord
+    t = TaskRecord(id="TASK-001", brief="x")
+    assert t.task_type == "task"
+
+
+def test_task_type_accepts_subtask():
+    from src.models import TaskRecord
+    t = TaskRecord(id="TASK-002", brief="x", task_type="subtask")
+    assert t.task_type == "subtask"
+
+
 def test_legacy_artifact_columns_renamed_and_path_strings_rewritten(tmp_path):
     """2026-06-02 rename: an un-migrated runtime with the OLD column names
     (`final_artifact_dir`, `artifact_dir`) and OLD `artifacts/...` path
