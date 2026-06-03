@@ -76,6 +76,7 @@ MAX_OUTPUT_BYTES = 200 * 1024
 class SubmitTask(BaseModel):
     team: str | None = None
     brief: str
+    owner: str | None = None  # assign a specific agent (default: team manager)
 
 
 @router.post("/tasks")
@@ -89,7 +90,16 @@ async def submit_task(body: SubmitTask, org: OrgDep, request: Request) -> dict:
             status_code=400,
             detail={"code": "unknown_team", "valid": valid},
         )
-    manager = registry.manager_for_team(team)
+    if body.owner is not None:
+        if body.owner not in registry.all_agents():
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "unknown_owner", "owner": body.owner,
+                        "valid": registry.all_agents()},
+            )
+        assigned = body.owner
+    else:
+        assigned = registry.manager_for_team(team).name
     async with org.db_lock:
         task_id = org.db.next_task_id()
         org.db.insert_task(
@@ -97,12 +107,12 @@ async def submit_task(body: SubmitTask, org: OrgDep, request: Request) -> dict:
                 id=task_id,
                 brief=body.brief,
                 team=team,
-                assigned_agent=manager.name,
+                assigned_agent=assigned,
             )
         )
 
     enqueue_task(state, org.slug, task_id)
-    return {"task_id": task_id, "team": team, "assigned_agent": manager.name}
+    return {"task_id": task_id, "team": team, "assigned_agent": assigned}
 
 
 @router.get("/tasks")
