@@ -418,6 +418,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             parent_task_id=task_id,
             status=TaskStatus.PENDING,
             session_timeout_seconds=task.session_timeout_seconds,
+            task_type="subtask",
         )
         # Atomic CAS: insert child + transition parent to BLOCKED(DELEGATED)
         # under the same RLock acquisition. Serializes against /cancel via

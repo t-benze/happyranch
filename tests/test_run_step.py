@@ -1575,3 +1575,29 @@ def test_subtask_owner_is_leaf_even_if_decision_present(runtime, db, monkeypatch
     t = db.get_task("T-2")
     assert t.status == TaskStatus.COMPLETED          # leaf — no child spawned
     assert db.get_children("T-2") == []
+
+
+def test_delegated_child_is_typed_subtask(runtime, db, monkeypatch):
+    import json
+    from src.orchestrator.orchestrator import Orchestrator
+    (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
+    db.insert_task(TaskRecord(
+        id="T-1", brief="root", assigned_agent="engineering_head",
+        task_type="task",
+    ))
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10),
+                        paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(
+            output_summary=json.dumps(
+                {"action": "delegate", "agent": "dev_agent", "prompt": "build"}),
+        )
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    orch.run_step("T-1")
+    children = db.get_children("T-1")
+    assert len(children) == 1
+    assert db.get_task(children[0]).task_type == "subtask"
