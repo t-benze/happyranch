@@ -371,22 +371,25 @@ def test_startup_recovery_run_step_writes_resumed_audit_row(
         duration_seconds=1, session_id="sess-fake-1",
     )
 
-    # ── Before run_step: verify the BLOCKED-JOBS-RESULTS header would fire ──
-    # The header builder returns non-None when task_resumed_from_jobs has a
-    # higher audit id than the latest orchestration_step entry. Since no
-    # orchestration_step has been written yet, the header must fire here.
-    # This is the state the resumed agent session would see at step 4 of run_step.
-    from src.orchestrator.run_step import _blocked_jobs_resume_header_if_applicable
-
-    # At this point, task_resumed_from_jobs is NOT yet written (we haven't called
-    # run_step yet). Re-wire the queue now so run_step can call it.
     orch.attach_queue(mock_queue)
 
-    # Call run_step which: CAS-wins, writes task_resumed_from_jobs, then builds
-    # the prompt (which calls _blocked_jobs_resume_header_if_applicable internally),
-    # then calls _run_agent (mocked), then writes orchestration_step (only for
-    # team managers; dev_agent is a worker so this is skipped).
-    with patch.object(orch, "_run_agent", return_value=(fake_result, fake_report)):
+    # Call run_step which: CAS-wins, writes task_resumed_from_jobs (step 3),
+    # builds the resumed agent's prompt (step 4 — this is where the
+    # BLOCKED-JOBS-RESULTS header is injected, via _build_agent_prompt ->
+    # _blocked_jobs_resume_header_if_applicable), calls _run_agent (mocked),
+    # then writes orchestration_step (step 6). TASK-3 is a task_type="task"
+    # root (dispatched to dev_agent), so its owner orchestrates and the header
+    # fires at step 4 — BEFORE orchestration_step exists. We capture the actual
+    # prompt handed to the resumed agent and assert the header is in it, rather
+    # than re-deriving it post-hoc (a post-run builder call would be suppressed
+    # by the step-6 orchestration_step row).
+    captured: dict = {}
+
+    def _capture_run_agent(task_id, agent, prompt, on_session_started=None):
+        captured["prompt"] = prompt
+        return (fake_result, fake_report)
+
+    with patch.object(orch, "_run_agent", side_effect=_capture_run_agent):
         orch.run_step(
             "TASK-3",
             metadata={"trigger": "startup_recovery", "triggering_job_id": None},
@@ -424,25 +427,16 @@ def test_startup_recovery_run_step_writes_resumed_audit_row(
         f"expected job_outcomes['JOB-C']='failed', got {job_outcomes!r}"
     )
 
-    # ── Verify BLOCKED-JOBS-RESULTS header was available during the run ──
-    # After run_step completes: task_resumed_from_jobs has been written and is
-    # readable. The header builder returns non-None because task_resumed_from_jobs
-    # is the latest relevant audit entry (dev_agent is a worker, not a manager,
-    # so no orchestration_step row is written on its behalf — workers go straight
-    # to done). The task itself is now completed/terminal.
-    header = _blocked_jobs_resume_header_if_applicable(orch, "TASK-3")
-    # The header is non-None (task_resumed_from_jobs was written; no subsequent
-    # orchestration_step suppresses it for a worker). This confirms it WAS
-    # available during the agent session and the prompt injection path would fire.
-    assert header is not None, (
-        "expected header to be non-None (task_resumed_from_jobs was written "
-        "and no orchestration_step suppresses it for a worker agent); "
-        f"audit actions={actions}"
+    # ── Verify the BLOCKED-JOBS-RESULTS header was injected into the resumed
+    #    agent's prompt (the real consumption point: run_step step 4, before the
+    #    step-6 orchestration_step row exists). We assert on the prompt actually
+    #    handed to _run_agent rather than a post-hoc builder call.
+    injected = captured.get("prompt", "")
+    assert injected, "expected _run_agent to have been called with a prompt"
+    # The injected prompt must mention JOB-C and its 'failed' status.
+    assert "JOB-C" in injected, (
+        f"expected JOB-C in the resumed agent prompt; got:\n{injected}"
     )
-    # The header must mention JOB-C and its 'failed' status.
-    assert "JOB-C" in header, (
-        f"expected JOB-C to appear in the BLOCKED-JOBS-RESULTS header; got:\n{header}"
-    )
-    assert "failed" in header, (
-        f"expected 'failed' to appear in the BLOCKED-JOBS-RESULTS header; got:\n{header}"
+    assert "failed" in injected, (
+        f"expected 'failed' (JOB-C outcome) in the resumed agent prompt; got:\n{injected}"
     )
