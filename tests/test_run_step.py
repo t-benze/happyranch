@@ -1649,3 +1649,33 @@ def test_non_manager_cross_agent_delegation_is_rejected(runtime, db, monkeypatch
     orch.run_step("T-1")
     assert db.get_children("T-1") == []
     assert db.get_task("T-1").status == TaskStatus.PENDING   # re-enqueued for re-decide
+
+
+def test_manager_self_target_does_not_bump_revision_count(runtime, db, monkeypatch):
+    """A manager re-delegating to ITSELF is sequencing, not a revise loop —
+    revision_count must stay 0 so escalate-after-2-rounds doesn't misfire."""
+    import json
+    from src.orchestrator.orchestrator import Orchestrator
+    (runtime.workspaces_dir / "engineering_head").mkdir(parents=True, exist_ok=True)
+    # One already-completed self-child makes engineering_head the worker-of-record.
+    db.insert_task(TaskRecord(id="T-1", brief="root",
+                              assigned_agent="engineering_head", task_type="task"))
+    db.insert_task(TaskRecord(id="T-1-c1", brief="c1",
+                              assigned_agent="engineering_head",
+                              parent_task_id="T-1", task_type="subtask"))
+    db.update_task("T-1-c1", status=TaskStatus.COMPLETED)
+
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10),
+                        paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    def fake(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(
+            output_summary=json.dumps(
+                {"action": "delegate", "agent": "engineering_head",
+                 "prompt": "phase 2"}))
+    monkeypatch.setattr(orch, "_run_agent", fake)
+
+    orch.run_step("T-1")
+    assert db.get_task("T-1").revision_count == 0

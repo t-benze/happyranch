@@ -411,7 +411,10 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             # Earliest by created_at; tie-break on id for determinism.
             completed_children.sort(key=lambda c: (c.created_at, c.id))
             worker_of_record = completed_children[0].assigned_agent
-            if worker_of_record == decision.agent:
+            # Self-targeted delegation is a sequence step (self-decomposition),
+            # NOT a revise cycle — only bump when re-delegating to a DIFFERENT
+            # worker-of-record. `agent` is this task's owner.
+            if worker_of_record == decision.agent and decision.agent != agent:
                 db.increment_revision_count(task_id)
         child_id = db.next_task_id()
         child = TaskRecord(
@@ -596,7 +599,6 @@ def _list_candidate_agents(orch: "Orchestrator", calling_manager: str) -> list[s
     if caller_team is None:
         return []
     team_members = set(orch.teams.manager_for_team(caller_team).workers)
-    team_members.discard(calling_manager)  # manager should not delegate to itself
 
     if orch._paths.workspaces_dir.exists():
         names = sorted(
