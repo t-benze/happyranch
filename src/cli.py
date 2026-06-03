@@ -234,6 +234,8 @@ def cmd_run(args: argparse.Namespace) -> None:
     payload: dict = {"brief": brief}
     if args.team:
         payload["team"] = args.team
+    if args.owner:
+        payload["owner"] = args.owner
     r = client.post(f"/api/v1/orgs/{slug}/tasks", json=payload)
     if not _ok(r):
         return
@@ -2565,6 +2567,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--team", default=None,
         help="Team to route the task to (default: engineering)",
+    )
+    p_run.add_argument(
+        "--owner", default=None,
+        help="Assign the task to a specific agent (default: the team manager)",
     )
     p_run_brief = p_run.add_mutually_exclusive_group(required=True)
     p_run_brief.add_argument("--brief", help="Task description (inline string)")
