@@ -242,6 +242,46 @@ def test_chain_branch_auto_advances_on_verdict_match(tmp_path):
     assert db.get_task("TASK-001").orchestration_step_count == 0
 
 
+def test_chain_advanced_leg_child_is_typed_subtask(tmp_path):
+    """Regression: a chain auto-advance leg child is spawned from an ongoing
+    task, so it MUST be task_type='subtask' (a leaf). Otherwise the reviewer
+    worker on leg 2+ owns a task_type='task', hits the decision gate, and its
+    verdict-only/no-decision completion escalates — stalling the chain."""
+    from src.infrastructure.database import Database
+    from src.orchestrator.chain import ChainState
+
+    db = Database(tmp_path / "x.db")
+    db.insert_task(TaskRecord(id="TASK-001", team="engineering", brief="parent"))
+    db.update_task("TASK-001", status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED)
+    chain = ChainState(
+        step_index=0,
+        first_leg_expect_verdict=None,
+        legs=[ChainLeg(agent="sr", prompt="review brief", expect_verdict="APPROVE")],
+        step_audit_id=1,
+    )
+    db.update_task_active_chain("TASK-001", chain.serialize())
+    db.insert_task(TaskRecord(
+        id="TASK-002", team="engineering", brief="build",
+        parent_task_id="TASK-001", assigned_agent="dev",
+    ))
+    db.update_task("TASK-002", status=TaskStatus.COMPLETED)
+    db.insert_task_result(
+        task_id="TASK-002", agent="dev", session_id="s",
+        status="completed", confidence_score=80,
+        output_summary="built PR #1", verdict=None,
+    )
+
+    from src.orchestrator.run_step import _advance_chain_for_completed_child
+    outcome = _advance_chain_for_completed_child(
+        orch=_orch_with_db(db),
+        parent_task_id="TASK-001",
+        child_task_id="TASK-002",
+    )
+    assert outcome == "advance"
+    new_child_id = db.get_children("TASK-001")[1]
+    assert db.get_task(new_child_id).task_type == "subtask"
+
+
 def test_chain_branch_wakes_parent_on_verdict_mismatch(tmp_path):
     """Mismatched verdict aborts the chain; helper returns 'wake' and clears active_chain."""
     from src.infrastructure.database import Database

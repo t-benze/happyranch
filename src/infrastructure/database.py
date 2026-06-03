@@ -770,6 +770,7 @@ class Database:
                 cancelled_at=row["cancelled_at"],
                 last_heartbeat=row["last_heartbeat"],
                 session_timeout_seconds=row["session_timeout_seconds"],
+                task_type=row["task_type"],
             )
             for row in cursor.fetchall()
         ]
@@ -917,6 +918,7 @@ class Database:
                 cancelled_at=row["cancelled_at"],
                 last_heartbeat=row["last_heartbeat"],
                 session_timeout_seconds=row["session_timeout_seconds"],
+                task_type=row["task_type"],
             )
             for row in cursor.fetchall()
         ]

@@ -1213,6 +1213,7 @@ def _advance_chain_for_completed_child(
             assigned_agent=action.next_leg.agent,
             status=TaskStatus.PENDING,
             session_timeout_seconds=parent.session_timeout_seconds,
+            task_type="subtask",
         )
     )
 
