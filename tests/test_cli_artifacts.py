@@ -78,7 +78,7 @@ def test_cmd_artifacts_put_invokes_client(tmp_path: Path, capsys) -> None:
     }
 
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["demo"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["demo"]):
         args = argparse.Namespace(
             org="demo",
             local_path=local,
@@ -112,7 +112,7 @@ def test_cmd_artifacts_put_with_name_override(tmp_path: Path) -> None:
     }
 
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["demo"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["demo"]):
         args = argparse.Namespace(
             org="demo",
             local_path=local,
@@ -144,7 +144,7 @@ def test_cmd_artifacts_list_invokes_client(capsys) -> None:
     }
 
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["demo"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["demo"]):
         args = argparse.Namespace(org="demo")
         cmd_artifacts_list(args)
 
@@ -161,7 +161,7 @@ def test_cmd_artifacts_list_empty(capsys) -> None:
     fake.list_artifacts.return_value = {"artifacts": []}
 
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["demo"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["demo"]):
         args = argparse.Namespace(org="demo")
         cmd_artifacts_list(args)
 
@@ -181,7 +181,7 @@ def test_cmd_artifacts_get_writes_to_output(tmp_path: Path, capsys) -> None:
     fake.get_artifact.return_value = b"contents"
 
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
-         patch("cli.main._fetch_available_orgs", return_value=["demo"]):
+         patch("cli._shared._fetch_available_orgs", return_value=["demo"]):
         args = argparse.Namespace(org="demo", name="a.txt", output=out)
         cmd_artifacts_get(args)
 

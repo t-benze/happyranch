@@ -141,6 +141,16 @@ Cross-team validation runs on every leg at decision-parse time; any off-team age
 
 See `docs/superpowers/specs/2026-05-30-inline-delegation-chain-design.md`.
 
+### Who emits a decision, and delegation scope
+
+**Decision emitters:** Any agent that owns a `task_type=task` task must emit a `decision` field — not only `role: manager` agents. Conversely, an agent owning a `task_type=subtask` task is a leaf: it reports `status` + `output_summary` and omits `decision` entirely. The orchestration gate keys on `task.task_type`, not on agent role.
+
+**Self-delegation (self-decomposition):** A non-manager owner may `delegate` only to **itself** — spawning the next sub-task in a sequence it owns and orchestrates, getting woken on each child terminal. Team managers may delegate to own-team agents or to themselves. Any attempt by a non-manager to delegate to a different agent is rejected with feedback; the task re-runs so the owner can revise its decision.
+
+**Escalation:** Routes to the founder unchanged (any agent role, any task type).
+
+See `docs/superpowers/specs/2026-06-03-subtask-composite-task-design.md` for the design rationale.
+
 ## Mid-task learnings
 
 Durable lessons go through:
