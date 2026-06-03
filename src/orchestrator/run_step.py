@@ -292,11 +292,11 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         return
 
     # ---- 6. Parse next step ----
-    # Only team managers speak the NextStep JSON protocol. Worker
-    # completions are plain prose/summary payloads — treating them as
-    # manager decisions reclassifies every non-JSON output_summary as
-    # `escalate` (see P1 in 2026-04-20 review).
-    if orch.teams.is_team_manager(agent):
+    # Orchestration is driven by task TYPE, not manager role. A type=task
+    # owner (any agent) speaks the NextStep protocol; a type=subtask is
+    # leaf-only. `task` is the early-fetched record; task_type is immutable
+    # provenance, safe to read post-claim.
+    if task.task_type == "task":
         decision = orch._parse_next_step(report)
         _step_audit_id = orch._audit.log_orchestration_step(
             task_id, next_count, decision.model_dump(exclude_none=True),

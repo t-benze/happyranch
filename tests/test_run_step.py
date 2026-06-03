@@ -755,6 +755,7 @@ def test_run_step_worker_completion_is_done_not_parsed_as_eh_decision(
     db.insert_task(TaskRecord(
         id="T-CHD", brief="c",
         assigned_agent="dev_agent", parent_task_id="T-PAR",
+        task_type="subtask",
     ))
 
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
@@ -796,10 +797,12 @@ def test_run_step_delegated_worker_emits_review_verdict(
     db.insert_task(TaskRecord(
         id="T-OK", brief="ok",
         assigned_agent="dev_agent", parent_task_id="T-PAR",
+        task_type="subtask",
     ))
     db.insert_task(TaskRecord(
         id="T-BAD", brief="bad",
         assigned_agent="dev_agent", parent_task_id="T-PAR",
+        task_type="subtask",
     ))
 
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
@@ -1519,3 +1522,56 @@ def test_run_step_escalate_atomic_against_cancel_between_recheck_and_cas(
     assert t.cancelled_at is not None
     # block_kind stays None (cancel cleared it); not BLOCKED(ESCALATED).
     assert t.block_kind is None
+
+
+def test_non_manager_owner_of_task_type_emits_decision(runtime, db, monkeypatch):
+    """A type=task owned by a NON-manager parses its decision (done here)."""
+    import json
+    from src.orchestrator.orchestrator import Orchestrator
+    db.insert_task(TaskRecord(
+        id="T-1", brief="root", assigned_agent="dev_agent", task_type="task",
+    ))
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10),
+                        paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(
+            output_summary=json.dumps({"action": "done", "summary": "did it"}),
+        )
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    orch.run_step("T-1")
+    t = db.get_task("T-1")
+    assert t.status == TaskStatus.COMPLETED
+    assert t.note == "did it"
+
+
+def test_subtask_owner_is_leaf_even_if_decision_present(runtime, db, monkeypatch):
+    """A type=subtask owner does NOT orchestrate: a delegate decision in its
+    report is ignored and the task simply completes (leaf path)."""
+    import json
+    from src.orchestrator.orchestrator import Orchestrator
+    db.insert_task(TaskRecord(
+        id="T-2", brief="leaf", assigned_agent="engineering_head",
+        task_type="subtask",
+    ))
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10),
+                        paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        # Even though this is a manager AND emits a delegate, the subtask
+        # gate forces leaf completion.
+        return _make_result(), _make_report(
+            output_summary=json.dumps(
+                {"action": "delegate", "agent": "dev_agent", "prompt": "go"}),
+        )
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    orch.run_step("T-2")
+    t = db.get_task("T-2")
+    assert t.status == TaskStatus.COMPLETED          # leaf — no child spawned
+    assert db.get_children("T-2") == []
