@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from src.config import settings
 from src.daemon.dispatcher import Dispatcher
 from src.daemon.routes import (
     agents,
@@ -53,7 +54,7 @@ def ensure_workers_started(state: DaemonState) -> None:
     if state.queue.is_running():
         return
     dispatcher = Dispatcher(state)
-    state.queue.start_workers(dispatcher, n=3)
+    state.queue.start_workers(dispatcher, n=settings.queue_workers)
 
 
 def _attach_thread_queue_wiring(state: DaemonState, loop) -> None:

@@ -118,7 +118,7 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
             {failureNote && (
               <div
                 role="alert"
-                className="bg-tier-red-tint text-status-abandoned mt-3 rounded-sm px-3 py-2 text-sm"
+                className="bg-tier-red-tint text-status-abandoned mt-3 max-h-32 overflow-y-auto rounded-sm px-3 py-2 text-sm"
               >
                 <span className="font-semibold">Failure reason:</span>{' '}
                 <span className="font-mono">{failureNote}</span>

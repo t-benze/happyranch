@@ -80,7 +80,7 @@ HTTP routes: per-org under `/api/v1/orgs/<slug>/...`; container-level under `/ap
 
 ## Configuration
 
-Operational settings use the `HAPPYRANCH_` env prefix. Runtime paths are derived from the runtime directory.
+Operational settings (`Settings` in `src/config.py`) resolve from, highest precedence first: (1) `HAPPYRANCH_`-prefixed **env vars**, (2) **`<daemon-home>/config.yaml`** (default `~/.happyranch/config.yaml`; honors `HAPPYRANCH_DAEMON_HOME`; keys are field names *without* the prefix, e.g. `queue_workers: 6`), (3) code defaults. There is **no `.env` support** — `settings_customise_sources` drops the dotenv source and adds `YamlConfigSettingsSource` (resolved per-instantiation, so tests can redirect via `HAPPYRANCH_DAEMON_HOME`). The home resolver is inlined in `config.py` (`_daemon_home`) rather than importing `src.daemon.paths`, to keep `config` free of a `daemon` dependency. Missing file → defaults (no raise). Do not confuse this daemon-level `config.yaml` with each org's `<runtime>/orgs/<slug>/org/config.yaml` (per-org settings, loaded by `src/orchestrator/org_config.py`). Runtime paths are derived from the runtime directory.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -91,6 +91,7 @@ Operational settings use the `HAPPYRANCH_` env prefix. Runtime paths are derived
 | `HAPPYRANCH_PERMISSION_MODE` | `auto` | Claude Code permission mode |
 | `HAPPYRANCH_PROTOCOL_DIR` | `protocol` | Protocol docs dirname (relative to project root) |
 | `HAPPYRANCH_MAX_ORCHESTRATION_STEPS` | `50` | Max manager decision steps before escalation |
+| `HAPPYRANCH_QUEUE_WORKERS` | `3` | Number of `run_step` worker slots (daemon-wide, shared across all orgs). Caps concurrent agent sessions — each slot blocks on one subprocess for the whole session. Must be > 0. Tunes head-of-line blocking; does NOT add per-org fairness |
 | `HAPPYRANCH_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout — global default; see resolution below |
 | `HAPPYRANCH_ORG_SLUG` | _(unset)_ | Default org slug for per-org CLI commands. Resolution: explicit `--org` flag > `HAPPYRANCH_ORG_SLUG` env > auto-infer (only if exactly one org exists) > error |
 
