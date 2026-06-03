@@ -25,19 +25,23 @@ This generalizes the existing manager-delegation machinery — it does **not** a
 `TaskRecord` gains:
 
 ```python
-type: Literal["task", "subtask"] = "task"
+task_type: Literal["task", "subtask"] = "task"
 ```
+
+**Field/column name is `task_type`, NOT `type`.** `tasks` previously had a `type` column (dropped in the "Task-4 schema refactor") and `database.py` still carries compat code keyed on the *column name* `type`: `_detect_legacy_columns()` sets `_tasks_has_legacy_type_column = "type" in columns`, and `insert_task` writes a `"general"` sentinel into a `type` column when that flag is set. Adding a new column named `type` would (a) on a *fresh* DB flip that flag `True`, making `insert_task` write `"general"` into our column on every insert — silently breaking the feature; (b) on a *pre-Task-4* DB collide with the still-present legacy column (duplicate-column ALTER). Using `task_type` sidesteps all of it. Values are still `"task"` / `"subtask"`. (Throughout this doc, the shorthand `type=task` / `type=subtask` means `task_type == "task"` / `"subtask"`.)
 
 - **`task`** — a top-level task. Created by founder dispatch. Its owner may orchestrate (spawn sub-tasks).
 - **`subtask`** — a task spawned from an *ongoing* task. Leaf-only: its owner executes and terminates; it cannot spawn.
 
-`type` records **where the task came from**, not a behavior label chosen up front. "Composite / orchestrator" is never stored — it is derived: a task acts as an orchestrator exactly when it is a `type=task` root. (Equivalently: only `task`s can have sub-tasks, so "is composite" ≡ "is a `task` that has spawned sub-tasks.")
+`task_type` records **where the task came from**, not a behavior label chosen up front. "Composite / orchestrator" is never stored — it is derived: a task acts as an orchestrator exactly when it is a `type=task` root. (Equivalently: only `task`s can have sub-tasks, so "is composite" ≡ "is a `task` that has spawned sub-tasks.")
 
-**Migration (ratified — uniform backfill):** every existing `tasks` row → `type="task"` via the column `DEFAULT 'task'`. No conditional backfill on `parent_task_id`. The provenance rule (*spawned-from-ongoing → `subtask`*) is forward-only and does not retro-classify historical children. This is safe because the `type=="task"` gate only fires when the owner emits a `decision`, which legacy leaf workers never do; the sole observable effect is that a rare *in-flight* legacy child, if re-run after migration, would receive the orchestrator prompt — an acceptable edge case the founder accepted in favor of a trivial migration.
+**Legacy `type`-column cleanup (bundled).** Because the legacy `type` column is never *read* anywhere (only the `"general"` sentinel is written in `insert_task`'s legacy branch), we remove the dead machinery as part of this change: an idempotent `ALTER TABLE tasks DROP COLUMN type` migration (SQLite 3.35+, already relied on by the jobs migration; naturally idempotent via the existing `try/except sqlite3.OperationalError` block), plus deletion of `_detect_legacy_columns`, the `_tasks_has_legacy_type_column` flag, and `insert_task`'s legacy INSERT branch (collapsing to the single INSERT). Two tests in `tests/test_database.py` assert the legacy behavior and must be rewritten (see plan). `DROP COLUMN` is irreversible, but the column has been unused since Task-4 and this is a single-founder self-hosted DB.
+
+**Migration (ratified — uniform backfill):** every existing `tasks` row → `task_type="task"` via the column `DEFAULT 'task'`. No conditional backfill on `parent_task_id`. The provenance rule (*spawned-from-ongoing → `subtask`*) is forward-only and does not retro-classify historical children. This is safe because the gate only fires when the owner emits a `decision`, which legacy leaf workers never do; the sole observable effect is that a rare *in-flight* legacy child, if re-run after migration, would receive the orchestrator prompt — an acceptable edge case the founder accepted in favor of a trivial migration.
 
 ### 2. The spawn gate is `type == "task"`
 
-The `is_team_manager(agent)` gate on decision parsing (`run_step.py:299`) is **replaced** by `task.type == "task"`. This is the whole feature in one line: orchestration is driven by task type, not manager role.
+The `is_team_manager(agent)` gate on decision parsing (`run_step.py:299`) is **replaced** by `task.task_type == "task"`. This is the whole feature in one line: orchestration is driven by task type, not manager role.
 
 - Owner of a `type=task` → completion `decision` is parsed; may `delegate` (spawn sub-task), `done`, or `escalate`.
 - Owner of a `type=subtask` → leaf path, unchanged from today's worker behavior: `status=completed` → task completes; `status=blocked` → block; no `decision` parsing.
@@ -79,15 +83,15 @@ This is exactly today's manager→worker shape, with the orchestrator generalize
 
 ### 6. Escalation routing
 
-On `decision=escalate` from a `type=task` owner: walk `parent_task_id` to the nearest **manager-owned** ancestor.
-- **Found** → wake that manager for a re-decision; the escalation reason is surfaced in the manager's next-step prompt header (reuse the existing resolved-escalation header mechanism).
-- **None** (founder-dispatched lineage with no manager ancestor) → existing `notify_escalated` → founder.
+`decision=escalate` from a `type=task` owner routes to `notify_escalated` → **founder** — unchanged from today. **No code change.**
 
-A `type=subtask` leaf does not escalate via `decision`; it reports `status=blocked` and its `type=task` parent is woken to decide (today's worker→manager behavior).
+**Why not "to the nearest manager ancestor" (the earlier-ratified routing)?** It is *unreachable* under the no-nesting + founder-dispatch-only decisions. `type=task` tasks are created *only* by founder dispatch and have no parent; everything a manager or an owner spawns is a `type=subtask`. So **`type=task ⟺ root`**, and an escalating `type=task` owner never has a manager ancestor to route to. The manager-ancestor branch is deferred to the future nesting upgrade (where a manager *could* own an orchestrating subtask) and is **not implemented in v1**. (No `walk_ancestors` call, no escalation-header reuse — that work evaporates.)
+
+A `type=subtask` leaf does not escalate via `decision`; if it reports `status=blocked` the existing pre-gate handler (`run_step.py:236`) `_fail`s it and wakes its `type=task` parent via `_enqueue_parent_if_waiting` (today's worker→manager behavior, unchanged).
 
 ### 7. Prompt surface
 
-`_build_agent_prompt` re-gates on `task.type`:
+`_build_agent_prompt` re-gates on `task.task_type`:
 
 - **`type=task`, manager owner** → full capabilities prompt (decision schema + own-team roster + prior steps) — unchanged from today.
 - **`type=task`, non-manager owner** → a **reduced** decision schema: self-targeted `delegate` + `done` + `escalate`. No team roster (target is always self).
@@ -110,7 +114,7 @@ Replace the role gate at `run_step.py:299` with a type gate:
 ```python
 # before:  if orch.teams.is_team_manager(agent): decision = orch._parse_next_step(report)
 # after:
-if task.type == "task":
+if task.task_type == "task":
     decision = orch._parse_next_step(report)   # delegate / done / escalate
     # ... log_orchestration_step, then dispatch on decision.action ...
 else:  # subtask → leaf
@@ -133,35 +137,36 @@ Resolution table for a `type=task` owner:
 **`src/models.py` — `TaskRecord`:**
 
 ```python
-type: Literal["task", "subtask"] = "task"
+task_type: Literal["task", "subtask"] = "task"
 ```
 
-**Database — one new column on `tasks`:**
+**Database — one new column on `tasks`, plus legacy-column drop:**
 
 ```sql
-ALTER TABLE tasks ADD COLUMN type TEXT NOT NULL DEFAULT 'task';
+ALTER TABLE tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'task';
+ALTER TABLE tasks DROP COLUMN type;   -- legacy cleanup; idempotent via try/except
 ```
 
-Added in **both** the `tasks` CREATE TABLE (fresh DBs) and the idempotent ALTER block (existing DBs), matching the two-place schema convention. The `DEFAULT 'task'` migrates every existing row.
+`ADD COLUMN task_type` goes in **both** the `tasks` CREATE TABLE (fresh DBs) and the idempotent ALTER block (existing DBs), matching the two-place schema convention. The `DEFAULT 'task'` migrates every existing row. `DROP COLUMN type` goes in the ALTER block only (fresh DBs never had it); the surrounding `try/except sqlite3.OperationalError` makes it a no-op when absent.
 
-When spawning a child (`run_step.py` delegate branch + the dispatch route's manager-delegation), the child `TaskRecord` is created with `type="subtask"`. Founder-dispatched roots are created with `type="task"`.
+When spawning a child (`run_step.py` delegate branch via `try_delegate` → `insert_task`), the child `TaskRecord` is created with `task_type="subtask"`. Founder-dispatched roots are created with `task_type="task"` (the model default).
 
 ## Touch points (implementation surface)
 
-- `src/models.py` — `TaskRecord.type`.
-- `src/infrastructure/database.py` — column in CREATE + ALTER; `create_task` / child-insert paths carry `type`; `get_task` hydrates it.
-- `src/orchestrator/run_step.py` — gate flip (`is_team_manager` → `type=="task"`); self-target validation in `_validate_one_leg` / `_chain_legs_off_team`; lift self-delegation bans; child created with `type="subtask"`; escalate routing walks to nearest manager ancestor.
-- `src/orchestrator/run_step.py` `_build_agent_prompt` — three-way branch on `type` + role (§7); a reduced self-only capabilities prompt.
+- `src/models.py` — `TaskRecord.task_type`.
+- `src/infrastructure/database.py` — `task_type` in CREATE TABLE + the idempotent ALTER block; `DROP COLUMN type` migration; **remove** `_detect_legacy_columns`, `_tasks_has_legacy_type_column`, and `insert_task`'s legacy branch (collapse to one INSERT that includes `task_type`); `get_task` hydrates `task_type=row["task_type"]`.
+- `src/orchestrator/run_step.py` — gate flip at line 299 (`is_team_manager` → `task.task_type == "task"`); self-target validation in `_validate_one_leg` / `_chain_legs_off_team` (non-manager owner → only the owner itself; manager owner → own-team ∪ self); lift self-delegation bans (`_list_candidate_agents` self-discard for `type=task` owners); exempt self-targeted delegations from the `revision_count` bump (lines 400–411); child created with `task_type="subtask"`. **Escalate routing: no change** (founder; §6).
+- `src/orchestrator/run_step.py` `_build_agent_prompt` — branch on `task_type` + role (§7): `type=subtask` → `""`; `type=task` + manager → full roster prompt; `type=task` + non-manager → reduced self-only prompt.
 - `src/orchestrator/capabilities.py` — reduced (self-only, roster-less) variant of the capabilities prompt.
-- `src/daemon/routes/tasks.py` — dispatch route grows optional `owner`; stops force-assigning `manager_for_team` when `owner` is given; default path unchanged.
-- `src/cli.py` — `dispatch` grows `--owner`.
-- Web/OpenAPI — dispatch body gains optional `owner`; regenerate the OpenAPI snapshot + mirror the TS function (contract-pinning tests).
-- `protocol/00-completion-contract.md` — document that `type=task` owners (not just managers) emit decisions, self-targeted delegation, and the escalate-to-nearest-manager rule.
+- `src/daemon/routes/tasks.py` — `SubmitTask` body grows optional `owner: str | None`; when set, validate the agent exists and assign it instead of `manager_for_team`; default path unchanged.
+- `src/cli.py` — `happyranch run` grows `--owner`; `cmd_run` adds it to the POST payload.
+- Web/OpenAPI — `SubmitTask` gains optional `owner`; regenerate the OpenAPI snapshot (`HAPPYRANCH_REGEN_OPENAPI=1`) + mirror the TS `submitTask` function (contract-pinning tests).
+- `protocol/00-completion-contract.md` — document that `type=task` owners (not just managers) emit decisions, and self-targeted delegation.
 
 ## Invariants to preserve
 
-- **`type` is provenance, never a behavior label set by a human's up-front judgment.** A task is a `subtask` iff it was spawned from an ongoing task. Do not add an API that lets a caller declare a child `type=task`.
-- **Sub-tasks never spawn.** The `type=="task"` gate is the single chokepoint that guarantees the two-level topology and therefore termination. Do not add a code path that parses a `subtask` owner's `decision`.
+- **`task_type` is provenance, never a behavior label set by a human's up-front judgment.** A task is a `subtask` iff it was spawned from an ongoing task. Do not add an API that lets a caller declare a child `task_type="task"`.
+- **Sub-tasks never spawn.** The `task_type == "task"` gate is the single chokepoint that guarantees the two-level topology and therefore termination. Do not add a code path that parses a `subtask` owner's `decision`.
 - **Self-target validation is role-gated, not type-gated.** Managers keep own-team scope; non-managers get self-only. Both only apply to `type=task` owners (subtasks can't spawn at all).
 - **Governance stays manager-only** (manage-agent, KB delete, peer review, dispatch role-tagging).
 - **Existing parent-wake / cascade-fail / auto-revisit machinery is untouched** — it keys off `parent_task_id` + terminal state, not role or type, so it works for any orchestrator without change.
