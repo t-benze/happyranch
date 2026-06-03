@@ -356,7 +356,17 @@ The daemon binds to port **8765** by default. Override with `HAPPYRANCH_DAEMON_P
 
 ## Configuration
 
-Operational settings use the `HAPPYRANCH_` env prefix. Runtime paths are derived from the runtime container.
+Operational settings come from two places, highest precedence first:
+
+1. **Environment variables** with the `HAPPYRANCH_` prefix (e.g. `HAPPYRANCH_QUEUE_WORKERS=6`).
+2. **`~/.happyranch/config.yaml`** — a YAML file in the daemon home (the same directory as `daemon.token` / `runtimes.yaml`; honors `HAPPYRANCH_DAEMON_HOME`). Keys are the setting names **without** the prefix, e.g.:
+
+   ```yaml
+   queue_workers: 6
+   session_timeout_seconds: 1800
+   ```
+
+If a value isn't set in either, the code default applies. The file is optional — if it doesn't exist, defaults are used. Changes take effect on daemon restart. (This is distinct from each org's `<runtime>/orgs/<slug>/org/config.yaml`, which holds per-org settings.) Runtime paths are derived from the runtime container.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -366,6 +376,7 @@ Operational settings use the `HAPPYRANCH_` env prefix. Runtime paths are derived
 | `HAPPYRANCH_PI_CLI_PATH` | `pi` | Path to Pi CLI |
 | `HAPPYRANCH_PERMISSION_MODE` | `auto` | Claude Code permission mode |
 | `HAPPYRANCH_MAX_ORCHESTRATION_STEPS` | `50` | Max manager decision steps before escalation |
+| `HAPPYRANCH_QUEUE_WORKERS` | `3` | Max agent sessions running at once (daemon-wide, across all orgs). Raise it if tasks queue up waiting for a free slot; the limit is shared, so a busy org can still use every slot. Must be a positive integer. Takes effect on daemon restart. |
 | `HAPPYRANCH_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout (30 min) — global default; see overrides below |
 | `HAPPYRANCH_DAEMON_PORT` | `8765` | Port the daemon binds to (`0` = ephemeral, old behaviour) |
 | `HAPPYRANCH_ORG_SLUG` | _(unset)_ | Default org slug for per-org CLI commands |
