@@ -38,8 +38,9 @@ import { InviteDialog } from './InviteDialog';
 import { NewThreadDialog } from './NewThreadDialog';
 import { ResponderStatusStrip } from './ResponderStatusStrip';
 import { ResumeButton } from './ResumeButton';
+import { selectInFlightResponders } from './inFlightResponders';
 import { describeError } from './strings';
-import { ThreadActivityFooter } from './ThreadActivityFooter';
+import { TypingBubble } from './TypingBubble';
 
 function useNowMs(active: boolean): number {
   const [now, setNow] = useState(() => Date.now());
@@ -411,7 +412,6 @@ function DetailColumn({
       <div className="flex-1 overflow-hidden">
         <MessageTranscript messages={messages} loading={messagesLoading} slug={slug} nowMs={nowMs} />
       </div>
-      <ThreadActivityFooter messages={messages} nowMs={nowMs} />
       <footer className="border-border-default bg-surface-sunken border-t p-3">
         {composer}
       </footer>
@@ -430,11 +430,16 @@ interface TranscriptProps {
 function MessageTranscript({ messages, loading, slug, nowMs }: TranscriptProps): JSX.Element {
   const endRef = useRef<HTMLDivElement>(null);
 
+  // Agents mid-reply (working) or waiting to reply (queued), deduped by name —
+  // a working turn wins over a queued one (see selectInFlightResponders).
+  const inFlight = useMemo(() => selectInFlightResponders(messages), [messages]);
+  const inFlightKey = inFlight.map((s) => `${s.agent_name}:${s.status}`).join(',');
+
   useEffect(() => {
     if (typeof endRef.current?.scrollIntoView === 'function') {
       endRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
     }
-  }, [messages.length]);
+  }, [messages.length, inFlightKey]);
 
   return (
     <div className="flex h-full flex-col gap-2 overflow-auto px-4 py-3">
@@ -460,6 +465,15 @@ function MessageTranscript({ messages, loading, slug, nowMs }: TranscriptProps):
             <ResponderStatusStrip statuses={m.responder_status ?? []} nowMs={nowMs} />
           )}
         </div>
+      ))}
+      {inFlight.map((s) => (
+        <TypingBubble
+          key={`typing-${s.agent_name}`}
+          agentName={s.agent_name}
+          status={s.status as 'queued' | 'working'}
+          startedAt={s.started_at}
+          nowMs={nowMs}
+        />
       ))}
       <div ref={endRef} />
     </div>

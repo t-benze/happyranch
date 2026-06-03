@@ -14,11 +14,16 @@ export function ResponderStatusStrip({
   statuses: ResponderStatusEntry[];
   nowMs?: number;
 }): JSX.Element | null {
-  if (statuses.length === 0) return null;
+  // In-flight states (queued/working) are surfaced by the inline TypingBubble
+  // at the transcript tail; this strip is the per-message terminal record only.
+  const terminal = statuses.filter(
+    (s) => s.status === 'replied' || s.status === 'declined' || s.status === 'failed',
+  );
+  if (terminal.length === 0) return null;
   const now = nowMs ?? Date.now();
   return (
-    <div className="text-xs text-neutral-500 mt-1 flex flex-wrap gap-x-3">
-      {statuses.map((s) => (
+    <div className="mt-1 flex flex-wrap gap-x-3 text-xs text-neutral-500">
+      {terminal.map((s) => (
         <span key={s.agent_name}>
           <span className="font-medium">{s.agent_name}</span>:{' '}
           <span className={statusClass(s.status)}>{statusLabel(s, now)}</span>
