@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from src.orchestrator import prompt_loader
-from src.orchestrator._paths import OrgPaths
-from src.orchestrator.agent_def import AgentDef
-from src.runtime import RuntimeDir
+from runtime.orchestrator import prompt_loader
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.agent_def import AgentDef
+from runtime.runtime import RuntimeDir
 
 
 def _write_agent(runtime: OrgPaths, name: str, **fm) -> Path:

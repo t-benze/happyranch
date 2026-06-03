@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from src.daemon.jobs_runner import run_job
+from runtime.daemon.jobs_runner import run_job
 
 
 @pytest.mark.asyncio
@@ -83,7 +83,7 @@ async def test_run_job_kills_on_output_cap(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_terminate_jobs_for_task_kills_inflight(tmp_path: Path) -> None:
     """In-flight subprocesses for task_id get SIGTERM → SIGKILL; row transitions to failed."""
-    from src.daemon import jobs_runner
+    from runtime.daemon import jobs_runner
 
     out = tmp_path / "out.log"
     err = tmp_path / "err.log"

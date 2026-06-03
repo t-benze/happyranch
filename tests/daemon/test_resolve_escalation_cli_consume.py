@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from src.models import BlockKind, TaskRecord, TaskStatus
+from runtime.models import BlockKind, TaskRecord, TaskStatus
 
 
 @pytest.mark.asyncio

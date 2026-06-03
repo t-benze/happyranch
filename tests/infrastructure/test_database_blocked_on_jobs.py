@@ -4,8 +4,8 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
-from src.infrastructure.database import Database
-from src.models import BlockKind
+from runtime.infrastructure.database import Database
+from runtime.models import BlockKind
 
 
 def test_blocked_on_job_enum_value():
@@ -39,12 +39,12 @@ def test_blocked_on_job_ids_round_trips_through_update_and_read():
     """update_task can set blocked_on_job_ids; get_task reads it back."""
     import json
 
-    from src.models import TaskStatus
+    from runtime.models import TaskStatus
 
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "test.db"
         db = Database(db_path)
-        from src.models import TaskRecord
+        from runtime.models import TaskRecord
         task = TaskRecord(
             id="TASK-001", team="engineering", brief="t",
             status=TaskStatus.IN_PROGRESS, parent_task_id=None,
@@ -91,7 +91,7 @@ def test_get_job_status_terminal_and_running():
 
 def test_list_tasks_blocked_on_jobs_filters_correctly():
     """Returns only ids of BLOCKED+BLOCKED_ON_JOB tasks; excludes other blocked."""
-    from src.models import TaskRecord, TaskStatus
+    from runtime.models import TaskRecord, TaskStatus
 
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "test.db"

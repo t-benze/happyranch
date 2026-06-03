@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.daemon.sessions import SessionTracker
+from runtime.daemon.sessions import SessionTracker
 
 
 def test_register_and_lookup() -> None:

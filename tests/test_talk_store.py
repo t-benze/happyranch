@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from src.infrastructure.talk_store import TalkStore, InvalidTranscript
+from runtime.infrastructure.talk_store import TalkStore, InvalidTranscript
 
 
 def test_write_and_read_transcript(tmp_path: Path):

@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.infrastructure.database import Database
-from src.infrastructure.audit_logger import AuditLogger
+from runtime.infrastructure.database import Database
+from runtime.infrastructure.audit_logger import AuditLogger
 
 
 def _make_event(*, root_id: str | None, text: str, sender_type: str = "user", event_id: str = "evt_1"):
@@ -38,7 +38,7 @@ def _make_event(*, root_id: str | None, text: str, sender_type: str = "user", ev
 
 @pytest.fixture()
 def listener(tmp_path: Path):
-    from src.daemon.feishu_listener import FeishuEventListener
+    from runtime.daemon.feishu_listener import FeishuEventListener
     db = Database(tmp_path / "happyranch.db")
     audit = AuditLogger(db)
     loop = asyncio.new_event_loop()
@@ -68,7 +68,7 @@ def test_top_level_dispatch_branch_taken(listener):
 
 
 def test_top_level_dispatch_dropped_when_disabled(tmp_path: Path):
-    from src.daemon.feishu_listener import FeishuEventListener
+    from runtime.daemon.feishu_listener import FeishuEventListener
     db = Database(tmp_path / "happyranch.db")
     audit = AuditLogger(db)
     loop = asyncio.new_event_loop()
@@ -91,7 +91,7 @@ def test_top_level_dispatch_dropped_when_disabled(tmp_path: Path):
 def test_threaded_reply_takes_reply_branch(listener):
     """root_id is set → reply branch taken; dispatch helper NOT called."""
     from datetime import timedelta
-    from src.models import TaskRecord, TaskStatus, BlockKind
+    from runtime.models import TaskRecord, TaskStatus, BlockKind
     l, db, loop = listener
     expires = datetime.now(timezone.utc) + timedelta(hours=72)
     db.mint_escalation_notification(

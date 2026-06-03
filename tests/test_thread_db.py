@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 from datetime import datetime, timezone
 
-from src.infrastructure.database import Database
-from src.models import TaskRecord
+from runtime.infrastructure.database import Database
+from runtime.models import TaskRecord
 
 
 def test_dispatched_from_thread_id_round_trips(tmp_path):
@@ -33,7 +33,7 @@ def test_dispatched_from_talk_id_round_trips(tmp_path):
     assert fetched.dispatched_from_talk_id == "TALK-1"
 
 
-from src.models import (
+from runtime.models import (
     ThreadInvocation, ThreadInvocationPurpose, ThreadInvocationStatus,
     ThreadMessage, ThreadMessageKind, ThreadParticipant, ThreadRecord,
     ThreadStatus,
@@ -312,7 +312,7 @@ def test_set_thread_status_to_open_resumes_archived_thread(tmp_path):
 
 def test_log_thread_resumed_writes_audit_row(tmp_path):
     """Audit writer records the resume event with prior archived timestamp."""
-    from src.infrastructure.audit_logger import AuditLogger
+    from runtime.infrastructure.audit_logger import AuditLogger
     db = Database(tmp_path / "happyranch.db")
     db.insert_thread(ThreadRecord(id="THR-100", subject="x"))
     AuditLogger(db).log_thread_resumed(
@@ -326,8 +326,8 @@ def test_log_thread_resumed_writes_audit_row(tmp_path):
 
 
 def test_thread_session_defaults_and_roundtrip(tmp_path):
-    from src.infrastructure.database import Database
-    from src.models import ThreadRecord
+    from runtime.infrastructure.database import Database
+    from runtime.models import ThreadRecord
 
     db = Database(tmp_path / "happyranch.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
@@ -352,8 +352,8 @@ def test_thread_session_defaults_and_roundtrip(tmp_path):
 
 
 def test_grouped_invocations_include_started_at(tmp_path):
-    from src.infrastructure.database import Database
-    from src.models import ThreadRecord, ThreadInvocationPurpose, ThreadMessageKind
+    from runtime.infrastructure.database import Database
+    from runtime.models import ThreadRecord, ThreadInvocationPurpose, ThreadMessageKind
 
     db = Database(tmp_path / "happyranch.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))

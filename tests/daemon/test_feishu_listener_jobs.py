@@ -10,9 +10,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.daemon.feishu_listener import FeishuEventListener
-from src.infrastructure.audit_logger import AuditLogger
-from src.infrastructure.database import Database
+from runtime.daemon.feishu_listener import FeishuEventListener
+from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.infrastructure.database import Database
 
 
 def _mk_listener(tmp_path: Path):

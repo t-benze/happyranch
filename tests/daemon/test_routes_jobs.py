@@ -5,7 +5,7 @@ import secrets
 
 import pytest
 
-from src.models import TaskRecord, TaskStatus
+from runtime.models import TaskRecord, TaskStatus
 
 
 def _make_active_session(org, agent: str = "engineering_head"):
@@ -314,8 +314,8 @@ def test_run_happy_path_completes(tmp_home, daemon_state):
     event loop to keep running between HTTP calls to drain the background task.
     """
     from fastapi.testclient import TestClient
-    from src.daemon.app import create_app
-    from src.daemon import paths as paths_mod
+    from runtime.daemon.app import create_app
+    from runtime.daemon import paths as paths_mod
 
     org = daemon_state.orgs["alpha"]
     app = create_app(daemon_state)
@@ -356,8 +356,8 @@ def test_run_consumes_open_feishu_notification(tmp_home, daemon_state):
     script_request notification as cli-fallback. Mirrors the reject path."""
     from datetime import datetime, timedelta, timezone
     from fastapi.testclient import TestClient
-    from src.daemon.app import create_app
-    from src.daemon import paths as paths_mod
+    from runtime.daemon.app import create_app
+    from runtime.daemon import paths as paths_mod
 
     org = daemon_state.orgs["alpha"]
     app = create_app(daemon_state)
@@ -437,8 +437,8 @@ def test_run_cwd_override_missing(client_with_runtime):
 def test_output_after_run(tmp_home, daemon_state):
     """Run a script, wait for terminal, fetch full output."""
     from fastapi.testclient import TestClient
-    from src.daemon.app import create_app
-    from src.daemon import paths as paths_mod
+    from runtime.daemon.app import create_app
+    from runtime.daemon import paths as paths_mod
 
     org = daemon_state.orgs["alpha"]
     app = create_app(daemon_state)
@@ -499,8 +499,8 @@ def test_events_terminal_after_completed(tmp_home, daemon_state):
     """Connecting to /events on an already-terminal SR sends one terminal
     event and closes."""
     from fastapi.testclient import TestClient
-    from src.daemon.app import create_app
-    from src.daemon import paths as paths_mod
+    from runtime.daemon.app import create_app
+    from runtime.daemon import paths as paths_mod
 
     org = daemon_state.orgs["alpha"]
     app = create_app(daemon_state)
@@ -603,8 +603,8 @@ def test_events_stream_terminates_after_db_only_terminal_transition(
     import time as _t
 
     from fastapi.testclient import TestClient
-    from src.daemon.app import create_app
-    from src.daemon import paths as paths_mod
+    from runtime.daemon.app import create_app
+    from runtime.daemon import paths as paths_mod
 
     org = daemon_state.orgs["alpha"]
     app = create_app(daemon_state)
@@ -673,8 +673,8 @@ def test_submit_defaults_to_review_required_false_persistent_false(
 ):
     """Default behavior: both flags absent → auto-run, bounded (300s default)."""
     from fastapi.testclient import TestClient
-    from src.daemon.app import create_app
-    from src.daemon import paths as paths_mod
+    from runtime.daemon.app import create_app
+    from runtime.daemon import paths as paths_mod
 
     org = daemon_state.orgs["alpha"]
     app = create_app(daemon_state)
@@ -736,8 +736,8 @@ def test_submit_with_persistent_true_runs_unbounded(tmp_home, daemon_state):
     without a timeout cap.
     """
     from fastapi.testclient import TestClient
-    from src.daemon.app import create_app
-    from src.daemon import paths as paths_mod
+    from runtime.daemon.app import create_app
+    from runtime.daemon import paths as paths_mod
 
     org = daemon_state.orgs["alpha"]
     app = create_app(daemon_state)
@@ -805,7 +805,7 @@ def client_no_bearer(tmp_home, daemon_state):
     (session-binding instead of bearer).
     """
     from fastapi.testclient import TestClient
-    from src.daemon.app import create_app
+    from runtime.daemon.app import create_app
     app = create_app(daemon_state)
     return TestClient(app)
 
@@ -885,8 +885,8 @@ def test_get_job_bearer_still_works(client_with_runtime):
 def test_tail_returns_last_n_lines(tmp_home, daemon_state):
     """Tail returns the last N lines from the stdout file."""
     from fastapi.testclient import TestClient
-    from src.daemon.app import create_app
-    from src.daemon import paths as paths_mod
+    from runtime.daemon.app import create_app
+    from runtime.daemon import paths as paths_mod
 
     org = daemon_state.orgs["alpha"]
     app = create_app(daemon_state)
@@ -982,8 +982,8 @@ def test_stop_unknown_job(client_with_runtime):
 def test_stop_kills_running_job(tmp_home, daemon_state):
     """SIGTERM a running job; the row transitions to failed with reason=founder_stop."""
     from fastapi.testclient import TestClient
-    from src.daemon.app import create_app
-    from src.daemon import paths as paths_mod
+    from runtime.daemon.app import create_app
+    from runtime.daemon import paths as paths_mod
 
     org = daemon_state.orgs["alpha"]
     app = create_app(daemon_state)
@@ -1046,8 +1046,8 @@ def test_wait_returns_when_terminal_already(client_with_runtime):
 def test_wait_returns_when_runner_finishes(tmp_home, daemon_state):
     """Spawn a quick-exit job and verify /wait unblocks on the terminal event."""
     from fastapi.testclient import TestClient
-    from src.daemon.app import create_app
-    from src.daemon import paths as paths_mod
+    from runtime.daemon.app import create_app
+    from runtime.daemon import paths as paths_mod
 
     org = daemon_state.orgs["alpha"]
     app = create_app(daemon_state)
@@ -1080,8 +1080,8 @@ def test_wait_returns_when_runner_finishes(tmp_home, daemon_state):
 def test_wait_returns_timeout_status(tmp_home, daemon_state):
     """A still-running job past the wait deadline → timed_out=True, status=running."""
     from fastapi.testclient import TestClient
-    from src.daemon.app import create_app
-    from src.daemon import paths as paths_mod
+    from runtime.daemon.app import create_app
+    from runtime.daemon import paths as paths_mod
 
     org = daemon_state.orgs["alpha"]
     app = create_app(daemon_state)
@@ -1157,7 +1157,7 @@ def jobs_mixed_fixture(client_with_runtime):
     keyed by ``(review_required: bool, persistent: bool)`` for assertion
     convenience.
     """
-    from src.models import JobInterpreter, JobRecord, JobStatus
+    from runtime.models import JobInterpreter, JobRecord, JobStatus
     client, org = client_with_runtime
     ids_by_cell: dict[tuple[bool, bool], str] = {}
     for review_required in (True, False):
@@ -1257,8 +1257,8 @@ def test_auto_run_job_does_not_send_feishu_notification(
     task can drain inside the lifespan, mirroring other auto-run tests.
     """
     from fastapi.testclient import TestClient
-    from src.daemon.app import create_app
-    from src.daemon import paths as paths_mod
+    from runtime.daemon.app import create_app
+    from runtime.daemon import paths as paths_mod
 
     org = daemon_state.orgs["alpha"]
     app = create_app(daemon_state)

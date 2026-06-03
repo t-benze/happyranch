@@ -8,7 +8,7 @@ from textwrap import dedent
 import httpx
 import pytest
 
-from src.infrastructure.database import Database
+from runtime.infrastructure.database import Database
 from tests.integration.conftest import seed_workspace
 
 
@@ -16,7 +16,7 @@ pytestmark = pytest.mark.integration
 
 
 def _auth_headers() -> dict:
-    from src.daemon import paths
+    from runtime.daemon import paths
 
     return {"Authorization": f"Bearer {paths.read_token()}"}
 

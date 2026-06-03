@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from src.config import Settings
-from src.daemon.runner import enqueue_task
-from src.daemon.state import DaemonState
-from src.runtime import RuntimeDir
+from runtime.config import Settings
+from runtime.daemon.runner import enqueue_task
+from runtime.daemon.state import DaemonState
+from runtime.runtime import RuntimeDir
 
 
 def _seed_org(org_root: Path) -> None:

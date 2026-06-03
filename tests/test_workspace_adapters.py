@@ -3,13 +3,13 @@ from pathlib import Path
 
 import pytest
 
-from src.orchestrator._paths import OrgPaths
-from src.orchestrator.workspace_adapters import (
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.workspace_adapters import (
     ClaudeWorkspaceAdapter,
     CodexWorkspaceAdapter,
     OpencodeWorkspaceAdapter,
 )
-from src.runtime import RuntimeDir
+from runtime.runtime import RuntimeDir
 
 
 @pytest.fixture
@@ -102,7 +102,7 @@ def test_copy_skills_substitutes_org_slug(tmp_path: Path, monkeypatch) -> None:
     workspace ends up with its own org's slug baked into the example `happyranch`
     invocations so agent callbacks always carry `--org`.
     """
-    from src.config import Settings
+    from runtime.config import Settings
 
     proto = tmp_path / "protocol" / "skills" / "start-task"
     proto.mkdir(parents=True)
@@ -110,7 +110,7 @@ def test_copy_skills_substitutes_org_slug(tmp_path: Path, monkeypatch) -> None:
         "Run: happyranch report-completion --org {ORG_SLUG} --task-id ...\n"
     )
     monkeypatch.setattr(
-        "src.orchestrator.workspace_adapters._SKILLS_SRC",
+        "runtime.orchestrator.workspace_adapters._SKILLS_SRC",
         tmp_path / "protocol" / "skills",
     )
 
@@ -200,7 +200,7 @@ def test_opencode_json_includes_agent_specific_allow_rules(
     bash allow entries. Source of truth is the same frontmatter Claude reads;
     only the rendering differs (Bash(prefix:*) → "prefix *": "allow")."""
     from datetime import datetime, timezone
-    from src.orchestrator.agent_def import AgentDef, render_agent_text
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
     eh = AgentDef(
         name="engineering_head",
@@ -287,9 +287,9 @@ def test_codex_agents_md_does_not_inline_completion_contract(test_settings, tmp_
 
 def test_claude_md_includes_shared_artifacts_section(tmp_path: Path) -> None:
     # Adjust adapter construction to match the existing test fixtures.
-    from src.config import Settings
-    from src.orchestrator._paths import OrgPaths
-    from src.orchestrator.workspace_adapters import ClaudeWorkspaceAdapter
+    from runtime.config import Settings
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.workspace_adapters import ClaudeWorkspaceAdapter
 
     paths = OrgPaths(root=tmp_path)
     adapter = ClaudeWorkspaceAdapter(Settings(), paths, slug="demo")
@@ -303,9 +303,9 @@ def test_claude_md_includes_shared_artifacts_section(tmp_path: Path) -> None:
 
 
 def test_codex_agents_md_includes_shared_artifacts_section(tmp_path: Path) -> None:
-    from src.config import Settings
-    from src.orchestrator._paths import OrgPaths
-    from src.orchestrator.workspace_adapters import CodexWorkspaceAdapter
+    from runtime.config import Settings
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.workspace_adapters import CodexWorkspaceAdapter
 
     paths = OrgPaths(root=tmp_path)
     adapter = CodexWorkspaceAdapter(Settings(), paths, slug="demo")
@@ -319,9 +319,9 @@ def test_codex_agents_md_includes_shared_artifacts_section(tmp_path: Path) -> No
 
 
 def test_opencode_agents_md_includes_shared_artifacts_section(tmp_path: Path) -> None:
-    from src.config import Settings
-    from src.orchestrator._paths import OrgPaths
-    from src.orchestrator.workspace_adapters import OpencodeWorkspaceAdapter
+    from runtime.config import Settings
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.workspace_adapters import OpencodeWorkspaceAdapter
 
     paths = OrgPaths(root=tmp_path)
     adapter = OpencodeWorkspaceAdapter(Settings(), paths, slug="demo")
@@ -336,9 +336,9 @@ def test_opencode_agents_md_includes_shared_artifacts_section(tmp_path: Path) ->
 
 def test_claude_md_warns_about_non_stop_commands(tmp_path: Path) -> None:
     """Bootstrap must steer agents off synchronous bash for non-returning commands."""
-    from src.config import Settings
-    from src.orchestrator._paths import OrgPaths
-    from src.orchestrator.workspace_adapters import ClaudeWorkspaceAdapter
+    from runtime.config import Settings
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.workspace_adapters import ClaudeWorkspaceAdapter
 
     paths = OrgPaths(root=tmp_path)
     adapter = ClaudeWorkspaceAdapter(Settings(), paths, slug="demo")
@@ -357,9 +357,9 @@ def test_claude_md_warns_about_non_stop_commands(tmp_path: Path) -> None:
 
 
 def test_codex_agents_md_warns_about_non_stop_commands(tmp_path: Path) -> None:
-    from src.config import Settings
-    from src.orchestrator._paths import OrgPaths
-    from src.orchestrator.workspace_adapters import CodexWorkspaceAdapter
+    from runtime.config import Settings
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.workspace_adapters import CodexWorkspaceAdapter
 
     paths = OrgPaths(root=tmp_path)
     adapter = CodexWorkspaceAdapter(Settings(), paths, slug="demo")
@@ -371,9 +371,9 @@ def test_codex_agents_md_warns_about_non_stop_commands(tmp_path: Path) -> None:
 
 
 def test_opencode_agents_md_warns_about_non_stop_commands(tmp_path: Path) -> None:
-    from src.config import Settings
-    from src.orchestrator._paths import OrgPaths
-    from src.orchestrator.workspace_adapters import OpencodeWorkspaceAdapter
+    from runtime.config import Settings
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.workspace_adapters import OpencodeWorkspaceAdapter
 
     paths = OrgPaths(root=tmp_path)
     adapter = OpencodeWorkspaceAdapter(Settings(), paths, slug="demo")
@@ -392,9 +392,9 @@ def test_claude_md_includes_thread_talk_dispatch_doctrine(tmp_path: Path) -> Non
     section is the *why* and the recommended pattern, surfaced before the
     agent encounters the rejection.
     """
-    from src.config import Settings
-    from src.orchestrator._paths import OrgPaths
-    from src.orchestrator.workspace_adapters import ClaudeWorkspaceAdapter
+    from runtime.config import Settings
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.workspace_adapters import ClaudeWorkspaceAdapter
 
     paths = OrgPaths(root=tmp_path)
     adapter = ClaudeWorkspaceAdapter(Settings(), paths, slug="demo")
@@ -410,9 +410,9 @@ def test_claude_md_includes_thread_talk_dispatch_doctrine(tmp_path: Path) -> Non
 
 
 def test_codex_agents_md_includes_thread_talk_dispatch_doctrine(tmp_path: Path) -> None:
-    from src.config import Settings
-    from src.orchestrator._paths import OrgPaths
-    from src.orchestrator.workspace_adapters import CodexWorkspaceAdapter
+    from runtime.config import Settings
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.workspace_adapters import CodexWorkspaceAdapter
 
     paths = OrgPaths(root=tmp_path)
     adapter = CodexWorkspaceAdapter(Settings(), paths, slug="demo")
@@ -425,9 +425,9 @@ def test_codex_agents_md_includes_thread_talk_dispatch_doctrine(tmp_path: Path) 
 
 
 def test_opencode_agents_md_includes_thread_talk_dispatch_doctrine(tmp_path: Path) -> None:
-    from src.config import Settings
-    from src.orchestrator._paths import OrgPaths
-    from src.orchestrator.workspace_adapters import OpencodeWorkspaceAdapter
+    from runtime.config import Settings
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.workspace_adapters import OpencodeWorkspaceAdapter
 
     paths = OrgPaths(root=tmp_path)
     adapter = OpencodeWorkspaceAdapter(Settings(), paths, slug="demo")
@@ -463,9 +463,9 @@ def test_claude_md_includes_task_completion_format_section(tmp_path: Path) -> No
     in agent ``.md`` files with a single system-injected section. Agents no
     longer author (or leave dangling) this content; the system carries it
     uniformly across every role."""
-    from src.config import Settings
-    from src.orchestrator._paths import OrgPaths
-    from src.orchestrator.workspace_adapters import ClaudeWorkspaceAdapter
+    from runtime.config import Settings
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.workspace_adapters import ClaudeWorkspaceAdapter
 
     paths = OrgPaths(root=tmp_path)
     adapter = ClaudeWorkspaceAdapter(Settings(), paths, slug="demo")
@@ -476,9 +476,9 @@ def test_claude_md_includes_task_completion_format_section(tmp_path: Path) -> No
 
 
 def test_codex_agents_md_includes_task_completion_format_section(tmp_path: Path) -> None:
-    from src.config import Settings
-    from src.orchestrator._paths import OrgPaths
-    from src.orchestrator.workspace_adapters import CodexWorkspaceAdapter
+    from runtime.config import Settings
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.workspace_adapters import CodexWorkspaceAdapter
 
     paths = OrgPaths(root=tmp_path)
     adapter = CodexWorkspaceAdapter(Settings(), paths, slug="demo")
@@ -489,9 +489,9 @@ def test_codex_agents_md_includes_task_completion_format_section(tmp_path: Path)
 
 
 def test_opencode_agents_md_includes_task_completion_format_section(tmp_path: Path) -> None:
-    from src.config import Settings
-    from src.orchestrator._paths import OrgPaths
-    from src.orchestrator.workspace_adapters import OpencodeWorkspaceAdapter
+    from runtime.config import Settings
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.workspace_adapters import OpencodeWorkspaceAdapter
 
     paths = OrgPaths(root=tmp_path)
     adapter = OpencodeWorkspaceAdapter(Settings(), paths, slug="demo")
@@ -510,9 +510,9 @@ def test_reserved_header_in_claude_agent_body_raises(tmp_path: Path) -> None:
     workspace setup raises and tells the founder exactly which header to
     rename.
     """
-    from src.config import Settings
-    from src.orchestrator._paths import OrgPaths
-    from src.orchestrator.workspace_adapters import (
+    from runtime.config import Settings
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.workspace_adapters import (
         ClaudeWorkspaceAdapter,
         ReservedHeaderInAgentBody,
     )
@@ -534,9 +534,9 @@ def test_reserved_header_in_claude_agent_body_raises(tmp_path: Path) -> None:
 
 
 def test_reserved_header_in_codex_agent_body_raises(tmp_path: Path) -> None:
-    from src.config import Settings
-    from src.orchestrator._paths import OrgPaths
-    from src.orchestrator.workspace_adapters import (
+    from runtime.config import Settings
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.workspace_adapters import (
         CodexWorkspaceAdapter,
         ReservedHeaderInAgentBody,
     )
@@ -555,9 +555,9 @@ def test_reserved_header_in_codex_agent_body_raises(tmp_path: Path) -> None:
 
 
 def test_reserved_header_in_opencode_agent_body_raises(tmp_path: Path) -> None:
-    from src.config import Settings
-    from src.orchestrator._paths import OrgPaths
-    from src.orchestrator.workspace_adapters import (
+    from runtime.config import Settings
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.workspace_adapters import (
         OpencodeWorkspaceAdapter,
         ReservedHeaderInAgentBody,
     )
@@ -580,9 +580,9 @@ def test_reserved_header_validator_lists_multiple_offenders(tmp_path: Path) -> N
     must list ALL of them in one message so the founder fixes them in one
     pass instead of seeing one error per session retry.
     """
-    from src.config import Settings
-    from src.orchestrator._paths import OrgPaths
-    from src.orchestrator.workspace_adapters import (
+    from runtime.config import Settings
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.workspace_adapters import (
         ClaudeWorkspaceAdapter,
         ReservedHeaderInAgentBody,
     )
@@ -609,9 +609,9 @@ def test_reserved_header_validator_ignores_lookalikes(tmp_path: Path) -> None:
     flag near-misses like ``## Editorial Workflow`` (a domain-specific name
     that legitimately lives in agent bodies — see content_manager.md).
     """
-    from src.config import Settings
-    from src.orchestrator._paths import OrgPaths
-    from src.orchestrator.workspace_adapters import ClaudeWorkspaceAdapter
+    from runtime.config import Settings
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.workspace_adapters import ClaudeWorkspaceAdapter
 
     paths = OrgPaths(root=tmp_path)
     adapter = ClaudeWorkspaceAdapter(Settings(), paths, slug="demo")
@@ -634,7 +634,7 @@ def test_sample_org_agent_files_have_no_reserved_header_collisions() -> None:
     contributor's edit) reintroduces the Finding-B pattern.
     """
     import re
-    from src.orchestrator.workspace_adapters import (
+    from runtime.orchestrator.workspace_adapters import (
         _RESERVED_AGENT_BODY_HEADERS,
     )
 
@@ -668,9 +668,9 @@ def test_task_completion_format_does_not_inline_json_schema(tmp_path: Path) -> N
     over time (worker schema, manager `decision` schema, the
     blocked-path variant). The skill is the single source of truth.
     """
-    from src.config import Settings
-    from src.orchestrator._paths import OrgPaths
-    from src.orchestrator.workspace_adapters import ClaudeWorkspaceAdapter
+    from runtime.config import Settings
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.workspace_adapters import ClaudeWorkspaceAdapter
 
     paths = OrgPaths(root=tmp_path)
     adapter = ClaudeWorkspaceAdapter(Settings(), paths, slug="demo")

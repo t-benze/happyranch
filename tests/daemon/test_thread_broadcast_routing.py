@@ -69,7 +69,7 @@ def test_agent_reply_excludes_self_from_broadcast(
     """
     thread_id, client, org_state, auth_headers = three_agent_thread
 
-    from src.models import ThreadInvocationStatus
+    from runtime.models import ThreadInvocationStatus
     all_invs = org_state.db.list_thread_invocations(thread_id)
 
     # Consume bravo + charlie's existing invocations so we can cleanly detect
@@ -182,7 +182,7 @@ def test_founder_send_broadcasts_to_all_participants(tmp_home, app, org_state, a
     thread_id = r.json()["thread_id"]
 
     # Consume all pending invocations so no pending load.
-    from src.models import ThreadInvocationStatus
+    from runtime.models import ThreadInvocationStatus
     for inv in org_state.db.list_thread_invocations(thread_id):
         if inv.status == ThreadInvocationStatus.PENDING:
             org_state.db.consume_invocation(inv.invocation_token)

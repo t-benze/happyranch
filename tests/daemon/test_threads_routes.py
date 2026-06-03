@@ -236,7 +236,7 @@ def test_decline_records_decline_and_consumes_token(tmp_home, app, org_state, au
     msgs = org_state.db.list_thread_messages(tid)
     assert not any(m.kind.value == "decline" for m in msgs)
     # Invocation is marked declined; token is consumed.
-    from src.models import ThreadInvocationStatus
+    from runtime.models import ThreadInvocationStatus
     inv = org_state.db.get_invocation_any_status(token)
     assert inv.status is ThreadInvocationStatus.DECLINED
     assert inv.decline_reason == "nothing to add"
@@ -572,7 +572,7 @@ def test_tail_sse_replays_existing_messages(tmp_home, app, org_state, auth_heade
     """
     import asyncio
     import json as _json
-    from src.daemon.routes.threads import _msg_to_dict
+    from runtime.daemon.routes.threads import _msg_to_dict
 
     client = TestClient(app)
     _seed_agent(org_state, "dev_agent")
@@ -612,7 +612,7 @@ def _open_thread_with_followup_token(client, org_state, auth_headers, *, recipie
 
     Returns (thread_id, followup_token, seq_of_compose_msg).
     """
-    from src.models import ThreadInvocationPurpose
+    from runtime.models import ThreadInvocationPurpose
     _seed_agent(org_state, recipient)
     r = client.post(
         "/api/v1/orgs/alpha/threads",

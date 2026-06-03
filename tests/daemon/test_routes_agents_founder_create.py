@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from src.orchestrator._paths import OrgPaths
-from src.orchestrator import prompt_loader
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator import prompt_loader
 
 
 def _post(client, body):

@@ -8,9 +8,9 @@ from pathlib import Path
 import httpx
 import pytest
 
-from src.daemon import paths as paths_mod
-from src.daemon import runtimes as runtimes_mod
-from src.runtime import RuntimeDir
+from runtime.daemon import paths as paths_mod
+from runtime.daemon import runtimes as runtimes_mod
+from runtime.runtime import RuntimeDir
 
 
 def pytest_configure(config):
@@ -25,7 +25,7 @@ def pytest_configure(config):
     To silence: stop the production daemon before running integration tests:
         scripts/daemon.sh stop
     """
-    from src.daemon import paths as _paths
+    from runtime.daemon import paths as _paths
     pid_file = _paths.pid_file()
     if not pid_file.exists():
         return
@@ -205,7 +205,7 @@ def live_daemon(
     """Start the daemon via scripts/daemon.sh and stop it after the test."""
     monkeypatch.setenv("HAPPYRANCH_CLAUDE_CLI_PATH", str(fake_claude))
     monkeypatch.setenv("HAPPYRANCH_CODEX_CLI_PATH", str(fake_codex))
-    from src.daemon import runtimes as runtimes_mod
+    from runtime.daemon import runtimes as runtimes_mod
 
     runtimes_mod.register(runtime_container)
     script = Path(__file__).resolve().parent.parent.parent / "scripts" / "daemon.sh"

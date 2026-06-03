@@ -78,7 +78,7 @@ def test_failure_notify_then_revisit_via_reply(
     base_url, fake_state = fake_feishu
 
     # Point the lark SDK at our fake Feishu server
-    import src.daemon.org_state as org_state_mod
+    import runtime.daemon.org_state as org_state_mod
     monkeypatch.setitem(org_state_mod._REGION_TO_DOMAIN, "feishu", base_url)
 
     # Build the org with notify_on_failure=true and allow_dispatch=false
@@ -96,12 +96,12 @@ def test_failure_notify_then_revisit_via_reply(
         "  notify_on_failure: true\n"
     )
 
-    from src.daemon.org_state import OrgState
+    from runtime.daemon.org_state import OrgState
     org = OrgState.load(slug="test", root=root, settings=test_settings)
     assert org.notifier is not None
 
     # Insert a FAILED task — bypassing run_step for this wiring test
-    from src.models import TaskRecord, TaskStatus
+    from runtime.models import TaskRecord, TaskStatus
     from datetime import datetime, timezone
     org.db.insert_task(TaskRecord(
         id="TASK-1", team="engineering",
@@ -158,7 +158,7 @@ def test_failure_notify_then_revisit_via_reply(
     # === Now simulate the inbound REVISIT reply ===
     # Monkeypatch FeishuEventListener.start to a no-op so the factory doesn't
     # open a real WebSocket connection.
-    from src.daemon.feishu_listener import FeishuEventListener
+    from runtime.daemon.feishu_listener import FeishuEventListener
     monkeypatch.setattr(FeishuEventListener, "start", lambda self: None)
 
     # Build a minimal DaemonState stand-in with a no-op enqueue.
@@ -175,7 +175,7 @@ def test_failure_notify_then_revisit_via_reply(
     state = _State()
     loop = asyncio.new_event_loop()
 
-    from src.daemon.feishu_listener import maybe_start_feishu_listener_for_org
+    from runtime.daemon.feishu_listener import maybe_start_feishu_listener_for_org
     maybe_start_feishu_listener_for_org(org, state, loop)
     assert org.feishu_listener is not None
 

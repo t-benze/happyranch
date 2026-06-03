@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from src.infrastructure.feishu.reply_parser import (
+from runtime.infrastructure.feishu.reply_parser import (
     ParseResult,
     extract_text_from_content,
     parse_reply,

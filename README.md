@@ -451,7 +451,7 @@ chmod 600 <runtime>/orgs/<slug>/org/config.yaml
 **Verification** — restart the daemon. On startup, look for:
 
 ```
-INFO src.daemon.feishu_listener: started Feishu event listener for org=<slug>
+INFO runtime.daemon.feishu_listener: started Feishu event listener for org=<slug>
 ```
 
 Trigger a test escalation (e.g., via `happyranch revisit ...` to a stuck task) and confirm the bot posts in your chat. Reply with `APPROVE\nlooks fine` and confirm the task transitions to `pending` (or `REJECT\nnot now` to fail it).

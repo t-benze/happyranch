@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.cli import build_parser, cmd_web
+from cli.main import build_parser, cmd_web
 
 
 def test_web_subcommand_parses():
@@ -27,7 +27,7 @@ def test_cmd_web_prints_url(capsys):
     fake_client.base_url = "http://127.0.0.1:12345"
     fake_client.get.return_value.status_code = 200
 
-    with patch("src.cli.OpcClient.from_env", return_value=fake_client), \
+    with patch("cli.main.OpcClient.from_env", return_value=fake_client), \
          patch("webbrowser.open") as wb:
         args = MagicMock()
         args.no_open = False
@@ -41,7 +41,7 @@ def test_cmd_web_no_open(capsys):
     fake_client.base_url = "http://127.0.0.1:12345"
     fake_client.get.return_value.status_code = 200
 
-    with patch("src.cli.OpcClient.from_env", return_value=fake_client), \
+    with patch("cli.main.OpcClient.from_env", return_value=fake_client), \
          patch("webbrowser.open") as wb:
         args = MagicMock()
         args.no_open = True
@@ -55,7 +55,7 @@ def test_cmd_web_daemon_unreachable_exits(capsys):
     fake_client.base_url = "http://127.0.0.1:12345"
     fake_client.get.side_effect = ConnectionError("refused")
 
-    with patch("src.cli.OpcClient.from_env", return_value=fake_client):
+    with patch("cli.main.OpcClient.from_env", return_value=fake_client):
         args = MagicMock()
         args.no_open = True
         with pytest.raises(SystemExit) as exc:
@@ -72,7 +72,7 @@ def test_cmd_web_health_failure_exits(capsys):
     fake_client.get.return_value.text = "boom"
     fake_client.get.return_value.json.side_effect = ValueError
 
-    with patch("src.cli.OpcClient.from_env", return_value=fake_client):
+    with patch("cli.main.OpcClient.from_env", return_value=fake_client):
         args = MagicMock()
         args.no_open = True
         with pytest.raises(SystemExit) as exc:

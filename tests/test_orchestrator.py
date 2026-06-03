@@ -3,14 +3,14 @@ from unittest.mock import patch
 
 import pytest
 
-from src.daemon.agent_config import set_executor, write_default_agent_config
-from src.infrastructure.database import Database
-from src.models import (
+from runtime.daemon.agent_config import set_executor, write_default_agent_config
+from runtime.infrastructure.database import Database
+from runtime.models import (
     TaskStatus,
 )
-from src.orchestrator.executors import ExecutorResult
-from src.orchestrator.orchestrator import Orchestrator
-from src.orchestrator.teams import TeamsRegistry
+from runtime.orchestrator.executors import ExecutorResult
+from runtime.orchestrator.orchestrator import Orchestrator
+from runtime.orchestrator.teams import TeamsRegistry
 
 
 @pytest.fixture
@@ -65,7 +65,7 @@ def _setup_pi_workspace(runtime, agent: str) -> None:
 
 def test_orchestrator_no_longer_has_run_task():
     """run_task was removed in favor of the async run_step queue model."""
-    from src.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.orchestrator import Orchestrator
     assert not hasattr(Orchestrator, "run_task")
 
 
@@ -96,7 +96,7 @@ def test_task_metadata_in_agent_prompt(orchestrator, test_runtime, monkeypatch):
     # Fix the session_id so the prompt is deterministic.
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
 
-    with patch("src.orchestrator.orchestrator.ClaudeExecutor") as MockExecutor:
+    with patch("runtime.orchestrator.orchestrator.ClaudeExecutor") as MockExecutor:
         mock_executor = MockExecutor.return_value
         mock_executor.run.return_value = ExecutorResult(
             success=True,
@@ -131,7 +131,7 @@ def test_worker_prompt_omits_role_guidance_block(
     task_id = orchestrator.create_task("Implement Alipay webhook")
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-dev")
 
-    with patch("src.orchestrator.orchestrator.ClaudeExecutor") as MockExecutor:
+    with patch("runtime.orchestrator.orchestrator.ClaudeExecutor") as MockExecutor:
         mock_executor = MockExecutor.return_value
         mock_executor.run.return_value = ExecutorResult(
             success=True,
@@ -158,7 +158,7 @@ def test_codex_agent_prompt_uses_provider_specific_wording(
     task_id = orchestrator.create_task("Explore payments")
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
 
-    with patch("src.orchestrator.orchestrator.CodexExecutor") as MockExecutor:
+    with patch("runtime.orchestrator.orchestrator.CodexExecutor") as MockExecutor:
         mock_executor = MockExecutor.return_value
         mock_executor.run.return_value = ExecutorResult(
             success=True,
@@ -183,7 +183,7 @@ def test_run_agent_registers_active_session_when_tracker_attached(
     BEFORE the subprocess starts. Without this, the agent's
     `happyranch report-completion` callback hits 409 unknown_session and the task
     silently fails with note='agent session failed'."""
-    from src.daemon.sessions import SessionTracker
+    from runtime.daemon.sessions import SessionTracker
 
     _setup_workspaces(test_runtime)
     tracker = SessionTracker()
@@ -192,7 +192,7 @@ def test_run_agent_registers_active_session_when_tracker_attached(
     task_id = orchestrator.create_task("Explore payments")
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
 
-    with patch("src.orchestrator.orchestrator.ClaudeExecutor") as MockExecutor:
+    with patch("runtime.orchestrator.orchestrator.ClaudeExecutor") as MockExecutor:
         mock_executor = MockExecutor.return_value
         mock_executor.run.return_value = ExecutorResult(
             success=True, duration_seconds=1, session_id="sess-eh",
@@ -215,7 +215,7 @@ def test_run_agent_skips_session_registration_when_tracker_not_attached(
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
     captured: list[tuple[str, str, str]] = []
 
-    with patch("src.orchestrator.orchestrator.ClaudeExecutor") as MockExecutor:
+    with patch("runtime.orchestrator.orchestrator.ClaudeExecutor") as MockExecutor:
         mock_executor = MockExecutor.return_value
         mock_executor.run.return_value = ExecutorResult(
             success=True, duration_seconds=1, session_id="sess-eh",
@@ -232,7 +232,7 @@ def test_run_agent_fails_fast_when_workspace_missing_skill(orchestrator, test_ru
     """Workspace bootstrap is an explicit, operator-driven step. If the
     start-task skill file is missing, the orchestrator should raise an
     actionable error instead of silently marking the task rejected."""
-    from src.orchestrator.orchestrator import WorkspaceNotInitialized
+    from runtime.orchestrator.orchestrator import WorkspaceNotInitialized
 
     task_id = orchestrator.create_task("ping")
     eh_workspace = test_runtime.workspaces_dir / "engineering_head"
@@ -253,7 +253,7 @@ def test_run_agent_accepts_codex_readiness_marker(orchestrator, test_runtime, mo
     task_id = orchestrator.create_task("ping")
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
 
-    with patch("src.orchestrator.orchestrator.CodexExecutor") as MockExecutor:
+    with patch("runtime.orchestrator.orchestrator.CodexExecutor") as MockExecutor:
         mock_executor = MockExecutor.return_value
         mock_executor.run.return_value = ExecutorResult(
             success=True,
@@ -279,7 +279,7 @@ def test_run_agent_routes_opencode_workspace_to_opencode_executor(
     task_id = orchestrator.create_task("ping")
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
 
-    with patch("src.orchestrator.orchestrator.OpencodeExecutor") as MockExecutor:
+    with patch("runtime.orchestrator.orchestrator.OpencodeExecutor") as MockExecutor:
         mock_executor = MockExecutor.return_value
         mock_executor.run.return_value = ExecutorResult(
             success=True,
@@ -306,7 +306,7 @@ def test_run_agent_routes_pi_workspace_to_pi_executor(
     task_id = orchestrator.create_task("ping")
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
 
-    with patch("src.orchestrator.orchestrator.PiExecutor") as MockExecutor:
+    with patch("runtime.orchestrator.orchestrator.PiExecutor") as MockExecutor:
         mock_executor = MockExecutor.return_value
         mock_executor.run.return_value = ExecutorResult(
             success=True,
@@ -336,7 +336,7 @@ def test_run_agent_defaults_missing_executor_to_claude(orchestrator, test_runtim
     task_id = orchestrator.create_task("ping")
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
 
-    with patch("src.orchestrator.orchestrator.ClaudeExecutor") as MockExecutor:
+    with patch("runtime.orchestrator.orchestrator.ClaudeExecutor") as MockExecutor:
         mock_executor = MockExecutor.return_value
         mock_executor.run.return_value = ExecutorResult(
             success=True,
@@ -440,7 +440,7 @@ def test_read_completion_from_db_hydrates_decision(orchestrator):
     and must be rehydrated into report.decision as a NextStep so the parser
     consumes it directly — no prose inference."""
     import json as _json
-    from src.models import NextStep
+    from runtime.models import NextStep
 
     orchestrator.create_task("Clean up stale PR/issue")
     orchestrator._db.insert_task_result(
@@ -474,7 +474,7 @@ def test_parse_next_step_prefers_decision_field_over_prose(orchestrator):
     `output_summary` is no longer an escalation trigger if the structured
     decision is present.
     """
-    from src.models import CompletionReport, NextStep
+    from runtime.models import CompletionReport, NextStep
 
     # Prose output_summary + structured decision — the TASK-071 shape.
     report = CompletionReport(
@@ -500,7 +500,7 @@ def test_parse_next_step_legacy_path_still_works_for_json_in_output_summary(
     contract: JSON decision embedded directly in output_summary, no `decision`
     field. Parser must continue to honor that during the transition."""
     import json as _json
-    from src.models import CompletionReport
+    from runtime.models import CompletionReport
 
     report = CompletionReport(
         task_id="TASK-050",
@@ -525,7 +525,7 @@ def test_parse_next_step_prose_without_decision_still_escalates(orchestrator):
     must remain: if EH sends prose AND omits `decision`, escalate. The new
     escalation message points at the missing `decision` field so the fix is
     obvious from the audit log."""
-    from src.models import CompletionReport
+    from runtime.models import CompletionReport
 
     report = CompletionReport(
         task_id="TASK-099",
@@ -563,11 +563,11 @@ def test_read_completion_from_db_tolerates_garbage_decision_json(orchestrator):
 def test_orchestrator_requires_teams() -> None:
     import pytest
     from pathlib import Path
-    from src.config import Settings
-    from src.infrastructure.database import Database
-    from src.orchestrator._paths import OrgPaths
-    from src.orchestrator.orchestrator import Orchestrator
-    from src.runtime import RuntimeDir
+    from runtime.config import Settings
+    from runtime.infrastructure.database import Database
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.runtime import RuntimeDir
     import tempfile
 
     with tempfile.TemporaryDirectory() as td:
@@ -580,10 +580,10 @@ def test_orchestrator_requires_teams() -> None:
 
 
 def test_orchestrator_notifier_default_none(tmp_path, test_settings):
-    from src.infrastructure.database import Database
-    from src.orchestrator._paths import OrgPaths
-    from src.orchestrator.orchestrator import Orchestrator
-    from src.orchestrator.teams import TeamsRegistry
+    from runtime.infrastructure.database import Database
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.teams import TeamsRegistry
 
     root = tmp_path / "orgs" / "x"
     root.mkdir(parents=True)
@@ -597,10 +597,10 @@ def test_orchestrator_notifier_default_none(tmp_path, test_settings):
 
 
 def test_orchestrator_notify_escalated_no_op_when_unset(tmp_path, test_settings):
-    from src.infrastructure.database import Database
-    from src.orchestrator._paths import OrgPaths
-    from src.orchestrator.orchestrator import Orchestrator
-    from src.orchestrator.teams import TeamsRegistry
+    from runtime.infrastructure.database import Database
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.teams import TeamsRegistry
 
     root = tmp_path / "orgs" / "x"
     root.mkdir(parents=True)
@@ -619,10 +619,10 @@ def test_orchestrator_notify_does_not_block_synchronous_caller(tmp_path, test_se
     import threading
     import time
 
-    from src.infrastructure.database import Database
-    from src.orchestrator._paths import OrgPaths
-    from src.orchestrator.orchestrator import Orchestrator
-    from src.orchestrator.teams import TeamsRegistry
+    from runtime.infrastructure.database import Database
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.teams import TeamsRegistry
 
     root = tmp_path / "orgs" / "x"
     root.mkdir(parents=True)

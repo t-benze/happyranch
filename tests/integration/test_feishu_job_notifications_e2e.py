@@ -90,7 +90,7 @@ def _build_org(root, test_settings):
     # Workspace root must exist for _resolve_cwd → not-cwd_missing.
     (root / "workspaces" / "dev_agent").mkdir(parents=True)
 
-    from src.daemon.org_state import OrgState
+    from runtime.daemon.org_state import OrgState
     org = OrgState.load(slug="test", root=root, settings=test_settings)
     assert org.notifier is not None
     return org
@@ -99,7 +99,7 @@ def _build_org(root, test_settings):
 def _seed_task_and_job(org, *, task_id: str, job_id: str):
     """Insert an active task assigned to dev_agent + a pending job row."""
     from datetime import datetime, timezone
-    from src.models import (
+    from runtime.models import (
         JobInterpreter,
         JobRecord,
         JobStatus,
@@ -126,7 +126,7 @@ def _seed_task_and_job(org, *, task_id: str, job_id: str):
 
 def _start_listener(org, monkeypatch):
     """Mount the listener without spinning up a real WS thread."""
-    from src.daemon.feishu_listener import (
+    from runtime.daemon.feishu_listener import (
         FeishuEventListener,
         maybe_start_feishu_listener_for_org,
     )
@@ -167,7 +167,7 @@ def _wait_for_message(fake_state, *, timeout: float = 5.0) -> bool:
 
 
 def _fake_completed_result():
-    from src.daemon.jobs_runner import JobRunResult
+    from runtime.daemon.jobs_runner import JobRunResult
     return JobRunResult(
         status="completed", exit_code=0, duration_ms=10,
         stdout_head="hello", stderr_head="",
@@ -183,7 +183,7 @@ def test_job_submit_approve_runs_and_posts_follow_up(
     """APPROVE branch: job transitions completed and a threaded follow-up arrives."""
     base_url, fake_state = fake_feishu
 
-    import src.daemon.org_state as org_state_mod
+    import runtime.daemon.org_state as org_state_mod
     monkeypatch.setitem(org_state_mod._REGION_TO_DOMAIN, "feishu", base_url)
 
     org = _build_org(tmp_path / "orgs" / "test", test_settings)
@@ -193,7 +193,7 @@ def test_job_submit_approve_runs_and_posts_follow_up(
     async def _fake_spawn(**_kwargs):
         return _fake_completed_result()
     monkeypatch.setattr(
-        "src.daemon.routes.jobs._spawn_job", _fake_spawn,
+        "runtime.daemon.routes.jobs._spawn_job", _fake_spawn,
     )
 
     # Fire the orchestrator push bridge (fire-and-forget; spawns a daemon thread
@@ -288,7 +288,7 @@ def test_job_submit_reject_transitions_and_posts_no_follow_up(
     """REJECT branch: job transitions to rejected, no terminal-result follow-up."""
     base_url, fake_state = fake_feishu
 
-    import src.daemon.org_state as org_state_mod
+    import runtime.daemon.org_state as org_state_mod
     monkeypatch.setitem(org_state_mod._REGION_TO_DOMAIN, "feishu", base_url)
 
     org = _build_org(tmp_path / "orgs" / "test", test_settings)
@@ -299,7 +299,7 @@ def test_job_submit_reject_transitions_and_posts_no_follow_up(
     async def _fake_spawn(**_kwargs):
         return _fake_completed_result()
     monkeypatch.setattr(
-        "src.daemon.routes.jobs._spawn_job", _fake_spawn,
+        "runtime.daemon.routes.jobs._spawn_job", _fake_spawn,
     )
 
     org.orchestrator.notify_job_submitted(

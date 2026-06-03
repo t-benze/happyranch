@@ -4,10 +4,10 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from src.config import Settings
-from src.daemon import paths
-from src.daemon.app import create_app
-from src.daemon.state import DaemonState
+from runtime.config import Settings
+from runtime.daemon import paths
+from runtime.daemon.app import create_app
+from runtime.daemon.state import DaemonState
 
 
 @pytest.fixture
@@ -31,7 +31,7 @@ def test_bootstrap_rejects_non_localhost(app_client):
 
 def test_bootstrap_returns_token_from_localhost(app_client, monkeypatch):
     client, home = app_client
-    from src.daemon.routes import auth as auth_route
+    from runtime.daemon.routes import auth as auth_route
     monkeypatch.setattr(
         auth_route, "_LOCAL_HOSTS", auth_route._LOCAL_HOSTS | {"testclient"}
     )
@@ -47,7 +47,7 @@ def test_bootstrap_returns_500_if_token_missing(tmp_path, monkeypatch):
     state = DaemonState.idle(Settings())
     app = create_app(state)
     client = TestClient(app)
-    from src.daemon.routes import auth as auth_route
+    from runtime.daemon.routes import auth as auth_route
     monkeypatch.setattr(
         auth_route, "_LOCAL_HOSTS", auth_route._LOCAL_HOSTS | {"testclient"}
     )

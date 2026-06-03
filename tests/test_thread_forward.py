@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from src.daemon.thread_forward import (
+from cli.thread_forward import (
     build_forward_body_from_talk, build_forward_body_from_thread,
 )
-from src.models import ThreadMessage, ThreadMessageKind
+from runtime.models import ThreadMessage, ThreadMessageKind
 
 
 def test_build_forward_body_from_talk_truncates_at_4kib():

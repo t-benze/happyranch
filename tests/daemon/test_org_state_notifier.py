@@ -4,7 +4,7 @@ import textwrap
 
 import pytest
 
-from src.daemon.org_state import OrgState
+from runtime.daemon.org_state import OrgState
 
 
 def _write_cfg(root, body: str) -> None:
@@ -66,9 +66,9 @@ def test_lifespan_creates_listener_when_feishu_configured(
     that has full Feishu config."""
     import asyncio
 
-    from src.daemon.app import _start_feishu_listeners
-    from src.daemon.feishu_listener import FeishuEventListener
-    from src.daemon.state import DaemonState
+    from runtime.daemon.app import _start_feishu_listeners
+    from runtime.daemon.feishu_listener import FeishuEventListener
+    from runtime.daemon.state import DaemonState
 
     _write_cfg(org_root, textwrap.dedent("""
         feishu_notifications:
@@ -100,9 +100,9 @@ async def test_add_org_starts_feishu_listener_when_configured(
 ):
     """DaemonState.add_org must start a FeishuEventListener for orgs created
     after daemon startup when their config is complete."""
-    from src.daemon.feishu_listener import FeishuEventListener
-    from src.daemon.state import DaemonState
-    from src.runtime import RuntimeDir
+    from runtime.daemon.feishu_listener import FeishuEventListener
+    from runtime.daemon.state import DaemonState
+    from runtime.runtime import RuntimeDir
 
     rt = RuntimeDir.init(tmp_path / "rt")
     org_root = rt.orgs_dir / "newbie"

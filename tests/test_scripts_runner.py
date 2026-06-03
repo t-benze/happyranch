@@ -20,7 +20,7 @@ def tmp_paths():
 
 
 def test_run_job_captures_stdout_and_exit_zero(tmp_paths):
-    from src.daemon.jobs_runner import run_job
+    from runtime.daemon.jobs_runner import run_job
     tmp_paths["cwd"].mkdir()
     result = asyncio.run(run_job(
         script_text="echo hello",
@@ -38,7 +38,7 @@ def test_run_job_captures_stdout_and_exit_zero(tmp_paths):
 
 
 def test_run_job_captures_stderr_and_nonzero_exit(tmp_paths):
-    from src.daemon.jobs_runner import run_job
+    from runtime.daemon.jobs_runner import run_job
     tmp_paths["cwd"].mkdir()
     result = asyncio.run(run_job(
         script_text="echo oops >&2; exit 7",
@@ -55,7 +55,7 @@ def test_run_job_captures_stderr_and_nonzero_exit(tmp_paths):
 
 
 def test_run_job_publishes_line_events(tmp_paths):
-    from src.daemon.jobs_runner import run_job
+    from runtime.daemon.jobs_runner import run_job
     tmp_paths["cwd"].mkdir()
     events: list[dict] = []
     asyncio.run(run_job(
@@ -76,7 +76,7 @@ def test_run_job_publishes_line_events(tmp_paths):
 
 
 def test_run_job_timeout_marks_failed(tmp_paths):
-    from src.daemon.jobs_runner import run_job
+    from runtime.daemon.jobs_runner import run_job
     tmp_paths["cwd"].mkdir()
     result = asyncio.run(run_job(
         script_text="sleep 30",
@@ -92,7 +92,7 @@ def test_run_job_timeout_marks_failed(tmp_paths):
 
 
 def test_run_job_missing_interpreter_raises(tmp_paths):
-    from src.daemon.jobs_runner import run_job
+    from runtime.daemon.jobs_runner import run_job
     tmp_paths["cwd"].mkdir()
     with pytest.raises(FileNotFoundError):
         asyncio.run(run_job(
@@ -107,7 +107,7 @@ def test_run_job_missing_interpreter_raises(tmp_paths):
 
 
 def test_in_flight_registry_clears_after_run(tmp_paths):
-    from src.daemon.jobs_runner import run_job, in_flight_job_ids
+    from runtime.daemon.jobs_runner import run_job, in_flight_job_ids
     tmp_paths["cwd"].mkdir()
     asyncio.run(run_job(
         job_id="SR-T1",

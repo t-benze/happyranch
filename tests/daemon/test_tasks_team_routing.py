@@ -4,8 +4,8 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from src.daemon import paths as paths_mod
-from src.daemon.app import create_app
+from runtime.daemon import paths as paths_mod
+from runtime.daemon.app import create_app
 
 
 @pytest.fixture

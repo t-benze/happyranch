@@ -1,6 +1,6 @@
-from src.infrastructure.audit_logger import AuditLogger
-from src.infrastructure.database import Database
-from src.models import CompletionReport
+from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.infrastructure.database import Database
+from runtime.models import CompletionReport
 
 
 def test_log_session_start(db):
@@ -103,7 +103,7 @@ def test_log_escalation_resolved_persists_decision_and_rationale(db):
 
 
 def test_log_revisit_of_records_predecessor_chain(db):
-    from src.infrastructure.audit_logger import AuditLogger
+    from runtime.infrastructure.audit_logger import AuditLogger
     audit = AuditLogger(db)
     audit.log_revisit_of(
         task_id="TASK-072",
@@ -124,7 +124,7 @@ def test_log_revisit_of_records_predecessor_chain(db):
 
 
 def test_log_revisit_spawned_records_new_root(db):
-    from src.infrastructure.audit_logger import AuditLogger
+    from runtime.infrastructure.audit_logger import AuditLogger
     audit = AuditLogger(db)
     audit.log_revisit_spawned(predecessor_task_id="TASK-052", new_root="TASK-072")
     logs = db.get_audit_logs("TASK-052")
@@ -286,7 +286,7 @@ def test_log_parse_hint_send_failed(db):
 
 
 def test_log_job_submitted(db):
-    from src.infrastructure.audit_logger import AuditLogger
+    from runtime.infrastructure.audit_logger import AuditLogger
     audit = AuditLogger(db)
     audit.log_job_submitted(
         task_id="TASK-001",
@@ -311,7 +311,7 @@ def test_log_job_submitted(db):
 
 
 def test_log_job_run_completed(db):
-    from src.infrastructure.audit_logger import AuditLogger
+    from runtime.infrastructure.audit_logger import AuditLogger
     audit = AuditLogger(db)
     audit.log_job_run_completed(
         task_id="TASK-001",
@@ -470,8 +470,8 @@ def test_log_artifact_put_writes_event(db) -> None:
 
 def test_log_artifact_put_does_not_collide_with_task_id(tmp_path) -> None:
     """Artifact names like 'TASK-123' must NOT pollute task-scoped audit history."""
-    from src.infrastructure.database import Database
-    from src.infrastructure.audit_logger import AuditLogger
+    from runtime.infrastructure.database import Database
+    from runtime.infrastructure.audit_logger import AuditLogger
 
     db = Database(tmp_path / "test.db")
     logger = AuditLogger(db)
@@ -493,7 +493,7 @@ def test_log_artifact_put_does_not_collide_with_task_id(tmp_path) -> None:
 
 
 def test_log_chain_auto_advance_writes_expected_payload(db):
-    from src.infrastructure.audit_logger import AuditLogger
+    from runtime.infrastructure.audit_logger import AuditLogger
     logger = AuditLogger(db)
     logger.log_chain_auto_advance(
         parent_task_id="TASK-1",
@@ -516,8 +516,8 @@ def test_log_chain_auto_advance_writes_expected_payload(db):
 
 
 def test_log_agent_session_reused_and_evicted(tmp_path):
-    from src.infrastructure.database import Database
-    from src.infrastructure.audit_logger import AuditLogger
+    from runtime.infrastructure.database import Database
+    from runtime.infrastructure.audit_logger import AuditLogger
 
     db = Database(tmp_path / "happyranch.db")
     audit = AuditLogger(db)

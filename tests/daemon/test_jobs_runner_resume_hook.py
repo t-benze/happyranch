@@ -10,12 +10,12 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from src.daemon.jobs_runner import (
+from runtime.daemon.jobs_runner import (
     attach_jobs_resume_main_loop,
     fire_resume_check_for_job,
 )
-from src.infrastructure.database import Database
-from src.models import (
+from runtime.infrastructure.database import Database
+from runtime.models import (
     BlockKind,
     JobInterpreter,
     JobRecord,
@@ -96,7 +96,7 @@ def test_fire_resume_silent_when_not_wired():
     fire_resume_check_for_job still works because it uses the org arg directly,
     not the module state. Verify reset doesn't break anything.
     """
-    import src.daemon.jobs_runner as jr
+    import runtime.daemon.jobs_runner as jr
     jr._RESUME_MAIN_LOOP = None
     jr._ORCH_RESOLVER = None
     org = SimpleNamespace(orchestrator=None)
@@ -188,7 +188,7 @@ def test_fire_resume_like_anchor_does_not_match_prefix(tmp_path):
 
 def test_attach_jobs_resume_main_loop_stores_state():
     """attach_jobs_resume_main_loop sets the module-level variables."""
-    import src.daemon.jobs_runner as jr
+    import runtime.daemon.jobs_runner as jr
 
     loop = MagicMock(spec=asyncio.AbstractEventLoop)
     resolver = MagicMock()

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.infrastructure.feishu.reply_parser import parse_reply
+from runtime.infrastructure.feishu.reply_parser import parse_reply
 
 
 def test_revisit_verb_uppercase():
