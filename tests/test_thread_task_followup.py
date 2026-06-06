@@ -349,7 +349,7 @@ def test_log_thread_turn_cap_auto_extended_writes_new_cap(tmp_path):
 import pytest as _pytest
 
 from runtime.config import Settings
-from runtime.models import TaskRecord, TaskStatus, ThreadRecord, ThreadStatus
+from runtime.models import BlockKind, TaskRecord, TaskStatus, ThreadRecord, ThreadStatus
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.orchestrator import Orchestrator
 from runtime.orchestrator.teams import TeamsRegistry
@@ -847,3 +847,102 @@ def test_cancel_pending_thread_dispatched_task_fires_followup(orch_with_thread_q
     invs = orch._db.list_thread_invocations("THR-1")
     followups = [i for i in invs if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP]
     assert len(followups) == 1
+
+
+# ---------------------------------------------------------------------------
+# Thread escalation surfacing — _maybe_post_thread_escalation
+# Spec: docs/superpowers/specs/2026-06-06-thread-escalation-surfacing-design.md
+# ---------------------------------------------------------------------------
+
+
+def test_escalation_root_fires_and_carries_reason(orch_with_db):
+    from runtime.orchestrator.run_step import _maybe_post_thread_escalation
+    orch = orch_with_db
+    _seed_dispatched_root(orch)
+    orch._db.update_task("TASK-1", status=TaskStatus.BLOCKED,
+                         block_kind=BlockKind.ESCALATED, note="needs founder auth")
+
+    _maybe_post_thread_escalation(orch, "TASK-1", reason="needs founder auth")
+
+    invs = orch._db.list_thread_invocations("THR-1")
+    followups = [i for i in invs if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP]
+    assert len(followups) == 1
+    msgs = orch._db.list_thread_messages("THR-1")
+    sysmsgs = [m for m in msgs if m.system_payload
+               and m.system_payload.get("kind_tag") == "task_escalated"]
+    assert len(sysmsgs) == 1
+    assert sysmsgs[0].system_payload["reason"] == "needs founder auth"
+    assert sysmsgs[0].system_payload["task_id"] == "TASK-1"
+    assert sysmsgs[0].speaker == "alice"
+
+
+def test_escalation_child_depth_surfaces_via_ancestors(orch_with_db):
+    """Escalations do NOT cascade; a child-task escalation must still surface
+    in the originating thread by walking ancestors to the dispatched root."""
+    from runtime.orchestrator.run_step import _maybe_post_thread_escalation
+    orch = orch_with_db
+    _seed_dispatched_root(orch, task_id="TASK-1")
+    orch._db.insert_task(TaskRecord(
+        id="TASK-2", brief="b", team="ops", assigned_agent="alice",
+        parent_task_id="TASK-1",
+    ))
+    orch._db.update_task("TASK-2", status=TaskStatus.BLOCKED,
+                         block_kind=BlockKind.ESCALATED, note="deep blocker")
+
+    _maybe_post_thread_escalation(orch, "TASK-2", reason="deep blocker")
+
+    invs = orch._db.list_thread_invocations("THR-1")
+    followups = [i for i in invs if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP]
+    assert len(followups) == 1
+    msgs = orch._db.list_thread_messages("THR-1")
+    sysmsgs = [m for m in msgs if m.system_payload
+               and m.system_payload.get("kind_tag") == "task_escalated"]
+    assert len(sysmsgs) == 1
+    assert sysmsgs[0].system_payload["task_id"] == "TASK-2"
+    assert sysmsgs[0].system_payload["original_task_id"] == "TASK-1"
+
+
+def test_escalation_resolved_in_race_is_noop(orch_with_db):
+    """If the task is no longer blocked/escalated (founder resolved in the
+    race window), the helper must not post anything."""
+    from runtime.orchestrator.run_step import _maybe_post_thread_escalation
+    orch = orch_with_db
+    _seed_dispatched_root(orch)
+    orch._db.update_task("TASK-1", status=TaskStatus.COMPLETED)
+
+    _maybe_post_thread_escalation(orch, "TASK-1", reason="needs founder auth")
+
+    invs = orch._db.list_thread_invocations("THR-1")
+    assert not any(i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP for i in invs)
+    assert not orch._db.list_thread_messages("THR-1")
+
+
+def test_escalation_non_thread_task_noop(orch_with_db):
+    from runtime.orchestrator.run_step import _maybe_post_thread_escalation
+    orch = orch_with_db
+    orch._db.insert_task(TaskRecord(
+        id="TASK-N", brief="b", team="ops", assigned_agent="alice",
+    ))
+    orch._db.update_task("TASK-N", status=TaskStatus.BLOCKED,
+                         block_kind=BlockKind.ESCALATED, note="x")
+
+    _maybe_post_thread_escalation(orch, "TASK-N", reason="x")
+
+    audit_rows = orch._db.get_audit_logs("TASK-N")
+    assert not any(r["action"].startswith("thread_") for r in audit_rows)
+
+
+def test_escalation_thread_not_open_skips_with_audit(orch_with_db):
+    from runtime.orchestrator.run_step import _maybe_post_thread_escalation
+    orch = orch_with_db
+    _seed_dispatched_root(orch)
+    orch._db.set_thread_status("THR-1", status=ThreadStatus.ARCHIVED)
+    orch._db.update_task("TASK-1", status=TaskStatus.BLOCKED,
+                         block_kind=BlockKind.ESCALATED, note="x")
+
+    _maybe_post_thread_escalation(orch, "TASK-1", reason="x")
+
+    invs = orch._db.list_thread_invocations("THR-1")
+    assert not any(i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP for i in invs)
+    audit_rows = orch._db.get_audit_logs("TASK-1")
+    assert any(r["action"] == "thread_followup_skipped" for r in audit_rows)

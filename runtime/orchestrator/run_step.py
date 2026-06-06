@@ -1670,6 +1670,104 @@ def _append_followup_system_and_reinvoke(
         )
 
 
+def _maybe_post_thread_escalation(
+    orch: "Orchestrator",
+    task_id: str,
+    *,
+    reason: str,
+) -> None:
+    """Post a `task_escalated` SYSTEM message + re-invoke the dispatcher when a
+    thread-dispatched task escalates to the founder.
+
+    Unlike `_maybe_post_thread_followup` (terminal-only, root-only because
+    terminals cascade up to the parent), escalations do NOT cascade
+    (run_step escalate branch: "parent stays blocked(DELEGATED)") and a team
+    manager can escalate at any depth. So we walk ancestors to the chain root,
+    then the revisit chain, to find the originating thread.
+
+    Spec: docs/superpowers/specs/2026-06-06-thread-escalation-surfacing-design.md
+    """
+    db = orch._db
+    audit = orch._audit
+
+    task = db.get_task(task_id)
+    if task is None:
+        return
+    # Re-read persisted state: the founder may have resolved/cancelled the
+    # escalation in the window between try_escalate and this call.
+    if not (task.status == TaskStatus.BLOCKED
+            and task.block_kind == BlockKind.ESCALATED):
+        return
+
+    # Resolve the originating thread. Escalation can fire on a child, so walk
+    # ancestors to the chain root first, then the revisit chain (only the
+    # dispatched root carries dispatched_from_thread_id).
+    from runtime.infrastructure.database import LineageTooDeep  # local: avoid cycle
+    try:
+        ancestors = db.walk_ancestors(task_id, max_hops=200)
+    except LineageTooDeep:
+        audit.log_thread_followup_skipped(
+            "(unresolved)", original_task_id=task_id, terminal_task_id=task_id,
+            reason="chain_too_deep",
+        )
+        return
+    root = ancestors[-1] if ancestors else task
+    chain = db.walk_revisit_chain(root.id, max_hops=200, truncate=True)
+    original = chain[-1] if chain else root
+    thread_id = original.dispatched_from_thread_id
+    if thread_id is None:
+        # Not a thread-dispatched chain; silent no-op (Feishu path untouched).
+        return
+
+    # Thread-state guard.
+    thread = db.get_thread(thread_id)
+    from runtime.models import ThreadStatus as _ThreadStatus
+    if thread is None or thread.status is not _ThreadStatus.OPEN:
+        audit.log_thread_followup_skipped(
+            thread_id, original_task_id=original.id, terminal_task_id=task_id,
+            reason="thread_not_open",
+            thread_status=(thread.status.value if thread else "missing"),
+            task_status="escalated",
+        )
+        return
+
+    # Dispatcher identity from the thread_dispatch audit row on the original.
+    dispatch_rows = [
+        r for r in db.get_audit_logs(thread_id)
+        if r["action"] == "thread_dispatch"
+        and _payload_dict(r).get("task_id") == original.id
+    ]
+    if not dispatch_rows:
+        audit.log_thread_followup_skipped(
+            thread_id, original_task_id=original.id, terminal_task_id=task_id,
+            reason="dispatcher_unresolved",
+        )
+        return
+    dispatcher = _payload_dict(dispatch_rows[0])["dispatcher"]
+
+    # `original_task_id` is the revisit-chain origin (thread-dispatch keying);
+    # `root_task_id` is the ancestor root of the escalating task. These are
+    # equal for a root escalation but differ when a child escalates inside a
+    # revisited chain — both are emitted for the dispatcher's downstream use.
+    system_payload = {
+        "kind_tag": "task_escalated",
+        "task_id": task_id,
+        "original_task_id": original.id,
+        "root_task_id": root.id,
+        "status": "escalated",
+        "reason": reason,
+        "revisit_chain_length": len(chain) if chain else 1,
+    }
+    _append_followup_system_and_reinvoke(
+        orch,
+        thread_id=thread_id,
+        dispatcher=dispatcher,
+        original_id=original.id,
+        source_task_id=task_id,
+        system_payload=system_payload,
+    )
+
+
 def _maybe_post_thread_followup(
     orch: "Orchestrator",
     task_id: str,
