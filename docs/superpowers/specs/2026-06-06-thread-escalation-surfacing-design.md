@@ -135,10 +135,12 @@ The completed/failed wording is unchanged for non-escalated `task_followup` turn
 
 ## 9. Renderers
 
-New `task_escalated` kind_tag case in the two thread system-message renderers (the only two; task-lifecycle `task_completed`/`task_failed` references elsewhere are unrelated event logs):
+New `task_escalated` kind_tag case in the three thread system-message renderers (the only three; task-lifecycle `task_completed`/`task_failed` references elsewhere are unrelated event logs):
 
 - **`runtime/infrastructure/thread_store.py`** (transcript, ~line 103): mirror `task_failed`:
   `**Task TASK-NNN escalated**` + ` (chain root TASK-MMM)` when root differs + ` · {reason[:240]}`.
+- **`cli/thread_forward.py`** (forward body, after `task_failed`): mirror `task_failed`:
+  `Task TASK-NNN escalated` + ` (chain root TASK-MMM)` when root differs + `: {reason[:240]}`.
 - **`web/src/features/threads/ThreadsPage.tsx`** (~line 530): `case 'task_escalated'` mirroring `task_failed` — task-id `<Link>` + ` · {reason[:240]}`.
 
 ## 10. Skill doc
