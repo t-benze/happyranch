@@ -969,3 +969,49 @@ def test_purpose_note_escalated_uses_escalation_wording():
     assert "TASK-893" in note
     assert "needs founder CDN authorize" in note
     assert "resolve the escalation yourself" in note
+
+
+def test_thread_store_renders_task_escalated():
+    from runtime.infrastructure.thread_store import render_transcript_body
+
+    msg = _make_system_msg(
+        12,
+        {
+            "kind_tag": "task_escalated",
+            "task_id": "TASK-893",
+            "original_task_id": "TASK-893",
+            "root_task_id": "TASK-893",
+            "status": "escalated",
+            "reason": "needs founder CDN authorize",
+            "revisit_chain_length": 1,
+        },
+    )
+    out = render_transcript_body([msg])
+    assert "Task TASK-893 escalated" in out
+    assert "needs founder CDN authorize" in out
+
+
+def test_thread_forward_renders_task_escalated():
+    from cli.thread_forward import build_forward_body_from_thread
+    from runtime.models import ThreadMessage, ThreadMessageKind
+    from datetime import datetime, timezone
+
+    msg = ThreadMessage(
+        thread_id="THR-1", seq=12, speaker="alice",
+        kind=ThreadMessageKind.SYSTEM,
+        system_payload={
+            "kind_tag": "task_escalated",
+            "task_id": "TASK-2",
+            "original_task_id": "TASK-1",
+            "status": "escalated",
+            "reason": "deep blocker",
+            "revisit_chain_length": 1,
+        },
+        created_at=datetime(2026, 6, 6, tzinfo=timezone.utc),
+    )
+    out = build_forward_body_from_thread(
+        source_id="THR-1", messages=[msg], subject="s",
+    )
+    assert "Task TASK-2 escalated" in out
+    assert "chain root TASK-1" in out
+    assert "deep blocker" in out

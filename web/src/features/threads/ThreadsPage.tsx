@@ -543,6 +543,18 @@ function describeSystem(payload: Record<string, unknown> | null, slug?: string):
         </>
       );
     }
+    case 'task_escalated': {
+      const taskId = String(payload.task_id ?? '');
+      const taskLink = slug && taskId
+        ? <Link to={`/orgs/${slug}/tasks/${taskId}`} className="underline">{taskId}</Link>
+        : taskId;
+      const reason = payload.reason ? String(payload.reason).slice(0, 240) : null;
+      return (
+        <>
+          task {taskLink} escalated{reason ? ` · ${reason}` : ''}
+        </>
+      );
+    }
     default:
       return tag || JSON.stringify(payload);
   }

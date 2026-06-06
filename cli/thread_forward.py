@@ -63,6 +63,16 @@ def build_forward_body_from_thread(*, source_id: str, messages: list[ThreadMessa
                 if annotations:
                     label += "; " + "; ".join(annotations)
                 rendered.append(f"> (system: {label})")
+            elif tag == "task_escalated":
+                tid = payload.get("task_id")
+                orig = payload.get("original_task_id")
+                label = f"Task {tid} escalated" + (
+                    f" (chain root {orig})" if orig and orig != tid else ""
+                )
+                reason = (payload.get("reason") or "").strip()
+                if reason:
+                    label += f": {reason[:240]}"
+                rendered.append(f"> (system: {label})")
             else:
                 rendered.append(f"> (system: {tag})")
     quoted = "\n".join(rendered)
