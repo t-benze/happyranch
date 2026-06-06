@@ -2432,3 +2432,59 @@ def test_cmd_progress_posts_to_progress_endpoint():
         "agent": "dev_agent",
         "message": "Phase 3 of 6",
     }
+
+
+def test_cancel_parser_accepts_as_agent():
+    from cli.main import build_parser
+
+    args = build_parser().parse_args(
+        ["cancel", "TASK-012", "--as-agent", "family_manager"]
+    )
+    assert args.command == "cancel"
+    assert args.task_id == "TASK-012"
+    assert args.as_agent == "family_manager"
+
+
+def test_cancel_parser_as_agent_defaults_none():
+    from cli.main import build_parser
+
+    args = build_parser().parse_args(["cancel", "TASK-012"])
+    assert args.as_agent is None
+
+
+def test_cmd_cancel_includes_actor_when_set(capsys):
+    from cli.main import cmd_cancel
+    from unittest.mock import MagicMock, patch
+
+    fake = MagicMock()
+    fake.post.return_value.status_code = 200
+    fake.post.return_value.json.return_value = {"cancelled": ["TASK-012"], "killed": []}
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
+        args = MagicMock(
+            org=None, task_id="TASK-012", rationale="",
+            no_cascade=False, as_agent="family_manager",
+        )
+        cmd_cancel(args)
+
+    _, kwargs = fake.post.call_args
+    assert kwargs["json"]["actor"] == "family_manager"
+
+
+def test_cmd_cancel_omits_actor_when_unset(capsys):
+    from cli.main import cmd_cancel
+    from unittest.mock import MagicMock, patch
+
+    fake = MagicMock()
+    fake.post.return_value.status_code = 200
+    fake.post.return_value.json.return_value = {"cancelled": ["TASK-012"], "killed": []}
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
+        args = MagicMock(
+            org=None, task_id="TASK-012", rationale="",
+            no_cascade=False, as_agent=None,
+        )
+        cmd_cancel(args)
+
+    _, kwargs = fake.post.call_args
+    assert "actor" not in kwargs["json"]

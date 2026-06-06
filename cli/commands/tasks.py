@@ -639,9 +639,12 @@ def cmd_cancel(args: argparse.Namespace) -> None:
     slug = resolve_org_slug(
         args_org=args.org, available=_shared._fetch_available_orgs(client),
     )
+    payload = {"rationale": args.rationale or "", "cascade": not args.no_cascade}
+    if args.as_agent:
+        payload["actor"] = args.as_agent
     r = client.post(
         f"/api/v1/orgs/{slug}/tasks/{args.task_id}/cancel",
-        json={"rationale": args.rationale or "", "cascade": not args.no_cascade},
+        json=payload,
     )
     if r.status_code == 404:
         print(f"Task {args.task_id} not found.")
@@ -910,6 +913,11 @@ def register(sub) -> None:
         "--no-cascade", action="store_true",
         help="Cancel only this task, not its descendants "
              "(dangerous: leaves any live children parentless)",
+    )
+    p_cancel.add_argument(
+        "--as-agent", default=None, metavar="NAME",
+        help="Attribute the cancellation to this agent instead of the founder "
+             "(advisory; recorded in the audit log and task note)",
     )
     p_cancel.set_defaults(func=cmd_cancel)
 
