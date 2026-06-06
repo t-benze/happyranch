@@ -111,6 +111,61 @@ async def test_run_invocation_no_callback_silent_decline(tmp_path, monkeypatch):
     assert inv_after.status.value in {"failed", "timeout"}
 
 
+@pytest.mark.asyncio
+async def test_no_callback_failure_surfaces_executor_error(tmp_path, monkeypatch):
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    import runtime.daemon.thread_runner as runner_mod
+
+    class _FailExec:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, **kwargs):
+            r = FakeExecutorResult(
+                success=False,
+                error="Command exited with code 1: API Error: 529 Overloaded. "
+                "This is a server-side issue, usually temporary.",
+            )
+            r.returncode = 1
+            return r
+
+    monkeypatch.setattr(
+        runner_mod,
+        "_build_executor_for_provider",
+        lambda provider, settings, paths: _FailExec(),
+    )
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+
+    inv_after = db.get_invocation_any_status(inv.invocation_token)
+    assert inv_after.status.value == "failed"
+    # The opaque rc code is retained, but the underlying cause is now visible
+    # instead of being silently dropped (the 529 was previously only findable
+    # by digging into the claude session JSONL).
+    assert inv_after.decline_reason.startswith("no_callback: rc=1")
+    assert "529 Overloaded" in inv_after.decline_reason
+    # The executor's redundant "Command exited with code N" envelope is stripped.
+    assert "Command exited with code" not in inv_after.decline_reason
+
+
 def test_thread_runner_builds_pi_executor():
     import runtime.daemon.thread_runner as runner_mod
 
