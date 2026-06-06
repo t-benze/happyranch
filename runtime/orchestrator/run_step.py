@@ -1793,8 +1793,6 @@ def _maybe_post_thread_followup(
 
     Spec: docs/superpowers/specs/2026-05-28-thread-task-followup-design.md §4-§6
     """
-    import json as _json
-
     # Predicate gate — first pass using caller's claim (cheap early-out).
     if status == TaskStatus.FAILED and auto_revisit_spawned:
         return
