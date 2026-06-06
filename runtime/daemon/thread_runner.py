@@ -29,6 +29,27 @@ from runtime.orchestrator.executors import (
 
 logger = logging.getLogger(__name__)
 
+# Cap for the underlying-error detail appended to a no_callback reason so a
+# multi-KB stdout/stderr tail can't bloat the audit row.
+_REASON_DETAIL_CAP = 300
+
+
+def _executor_error_detail(result, rc) -> str:
+    """Single-line cause behind a non-zero subprocess exit, for the audit reason.
+
+    The executor sets ``error`` to ``"Command exited with code N[: <stderr>]"``;
+    that envelope is stripped so the reason carries just the underlying cause
+    (e.g. an ``API Error: 529 Overloaded`` raised inside the claude CLI), which
+    was previously only recoverable by digging into the claude session JSONL.
+    """
+    raw = (str(getattr(result, "error", "") or "")
+           or str(getattr(result, "stderr_tail", "") or "")).strip()
+    prefix = f"Command exited with code {rc}"
+    if raw.startswith(prefix):
+        raw = raw[len(prefix):].lstrip(": ").strip()
+    raw = " ".join(raw.split())  # collapse newlines → single-line reason
+    return raw[:_REASON_DETAIL_CAP]
+
 
 async def _publish_invocation_event(
     org_state, *, thread_id: str, agent_name: str, seq: int, kind: str, status: str
@@ -473,6 +494,9 @@ async def run_invocation(
             status = ThreadInvocationStatus.TIMEOUT
         else:
             reason = f"no_callback: rc={rc}"
+            detail = _executor_error_detail(result, rc)
+            if detail:
+                reason = f"{reason} — {detail}"
             status = ThreadInvocationStatus.FAILED
 
         org_state.db.fail_invocation(
