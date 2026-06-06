@@ -995,7 +995,7 @@ def _fail(orch: "Orchestrator", task_id: str, *, note: str) -> None:
     # Idempotence guard — same rationale as _complete. When /cancel SIGTERMs
     # the subprocess, run_step re-enters via the post-execution classifier and
     # tries to write a "session failed (rc=-15; ...)" note. That must NOT
-    # overwrite the founder's "cancelled by founder: ..." note.
+    # overwrite the cancel route's "cancelled by <actor>: ..." note.
     if _is_already_terminal(orch, task_id):
         return
     # Clear any in-flight chain so the CLI/Web UI doesn't show a chain strip
