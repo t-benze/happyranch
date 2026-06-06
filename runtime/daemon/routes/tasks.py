@@ -528,6 +528,10 @@ class CancelBody(BaseModel):
     # rather than removed entirely because there are narrow cases (rogue-agent
     # isolation) where targeting a single node is right.
     cascade: bool = True
+    # Caller-declared actor for attribution. Advisory only — founder and agents
+    # share one bearer token, so this is not validated. Omitted/blank → "founder",
+    # preserving the original founder-only behavior byte-for-byte.
+    actor: str | None = None
 
 
 class RevisitBody(BaseModel):
@@ -841,7 +845,8 @@ async def cancel_task(
 
     now = datetime.now(timezone.utc).isoformat()
     rationale = body.rationale.strip()
-    note = f"cancelled by founder: {rationale}" if rationale else "cancelled by founder"
+    actor = (body.actor or "").strip() or "founder"
+    note = f"cancelled by {actor}: {rationale}" if rationale else f"cancelled by {actor}"
 
     # Phase 1: DB writes + audit under the lock, to serialise with run_step
     # transitions. Collect PIDs while we hold the lock — we'll SIGTERM outside.
@@ -860,7 +865,7 @@ async def cancel_task(
             for agent, pid in org.sessions.iter_task_pids(tid):
                 pids_to_kill.append((tid, agent, pid))
             audit.log_task_cancelled(
-                task_id=tid, rationale=rationale, cascade=body.cascade,
+                task_id=tid, rationale=rationale, cascade=body.cascade, actor=actor,
             )
 
     # Phase 1b: fire thread followup for PENDING and BLOCKED tasks.

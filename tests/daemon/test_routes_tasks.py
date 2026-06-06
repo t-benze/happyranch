@@ -1700,3 +1700,69 @@ def test_task_detail_active_chain_is_null_when_no_chain(
     body = r.json()
     assert "active_chain" in body
     assert body["active_chain"] is None
+
+
+def test_cancel_records_declared_actor(
+    tmp_home, app, daemon_state, org_state, auth_headers,
+) -> None:
+    """When the caller declares an actor, the note and audit log record it
+    instead of the hardcoded 'founder'."""
+    sub = TestClient(app).post(
+        "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+
+    r = TestClient(app).post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/cancel",
+        json={"rationale": "", "cascade": True, "actor": "family_manager"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+
+    assert org_state.db.get_task(task_id).note == "cancelled by family_manager"
+    cancel_logs = [
+        e for e in org_state.db.get_audit_logs(task_id)
+        if e["action"] == "task_cancelled"
+    ]
+    assert len(cancel_logs) == 1
+    assert cancel_logs[0]["agent"] == "family_manager"
+
+
+def test_cancel_actor_with_rationale(
+    tmp_home, app, daemon_state, org_state, auth_headers,
+) -> None:
+    sub = TestClient(app).post(
+        "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+
+    r = TestClient(app).post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/cancel",
+        json={"rationale": "superseded", "actor": "family_manager"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert org_state.db.get_task(task_id).note == "cancelled by family_manager: superseded"
+
+
+def test_cancel_defaults_to_founder(
+    tmp_home, app, daemon_state, org_state, auth_headers,
+) -> None:
+    """No actor supplied → unchanged 'founder' strings (backward compat)."""
+    sub = TestClient(app).post(
+        "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+
+    r = TestClient(app).post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/cancel",
+        json={"rationale": "", "cascade": True},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert org_state.db.get_task(task_id).note == "cancelled by founder"
+    cancel_logs = [
+        e for e in org_state.db.get_audit_logs(task_id)
+        if e["action"] == "task_cancelled"
+    ]
+    assert cancel_logs[0]["agent"] == "founder"

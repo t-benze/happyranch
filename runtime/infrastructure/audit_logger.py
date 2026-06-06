@@ -236,11 +236,11 @@ class AuditLogger:
         )
 
     def log_task_cancelled(
-        self, task_id: str, rationale: str, cascade: bool,
+        self, task_id: str, rationale: str, cascade: bool, actor: str = "founder",
     ) -> None:
         self._db.insert_audit_log(
             task_id=task_id,
-            agent="founder",
+            agent=actor,
             action="task_cancelled",
             payload={"rationale": rationale, "cascade": cascade},
         )
