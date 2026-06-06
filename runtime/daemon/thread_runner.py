@@ -116,6 +116,20 @@ def _purpose_note(
         payload = (triggering_message.system_payload or {}) if triggering_message else {}
         task_id = payload.get("task_id", "?")
         status = payload.get("status", "?")
+        if status == "escalated":
+            reason = (payload.get("reason") or "").strip()
+            reason_clause = f': "{reason[:240]}"' if reason else ""
+            return (
+                f"Task {task_id} that you dispatched from this thread has "
+                f"ESCALATED to the founder{reason_clause}. The task is blocked "
+                f"awaiting a founder decision. Post a concise reply in this "
+                f"thread that states what you need from the founder and why, so "
+                f"she sees it in context (pull details via `happyranch details "
+                f"{task_id}`). Do not attempt to resolve the escalation "
+                f"yourself; do not dispatch a new task from this turn. Decline "
+                f"if the Feishu escalation already says everything and a thread "
+                f"restatement adds nothing."
+            )
         return (
             f"Task {task_id} that you dispatched from this thread reached "
             f"`{status}`. Compose a follow-up reply with the result (pull "

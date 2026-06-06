@@ -946,3 +946,26 @@ def test_escalation_thread_not_open_skips_with_audit(orch_with_db):
     assert not any(i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP for i in invs)
     audit_rows = orch._db.get_audit_logs("TASK-1")
     assert any(r["action"] == "thread_followup_skipped" for r in audit_rows)
+
+
+def test_purpose_note_escalated_uses_escalation_wording():
+    from runtime.daemon.thread_runner import _purpose_note
+    from runtime.models import ThreadMessage, ThreadMessageKind
+    from datetime import datetime, timezone
+
+    msg = ThreadMessage(
+        thread_id="THR-1", seq=5, speaker="alice",
+        kind=ThreadMessageKind.SYSTEM,
+        system_payload={
+            "kind_tag": "task_escalated",
+            "task_id": "TASK-893",
+            "status": "escalated",
+            "reason": "needs founder CDN authorize",
+        },
+        created_at=datetime(2026, 6, 6, tzinfo=timezone.utc),
+    )
+    note = _purpose_note("task_followup", 5, "alice", triggering_message=msg)
+    assert "ESCALATED" in note
+    assert "TASK-893" in note
+    assert "needs founder CDN authorize" in note
+    assert "resolve the escalation yourself" in note
