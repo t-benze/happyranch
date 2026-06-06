@@ -630,7 +630,11 @@ def cmd_resolve_escalation(args: argparse.Namespace) -> None:
 
 
 def cmd_cancel(args: argparse.Namespace) -> None:
-    """Founder action: cancel a task and (by default) its delegated subtree."""
+    """Cancel a task and (by default) its delegated subtree.
+
+    Defaults attribution to the founder; an agent can attribute the cancel to
+    itself via ``--as-agent`` (advisory — see the daemon cancel route).
+    """
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
@@ -898,7 +902,7 @@ def register(sub) -> None:
 
     p_cancel = sub.add_parser(
         "cancel",
-        help="Cancel a task (founder): SIGTERMs live subprocesses and cascades down the subtree",
+        help="Cancel a task: SIGTERMs live subprocesses and cascades down the subtree",
     )
     p_cancel.add_argument("task_id", help="Task ID to cancel (e.g. TASK-052)")
     p_cancel.add_argument(
@@ -907,7 +911,7 @@ def register(sub) -> None:
     )
     p_cancel.add_argument(
         "--rationale", default="",
-        help="Optional founder note recorded on every cancelled row",
+        help="Optional note recorded on every cancelled row",
     )
     p_cancel.add_argument(
         "--no-cascade", action="store_true",

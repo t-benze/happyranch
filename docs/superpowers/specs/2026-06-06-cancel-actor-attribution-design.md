@@ -6,7 +6,7 @@ When a task is cancelled, the audit log and the task note always record the
 actor as `"founder"`, regardless of who actually triggered the cancellation.
 
 This was observed in `family/THR-003`: `family_manager` cancelled `TASK-012`
-itself (it ran `happyranch task cancel` during a turn, to supersede an
+itself (it ran `happyranch cancel` during a turn, to supersede an
 in-flight report with `TASK-013`), but the trail reads as if the human founder
 did it:
 
@@ -71,7 +71,7 @@ Add an optional, caller-declared `actor` to the cancel path. Default
 ### Data flow
 
 ```
-CLI: happyranch task cancel TASK-012 --as-agent family_manager
+CLI: happyranch cancel TASK-012 --as-agent family_manager
   -> POST /tasks/TASK-012/cancel {rationale:"", cascade:true, actor:"family_manager"}
      -> note = "cancelled by family_manager"
      -> audit: agent="family_manager", action="task_cancelled"
@@ -85,10 +85,11 @@ fixes the thread view too.
 
 - No `actor` / no `--as-agent` → strings stay exactly `"founder"` /
   `"cancelled by founder"`. Existing cancel and thread-followup tests stay green.
-- `CancelBody` gains an optional field → OpenAPI snapshot changes. Regenerate:
-  `HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py`.
-  No new TS api function (existing cancel function gains an optional arg) —
-  confirm `web/src/test/openapi-coverage.test.ts` still passes.
+- `CancelBody` gains an optional field. The OpenAPI snapshot
+  (`tests/contract/test_openapi_snapshot.py`) only pins paths/params/response
+  codes — not request-body schemas — so it does NOT change. No new TS api
+  function (existing cancel function gains an optional arg); confirm
+  `web/src/test/openapi-coverage.test.ts` still passes.
 
 ## Testing
 

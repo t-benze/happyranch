@@ -346,7 +346,7 @@ Expected: PASS (no regressions — pay attention to `tests/test_thread_task_foll
 ```bash
 TOKEN=$(cat ~/.happyranch/daemon.token)
 # Submit a throwaway task in a scratch org you control, capture its id, then:
-happyranch task cancel <TASK_ID> --as-agent family_manager --org <ORG>
+happyranch cancel <TASK_ID> --as-agent family_manager --org <ORG>
 curl -s -H "Authorization: Bearer $TOKEN" \
   http://localhost:8765/api/v1/orgs/<ORG>/tasks/<TASK_ID> | python3 -m json.tool
 ```
