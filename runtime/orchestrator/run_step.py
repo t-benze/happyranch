@@ -96,6 +96,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         orch.notify_escalated(
             task_id=task_id, agent="orchestrator", reason=reason,
         )
+        _maybe_post_thread_escalation(orch, task_id, reason=reason)
         return
 
     # ---- 3. Atomic claim: unblock + increment + mark in_progress ----
@@ -338,6 +339,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             task_id=task_id, agent=agent, reason=reason,
             last_summary=getattr(report, "output_summary", "") or "",
         )
+        _maybe_post_thread_escalation(orch, task_id, reason=reason)
         # parent stays blocked(DELEGATED) until this task reaches a terminal.
         return
 

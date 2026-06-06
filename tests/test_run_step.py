@@ -1519,3 +1519,74 @@ def test_run_step_escalate_atomic_against_cancel_between_recheck_and_cas(
     assert t.cancelled_at is not None
     # block_kind stays None (cancel cleared it); not BLOCKED(ESCALATED).
     assert t.block_kind is None
+
+
+def _seed_open_thread_dispatch(db, *, thread_id, task_id, dispatcher, target):
+    # Sibling: _seed_dispatched_root in test_thread_task_followup.py also inserts
+    # the TaskRecord; this one does not — callers insert the task themselves.
+    from runtime.models import ThreadRecord
+    from runtime.infrastructure.audit_logger import AuditLogger
+    db.insert_thread(ThreadRecord(id=thread_id, subject="t"))
+    db.add_thread_participant(thread_id, dispatcher, added_by="founder")
+    AuditLogger(db).log_thread_dispatch(
+        thread_id, task_id=task_id, dispatcher=dispatcher,
+        target_agent=target, team="engineering",
+    )
+
+
+def test_run_step_escalate_surfaces_in_thread(runtime, db, monkeypatch):
+    import json
+    from runtime.models import ThreadInvocationPurpose
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    db.insert_task(TaskRecord(
+        id="T-1", brief="x", assigned_agent="engineering_head",
+        dispatched_from_thread_id="THR-9",
+    ))
+    _seed_open_thread_dispatch(db, thread_id="THR-9", task_id="T-1",
+                               dispatcher="engineering_head", target="engineering_head")
+
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()  # mirror existing escalate test; not used on escalate path
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(
+            output_summary=json.dumps({"action": "escalate", "reason": "needs founder auth"}),
+        )
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    orch.run_step("T-1")
+
+    t = db.get_task("T-1")
+    assert t.status == TaskStatus.BLOCKED and t.block_kind == BlockKind.ESCALATED
+    msgs = db.list_thread_messages("THR-9")
+    esc = [m for m in msgs if m.system_payload
+           and m.system_payload.get("kind_tag") == "task_escalated"]
+    assert len(esc) == 1
+    assert esc[0].system_payload["reason"] == "needs founder auth"
+    invs = db.list_thread_invocations("THR-9")
+    assert any(i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP for i in invs)
+
+
+def test_run_step_over_budget_surfaces_in_thread(runtime, db):
+    from runtime.models import ThreadInvocationPurpose
+    from runtime.orchestrator.orchestrator import Orchestrator
+    settings = Settings(max_orchestration_steps=3)
+    db.insert_task(TaskRecord(
+        id="T-1", brief="x", assigned_agent="engineering_head",
+        dispatched_from_thread_id="THR-9",
+    ))
+    db.update_task("T-1", orchestration_step_count=3)  # already at the cap
+    _seed_open_thread_dispatch(db, thread_id="THR-9", task_id="T-1",
+                               dispatcher="engineering_head", target="engineering_head")
+
+    orch = Orchestrator(db=db, settings=settings, paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    orch.run_step("T-1")
+
+    msgs = db.list_thread_messages("THR-9")
+    esc = [m for m in msgs if m.system_payload
+           and m.system_payload.get("kind_tag") == "task_escalated"]
+    assert len(esc) == 1
+    assert "max steps" in esc[0].system_payload["reason"]
