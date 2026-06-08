@@ -293,11 +293,11 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         return
 
     # ---- 6. Parse next step ----
-    # Only team managers speak the NextStep JSON protocol. Worker
-    # completions are plain prose/summary payloads — treating them as
-    # manager decisions reclassifies every non-JSON output_summary as
-    # `escalate` (see P1 in 2026-04-20 review).
-    if orch.teams.is_team_manager(agent):
+    # Orchestration is driven by task TYPE, not manager role. A type=task
+    # owner (any agent) speaks the NextStep protocol; a type=subtask is
+    # leaf-only. `task` is the early-fetched record; task_type is immutable
+    # provenance, safe to read post-claim.
+    if task.task_type == "task":
         decision = orch._parse_next_step(report)
         _step_audit_id = orch._audit.log_orchestration_step(
             task_id, next_count, decision.model_dump(exclude_none=True),
@@ -360,18 +360,24 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
                 status=TaskStatus.FAILED, auto_revisit_spawned=False,
             )
             return
-        # Cross-team delegation guard: a manager may only delegate to workers
-        # on its own team. Violations feed a feedback step back (not a hard
-        # fail) so the manager can correct its decision on the next step.
-        off_team_legs = _chain_legs_off_team(orch.teams, manager=agent, decision=decision)
-        if off_team_legs:
-            caller_team = orch.teams.team_for_manager(agent)
-            parts = [f"{name!r} is on team {team!r}" for name, team in off_team_legs]
-            feedback = (
-                f"Invalid delegation: you are on team {caller_team!r}, "
-                f"but {'; '.join(parts)}. "
-                "Pick workers on your own team, or escalate."
-            )
+        # Target-scope guard. Managers: own-team agents or self. Non-manager
+        # owners: self only. Violations feed a feedback step back (not a hard
+        # fail) so the owner can correct its decision next step.
+        out_of_scope = _legs_out_of_scope(orch, owner=agent, decision=decision)
+        if out_of_scope:
+            parts = [f"{name!r} ({reason})" for name, reason in out_of_scope]
+            if orch.teams.is_team_manager(agent):
+                caller_team = orch.teams.team_for_manager(agent)
+                feedback = (
+                    f"Invalid delegation: you are on team {caller_team!r}, but "
+                    f"{'; '.join(parts)}. Pick agents on your own team or "
+                    "yourself, or escalate."
+                )
+            else:
+                feedback = (
+                    f"Invalid delegation: {'; '.join(parts)}. You may only "
+                    f"delegate sub-tasks to yourself ({agent!r}), or escalate."
+                )
             db.insert_task_result(
                 task_id=task_id,
                 agent=agent,
@@ -384,8 +390,6 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             orch._audit.log_orchestration_step(
                 task_id, next_count, {"action": "feedback", "reason": feedback},
             )
-            # step already counted on claim (try_claim_for_step increments
-            # orchestration_step_count atomically before the agent runs).
             db.update_task(task_id, status=TaskStatus.PENDING, block_kind=None)
             if orch._queue is not None:
                 orch._queue.put_nowait(orch._slug, task_id)
@@ -409,7 +413,10 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             # Earliest by created_at; tie-break on id for determinism.
             completed_children.sort(key=lambda c: (c.created_at, c.id))
             worker_of_record = completed_children[0].assigned_agent
-            if worker_of_record == decision.agent:
+            # Self-targeted delegation is a sequence step (self-decomposition),
+            # NOT a revise cycle — only bump when re-delegating to a DIFFERENT
+            # worker-of-record. `agent` is this task's owner.
+            if worker_of_record == decision.agent and decision.agent != agent:
                 db.increment_revision_count(task_id)
         child_id = db.next_task_id()
         child = TaskRecord(
@@ -420,6 +427,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             parent_task_id=task_id,
             status=TaskStatus.PENDING,
             session_timeout_seconds=task.session_timeout_seconds,
+            task_type="subtask",
         )
         # Atomic CAS: insert child + transition parent to BLOCKED(DELEGATED)
         # under the same RLock acquisition. Serializes against /cancel via
@@ -501,28 +509,30 @@ def _validate_delegate(orch: "Orchestrator", decision) -> str | None:
     return None
 
 
-def _chain_legs_off_team(
-    teams,
-    manager: str,
-    decision,
-) -> list[tuple[str, str | None]]:
-    """Return [(agent_name, agent_team)] for every leg in ``decision`` whose
-    agent is NOT on ``manager``'s team. Empty list means all legs are on-team.
-    """
-    caller_team = teams.team_for_manager(manager)
-    if caller_team is None:
-        # Manager itself isn't registered — surface every leg as off-team.
-        all_agents = [decision.agent] + [leg.agent for leg in (decision.then or [])]
-        return [(a, teams.team_for_agent(a)) for a in all_agents if a]
+def _legs_out_of_scope(orch: "Orchestrator", owner: str, decision) -> list[tuple[str, str]]:
+    """Return [(agent_name, reason)] for delegation legs `owner` may not target.
 
-    off: list[tuple[str, str | None]] = []
-    for agent_name in [decision.agent] + [leg.agent for leg in (decision.then or [])]:
-        if not agent_name:
-            continue
-        agent_team = teams.team_for_agent(agent_name)
-        if agent_team is None or agent_team != caller_team:
-            off.append((agent_name, agent_team))
-    return off
+    - Manager owner: may target agents on its own team, or itself.
+    - Non-manager owner: may target ONLY itself (self-decomposition).
+
+    Empty list = all legs in scope.
+    """
+    targets = [decision.agent] + [leg.agent for leg in (decision.then or [])]
+    out: list[tuple[str, str]] = []
+    if orch.teams.is_team_manager(owner):
+        caller_team = orch.teams.team_for_manager(owner)
+        for a in targets:
+            if not a or a == owner:        # self always allowed
+                continue
+            t = orch.teams.team_for_agent(a)
+            if caller_team is None or t != caller_team:
+                out.append((a, f"on team {t!r}" if t else "not on a team"))
+    else:
+        for a in targets:
+            if not a or a == owner:
+                continue
+            out.append((a, "non-manager owners may only delegate to themselves"))
+    return out
 
 
 def _default_agent_for_root(orch: "Orchestrator", task) -> str:
@@ -545,17 +555,24 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
     on the very first orchestration step (detected via audit log).
     """
     from runtime.orchestrator.capabilities import build_capabilities_prompt
-    if not orch.teams.is_team_manager(agent):
-        return ""
+    if task.task_type != "task":
+        return ""   # leaf sub-task: per-task instruction is the brief
     from runtime.orchestrator import prompt_loader
-    agent_names = _list_candidate_agents(orch, agent)
-    agents_for_prompt = []
-    for name in agent_names:
-        candidate = prompt_loader.load_agent(orch._paths, name)
-        desc = (candidate.description if candidate is not None else None) or name
+    is_mgr = orch.teams.is_team_manager(agent)
+    agents_for_prompt: list[dict] = []
+    if is_mgr:
+        for name in _list_candidate_agents(orch, agent):
+            candidate = prompt_loader.load_agent(orch._paths, name)
+            desc = (candidate.description if candidate is not None else None) or name
+            agents_for_prompt.append({"name": name, "description": desc})
+        # Self-targeting (spec §3): a manager may delegate a sub-task to itself
+        # to break its own work into a fresh bounded session. _list_candidate_agents
+        # only returns team workers (the manager is never in teams.yaml `workers`),
+        # so advertise self explicitly in the roster.
         agents_for_prompt.append({
-            "name": name,
-            "description": desc,
+            "name": agent,
+            "description": "yourself — delegate a sub-task to yourself to "
+                           "decompose your own work into a fresh bounded session",
         })
     prior_steps = _build_prior_steps_from_db(orch, task.id)
     base = build_capabilities_prompt(
@@ -564,6 +581,7 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
         max_steps=orch._settings.max_orchestration_steps,
         prior_steps=prior_steps,
         manager_name=agent,
+        self_only=not is_mgr,
     )
     headers: list[str] = []
     revisit = _revisit_header_if_applicable(orch, task.id)
@@ -591,7 +609,6 @@ def _list_candidate_agents(orch: "Orchestrator", calling_manager: str) -> list[s
     if caller_team is None:
         return []
     team_members = set(orch.teams.manager_for_team(caller_team).workers)
-    team_members.discard(calling_manager)  # manager should not delegate to itself
 
     if orch._paths.workspaces_dir.exists():
         names = sorted(
@@ -1207,6 +1224,7 @@ def _advance_chain_for_completed_child(
             assigned_agent=action.next_leg.agent,
             status=TaskStatus.PENDING,
             session_timeout_seconds=parent.session_timeout_seconds,
+            task_type="subtask",
         )
     )
 

@@ -1,8 +1,9 @@
 # Knowledge Base Guideline
 
-Authoritative reference for what goes in `<runtime>/kb/`, how to write entries,
-and how deletion works. Agents read this on demand; `CLAUDE.md` points at it.
-Rules here are org policy — they apply equally to every agent.
+Authoritative reference for what goes in `<runtime>/orgs/<slug>/kb/`, how to
+write entries, and how deletion works. Agents read this on demand; `CLAUDE.md`
+points at it. Rules here are org policy — they apply equally to every agent in
+that org.
 
 ## What belongs
 

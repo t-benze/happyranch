@@ -85,15 +85,15 @@ export function RunJobDialog({ job, open, onClose, onSuccess }: Props): JSX.Elem
         </DialogHeader>
 
         {/* Script preview */}
-        <div className="space-y-3">
-          <div>
+        <div className="min-w-0 space-y-3">
+          <div className="min-w-0">
             <p className="text-fg-muted mb-1 text-xs font-medium uppercase tracking-wider">
               Script
               <span className="ml-1 normal-case">
                 ({job.interpreter}{job.cwd_hint ? ` · cwd hint: ${job.cwd_hint}` : ''})
               </span>
             </p>
-            <pre className="bg-surface-canvas text-fg max-h-40 overflow-y-auto rounded p-3 text-xs whitespace-pre">
+            <pre className="bg-surface-canvas text-fg max-h-40 max-w-full min-w-0 overflow-x-auto overflow-y-auto rounded p-3 text-xs whitespace-pre">
               {job.script_text}
             </pre>
           </div>

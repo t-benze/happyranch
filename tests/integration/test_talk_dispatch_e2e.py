@@ -105,18 +105,22 @@ def test_worker_self_dispatch_runs_to_completion(
     base = _base(port)
     headers = _auth_headers()
 
-    # Plan: every fake-claude invocation reports completion. dev_agent's
-    # summary doesn't need to be a NextStep JSON object — workers report
-    # plain prose. We hard-code the agent name in the callback because
-    # this test only ever runs dev_agent.
+    # Plan: a talk-dispatched task is a root (task_type=task), so its owner —
+    # dev_agent here — orchestrates it and MUST emit a `decision`. dev_agent
+    # does the work itself this step and reports `done` (it could instead
+    # delegate a self-sub-task). This mirrors what a real agent emits under the
+    # self_only orchestration prompt injected for task_type=task owners.
     fake_plan_env.write_text(
         '#!/usr/bin/env bash\n'
         'set -e\n'
         'task_id=$1; session_id=$2; agent=$3; org_slug=$4\n'
-        'happyranch report-completion --org "$org_slug" \\\n'
-        '  --task-id "$task_id" --session-id "$session_id" \\\n'
-        '  --agent "$agent" --status completed --confidence 90 \\\n'
-        '  --summary "dispatched task done"\n'
+        'tmpfile=$(mktemp)\n'
+        'printf \'{"task_id":"%s","session_id":"%s","agent":"%s","status":"completed",'
+        '"summary":"dispatched task done","confidence":90,'
+        '"decision":{"action":"done","summary":"dispatched task done"}}\''
+        ' "$task_id" "$session_id" "$agent" > "$tmpfile"\n'
+        'happyranch report-completion --org "$org_slug" --from-file "$tmpfile"\n'
+        'rm -f "$tmpfile"\n'
     )
     fake_plan_env.chmod(0o755)
 

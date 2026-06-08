@@ -63,28 +63,13 @@ class Database:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
-        self._tasks_has_legacy_type_column: bool = False
         self._migrate_jobs_table_if_needed()
         self._create_tables()
-        self._detect_legacy_columns()
 
     @property
     def path(self) -> Path:
         """Alias for ``db_path``. Convenience for callers that prefer ``.path``."""
         return self.db_path
-
-    def _detect_legacy_columns(self) -> None:
-        """Detect legacy columns that may still exist on upgraded DBs.
-
-        Called once after _create_tables() completes. Fresh DBs never have the
-        ``type`` column (dropped in the Task-4 schema refactor). Runtimes
-        created before that change retain it as ``TEXT NOT NULL`` with no SQL
-        default — insert_task must supply a sentinel value or SQLite raises
-        IntegrityError.
-        """
-        cursor = self._conn.execute("PRAGMA table_info(tasks)")
-        columns = {row[1] for row in cursor.fetchall()}
-        self._tasks_has_legacy_type_column = "type" in columns
 
     def _migrate_jobs_table_if_needed(self) -> None:
         """Rename legacy ``script_requests`` table to ``jobs`` and ripple the
@@ -204,6 +189,7 @@ class Database:
                 assigned_agent TEXT,
                 team TEXT NOT NULL DEFAULT 'engineering',
                 brief TEXT NOT NULL,
+                task_type TEXT NOT NULL DEFAULT 'task',
                 revision_count INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -519,11 +505,36 @@ class Database:
             # successful turn.
             "ALTER TABLE thread_participants ADD COLUMN agent_session_id TEXT",
             "ALTER TABLE thread_participants ADD COLUMN last_resumed_seq INTEGER NOT NULL DEFAULT 0",
+            # Legacy cleanup: drop the dead `type` column (dropped from the
+            # current schema in the Task-4 refactor; never read, only a
+            # "general" sentinel was written). Idempotent via the try/except
+            # below — DROP of an absent column raises OperationalError.
+            "ALTER TABLE tasks DROP COLUMN type",
         ):
             try:
                 self._conn.execute(ddl)
             except sqlite3.OperationalError:
                 pass
+        # task_type column + one-time provenance backfill. Coupled in a single
+        # try/except so the backfill UPDATE runs EXACTLY ONCE — when ADD COLUMN
+        # succeeds on the first upgrade. On later startups (and on fresh DBs,
+        # where CREATE TABLE already defines the column) ADD raises
+        # duplicate-column and the whole block is skipped. Existing rows with a
+        # parent were spawned from an ongoing task, so under the new model they
+        # are subtasks (leaf); roots keep the 'task' default. Without this
+        # backfill an in-flight pre-existing child would be mis-typed 'task' and
+        # run_step would parse its plain completion as a NextStep decision and
+        # escalate. (A task_type='task' row never has a parent, so the predicate
+        # is provenance-correct and safe even if it ever re-ran.)
+        try:
+            self._conn.execute(
+                "ALTER TABLE tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'task'"
+            )
+            self._conn.execute(
+                "UPDATE tasks SET task_type='subtask' WHERE parent_task_id IS NOT NULL"
+            )
+        except sqlite3.OperationalError:
+            pass
         # Index the reverse lookup (`WHERE revisit_of_task_id = ?`).
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tasks_revisit_of ON tasks(revisit_of_task_id)"
@@ -667,32 +678,17 @@ class Database:
             task.note,
             task.orchestration_step_count,
             task.session_timeout_seconds,
+            task.task_type,
         )
-        if self._tasks_has_legacy_type_column:
-            # Legacy DBs (created before the Task-4 schema refactor) retain a
-            # `type TEXT NOT NULL` column with no SQL default. Supply a sentinel
-            # value to satisfy the NOT NULL constraint without re-adding the
-            # column to the current schema.
-            # params[0] = id; insert type="general" after id, then the rest.
-            self._conn.execute(
-                """INSERT INTO tasks (id, type, status, assigned_agent, team, brief,
-                   revision_count, created_at, updated_at, completed_at, parent_task_id,
-                   revisit_of_task_id, dispatched_from_talk_id, dispatched_from_thread_id,
-                   block_kind, note,
-                   orchestration_step_count, session_timeout_seconds)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (params[0], "general") + params[1:],
-            )
-        else:
-            self._conn.execute(
-                """INSERT INTO tasks (id, status, assigned_agent, team, brief,
-                   revision_count, created_at, updated_at, completed_at, parent_task_id,
-                   revisit_of_task_id, dispatched_from_talk_id, dispatched_from_thread_id,
-                   block_kind, note,
-                   orchestration_step_count, session_timeout_seconds)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                params,
-            )
+        self._conn.execute(
+            """INSERT INTO tasks (id, status, assigned_agent, team, brief,
+               revision_count, created_at, updated_at, completed_at, parent_task_id,
+               revisit_of_task_id, dispatched_from_talk_id, dispatched_from_thread_id,
+               block_kind, note,
+               orchestration_step_count, session_timeout_seconds, task_type)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            params,
+        )
         self._conn.commit()
 
     @_synchronized
@@ -724,6 +720,7 @@ class Database:
             cancelled_at=row["cancelled_at"],
             last_heartbeat=row["last_heartbeat"],
             session_timeout_seconds=row["session_timeout_seconds"],
+            task_type=row["task_type"],
         )
 
     @_synchronized
@@ -792,6 +789,7 @@ class Database:
                 cancelled_at=row["cancelled_at"],
                 last_heartbeat=row["last_heartbeat"],
                 session_timeout_seconds=row["session_timeout_seconds"],
+                task_type=row["task_type"],
             )
             for row in cursor.fetchall()
         ]
@@ -939,6 +937,7 @@ class Database:
                 cancelled_at=row["cancelled_at"],
                 last_heartbeat=row["last_heartbeat"],
                 session_timeout_seconds=row["session_timeout_seconds"],
+                task_type=row["task_type"],
             )
             for row in cursor.fetchall()
         ]

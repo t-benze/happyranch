@@ -76,20 +76,54 @@ MAX_OUTPUT_BYTES = 200 * 1024
 class SubmitTask(BaseModel):
     team: str | None = None
     brief: str
+    owner: str | None = None  # assign a specific agent (default: team manager)
 
 
 @router.post("/tasks")
 async def submit_task(body: SubmitTask, org: OrgDep, request: Request) -> dict:
     state: DaemonState = request.app.state.daemon
-    team = body.team or "engineering"
     registry = org.teams
-    if registry is None or team not in registry.teams():
-        valid = registry.teams() if registry is not None else []
+    if registry is None:
         raise HTTPException(
             status_code=400,
-            detail={"code": "unknown_team", "valid": valid},
+            detail={"code": "unknown_team", "valid": []},
         )
-    manager = registry.manager_for_team(team)
+
+    def _require_known_team(t: str) -> None:
+        if t not in registry.teams():
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "unknown_team", "valid": registry.teams()},
+            )
+
+    if body.owner is not None:
+        if body.owner not in registry.all_agents():
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "unknown_owner", "owner": body.owner,
+                        "valid": registry.all_agents()},
+            )
+        # The owner's own team is authoritative for routing/audit. Derive it
+        # when no team is requested; otherwise the requested team must match,
+        # so the task.team that children inherit can't diverge from the owner.
+        owner_team = (registry.team_for_agent(body.owner)
+                      or registry.team_for_manager(body.owner))
+        if body.team is None:
+            team = owner_team
+        else:
+            team = body.team
+            _require_known_team(team)
+            if owner_team != team:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": "owner_team_mismatch", "owner": body.owner,
+                            "owner_team": owner_team, "requested_team": team},
+                )
+        assigned = body.owner
+    else:
+        team = body.team or "engineering"
+        _require_known_team(team)
+        assigned = registry.manager_for_team(team).name
     async with org.db_lock:
         task_id = org.db.next_task_id()
         org.db.insert_task(
@@ -97,12 +131,12 @@ async def submit_task(body: SubmitTask, org: OrgDep, request: Request) -> dict:
                 id=task_id,
                 brief=body.brief,
                 team=team,
-                assigned_agent=manager.name,
+                assigned_agent=assigned,
             )
         )
 
     enqueue_task(state, org.slug, task_id)
-    return {"task_id": task_id, "team": team, "assigned_agent": manager.name}
+    return {"task_id": task_id, "team": team, "assigned_agent": assigned}
 
 
 @router.get("/tasks")

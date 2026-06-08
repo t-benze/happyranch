@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
@@ -153,6 +153,39 @@ describe('JobDetailPane + RejectJobDialog — write path', () => {
     await waitFor(() => {
       expect(capturedBody).toEqual({ reason: 'Too risky' });
     });
+  });
+
+  test('RunJobDialog keeps long script previews inside the dialog', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const longScriptJob: JobRecord = {
+      ...JOB,
+      script_text: `echo ${'very-long-token-'.repeat(30)}`,
+    };
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
+        HttpResponse.json({ jobs: [longScriptJob] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/JOB-0001`, () =>
+        HttpResponse.json(longScriptJob),
+      ),
+    );
+
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
+
+    await user.click(await screen.findByRole('button', { name: /^Run$/ }));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toBeInTheDocument();
+    expect(within(dialog).getByText(longScriptJob.script_text)).toHaveClass(
+      'overflow-x-auto',
+      'max-w-full',
+      'min-w-0',
+    );
+    expect(dialog).toHaveClass('overflow-x-hidden');
   });
 
   test('reject button is disabled when reason is empty', async () => {

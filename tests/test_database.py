@@ -723,19 +723,17 @@ def test_get_direct_revisits_none(db):
     assert db.get_direct_revisits("TASK-001") == []
 
 
-def test_insert_task_succeeds_on_legacy_schema_with_type_column(tmp_path):
-    """Simulate an upgraded DB that still has the legacy `type NOT NULL` column.
-    insert_task must supply a sentinel value so the NOT NULL constraint is satisfied."""
+def test_legacy_type_column_is_dropped_on_open(tmp_path):
+    """A pre-Task-4 DB with a legacy `type TEXT NOT NULL` column: opening it
+    via Database() drops the column, and inserts still work."""
     import sqlite3
     from runtime.infrastructure.database import Database
     from runtime.models import TaskRecord
 
     db_path = tmp_path / "legacy.db"
-
-    # Manually create the legacy schema (pre-Task-4) with type TEXT NOT NULL.
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript("""
-        CREATE TABLE tasks (
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE tasks (
             id TEXT PRIMARY KEY,
             type TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'pending',
@@ -747,88 +745,64 @@ def test_insert_task_succeeds_on_legacy_schema_with_type_column(tmp_path):
             updated_at TEXT NOT NULL,
             completed_at TEXT,
             parent_task_id TEXT,
-            final_output_summary TEXT,
-            final_output_dir TEXT,
-            block_kind TEXT,
-            note TEXT,
-            orchestration_step_count INTEGER DEFAULT 0,
-            cancelled_at TEXT,
-            revisit_of_task_id TEXT
-        );
-        CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
-        CREATE INDEX IF NOT EXISTS idx_tasks_revisit_of ON tasks(revisit_of_task_id);
-        CREATE TABLE IF NOT EXISTS audit_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            task_id TEXT NOT NULL,
-            agent TEXT NOT NULL,
-            action TEXT NOT NULL,
-            payload TEXT,
-            timestamp TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS scorecards (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            agent TEXT NOT NULL UNIQUE,
-            period_start TEXT NOT NULL,
-            period_end TEXT NOT NULL,
-            acceptance_rate REAL NOT NULL,
-            revision_rate REAL NOT NULL,
-            error_count INTEGER NOT NULL,
-            tier TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS task_results (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            task_id TEXT NOT NULL,
-            agent TEXT NOT NULL,
-            session_id TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'completed',
-            output_summary TEXT,
-            decision_json TEXT,
-            confidence_score INTEGER,
-            learnings TEXT,
-            risks_flagged TEXT,
-            duration_seconds INTEGER,
-            token_count INTEGER,
-            estimated_cost REAL,
-            output_dir TEXT,
-            created_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS talks (
-            id TEXT PRIMARY KEY,
-            agent_name TEXT NOT NULL,
-            started_at TEXT NOT NULL,
-            ended_at TEXT,
-            status TEXT NOT NULL DEFAULT 'open',
-            summary TEXT,
-            topic_list_json TEXT,
-            new_learnings_count INTEGER NOT NULL DEFAULT 0,
-            new_kb_slugs_json TEXT,
-            transcript_path TEXT
-        );
-    """)
+            final_output_dir TEXT
+        )"""
+    )
     conn.commit()
     conn.close()
 
-    # Database() should detect the legacy column and handle inserts gracefully.
     db = Database(db_path)
-    assert db._tasks_has_legacy_type_column is True
+    cols = {r[1] for r in db._conn.execute("PRAGMA table_info(tasks)").fetchall()}
+    assert "type" not in cols          # legacy column dropped
+    assert "task_type" in cols         # new column present
 
-    record = TaskRecord(id="TASK-001", brief="legacy schema test", team="engineering")
-    db.insert_task(record)  # Must NOT raise IntegrityError
-
-    # Round-trip read should work.
+    db.insert_task(TaskRecord(id="TASK-001", brief="legacy schema test"))
     got = db.get_task("TASK-001")
-    assert got is not None
-    assert got.id == "TASK-001"
-    assert got.brief == "legacy schema test"
+    assert got is not None and got.task_type == "task"
 
 
-def test_fresh_db_has_no_legacy_type_column(tmp_path):
-    """Fresh DBs must not have the legacy type column — flag stays False."""
+def test_task_type_backfill_classifies_existing_children_as_subtask(tmp_path):
+    """Upgrade migration: a pre-existing DB with a root + delegated child (no
+    task_type column) must backfill the child (parent_task_id IS NOT NULL) to
+    'subtask' and the root to 'task'. Otherwise an in-flight legacy child would
+    be mis-typed 'task' and run_step would parse its completion as a decision."""
+    import sqlite3
     from runtime.infrastructure.database import Database
+    from runtime.models import TaskRecord
 
-    db = Database(tmp_path / "fresh.db")
-    assert db._tasks_has_legacy_type_column is False
+    db_path = tmp_path / "upgrade.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'pending',
+            assigned_agent TEXT,
+            team TEXT NOT NULL DEFAULT 'engineering',
+            brief TEXT NOT NULL,
+            revision_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT,
+            parent_task_id TEXT,
+            final_output_dir TEXT
+        )"""
+    )
+    # A root (no parent) and a delegated child (has parent) — no task_type col.
+    conn.execute(
+        "INSERT INTO tasks (id, status, team, brief, created_at, updated_at) "
+        "VALUES ('TASK-1', 'blocked', 'engineering', 'root', '2026-01-01', '2026-01-01')"
+    )
+    conn.execute(
+        "INSERT INTO tasks (id, status, team, brief, parent_task_id, created_at, updated_at) "
+        "VALUES ('TASK-2', 'pending', 'engineering', 'child', 'TASK-1', '2026-01-01', '2026-01-01')"
+    )
+    conn.commit()
+    conn.close()
+
+    db = Database(db_path)
+    assert db.get_task("TASK-1").task_type == "task"      # root
+    assert db.get_task("TASK-2").task_type == "subtask"   # delegated child
+    db.close()
     db.close()
 
 
@@ -1236,6 +1210,18 @@ def test_update_task_active_chain_sets_and_clears(db):
     assert db.get_task("TASK-1").active_chain is None
 
 
+def test_task_type_defaults_to_task():
+    from runtime.models import TaskRecord
+    t = TaskRecord(id="TASK-001", brief="x")
+    assert t.task_type == "task"
+
+
+def test_task_type_accepts_subtask():
+    from runtime.models import TaskRecord
+    t = TaskRecord(id="TASK-002", brief="x", task_type="subtask")
+    assert t.task_type == "subtask"
+
+
 def test_legacy_artifact_columns_renamed_and_path_strings_rewritten(tmp_path):
     """2026-06-02 rename: an un-migrated runtime with the OLD column names
     (`final_artifact_dir`, `artifact_dir`) and OLD `artifacts/...` path
@@ -1318,3 +1304,14 @@ def test_legacy_artifact_columns_renamed_and_path_strings_rewritten(tmp_path):
     final_dir2 = db2._conn.execute("SELECT final_output_dir FROM tasks WHERE id='TASK-1'").fetchone()[0]
     assert final_dir2 == "output/TASK-1"
     db2.close()
+
+
+def test_task_type_round_trips(tmp_path):
+    from runtime.infrastructure.database import Database
+    from runtime.models import TaskRecord
+    db = Database(tmp_path / "rt.db")
+    db.insert_task(TaskRecord(id="TASK-001", brief="root", task_type="task"))
+    db.insert_task(TaskRecord(id="TASK-002", brief="child", task_type="subtask"))
+    assert db.get_task("TASK-001").task_type == "task"
+    assert db.get_task("TASK-002").task_type == "subtask"
+    db.close()

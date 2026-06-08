@@ -68,15 +68,18 @@ def test_validate_delegate_rejects_chain_leg_with_missing_workspace():
 def test_cross_team_chain_guard_rejects_off_team_leg():
     """If any leg targets an agent not on the manager's team, the whole
     chain is rejected via the existing feedback mechanism."""
-    from runtime.orchestrator.run_step import _chain_legs_off_team
+    from runtime.orchestrator.run_step import _legs_out_of_scope
 
     teams = MagicMock()
+    teams.is_team_manager.return_value = True
     teams.team_for_manager.return_value = "engineering"
     teams.team_for_agent.side_effect = lambda name: {
         "dev": "engineering",
         "sr": "engineering",
         "outsider": "content",
     }.get(name)
+    orch = MagicMock()
+    orch.teams = teams
 
     decision = NextStep(
         action="delegate", agent="dev", prompt="build",
@@ -85,35 +88,45 @@ def test_cross_team_chain_guard_rejects_off_team_leg():
             ChainLeg(agent="outsider", prompt="other"),
         ],
     )
-    off = _chain_legs_off_team(teams, manager="eh", decision=decision)
-    assert off == [("outsider", "content")]
+    out = _legs_out_of_scope(orch, owner="eh", decision=decision)
+    assert len(out) == 1
+    assert out[0][0] == "outsider"
+    assert "content" in out[0][1]
 
 
 def test_cross_team_chain_guard_passes_when_all_legs_on_team():
-    from runtime.orchestrator.run_step import _chain_legs_off_team
+    from runtime.orchestrator.run_step import _legs_out_of_scope
     teams = MagicMock()
+    teams.is_team_manager.return_value = True
     teams.team_for_manager.return_value = "engineering"
     teams.team_for_agent.return_value = "engineering"
+    orch = MagicMock()
+    orch.teams = teams
     decision = NextStep(action="delegate", agent="dev", prompt="x", then=[
         ChainLeg(agent="sr", prompt="y"),
     ])
-    assert _chain_legs_off_team(teams, manager="eh", decision=decision) == []
+    assert _legs_out_of_scope(orch, owner="eh", decision=decision) == []
 
 
 def test_cross_team_chain_guard_first_leg_off_team():
     """First leg's off-team membership is also caught by the new helper."""
-    from runtime.orchestrator.run_step import _chain_legs_off_team
+    from runtime.orchestrator.run_step import _legs_out_of_scope
     teams = MagicMock()
+    teams.is_team_manager.return_value = True
     teams.team_for_manager.return_value = "engineering"
     teams.team_for_agent.side_effect = lambda name: {
         "outsider": "content",
         "sr": "engineering",
     }.get(name)
+    orch = MagicMock()
+    orch.teams = teams
     decision = NextStep(action="delegate", agent="outsider", prompt="x", then=[
         ChainLeg(agent="sr", prompt="y"),
     ])
-    off = _chain_legs_off_team(teams, manager="eh", decision=decision)
-    assert off == [("outsider", "content")]
+    out = _legs_out_of_scope(orch, owner="eh", decision=decision)
+    assert len(out) == 1
+    assert out[0][0] == "outsider"
+    assert "content" in out[0][1]
 
 
 def test_chain_persistence_writes_active_chain_with_step_audit_id(tmp_path):
@@ -227,6 +240,46 @@ def test_chain_branch_auto_advances_on_verdict_match(tmp_path):
     assert cs2.step_index == 1
     # chain auto-advance does NOT bump orchestration_step_count
     assert db.get_task("TASK-001").orchestration_step_count == 0
+
+
+def test_chain_advanced_leg_child_is_typed_subtask(tmp_path):
+    """Regression: a chain auto-advance leg child is spawned from an ongoing
+    task, so it MUST be task_type='subtask' (a leaf). Otherwise the reviewer
+    worker on leg 2+ owns a task_type='task', hits the decision gate, and its
+    verdict-only/no-decision completion escalates — stalling the chain."""
+    from runtime.infrastructure.database import Database
+    from runtime.orchestrator.chain import ChainState
+
+    db = Database(tmp_path / "x.db")
+    db.insert_task(TaskRecord(id="TASK-001", team="engineering", brief="parent"))
+    db.update_task("TASK-001", status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED)
+    chain = ChainState(
+        step_index=0,
+        first_leg_expect_verdict=None,
+        legs=[ChainLeg(agent="sr", prompt="review brief", expect_verdict="APPROVE")],
+        step_audit_id=1,
+    )
+    db.update_task_active_chain("TASK-001", chain.serialize())
+    db.insert_task(TaskRecord(
+        id="TASK-002", team="engineering", brief="build",
+        parent_task_id="TASK-001", assigned_agent="dev",
+    ))
+    db.update_task("TASK-002", status=TaskStatus.COMPLETED)
+    db.insert_task_result(
+        task_id="TASK-002", agent="dev", session_id="s",
+        status="completed", confidence_score=80,
+        output_summary="built PR #1", verdict=None,
+    )
+
+    from runtime.orchestrator.run_step import _advance_chain_for_completed_child
+    outcome = _advance_chain_for_completed_child(
+        orch=_orch_with_db(db),
+        parent_task_id="TASK-001",
+        child_task_id="TASK-002",
+    )
+    assert outcome == "advance"
+    new_child_id = db.get_children("TASK-001")[1]
+    assert db.get_task(new_child_id).task_type == "subtask"
 
 
 def test_chain_branch_wakes_parent_on_verdict_mismatch(tmp_path):

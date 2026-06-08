@@ -170,3 +170,16 @@ def test_prompt_warns_that_prose_escalates():
         "prose" in lowered or "plain text" in lowered or "non-json" in lowered
         or "not json" in lowered
     )
+
+
+def test_self_only_prompt_omits_roster_and_names_self():
+    from runtime.orchestrator.capabilities import build_capabilities_prompt
+    p = build_capabilities_prompt(
+        agents=[], step_number=1, max_steps=10,
+        manager_name="dev_agent", self_only=True,
+    )
+    assert "Available Agents" not in p          # no team roster
+    assert "dev_agent" in p                       # delegate-to-self target named
+    assert '"action": "delegate"' in p
+    assert '"action": "done"' in p
+    assert '"action": "escalate"' in p

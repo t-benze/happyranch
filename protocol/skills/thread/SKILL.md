@@ -77,16 +77,16 @@ not "I have nothing to add").
 
 ### Dispatch a task (optional, before reply/decline)
 
-If the thread has converged on a concrete action that fits your authority
-(workers self-dispatch only; managers can dispatch to anyone on their team),
-you may submit a task without ending the thread. Cross-team dispatch is
-forbidden — if the action belongs to another team, surface it in your reply
-and let the founder loop their manager in.
+If the thread has converged on a concrete action that fits your authority,
+you may submit a task to yourself without ending the thread. Thread dispatch is
+self-only for workers and managers. If the action belongs to someone else,
+surface it in your reply and let the founder loop them in or open a task tree
+where manager delegation is available.
 
 Write `/tmp/thread-dispatch-<thread_id>.json`:
 {"thread_id": "<id>", "invocation_token": "<token>",
  "dispatcher": "<your name>", "brief": "...",
- "target_agent": "<name>" /* optional, defaults to yourself */,
+ "target_agent": "<your name>" /* optional; any other target is rejected */,
  "team": "<team>" /* optional, defaults to your team */}
 
 Then:
