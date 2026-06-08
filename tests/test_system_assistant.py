@@ -650,6 +650,27 @@ def test_classify_stale_when_learnings_index_is_symlink(tmp_path: Path) -> None:
     assert status.detail == "assistant learnings index must not be a symlink"
 
 
+def test_classify_stale_when_learnings_index_is_dangling_symlink(
+    tmp_path: Path,
+) -> None:
+    bootstrap_assistant_workspace(tmp_path, executor="codex")
+    paths = system_assistant_paths(tmp_path)
+    target = tmp_path / "missing-index-target.md"
+    (paths.learnings_dir / "_index.md").unlink()
+    (paths.learnings_dir / "_index.md").symlink_to(target)
+    cfg = AssistantConfig(
+        selected_executor="codex",
+        selected_command="codex",
+        workspace_path=str(paths.workspace),
+    )
+
+    save_assistant_config(tmp_path, cfg)
+    status = classify_assistant_state(tmp_path)
+
+    assert status.state == AssistantState.STALE_OR_BROKEN
+    assert status.detail == "assistant learnings index must not be a symlink"
+
+
 def test_classify_stale_when_learnings_index_is_directory(tmp_path: Path) -> None:
     bootstrap_assistant_workspace(tmp_path, executor="codex")
     paths = system_assistant_paths(tmp_path)
@@ -948,3 +969,20 @@ def test_bootstrap_rejects_learnings_index_directory(tmp_path: Path) -> None:
         match="assistant learnings index is not a regular file",
     ):
         bootstrap_assistant_workspace(tmp_path, executor="codex")
+
+
+def test_bootstrap_rejects_dangling_learnings_index_symlink_without_writing_target(
+    tmp_path: Path,
+) -> None:
+    paths = system_assistant_paths(tmp_path)
+    paths.learnings_dir.mkdir(parents=True)
+    target = tmp_path / "external-index-target.md"
+    (paths.learnings_dir / "_index.md").symlink_to(target)
+
+    with pytest.raises(
+        ValueError,
+        match="assistant learnings index must not be a symlink",
+    ):
+        bootstrap_assistant_workspace(tmp_path, executor="codex")
+
+    assert not target.exists()

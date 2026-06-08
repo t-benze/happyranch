@@ -122,10 +122,10 @@ def _bootstrap_file_invalid_detail(path: Path, filename: str) -> str | None:
 
 
 def _learnings_index_invalid_detail(path: Path) -> str | None:
-    if not path.exists():
-        return None
     if path.is_symlink():
         return "assistant learnings index must not be a symlink"
+    if not path.exists():
+        return None
     if not path.is_file():
         return "assistant learnings index is not a regular file"
     return None
