@@ -74,6 +74,7 @@ def load_assistant_config(runtime_root: Path) -> AssistantConfig | None:
 
 def _managed_dir_symlink_detail(paths: SystemAssistantPaths) -> str | None:
     managed_dirs = [
+        (paths.root.parent, "assistant system directory must not be a symlink"),
         (paths.root, "assistant root must not be a symlink"),
         (paths.workspace, "assistant workspace must not be a symlink"),
         (paths.learnings_dir, "assistant learnings directory must not be a symlink"),
@@ -87,6 +88,7 @@ def _managed_dir_symlink_detail(paths: SystemAssistantPaths) -> str | None:
 
 def _managed_dir_invalid_detail(paths: SystemAssistantPaths) -> str | None:
     managed_dirs = [
+        (paths.root.parent, "assistant system directory is missing"),
         (paths.root, "assistant root is missing"),
         (paths.workspace, "assistant workspace is missing"),
         (paths.learnings_dir, "assistant learnings directory is missing"),
@@ -120,11 +122,17 @@ def _ensure_managed_dir(path: Path, symlink_detail: str) -> None:
 
 def save_assistant_config(runtime_root: Path, config: AssistantConfig) -> None:
     paths = system_assistant_paths(runtime_root)
+    if paths.root.parent.is_symlink():
+        raise ValueError("assistant system directory must not be a symlink")
     if paths.root.is_symlink():
         raise ValueError("assistant root must not be a symlink")
     if paths.config_path.is_symlink():
         raise ValueError("assistant config must not be a symlink")
-    paths.root.mkdir(parents=True, exist_ok=True)
+    _ensure_managed_dir(
+        paths.root.parent,
+        "assistant system directory must not be a symlink",
+    )
+    _ensure_managed_dir(paths.root, "assistant root must not be a symlink")
     paths.config_path.write_text(config.model_dump_json(indent=2) + "\n")
 
 
@@ -245,6 +253,10 @@ def _reject_symlink(path: Path, detail: str) -> None:
 def bootstrap_assistant_workspace(runtime_root: Path, *, executor: str) -> None:
     selected_executor = _validate_executor(executor)
     paths = system_assistant_paths(runtime_root)
+    _reject_symlink(
+        paths.root.parent,
+        "assistant system directory must not be a symlink",
+    )
     _reject_symlink(paths.root, "assistant root must not be a symlink")
     _reject_symlink(paths.workspace, "assistant workspace must not be a symlink")
     _reject_symlink(
@@ -267,6 +279,10 @@ def bootstrap_assistant_workspace(runtime_root: Path, *, executor: str) -> None:
     _reject_symlink(
         paths.learnings_dir / "_index.md",
         "assistant learnings index must not be a symlink",
+    )
+    _ensure_managed_dir(
+        paths.root.parent,
+        "assistant system directory must not be a symlink",
     )
     _ensure_managed_dir(paths.root, "assistant root must not be a symlink")
     _ensure_managed_dir(paths.workspace, "assistant workspace must not be a symlink")

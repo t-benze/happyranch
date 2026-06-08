@@ -5,6 +5,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+import yaml
 
 from runtime.system_assistant import (
     AssistantConfig,
@@ -86,6 +87,26 @@ def test_save_config_rejects_root_symlink_without_writing_target(tmp_path: Path)
         save_assistant_config(tmp_path, cfg)
 
     assert not (external_root / "config.json").exists()
+
+
+def test_save_config_rejects_system_symlink_without_writing_target(tmp_path: Path) -> None:
+    paths = system_assistant_paths(tmp_path)
+    external_system = tmp_path / "external-system"
+    external_system.mkdir()
+    paths.root.parent.symlink_to(external_system, target_is_directory=True)
+    cfg = AssistantConfig(
+        selected_executor="codex",
+        selected_command="codex",
+        workspace_path=str(paths.workspace),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="assistant system directory must not be a symlink",
+    ):
+        save_assistant_config(tmp_path, cfg)
+
+    assert not (external_system / "assistant" / "config.json").exists()
 
 
 def test_classify_stale_when_config_is_invalid(tmp_path: Path) -> None:
@@ -216,6 +237,29 @@ def test_classify_stale_when_workspace_is_symlink(tmp_path: Path) -> None:
 
     assert status.state == AssistantState.STALE_OR_BROKEN
     assert status.detail == "assistant workspace must not be a symlink"
+
+
+def test_classify_stale_when_system_directory_is_symlink(tmp_path: Path) -> None:
+    paths = system_assistant_paths(tmp_path)
+    external_system = tmp_path / "external-system"
+    external_system.mkdir()
+    paths.root.parent.symlink_to(external_system, target_is_directory=True)
+    external_root = external_system / "assistant"
+    external_workspace = external_root / "workspace"
+    external_workspace.mkdir(parents=True)
+    (external_workspace / "agent.yaml").write_text("name: system_assistant\n")
+    (external_workspace / "AGENTS.md").write_text("# System Assistant\n")
+    cfg = AssistantConfig(
+        selected_executor="codex",
+        selected_command="codex",
+        workspace_path=str(paths.workspace),
+    )
+    (external_root / "config.json").write_text(cfg.model_dump_json(indent=2) + "\n")
+
+    status = classify_assistant_state(tmp_path)
+
+    assert status.state == AssistantState.STALE_OR_BROKEN
+    assert status.detail == "assistant system directory must not be a symlink"
 
 
 @pytest.mark.parametrize(
@@ -444,7 +488,10 @@ def test_bootstrap_agents_backed_workspace_writes_agents_surface(
     bootstrap_assistant_workspace(tmp_path, executor=executor)
     workspace = tmp_path / "system" / "assistant" / "workspace"
 
-    assert (workspace / "agent.yaml").read_text().startswith("name: system_assistant\n")
+    agent_yaml = yaml.safe_load((workspace / "agent.yaml").read_text())
+    assert agent_yaml["name"] == "system_assistant"
+    assert agent_yaml["executor"] == executor
+    assert agent_yaml["repos"] == {}
     agents_md = (workspace / "AGENTS.md").read_text()
     assert "System Assistant" in agents_md
     assert "explicit user confirmation" in agents_md
@@ -478,6 +525,24 @@ def test_bootstrap_rejects_workspace_symlink_without_writing_target(
         bootstrap_assistant_workspace(tmp_path, executor="codex")
 
     assert list(external_workspace.iterdir()) == []
+
+
+def test_bootstrap_rejects_system_symlink_without_writing_target(
+    tmp_path: Path,
+) -> None:
+    paths = system_assistant_paths(tmp_path)
+    external_system = tmp_path / "external-system"
+    external_system.mkdir()
+    paths.root.parent.symlink_to(external_system, target_is_directory=True)
+
+    with pytest.raises(
+        ValueError,
+        match="assistant system directory must not be a symlink",
+    ):
+        bootstrap_assistant_workspace(tmp_path, executor="codex")
+
+    assert not (external_system / "assistant" / "workspace" / "agent.yaml").exists()
+    assert not (external_system / "assistant" / "workspace" / "AGENTS.md").exists()
 
 
 @pytest.mark.parametrize(
