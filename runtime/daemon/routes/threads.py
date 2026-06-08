@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from runtime.daemon.auth import require_token
 from runtime.daemon.routes._doctrine import SELF_DISPATCH_HINT
@@ -15,11 +15,13 @@ from runtime.daemon.runner import enqueue_task
 from runtime.daemon.state import DaemonState
 from runtime.daemon.thread_queue import ThreadJob
 from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.infrastructure.artifact_store import ArtifactStore, InvalidArtifactName
 from runtime.infrastructure.thread_store import render_transcript_body
 from runtime.models import (
     ResponderStatusEntry,
     TalkStatus,
     TaskRecord,
+    ThreadAttachment,
     ThreadInvocationPurpose,
     ThreadMessageKind,
     ThreadRecord,
@@ -36,6 +38,7 @@ router = APIRouter(dependencies=[require_token()])
 # and is permitted only in `recipients` on agent-initiated composes.
 # Routes via the Feishu notifier and the inbox UI instead.
 FOUNDER_LITERAL = "@founder"
+MAX_THREAD_ATTACHMENTS = 5
 
 
 async def _publish_thread_event(
@@ -71,9 +74,10 @@ def _create_agent_thread_locked(
     *,
     composer: str,
     subject: str,
-    body_text: str,
+    body_text: str | None,
     recipients: list[str],
     turn_cap: int,
+    attachments: list[ThreadAttachment] | None = None,
     composed_from_task_id: str | None = None,
     composed_from_talk_id: str | None = None,
 ) -> tuple[str, int, list[str], list[str]]:
@@ -122,6 +126,7 @@ def _create_agent_thread_locked(
         thread_id=thread_id, speaker=composer,
         kind=ThreadMessageKind.MESSAGE,
         body_markdown=body_text,
+        attachments=attachments or [],
     )
     org.db.increment_thread_turns_used(thread_id, by=1)
     AuditLogger(org.db).log_thread_started(
@@ -135,6 +140,7 @@ def _create_agent_thread_locked(
     )
     AuditLogger(org.db).log_thread_message_sent(
         thread_id, seq=seq, speaker=composer, kind="message",
+        attachment_names=[a.artifact_name for a in (attachments or [])],
     )
     tokens_to_enqueue: list[str] = []
     for name in addressed_agents:
@@ -146,10 +152,16 @@ def _create_agent_thread_locked(
     return thread_id, seq, tokens_to_enqueue, addressed_agents
 
 
+class AttachmentRefBody(BaseModel):
+    artifact_name: str
+    display_name: str | None = None
+
+
 class ComposeBody(BaseModel):
     subject: str
     recipients: list[str]
-    body_markdown: str
+    body_markdown: str = ""
+    attachments: list[AttachmentRefBody] = Field(default_factory=list)
     forwarded_from_id: str | None = None
     forwarded_from_kind: str | None = None  # 'thread' | 'talk'
 
@@ -158,10 +170,104 @@ class ComposeAsAgentBody(BaseModel):
     composer: str
     subject: str
     recipients: list[str]
-    body_markdown: str
+    body_markdown: str = ""
+    attachments: list[AttachmentRefBody] = Field(default_factory=list)
     task_id: str | None = None
     session_id: str | None = None
     talk_id: str | None = None
+
+
+def _validate_display_name(name: str) -> None:
+    if not name or len(name) > 200:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_attachment_display_name", "name": name},
+        )
+    if "/" in name or "\\" in name or any(ord(ch) < 32 for ch in name):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_attachment_display_name", "name": name},
+        )
+
+
+def _attachments_preview(attachments: list[ThreadAttachment]) -> str:
+    if not attachments:
+        return ""
+    names = ", ".join(a.display_name for a in attachments[:3])
+    suffix = "" if len(attachments) <= 3 else f" +{len(attachments) - 3} more"
+    file_word = "file" if len(attachments) == 1 else "files"
+    return f"Attached {len(attachments)} {file_word}: {names}{suffix}"
+
+
+def _normalize_attachments(
+    org: object,
+    refs: list[AttachmentRefBody] | None,
+    *,
+    uploaded_by: str,
+) -> list[ThreadAttachment]:
+    if not refs:
+        return []
+    if len(refs) > MAX_THREAD_ATTACHMENTS:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "too_many_attachments", "max": MAX_THREAD_ATTACHMENTS},
+        )
+    seen: set[str] = set()
+    store = ArtifactStore(OrgPaths(org.root).artifacts_dir)
+    out: list[ThreadAttachment] = []
+    for ref in refs:
+        artifact_name = ref.artifact_name.strip()
+        if artifact_name in seen:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "duplicate_attachment",
+                    "artifact_name": artifact_name,
+                },
+            )
+        seen.add(artifact_name)
+        try:
+            path = store.path_for(artifact_name)
+        except InvalidArtifactName as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "invalid_artifact_name",
+                    "name": artifact_name,
+                    "message": str(exc),
+                },
+            ) from exc
+        if ref.display_name is None:
+            display_name = artifact_name
+        else:
+            display_name = ref.display_name.strip()
+        _validate_display_name(display_name)
+        if not path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "artifact_not_found", "name": artifact_name},
+            )
+        stat = path.stat()
+        out.append(
+            ThreadAttachment(
+                artifact_name=artifact_name,
+                display_name=display_name,
+                size_bytes=stat.st_size,
+                content_type=None,
+                uploaded_by=uploaded_by,
+            )
+        )
+    return out
+
+
+def _normalize_message_body(
+    body_markdown: str | None,
+    attachments: list[ThreadAttachment],
+) -> str | None:
+    body_text = (body_markdown or "").strip()
+    if not body_text and not attachments:
+        raise HTTPException(status_code=422, detail={"code": "empty_body"})
+    return body_text or None
 
 
 @router.post("/threads")
@@ -175,9 +281,10 @@ async def compose_thread(
         raise HTTPException(status_code=422, detail={"code": "empty_subject"})
     if not body.recipients:
         raise HTTPException(status_code=422, detail={"code": "empty_recipients"})
-    body_text = body.body_markdown.strip()
-    if not body_text:
-        raise HTTPException(status_code=422, detail={"code": "empty_body"})
+    attachments = _normalize_attachments(
+        org, body.attachments, uploaded_by="founder",
+    )
+    body_text = _normalize_message_body(body.body_markdown, attachments)
 
     # Validate each recipient is an approved agent with a workspace.
     org_paths = OrgPaths(root=org.root)
@@ -235,6 +342,7 @@ async def compose_thread(
             thread_id=thread_id, speaker="founder",
             kind=ThreadMessageKind.MESSAGE,
             body_markdown=body_text,
+            attachments=attachments,
         )
         org.db.increment_thread_turns_used(thread_id, by=1)
         AuditLogger(org.db).log_thread_started(
@@ -245,6 +353,7 @@ async def compose_thread(
         )
         AuditLogger(org.db).log_thread_message_sent(
             thread_id, seq=seq, speaker="founder", kind="message",
+            attachment_names=[a.artifact_name for a in attachments],
         )
         # Broadcast: mint REPLY for every recipient (participant). The founder
         # is the speaker and is not in recipients, so she is never minted.
@@ -262,7 +371,9 @@ async def compose_thread(
     await _publish_thread_event(
         org, slug,
         thread_id=thread_id, seq=seq, speaker="founder",
-        kind="message", preview=body_text, status="open",
+        kind="message",
+        preview=body_text or _attachments_preview(attachments),
+        status="open",
     )
 
     return {
@@ -286,9 +397,10 @@ async def compose_thread_as_agent(
     subject = body.subject.strip()
     if not subject:
         raise HTTPException(status_code=422, detail={"code": "empty_subject"})
-    body_text = body.body_markdown.strip()
-    if not body_text:
-        raise HTTPException(status_code=422, detail={"code": "empty_body"})
+    attachments = _normalize_attachments(
+        org, body.attachments, uploaded_by=body.composer,
+    )
+    body_text = _normalize_message_body(body.body_markdown, attachments)
     if not body.recipients:
         raise HTTPException(status_code=422, detail={"code": "empty_recipients"})
 
@@ -401,6 +513,7 @@ async def compose_thread_as_agent(
             body_text=body_text,
             recipients=recipients,
             turn_cap=turn_cap,
+            attachments=attachments,
             composed_from_task_id=composed_from_task_id,
             composed_from_talk_id=composed_from_talk_id,
         )
@@ -411,7 +524,9 @@ async def compose_thread_as_agent(
     await _publish_thread_event(
         org, slug,
         thread_id=thread_id, seq=seq, speaker=body.composer,
-        kind="message", preview=body_text, status="open",
+        kind="message",
+        preview=body_text or _attachments_preview(attachments),
+        status="open",
     )
 
     return {
@@ -493,6 +608,9 @@ def _msg_to_dict(m, responders: list[dict] | None = None) -> dict:
         "body_markdown": m.body_markdown,
         "decline_reason": m.decline_reason,
         "system_payload": m.system_payload,
+        "attachments": [
+            attachment.model_dump(mode="json") for attachment in m.attachments
+        ],
         "created_at": m.created_at.isoformat(),
     }
     if responders is not None:
@@ -624,7 +742,8 @@ class ReplyBody(BaseModel):
     thread_id: str
     invocation_token: str
     speaker: str
-    body_markdown: str
+    body_markdown: str = ""
+    attachments: list[AttachmentRefBody] = Field(default_factory=list)
     in_response_to_seq: int
 
 
@@ -675,9 +794,10 @@ async def reply_thread_endpoint(
     if t.status is not ThreadStatus.OPEN:
         raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
 
-    body_text = body.body_markdown.strip()
-    if not body_text:
-        raise HTTPException(status_code=422, detail={"code": "empty_body"})
+    attachments = _normalize_attachments(
+        org, body.attachments, uploaded_by=body.speaker,
+    )
+    body_text = _normalize_message_body(body.body_markdown, attachments)
 
     _validate_invocation_token(
         org, token=body.invocation_token,
@@ -713,11 +833,13 @@ async def reply_thread_endpoint(
         seq = org.db.append_thread_message(
             thread_id=thread_id, speaker=body.speaker,
             kind=ThreadMessageKind.MESSAGE, body_markdown=body_text,
+            attachments=attachments,
         )
         org.db.consume_invocation(body.invocation_token)
         org.db.increment_thread_turns_used(thread_id, by=1)
         AuditLogger(org.db).log_thread_message_sent(
             thread_id, seq=seq, speaker=body.speaker, kind="message",
+            attachment_names=[a.artifact_name for a in attachments],
         )
         # Broadcast: mint REPLY for every participant except the speaker.
         for p in org.db.list_thread_participants(thread_id):
@@ -735,7 +857,9 @@ async def reply_thread_endpoint(
     await _publish_thread_event(
         org, slug,
         thread_id=thread_id, seq=seq, speaker=body.speaker,
-        kind="message", preview=body_text, status="open",
+        kind="message",
+        preview=body_text or _attachments_preview(attachments),
+        status="open",
     )
 
     return {"thread_id": thread_id, "seq": seq, "kind": "message"}
@@ -929,7 +1053,8 @@ async def dispatch_from_thread_endpoint(
 
 
 class SendBody(BaseModel):
-    body_markdown: str
+    body_markdown: str = ""
+    attachments: list[AttachmentRefBody] = Field(default_factory=list)
 
 
 class _SendThreadError(Exception):
@@ -948,6 +1073,7 @@ async def _send_thread_message_inprocess(
     thread_id: str,
     *,
     body_markdown: str,
+    attachments: list[AttachmentRefBody] | None = None,
 ) -> dict:
     """Append a founder message to an open thread + mint reply invocations.
 
@@ -959,9 +1085,10 @@ async def _send_thread_message_inprocess(
         raise _SendThreadError(404, "not_found")
     if t.status is not ThreadStatus.OPEN:
         raise _SendThreadError(400, "thread_not_open")
-    body_text = body_markdown.strip()
-    if not body_text:
-        raise _SendThreadError(422, "empty_body")
+    normalized_attachments = _normalize_attachments(
+        org, attachments, uploaded_by="founder",
+    )
+    body_text = _normalize_message_body(body_markdown, normalized_attachments)
 
     participants = [p.agent_name for p in org.db.list_thread_participants(thread_id)]
 
@@ -982,10 +1109,12 @@ async def _send_thread_message_inprocess(
             thread_id=thread_id, speaker="founder",
             kind=ThreadMessageKind.MESSAGE,
             body_markdown=body_text,
+            attachments=normalized_attachments,
         )
         org.db.increment_thread_turns_used(thread_id, by=1)
         AuditLogger(org.db).log_thread_message_sent(
             thread_id, seq=seq, speaker="founder", kind="message",
+            attachment_names=[a.artifact_name for a in normalized_attachments],
         )
         for name in addressed:
             inv = org.db.mint_thread_invocation(
@@ -1000,7 +1129,9 @@ async def _send_thread_message_inprocess(
     await _publish_thread_event(
         org, slug,
         thread_id=thread_id, seq=seq, speaker="founder",
-        kind="message", preview=body_text, status="open",
+        kind="message",
+        preview=body_text or _attachments_preview(normalized_attachments),
+        status="open",
     )
 
     return {"thread_id": thread_id, "seq": seq, "pending_replies": addressed}
@@ -1014,6 +1145,7 @@ async def send_thread_endpoint(
         return await _send_thread_message_inprocess(
             org, slug, thread_id,
             body_markdown=body.body_markdown,
+            attachments=body.attachments,
         )
     except _SendThreadError as exc:
         raise HTTPException(

@@ -3,6 +3,16 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from runtime.infrastructure.artifact_store import ArtifactStore
+from runtime.models import (
+    TalkRecord,
+    TalkStatus,
+    ThreadAttachment,
+    ThreadMessageKind,
+    ThreadRecord,
+)
+from runtime.orchestrator._paths import OrgPaths
+
 # We use the existing daemon conftest fixtures: tmp_home, app, org_state, auth_headers.
 # Helper to seed an approved agent in the alpha org.
 
@@ -82,6 +92,28 @@ def test_compose_rejects_empty_subject(tmp_home, app, org_state, auth_headers):
     assert resp.status_code == 422
 
 
+def test_compose_accepts_attachment_only_message(client, auth_headers, org_state) -> None:
+    _seed_agent(org_state, "dev_agent")
+    _artifact_store(org_state).put("compose-report.pdf", b"pdf")
+
+    resp = client.post(
+        "/api/v1/orgs/alpha/threads",
+        headers=auth_headers,
+        json={
+            "subject": "Files",
+            "recipients": ["dev_agent"],
+            "body_markdown": "",
+            "attachments": [{"artifact_name": "compose-report.pdf"}],
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    messages = org_state.db.list_thread_messages(resp.json()["thread_id"])
+    assert messages[0].body_markdown is None
+    assert messages[0].attachments[0].artifact_name == "compose-report.pdf"
+    assert messages[0].attachments[0].display_name == "compose-report.pdf"
+
+
 # ---------------------------------------------------------------------------
 # Task 20 — GET /threads, GET /threads/{id}, GET /threads/{id}/messages
 # ---------------------------------------------------------------------------
@@ -124,6 +156,40 @@ def test_get_thread_returns_messages_and_participants(tmp_home, app, org_state, 
     assert data["messages"][0]["body_markdown"] == "hi"
 
 
+def test_get_thread_response_includes_attachments(client, auth_headers, org_state) -> None:
+    thread_id = _seed_open_thread(org_state, participants=["dev_agent"])
+    org_state.db.append_thread_message(
+        thread_id=thread_id,
+        speaker="founder",
+        kind=ThreadMessageKind.MESSAGE,
+        attachments=[
+            ThreadAttachment(
+                artifact_name="detail-report.pdf",
+                display_name="detail report.pdf",
+                size_bytes=3,
+                content_type=None,
+                uploaded_by="founder",
+            )
+        ],
+    )
+
+    resp = client.get(
+        f"/api/v1/orgs/alpha/threads/{thread_id}",
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["messages"][0]["attachments"] == [
+        {
+            "artifact_name": "detail-report.pdf",
+            "display_name": "detail report.pdf",
+            "size_bytes": 3,
+            "content_type": None,
+            "uploaded_by": "founder",
+        }
+    ]
+
+
 def test_get_thread_missing_returns_404(tmp_home, app, org_state, auth_headers):
     client = TestClient(app)
     resp = client.get("/api/v1/orgs/alpha/threads/THR-999", headers=auth_headers)
@@ -145,6 +211,18 @@ def _start_thread(client, org_state, auth_headers, *, recipient="dev_agent"):
     ).json()
     inv = org_state.db.list_thread_invocations(r["thread_id"])[0]
     return r["thread_id"], inv.invocation_token
+
+
+def _seed_open_thread(org_state, *, participants: list[str]) -> str:
+    thread_id = org_state.db.next_thread_id()
+    org_state.db.insert_thread(ThreadRecord(id=thread_id, subject="Files"))
+    for agent in participants:
+        org_state.db.add_thread_participant(thread_id, agent, added_by="founder")
+    return thread_id
+
+
+def _artifact_store(org_state) -> ArtifactStore:
+    return ArtifactStore(OrgPaths(org_state.root).artifacts_dir)
 
 
 def test_reply_appends_message_and_consumes_token(tmp_home, app, org_state, auth_headers):
@@ -214,6 +292,29 @@ def test_reply_rejects_mismatched_speaker(tmp_home, app, org_state, auth_headers
         headers=auth_headers,
     )
     assert resp.status_code == 401
+
+
+def test_reply_accepts_attachments_with_speaker_uploaded_by(client, auth_headers, org_state) -> None:
+    _artifact_store(org_state).put("reply-report.pdf", b"pdf")
+    thread_id, token = _start_thread(client, org_state, auth_headers)
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{thread_id}/reply",
+        headers=auth_headers,
+        json={
+            "thread_id": thread_id,
+            "invocation_token": token,
+            "speaker": "dev_agent",
+            "body_markdown": "see attached",
+            "attachments": [{"artifact_name": "reply-report.pdf"}],
+            "in_response_to_seq": 1,
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    message = org_state.db.list_thread_messages(thread_id)[-1]
+    assert message.attachments[0].artifact_name == "reply-report.pdf"
+    assert message.attachments[0].uploaded_by == "dev_agent"
 
 
 # ---------------------------------------------------------------------------
@@ -374,6 +475,222 @@ def test_founder_send_appends_and_enqueues(tmp_home, app, org_state, auth_header
     after_invocations = len(org_state.db.list_thread_invocations(tid))
     # Broadcast model: /send mints REPLY for every participant (2 agents).
     assert after_invocations == before_invocations + 2
+
+
+def test_thread_send_accepts_attachment_only(client, auth_headers, org_state) -> None:
+    _artifact_store(org_state).put("THR-001-report.pdf", b"pdf")
+    thread_id = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    r = client.post(
+        f"/api/v1/orgs/alpha/threads/{thread_id}/send",
+        headers=auth_headers,
+        json={
+            "body_markdown": "",
+            "attachments": [
+                {"artifact_name": "THR-001-report.pdf", "display_name": "report.pdf"}
+            ],
+        },
+    )
+
+    assert r.status_code == 200
+    messages = org_state.db.list_thread_messages(thread_id)
+    assert messages[-1].body_markdown is None
+    assert messages[-1].attachments[0].artifact_name == "THR-001-report.pdf"
+
+
+def test_compose_as_agent_accepts_attachments_with_composer_uploaded_by(
+    client, auth_headers, org_state
+) -> None:
+    _seed_agent(org_state, "engineering_head")
+    _seed_agent(org_state, "dev_agent")
+    _artifact_store(org_state).put("agent-report.pdf", b"pdf")
+    org_state.db.insert_talk(
+        TalkRecord(
+            id="TALK-001",
+            agent_name="engineering_head",
+            status=TalkStatus.OPEN,
+        )
+    )
+
+    resp = client.post(
+        "/api/v1/orgs/alpha/threads/compose-as-agent",
+        headers=auth_headers,
+        json={
+            "composer": "engineering_head",
+            "subject": "Files",
+            "recipients": ["dev_agent"],
+            "body_markdown": "see attached",
+            "attachments": [{"artifact_name": "agent-report.pdf"}],
+            "talk_id": "TALK-001",
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    message = org_state.db.list_thread_messages(resp.json()["thread_id"])[0]
+    assert message.attachments[0].artifact_name == "agent-report.pdf"
+    assert message.attachments[0].uploaded_by == "engineering_head"
+
+
+def test_thread_send_defaults_display_name_to_artifact_name(
+    client, auth_headers, org_state
+) -> None:
+    _artifact_store(org_state).put("default-name.pdf", b"pdf")
+    thread_id = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{thread_id}/send",
+        headers=auth_headers,
+        json={
+            "body_markdown": "file",
+            "attachments": [{"artifact_name": "default-name.pdf"}],
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    attachment = org_state.db.list_thread_messages(thread_id)[-1].attachments[0]
+    assert attachment.display_name == "default-name.pdf"
+
+
+@pytest.mark.parametrize("display_name", ["", "   "])
+def test_thread_send_rejects_invalid_attachment_display_name(
+    client, auth_headers, org_state, display_name: str
+) -> None:
+    _artifact_store(org_state).put("display.pdf", b"pdf")
+    thread_id = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{thread_id}/send",
+        headers=auth_headers,
+        json={
+            "body_markdown": "file",
+            "attachments": [
+                {"artifact_name": "display.pdf", "display_name": display_name}
+            ],
+        },
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "invalid_attachment_display_name"
+
+
+def test_thread_send_rejects_invalid_artifact_name(
+    client, auth_headers, org_state
+) -> None:
+    thread_id = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{thread_id}/send",
+        headers=auth_headers,
+        json={
+            "body_markdown": "file",
+            "attachments": [{"artifact_name": "../bad.pdf"}],
+        },
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["code"] == "invalid_artifact_name"
+
+
+def test_thread_send_rejects_unknown_attachment(client, auth_headers, org_state) -> None:
+    thread_id = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    r = client.post(
+        f"/api/v1/orgs/alpha/threads/{thread_id}/send",
+        headers=auth_headers,
+        json={
+            "body_markdown": "see file",
+            "attachments": [{"artifact_name": "missing.pdf"}],
+        },
+    )
+
+    assert r.status_code == 404
+    assert r.json()["detail"]["code"] == "artifact_not_found"
+
+
+def test_thread_send_rejects_empty_without_attachments(client, auth_headers, org_state) -> None:
+    thread_id = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    r = client.post(
+        f"/api/v1/orgs/alpha/threads/{thread_id}/send",
+        headers=auth_headers,
+        json={"body_markdown": "   ", "attachments": []},
+    )
+
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "empty_body"
+
+
+def test_thread_send_rejects_duplicate_attachment(client, auth_headers, org_state) -> None:
+    _artifact_store(org_state).put("report.pdf", b"pdf")
+    thread_id = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    r = client.post(
+        f"/api/v1/orgs/alpha/threads/{thread_id}/send",
+        headers=auth_headers,
+        json={
+            "body_markdown": "files",
+            "attachments": [
+                {"artifact_name": "report.pdf"},
+                {"artifact_name": "report.pdf"},
+            ],
+        },
+    )
+
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "duplicate_attachment"
+
+
+def test_thread_send_rejects_too_many_attachments(client, auth_headers, org_state) -> None:
+    for idx in range(6):
+        _artifact_store(org_state).put(f"file-{idx}.txt", b"x")
+    thread_id = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    r = client.post(
+        f"/api/v1/orgs/alpha/threads/{thread_id}/send",
+        headers=auth_headers,
+        json={
+            "body_markdown": "files",
+            "attachments": [{"artifact_name": f"file-{idx}.txt"} for idx in range(6)],
+        },
+    )
+
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "too_many_attachments"
+
+
+def test_thread_messages_response_includes_attachments(client, auth_headers, org_state) -> None:
+    _artifact_store(org_state).put("THR-001-report.pdf", b"pdf")
+    thread_id = _seed_open_thread(org_state, participants=["dev_agent"])
+    org_state.db.append_thread_message(
+        thread_id=thread_id,
+        speaker="founder",
+        kind=ThreadMessageKind.MESSAGE,
+        attachments=[
+            ThreadAttachment(
+                artifact_name="THR-001-report.pdf",
+                display_name="report.pdf",
+                size_bytes=3,
+                content_type=None,
+                uploaded_by="founder",
+            )
+        ],
+    )
+
+    r = client.get(
+        f"/api/v1/orgs/alpha/threads/{thread_id}/messages",
+        headers=auth_headers,
+    )
+
+    assert r.status_code == 200
+    assert r.json()["messages"][0]["attachments"] == [
+        {
+            "artifact_name": "THR-001-report.pdf",
+            "display_name": "report.pdf",
+            "size_bytes": 3,
+            "content_type": None,
+            "uploaded_by": "founder",
+        }
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -765,5 +1082,3 @@ def test_resume_404_on_missing_thread(tmp_home, app, org_state, auth_headers):
     )
     assert resp.status_code == 404
     assert resp.json()["detail"]["code"] == "not_found"
-
-
