@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import time
 
 from runtime.config import Settings
 from runtime.daemon.assistant_pty import (
@@ -121,6 +122,31 @@ print("NOT_READY", flush=True)
     assert f"{PROBE_READY} stale-nonce" in result.output_excerpt
 
 
+def test_probe_rejects_prompt_dump_containing_ready_instructions(tmp_path: Path) -> None:
+    cli = _write_fake_cli(
+        tmp_path,
+        """
+from pathlib import Path
+import sys
+
+print(Path("AGENTS.md").read_text(), flush=True)
+sys.stdin.readline()
+print("NOT_READY", flush=True)
+""",
+    )
+    spec = InteractiveExecutorSpec(
+        name="fake",
+        argv=[str(cli)],
+        prompt_surface="AGENTS.md",
+    )
+
+    result = ProbeRunner().probe_executor(spec)
+
+    assert result.passed is False
+    assert result.detail == "expected ready marker not found"
+    assert "NOT_READY" in result.output_excerpt
+
+
 def test_probe_writes_minimal_workspace_surface(tmp_path: Path) -> None:
     marker_path = tmp_path / "surface.txt"
     cli = _write_fake_cli(
@@ -132,10 +158,10 @@ import sys
 
 surface = Path("CLAUDE.md")
 content = surface.read_text()
-Path(os.environ["SURFACE_MARKER_PATH"]).write_text(
-    f"{{surface.exists()}}\\n{{content}}"
-)
 request = sys.stdin.readline().strip()
+Path(os.environ["SURFACE_MARKER_PATH"]).write_text(
+    f"{{surface.exists()}}\\n{{request}}\\n---\\n{{content}}"
+)
 nonce = request.split(maxsplit=1)[1]
 print(f"{PROBE_READY} {{nonce}}", flush=True)
 """,
@@ -150,10 +176,13 @@ print(f"{PROBE_READY} {{nonce}}", flush=True)
     result = ProbeRunner().probe_executor(spec)
 
     assert result.passed is True
-    surface = marker_path.read_text()
-    assert surface.startswith("True\n")
-    assert PROBE_REQUEST in surface
-    assert PROBE_READY in surface
+    surface_exists, request, content = marker_path.read_text().split("\n", 2)
+    assert surface_exists == "True"
+    nonce = request.split(maxsplit=1)[1]
+    assert PROBE_REQUEST in content
+    assert PROBE_READY in content
+    assert request not in content
+    assert f"{PROBE_READY} {nonce}" not in content
 
 
 def test_build_executor_specs_uses_settings_paths() -> None:
@@ -200,7 +229,11 @@ from pathlib import Path
 import os
 import time
 
+request = input()
+if not request.startswith("HAPPYRANCH_ASSISTANT_PTY_PROBE_REQUEST "):
+    raise SystemExit(2)
 Path(os.environ["PID_PATH"]).write_text(str(os.getpid()))
+print("STARTED", flush=True)
 time.sleep(30)
 """,
     )
@@ -211,14 +244,20 @@ time.sleep(30)
         env={"PID_PATH": str(pid_path)},
     )
 
-    result = ProbeRunner().probe_executor(spec, timeout_seconds=1)
+    result = ProbeRunner().probe_executor(spec, timeout_seconds=5)
 
     assert result.passed is False
     assert result.timed_out is True
+    assert "STARTED" in result.output_excerpt
     child_pid = int(pid_path.read_text())
-    try:
-        os.kill(child_pid, 0)
-    except ProcessLookupError:
-        pass
-    else:
+    deadline = time.monotonic() + 1
+    child_alive = True
+    while time.monotonic() < deadline:
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            child_alive = False
+            break
+        time.sleep(0.01)
+    if child_alive:
         raise AssertionError(f"child process {child_pid} was not cleaned up")

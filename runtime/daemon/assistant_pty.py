@@ -87,12 +87,7 @@ class ProbeRunner:
         expected_response = build_probe_response(nonce)
         with tempfile.TemporaryDirectory(prefix="happyranch-assistant-probe-") as tmp:
             workspace = Path(tmp)
-            self._write_prompt_surface(
-                workspace,
-                spec.prompt_surface,
-                probe_request=probe_request,
-                expected_response=expected_response,
-            )
+            self._write_prompt_surface(workspace, spec.prompt_surface)
             return self._probe_in_workspace(
                 spec,
                 workspace=workspace,
@@ -215,9 +210,6 @@ class ProbeRunner:
         self,
         workspace: Path,
         prompt_surface: str,
-        *,
-        probe_request: str,
-        expected_response: str,
     ) -> None:
         (workspace / prompt_surface).write_text(
             "\n".join(
@@ -226,8 +218,8 @@ class ProbeRunner:
                     "",
                     "This temporary workspace is used only for readiness probing.",
                     (
-                        f"When the user sends `{probe_request}`, reply with exactly "
-                        f"`{expected_response}`."
+                        f"When the user sends `{PROBE_REQUEST} <token>`, reply with "
+                        f"`{PROBE_READY} <the same token>`."
                     ),
                     "Do not include any other text in the reply.",
                     "",
@@ -311,24 +303,32 @@ class ProbeRunner:
         return self._status_to_returncode(status)
 
     def _terminate_process(self, pid: int) -> None:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
+        self._signal_process_tree(pid, signal.SIGTERM)
         deadline = time.monotonic() + 0.5
         while time.monotonic() < deadline:
             if self._poll_returncode(pid) is not None:
                 return
             time.sleep(0.01)
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            return
+        self._signal_process_tree(pid, signal.SIGKILL)
         deadline = time.monotonic() + 0.5
         while time.monotonic() < deadline:
             if self._poll_returncode(pid) is not None:
                 return
             time.sleep(0.01)
+
+    def _signal_process_tree(self, pid: int, sig: signal.Signals) -> None:
+        try:
+            os.killpg(pid, sig)
+        except ProcessLookupError:
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                return
+        except OSError:
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                return
 
     def _status_to_returncode(self, status: int) -> int:
         if os.WIFEXITED(status):
