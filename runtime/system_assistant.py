@@ -182,8 +182,16 @@ def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
         )
     if config is None:
         return AssistantStatus(state=AssistantState.UNINITIALIZED)
-    configured_workspace = Path(config.workspace_path).expanduser().resolve(strict=False)
-    expected_workspace = paths.workspace.resolve(strict=False)
+    try:
+        configured_workspace = (
+            Path(config.workspace_path).expanduser().resolve(strict=False)
+        )
+        expected_workspace = paths.workspace.resolve(strict=False)
+    except (OSError, ValueError):
+        return AssistantStatus(
+            state=AssistantState.STALE_OR_BROKEN,
+            detail="assistant config is invalid",
+        )
     if configured_workspace != expected_workspace:
         return AssistantStatus(
             state=AssistantState.STALE_OR_BROKEN,
