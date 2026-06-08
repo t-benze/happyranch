@@ -61,6 +61,28 @@ class ThreadStore:
         return target
 
 
+def _inline_code(text: str) -> str:
+    return f"`{text.replace('`', "'")}`"
+
+
+def _render_attachments_for_transcript(m) -> list[str]:
+    attachments = getattr(m, "attachments", []) or []
+    if not attachments:
+        return []
+    lines = ["Attachments:"]
+    for attachment in attachments:
+        size = (
+            f" ({attachment.size_bytes} bytes)"
+            if attachment.size_bytes is not None
+            else ""
+        )
+        lines.append(
+            f"- {_inline_code(attachment.display_name)} "
+            f"(`artifact:{attachment.artifact_name}`){size}"
+        )
+    return lines
+
+
 def render_transcript_body(messages: list) -> str:
     """Render a chronological list of ThreadMessage into markdown."""
     lines: list[str] = ["# Transcript", ""]
@@ -71,6 +93,7 @@ def render_transcript_body(messages: list) -> str:
             header = f"## Message {m.seq} — {m.speaker} · {ts}"
             lines.append(header)
             lines.append(m.body_markdown or "")
+            lines.extend(_render_attachments_for_transcript(m))
             lines.append("")
         elif kind_name == "decline":
             lines.append(f"## Message {m.seq} — {m.speaker} · {ts}")

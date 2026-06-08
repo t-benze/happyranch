@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from runtime.infrastructure.thread_store import ThreadStore, render_transcript_body
-from runtime.models import ThreadMessage, ThreadMessageKind
+from runtime.models import ThreadAttachment, ThreadMessage, ThreadMessageKind
 
 
 def test_write_transcript_creates_file(tmp_path):
@@ -77,3 +77,54 @@ def test_render_transcript_renders_message_decline_system():
     assert "## Message 3 — bob" in out
     assert "declined" in out and "alice covered it" in out
     assert "system: dispatched TASK-091 to dev" in out
+
+
+def test_render_transcript_body_includes_attachments() -> None:
+    msg = ThreadMessage(
+        thread_id="THR-001",
+        seq=1,
+        speaker="founder",
+        kind=ThreadMessageKind.MESSAGE,
+        body_markdown=None,
+        attachments=[
+            ThreadAttachment(
+                artifact_name="THR-001-report.pdf",
+                display_name="report.pdf",
+                size_bytes=123,
+                content_type=None,
+                uploaded_by="founder",
+            )
+        ],
+    )
+
+    rendered = render_transcript_body([msg])
+
+    assert "Attachments:" in rendered
+    assert "- `report.pdf` (`artifact:THR-001-report.pdf`) (123 bytes)" in rendered
+
+
+def test_render_transcript_body_attachment_does_not_link_display_name() -> None:
+    msg = ThreadMessage(
+        thread_id="THR-001",
+        seq=1,
+        speaker="founder",
+        kind=ThreadMessageKind.MESSAGE,
+        body_markdown="see attached",
+        attachments=[
+            ThreadAttachment(
+                artifact_name="THR-001-safe.pdf",
+                display_name="[report](https://evil.example)",
+                size_bytes=123,
+                content_type=None,
+                uploaded_by="founder",
+            )
+        ],
+    )
+
+    rendered = render_transcript_body([msg])
+
+    assert (
+        "- `[report](https://evil.example)` "
+        "(`artifact:THR-001-safe.pdf`) (123 bytes)"
+    ) in rendered
+    assert "- [report](https://evil.example) (" not in rendered

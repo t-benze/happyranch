@@ -197,6 +197,13 @@ def cmd_threads_show(args: argparse.Namespace) -> None:
             print(f"  declined: {m['decline_reason']}")
         elif m.get("system_payload"):
             print(f"  system: {m['system_payload']}")
+        for attachment in m.get("attachments", []):
+            size = attachment.get("size_bytes")
+            size_text = f" ({size}B)" if size is not None else ""
+            print(
+                f"  attachment: {attachment['display_name']} "
+                f"[artifact:{attachment['artifact_name']}]{size_text}"
+            )
         print()
 
 
@@ -456,4 +463,3 @@ def register(sub) -> None:
     p_threads_forward.add_argument("--note-file", dest="note_file", default=None)
     p_threads_forward.add_argument("--subject", default=None)
     p_threads_forward.set_defaults(func=cmd_threads_forward)
-

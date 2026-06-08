@@ -4,9 +4,14 @@ import pytest
 from datetime import datetime, timezone
 
 from runtime.config import Settings
-from runtime.daemon.thread_runner import build_thread_prompt, run_invocation
+from runtime.daemon.thread_runner import (
+    _render_message,
+    build_thread_prompt,
+    run_invocation,
+)
 from runtime.infrastructure.database import Database
 from runtime.models import (
+    ThreadAttachment,
     ThreadInvocationPurpose,
     ThreadMessage,
     ThreadMessageKind,
@@ -14,6 +19,30 @@ from runtime.models import (
     ThreadRecord,
     TokenUsage,
 )
+
+
+def test_render_message_includes_attachments() -> None:
+    msg = ThreadMessage(
+        thread_id="THR-001",
+        seq=1,
+        speaker="founder",
+        kind=ThreadMessageKind.MESSAGE,
+        body_markdown="see attached",
+        attachments=[
+            ThreadAttachment(
+                artifact_name="THR-001-report.pdf",
+                display_name="report.pdf",
+                size_bytes=123,
+                content_type=None,
+                uploaded_by="founder",
+            )
+        ],
+    )
+
+    rendered = _render_message(msg)
+
+    assert "Attachments:" in rendered
+    assert "- report.pdf (`artifact:THR-001-report.pdf`, 123 bytes)" in rendered
 
 
 def test_build_prompt_includes_token_and_history():
