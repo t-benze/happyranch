@@ -86,16 +86,26 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
     next_count = task.orchestration_step_count + 1
     if next_count > max_steps:
         reason = f"max steps ({max_steps}) exceeded"
-        db.update_task(
+        # Atomic CAS on the eligible pre-state read at step 1. This guard runs
+        # BEFORE try_claim_for_step, so without it two duplicate deliveries of
+        # the same stale at-cap row would both escalate and double-post the
+        # thread `task_escalated` message + TASK_FOLLOWUP. If False: another
+        # worker escalated first (or /cancel landed) — drop silently.
+        if not db.try_escalate_over_budget(
             task_id,
-            status=TaskStatus.BLOCKED,
-            block_kind=BlockKind.ESCALATED,
-            note=reason,
-        )
+            expected_status=task.status,
+            expected_block_kind=task.block_kind,
+            reason=reason,
+        ):
+            logger.debug(
+                "run_step %s: lost over-budget escalate race, dropping", task_id,
+            )
+            return
         orch._audit.log_escalation(task_id, "orchestrator", reason)
         orch.notify_escalated(
             task_id=task_id, agent="orchestrator", reason=reason,
         )
+        _maybe_post_thread_escalation(orch, task_id, reason=reason)
         return
 
     # ---- 3. Atomic claim: unblock + increment + mark in_progress ----
@@ -342,6 +352,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             task_id=task_id, agent=agent, reason=reason,
             last_summary=getattr(report, "output_summary", "") or "",
         )
+        _maybe_post_thread_escalation(orch, task_id, reason=reason)
         # parent stays blocked(DELEGATED) until this task reaches a terminal.
         return
 
@@ -1607,6 +1618,189 @@ def _maybe_resume_blocked_task(
     return True
 
 
+def _append_followup_system_and_reinvoke(
+    orch: "Orchestrator",
+    *,
+    thread_id: str,
+    dispatcher: str,
+    original_id: str,
+    source_task_id: str,
+    system_payload: dict,
+) -> None:
+    """Append a SYSTEM message + mint/enqueue a TASK_FOLLOWUP re-invocation.
+
+    Shared tail for `_maybe_post_thread_followup` (terminal) and
+    `_maybe_post_thread_escalation`. Race-aware: the atomic cap-projection +
+    conditional bump + mint is serialized by the RLock on
+    `mint_followup_invocation_with_cap_extend`. `original_id` is the original
+    dispatched task id (for audit keying); `source_task_id` is the task that
+    triggered this followup (terminal task or escalated task).
+    """
+    db = orch._db
+    audit = orch._audit
+
+    # Append system message (separate from the atomic cap+mint below — the
+    # system message ordering relative to concurrent system messages is not
+    # part of the atomicity invariant we're protecting).
+    from runtime.models import ThreadMessageKind as _TMK
+    sys_seq = db.append_thread_message(
+        thread_id=thread_id, speaker=dispatcher,
+        kind=_TMK.SYSTEM,
+        system_payload=system_payload,
+    )
+
+    # Atomic cap-projection + conditional bump + mint.  Closes the TOCTOU race
+    # where two concurrent root completions on the same thread both read the
+    # same pending count, both skip the bump, both mint, and leave the thread
+    # with more obligations than turn_cap.  The @_synchronized RLock on
+    # mint_followup_invocation_with_cap_extend serializes all three steps.
+    inv, new_cap = db.mint_followup_invocation_with_cap_extend(
+        thread_id=thread_id,
+        agent_name=dispatcher,
+        triggering_seq=sys_seq,
+    )
+    if new_cap is not None:
+        audit.log_thread_turn_cap_auto_extended(
+            thread_id, original_task_id=original_id,
+            reason="task_followup", new_cap=new_cap,
+        )
+    audit.log_thread_task_followup_enqueued(
+        thread_id, original_task_id=original_id, terminal_task_id=source_task_id,
+        dispatcher=dispatcher, invocation_token=inv.invocation_token,
+    )
+
+    # Enqueue onto the org's thread queue. The queue is bound to the daemon's
+    # main event loop, but run_step runs on a worker thread, so we cross the
+    # loop boundary via run_coroutine_threadsafe — same pattern as
+    # `_start_feishu_listeners` uses for cross-thread async bridging.
+    import asyncio as _asyncio
+    from runtime.daemon.thread_queue import ThreadJob as _ThreadJob
+    thread_queue = getattr(orch, "_thread_queue", None)
+    main_loop = getattr(orch, "_main_loop", None)
+    if thread_queue is not None and main_loop is not None:
+        try:
+            _asyncio.run_coroutine_threadsafe(
+                thread_queue.put(_ThreadJob(
+                    org_slug=orch._slug,
+                    invocation_token=inv.invocation_token,
+                )),
+                main_loop,
+            )
+        except Exception as exc:
+            audit.log_thread_followup_skipped(
+                thread_id, original_task_id=original_id, terminal_task_id=source_task_id,
+                reason="enqueue_failed", detail=str(exc),
+            )
+    else:
+        # Defence: queue or loop not yet wired (e.g., test orchestrator constructed
+        # without daemon context). Invocation stays PENDING; audit so the
+        # operator can detect it if needed. In production this path is never
+        # taken because _lifespan always calls _attach_thread_queue_wiring before
+        # the first task step runs.
+        audit.log_thread_followup_skipped(
+            thread_id, original_task_id=original_id, terminal_task_id=source_task_id,
+            reason="enqueue_unavailable",
+        )
+
+
+def _maybe_post_thread_escalation(
+    orch: "Orchestrator",
+    task_id: str,
+    *,
+    reason: str,
+) -> None:
+    """Post a `task_escalated` SYSTEM message + re-invoke the dispatcher when a
+    thread-dispatched task escalates to the founder.
+
+    Unlike `_maybe_post_thread_followup` (terminal-only, root-only because
+    terminals cascade up to the parent), escalations do NOT cascade
+    (run_step escalate branch: "parent stays blocked(DELEGATED)") and a team
+    manager can escalate at any depth. So we walk ancestors to the chain root,
+    then the revisit chain, to find the originating thread.
+
+    Spec: docs/superpowers/specs/2026-06-06-thread-escalation-surfacing-design.md
+    """
+    db = orch._db
+    audit = orch._audit
+
+    task = db.get_task(task_id)
+    if task is None:
+        return
+    # Re-read persisted state: the founder may have resolved/cancelled the
+    # escalation in the window between try_escalate and this call.
+    if not (task.status == TaskStatus.BLOCKED
+            and task.block_kind == BlockKind.ESCALATED):
+        return
+
+    # Resolve the originating thread. Escalation can fire on a child, so walk
+    # ancestors to the chain root first, then the revisit chain (only the
+    # dispatched root carries dispatched_from_thread_id).
+    from runtime.infrastructure.database import LineageTooDeep  # local: avoid cycle
+    try:
+        ancestors = db.walk_ancestors(task_id, max_hops=200)
+    except LineageTooDeep:
+        audit.log_thread_followup_skipped(
+            "(unresolved)", original_task_id=task_id, terminal_task_id=task_id,
+            reason="chain_too_deep",
+        )
+        return
+    root = ancestors[-1] if ancestors else task
+    chain = db.walk_revisit_chain(root.id, max_hops=200, truncate=True)
+    original = chain[-1] if chain else root
+    thread_id = original.dispatched_from_thread_id
+    if thread_id is None:
+        # Not a thread-dispatched chain; silent no-op (Feishu path untouched).
+        return
+
+    # Thread-state guard.
+    thread = db.get_thread(thread_id)
+    from runtime.models import ThreadStatus as _ThreadStatus
+    if thread is None or thread.status is not _ThreadStatus.OPEN:
+        audit.log_thread_followup_skipped(
+            thread_id, original_task_id=original.id, terminal_task_id=task_id,
+            reason="thread_not_open",
+            thread_status=(thread.status.value if thread else "missing"),
+            task_status="escalated",
+        )
+        return
+
+    # Dispatcher identity from the thread_dispatch audit row on the original.
+    dispatch_rows = [
+        r for r in db.get_audit_logs(thread_id)
+        if r["action"] == "thread_dispatch"
+        and _payload_dict(r).get("task_id") == original.id
+    ]
+    if not dispatch_rows:
+        audit.log_thread_followup_skipped(
+            thread_id, original_task_id=original.id, terminal_task_id=task_id,
+            reason="dispatcher_unresolved",
+        )
+        return
+    dispatcher = _payload_dict(dispatch_rows[0])["dispatcher"]
+
+    # `original_task_id` is the revisit-chain origin (thread-dispatch keying);
+    # `root_task_id` is the ancestor root of the escalating task. These are
+    # equal for a root escalation but differ when a child escalates inside a
+    # revisited chain — both are emitted for the dispatcher's downstream use.
+    system_payload = {
+        "kind_tag": "task_escalated",
+        "task_id": task_id,
+        "original_task_id": original.id,
+        "root_task_id": root.id,
+        "status": "escalated",
+        "reason": reason,
+        "revisit_chain_length": len(chain) if chain else 1,
+    }
+    _append_followup_system_and_reinvoke(
+        orch,
+        thread_id=thread_id,
+        dispatcher=dispatcher,
+        original_id=original.id,
+        source_task_id=task_id,
+        system_payload=system_payload,
+    )
+
+
 def _maybe_post_thread_followup(
     orch: "Orchestrator",
     task_id: str,
@@ -1630,8 +1824,6 @@ def _maybe_post_thread_followup(
 
     Spec: docs/superpowers/specs/2026-05-28-thread-task-followup-design.md §4-§6
     """
-    import json as _json
-
     # Predicate gate — first pass using caller's claim (cheap early-out).
     if status == TaskStatus.FAILED and auto_revisit_spawned:
         return
@@ -1729,68 +1921,14 @@ def _maybe_post_thread_followup(
         "revisit_chain_length": len(chain) if chain else 1,
     }
 
-    # Append system message (separate from the atomic cap+mint below — the
-    # system message ordering relative to concurrent system messages is not
-    # part of the atomicity invariant we're protecting).
-    from runtime.models import ThreadMessageKind as _TMK, ThreadInvocationPurpose as _TIP
-    sys_seq = db.append_thread_message(
-        thread_id=thread_id, speaker=dispatcher,
-        kind=_TMK.SYSTEM,
+    _append_followup_system_and_reinvoke(
+        orch,
+        thread_id=thread_id,
+        dispatcher=dispatcher,
+        original_id=original.id,
+        source_task_id=task_id,
         system_payload=system_payload,
     )
-
-    # Atomic cap-projection + conditional bump + mint.  Closes the TOCTOU race
-    # where two concurrent root completions on the same thread both read the
-    # same pending count, both skip the bump, both mint, and leave the thread
-    # with more obligations than turn_cap.  The @_synchronized RLock on
-    # mint_followup_invocation_with_cap_extend serializes all three steps.
-    inv, new_cap = db.mint_followup_invocation_with_cap_extend(
-        thread_id=thread_id,
-        agent_name=dispatcher,
-        triggering_seq=sys_seq,
-    )
-    if new_cap is not None:
-        audit.log_thread_turn_cap_auto_extended(
-            thread_id, original_task_id=original.id,
-            reason="task_followup", new_cap=new_cap,
-        )
-    audit.log_thread_task_followup_enqueued(
-        thread_id, original_task_id=original.id, terminal_task_id=task_id,
-        dispatcher=dispatcher, invocation_token=inv.invocation_token,
-    )
-
-    # Enqueue onto the org's thread queue. The queue is bound to the daemon's
-    # main event loop, but run_step runs on a worker thread, so we cross the
-    # loop boundary via run_coroutine_threadsafe — same pattern as
-    # `_start_feishu_listeners` uses for cross-thread async bridging.
-    import asyncio as _asyncio
-    from runtime.daemon.thread_queue import ThreadJob as _ThreadJob
-    thread_queue = getattr(orch, "_thread_queue", None)
-    main_loop = getattr(orch, "_main_loop", None)
-    if thread_queue is not None and main_loop is not None:
-        try:
-            _asyncio.run_coroutine_threadsafe(
-                thread_queue.put(_ThreadJob(
-                    org_slug=orch._slug,
-                    invocation_token=inv.invocation_token,
-                )),
-                main_loop,
-            )
-        except Exception as exc:
-            audit.log_thread_followup_skipped(
-                thread_id, original_task_id=original.id, terminal_task_id=task_id,
-                reason="enqueue_failed", detail=str(exc),
-            )
-    else:
-        # Defence: queue or loop not yet wired (e.g., test orchestrator constructed
-        # without daemon context). Invocation stays PENDING; audit so the
-        # operator can detect it if needed. In production this path is never
-        # taken because _lifespan always calls _attach_thread_queue_wiring before
-        # the first task step runs.
-        audit.log_thread_followup_skipped(
-            thread_id, original_task_id=original.id, terminal_task_id=task_id,
-            reason="enqueue_unavailable",
-        )
 
 
 def _payload_dict(row: dict) -> dict:

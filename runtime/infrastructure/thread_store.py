@@ -115,6 +115,15 @@ def render_transcript_body(messages: list) -> str:
                     annotations.append(f"after {n} {'revisit' if n == 1 else 'revisits'}")
                 if annotations:
                     rendered += " · " + "; ".join(annotations)
+            elif tag == "task_escalated":
+                tid = payload.get("task_id")
+                orig = payload.get("original_task_id")
+                rendered = f"**Task {tid} escalated**" + (
+                    f" (chain root {orig})" if orig and orig != tid else ""
+                )
+                reason = (payload.get("reason") or "").strip()
+                if reason:
+                    rendered += f" · {reason[:240]}"
             elif tag == "turn_cap_extended":
                 rendered = (
                     f"system: turn cap extended from {payload.get('prior_cap')} "

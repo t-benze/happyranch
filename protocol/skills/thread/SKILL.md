@@ -145,6 +145,13 @@ and output dir (if any).
 substantive to add (e.g., the task was founder-cancelled and the founder already
 knows), decline.
 
+**Escalation variant:** If the dispatched task **escalated** to the founder instead
+of finishing, the thread gets a `task_escalated` system message (with the escalation
+reason) and the prompt-header asks you to restate the ask in-thread. In that turn:
+state concisely what you need from the founder and why — do NOT try to resolve the
+escalation yourself, and do NOT dispatch a new task. Decline if the Feishu escalation
+already covers it and a thread restatement adds nothing.
+
 **What you may NOT do:** Dispatch a new task from this turn. The runtime rejects
 dispatch with purpose `task_followup` (HTTP 400 `wrong_invocation_purpose`). If a
 new action is warranted, mention it in your reply and let the founder loop in.

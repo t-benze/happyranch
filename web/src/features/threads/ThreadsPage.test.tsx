@@ -138,6 +138,25 @@ describe('ThreadsPage — system message rendering', () => {
       expect(screen.getByText(/2 revisits/)).toBeInTheDocument();
     });
   });
+
+  test('renders task_escalated system message with task id and reason', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupThreadWithMessages('THR-012', [
+      mkSystemMessage(1, 'agent_a', {
+        kind_tag: 'task_escalated',
+        task_id: 'TASK-893',
+        original_task_id: 'TASK-893',
+        status: 'escalated',
+        reason: 'needs founder CDN authorize',
+        revisit_chain_length: 1,
+      }),
+    ]);
+    mountAt(`/orgs/${SLUG}/threads/THR-012`);
+    await waitFor(() => {
+      expect(screen.getByText(/TASK-893/)).toBeInTheDocument();
+      expect(screen.getByText(/needs founder CDN authorize/)).toBeInTheDocument();
+    });
+  });
 });
 
 function mkThread(id: string, subject: string) {
