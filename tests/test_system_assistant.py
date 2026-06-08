@@ -84,6 +84,33 @@ def test_save_config_rejects_directory_config_path(tmp_path: Path) -> None:
         save_assistant_config(tmp_path, cfg)
 
 
+@pytest.mark.parametrize(
+    ("directory_name", "detail"),
+    [
+        ("system", "assistant system directory is not a directory"),
+        ("root", "assistant root is not a directory"),
+    ],
+)
+def test_save_config_rejects_regular_file_managed_ancestor(
+    tmp_path: Path, directory_name: str, detail: str
+) -> None:
+    paths = system_assistant_paths(tmp_path)
+    if directory_name == "system":
+        managed_path = paths.root.parent
+    else:
+        paths.root.parent.mkdir()
+        managed_path = paths.root
+    managed_path.write_text("not a directory\n")
+    cfg = AssistantConfig(
+        selected_executor="codex",
+        selected_command="codex",
+        workspace_path=str(paths.workspace),
+    )
+
+    with pytest.raises(ValueError, match=detail):
+        save_assistant_config(tmp_path, cfg)
+
+
 def test_save_config_rejects_root_symlink_without_writing_target(tmp_path: Path) -> None:
     paths = system_assistant_paths(tmp_path)
     external_root = tmp_path / "external-root"
@@ -156,6 +183,27 @@ def test_load_config_rejects_root_symlink(tmp_path: Path) -> None:
     (external_root / "config.json").write_text(cfg.model_dump_json(indent=2) + "\n")
 
     with pytest.raises(ValueError, match="assistant root must not be a symlink"):
+        load_assistant_config(tmp_path)
+
+
+def test_load_config_rejects_config_symlink(tmp_path: Path) -> None:
+    paths = system_assistant_paths(tmp_path)
+    paths.root.mkdir(parents=True)
+    target = tmp_path / "external-config.json"
+    target.write_text(
+        json.dumps(
+            {
+                "selected_executor": "codex",
+                "selected_command": "codex",
+                "workspace_path": str(paths.workspace),
+                "latest_probe_results": [],
+            }
+        )
+        + "\n"
+    )
+    paths.config_path.symlink_to(target)
+
+    with pytest.raises(ValueError, match="assistant config must not be a symlink"):
         load_assistant_config(tmp_path)
 
 
