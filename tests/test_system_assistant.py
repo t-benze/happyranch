@@ -78,6 +78,38 @@ def test_classify_stale_when_workspace_path_does_not_match(tmp_path: Path) -> No
     assert status.detail == "assistant workspace path does not match runtime"
 
 
+def test_classify_accepts_equivalent_workspace_path(tmp_path: Path) -> None:
+    bootstrap_assistant_workspace(tmp_path, executor="codex")
+    cfg = AssistantConfig(
+        selected_executor="codex",
+        selected_command="codex",
+        workspace_path=str(
+            tmp_path / "system" / "assistant" / ".." / "assistant" / "workspace"
+        ),
+    )
+
+    save_assistant_config(tmp_path, cfg)
+    status = classify_assistant_state(tmp_path)
+
+    assert status.state == AssistantState.CONFIGURED
+
+
+def test_classify_stale_when_agent_yaml_is_missing(tmp_path: Path) -> None:
+    bootstrap_assistant_workspace(tmp_path, executor="codex")
+    (system_assistant_paths(tmp_path).workspace / "agent.yaml").unlink()
+    cfg = AssistantConfig(
+        selected_executor="codex",
+        selected_command="codex",
+        workspace_path=str(system_assistant_paths(tmp_path).workspace),
+    )
+
+    save_assistant_config(tmp_path, cfg)
+    status = classify_assistant_state(tmp_path)
+
+    assert status.state == AssistantState.STALE_OR_BROKEN
+    assert status.detail == "assistant agent.yaml is missing"
+
+
 def test_classify_stale_when_executor_is_invalid(tmp_path: Path) -> None:
     paths = system_assistant_paths(tmp_path)
     paths.root.mkdir(parents=True)

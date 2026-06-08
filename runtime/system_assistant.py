@@ -83,7 +83,9 @@ def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
         )
     if config is None:
         return AssistantStatus(state=AssistantState.UNINITIALIZED)
-    if Path(config.workspace_path) != paths.workspace:
+    configured_workspace = Path(config.workspace_path).expanduser().resolve(strict=False)
+    expected_workspace = paths.workspace.resolve(strict=False)
+    if configured_workspace != expected_workspace:
         return AssistantStatus(
             state=AssistantState.STALE_OR_BROKEN,
             selected_executor=config.selected_executor,
@@ -97,6 +99,14 @@ def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
             selected_executor=config.selected_executor,
             workspace_path=config.workspace_path,
             detail="assistant workspace is missing",
+            latest_probe_results=config.latest_probe_results,
+        )
+    if not (paths.workspace / "agent.yaml").exists():
+        return AssistantStatus(
+            state=AssistantState.STALE_OR_BROKEN,
+            selected_executor=config.selected_executor,
+            workspace_path=config.workspace_path,
+            detail="assistant agent.yaml is missing",
             latest_probe_results=config.latest_probe_results,
         )
     expected = (
