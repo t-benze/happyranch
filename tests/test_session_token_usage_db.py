@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 from runtime.infrastructure.database import Database
 from runtime.models import TokenUsage
 
@@ -22,6 +24,51 @@ def test_insert_and_list_session_token_usage(db: Database):
     assert r["executor"] == "claude"
     assert r["input_tokens"] == 10
     assert r["output_tokens"] == 20
+
+
+def test_legacy_session_token_usage_table_migrates_before_scope_indexes(tmp_path):
+    db_path = tmp_path / "legacy-token-usage.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript("""
+        CREATE TABLE session_token_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id    TEXT NOT NULL,
+            agent      TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            executor   TEXT NOT NULL,
+            model      TEXT,
+            input_tokens          INTEGER,
+            output_tokens         INTEGER,
+            cache_read_tokens     INTEGER,
+            cache_creation_tokens INTEGER,
+            reasoning_tokens      INTEGER,
+            usage_raw_json TEXT,
+            created_at TEXT NOT NULL,
+            UNIQUE (task_id, agent, session_id)
+        );
+    """)
+    conn.execute(
+        """INSERT INTO session_token_usage
+           (task_id, agent, session_id, executor, input_tokens, created_at)
+           VALUES ('TASK-1', 'dev_agent', 'sess-a', 'claude', 10, '2026-06-09T00:00:00Z')"""
+    )
+    conn.commit()
+    conn.close()
+
+    db = Database(db_path)
+
+    rows = db.list_session_token_usage(task_id="TASK-1", scope_type="task")
+    columns = {row["name"] for row in db._conn.execute(
+        "PRAGMA table_info(session_token_usage)"
+    ).fetchall()}
+    indexes = {row["name"] for row in db._conn.execute(
+        "PRAGMA index_list(session_token_usage)"
+    ).fetchall()}
+
+    assert rows[0]["scope_type"] == "task"
+    assert rows[0]["scope_id"] == "TASK-1"
+    assert {"scope_type", "scope_id", "thread_id", "talk_id"} <= columns
+    assert "idx_session_token_usage_scope" in indexes
 
 
 def test_insert_or_ignore_on_duplicate_unique_key(db: Database):

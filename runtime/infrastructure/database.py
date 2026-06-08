@@ -263,16 +263,6 @@ class Database:
                 created_at TEXT NOT NULL,
                 UNIQUE (task_id, agent, session_id)
             );
-            CREATE INDEX IF NOT EXISTS idx_session_token_usage_task   ON session_token_usage (task_id);
-            CREATE INDEX IF NOT EXISTS idx_session_token_usage_agent  ON session_token_usage (agent, created_at);
-            CREATE INDEX IF NOT EXISTS idx_session_token_usage_scope
-                ON session_token_usage (scope_type, scope_id);
-            CREATE INDEX IF NOT EXISTS idx_session_token_usage_thread
-                ON session_token_usage (thread_id)
-                WHERE thread_id IS NOT NULL;
-            CREATE INDEX IF NOT EXISTS idx_session_token_usage_talk
-                ON session_token_usage (talk_id)
-                WHERE talk_id IS NOT NULL;
 
             CREATE TABLE IF NOT EXISTS escalation_notifications (
                 feishu_message_id TEXT PRIMARY KEY,
