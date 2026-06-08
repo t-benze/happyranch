@@ -19,6 +19,7 @@ PROBE_REQUEST = "HAPPYRANCH_ASSISTANT_PTY_PROBE_REQUEST"
 PROBE_READY = "HAPPYRANCH_ASSISTANT_PTY_PROBE_READY"
 
 _OUTPUT_EXCERPT_BYTES = 4096
+_READY_EXIT_OBSERVATION_SECONDS = 0.25
 
 
 @dataclass(frozen=True)
@@ -112,6 +113,7 @@ class ProbeRunner:
         exec_ready_fd: int | None = None
         exec_signal_fd: int | None = None
         returncode: int | None = None
+        passed = False
         output = bytearray()
         try:
             env = os.environ.copy()
@@ -166,7 +168,23 @@ class ProbeRunner:
                     start_index=response_start,
                     expected_response=expected_response,
                 ):
-                    returncode = self._poll_returncode(child_pid)
+                    returncode = self._observe_ready_returncode(
+                        child_pid,
+                        master_fd,
+                        output,
+                        deadline,
+                    )
+                    if returncode is not None and returncode != 0:
+                        return self._result(
+                            False,
+                            spec,
+                            output,
+                            start,
+                            f"ready marker observed but executor exited {returncode}",
+                            error="nonzero_exit",
+                            returncode=returncode,
+                        )
+                    passed = True
                     return self._result(
                         True,
                         spec,
@@ -207,7 +225,7 @@ class ProbeRunner:
                 returncode=returncode,
             )
         finally:
-            if child_pid is not None and returncode is None:
+            if child_pid is not None and not passed:
                 self._terminate_process(child_pid)
             if exec_signal_fd is not None:
                 self._close_fd(exec_signal_fd)
@@ -277,6 +295,23 @@ class ProbeRunner:
     ) -> bool:
         text = bytes(output[start_index:]).decode(errors="replace")
         return any(line.strip() == expected_response for line in text.splitlines())
+
+    def _observe_ready_returncode(
+        self,
+        child_pid: int,
+        master_fd: int,
+        output: bytearray,
+        deadline: float,
+    ) -> int | None:
+        observation_deadline = min(
+            deadline,
+            time.monotonic() + _READY_EXIT_OBSERVATION_SECONDS,
+        )
+        returncode = self._poll_returncode(child_pid)
+        while returncode is None and time.monotonic() < observation_deadline:
+            self._read_available(master_fd, output, observation_deadline)
+            returncode = self._poll_returncode(child_pid)
+        return returncode
 
     def _new_probe_nonce(self) -> str:
         return secrets.token_hex(16)

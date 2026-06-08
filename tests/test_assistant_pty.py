@@ -73,6 +73,87 @@ print("NOT_READY", flush=True)
     assert "NOT_READY" in result.output_excerpt
 
 
+def test_probe_cleans_up_helper_after_failed_leader_exit(tmp_path: Path) -> None:
+    pid_path = tmp_path / "helper.pid"
+    cli = _write_fake_cli(
+        tmp_path,
+        """
+from pathlib import Path
+import os
+import subprocess
+import sys
+
+helper = subprocess.Popen(
+    [
+        sys.executable,
+        "-c",
+        (
+            "from pathlib import Path; "
+            "import os, signal, time; "
+            "signal.signal(signal.SIGHUP, signal.SIG_IGN); "
+            "Path(os.environ['PID_PATH']).write_text(str(os.getpid())); "
+            "time.sleep(30)"
+        ),
+    ],
+    env=os.environ.copy(),
+)
+while not Path(os.environ["PID_PATH"]).exists():
+    pass
+sys.stdin.readline()
+print("NOT_READY", flush=True)
+raise SystemExit(1)
+""",
+    )
+    spec = InteractiveExecutorSpec(
+        name="helper",
+        argv=[str(cli)],
+        prompt_surface="AGENTS.md",
+        env={"PID_PATH": str(pid_path)},
+    )
+
+    result = ProbeRunner().probe_executor(spec, timeout_seconds=5)
+
+    assert result.passed is False
+    assert result.returncode == 1
+    helper_pid = int(pid_path.read_text())
+    deadline = time.monotonic() + 1
+    helper_alive = True
+    while time.monotonic() < deadline:
+        try:
+            os.kill(helper_pid, 0)
+        except ProcessLookupError:
+            helper_alive = False
+            break
+        time.sleep(0.01)
+    if helper_alive:
+        raise AssertionError(f"helper process {helper_pid} was not cleaned up")
+
+
+def test_probe_fails_when_ready_marker_followed_by_nonzero_exit(tmp_path: Path) -> None:
+    cli = _write_fake_cli(
+        tmp_path,
+        f"""
+import sys
+
+request = sys.stdin.readline().strip()
+nonce = request.split(maxsplit=1)[1]
+print(f"{PROBE_READY} {{nonce}}", flush=True)
+raise SystemExit(2)
+""",
+    )
+    spec = InteractiveExecutorSpec(
+        name="nonzero",
+        argv=[str(cli)],
+        prompt_surface="AGENTS.md",
+    )
+
+    result = ProbeRunner().probe_executor(spec)
+
+    assert result.passed is False
+    assert result.returncode == 2
+    assert result.error == "nonzero_exit"
+
+
 def test_probe_ignores_standalone_startup_ready_marker(tmp_path: Path) -> None:
     cli = _write_fake_cli(
         tmp_path,
