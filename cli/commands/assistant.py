@@ -2,8 +2,15 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import contextlib
+import termios
 import sys
+import tty
 from typing import Any
+from urllib.parse import urlparse
+
+import websockets
 
 from cli.client.client import DaemonNotRunning, DaemonStateInconsistent, OpcClient
 
@@ -103,9 +110,93 @@ def cmd_assistant_init(args: argparse.Namespace) -> None:
     _print_status(configured.json())
 
 
+def _ws_url(client: OpcClient) -> str:
+    parsed = urlparse(client.base_url)
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    token = client.headers["Authorization"].removeprefix("Bearer ")
+    return f"{scheme}://{parsed.netloc}/api/v1/assistant/session?token={token}"
+
+
+async def _attach_bridge(client: OpcClient) -> None:
+    fd = sys.stdin.fileno()
+    old_attrs = termios.tcgetattr(fd)
+    pending_sends: set[asyncio.Task[Any]] = set()
+
+    def forget_send(task: asyncio.Task[Any]) -> None:
+        pending_sends.discard(task)
+        with contextlib.suppress(Exception):
+            task.result()
+
+    try:
+        tty.setraw(fd)
+        async with websockets.connect(_ws_url(client)) as websocket:
+            loop = asyncio.get_running_loop()
+            done = loop.create_future()
+
+            def send_stdin_char() -> None:
+                data = sys.stdin.read(1)
+                if not data:
+                    if not done.done():
+                        done.set_result(None)
+                    return
+                task = asyncio.create_task(websocket.send(data))
+                pending_sends.add(task)
+                task.add_done_callback(forget_send)
+
+            loop.add_reader(fd, send_stdin_char)
+            try:
+                receive_task = asyncio.create_task(_write_websocket_output(websocket))
+                finished, pending = await asyncio.wait(
+                    {receive_task, done},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                await websocket.close()
+                if pending_sends:
+                    await asyncio.gather(*pending_sends, return_exceptions=True)
+                for task in finished:
+                    task.result()
+            finally:
+                loop.remove_reader(fd)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
+
+
+async def _write_websocket_output(websocket: Any) -> None:
+    async for message in websocket:
+        if isinstance(message, bytes):
+            sys.stdout.buffer.write(message)
+            sys.stdout.buffer.flush()
+        else:
+            sys.stdout.write(message)
+            sys.stdout.flush()
+
+
+def _run_attach_bridge(client: OpcClient) -> None:
+    asyncio.run(_attach_bridge(client))
+
+
 def cmd_assistant_attach(args: argparse.Namespace) -> None:
-    print("assistant attach is not implemented yet; run `happyranch assistant status`.")
-    sys.exit(2)
+    client = _client()
+    status = client.get("/api/v1/assistant/status")
+    if status.status_code != 200:
+        print(f"Error ({status.status_code}): {status.text}")
+        sys.exit(1)
+    state = status.json()["state"]
+    if state == "uninitialized":
+        print("System assistant is not initialized. Run `happyranch assistant init`.")
+        sys.exit(2)
+    if state != "configured":
+        print(
+            "System assistant configuration needs repair or reconfigure. "
+            "Run `happyranch assistant init --repair` or "
+            "`happyranch assistant init --reconfigure`."
+        )
+        sys.exit(2)
+    _run_attach_bridge(client)
+
 
 
 def register(
