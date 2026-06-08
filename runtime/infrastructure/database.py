@@ -18,6 +18,7 @@ from runtime.models import (
     ThreadInvocation,
     ThreadInvocationPurpose,
     ThreadInvocationStatus,
+    ThreadAttachment,
     ThreadMessage,
     ThreadMessageKind,
     ThreadParticipant,
@@ -384,6 +385,23 @@ class Database:
             );
             CREATE UNIQUE INDEX IF NOT EXISTS idx_thread_messages_thread_seq
                 ON thread_messages(thread_id, seq);
+
+            CREATE TABLE IF NOT EXISTS thread_message_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                thread_id TEXT NOT NULL,
+                message_seq INTEGER NOT NULL,
+                ordinal INTEGER NOT NULL,
+                artifact_name TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                size_bytes INTEGER,
+                content_type TEXT,
+                uploaded_by TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (thread_id) REFERENCES threads(id),
+                UNIQUE(thread_id, message_seq, ordinal)
+            );
+            CREATE INDEX IF NOT EXISTS idx_thread_message_attachments_message
+                ON thread_message_attachments(thread_id, message_seq);
 
             CREATE TABLE IF NOT EXISTS thread_invocations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2377,6 +2395,7 @@ class Database:
         body_markdown: str | None = None,
         decline_reason: str | None = None,
         system_payload: dict | None = None,
+        attachments: list[ThreadAttachment] | None = None,
     ) -> int:
         """Append a message and return its allocated seq.
 
@@ -2384,29 +2403,77 @@ class Database:
         insert happen under the connection's transaction, and the unique
         index on (thread_id, seq) guards against any race.
         """
-        cursor = self._conn.execute(
-            "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq "
-            "FROM thread_messages WHERE thread_id = ?",
-            (thread_id,),
-        )
-        next_seq = cursor.fetchone()["next_seq"]
-        self._conn.execute(
-            "INSERT INTO thread_messages (thread_id, seq, speaker, kind, "
-            "body_markdown, decline_reason, system_payload_json, "
-            "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                thread_id,
-                next_seq,
-                speaker,
-                kind.value,
-                body_markdown,
-                decline_reason,
-                json.dumps(system_payload) if system_payload else None,
-                _now().isoformat(),
-            ),
-        )
-        self._conn.commit()
+        try:
+            self._conn.execute("BEGIN")
+            cursor = self._conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq "
+                "FROM thread_messages WHERE thread_id = ?",
+                (thread_id,),
+            )
+            next_seq = cursor.fetchone()["next_seq"]
+            self._conn.execute(
+                "INSERT INTO thread_messages (thread_id, seq, speaker, kind, "
+                "body_markdown, decline_reason, system_payload_json, "
+                "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    thread_id,
+                    next_seq,
+                    speaker,
+                    kind.value,
+                    body_markdown,
+                    decline_reason,
+                    json.dumps(system_payload) if system_payload else None,
+                    _now().isoformat(),
+                ),
+            )
+            for ordinal, attachment in enumerate(attachments or []):
+                self._conn.execute(
+                    "INSERT INTO thread_message_attachments ("
+                    "thread_id, message_seq, ordinal, artifact_name, display_name, "
+                    "size_bytes, content_type, uploaded_by, created_at"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        thread_id,
+                        next_seq,
+                        ordinal,
+                        attachment.artifact_name,
+                        attachment.display_name,
+                        attachment.size_bytes,
+                        attachment.content_type,
+                        attachment.uploaded_by,
+                        _now().isoformat(),
+                    ),
+                )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
         return next_seq
+
+    def _attachments_for_messages(
+        self, thread_id: str, seqs: list[int]
+    ) -> dict[int, list[ThreadAttachment]]:
+        if not seqs:
+            return {}
+        placeholders = ",".join("?" for _ in seqs)
+        cursor = self._conn.execute(
+            "SELECT * FROM thread_message_attachments "
+            f"WHERE thread_id = ? AND message_seq IN ({placeholders}) "
+            "ORDER BY message_seq, ordinal",
+            (thread_id, *seqs),
+        )
+        out: dict[int, list[ThreadAttachment]] = {seq: [] for seq in seqs}
+        for row in cursor.fetchall():
+            out.setdefault(row["message_seq"], []).append(
+                ThreadAttachment(
+                    artifact_name=row["artifact_name"],
+                    display_name=row["display_name"],
+                    size_bytes=row["size_bytes"],
+                    content_type=row["content_type"],
+                    uploaded_by=row["uploaded_by"],
+                )
+            )
+        return out
 
     @_synchronized
     def list_thread_messages(
@@ -2416,6 +2483,11 @@ class Database:
             "SELECT * FROM thread_messages "
             "WHERE thread_id = ? AND seq > ? ORDER BY seq LIMIT ?",
             (thread_id, since_seq, limit),
+        )
+        rows = cursor.fetchall()
+        attachments_by_seq = self._attachments_for_messages(
+            thread_id,
+            [r["seq"] for r in rows],
         )
         return [
             ThreadMessage(
@@ -2427,9 +2499,10 @@ class Database:
                 body_markdown=r["body_markdown"],
                 decline_reason=r["decline_reason"],
                 system_payload=json.loads(r["system_payload_json"]) if r["system_payload_json"] else None,
+                attachments=attachments_by_seq.get(r["seq"], []),
                 created_at=datetime.fromisoformat(r["created_at"]),
             )
-            for r in cursor.fetchall()
+            for r in rows
         ]
 
     @_synchronized
@@ -2443,6 +2516,7 @@ class Database:
         row = cursor.fetchone()
         if not row:
             return None
+        attachments_by_seq = self._attachments_for_messages(thread_id, [seq])
         return ThreadMessage(
             id=row["id"],
             thread_id=row["thread_id"],
@@ -2452,6 +2526,7 @@ class Database:
             body_markdown=row["body_markdown"],
             decline_reason=row["decline_reason"],
             system_payload=json.loads(row["system_payload_json"]) if row["system_payload_json"] else None,
+            attachments=attachments_by_seq.get(seq, []),
             created_at=datetime.fromisoformat(row["created_at"]),
         )
 
