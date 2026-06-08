@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from runtime.config import Settings
+from runtime.daemon import paths as paths_mod
 from runtime.daemon.assistant_pty import ProbeResult
 from runtime.daemon.app import create_app
 from runtime.daemon.state import DaemonState
@@ -315,6 +318,113 @@ def test_assistant_configure_derives_command_from_server_specs(
     assert config is not None
     assert config.selected_command == "/server/bin/codex"
     assert config.latest_probe_results == [expected_probe_result]
+
+
+def test_assistant_websocket_streams_to_selected_cli(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from runtime.daemon.routes import assistant as assistant_route
+
+    fake_cli = tmp_path / "fake-assistant"
+    fake_cli.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "print('assistant ready', flush=True)\n"
+        "for line in sys.stdin:\n"
+        "    print('echo: ' + line.strip(), flush=True)\n"
+    )
+    fake_cli.chmod(0o755)
+
+    @dataclass(frozen=True)
+    class FakeSpec:
+        name: str
+        argv: list[str]
+        prompt_surface: str
+
+    monkeypatch.setattr(
+        assistant_route,
+        "build_executor_specs",
+        lambda _settings: [
+            FakeSpec(name="codex", argv=[str(fake_cli)], prompt_surface="AGENTS.md"),
+        ],
+    )
+    response = client.post(
+        "/api/v1/assistant/configure",
+        json={
+            "selected_executor": "codex",
+            "probe_results": [_passed_probe_result("codex")],
+        },
+    )
+    assert response.status_code == 200, response.text
+
+    try:
+        token = paths_mod.read_token()
+        with client.websocket_connect(
+            f"/api/v1/assistant/session?token={token}"
+        ) as websocket:
+            assert websocket.receive_text().strip() == "assistant ready"
+
+            websocket.send_text("hello from websocket\n")
+
+            assert "echo: hello from websocket" in websocket.receive_text()
+    finally:
+        asyncio.run(client.app.state.daemon.assistant_sessions.close_all())
+
+
+def test_assistant_websocket_rejects_bad_token_without_starting_session(
+    client: TestClient,
+    runtime,
+) -> None:
+    paths = system_assistant_paths(runtime.root)
+    paths.root.mkdir(parents=True)
+    paths.workspace.mkdir(parents=True)
+    (paths.workspace / "agent.yaml").write_text("name: system_assistant\n")
+    (paths.workspace / "AGENTS.md").write_text("# Assistant\n")
+    (paths.learnings_dir).mkdir(parents=True)
+    (paths.learnings_dir / "_index.md").write_text("# Learnings\n")
+    save_assistant_config(
+        runtime.root,
+        AssistantConfig(
+            selected_executor="codex",
+            selected_command="/should/not/start",
+            workspace_path=str(paths.workspace),
+            latest_probe_results=[],
+        ),
+    )
+
+    class NoStartSessions:
+        async def get_or_start(self, **_kwargs: Any) -> None:
+            raise AssertionError("unauthorized websocket started assistant session")
+
+    client.app.state.daemon.assistant_sessions = NoStartSessions()
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/api/v1/assistant/session?token=bad-token"):
+            pass
+
+    assert exc_info.value.code == 1008
+
+
+def test_assistant_websocket_uninitialized_sends_hint_without_starting_session(
+    client: TestClient,
+) -> None:
+    class NoStartSessions:
+        async def get_or_start(self, **_kwargs: Any) -> None:
+            raise AssertionError("uninitialized assistant started session")
+
+    client.app.state.daemon.assistant_sessions = NoStartSessions()
+    token = paths_mod.read_token()
+
+    with client.websocket_connect(f"/api/v1/assistant/session?token={token}") as websocket:
+        assert websocket.receive_text() == (
+            "assistant_init_required: configure the system assistant before attaching"
+        )
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            websocket.receive_text()
+
+    assert exc_info.value.code == 1000
 
 
 def test_assistant_repair_refreshes_workspace(client: TestClient, runtime) -> None:

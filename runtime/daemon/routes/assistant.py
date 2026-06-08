@@ -1,13 +1,24 @@
 """System assistant setup and status routes."""
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import (
+    APIRouter,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from runtime.daemon import paths as daemon_paths
 from runtime.daemon.assistant_pty import (
+    AssistantPtySession,
     InteractiveExecutorSpec,
     ProbeResult,
     ProbeRunner,
@@ -17,6 +28,7 @@ from runtime.daemon.auth import require_token
 from runtime.daemon.state import DaemonState
 from runtime.system_assistant import (
     AssistantConfig,
+    AssistantState,
     bootstrap_assistant_workspace,
     classify_assistant_state,
     load_assistant_config,
@@ -24,7 +36,7 @@ from runtime.system_assistant import (
     system_assistant_paths,
 )
 
-router = APIRouter(dependencies=[require_token()])
+router = APIRouter()
 
 
 class ConfigureAssistantRequest(BaseModel):
@@ -139,13 +151,44 @@ def _assistant_error(code: str, exc: Exception) -> HTTPException:
     return HTTPException(status_code=409, detail={"code": code, "message": str(exc)})
 
 
-@router.get("/assistant/status")
+def _websocket_token_is_valid(websocket: WebSocket) -> bool:
+    expected = daemon_paths.read_token()
+    if expected is None:
+        return False
+    return websocket.query_params.get("token") == expected
+
+
+def _assistant_init_hint(state: AssistantState, detail: str | None) -> str:
+    if state == AssistantState.UNINITIALIZED:
+        return "assistant_init_required: configure the system assistant before attaching"
+    if detail:
+        return f"assistant_init_required: repair the system assistant before attaching ({detail})"
+    return "assistant_init_required: repair the system assistant before attaching"
+
+
+async def _pump_assistant_output(
+    websocket: WebSocket,
+    session: AssistantPtySession,
+    queue: asyncio.Queue[str | None],
+) -> None:
+    try:
+        while True:
+            text = await queue.get()
+            if text is None:
+                await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+                return
+            await websocket.send_text(text)
+    finally:
+        session.unsubscribe(queue)
+
+
+@router.get("/assistant/status", dependencies=[require_token()])
 async def get_assistant_status(request: Request) -> dict[str, Any]:
     root = _runtime_root(request)
     return classify_assistant_state(root).model_dump()
 
 
-@router.post("/assistant/probes")
+@router.post("/assistant/probes", dependencies=[require_token()])
 def probe_assistant_executors(request: Request) -> dict[str, Any]:
     _runtime_root(request)
     state: DaemonState = request.app.state.daemon
@@ -157,7 +200,7 @@ def probe_assistant_executors(request: Request) -> dict[str, Any]:
     return {"probe_results": probe_results}
 
 
-@router.post("/assistant/configure")
+@router.post("/assistant/configure", dependencies=[require_token()])
 async def configure_assistant(
     body: ConfigureAssistantRequest,
     request: Request,
@@ -208,7 +251,7 @@ async def configure_assistant(
     return classify_assistant_state(root).model_dump()
 
 
-@router.post("/assistant/repair")
+@router.post("/assistant/repair", dependencies=[require_token()])
 async def repair_assistant(request: Request) -> dict[str, Any]:
     root = _runtime_root(request)
     try:
@@ -224,3 +267,63 @@ async def repair_assistant(request: Request) -> dict[str, Any]:
     except ValueError as exc:
         raise _assistant_error("assistant_workspace_invalid", exc) from exc
     return classify_assistant_state(root).model_dump()
+
+
+@router.websocket("/assistant/session")
+async def attach_assistant_session(websocket: WebSocket) -> None:
+    if not _websocket_token_is_valid(websocket):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    await websocket.accept()
+    state_obj = websocket.app.state.daemon
+    assert isinstance(state_obj, DaemonState)
+    if state_obj.runtime is None:
+        await websocket.send_text("assistant_init_required: no active runtime")
+        await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
+        return
+
+    root = state_obj.runtime.root
+    assistant_status = classify_assistant_state(root)
+    if assistant_status.state != AssistantState.CONFIGURED:
+        await websocket.send_text(
+            _assistant_init_hint(assistant_status.state, assistant_status.detail)
+        )
+        await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
+        return
+
+    try:
+        config = load_assistant_config(root)
+    except (OSError, UnicodeDecodeError, ValueError, ValidationError) as exc:
+        await websocket.send_text(
+            _assistant_init_hint(AssistantState.STALE_OR_BROKEN, str(exc))
+        )
+        await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
+        return
+    if config is None:
+        await websocket.send_text(_assistant_init_hint(AssistantState.UNINITIALIZED, None))
+        await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
+        return
+
+    try:
+        session = await state_obj.assistant_sessions.get_or_start(
+            command=config.selected_command,
+            workspace=system_assistant_paths(root).workspace,
+        )
+    except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
+        await websocket.send_text(f"assistant_launch_failed: {exc}")
+        await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+        return
+
+    queue = session.subscribe()
+    output_task = asyncio.create_task(_pump_assistant_output(websocket, session, queue))
+    try:
+        while True:
+            text = await websocket.receive_text()
+            await session.write_text(text)
+    except WebSocketDisconnect:
+        return
+    finally:
+        output_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await output_task

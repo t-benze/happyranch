@@ -114,3 +114,25 @@ async def test_add_org_clears_broken_on_success(tmp_path: Path) -> None:
     assert org.slug == "broken"
     assert "broken" not in state.broken_orgs
     assert "broken" in state.orgs
+
+
+@pytest.mark.asyncio
+async def test_close_all_closes_assistant_sessions(tmp_path: Path) -> None:
+    rt = RuntimeDir.init(tmp_path / "rt")
+    _seed_org(rt.orgs_dir / "alpha")
+    state = DaemonState.from_runtime(rt, Settings())
+
+    class FakeAssistantSessions:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def close_all(self) -> None:
+            self.closed = True
+
+    fake_sessions = FakeAssistantSessions()
+    state.assistant_sessions = fake_sessions
+
+    await state.close_all()
+
+    assert fake_sessions.closed is True
+    assert state.orgs == {}
