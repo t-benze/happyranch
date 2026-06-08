@@ -86,12 +86,21 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
     next_count = task.orchestration_step_count + 1
     if next_count > max_steps:
         reason = f"max steps ({max_steps}) exceeded"
-        db.update_task(
+        # Atomic CAS on the eligible pre-state read at step 1. This guard runs
+        # BEFORE try_claim_for_step, so without it two duplicate deliveries of
+        # the same stale at-cap row would both escalate and double-post the
+        # thread `task_escalated` message + TASK_FOLLOWUP. If False: another
+        # worker escalated first (or /cancel landed) — drop silently.
+        if not db.try_escalate_over_budget(
             task_id,
-            status=TaskStatus.BLOCKED,
-            block_kind=BlockKind.ESCALATED,
-            note=reason,
-        )
+            expected_status=task.status,
+            expected_block_kind=task.block_kind,
+            reason=reason,
+        ):
+            logger.debug(
+                "run_step %s: lost over-budget escalate race, dropping", task_id,
+            )
+            return
         orch._audit.log_escalation(task_id, "orchestrator", reason)
         orch.notify_escalated(
             task_id=task_id, agent="orchestrator", reason=reason,

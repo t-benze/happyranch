@@ -1114,6 +1114,58 @@ def test_try_escalate_rejects_missing_task(db):
     assert db.try_escalate("T-NOPE", reason="x") is False
 
 
+def test_try_escalate_over_budget_succeeds_from_expected_state(db):
+    """CAS happy path: an eligible PENDING task at the step cap escalates."""
+    from runtime.models import BlockKind
+    db.insert_task(TaskRecord(id="T-1", brief="x"))
+    ok = db.try_escalate_over_budget(
+        "T-1", expected_status=TaskStatus.PENDING, expected_block_kind=None,
+        reason="max steps (3) exceeded",
+    )
+    assert ok is True
+    t = db.get_task("T-1")
+    assert t.status == TaskStatus.BLOCKED
+    assert t.block_kind == BlockKind.ESCALATED
+    assert t.note == "max steps (3) exceeded"
+
+
+def test_try_escalate_over_budget_is_idempotent_under_duplicate_delivery(db):
+    """Two duplicate deliveries read the same eligible at-cap row; only the
+    first writer wins. The second sees the row already moved out of PENDING so
+    its conditional UPDATE matches zero rows → returns False. Guarantees the
+    thread `task_escalated` message + TASK_FOLLOWUP invocation fire exactly once
+    on the pre-CAS max-steps path."""
+    db.insert_task(TaskRecord(id="T-1", brief="x"))
+    first = db.try_escalate_over_budget(
+        "T-1", expected_status=TaskStatus.PENDING, expected_block_kind=None,
+        reason="max steps (3) exceeded",
+    )
+    second = db.try_escalate_over_budget(
+        "T-1", expected_status=TaskStatus.PENDING, expected_block_kind=None,
+        reason="max steps (3) exceeded",
+    )
+    assert first is True
+    assert second is False
+
+
+def test_try_escalate_over_budget_rejects_cancelled_task(db):
+    """A /cancel landing between the step-1 read and the budget guard moves the
+    row to FAILED; the CAS pre-state no longer matches → no escalation."""
+    from datetime import datetime, timezone
+    db.insert_task(TaskRecord(id="T-1", brief="x"))
+    now = datetime.now(timezone.utc).isoformat()
+    db.update_task("T-1", status=TaskStatus.FAILED, cancelled_at=now,
+                   completed_at=now, note="cancelled by founder")
+    ok = db.try_escalate_over_budget(
+        "T-1", expected_status=TaskStatus.PENDING, expected_block_kind=None,
+        reason="bogus",
+    )
+    assert ok is False
+    t = db.get_task("T-1")
+    assert t.status == TaskStatus.FAILED
+    assert t.note == "cancelled by founder"
+
+
 def test_try_delegate_succeeds_on_pending_parent(db):
     """CAS happy path: parent transitions to BLOCKED(DELEGATED) AND child
     is inserted in one atomic RLock acquisition."""
