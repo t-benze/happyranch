@@ -3,14 +3,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import termios
 import sys
 import tty
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 import websockets
+from websockets.exceptions import WebSocketException
 
 from cli.client.client import DaemonNotRunning, DaemonStateInconsistent, OpcClient
 
@@ -114,52 +114,117 @@ def _ws_url(client: OpcClient) -> str:
     parsed = urlparse(client.base_url)
     scheme = "wss" if parsed.scheme == "https" else "ws"
     token = client.headers["Authorization"].removeprefix("Bearer ")
-    return f"{scheme}://{parsed.netloc}/api/v1/assistant/session?token={token}"
+    query = urlencode({"token": token})
+    return f"{scheme}://{parsed.netloc}/api/v1/assistant/session?{query}"
 
 
 async def _attach_bridge(client: OpcClient) -> None:
     fd = sys.stdin.fileno()
     old_attrs = termios.tcgetattr(fd)
-    pending_sends: set[asyncio.Task[Any]] = set()
-
-    def forget_send(task: asyncio.Task[Any]) -> None:
-        pending_sends.discard(task)
-        with contextlib.suppress(Exception):
-            task.result()
 
     try:
         tty.setraw(fd)
         async with websockets.connect(_ws_url(client)) as websocket:
             loop = asyncio.get_running_loop()
-            done = loop.create_future()
+            bridge_done = loop.create_future()
+            stdin_queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=1024)
+            backpressure_tasks: set[asyncio.Task[Any]] = set()
+            reader_active = False
+
+            def remove_stdin_reader() -> None:
+                nonlocal reader_active
+                if reader_active:
+                    loop.remove_reader(fd)
+                    reader_active = False
+
+            def fail_bridge(exc: Exception) -> None:
+                remove_stdin_reader()
+                if not bridge_done.done():
+                    bridge_done.set_exception(exc)
+
+            def add_stdin_reader() -> None:
+                nonlocal reader_active
+                if not reader_active and not bridge_done.done():
+                    loop.add_reader(fd, send_stdin_char)
+                    reader_active = True
+
+            async def enqueue_after_space(item: str | None) -> None:
+                try:
+                    await stdin_queue.put(item)
+                except Exception as exc:
+                    fail_bridge(exc)
+                    return
+                if item is not None:
+                    add_stdin_reader()
+
+            def queue_stdin_item(item: str | None) -> None:
+                try:
+                    stdin_queue.put_nowait(item)
+                except asyncio.QueueFull:
+                    remove_stdin_reader()
+                    task = asyncio.create_task(enqueue_after_space(item))
+                    backpressure_tasks.add(task)
+                    task.add_done_callback(backpressure_tasks.discard)
 
             def send_stdin_char() -> None:
-                data = sys.stdin.read(1)
-                if not data:
-                    if not done.done():
-                        done.set_result(None)
+                if not reader_active or bridge_done.done():
                     return
-                task = asyncio.create_task(websocket.send(data))
-                pending_sends.add(task)
-                task.add_done_callback(forget_send)
+                try:
+                    data = sys.stdin.read(1)
+                except Exception as exc:
+                    fail_bridge(exc)
+                    return
+                if not data:
+                    remove_stdin_reader()
+                    queue_stdin_item(None)
+                    return
+                queue_stdin_item(data)
 
-            loop.add_reader(fd, send_stdin_char)
+            async def send_stdin_to_websocket() -> None:
+                try:
+                    while True:
+                        data = await stdin_queue.get()
+                        if data is None:
+                            return
+                        await websocket.send(data)
+                except Exception as exc:
+                    fail_bridge(exc)
+                    raise
+
+            add_stdin_reader()
             try:
                 receive_task = asyncio.create_task(_write_websocket_output(websocket))
+                sender_task = asyncio.create_task(send_stdin_to_websocket())
                 finished, pending = await asyncio.wait(
-                    {receive_task, done},
+                    {receive_task, sender_task, bridge_done},
                     return_when=asyncio.FIRST_COMPLETED,
                 )
+                error: BaseException | None = None
+                for task in finished:
+                    try:
+                        task.result()
+                    except Exception as exc:
+                        error = exc
+                if bridge_done.done():
+                    try:
+                        bridge_done.result()
+                    except Exception as exc:
+                        error = exc
                 for task in pending:
                     task.cancel()
+                queued_backpressure_tasks = list(backpressure_tasks)
+                for task in queued_backpressure_tasks:
+                    task.cancel()
                 await asyncio.gather(*pending, return_exceptions=True)
+                await asyncio.gather(
+                    *queued_backpressure_tasks,
+                    return_exceptions=True,
+                )
                 await websocket.close()
-                if pending_sends:
-                    await asyncio.gather(*pending_sends, return_exceptions=True)
-                for task in finished:
-                    task.result()
+                if error is not None:
+                    raise error
             finally:
-                loop.remove_reader(fd)
+                remove_stdin_reader()
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
 
@@ -195,7 +260,11 @@ def cmd_assistant_attach(args: argparse.Namespace) -> None:
             "`happyranch assistant init --reconfigure`."
         )
         sys.exit(2)
-    _run_attach_bridge(client)
+    try:
+        _run_attach_bridge(client)
+    except (OSError, WebSocketException) as exc:
+        print(f"Error: assistant attach failed: {exc}")
+        sys.exit(1)
 
 
 
