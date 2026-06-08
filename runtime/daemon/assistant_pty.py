@@ -378,8 +378,7 @@ class ProbeRunner:
         self._signal_process_tree(pid, signal.SIGTERM)
         deadline = time.monotonic() + 0.5
         while time.monotonic() < deadline:
-            if self._poll_returncode(pid) is not None:
-                return
+            self._poll_returncode(pid)
             time.sleep(0.01)
         self._signal_process_tree(pid, signal.SIGKILL)
         deadline = time.monotonic() + 0.5

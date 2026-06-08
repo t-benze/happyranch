@@ -91,6 +91,7 @@ helper = subprocess.Popen(
             "from pathlib import Path; "
             "import os, signal, time; "
             "signal.signal(signal.SIGHUP, signal.SIG_IGN); "
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
             "Path(os.environ['PID_PATH']).write_text(str(os.getpid())); "
             "time.sleep(30)"
         ),
