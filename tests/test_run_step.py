@@ -755,6 +755,7 @@ def test_run_step_worker_completion_is_done_not_parsed_as_eh_decision(
     db.insert_task(TaskRecord(
         id="T-CHD", brief="c",
         assigned_agent="dev_agent", parent_task_id="T-PAR",
+        task_type="subtask",
     ))
 
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
@@ -796,10 +797,12 @@ def test_run_step_delegated_worker_emits_review_verdict(
     db.insert_task(TaskRecord(
         id="T-OK", brief="ok",
         assigned_agent="dev_agent", parent_task_id="T-PAR",
+        task_type="subtask",
     ))
     db.insert_task(TaskRecord(
         id="T-BAD", brief="bad",
         assigned_agent="dev_agent", parent_task_id="T-PAR",
+        task_type="subtask",
     ))
 
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
@@ -1519,3 +1522,198 @@ def test_run_step_escalate_atomic_against_cancel_between_recheck_and_cas(
     assert t.cancelled_at is not None
     # block_kind stays None (cancel cleared it); not BLOCKED(ESCALATED).
     assert t.block_kind is None
+
+
+def test_non_manager_owner_of_task_type_emits_decision(runtime, db, monkeypatch):
+    """A type=task owned by a NON-manager parses its decision (done here)."""
+    import json
+    from runtime.orchestrator.orchestrator import Orchestrator
+    db.insert_task(TaskRecord(
+        id="T-1", brief="root", assigned_agent="dev_agent", task_type="task",
+    ))
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10),
+                        paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(
+            output_summary=json.dumps({"action": "done", "summary": "did it"}),
+        )
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    orch.run_step("T-1")
+    t = db.get_task("T-1")
+    assert t.status == TaskStatus.COMPLETED
+    assert t.note == "did it"
+
+
+def test_subtask_owner_is_leaf_even_if_decision_present(runtime, db, monkeypatch):
+    """A type=subtask owner does NOT orchestrate: a delegate decision in its
+    report is ignored and the task simply completes (leaf path)."""
+    import json
+    from runtime.orchestrator.orchestrator import Orchestrator
+    db.insert_task(TaskRecord(
+        id="T-2", brief="leaf", assigned_agent="engineering_head",
+        task_type="subtask",
+    ))
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10),
+                        paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        # Even though this is a manager AND emits a delegate, the subtask
+        # gate forces leaf completion.
+        return _make_result(), _make_report(
+            output_summary=json.dumps(
+                {"action": "delegate", "agent": "dev_agent", "prompt": "go"}),
+        )
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    orch.run_step("T-2")
+    t = db.get_task("T-2")
+    assert t.status == TaskStatus.COMPLETED          # leaf — no child spawned
+    assert db.get_children("T-2") == []
+
+
+def test_delegated_child_is_typed_subtask(runtime, db, monkeypatch):
+    import json
+    from runtime.orchestrator.orchestrator import Orchestrator
+    (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
+    db.insert_task(TaskRecord(
+        id="T-1", brief="root", assigned_agent="engineering_head",
+        task_type="task",
+    ))
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10),
+                        paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(
+            output_summary=json.dumps(
+                {"action": "delegate", "agent": "dev_agent", "prompt": "build"}),
+        )
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    orch.run_step("T-1")
+    children = db.get_children("T-1")
+    assert len(children) == 1
+    assert db.get_task(children[0]).task_type == "subtask"
+
+
+def test_non_manager_self_delegation_is_allowed(runtime, db, monkeypatch):
+    """dev_agent owns a type=task and delegates to ITSELF → child spawned."""
+    import json
+    from runtime.orchestrator.orchestrator import Orchestrator
+    (runtime.workspaces_dir / "dev_agent").mkdir(parents=True, exist_ok=True)
+    db.insert_task(TaskRecord(id="T-1", brief="root",
+                              assigned_agent="dev_agent", task_type="task"))
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10),
+                        paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    def fake(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(
+            output_summary=json.dumps(
+                {"action": "delegate", "agent": "dev_agent", "prompt": "phase 2"}))
+    monkeypatch.setattr(orch, "_run_agent", fake)
+
+    orch.run_step("T-1")
+    children = db.get_children("T-1")
+    assert len(children) == 1
+    assert db.get_task(children[0]).assigned_agent == "dev_agent"
+
+
+def test_non_manager_cross_agent_delegation_is_rejected(runtime, db, monkeypatch):
+    """dev_agent owning a type=task may NOT delegate to product_manager →
+    feedback step, task re-enqueued PENDING, no child."""
+    import json
+    from runtime.orchestrator.orchestrator import Orchestrator
+    (runtime.workspaces_dir / "product_manager").mkdir(parents=True, exist_ok=True)
+    db.insert_task(TaskRecord(id="T-1", brief="root",
+                              assigned_agent="dev_agent", task_type="task"))
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10),
+                        paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    def fake(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(
+            output_summary=json.dumps(
+                {"action": "delegate", "agent": "product_manager", "prompt": "x"}))
+    monkeypatch.setattr(orch, "_run_agent", fake)
+
+    orch.run_step("T-1")
+    assert db.get_children("T-1") == []
+    assert db.get_task("T-1").status == TaskStatus.PENDING   # re-enqueued for re-decide
+
+
+def test_manager_self_target_does_not_bump_revision_count(runtime, db, monkeypatch):
+    """A manager re-delegating to ITSELF is sequencing, not a revise loop —
+    revision_count must stay 0 so escalate-after-2-rounds doesn't misfire."""
+    import json
+    from runtime.orchestrator.orchestrator import Orchestrator
+    (runtime.workspaces_dir / "engineering_head").mkdir(parents=True, exist_ok=True)
+    # One already-completed self-child makes engineering_head the worker-of-record.
+    db.insert_task(TaskRecord(id="T-1", brief="root",
+                              assigned_agent="engineering_head", task_type="task"))
+    db.insert_task(TaskRecord(id="T-1-c1", brief="c1",
+                              assigned_agent="engineering_head",
+                              parent_task_id="T-1", task_type="subtask"))
+    db.update_task("T-1-c1", status=TaskStatus.COMPLETED)
+
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10),
+                        paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    def fake(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(
+            output_summary=json.dumps(
+                {"action": "delegate", "agent": "engineering_head",
+                 "prompt": "phase 2"}))
+    monkeypatch.setattr(orch, "_run_agent", fake)
+
+    orch.run_step("T-1")
+    assert db.get_task("T-1").revision_count == 0
+
+
+def test_build_agent_prompt_leaf_subtask_is_empty(runtime, db):
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _build_agent_prompt
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    t = TaskRecord(id="T-1", brief="x", assigned_agent="dev_agent",
+                   task_type="subtask")
+    assert _build_agent_prompt(orch, t, "dev_agent") == ""
+
+
+def test_build_agent_prompt_non_manager_task_is_self_only(runtime, db):
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _build_agent_prompt
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    t = TaskRecord(id="T-1", brief="x", assigned_agent="dev_agent",
+                   task_type="task")
+    p = _build_agent_prompt(orch, t, "dev_agent")
+    assert "Available Agents" not in p
+    assert "dev_agent" in p
+
+
+def test_build_agent_prompt_manager_roster_includes_self(runtime, db):
+    """Spec §3: a manager may self-target. The roster must advertise self so the
+    manager knows it can delegate a sub-task to itself (it is not in teams.yaml
+    `workers`, so it would otherwise be absent)."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _build_agent_prompt
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    t = TaskRecord(id="T-1", brief="x", assigned_agent="engineering_head",
+                   task_type="task")
+    p = _build_agent_prompt(orch, t, "engineering_head")
+    assert "Available Agents" in p          # full roster prompt
+    assert "engineering_head" in p          # self advertised in the roster
+    assert "yourself" in p

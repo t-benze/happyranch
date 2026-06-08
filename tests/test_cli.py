@@ -263,7 +263,7 @@ def test_cmd_run_submits_and_returns_without_streaming(capsys):
 
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
          patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
-        args = MagicMock(org=None, team=None, brief="x", brief_file=None)
+        args = MagicMock(org=None, team=None, brief="x", brief_file=None, owner=None)
         cmd_run(args)
 
     fake.post.assert_called_once_with("/api/v1/orgs/alpha/tasks", json={"brief": "x"})
@@ -285,7 +285,7 @@ def test_cmd_run_reads_brief_from_file(tmp_path, capsys):
     fake.post.return_value.json.return_value = {"task_id": "TASK-002"}
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
          patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
-        args = MagicMock(org=None, team=None, brief=None, brief_file=str(brief_path))
+        args = MagicMock(org=None, team=None, brief=None, brief_file=str(brief_path), owner=None)
         cmd_run(args)
 
     fake.post.assert_called_once_with(
@@ -297,7 +297,7 @@ def test_cmd_run_brief_file_missing(tmp_path, capsys):
     """--brief-file with a nonexistent path exits with a friendly error."""
     from cli.main import cmd_run
 
-    args = MagicMock(org=None, team=None, brief=None, brief_file=str(tmp_path / "nope.md"))
+    args = MagicMock(org=None, team=None, brief=None, brief_file=str(tmp_path / "nope.md"), owner=None)
     fake = MagicMock()
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
          patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
@@ -317,7 +317,7 @@ def test_cmd_run_brief_file_empty_rejected(tmp_path, capsys):
     fake = MagicMock()
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
          patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
-        args = MagicMock(org=None, team=None, brief=None, brief_file=str(brief_path))
+        args = MagicMock(org=None, team=None, brief=None, brief_file=str(brief_path), owner=None)
         with pytest.raises(SystemExit):
             cmd_run(args)
     out = capsys.readouterr().out
@@ -347,7 +347,7 @@ def test_cmd_run_idle_daemon_prints_friendly_message(capsys):
     fake.post.return_value.json.return_value = {"detail": {"code": "no_active_runtime"}}
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
          patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
-        args = MagicMock(org=None, team=None, brief="x", brief_file=None)
+        args = MagicMock(org=None, team=None, brief="x", brief_file=None, owner=None)
         with pytest.raises(SystemExit):
             cmd_run(args)
     out = capsys.readouterr().out
@@ -2322,7 +2322,7 @@ def test_cmd_run_resolves_org_explicit_flag(monkeypatch):
     fake.post.return_value.json.return_value = {"task_id": "TASK-001"}
 
     with patch("cli.main.OpcClient.from_env", return_value=fake):
-        args = MagicMock(org="from-flag", team=None, brief="x", brief_file=None)
+        args = MagicMock(org="from-flag", team=None, brief="x", brief_file=None, owner=None)
         cmd_run(args)
 
     fake.post.assert_called_once_with(
@@ -2344,7 +2344,7 @@ def test_cmd_run_resolves_org_via_env_var(monkeypatch):
     fake.post.return_value.json.return_value = {"task_id": "TASK-002"}
 
     with patch("cli.main.OpcClient.from_env", return_value=fake):
-        args = MagicMock(org=None, team=None, brief="x", brief_file=None)
+        args = MagicMock(org=None, team=None, brief="x", brief_file=None, owner=None)
         cmd_run(args)
 
     fake.post.assert_called_once_with(
@@ -2364,7 +2364,7 @@ def test_cmd_run_resolves_org_auto_infer_single(monkeypatch):
     fake.post.return_value.json.return_value = {"task_id": "TASK-003"}
 
     with patch("cli.main.OpcClient.from_env", return_value=fake):
-        args = MagicMock(org=None, team=None, brief="x", brief_file=None)
+        args = MagicMock(org=None, team=None, brief="x", brief_file=None, owner=None)
         cmd_run(args)
 
     fake.post.assert_called_once_with(
@@ -2384,7 +2384,7 @@ def test_cmd_run_multi_org_no_flag_no_env_errors(monkeypatch, capsys):
     }
 
     with patch("cli.main.OpcClient.from_env", return_value=fake):
-        args = MagicMock(org=None, team=None, brief="x")
+        args = MagicMock(org=None, team=None, brief="x", owner=None)
         with pytest.raises(SystemExit):
             cmd_run(args)
 
