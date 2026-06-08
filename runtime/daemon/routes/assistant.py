@@ -122,21 +122,21 @@ async def configure_assistant(
 
     paths = system_assistant_paths(root)
     try:
-        bootstrap_assistant_workspace(root, executor=body.selected_executor)
-        save_assistant_config(
-            root,
-            AssistantConfig(
-                selected_executor=body.selected_executor,
-                selected_command=_selected_command(body.selected_executor, matching_probe),
-                workspace_path=str(paths.workspace),
-                latest_probe_results=body.probe_results,
-            ),
+        config = AssistantConfig(
+            selected_executor=body.selected_executor,
+            selected_command=_selected_command(body.selected_executor, matching_probe),
+            workspace_path=str(paths.workspace),
+            latest_probe_results=body.probe_results,
         )
     except ValidationError as exc:
         raise HTTPException(
             status_code=400,
             detail={"code": "unsupported_assistant_executor", "message": str(exc)},
         ) from exc
+
+    try:
+        bootstrap_assistant_workspace(root, executor=body.selected_executor)
+        save_assistant_config(root, config)
     except ValueError as exc:
         raise _assistant_error("assistant_workspace_invalid", exc) from exc
     return classify_assistant_state(root).model_dump()
@@ -147,7 +147,7 @@ async def repair_assistant(request: Request) -> dict[str, Any]:
     root = _runtime_root(request)
     try:
         config = load_assistant_config(root)
-    except ValueError as exc:
+    except (OSError, UnicodeDecodeError, ValueError, ValidationError) as exc:
         raise _assistant_error("assistant_config_invalid", exc) from exc
     if config is None:
         raise HTTPException(status_code=409, detail={"code": "assistant_not_configured"})

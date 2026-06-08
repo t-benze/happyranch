@@ -159,6 +159,25 @@ def test_assistant_configure_requires_passing_probe(client: TestClient) -> None:
     assert response.json()["detail"]["code"] == "selected_executor_not_probe_passed"
 
 
+def test_assistant_configure_rejects_unsupported_executor_without_workspace(
+    client: TestClient,
+    runtime,
+) -> None:
+    paths = system_assistant_paths(runtime.root)
+
+    response = client.post(
+        "/api/v1/assistant/configure",
+        json={
+            "selected_executor": "not-real",
+            "probe_results": [_passed_probe_result("not-real")],
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "unsupported_assistant_executor"
+    assert not paths.root.exists()
+
+
 def test_assistant_configure_writes_workspace_and_status(
     client: TestClient,
     runtime,
@@ -214,6 +233,43 @@ def test_assistant_repair_refreshes_workspace(client: TestClient, runtime) -> No
     assert (paths.workspace / "agent.yaml").is_file()
     assert (paths.workspace / "CLAUDE.md").is_file()
     assert (paths.learnings_dir / "_index.md").is_file()
+
+
+def test_assistant_repair_invalid_config_returns_conflict(
+    client: TestClient,
+    runtime,
+) -> None:
+    paths = system_assistant_paths(runtime.root)
+    paths.root.mkdir(parents=True)
+    paths.config_path.write_text("{invalid json")
+
+    response = client.post("/api/v1/assistant/repair")
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "assistant_config_invalid"
+
+
+def test_assistant_repair_invalid_config_schema_returns_conflict(
+    client: TestClient,
+    runtime,
+) -> None:
+    paths = system_assistant_paths(runtime.root)
+    paths.root.mkdir(parents=True)
+    paths.config_path.write_text('{"selected_executor": "not-real"}\n')
+    no_raise_client = TestClient(client.app, raise_server_exceptions=False)
+    no_raise_client.headers.update(client.headers)
+
+    response = no_raise_client.post("/api/v1/assistant/repair")
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "assistant_config_invalid"
+
+
+def test_assistant_repair_requires_config(client: TestClient) -> None:
+    response = client.post("/api/v1/assistant/repair")
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "assistant_not_configured"
 
 
 @pytest.mark.parametrize(
