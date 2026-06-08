@@ -67,6 +67,8 @@ def load_assistant_config(runtime_root: Path) -> AssistantConfig | None:
         raise ValueError("assistant config must not be a symlink")
     if not path.exists():
         return None
+    if not path.is_file():
+        raise ValueError("assistant config must be a regular file")
     return AssistantConfig.model_validate_json(path.read_text())
 
 

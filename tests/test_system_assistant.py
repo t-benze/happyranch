@@ -104,6 +104,9 @@ def test_classify_stale_when_config_is_directory(tmp_path: Path) -> None:
     paths = system_assistant_paths(tmp_path)
     paths.config_path.mkdir(parents=True)
 
+    with pytest.raises(ValueError, match="assistant config must be a regular file"):
+        load_assistant_config(tmp_path)
+
     status = classify_assistant_state(tmp_path)
 
     assert status.state == AssistantState.STALE_OR_BROKEN
