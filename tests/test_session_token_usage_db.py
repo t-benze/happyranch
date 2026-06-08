@@ -121,6 +121,106 @@ def test_round_trip_all_fields_populated(db: Database):
     assert r["created_at"] is not None
 
 
+def test_insert_thread_scoped_session_token_usage(db: Database):
+    db.insert_session_token_usage(
+        task_id=None,
+        agent="alice",
+        session_id="TOK-1",
+        executor="claude",
+        token_usage=_usage(input_tokens=12, output_tokens=3, model="sonnet"),
+        scope_type="thread",
+        scope_id="THR-001",
+        thread_id="THR-001",
+        invocation_purpose="reply",
+    )
+
+    rows = db.list_session_token_usage(scope_type="thread", thread_id="THR-001")
+
+    assert len(rows) == 1
+    assert rows[0]["task_id"] is None
+    assert rows[0]["scope_type"] == "thread"
+    assert rows[0]["scope_id"] == "THR-001"
+    assert rows[0]["thread_id"] == "THR-001"
+    assert rows[0]["talk_id"] is None
+    assert rows[0]["invocation_purpose"] == "reply"
+    assert rows[0]["total_tokens"] == 15
+
+
+def test_existing_task_writes_default_to_task_scope(db: Database):
+    db.insert_session_token_usage(
+        task_id="TASK-1",
+        agent="dev_agent",
+        session_id="sess-a",
+        executor="claude",
+        token_usage=_usage(input_tokens=10, output_tokens=20),
+    )
+
+    rows = db.list_session_token_usage(task_id="TASK-1", scope_type="task")
+
+    assert len(rows) == 1
+    assert rows[0]["scope_type"] == "task"
+    assert rows[0]["scope_id"] == "TASK-1"
+
+
+def test_aggregate_by_thread_and_talk(db: Database):
+    db.insert_session_token_usage(
+        task_id=None,
+        agent="alice",
+        session_id="thread-a",
+        executor="claude",
+        token_usage=_usage(input_tokens=10, output_tokens=2),
+        scope_type="thread",
+        scope_id="THR-001",
+        thread_id="THR-001",
+        invocation_purpose="bootstrap",
+    )
+    db.insert_session_token_usage(
+        task_id=None,
+        agent="bob",
+        session_id="thread-b",
+        executor="claude",
+        token_usage=_usage(input_tokens=20, output_tokens=3),
+        scope_type="thread",
+        scope_id="THR-001",
+        thread_id="THR-001",
+        invocation_purpose="reply",
+    )
+    db.insert_session_token_usage(
+        task_id="TASK-9",
+        agent="alice",
+        session_id="talk-task",
+        executor="codex",
+        token_usage=_usage(input_tokens=7, output_tokens=4),
+        scope_type="task",
+        scope_id="TASK-9",
+        talk_id="TALK-001",
+    )
+
+    by_thread = db.aggregate_session_token_usage_by_thread()
+    by_talk = db.aggregate_session_token_usage_by_talk()
+
+    assert by_thread == [{
+        "thread_id": "THR-001",
+        "sessions": 2,
+        "input_tokens": 30,
+        "output_tokens": 5,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+        "reasoning_tokens": 0,
+        "total_tokens": 35,
+    }]
+    assert by_talk == [{
+        "talk_id": "TALK-001",
+        "sessions": 1,
+        "input_tokens": 7,
+        "output_tokens": 4,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+        "reasoning_tokens": 0,
+        "total_tokens": 11,
+    }]
+
+
 def test_aggregate_by_agent_filters_by_since(db: Database):
     """ISO timestamps compare lexicographically. since= filters out older rows."""
     import time

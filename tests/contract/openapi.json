@@ -1760,6 +1760,18 @@
             "query"
           ],
           [
+            "purpose",
+            "query"
+          ],
+          [
+            "scope_id",
+            "query"
+          ],
+          [
+            "scope_type",
+            "query"
+          ],
+          [
             "since",
             "query"
           ],
@@ -1768,7 +1780,15 @@
             "path"
           ],
           [
+            "talk_id",
+            "query"
+          ],
+          [
             "task_id",
+            "query"
+          ],
+          [
+            "thread_id",
             "query"
           ]
         ],

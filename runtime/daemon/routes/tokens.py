@@ -1,9 +1,9 @@
-"""GET /api/v1/orgs/{slug}/tokens — per-session token usage and rollups.
+"""GET /api/v1/orgs/{slug}/tokens — scoped token usage and rollups.
 
-Single read endpoint for the ``session_token_usage`` table. With no
-``group_by`` it returns one row per (task, agent, session); with
-``group_by=agent`` or ``group_by=task`` it returns a rollup keyed by that
-column. See spec: docs/superpowers/specs/2026-05-05-token-usage-tracking-design.md §3.2.
+Single read endpoint for the ``session_token_usage`` table. Task rows remain
+task-shaped for compatibility. Direct thread invocations use
+``scope_type=thread``; talk lifecycle routes do not run executors, so talk usage
+currently appears only through talk-dispatched task rows with ``talk_id``.
 """
 from __future__ import annotations
 
@@ -24,32 +24,59 @@ def list_tokens(
     since: str | None = None,
     limit: int | None = None,
     group_by: str | None = None,
+    scope_type: str | None = None,
+    scope_id: str | None = None,
+    thread_id: str | None = None,
+    talk_id: str | None = None,
+    purpose: str | None = None,
 ) -> dict:
-    """Return per-session rows or an aggregated rollup.
+    """Return scoped per-session rows or an aggregated rollup.
 
     Filters AND-compose. ``since`` is an ISO-8601 timestamp matched against
     ``created_at``. ``limit`` only applies to the per-session listing.
-    ``group_by`` accepts ``"agent"`` or ``"task"``; any other non-null value
-    yields 400.
+    ``group_by`` accepts ``agent``, ``task``, ``scope``, ``thread``, or
+    ``talk``. Talk lifecycle APIs are executor-free; ``talk`` rollups show
+    talk-attributed task rows today and future direct talk executor rows.
     """
-    if group_by is not None and group_by not in ("agent", "task"):
+    valid_groups = ("agent", "task", "scope", "thread", "talk")
+    if group_by is not None and group_by not in valid_groups:
         raise HTTPException(
             status_code=400,
             detail={"code": "invalid_group_by", "value": group_by},
         )
+    filters = dict(
+        since=since,
+        task_id=task_id,
+        agent=agent,
+        scope_type=scope_type,
+        scope_id=scope_id,
+        thread_id=thread_id,
+        talk_id=talk_id,
+        purpose=purpose,
+    )
 
     if group_by == "agent":
         rollup = org.db.aggregate_session_token_usage_by_agent(
-            since=since, task_id=task_id, agent=agent,
+            **filters,
         )
         return {"rollup": rollup}
     if group_by == "task":
         rollup = org.db.aggregate_session_token_usage_by_task(
-            since=since, agent=agent, task_id=task_id,
+            **filters,
         )
+        return {"rollup": rollup}
+    if group_by == "scope":
+        rollup = org.db.aggregate_session_token_usage_by_scope(**filters)
+        return {"rollup": rollup}
+    if group_by == "thread":
+        rollup = org.db.aggregate_session_token_usage_by_thread(**filters)
+        return {"rollup": rollup}
+    if group_by == "talk":
+        rollup = org.db.aggregate_session_token_usage_by_talk(**filters)
         return {"rollup": rollup}
 
     rows = org.db.list_session_token_usage(
-        task_id=task_id, agent=agent, since=since, limit=limit,
+        limit=limit,
+        **filters,
     )
     return {"rows": rows}

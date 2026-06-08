@@ -93,6 +93,53 @@ def test_tokens_filters_by_agent(tmp_home, app, org_state, auth_headers) -> None
     assert rows[0]["agent"] == "qa_engineer"
 
 
+def test_tokens_filters_by_thread_scope_and_purpose(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    org_state.db.insert_session_token_usage(
+        task_id=None,
+        agent="alice",
+        session_id="TOK-1",
+        executor="claude",
+        token_usage=TokenUsage(input_tokens=30, output_tokens=5),
+        scope_type="thread",
+        scope_id="THR-001",
+        thread_id="THR-001",
+        invocation_purpose="reply",
+    )
+    org_state.db.insert_session_token_usage(
+        task_id=None,
+        agent="alice",
+        session_id="TOK-2",
+        executor="claude",
+        token_usage=TokenUsage(input_tokens=99, output_tokens=1),
+        scope_type="thread",
+        scope_id="THR-002",
+        thread_id="THR-002",
+        invocation_purpose="bootstrap",
+    )
+
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tokens",
+        params={
+            "scope_type": "thread",
+            "thread_id": "THR-001",
+            "purpose": "reply",
+        },
+        headers=auth_headers,
+    )
+
+    assert r.status_code == 200
+    rows = r.json()["rows"]
+    assert len(rows) == 1
+    assert rows[0]["task_id"] is None
+    assert rows[0]["scope_type"] == "thread"
+    assert rows[0]["scope_id"] == "THR-001"
+    assert rows[0]["thread_id"] == "THR-001"
+    assert rows[0]["invocation_purpose"] == "reply"
+    assert rows[0]["total_tokens"] == 35
+
+
 def test_tokens_filters_by_since(tmp_home, app, org_state, auth_headers) -> None:
     _seed(org_state)
     # All seeded rows have created_at == now; a `since` set in the future
@@ -175,6 +222,113 @@ def test_tokens_group_by_task_returns_rollup(
     assert rollup["TASK-100"]["input_tokens"] == 30
     assert rollup["TASK-100"]["output_tokens"] == 13
     assert rollup["TASK-200"]["sessions"] == 1
+
+
+def test_tokens_group_by_thread_and_talk_returns_rollups(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    org_state.db.insert_session_token_usage(
+        task_id=None,
+        agent="alice",
+        session_id="thread-a",
+        executor="claude",
+        token_usage=TokenUsage(input_tokens=10, output_tokens=5),
+        scope_type="thread",
+        scope_id="THR-001",
+        thread_id="THR-001",
+        invocation_purpose="reply",
+    )
+    org_state.db.insert_session_token_usage(
+        task_id=None,
+        agent="bob",
+        session_id="thread-b",
+        executor="codex",
+        token_usage=TokenUsage(input_tokens=20, output_tokens=7),
+        scope_type="thread",
+        scope_id="THR-001",
+        thread_id="THR-001",
+        invocation_purpose="task_followup",
+    )
+    org_state.db.insert_session_token_usage(
+        task_id="TASK-300",
+        agent="alice",
+        session_id="talk-task",
+        executor="claude",
+        token_usage=TokenUsage(input_tokens=8, output_tokens=2),
+        scope_type="task",
+        scope_id="TASK-300",
+        talk_id="TALK-001",
+    )
+
+    thread_r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tokens",
+        params={"group_by": "thread"},
+        headers=auth_headers,
+    )
+    talk_r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tokens",
+        params={"group_by": "talk"},
+        headers=auth_headers,
+    )
+
+    assert thread_r.status_code == 200
+    assert talk_r.status_code == 200
+    assert thread_r.json()["rollup"] == [{
+        "thread_id": "THR-001",
+        "sessions": 2,
+        "input_tokens": 30,
+        "output_tokens": 12,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+        "reasoning_tokens": 0,
+        "total_tokens": 42,
+    }]
+    assert talk_r.json()["rollup"] == [{
+        "talk_id": "TALK-001",
+        "sessions": 1,
+        "input_tokens": 8,
+        "output_tokens": 2,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+        "reasoning_tokens": 0,
+        "total_tokens": 10,
+    }]
+
+
+def test_tokens_group_by_scope_returns_scope_rollup(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    _seed(org_state)
+    org_state.db.insert_session_token_usage(
+        task_id=None,
+        agent="alice",
+        session_id="TOK-1",
+        executor="claude",
+        token_usage=TokenUsage(input_tokens=30, output_tokens=5),
+        scope_type="thread",
+        scope_id="THR-001",
+        thread_id="THR-001",
+        invocation_purpose="reply",
+    )
+
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tokens",
+        params={"group_by": "scope", "scope_type": "thread"},
+        headers=auth_headers,
+    )
+
+    assert r.status_code == 200
+    assert r.json()["rollup"] == [{
+        "scope_type": "thread",
+        "scope_id": "THR-001",
+        "sessions": 1,
+        "input_tokens": 30,
+        "output_tokens": 5,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+        "reasoning_tokens": 0,
+        "total_tokens": 35,
+    }]
 
 
 def test_tokens_invalid_group_by_returns_400(

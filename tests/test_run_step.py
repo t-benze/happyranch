@@ -1366,6 +1366,60 @@ def test_run_step_drops_delegate_when_cancelled_during_session(runtime, db, monk
     assert usage_rows[0]["output_tokens"] == 20
 
 
+@pytest.mark.parametrize(
+    ("task_id", "field", "origin_id"),
+    [
+        ("T-TALK", "dispatched_from_talk_id", "TALK-001"),
+        ("T-THREAD", "dispatched_from_thread_id", "THR-001"),
+    ],
+)
+def test_run_step_token_usage_carries_task_origin_scope(
+    runtime, db, monkeypatch, task_id, field, origin_id,
+):
+    from datetime import datetime, timezone
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.models import TokenUsage
+
+    task_kwargs = {
+        "id": task_id,
+        "brief": "x",
+        "assigned_agent": "engineering_head",
+        field: origin_id,
+    }
+    db.insert_task(TaskRecord(**task_kwargs))
+    orch = Orchestrator(
+        db=db, settings=Settings(), paths=runtime, slug="test",
+        teams=TeamsRegistry.load(runtime.root),
+    )
+    orch._queue = _SlugQueue()
+
+    def cancel_with_usage(*a, **k):
+        now = datetime.now(timezone.utc).isoformat()
+        db.update_task(
+            task_id,
+            status=TaskStatus.FAILED,
+            note="cancelled by founder: stop",
+            cancelled_at=now,
+            completed_at=now,
+        )
+        result = _make_result()
+        result.token_usage = TokenUsage(input_tokens=3, output_tokens=4)
+        return result, _make_report(output_summary="ignored")
+
+    monkeypatch.setattr(orch, "_run_agent", cancel_with_usage)
+
+    orch.run_step(task_id)
+
+    rows = db.list_session_token_usage(task_id=task_id)
+    assert len(rows) == 1
+    assert rows[0]["scope_type"] == "task"
+    assert rows[0]["scope_id"] == task_id
+    assert rows[0]["talk_id"] == (origin_id if field == "dispatched_from_talk_id" else None)
+    assert rows[0]["thread_id"] == (
+        origin_id if field == "dispatched_from_thread_id" else None
+    )
+
+
 # ---- Cancel-race Guard C: shared terminal predicate ----
 # See docs/superpowers/specs/2026-05-26-cancel-race-design.md §5.3.
 
