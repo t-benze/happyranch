@@ -59,6 +59,19 @@ def _wait_for_pid_file(path: Path, *, timeout_seconds: float = 2) -> int:
     raise AssertionError(f"pid file {path} was not written")
 
 
+def _wait_for_session_stopped(
+    session: AssistantPtySession,
+    *,
+    timeout_seconds: float = 2,
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if not session.is_running():
+            return
+        time.sleep(0.01)
+    raise AssertionError("assistant session leader is still running")
+
+
 @pytest.mark.asyncio
 async def test_assistant_session_marks_closed_after_natural_exit(tmp_path: Path) -> None:
     cli = _write_fake_cli(
@@ -120,6 +133,7 @@ from pathlib import Path
 import os
 import subprocess
 import sys
+import time
 
 subprocess.Popen(
     [
@@ -127,12 +141,17 @@ subprocess.Popen(
         "-c",
         (
             "from pathlib import Path; "
-            "import os, time; "
+            "import os, signal, time; "
+            "signal.signal(signal.SIGHUP, signal.SIG_IGN); "
             f"Path({str(helper_pid_path)!r}).write_text(str(os.getpid())); "
             "time.sleep(30)"
         ),
     ]
 )
+for _ in range(200):
+    if Path({str(helper_pid_path)!r}).exists():
+        break
+    time.sleep(0.01)
 print("leader exiting", flush=True)
 """,
     )
@@ -140,6 +159,7 @@ print("leader exiting", flush=True)
     session1 = await manager.get_or_start(command=str(cli), workspace=tmp_path)
     first_output = await asyncio.wait_for(session1.subscribe().get(), timeout=2)
     helper_pid = _wait_for_pid_file(helper_pid_path)
+    _wait_for_session_stopped(session1)
 
     session2 = await manager.get_or_start(command=str(cli), workspace=tmp_path)
     await manager.close_all()
@@ -171,6 +191,30 @@ time.sleep(30)
     await session.close()
 
     _wait_for_dead(pid)
+    assert session.is_running() is False
+    assert session.master_fd is None
+
+
+@pytest.mark.asyncio
+async def test_assistant_session_provides_controlling_terminal(tmp_path: Path) -> None:
+    cli = _write_fake_cli(
+        tmp_path,
+        """
+import os
+
+try:
+    foreground_pgrp = os.tcgetpgrp(0)
+except OSError as exc:
+    print(f"ctty failed: {exc.errno}", flush=True)
+else:
+    print(f"ctty ok: {foreground_pgrp == os.getpgrp()}", flush=True)
+""",
+    )
+    session = AssistantPtySession(command=str(cli), workspace=tmp_path)
+    await session.start()
+    output = await _read_until_terminal(session.subscribe())
+
+    assert output == ["ctty ok: True\r\n"]
     assert session.is_running() is False
     assert session.master_fd is None
 

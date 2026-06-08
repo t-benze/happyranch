@@ -13,6 +13,7 @@ import signal
 import shutil
 import shlex
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -25,6 +26,7 @@ PROBE_READY = "HAPPYRANCH_ASSISTANT_PTY_PROBE_READY"
 _OUTPUT_EXCERPT_BYTES = 4096
 _READY_EXIT_OBSERVATION_SECONDS = 0.25
 _SESSION_REPLAY_CHARS = 8192
+_PTY_EXEC_HELPER_MODULE = "runtime.daemon.pty_exec_helper"
 
 
 @dataclass(frozen=True)
@@ -126,6 +128,27 @@ def _parse_selected_command(command: str) -> list[str]:
     return argv
 
 
+def _build_session_launch_argv(
+    *,
+    executable: str,
+    argv: list[str],
+    slave_fd: int,
+    cwd: Path,
+) -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        _PTY_EXEC_HELPER_MODULE,
+        "--slave-fd",
+        str(slave_fd),
+        "--cwd",
+        str(cwd),
+        "--",
+        executable,
+        *argv[1:],
+    ]
+
+
 class AssistantPtySession:
     def __init__(self, *, command: str, workspace: Path) -> None:
         self.command = command
@@ -149,16 +172,19 @@ class AssistantPtySession:
         if executable is None:
             raise FileNotFoundError(f"executable not found: {self.argv[0]}")
         master_fd, slave_fd = pty.openpty()
+        launch_argv = _build_session_launch_argv(
+            executable=executable,
+            argv=self.argv,
+            slave_fd=slave_fd,
+            cwd=self.workspace,
+        )
         try:
             process = subprocess.Popen(
-                [executable, *self.argv[1:]],
-                stdin=slave_fd,
-                stdout=slave_fd,
-                stderr=slave_fd,
-                cwd=str(self.workspace),
+                launch_argv,
                 env=env,
                 start_new_session=True,
                 close_fds=True,
+                pass_fds=(slave_fd,),
             )
         except BaseException:
             _close_fd(master_fd)
