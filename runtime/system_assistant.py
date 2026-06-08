@@ -187,7 +187,7 @@ def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
             Path(config.workspace_path).expanduser().resolve(strict=False)
         )
         expected_workspace = paths.workspace.resolve(strict=False)
-    except (OSError, ValueError):
+    except (OSError, RuntimeError, ValueError):
         return AssistantStatus(
             state=AssistantState.STALE_OR_BROKEN,
             detail="assistant config is invalid",
