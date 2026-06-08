@@ -71,11 +71,15 @@ print("NOT_READY", flush=True)
     assert "NOT_READY" in result.output_excerpt
 
 
-def test_probe_ignores_startup_text_containing_ready_marker(tmp_path: Path) -> None:
+def test_probe_ignores_standalone_startup_ready_marker(tmp_path: Path) -> None:
     cli = _write_fake_cli(
         tmp_path,
         f"""
-print("startup context mentions {PROBE_READY}", flush=True)
+import sys
+
+print({PROBE_READY!r}, flush=True)
+sys.stdin.readline()
+print("NOT_READY", flush=True)
 """,
     )
     spec = InteractiveExecutorSpec(
@@ -88,7 +92,8 @@ print("startup context mentions {PROBE_READY}", flush=True)
 
     assert result.passed is False
     assert result.detail == "expected ready marker not found"
-    assert f"startup context mentions {PROBE_READY}" in result.output_excerpt
+    assert PROBE_READY in result.output_excerpt
+    assert "NOT_READY" in result.output_excerpt
 
 
 def test_probe_writes_minimal_workspace_surface(tmp_path: Path) -> None:

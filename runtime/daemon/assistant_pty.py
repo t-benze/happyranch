@@ -18,6 +18,8 @@ PROBE_REQUEST = "HAPPYRANCH_ASSISTANT_PTY_PROBE_REQUEST"
 PROBE_READY = "HAPPYRANCH_ASSISTANT_PTY_PROBE_READY"
 
 _OUTPUT_EXCERPT_BYTES = 4096
+_STARTUP_DRAIN_SECONDS = 0.5
+_STARTUP_QUIET_SECONDS = 0.05
 
 
 @dataclass(frozen=True)
@@ -120,6 +122,7 @@ class ProbeRunner:
             child_pid, master_fd = pty.fork()
             if child_pid == 0:
                 self._exec_child(spec.argv, executable, workspace, env)
+            self._drain_startup_output(master_fd, output)
             response_start = len(output)
             self._write_probe_request(master_fd)
             deadline = start + timeout_seconds
@@ -206,6 +209,19 @@ class ProbeRunner:
     def _write_probe_request(self, master_fd: int) -> None:
         for char in f"{PROBE_REQUEST}\r":
             os.write(master_fd, char.encode())
+
+    def _drain_startup_output(self, master_fd: int, output: bytearray) -> None:
+        deadline = time.monotonic() + _STARTUP_DRAIN_SECONDS
+        quiet_until: float | None = None
+        while time.monotonic() < deadline:
+            before = len(output)
+            read_deadline = deadline if quiet_until is None else min(deadline, quiet_until)
+            self._read_available(master_fd, output, read_deadline)
+            if len(output) > before:
+                quiet_until = time.monotonic() + _STARTUP_QUIET_SECONDS
+                continue
+            if quiet_until is not None and time.monotonic() >= quiet_until:
+                return
 
     def _has_ready_response(self, output: bytearray, *, start_index: int) -> bool:
         text = bytes(output[start_index:]).decode(errors="replace")
