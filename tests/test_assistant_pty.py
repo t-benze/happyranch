@@ -49,6 +49,50 @@ print(f"{PROBE_READY} {{nonce}}", flush=True)
     assert result.elapsed_seconds >= 0
 
 
+def test_probe_cleans_up_successful_live_executor(tmp_path: Path) -> None:
+    pid_path = tmp_path / "live.pid"
+    cli = _write_fake_cli(
+        tmp_path,
+        f"""
+from pathlib import Path
+import os
+import signal
+import sys
+import time
+
+signal.signal(signal.SIGHUP, signal.SIG_IGN)
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+request = sys.stdin.readline().strip()
+nonce = request.split(maxsplit=1)[1]
+Path(os.environ["PID_PATH"]).write_text(str(os.getpid()))
+print(f"{PROBE_READY} {{nonce}}", flush=True)
+time.sleep(30)
+""",
+    )
+    spec = InteractiveExecutorSpec(
+        name="live",
+        argv=[str(cli)],
+        prompt_surface="AGENTS.md",
+        env={"PID_PATH": str(pid_path)},
+    )
+
+    result = ProbeRunner().probe_executor(spec)
+
+    assert result.passed is True
+    child_pid = int(pid_path.read_text())
+    deadline = time.monotonic() + 1
+    child_alive = True
+    while time.monotonic() < deadline:
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            child_alive = False
+            break
+        time.sleep(0.01)
+    if child_alive:
+        raise AssertionError(f"successful process {child_pid} was not cleaned up")
+
+
 def test_probe_fails_on_wrong_marker(tmp_path: Path) -> None:
     cli = _write_fake_cli(
         tmp_path,
@@ -300,6 +344,24 @@ def test_probe_returns_failure_for_missing_executable(tmp_path: Path) -> None:
     assert result.passed is False
     assert result.error == "launch_error"
     assert "does-not-exist" in result.detail
+
+
+def test_probe_reports_exec_failure_after_path_resolution(tmp_path: Path) -> None:
+    bad_executable = tmp_path / "bad-cli"
+    bad_executable.write_text("not a script\n")
+    bad_executable.chmod(bad_executable.stat().st_mode | 0o111)
+    spec = InteractiveExecutorSpec(
+        name="bad",
+        argv=[str(bad_executable)],
+        prompt_surface="AGENTS.md",
+    )
+
+    result = ProbeRunner().probe_executor(spec, timeout_seconds=1)
+
+    assert result.passed is False
+    assert result.error == "launch_error"
+    assert result.returncode == 127
+    assert "failed to exec" in result.detail
 
 
 def test_probe_times_out_and_cleans_up_blocked_child(tmp_path: Path) -> None:

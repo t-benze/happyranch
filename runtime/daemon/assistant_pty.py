@@ -113,7 +113,6 @@ class ProbeRunner:
         exec_ready_fd: int | None = None
         exec_signal_fd: int | None = None
         returncode: int | None = None
-        passed = False
         output = bytearray()
         try:
             env = os.environ.copy()
@@ -142,10 +141,28 @@ class ProbeRunner:
             child_pid, master_fd = pty.fork()
             if child_pid == 0:
                 self._close_fd(exec_ready_fd)
-                self._exec_child(spec.argv, executable, workspace, env)
+                self._exec_child(spec.argv, executable, workspace, env, exec_signal_fd)
             self._close_fd(exec_signal_fd)
             exec_signal_fd = None
-            if not self._wait_for_child_exec(exec_ready_fd, deadline=start + timeout_seconds):
+            exec_started, exec_error = self._wait_for_child_exec(
+                exec_ready_fd,
+                deadline=start + timeout_seconds,
+            )
+            if not exec_started:
+                returncode = self._wait_for_returncode(
+                    child_pid,
+                    deadline=time.monotonic() + 0.1,
+                )
+                if exec_error is not None:
+                    return self._result(
+                        False,
+                        spec,
+                        output,
+                        start,
+                        exec_error,
+                        error="launch_error",
+                        returncode=returncode if returncode is not None else 127,
+                    )
                 return self._result(
                     False,
                     spec,
@@ -184,7 +201,6 @@ class ProbeRunner:
                             error="nonzero_exit",
                             returncode=returncode,
                         )
-                    passed = True
                     return self._result(
                         True,
                         spec,
@@ -195,7 +211,7 @@ class ProbeRunner:
                     )
                 returncode = self._poll_returncode(child_pid)
                 if returncode is not None:
-                    self._read_available(master_fd, output, time.monotonic())
+                    self._drain_available(master_fd, output, time.monotonic() + 0.1)
                     break
             timed_out = returncode is None and time.monotonic() >= deadline
             detail = (
@@ -225,7 +241,7 @@ class ProbeRunner:
                 returncode=returncode,
             )
         finally:
-            if child_pid is not None and not passed:
+            if child_pid is not None:
                 self._terminate_process(child_pid)
             if exec_signal_fd is not None:
                 self._close_fd(exec_signal_fd)
@@ -240,12 +256,18 @@ class ProbeRunner:
         executable: str,
         workspace: Path,
         env: dict[str, str],
+        exec_error_fd: int,
     ) -> None:
         try:
             os.chdir(workspace)
             os.execvpe(executable, argv, env)
         except OSError as exc:
-            os.write(2, f"failed to exec {argv[0]}: {exc}\n".encode())
+            message = f"failed to exec {argv[0]}: {exc}"
+            try:
+                os.write(exec_error_fd, message.encode())
+            except OSError:
+                pass
+            os.write(2, f"{message}\n".encode())
         os._exit(127)
 
     def _write_prompt_surface(
@@ -277,14 +299,22 @@ class ProbeRunner:
         while offset < len(data):
             offset += os.write(fd, data[offset:])
 
-    def _wait_for_child_exec(self, fd: int, *, deadline: float) -> bool:
+    def _wait_for_child_exec(
+        self,
+        fd: int,
+        *,
+        deadline: float,
+    ) -> tuple[bool, str | None]:
         while time.monotonic() < deadline:
             timeout = max(0.0, min(0.05, deadline - time.monotonic()))
             readable, _, _ = select.select([fd], [], [], timeout)
             if not readable:
                 continue
-            return os.read(fd, 1) == b""
-        return False
+            chunk = os.read(fd, 4096)
+            if chunk == b"":
+                return True, None
+            return False, chunk.decode(errors="replace")
+        return False, None
 
     def _has_ready_response(
         self,
@@ -321,26 +351,38 @@ class ProbeRunner:
         master_fd: int,
         output: bytearray,
         deadline: float,
-    ) -> None:
+    ) -> bool:
         timeout = max(0.0, min(0.05, deadline - time.monotonic()))
         try:
             readable, _, _ = select.select([master_fd], [], [], timeout)
         except OSError as exc:
             if exc.errno == errno.EINTR:
-                return
+                return False
             raise
         if not readable:
-            return
+            return False
         try:
             chunk = os.read(master_fd, 1024)
         except OSError as exc:
             if exc.errno == errno.EIO:
-                return
+                return False
             raise
         if chunk:
             output.extend(chunk)
             if len(output) > _OUTPUT_EXCERPT_BYTES:
                 del output[:-_OUTPUT_EXCERPT_BYTES]
+            return True
+        return False
+
+    def _drain_available(
+        self,
+        master_fd: int,
+        output: bytearray,
+        deadline: float,
+    ) -> None:
+        while time.monotonic() < deadline:
+            if not self._read_available(master_fd, output, deadline):
+                return
 
     def _result(
         self,
@@ -374,18 +416,37 @@ class ProbeRunner:
             return None
         return self._status_to_returncode(status)
 
+    def _wait_for_returncode(self, pid: int, *, deadline: float) -> int | None:
+        returncode = self._poll_returncode(pid)
+        while returncode is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+            returncode = self._poll_returncode(pid)
+        return returncode
+
     def _terminate_process(self, pid: int) -> None:
         self._signal_process_tree(pid, signal.SIGTERM)
         deadline = time.monotonic() + 0.5
         while time.monotonic() < deadline:
             self._poll_returncode(pid)
+            if not self._process_group_exists(pid):
+                return
             time.sleep(0.01)
         self._signal_process_tree(pid, signal.SIGKILL)
         deadline = time.monotonic() + 0.5
         while time.monotonic() < deadline:
-            if self._poll_returncode(pid) is not None:
+            self._poll_returncode(pid)
+            if not self._process_group_exists(pid):
                 return
             time.sleep(0.01)
+
+    def _process_group_exists(self, pid: int) -> bool:
+        try:
+            os.killpg(pid, 0)
+        except ProcessLookupError:
+            return False
+        except OSError:
+            return True
+        return True
 
     def _signal_process_tree(self, pid: int, sig: signal.Signals) -> None:
         try:
