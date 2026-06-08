@@ -37,6 +37,8 @@ def _passed_probe_result(executor: str = "codex") -> dict[str, Any]:
         "executor": executor,
         "command": f"/usr/local/bin/{executor}",
         "argv": [f"/usr/local/bin/{executor}"],
+        "name": executor,
+        "prompt_surface": "CLAUDE.md" if executor == "claude" else "AGENTS.md",
         "output_excerpt": "ready",
         "detail": "ready marker observed",
         "elapsed_seconds": 0.01,
@@ -176,6 +178,25 @@ def test_assistant_configure_rejects_unsupported_executor_without_workspace(
     assert response.status_code == 400
     assert response.json()["detail"]["code"] == "unsupported_assistant_executor"
     assert not paths.root.exists()
+
+
+def test_assistant_configure_rejects_extra_probe_fields(
+    client: TestClient,
+    runtime,
+) -> None:
+    paths = system_assistant_paths(runtime.root)
+    probe_result = {
+        **_passed_probe_result("codex"),
+        "unexpected": "must not persist",
+    }
+
+    response = client.post(
+        "/api/v1/assistant/configure",
+        json={"selected_executor": "codex", "probe_results": [probe_result]},
+    )
+
+    assert response.status_code == 422
+    assert not paths.config_path.exists()
 
 
 def test_assistant_configure_writes_workspace_and_status(

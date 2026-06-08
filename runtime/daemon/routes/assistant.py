@@ -31,7 +31,24 @@ class ConfigureAssistantRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     selected_executor: str
-    probe_results: list[dict[str, Any]]
+    probe_results: list["ProbeResultRow"]
+
+
+class ProbeResultRow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    passed: bool
+    executor: str
+    command: str
+    argv: list[str]
+    name: str
+    prompt_surface: str
+    output_excerpt: str
+    detail: str
+    elapsed_seconds: float
+    timed_out: bool
+    error: str | None
+    returncode: int | None
 
 
 def _runtime_root(request: Request) -> Path:
@@ -64,10 +81,10 @@ def _probe_result_to_dict(
 
 def _matching_passed_probe(
     selected_executor: str,
-    probe_results: list[dict[str, Any]],
-) -> dict[str, Any] | None:
+    probe_results: list[ProbeResultRow],
+) -> ProbeResultRow | None:
     for result in probe_results:
-        if result.get("executor") == selected_executor and result.get("passed") is True:
+        if result.executor == selected_executor and result.passed is True:
             return result
     return None
 
@@ -112,6 +129,7 @@ async def configure_assistant(
     root = _runtime_root(request)
     state: DaemonState = request.app.state.daemon
     specs = build_executor_specs(state.settings)
+    probe_results = [result.model_dump() for result in body.probe_results]
     matching_probe = _matching_passed_probe(body.selected_executor, body.probe_results)
     if matching_probe is None:
         raise HTTPException(
@@ -125,7 +143,7 @@ async def configure_assistant(
             selected_executor=body.selected_executor,
             selected_command=_server_selected_command(body.selected_executor, specs),
             workspace_path=str(paths.workspace),
-            latest_probe_results=body.probe_results,
+            latest_probe_results=probe_results,
         )
     except ValidationError as exc:
         raise HTTPException(
