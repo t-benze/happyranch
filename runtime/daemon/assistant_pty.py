@@ -109,6 +109,8 @@ class ProbeRunner:
     ) -> ProbeResult:
         master_fd: int | None = None
         child_pid: int | None = None
+        exec_ready_fd: int | None = None
+        exec_signal_fd: int | None = None
         returncode: int | None = None
         output = bytearray()
         try:
@@ -133,9 +135,27 @@ class ProbeRunner:
                     f"executable not found: {spec.argv[0]}",
                     error="launch_error",
                 )
+            exec_ready_fd, exec_signal_fd = os.pipe()
+            os.set_inheritable(exec_signal_fd, False)
             child_pid, master_fd = pty.fork()
             if child_pid == 0:
+                self._close_fd(exec_ready_fd)
                 self._exec_child(spec.argv, executable, workspace, env)
+            self._close_fd(exec_signal_fd)
+            exec_signal_fd = None
+            if not self._wait_for_child_exec(exec_ready_fd, deadline=start + timeout_seconds):
+                return self._result(
+                    False,
+                    spec,
+                    output,
+                    start,
+                    "timed out waiting for executor to start",
+                    timed_out=True,
+                    error="timeout",
+                    returncode=self._poll_returncode(child_pid),
+                )
+            self._close_fd(exec_ready_fd)
+            exec_ready_fd = None
             response_start = len(output)
             self._write_probe_request(master_fd, probe_request)
             deadline = start + timeout_seconds
@@ -189,6 +209,10 @@ class ProbeRunner:
         finally:
             if child_pid is not None and returncode is None:
                 self._terminate_process(child_pid)
+            if exec_signal_fd is not None:
+                self._close_fd(exec_signal_fd)
+            if exec_ready_fd is not None:
+                self._close_fd(exec_ready_fd)
             if master_fd is not None:
                 self._close_fd(master_fd)
 
@@ -228,8 +252,21 @@ class ProbeRunner:
         )
 
     def _write_probe_request(self, master_fd: int, probe_request: str) -> None:
-        for char in f"{probe_request}\r":
-            os.write(master_fd, char.encode())
+        self._write_all(master_fd, f"{probe_request}\r".encode())
+
+    def _write_all(self, fd: int, data: bytes) -> None:
+        offset = 0
+        while offset < len(data):
+            offset += os.write(fd, data[offset:])
+
+    def _wait_for_child_exec(self, fd: int, *, deadline: float) -> bool:
+        while time.monotonic() < deadline:
+            timeout = max(0.0, min(0.05, deadline - time.monotonic()))
+            readable, _, _ = select.select([fd], [], [], timeout)
+            if not readable:
+                continue
+            return os.read(fd, 1) == b""
+        return False
 
     def _has_ready_response(
         self,
