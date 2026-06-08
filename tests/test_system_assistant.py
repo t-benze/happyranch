@@ -109,6 +109,43 @@ def test_save_config_rejects_system_symlink_without_writing_target(tmp_path: Pat
     assert not (external_system / "assistant" / "config.json").exists()
 
 
+def test_load_config_rejects_system_symlink(tmp_path: Path) -> None:
+    paths = system_assistant_paths(tmp_path)
+    external_system = tmp_path / "external-system"
+    external_root = external_system / "assistant"
+    external_root.mkdir(parents=True)
+    paths.root.parent.symlink_to(external_system, target_is_directory=True)
+    cfg = AssistantConfig(
+        selected_executor="codex",
+        selected_command="codex",
+        workspace_path=str(paths.workspace),
+    )
+    (external_root / "config.json").write_text(cfg.model_dump_json(indent=2) + "\n")
+
+    with pytest.raises(
+        ValueError,
+        match="assistant system directory must not be a symlink",
+    ):
+        load_assistant_config(tmp_path)
+
+
+def test_load_config_rejects_root_symlink(tmp_path: Path) -> None:
+    paths = system_assistant_paths(tmp_path)
+    external_root = tmp_path / "external-root"
+    external_root.mkdir()
+    paths.root.parent.mkdir()
+    paths.root.symlink_to(external_root, target_is_directory=True)
+    cfg = AssistantConfig(
+        selected_executor="codex",
+        selected_command="codex",
+        workspace_path=str(paths.workspace),
+    )
+    (external_root / "config.json").write_text(cfg.model_dump_json(indent=2) + "\n")
+
+    with pytest.raises(ValueError, match="assistant root must not be a symlink"):
+        load_assistant_config(tmp_path)
+
+
 def test_classify_stale_when_config_is_invalid(tmp_path: Path) -> None:
     paths = system_assistant_paths(tmp_path)
     paths.root.mkdir(parents=True)
@@ -260,6 +297,42 @@ def test_classify_stale_when_system_directory_is_symlink(tmp_path: Path) -> None
 
     assert status.state == AssistantState.STALE_OR_BROKEN
     assert status.detail == "assistant system directory must not be a symlink"
+
+
+@pytest.mark.parametrize(
+    ("directory_name", "detail"),
+    [
+        ("system", "assistant system directory is not a directory"),
+        ("root", "assistant root is not a directory"),
+        ("workspace", "assistant workspace is not a directory"),
+        ("learnings", "assistant learnings directory is not a directory"),
+        ("logs", "assistant logs directory is not a directory"),
+    ],
+)
+def test_classify_stale_when_managed_path_is_regular_file(
+    tmp_path: Path, directory_name: str, detail: str
+) -> None:
+    paths = system_assistant_paths(tmp_path)
+    if directory_name == "system":
+        managed_path = paths.root.parent
+    elif directory_name == "root":
+        paths.root.parent.mkdir()
+        managed_path = paths.root
+    elif directory_name == "workspace":
+        paths.root.mkdir(parents=True)
+        managed_path = paths.workspace
+    elif directory_name == "learnings":
+        paths.workspace.mkdir(parents=True)
+        managed_path = paths.learnings_dir
+    else:
+        paths.workspace.mkdir(parents=True)
+        managed_path = paths.logs_dir
+    managed_path.write_text("not a directory\n")
+
+    status = classify_assistant_state(tmp_path)
+
+    assert status.state == AssistantState.STALE_OR_BROKEN
+    assert status.detail == detail
 
 
 @pytest.mark.parametrize(
@@ -525,6 +598,21 @@ def test_bootstrap_claude_workspace_writes_claude_surface(tmp_path: Path) -> Non
     assert not (workspace / "AGENTS.md").exists()
 
 
+def test_bootstrap_switches_prompt_surface_from_claude_to_codex(
+    tmp_path: Path,
+) -> None:
+    bootstrap_assistant_workspace(tmp_path, executor="claude")
+    workspace = tmp_path / "system" / "assistant" / "workspace"
+
+    assert (workspace / "CLAUDE.md").exists()
+    assert not (workspace / "AGENTS.md").exists()
+
+    bootstrap_assistant_workspace(tmp_path, executor="codex")
+
+    assert not (workspace / "CLAUDE.md").exists()
+    assert (workspace / "AGENTS.md").exists()
+
+
 def test_bootstrap_rejects_invalid_executor(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="unsupported assistant executor"):
         bootstrap_assistant_workspace(tmp_path, executor="bogus")
@@ -561,6 +649,40 @@ def test_bootstrap_rejects_system_symlink_without_writing_target(
 
     assert not (external_system / "assistant" / "workspace" / "agent.yaml").exists()
     assert not (external_system / "assistant" / "workspace" / "AGENTS.md").exists()
+
+
+@pytest.mark.parametrize(
+    ("directory_name", "detail"),
+    [
+        ("system", "assistant system directory is not a directory"),
+        ("root", "assistant root is not a directory"),
+        ("workspace", "assistant workspace is not a directory"),
+        ("learnings", "assistant learnings directory is not a directory"),
+        ("logs", "assistant logs directory is not a directory"),
+    ],
+)
+def test_bootstrap_rejects_managed_path_regular_file(
+    tmp_path: Path, directory_name: str, detail: str
+) -> None:
+    paths = system_assistant_paths(tmp_path)
+    if directory_name == "system":
+        managed_path = paths.root.parent
+    elif directory_name == "root":
+        paths.root.parent.mkdir()
+        managed_path = paths.root
+    elif directory_name == "workspace":
+        paths.root.mkdir(parents=True)
+        managed_path = paths.workspace
+    elif directory_name == "learnings":
+        paths.workspace.mkdir(parents=True)
+        managed_path = paths.learnings_dir
+    else:
+        paths.workspace.mkdir(parents=True)
+        managed_path = paths.logs_dir
+    managed_path.write_text("not a directory\n")
+
+    with pytest.raises(ValueError, match=detail):
+        bootstrap_assistant_workspace(tmp_path, executor="codex")
 
 
 @pytest.mark.parametrize(
