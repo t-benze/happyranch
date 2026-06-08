@@ -72,16 +72,13 @@ def _matching_passed_probe(
     return None
 
 
-def _selected_command(selected_executor: str, probe_result: dict[str, Any]) -> str:
-    command = probe_result.get("command")
-    if isinstance(command, str) and command:
-        return command
-    argv = probe_result.get("argv")
-    if isinstance(argv, list) and argv and isinstance(argv[0], str) and argv[0]:
-        return argv[0]
-    name = probe_result.get("name")
-    if isinstance(name, str) and name:
-        return name
+def _server_selected_command(
+    selected_executor: str,
+    specs: list[InteractiveExecutorSpec],
+) -> str:
+    for spec in specs:
+        if spec.name == selected_executor:
+            return spec.argv[0] if spec.argv else spec.name
     return selected_executor
 
 
@@ -113,6 +110,8 @@ async def configure_assistant(
     request: Request,
 ) -> dict[str, Any]:
     root = _runtime_root(request)
+    state: DaemonState = request.app.state.daemon
+    specs = build_executor_specs(state.settings)
     matching_probe = _matching_passed_probe(body.selected_executor, body.probe_results)
     if matching_probe is None:
         raise HTTPException(
@@ -124,7 +123,7 @@ async def configure_assistant(
     try:
         config = AssistantConfig(
             selected_executor=body.selected_executor,
-            selected_command=_selected_command(body.selected_executor, matching_probe),
+            selected_command=_server_selected_command(body.selected_executor, specs),
             workspace_path=str(paths.workspace),
             latest_probe_results=body.probe_results,
         )

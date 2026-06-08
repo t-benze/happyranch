@@ -203,8 +203,36 @@ def test_assistant_configure_writes_workspace_and_status(
     config = load_assistant_config(runtime.root)
     assert config is not None
     assert config.selected_executor == "codex"
-    assert config.selected_command == "/usr/local/bin/codex"
+    assert config.selected_command == "codex"
     assert config.workspace_path == str(paths.workspace)
+    assert config.latest_probe_results == [probe_result]
+
+
+def test_assistant_configure_derives_command_from_server_specs(
+    runtime,
+    auth: dict[str, str],
+) -> None:
+    state = DaemonState.from_runtime(
+        runtime,
+        Settings(codex_cli_path="/server/bin/codex"),
+    )
+    client = TestClient(create_app(state))
+    client.headers.update(auth)
+    probe_result = {
+        **_passed_probe_result("codex"),
+        "command": "/tmp/not-probed",
+        "argv": ["/tmp/not-probed"],
+    }
+
+    response = client.post(
+        "/api/v1/assistant/configure",
+        json={"selected_executor": "codex", "probe_results": [probe_result]},
+    )
+
+    assert response.status_code == 200, response.text
+    config = load_assistant_config(runtime.root)
+    assert config is not None
+    assert config.selected_command == "/server/bin/codex"
     assert config.latest_probe_results == [probe_result]
 
 
