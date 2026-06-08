@@ -36,7 +36,7 @@ def cmd_assistant_status(args: argparse.Namespace) -> None:
 
 
 def _probe_passed(result: dict[str, Any]) -> bool:
-    return result.get("passed") is True or result.get("status") == "passed"
+    return result.get("passed") is True
 
 
 def _probe_failure_reason(result: dict[str, Any]) -> str | None:
