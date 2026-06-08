@@ -1,8 +1,10 @@
 # Thread And Talk Token Usage Scope Design
 
-**Status:** Approved for implementation
+> Status: implemented
+> Current Source: README.md, runtime/daemon/routes/tokens.py, tests/contract/openapi.json
+> Notes: Tracks direct thread executor usage and task-origin talk/thread attribution for issue https://github.com/t-benze/happyranch/issues/67.
+
 **Date:** 2026-06-08
-**Issue:** https://github.com/t-benze/happyranch/issues/67
 
 ## Problem
 
