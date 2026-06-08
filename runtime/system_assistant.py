@@ -110,6 +110,16 @@ def _bootstrap_file_invalid_detail(path: Path, filename: str) -> str | None:
     return None
 
 
+def _learnings_index_invalid_detail(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    if path.is_symlink():
+        return "assistant learnings index must not be a symlink"
+    if not path.is_file():
+        return "assistant learnings index is not a regular file"
+    return None
+
+
 def _ensure_managed_dir(path: Path, symlink_detail: str) -> None:
     if path.is_symlink():
         raise ValueError(symlink_detail)
@@ -205,13 +215,15 @@ def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
             detail=prompt_invalid_detail,
             latest_probe_results=config.latest_probe_results,
         )
-    learnings_index = paths.learnings_dir / "_index.md"
-    if learnings_index.is_symlink():
+    learnings_index_invalid_detail = _learnings_index_invalid_detail(
+        paths.learnings_dir / "_index.md",
+    )
+    if learnings_index_invalid_detail is not None:
         return AssistantStatus(
             state=AssistantState.STALE_OR_BROKEN,
             selected_executor=config.selected_executor,
             workspace_path=config.workspace_path,
-            detail="assistant learnings index must not be a symlink",
+            detail=learnings_index_invalid_detail,
             latest_probe_results=config.latest_probe_results,
         )
     return AssistantStatus(
@@ -276,10 +288,11 @@ def bootstrap_assistant_workspace(runtime_root: Path, *, executor: str) -> None:
         paths.workspace / "CLAUDE.md",
         "assistant bootstrap file CLAUDE.md must not be a symlink",
     )
-    _reject_symlink(
+    learnings_index_invalid_detail = _learnings_index_invalid_detail(
         paths.learnings_dir / "_index.md",
-        "assistant learnings index must not be a symlink",
     )
+    if learnings_index_invalid_detail is not None:
+        raise ValueError(learnings_index_invalid_detail)
     _ensure_managed_dir(
         paths.root.parent,
         "assistant system directory must not be a symlink",
