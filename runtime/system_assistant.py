@@ -262,6 +262,13 @@ def _reject_symlink(path: Path, detail: str) -> None:
         raise ValueError(detail)
 
 
+def _reject_existing_invalid_bootstrap_file(path: Path, filename: str) -> None:
+    invalid_detail = _bootstrap_file_invalid_detail(path, filename)
+    if invalid_detail is None or invalid_detail.endswith(" is missing"):
+        return
+    raise ValueError(invalid_detail)
+
+
 def bootstrap_assistant_workspace(runtime_root: Path, *, executor: str) -> None:
     selected_executor = _validate_executor(executor)
     paths = system_assistant_paths(runtime_root)
@@ -276,17 +283,17 @@ def bootstrap_assistant_workspace(runtime_root: Path, *, executor: str) -> None:
         "assistant learnings directory must not be a symlink",
     )
     _reject_symlink(paths.logs_dir, "assistant logs directory must not be a symlink")
-    _reject_symlink(
+    _reject_existing_invalid_bootstrap_file(
         paths.workspace / "agent.yaml",
-        "assistant bootstrap file agent.yaml must not be a symlink",
+        "agent.yaml",
     )
-    _reject_symlink(
+    _reject_existing_invalid_bootstrap_file(
         paths.workspace / "AGENTS.md",
-        "assistant bootstrap file AGENTS.md must not be a symlink",
+        "AGENTS.md",
     )
-    _reject_symlink(
+    _reject_existing_invalid_bootstrap_file(
         paths.workspace / "CLAUDE.md",
-        "assistant bootstrap file CLAUDE.md must not be a symlink",
+        "CLAUDE.md",
     )
     learnings_index_invalid_detail = _learnings_index_invalid_detail(
         paths.learnings_dir / "_index.md",

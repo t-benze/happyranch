@@ -620,6 +620,28 @@ def test_bootstrap_rejects_child_symlink_without_writing_target(
     assert target.read_text() == "keep me\n"
 
 
+@pytest.mark.parametrize(
+    ("filename", "executor"),
+    [
+        ("agent.yaml", "codex"),
+        ("AGENTS.md", "codex"),
+        ("CLAUDE.md", "claude"),
+    ],
+)
+def test_bootstrap_rejects_existing_directory_bootstrap_file(
+    tmp_path: Path, filename: str, executor: str
+) -> None:
+    paths = system_assistant_paths(tmp_path)
+    paths.workspace.mkdir(parents=True)
+    (paths.workspace / filename).mkdir()
+
+    with pytest.raises(
+        ValueError,
+        match=f"assistant bootstrap file {filename} is not a regular file",
+    ):
+        bootstrap_assistant_workspace(tmp_path, executor=executor)
+
+
 def test_bootstrap_rejects_learnings_index_directory(tmp_path: Path) -> None:
     paths = system_assistant_paths(tmp_path)
     paths.workspace.mkdir(parents=True)
