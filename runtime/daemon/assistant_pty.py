@@ -5,6 +5,7 @@ import errno
 import os
 from pathlib import Path
 import pty
+import secrets
 import select
 import signal
 import shutil
@@ -18,8 +19,6 @@ PROBE_REQUEST = "HAPPYRANCH_ASSISTANT_PTY_PROBE_REQUEST"
 PROBE_READY = "HAPPYRANCH_ASSISTANT_PTY_PROBE_READY"
 
 _OUTPUT_EXCERPT_BYTES = 4096
-_STARTUP_DRAIN_SECONDS = 0.5
-_STARTUP_QUIET_SECONDS = 0.05
 
 
 @dataclass(frozen=True)
@@ -40,6 +39,14 @@ class ProbeResult:
     timed_out: bool = False
     error: str | None = None
     returncode: int | None = None
+
+
+def build_probe_request(nonce: str) -> str:
+    return f"{PROBE_REQUEST} {nonce}"
+
+
+def build_probe_response(nonce: str) -> str:
+    return f"{PROBE_READY} {nonce}"
 
 
 def build_executor_specs(settings: Settings) -> list[InteractiveExecutorSpec]:
@@ -75,14 +82,24 @@ class ProbeRunner:
         timeout_seconds: float = 3,
     ) -> ProbeResult:
         start = time.monotonic()
+        nonce = self._new_probe_nonce()
+        probe_request = build_probe_request(nonce)
+        expected_response = build_probe_response(nonce)
         with tempfile.TemporaryDirectory(prefix="happyranch-assistant-probe-") as tmp:
             workspace = Path(tmp)
-            self._write_prompt_surface(workspace, spec.prompt_surface)
+            self._write_prompt_surface(
+                workspace,
+                spec.prompt_surface,
+                probe_request=probe_request,
+                expected_response=expected_response,
+            )
             return self._probe_in_workspace(
                 spec,
                 workspace=workspace,
                 timeout_seconds=timeout_seconds,
                 start=start,
+                probe_request=probe_request,
+                expected_response=expected_response,
             )
 
     def _probe_in_workspace(
@@ -92,6 +109,8 @@ class ProbeRunner:
         workspace: Path,
         timeout_seconds: float,
         start: float,
+        probe_request: str,
+        expected_response: str,
     ) -> ProbeResult:
         master_fd: int | None = None
         child_pid: int | None = None
@@ -122,13 +141,16 @@ class ProbeRunner:
             child_pid, master_fd = pty.fork()
             if child_pid == 0:
                 self._exec_child(spec.argv, executable, workspace, env)
-            self._drain_startup_output(master_fd, output)
             response_start = len(output)
-            self._write_probe_request(master_fd)
+            self._write_probe_request(master_fd, probe_request)
             deadline = start + timeout_seconds
             while time.monotonic() < deadline:
                 self._read_available(master_fd, output, deadline)
-                if self._has_ready_response(output, start_index=response_start):
+                if self._has_ready_response(
+                    output,
+                    start_index=response_start,
+                    expected_response=expected_response,
+                ):
                     returncode = self._poll_returncode(child_pid)
                     return self._result(
                         True,
@@ -189,7 +211,14 @@ class ProbeRunner:
             os.write(2, f"failed to exec {argv[0]}: {exc}\n".encode())
         os._exit(127)
 
-    def _write_prompt_surface(self, workspace: Path, prompt_surface: str) -> None:
+    def _write_prompt_surface(
+        self,
+        workspace: Path,
+        prompt_surface: str,
+        *,
+        probe_request: str,
+        expected_response: str,
+    ) -> None:
         (workspace / prompt_surface).write_text(
             "\n".join(
                 [
@@ -197,8 +226,8 @@ class ProbeRunner:
                     "",
                     "This temporary workspace is used only for readiness probing.",
                     (
-                        f"When the user sends `{PROBE_REQUEST}`, reply with exactly "
-                        f"`{PROBE_READY}`."
+                        f"When the user sends `{probe_request}`, reply with exactly "
+                        f"`{expected_response}`."
                     ),
                     "Do not include any other text in the reply.",
                     "",
@@ -206,26 +235,22 @@ class ProbeRunner:
             )
         )
 
-    def _write_probe_request(self, master_fd: int) -> None:
-        for char in f"{PROBE_REQUEST}\r":
+    def _write_probe_request(self, master_fd: int, probe_request: str) -> None:
+        for char in f"{probe_request}\r":
             os.write(master_fd, char.encode())
 
-    def _drain_startup_output(self, master_fd: int, output: bytearray) -> None:
-        deadline = time.monotonic() + _STARTUP_DRAIN_SECONDS
-        quiet_until: float | None = None
-        while time.monotonic() < deadline:
-            before = len(output)
-            read_deadline = deadline if quiet_until is None else min(deadline, quiet_until)
-            self._read_available(master_fd, output, read_deadline)
-            if len(output) > before:
-                quiet_until = time.monotonic() + _STARTUP_QUIET_SECONDS
-                continue
-            if quiet_until is not None and time.monotonic() >= quiet_until:
-                return
-
-    def _has_ready_response(self, output: bytearray, *, start_index: int) -> bool:
+    def _has_ready_response(
+        self,
+        output: bytearray,
+        *,
+        start_index: int,
+        expected_response: str,
+    ) -> bool:
         text = bytes(output[start_index:]).decode(errors="replace")
-        return any(line.strip() == PROBE_READY for line in text.splitlines())
+        return any(line.strip() == expected_response for line in text.splitlines())
+
+    def _new_probe_nonce(self) -> str:
+        return secrets.token_hex(16)
 
     def _read_available(
         self,

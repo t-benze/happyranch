@@ -29,7 +29,8 @@ import sys
 seen = sys.stdin.readline()
 if {PROBE_REQUEST!r} not in seen:
     raise SystemExit(1)
-print({PROBE_READY!r}, flush=True)
+nonce = seen.strip().split(maxsplit=1)[1]
+print(f"{PROBE_READY} {{nonce}}", flush=True)
 """,
     )
     spec = InteractiveExecutorSpec(
@@ -96,6 +97,30 @@ print("NOT_READY", flush=True)
     assert "NOT_READY" in result.output_excerpt
 
 
+def test_probe_rejects_startup_ready_marker_with_wrong_nonce(tmp_path: Path) -> None:
+    cli = _write_fake_cli(
+        tmp_path,
+        f"""
+import sys
+
+print("{PROBE_READY} stale-nonce", flush=True)
+sys.stdin.readline()
+print("NOT_READY", flush=True)
+""",
+    )
+    spec = InteractiveExecutorSpec(
+        name="fake",
+        argv=[str(cli)],
+        prompt_surface="AGENTS.md",
+    )
+
+    result = ProbeRunner().probe_executor(spec)
+
+    assert result.passed is False
+    assert result.detail == "expected ready marker not found"
+    assert f"{PROBE_READY} stale-nonce" in result.output_excerpt
+
+
 def test_probe_writes_minimal_workspace_surface(tmp_path: Path) -> None:
     marker_path = tmp_path / "surface.txt"
     cli = _write_fake_cli(
@@ -110,8 +135,9 @@ content = surface.read_text()
 Path(os.environ["SURFACE_MARKER_PATH"]).write_text(
     f"{{surface.exists()}}\\n{{content}}"
 )
-sys.stdin.readline()
-print({PROBE_READY!r}, flush=True)
+request = sys.stdin.readline().strip()
+nonce = request.split(maxsplit=1)[1]
+print(f"{PROBE_READY} {{nonce}}", flush=True)
 """,
     )
     spec = InteractiveExecutorSpec(
