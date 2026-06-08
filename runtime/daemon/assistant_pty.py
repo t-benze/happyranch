@@ -12,6 +12,7 @@ import select
 import signal
 import shutil
 import shlex
+import subprocess
 import tempfile
 import time
 
@@ -53,24 +54,6 @@ def _close_fd(fd: int) -> None:
         return
 
 
-def _status_to_returncode(status: int) -> int:
-    if os.WIFEXITED(status):
-        return os.WEXITSTATUS(status)
-    if os.WIFSIGNALED(status):
-        return -os.WTERMSIG(status)
-    return status
-
-
-def _poll_returncode(pid: int) -> int | None:
-    try:
-        waited_pid, status = os.waitpid(pid, os.WNOHANG)
-    except ChildProcessError:
-        return 0
-    if waited_pid == 0:
-        return None
-    return _status_to_returncode(status)
-
-
 def _process_group_exists(pid: int) -> bool:
     try:
         os.killpg(pid, 0)
@@ -96,21 +79,35 @@ def _signal_process_tree(pid: int, sig: signal.Signals) -> None:
             return
 
 
-def _terminate_process(pid: int) -> None:
+def _terminate_process(process: subprocess.Popen[bytes]) -> None:
+    pid = process.pid
     _signal_process_tree(pid, signal.SIGTERM)
-    deadline = time.monotonic() + 0.5
-    while time.monotonic() < deadline:
-        _poll_returncode(pid)
-        if not _process_group_exists(pid):
-            return
-        time.sleep(0.01)
+    if _wait_for_process_group_exit(process, pid, timeout_seconds=0.5):
+        return
     _signal_process_tree(pid, signal.SIGKILL)
-    deadline = time.monotonic() + 0.5
+    _wait_for_process_group_exit(process, pid, timeout_seconds=0.5)
+
+
+def _wait_for_process_group_exit(
+    process: subprocess.Popen[bytes],
+    pid: int,
+    *,
+    timeout_seconds: float,
+) -> bool:
+    deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
-        _poll_returncode(pid)
+        if process.poll() is not None:
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=0)
         if not _process_group_exists(pid):
-            return
+            return True
         time.sleep(0.01)
+    if process.poll() is not None:
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=0)
+        if not _process_group_exists(pid):
+            return True
+    return False
 
 
 def _write_all(fd: int, data: bytes) -> None:
@@ -135,34 +132,53 @@ class AssistantPtySession:
         self.workspace = workspace
         self.argv = _parse_selected_command(command)
         self.master_fd: int | None = None
-        self.child_pid: int | None = None
+        self.process: subprocess.Popen[bytes] | None = None
         self._reader_task: asyncio.Task[None] | None = None
         self._subscribers: set[asyncio.Queue[str | None]] = set()
         self._replay: list[str] = []
         self._replay_chars = 0
+        self._terminal_sent = False
+        self._closing = False
         self._closed = False
 
     async def start(self) -> None:
-        if self.master_fd is not None and self.child_pid is not None:
+        if self.master_fd is not None and self.process is not None:
             return
         env = os.environ.copy()
         executable = shutil.which(self.argv[0], path=env.get("PATH"))
         if executable is None:
             raise FileNotFoundError(f"executable not found: {self.argv[0]}")
-        child_pid, master_fd = pty.fork()
-        if child_pid == 0:
-            self._exec_child(executable, env)
-        self.child_pid = child_pid
+        master_fd, slave_fd = pty.openpty()
+        try:
+            process = subprocess.Popen(
+                [executable, *self.argv[1:]],
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                cwd=str(self.workspace),
+                env=env,
+                start_new_session=True,
+                close_fds=True,
+            )
+        except BaseException:
+            _close_fd(master_fd)
+            raise
+        finally:
+            _close_fd(slave_fd)
+        self.process = process
         self.master_fd = master_fd
+        self._closed = False
+        self._closing = False
+        self._terminal_sent = False
         self._reader_task = asyncio.create_task(self._reader_loop())
 
     def matches(self, *, command: str, workspace: Path) -> bool:
         return self.command == command and self.workspace == workspace
 
     def is_running(self) -> bool:
-        if self._closed or self.child_pid is None:
+        if self._closed or self.process is None:
             return False
-        return _poll_returncode(self.child_pid) is None
+        return self.process.poll() is None
 
     def subscribe(self) -> asyncio.Queue[str | None]:
         queue: asyncio.Queue[str | None] = asyncio.Queue()
@@ -181,31 +197,25 @@ class AssistantPtySession:
         await asyncio.to_thread(_write_all, self.master_fd, data)
 
     async def close(self) -> None:
-        if self._closed:
+        if self._closed and self.master_fd is None and self.process is None:
             return
+        self._closing = True
         self._closed = True
-        if self._reader_task is not None:
+        if (
+            self._reader_task is not None
+            and self._reader_task is not asyncio.current_task()
+            and not self._reader_task.done()
+        ):
             self._reader_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._reader_task
-        child_pid = self.child_pid
-        if child_pid is not None:
-            await asyncio.to_thread(_terminate_process, child_pid)
-            self.child_pid = None
-        master_fd = self.master_fd
-        if master_fd is not None:
-            _close_fd(master_fd)
-            self.master_fd = None
-        self._broadcast(None)
+        process = self.process
+        if process is not None:
+            await asyncio.to_thread(_terminate_process, process)
+            self.process = None
+        self._close_master_fd()
+        self._broadcast_terminal_once()
         self._subscribers.clear()
-
-    def _exec_child(self, executable: str, env: dict[str, str]) -> None:
-        try:
-            os.chdir(self.workspace)
-            os.execvpe(executable, self.argv, env)
-        except OSError as exc:
-            os.write(2, f"failed to exec {self.argv[0]}: {exc}\n".encode())
-        os._exit(127)
 
     async def _reader_loop(self) -> None:
         assert self.master_fd is not None
@@ -217,7 +227,8 @@ class AssistantPtySession:
                 if chunk:
                     self._broadcast(chunk.decode(errors="replace"))
         finally:
-            self._broadcast(None)
+            if not self._closing:
+                await self._handle_natural_exit()
 
     def _read_once(self, master_fd: int) -> bytes | None:
         try:
@@ -247,6 +258,27 @@ class AssistantPtySession:
                 self._replay_chars -= len(removed)
         for queue in list(self._subscribers):
             queue.put_nowait(text)
+
+    async def _handle_natural_exit(self) -> None:
+        self._closed = True
+        self._close_master_fd()
+        process = self.process
+        if process is not None:
+            await asyncio.to_thread(process.wait)
+            self.process = None
+        self._broadcast_terminal_once()
+
+    def _close_master_fd(self) -> None:
+        master_fd = self.master_fd
+        if master_fd is not None:
+            _close_fd(master_fd)
+            self.master_fd = None
+
+    def _broadcast_terminal_once(self) -> None:
+        if self._terminal_sent:
+            return
+        self._terminal_sent = True
+        self._broadcast(None)
 
 
 class AssistantSessionManager:

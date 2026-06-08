@@ -73,6 +73,14 @@ def test_assistant_status_uninitialized(client: TestClient) -> None:
     }
 
 
+def test_assistant_status_requires_http_auth(client: TestClient) -> None:
+    no_auth = TestClient(client.app)
+
+    response = no_auth.get("/api/v1/assistant/status")
+
+    assert response.status_code == 401
+
+
 def test_assistant_probes_returns_fake_probe_results(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

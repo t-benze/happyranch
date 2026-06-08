@@ -166,6 +166,21 @@ def _assistant_init_hint(state: AssistantState, detail: str | None) -> str:
     return "assistant_init_required: repair the system assistant before attaching"
 
 
+async def _safe_websocket_send_text(websocket: WebSocket, text: str) -> bool:
+    try:
+        await websocket.send_text(text)
+    except (WebSocketDisconnect, RuntimeError, OSError):
+        return False
+    return True
+
+
+async def _safe_websocket_close(websocket: WebSocket, *, code: int) -> None:
+    try:
+        await websocket.close(code=code)
+    except (WebSocketDisconnect, RuntimeError, OSError):
+        return
+
+
 async def _pump_assistant_output(
     websocket: WebSocket,
     session: AssistantPtySession,
@@ -175,9 +190,13 @@ async def _pump_assistant_output(
         while True:
             text = await queue.get()
             if text is None:
-                await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+                await _safe_websocket_close(
+                    websocket,
+                    code=status.WS_1011_INTERNAL_ERROR,
+                )
                 return
-            await websocket.send_text(text)
+            if not await _safe_websocket_send_text(websocket, text):
+                return
     finally:
         session.unsubscribe(queue)
 
