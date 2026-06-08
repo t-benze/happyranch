@@ -5,13 +5,22 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+import yaml
+
+from pydantic import BaseModel, Field, ValidationError
 
 
 class AssistantState(StrEnum):
     UNINITIALIZED = "uninitialized"
     CONFIGURED = "configured"
     STALE_OR_BROKEN = "stale_or_broken"
+
+
+class AssistantExecutor(StrEnum):
+    CLAUDE = "claude"
+    CODEX = "codex"
+    OPENCODE = "opencode"
+    PI = "pi"
 
 
 @dataclass(frozen=True)
@@ -24,7 +33,7 @@ class SystemAssistantPaths:
 
 
 class AssistantConfig(BaseModel):
-    selected_executor: str
+    selected_executor: AssistantExecutor
     selected_command: str
     workspace_path: str
     latest_probe_results: list[dict[str, Any]] = Field(default_factory=list)
@@ -32,7 +41,7 @@ class AssistantConfig(BaseModel):
 
 class AssistantStatus(BaseModel):
     state: AssistantState
-    selected_executor: str | None = None
+    selected_executor: AssistantExecutor | None = None
     workspace_path: str | None = None
     detail: str | None = None
     latest_probe_results: list[dict[str, Any]] = Field(default_factory=list)
@@ -65,9 +74,23 @@ def save_assistant_config(runtime_root: Path, config: AssistantConfig) -> None:
 
 def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
     paths = system_assistant_paths(runtime_root)
-    config = load_assistant_config(runtime_root)
+    try:
+        config = load_assistant_config(runtime_root)
+    except ValidationError:
+        return AssistantStatus(
+            state=AssistantState.STALE_OR_BROKEN,
+            detail="assistant config is invalid",
+        )
     if config is None:
         return AssistantStatus(state=AssistantState.UNINITIALIZED)
+    if Path(config.workspace_path) != paths.workspace:
+        return AssistantStatus(
+            state=AssistantState.STALE_OR_BROKEN,
+            selected_executor=config.selected_executor,
+            workspace_path=config.workspace_path,
+            detail="assistant workspace path does not match runtime",
+            latest_probe_results=config.latest_probe_results,
+        )
     if not paths.workspace.exists():
         return AssistantStatus(
             state=AssistantState.STALE_OR_BROKEN,
@@ -76,7 +99,11 @@ def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
             detail="assistant workspace is missing",
             latest_probe_results=config.latest_probe_results,
         )
-    expected = "CLAUDE.md" if config.selected_executor == "claude" else "AGENTS.md"
+    expected = (
+        "CLAUDE.md"
+        if config.selected_executor == AssistantExecutor.CLAUDE
+        else "AGENTS.md"
+    )
     if not (paths.workspace / expected).exists():
         return AssistantStatus(
             state=AssistantState.STALE_OR_BROKEN,
@@ -91,6 +118,13 @@ def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
         workspace_path=config.workspace_path,
         latest_probe_results=config.latest_probe_results,
     )
+
+
+def _validate_executor(executor: str | AssistantExecutor) -> AssistantExecutor:
+    try:
+        return AssistantExecutor(executor)
+    except ValueError as exc:
+        raise ValueError(f"unsupported assistant executor: {executor}") from exc
 
 
 def _assistant_prompt() -> str:
@@ -110,19 +144,27 @@ Authority boundary:
 
 
 def bootstrap_assistant_workspace(runtime_root: Path, *, executor: str) -> None:
+    selected_executor = _validate_executor(executor)
     paths = system_assistant_paths(runtime_root)
     paths.workspace.mkdir(parents=True, exist_ok=True)
     paths.learnings_dir.mkdir(parents=True, exist_ok=True)
     paths.logs_dir.mkdir(parents=True, exist_ok=True)
     (paths.workspace / "agent.yaml").write_text(
-        f"name: system_assistant\nexecutor: {executor}\nrepos: {{}}\n"
+        yaml.safe_dump(
+            {
+                "name": "system_assistant",
+                "executor": selected_executor.value,
+                "repos": {},
+            },
+            sort_keys=False,
+        )
     )
     if not (paths.learnings_dir / "_index.md").exists():
         (paths.learnings_dir / "_index.md").write_text("# Learnings: system_assistant\n\n")
     prompt = _assistant_prompt()
     claude_path = paths.workspace / "CLAUDE.md"
     agents_path = paths.workspace / "AGENTS.md"
-    if executor == "claude":
+    if selected_executor == AssistantExecutor.CLAUDE:
         agents_path.unlink(missing_ok=True)
         claude_path.write_text(prompt)
     else:
