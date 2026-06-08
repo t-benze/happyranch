@@ -50,17 +50,23 @@ scripts/daemon.sh start
 #    subdirectories under <runtime>/orgs/<slug>/.
 happyranch init ~/happyranch-runtime
 
-# 3. Materialize an org from a sample tree.
+# 3. Optional but recommended: initialize the runtime-global system assistant.
+#    This also verifies that at least one supported agentic CLI works in an
+#    interactive PTY session.
+happyranch assistant init
+happyranch assistant
+
+# 4. Materialize an org from a sample tree.
 happyranch orgs init hk-macau-tourism --from examples/orgs/hk-macau-tourism
 
-# 4. (Optional) Set the default org so you don't pass --org on every command.
+# 5. (Optional) Set the default org so you don't pass --org on every command.
 export HAPPYRANCH_ORG_SLUG=hk-macau-tourism
 
-# 5. Initialize agent workspaces (creates agent.yaml, generates bootstrap docs,
+# 6. Initialize agent workspaces (creates agent.yaml, generates bootstrap docs,
 #    copies skills, clones repos declared in agent.yaml).
 happyranch init-agent
 
-# 6. Run a task. The CLI streams live events until done.
+# 7. Run a task. The CLI streams live events until done.
 happyranch run --brief "Explore how the payment module handles refunds"
 
 # Re-attach to a running task and stream events

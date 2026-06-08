@@ -27,6 +27,24 @@ There is no `.env` support. `settings_customise_sources` drops dotenv and adds `
 
 Slug resolution for per-org commands: explicit `--org <slug>` > `HAPPYRANCH_ORG_SLUG` > auto-infer only when exactly one org exists > error. Container-level commands such as `happyranch init`, `happyranch use`, and `happyranch orgs ...` take no `--org`.
 
+## System Assistant
+
+The system assistant is runtime-global and lives under `<runtime>/system/assistant/`.
+It is not an org agent and must not appear in `org/agents/` or `teams.yaml`.
+
+Initialize or repair it on the active runtime:
+
+```bash
+happyranch assistant init
+happyranch assistant init --repair
+happyranch assistant init --reconfigure
+```
+
+Initialization probes supported agentic CLIs through an interactive PTY
+request/reply check. Existing runtimes that predate the feature remain valid;
+`happyranch assistant` tells the user to run `happyranch assistant init` when no
+assistant config exists.
+
 ## Session Timeout Resolution
 
 `Orchestrator._resolve_session_timeout(agent_name, task_id=...)` walks three layers:
