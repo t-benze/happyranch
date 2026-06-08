@@ -71,6 +71,19 @@ def test_save_config_rejects_symlink_without_writing_target(tmp_path: Path) -> N
     assert target.read_text() == "keep me\n"
 
 
+def test_save_config_rejects_directory_config_path(tmp_path: Path) -> None:
+    paths = system_assistant_paths(tmp_path)
+    paths.config_path.mkdir(parents=True)
+    cfg = AssistantConfig(
+        selected_executor="codex",
+        selected_command="codex",
+        workspace_path=str(paths.workspace),
+    )
+
+    with pytest.raises(ValueError, match="assistant config must be a regular file"):
+        save_assistant_config(tmp_path, cfg)
+
+
 def test_save_config_rejects_root_symlink_without_writing_target(tmp_path: Path) -> None:
     paths = system_assistant_paths(tmp_path)
     external_root = tmp_path / "external-root"

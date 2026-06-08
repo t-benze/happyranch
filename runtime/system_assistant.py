@@ -159,6 +159,8 @@ def save_assistant_config(runtime_root: Path, config: AssistantConfig) -> None:
         raise ValueError(managed_detail)
     if paths.config_path.is_symlink():
         raise ValueError("assistant config must not be a symlink")
+    if paths.config_path.exists() and not paths.config_path.is_file():
+        raise ValueError("assistant config must be a regular file")
     _ensure_managed_dir(
         paths.root.parent,
         "assistant system directory must not be a symlink",
