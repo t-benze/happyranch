@@ -165,6 +165,50 @@ def test_classify_stale_when_agent_yaml_is_missing(tmp_path: Path) -> None:
     assert status.detail == "assistant agent.yaml is missing"
 
 
+@pytest.mark.parametrize("filename", ["agent.yaml", "AGENTS.md", "CLAUDE.md"])
+def test_classify_stale_when_required_bootstrap_file_is_symlink(
+    tmp_path: Path, filename: str
+) -> None:
+    executor = "claude" if filename == "CLAUDE.md" else "codex"
+    bootstrap_assistant_workspace(tmp_path, executor=executor)
+    workspace = system_assistant_paths(tmp_path).workspace
+    target = tmp_path / f"{filename}.target"
+    target.write_text("external target\n")
+    (workspace / filename).unlink()
+    (workspace / filename).symlink_to(target)
+    cfg = AssistantConfig(
+        selected_executor=executor,
+        selected_command=executor,
+        workspace_path=str(workspace),
+    )
+
+    save_assistant_config(tmp_path, cfg)
+    status = classify_assistant_state(tmp_path)
+
+    assert status.state == AssistantState.STALE_OR_BROKEN
+    assert status.detail == f"assistant bootstrap file {filename} must not be a symlink"
+
+
+def test_classify_stale_when_learnings_index_is_symlink(tmp_path: Path) -> None:
+    bootstrap_assistant_workspace(tmp_path, executor="codex")
+    paths = system_assistant_paths(tmp_path)
+    target = tmp_path / "index-target.md"
+    target.write_text("external target\n")
+    (paths.learnings_dir / "_index.md").unlink()
+    (paths.learnings_dir / "_index.md").symlink_to(target)
+    cfg = AssistantConfig(
+        selected_executor="codex",
+        selected_command="codex",
+        workspace_path=str(paths.workspace),
+    )
+
+    save_assistant_config(tmp_path, cfg)
+    status = classify_assistant_state(tmp_path)
+
+    assert status.state == AssistantState.STALE_OR_BROKEN
+    assert status.detail == "assistant learnings index must not be a symlink"
+
+
 def test_classify_stale_when_claude_prompt_file_is_missing(tmp_path: Path) -> None:
     bootstrap_assistant_workspace(tmp_path, executor="claude")
     workspace = system_assistant_paths(tmp_path).workspace
@@ -223,7 +267,7 @@ def test_classify_stale_when_executor_is_invalid(tmp_path: Path) -> None:
     assert status.detail == "assistant config is invalid"
 
 
-@pytest.mark.parametrize("executor", ["codex", "opencode", "pi"])
+@pytest.mark.parametrize("executor", ["claude", "codex", "opencode", "pi"])
 def test_classify_configured_when_workspace_matches_config(
     tmp_path: Path, executor: str
 ) -> None:
@@ -283,3 +327,30 @@ def test_bootstrap_rejects_workspace_symlink_without_writing_target(
         bootstrap_assistant_workspace(tmp_path, executor="codex")
 
     assert list(external_workspace.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("filename", "executor"),
+    [
+        ("agent.yaml", "codex"),
+        ("AGENTS.md", "codex"),
+        ("CLAUDE.md", "claude"),
+        ("learnings/_index.md", "codex"),
+    ],
+)
+def test_bootstrap_rejects_child_symlink_without_writing_target(
+    tmp_path: Path, filename: str, executor: str
+) -> None:
+    paths = system_assistant_paths(tmp_path)
+    paths.workspace.mkdir(parents=True)
+    paths.learnings_dir.mkdir(parents=True)
+    target = tmp_path / "external-target"
+    target.write_text("keep me\n")
+    symlink = paths.workspace / filename
+    symlink.parent.mkdir(parents=True, exist_ok=True)
+    symlink.symlink_to(target)
+
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        bootstrap_assistant_workspace(tmp_path, executor=executor)
+
+    assert target.read_text() == "keep me\n"
