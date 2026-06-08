@@ -89,18 +89,63 @@ def test_save_config_rejects_directory_config_path(tmp_path: Path) -> None:
     [
         ("system", "assistant system directory is not a directory"),
         ("root", "assistant root is not a directory"),
+        ("workspace", "assistant workspace is not a directory"),
+        ("learnings", "assistant learnings directory is not a directory"),
+        ("logs", "assistant logs directory is not a directory"),
     ],
 )
-def test_save_config_rejects_regular_file_managed_ancestor(
+def test_save_config_rejects_regular_file_managed_path(
     tmp_path: Path, directory_name: str, detail: str
 ) -> None:
     paths = system_assistant_paths(tmp_path)
     if directory_name == "system":
         managed_path = paths.root.parent
-    else:
+    elif directory_name == "root":
         paths.root.parent.mkdir()
         managed_path = paths.root
+    elif directory_name == "workspace":
+        paths.root.mkdir(parents=True)
+        managed_path = paths.workspace
+    elif directory_name == "learnings":
+        paths.workspace.mkdir(parents=True)
+        managed_path = paths.learnings_dir
+    else:
+        paths.workspace.mkdir(parents=True)
+        managed_path = paths.logs_dir
     managed_path.write_text("not a directory\n")
+    cfg = AssistantConfig(
+        selected_executor="codex",
+        selected_command="codex",
+        workspace_path=str(paths.workspace),
+    )
+
+    with pytest.raises(ValueError, match=detail):
+        save_assistant_config(tmp_path, cfg)
+
+
+@pytest.mark.parametrize(
+    ("directory_name", "detail"),
+    [
+        ("workspace", "assistant workspace must not be a symlink"),
+        ("learnings", "assistant learnings directory must not be a symlink"),
+        ("logs", "assistant logs directory must not be a symlink"),
+    ],
+)
+def test_save_config_rejects_symlinked_existing_workspace_path(
+    tmp_path: Path, directory_name: str, detail: str
+) -> None:
+    paths = system_assistant_paths(tmp_path)
+    paths.workspace.mkdir(parents=True)
+    if directory_name == "workspace":
+        shutil.rmtree(paths.workspace)
+        managed_path = paths.workspace
+    elif directory_name == "learnings":
+        managed_path = paths.learnings_dir
+    else:
+        managed_path = paths.logs_dir
+    external_path = tmp_path / f"external-{directory_name}"
+    external_path.mkdir()
+    managed_path.symlink_to(external_path, target_is_directory=True)
     cfg = AssistantConfig(
         selected_executor="codex",
         selected_command="codex",
@@ -204,6 +249,73 @@ def test_load_config_rejects_config_symlink(tmp_path: Path) -> None:
     paths.config_path.symlink_to(target)
 
     with pytest.raises(ValueError, match="assistant config must not be a symlink"):
+        load_assistant_config(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("directory_name", "detail"),
+    [
+        ("workspace", "assistant workspace is not a directory"),
+        ("learnings", "assistant learnings directory is not a directory"),
+        ("logs", "assistant logs directory is not a directory"),
+    ],
+)
+def test_load_config_rejects_regular_file_existing_workspace_path(
+    tmp_path: Path, directory_name: str, detail: str
+) -> None:
+    paths = system_assistant_paths(tmp_path)
+    paths.config_path.parent.mkdir(parents=True)
+    cfg = AssistantConfig(
+        selected_executor="codex",
+        selected_command="codex",
+        workspace_path=str(paths.workspace),
+    )
+    paths.config_path.write_text(cfg.model_dump_json(indent=2) + "\n")
+    if directory_name == "workspace":
+        paths.workspace.write_text("not a directory\n")
+    elif directory_name == "learnings":
+        paths.workspace.mkdir()
+        paths.learnings_dir.write_text("not a directory\n")
+    else:
+        paths.workspace.mkdir()
+        paths.logs_dir.write_text("not a directory\n")
+
+    with pytest.raises(ValueError, match=detail):
+        load_assistant_config(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("directory_name", "detail"),
+    [
+        ("workspace", "assistant workspace must not be a symlink"),
+        ("learnings", "assistant learnings directory must not be a symlink"),
+        ("logs", "assistant logs directory must not be a symlink"),
+    ],
+)
+def test_load_config_rejects_symlinked_existing_workspace_path(
+    tmp_path: Path, directory_name: str, detail: str
+) -> None:
+    paths = system_assistant_paths(tmp_path)
+    paths.config_path.parent.mkdir(parents=True)
+    cfg = AssistantConfig(
+        selected_executor="codex",
+        selected_command="codex",
+        workspace_path=str(paths.workspace),
+    )
+    paths.config_path.write_text(cfg.model_dump_json(indent=2) + "\n")
+    paths.workspace.mkdir()
+    if directory_name == "workspace":
+        shutil.rmtree(paths.workspace)
+        managed_path = paths.workspace
+    elif directory_name == "learnings":
+        managed_path = paths.learnings_dir
+    else:
+        managed_path = paths.logs_dir
+    external_path = tmp_path / f"external-{directory_name}"
+    external_path.mkdir()
+    managed_path.symlink_to(external_path, target_is_directory=True)
+
+    with pytest.raises(ValueError, match=detail):
         load_assistant_config(tmp_path)
 
 
@@ -329,8 +441,8 @@ def test_classify_stale_when_workspace_is_symlink(tmp_path: Path) -> None:
         selected_command="codex",
         workspace_path=str(external_workspace),
     )
+    paths.config_path.write_text(cfg.model_dump_json(indent=2) + "\n")
 
-    save_assistant_config(tmp_path, cfg)
     status = classify_assistant_state(tmp_path)
 
     assert status.state == AssistantState.STALE_OR_BROKEN

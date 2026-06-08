@@ -88,18 +88,9 @@ def _managed_dir_detail(
     return None
 
 
-def _managed_config_ancestor_detail(paths: SystemAssistantPaths) -> str | None:
-    for path, label in _managed_dir_entries(paths)[:2]:
-        if path.is_symlink():
-            return f"{label} must not be a symlink"
-        if path.exists() and not path.is_dir():
-            return f"{label} is not a directory"
-    return None
-
-
 def load_assistant_config(runtime_root: Path) -> AssistantConfig | None:
     paths = system_assistant_paths(runtime_root)
-    managed_detail = _managed_config_ancestor_detail(paths)
+    managed_detail = _managed_dir_existing_invalid_detail(paths)
     if managed_detail is not None:
         raise ValueError(managed_detail)
     path = paths.config_path
@@ -154,7 +145,7 @@ def _ensure_managed_dir(path: Path, symlink_detail: str, non_dir_detail: str) ->
 
 def save_assistant_config(runtime_root: Path, config: AssistantConfig) -> None:
     paths = system_assistant_paths(runtime_root)
-    managed_detail = _managed_config_ancestor_detail(paths)
+    managed_detail = _managed_dir_existing_invalid_detail(paths)
     if managed_detail is not None:
         raise ValueError(managed_detail)
     if paths.config_path.is_symlink():
