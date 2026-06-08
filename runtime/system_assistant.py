@@ -116,6 +116,8 @@ def _ensure_managed_dir(path: Path, symlink_detail: str) -> None:
 
 def save_assistant_config(runtime_root: Path, config: AssistantConfig) -> None:
     paths = system_assistant_paths(runtime_root)
+    if paths.root.is_symlink():
+        raise ValueError("assistant root must not be a symlink")
     if paths.config_path.is_symlink():
         raise ValueError("assistant config must not be a symlink")
     paths.root.mkdir(parents=True, exist_ok=True)
@@ -132,7 +134,7 @@ def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
         )
     try:
         config = load_assistant_config(runtime_root)
-    except (UnicodeDecodeError, ValidationError):
+    except (OSError, UnicodeDecodeError, ValidationError):
         return AssistantStatus(
             state=AssistantState.STALE_OR_BROKEN,
             detail="assistant config is invalid",

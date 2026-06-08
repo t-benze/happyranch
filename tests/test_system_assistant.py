@@ -70,10 +70,39 @@ def test_save_config_rejects_symlink_without_writing_target(tmp_path: Path) -> N
     assert target.read_text() == "keep me\n"
 
 
+def test_save_config_rejects_root_symlink_without_writing_target(tmp_path: Path) -> None:
+    paths = system_assistant_paths(tmp_path)
+    external_root = tmp_path / "external-root"
+    external_root.mkdir()
+    paths.root.parent.mkdir(parents=True)
+    paths.root.symlink_to(external_root, target_is_directory=True)
+    cfg = AssistantConfig(
+        selected_executor="codex",
+        selected_command="codex",
+        workspace_path=str(paths.workspace),
+    )
+
+    with pytest.raises(ValueError, match="assistant root must not be a symlink"):
+        save_assistant_config(tmp_path, cfg)
+
+    assert not (external_root / "config.json").exists()
+
+
 def test_classify_stale_when_config_is_invalid(tmp_path: Path) -> None:
     paths = system_assistant_paths(tmp_path)
     paths.root.mkdir(parents=True)
     paths.config_path.write_text("{invalid json")
+
+    status = classify_assistant_state(tmp_path)
+
+    assert status.state == AssistantState.STALE_OR_BROKEN
+    assert status.detail == "assistant config is invalid"
+    assert status.latest_probe_results == []
+
+
+def test_classify_stale_when_config_is_directory(tmp_path: Path) -> None:
+    paths = system_assistant_paths(tmp_path)
+    paths.config_path.mkdir(parents=True)
 
     status = classify_assistant_state(tmp_path)
 
