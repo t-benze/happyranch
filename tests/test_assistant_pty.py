@@ -37,7 +37,7 @@ print({PROBE_READY!r}, flush=True)
         prompt_surface="AGENTS.md",
     )
 
-    result = ProbeRunner().probe_executor(spec, timeout_seconds=1)
+    result = ProbeRunner().probe_executor(spec)
 
     assert result.passed is True
     assert result.executor == "fake"
@@ -62,7 +62,7 @@ print("NOT_READY", flush=True)
         prompt_surface="AGENTS.md",
     )
 
-    result = ProbeRunner().probe_executor(spec, timeout_seconds=1)
+    result = ProbeRunner().probe_executor(spec)
 
     assert result.passed is False
     assert result.executor == "fake"
@@ -95,7 +95,7 @@ print({PROBE_READY!r}, flush=True)
         env={"SURFACE_MARKER_PATH": str(marker_path)},
     )
 
-    result = ProbeRunner().probe_executor(spec, timeout_seconds=1)
+    result = ProbeRunner().probe_executor(spec)
 
     assert result.passed is True
     surface = marker_path.read_text()

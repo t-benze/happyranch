@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import errno
+import fcntl
 import os
 from pathlib import Path
 import pty
@@ -9,6 +10,7 @@ import select
 import signal
 import subprocess
 import tempfile
+import termios
 import time
 
 from runtime.config import Settings
@@ -99,6 +101,13 @@ class ProbeRunner:
             master_fd, slave_fd = pty.openpty()
             env = os.environ.copy()
             env.update(spec.env)
+
+            child_slave_fd = slave_fd
+
+            def configure_child_pty() -> None:
+                os.setsid()
+                fcntl.ioctl(child_slave_fd, termios.TIOCSCTTY, 0)
+
             proc = subprocess.Popen(
                 spec.argv,
                 stdin=slave_fd,
@@ -107,7 +116,7 @@ class ProbeRunner:
                 cwd=workspace,
                 env=env,
                 close_fds=True,
-                start_new_session=True,
+                preexec_fn=configure_child_pty,
             )
             os.close(slave_fd)
             slave_fd = None
@@ -180,7 +189,7 @@ class ProbeRunner:
         )
 
     def _write_probe_request(self, master_fd: int) -> None:
-        for char in f"{PROBE_REQUEST}\n":
+        for char in f"{PROBE_REQUEST}\r":
             os.write(master_fd, char.encode())
 
     def _read_available(
