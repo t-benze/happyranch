@@ -75,6 +75,28 @@ def test_classify_stale_when_config_is_invalid_utf8(tmp_path: Path) -> None:
     assert status.latest_probe_results == []
 
 
+def test_classify_stale_when_config_has_extra_field(tmp_path: Path) -> None:
+    paths = system_assistant_paths(tmp_path)
+    paths.root.mkdir(parents=True)
+    paths.config_path.write_text(
+        json.dumps(
+            {
+                "selected_executor": "codex",
+                "selected_command": "codex",
+                "workspace_path": str(paths.workspace),
+                "latest_probe_results": [],
+                "unexpected": True,
+            }
+        )
+        + "\n"
+    )
+
+    status = classify_assistant_state(tmp_path)
+
+    assert status.state == AssistantState.STALE_OR_BROKEN
+    assert status.detail == "assistant config is invalid"
+
+
 def test_classify_stale_when_workspace_path_does_not_match(tmp_path: Path) -> None:
     bootstrap_assistant_workspace(tmp_path, executor="codex")
     cfg = AssistantConfig(
@@ -143,6 +165,43 @@ def test_classify_stale_when_agent_yaml_is_missing(tmp_path: Path) -> None:
     assert status.detail == "assistant agent.yaml is missing"
 
 
+def test_classify_stale_when_claude_prompt_file_is_missing(tmp_path: Path) -> None:
+    bootstrap_assistant_workspace(tmp_path, executor="claude")
+    workspace = system_assistant_paths(tmp_path).workspace
+    (workspace / "CLAUDE.md").unlink()
+    cfg = AssistantConfig(
+        selected_executor="claude",
+        selected_command="claude",
+        workspace_path=str(workspace),
+    )
+
+    save_assistant_config(tmp_path, cfg)
+    status = classify_assistant_state(tmp_path)
+
+    assert status.state == AssistantState.STALE_OR_BROKEN
+    assert status.detail == "assistant bootstrap file CLAUDE.md is missing"
+
+
+@pytest.mark.parametrize("executor", ["codex", "opencode", "pi"])
+def test_classify_stale_when_agents_prompt_file_is_missing(
+    tmp_path: Path, executor: str
+) -> None:
+    bootstrap_assistant_workspace(tmp_path, executor=executor)
+    workspace = system_assistant_paths(tmp_path).workspace
+    (workspace / "AGENTS.md").unlink()
+    cfg = AssistantConfig(
+        selected_executor=executor,
+        selected_command=executor,
+        workspace_path=str(workspace),
+    )
+
+    save_assistant_config(tmp_path, cfg)
+    status = classify_assistant_state(tmp_path)
+
+    assert status.state == AssistantState.STALE_OR_BROKEN
+    assert status.detail == "assistant bootstrap file AGENTS.md is missing"
+
+
 def test_classify_stale_when_executor_is_invalid(tmp_path: Path) -> None:
     paths = system_assistant_paths(tmp_path)
     paths.root.mkdir(parents=True)
@@ -164,11 +223,14 @@ def test_classify_stale_when_executor_is_invalid(tmp_path: Path) -> None:
     assert status.detail == "assistant config is invalid"
 
 
-def test_classify_configured_when_workspace_matches_config(tmp_path: Path) -> None:
-    bootstrap_assistant_workspace(tmp_path, executor="codex")
+@pytest.mark.parametrize("executor", ["codex", "opencode", "pi"])
+def test_classify_configured_when_workspace_matches_config(
+    tmp_path: Path, executor: str
+) -> None:
+    bootstrap_assistant_workspace(tmp_path, executor=executor)
     cfg = AssistantConfig(
-        selected_executor="codex",
-        selected_command="codex",
+        selected_executor=executor,
+        selected_command=executor,
         workspace_path=str(system_assistant_paths(tmp_path).workspace),
     )
     save_assistant_config(tmp_path, cfg)
@@ -176,12 +238,15 @@ def test_classify_configured_when_workspace_matches_config(tmp_path: Path) -> No
     status = classify_assistant_state(tmp_path)
 
     assert status.state == AssistantState.CONFIGURED
-    assert status.selected_executor == "codex"
+    assert status.selected_executor == executor
     assert status.workspace_path == str(system_assistant_paths(tmp_path).workspace)
 
 
-def test_bootstrap_codex_workspace_writes_agents_surface(tmp_path: Path) -> None:
-    bootstrap_assistant_workspace(tmp_path, executor="codex")
+@pytest.mark.parametrize("executor", ["codex", "opencode", "pi"])
+def test_bootstrap_agents_backed_workspace_writes_agents_surface(
+    tmp_path: Path, executor: str
+) -> None:
+    bootstrap_assistant_workspace(tmp_path, executor=executor)
     workspace = tmp_path / "system" / "assistant" / "workspace"
 
     assert (workspace / "agent.yaml").read_text().startswith("name: system_assistant\n")
@@ -203,3 +268,18 @@ def test_bootstrap_claude_workspace_writes_claude_surface(tmp_path: Path) -> Non
 def test_bootstrap_rejects_invalid_executor(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="unsupported assistant executor"):
         bootstrap_assistant_workspace(tmp_path, executor="bogus")
+
+
+def test_bootstrap_rejects_workspace_symlink_without_writing_target(
+    tmp_path: Path,
+) -> None:
+    paths = system_assistant_paths(tmp_path)
+    external_workspace = tmp_path / "external-workspace"
+    external_workspace.mkdir()
+    paths.root.mkdir(parents=True)
+    paths.workspace.symlink_to(external_workspace, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="assistant workspace must not be a symlink"):
+        bootstrap_assistant_workspace(tmp_path, executor="codex")
+
+    assert list(external_workspace.iterdir()) == []

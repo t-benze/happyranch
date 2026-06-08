@@ -7,7 +7,7 @@ from typing import Any
 
 import yaml
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 
 class AssistantState(StrEnum):
@@ -33,6 +33,8 @@ class SystemAssistantPaths:
 
 
 class AssistantConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     selected_executor: AssistantExecutor
     selected_command: str
     workspace_path: str
@@ -164,6 +166,8 @@ Authority boundary:
 def bootstrap_assistant_workspace(runtime_root: Path, *, executor: str) -> None:
     selected_executor = _validate_executor(executor)
     paths = system_assistant_paths(runtime_root)
+    if paths.workspace.is_symlink():
+        raise ValueError("assistant workspace must not be a symlink")
     paths.workspace.mkdir(parents=True, exist_ok=True)
     paths.learnings_dir.mkdir(parents=True, exist_ok=True)
     paths.logs_dir.mkdir(parents=True, exist_ok=True)
