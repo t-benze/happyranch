@@ -111,6 +111,40 @@ def test_classify_stale_when_config_is_directory(tmp_path: Path) -> None:
     assert status.latest_probe_results == []
 
 
+def test_classify_stale_when_config_is_symlink_to_valid_json(tmp_path: Path) -> None:
+    bootstrap_assistant_workspace(tmp_path, executor="codex")
+    paths = system_assistant_paths(tmp_path)
+    target = tmp_path / "external-config.json"
+    target.write_text(
+        json.dumps(
+            {
+                "selected_executor": "codex",
+                "selected_command": "codex",
+                "workspace_path": str(paths.workspace),
+                "latest_probe_results": [],
+            }
+        )
+        + "\n"
+    )
+    paths.config_path.symlink_to(target)
+
+    status = classify_assistant_state(tmp_path)
+
+    assert status.state == AssistantState.STALE_OR_BROKEN
+    assert status.detail == "assistant config is invalid"
+
+
+def test_classify_stale_when_config_is_dangling_symlink(tmp_path: Path) -> None:
+    paths = system_assistant_paths(tmp_path)
+    paths.root.mkdir(parents=True)
+    paths.config_path.symlink_to(tmp_path / "missing-config.json")
+
+    status = classify_assistant_state(tmp_path)
+
+    assert status.state == AssistantState.STALE_OR_BROKEN
+    assert status.detail == "assistant config is invalid"
+
+
 def test_classify_stale_when_config_is_invalid_utf8(tmp_path: Path) -> None:
     paths = system_assistant_paths(tmp_path)
     paths.root.mkdir(parents=True)

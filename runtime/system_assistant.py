@@ -63,6 +63,8 @@ def system_assistant_paths(runtime_root: Path) -> SystemAssistantPaths:
 
 def load_assistant_config(runtime_root: Path) -> AssistantConfig | None:
     path = system_assistant_paths(runtime_root).config_path
+    if path.is_symlink():
+        raise ValueError("assistant config must not be a symlink")
     if not path.exists():
         return None
     return AssistantConfig.model_validate_json(path.read_text())
@@ -134,7 +136,7 @@ def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
         )
     try:
         config = load_assistant_config(runtime_root)
-    except (OSError, UnicodeDecodeError, ValidationError):
+    except (OSError, UnicodeDecodeError, ValueError, ValidationError):
         return AssistantStatus(
             state=AssistantState.STALE_OR_BROKEN,
             detail="assistant config is invalid",
