@@ -15,7 +15,7 @@ Keep this file short. It is loaded at the start of every Claude Code session. De
 | Web app, OpenAPI pinning, CLI behavior, agent callbacks | `docs/agent-guides/web-and-cli.md` |
 | KB, learnings, artifacts, revisit, threads, jobs, Feishu | `docs/agent-guides/features-and-invariants.md` |
 
-Design docs in `protocol/` and specs in `docs/superpowers/specs/` are the source of truth for behavior. `README.md` is for end users. `CLAUDE.md` is for repo-wide agent instructions.
+`README.md` is for end users. `CLAUDE.md` is for repo-wide agent instructions. `AGENTS.md` is a compatibility symlink to this file; keep repo-wide agent instructions here only. For current behavior, prefer `docs/agent-guides/`, `protocol/`, tests, OpenAPI snapshots, and implementation. `docs/superpowers/specs/` is append-only design history unless a spec is explicitly marked current in `docs/superpowers/specs/README.md`.
 
 ## Essentials
 
@@ -65,9 +65,9 @@ Every browser-callable daemon route maps to one TS function in `web/src/lib/api/
 ## GitNexus
 
 <!-- gitnexus:start -->
-# GitNexus - Code Intelligence
+# GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **happyranch** (13547 symbols, 30267 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **happyranch** (14108 symbols, 30767 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -77,13 +77,13 @@ This project is indexed by GitNexus as **happyranch** (13547 symbols, 30267 rela
 - **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
 - When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol - callers, callees, which execution flows it participates in - use `gitnexus_context({name: "symbolName"})`.
+- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
 
 ## Never Do
 
 - NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
 - NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace - use `gitnexus_rename` which understands the call graph.
+- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
 - NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
 
 ## Resources
