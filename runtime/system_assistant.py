@@ -68,14 +68,58 @@ def load_assistant_config(runtime_root: Path) -> AssistantConfig | None:
     return AssistantConfig.model_validate_json(path.read_text())
 
 
+def _managed_dir_symlink_detail(paths: SystemAssistantPaths) -> str | None:
+    managed_dirs = [
+        (paths.root, "assistant root must not be a symlink"),
+        (paths.workspace, "assistant workspace must not be a symlink"),
+        (paths.learnings_dir, "assistant learnings directory must not be a symlink"),
+        (paths.logs_dir, "assistant logs directory must not be a symlink"),
+    ]
+    for path, detail in managed_dirs:
+        if path.is_symlink():
+            return detail
+    return None
+
+
+def _managed_dir_invalid_detail(paths: SystemAssistantPaths) -> str | None:
+    managed_dirs = [
+        (paths.root, "assistant root is missing"),
+        (paths.workspace, "assistant workspace is missing"),
+        (paths.learnings_dir, "assistant learnings directory is missing"),
+        (paths.logs_dir, "assistant logs directory is missing"),
+    ]
+    for path, detail in managed_dirs:
+        if not path.is_dir():
+            return detail
+    return None
+
+
+def _ensure_managed_dir(path: Path, symlink_detail: str) -> None:
+    if path.is_symlink():
+        raise ValueError(symlink_detail)
+    path.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink():
+        raise ValueError(symlink_detail)
+    if not path.is_dir():
+        raise ValueError(f"{path} is not a directory")
+
+
 def save_assistant_config(runtime_root: Path, config: AssistantConfig) -> None:
     paths = system_assistant_paths(runtime_root)
+    if paths.config_path.is_symlink():
+        raise ValueError("assistant config must not be a symlink")
     paths.root.mkdir(parents=True, exist_ok=True)
     paths.config_path.write_text(config.model_dump_json(indent=2) + "\n")
 
 
 def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
     paths = system_assistant_paths(runtime_root)
+    managed_symlink_detail = _managed_dir_symlink_detail(paths)
+    if managed_symlink_detail is not None:
+        return AssistantStatus(
+            state=AssistantState.STALE_OR_BROKEN,
+            detail=managed_symlink_detail,
+        )
     try:
         config = load_assistant_config(runtime_root)
     except (UnicodeDecodeError, ValidationError):
@@ -85,14 +129,6 @@ def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
         )
     if config is None:
         return AssistantStatus(state=AssistantState.UNINITIALIZED)
-    if paths.workspace.is_symlink():
-        return AssistantStatus(
-            state=AssistantState.STALE_OR_BROKEN,
-            selected_executor=config.selected_executor,
-            workspace_path=config.workspace_path,
-            detail="assistant workspace must not be a symlink",
-            latest_probe_results=config.latest_probe_results,
-        )
     configured_workspace = Path(config.workspace_path).expanduser().resolve(strict=False)
     expected_workspace = paths.workspace.resolve(strict=False)
     if configured_workspace != expected_workspace:
@@ -103,12 +139,13 @@ def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
             detail="assistant workspace path does not match runtime",
             latest_probe_results=config.latest_probe_results,
         )
-    if not paths.workspace.exists():
+    managed_invalid_detail = _managed_dir_invalid_detail(paths)
+    if managed_invalid_detail is not None:
         return AssistantStatus(
             state=AssistantState.STALE_OR_BROKEN,
             selected_executor=config.selected_executor,
             workspace_path=config.workspace_path,
-            detail="assistant workspace is missing",
+            detail=managed_invalid_detail,
             latest_probe_results=config.latest_probe_results,
         )
     agent_path = paths.workspace / "agent.yaml"
@@ -198,8 +235,13 @@ def _reject_symlink(path: Path, detail: str) -> None:
 def bootstrap_assistant_workspace(runtime_root: Path, *, executor: str) -> None:
     selected_executor = _validate_executor(executor)
     paths = system_assistant_paths(runtime_root)
-    if paths.workspace.is_symlink():
-        raise ValueError("assistant workspace must not be a symlink")
+    _reject_symlink(paths.root, "assistant root must not be a symlink")
+    _reject_symlink(paths.workspace, "assistant workspace must not be a symlink")
+    _reject_symlink(
+        paths.learnings_dir,
+        "assistant learnings directory must not be a symlink",
+    )
+    _reject_symlink(paths.logs_dir, "assistant logs directory must not be a symlink")
     _reject_symlink(
         paths.workspace / "agent.yaml",
         "assistant bootstrap file agent.yaml must not be a symlink",
@@ -216,9 +258,13 @@ def bootstrap_assistant_workspace(runtime_root: Path, *, executor: str) -> None:
         paths.learnings_dir / "_index.md",
         "assistant learnings index must not be a symlink",
     )
-    paths.workspace.mkdir(parents=True, exist_ok=True)
-    paths.learnings_dir.mkdir(parents=True, exist_ok=True)
-    paths.logs_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_managed_dir(paths.root, "assistant root must not be a symlink")
+    _ensure_managed_dir(paths.workspace, "assistant workspace must not be a symlink")
+    _ensure_managed_dir(
+        paths.learnings_dir,
+        "assistant learnings directory must not be a symlink",
+    )
+    _ensure_managed_dir(paths.logs_dir, "assistant logs directory must not be a symlink")
     (paths.workspace / "agent.yaml").write_text(
         yaml.safe_dump(
             {

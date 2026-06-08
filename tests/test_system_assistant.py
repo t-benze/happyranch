@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -49,6 +50,24 @@ def test_save_and_load_config_round_trips(tmp_path: Path) -> None:
 
     assert load_assistant_config(tmp_path) == cfg
     assert classify_assistant_state(tmp_path).state == AssistantState.STALE_OR_BROKEN
+
+
+def test_save_config_rejects_symlink_without_writing_target(tmp_path: Path) -> None:
+    paths = system_assistant_paths(tmp_path)
+    paths.root.mkdir(parents=True)
+    target = tmp_path / "external-config.json"
+    target.write_text("keep me\n")
+    paths.config_path.symlink_to(target)
+    cfg = AssistantConfig(
+        selected_executor="codex",
+        selected_command="codex",
+        workspace_path=str(paths.workspace),
+    )
+
+    with pytest.raises(ValueError, match="assistant config must not be a symlink"):
+        save_assistant_config(tmp_path, cfg)
+
+    assert target.read_text() == "keep me\n"
 
 
 def test_classify_stale_when_config_is_invalid(tmp_path: Path) -> None:
@@ -131,6 +150,50 @@ def test_classify_stale_when_workspace_is_symlink(tmp_path: Path) -> None:
 
     assert status.state == AssistantState.STALE_OR_BROKEN
     assert status.detail == "assistant workspace must not be a symlink"
+
+
+@pytest.mark.parametrize(
+    ("directory_name", "detail"),
+    [
+        ("root", "assistant root must not be a symlink"),
+        ("learnings_dir", "assistant learnings directory must not be a symlink"),
+        ("logs_dir", "assistant logs directory must not be a symlink"),
+    ],
+)
+def test_classify_stale_when_managed_directory_is_symlink(
+    tmp_path: Path, directory_name: str, detail: str
+) -> None:
+    bootstrap_assistant_workspace(tmp_path, executor="codex")
+    paths = system_assistant_paths(tmp_path)
+    directory = getattr(paths, directory_name)
+    external_directory = tmp_path / f"external-{directory_name}"
+    external_directory.mkdir()
+    if directory_name == "root":
+        root_backup = tmp_path / "root-backup"
+        paths.root.rename(root_backup)
+        directory.symlink_to(external_directory, target_is_directory=True)
+        config_root = external_directory
+        workspace = external_directory / "workspace"
+        workspace.mkdir()
+        (workspace / "agent.yaml").write_text("name: system_assistant\n")
+        (workspace / "AGENTS.md").write_text("# System Assistant\n")
+    else:
+        shutil.rmtree(directory)
+        directory.symlink_to(external_directory, target_is_directory=True)
+        config_root = paths.root
+        workspace = paths.workspace
+    cfg = AssistantConfig(
+        selected_executor="codex",
+        selected_command="codex",
+        workspace_path=str(workspace),
+    )
+    config_root.mkdir(parents=True, exist_ok=True)
+    (config_root / "config.json").write_text(cfg.model_dump_json(indent=2) + "\n")
+
+    status = classify_assistant_state(tmp_path)
+
+    assert status.state == AssistantState.STALE_OR_BROKEN
+    assert status.detail == detail
 
 
 def test_classify_accepts_equivalent_workspace_path(tmp_path: Path) -> None:
@@ -327,6 +390,36 @@ def test_bootstrap_rejects_workspace_symlink_without_writing_target(
         bootstrap_assistant_workspace(tmp_path, executor="codex")
 
     assert list(external_workspace.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("directory_name", "detail"),
+    [
+        ("root", "assistant root must not be a symlink"),
+        ("learnings_dir", "assistant learnings directory must not be a symlink"),
+        ("logs_dir", "assistant logs directory must not be a symlink"),
+    ],
+)
+def test_bootstrap_rejects_managed_directory_symlink_without_writing_target(
+    tmp_path: Path, directory_name: str, detail: str
+) -> None:
+    paths = system_assistant_paths(tmp_path)
+    paths.workspace.mkdir(parents=True)
+    paths.learnings_dir.mkdir(parents=True)
+    paths.logs_dir.mkdir(parents=True)
+    directory = getattr(paths, directory_name)
+    external_directory = tmp_path / f"external-{directory_name}"
+    external_directory.mkdir()
+    if directory_name == "root":
+        paths.root.rename(tmp_path / "root-backup")
+    else:
+        directory.rmdir()
+    directory.symlink_to(external_directory, target_is_directory=True)
+
+    with pytest.raises(ValueError, match=detail):
+        bootstrap_assistant_workspace(tmp_path, executor="codex")
+
+    assert list(external_directory.iterdir()) == []
 
 
 @pytest.mark.parametrize(
