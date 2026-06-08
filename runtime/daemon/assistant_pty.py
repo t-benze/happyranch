@@ -2,15 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import errno
-import fcntl
 import os
 from pathlib import Path
 import pty
 import select
 import signal
-import subprocess
+import shutil
 import tempfile
-import termios
 import time
 
 from runtime.config import Settings
@@ -94,49 +92,54 @@ class ProbeRunner:
         start: float,
     ) -> ProbeResult:
         master_fd: int | None = None
-        slave_fd: int | None = None
-        proc: subprocess.Popen[bytes] | None = None
+        child_pid: int | None = None
+        returncode: int | None = None
         output = bytearray()
         try:
-            master_fd, slave_fd = pty.openpty()
             env = os.environ.copy()
             env.update(spec.env)
-
-            child_slave_fd = slave_fd
-
-            def configure_child_pty() -> None:
-                os.setsid()
-                fcntl.ioctl(child_slave_fd, termios.TIOCSCTTY, 0)
-
-            proc = subprocess.Popen(
-                spec.argv,
-                stdin=slave_fd,
-                stdout=slave_fd,
-                stderr=slave_fd,
-                cwd=workspace,
-                env=env,
-                close_fds=True,
-                preexec_fn=configure_child_pty,
-            )
-            os.close(slave_fd)
-            slave_fd = None
+            if not spec.argv:
+                return self._result(
+                    False,
+                    spec,
+                    output,
+                    start,
+                    "executor argv is empty",
+                    error="launch_error",
+                )
+            executable = shutil.which(spec.argv[0], path=env.get("PATH"))
+            if executable is None:
+                return self._result(
+                    False,
+                    spec,
+                    output,
+                    start,
+                    f"executable not found: {spec.argv[0]}",
+                    error="launch_error",
+                )
+            child_pid, master_fd = pty.fork()
+            if child_pid == 0:
+                self._exec_child(spec.argv, executable, workspace, env)
+            response_start = len(output)
             self._write_probe_request(master_fd)
             deadline = start + timeout_seconds
             while time.monotonic() < deadline:
                 self._read_available(master_fd, output, deadline)
-                if PROBE_READY.encode() in output:
+                if self._has_ready_response(output, start_index=response_start):
+                    returncode = self._poll_returncode(child_pid)
                     return self._result(
                         True,
                         spec,
                         output,
                         start,
                         "ready marker observed",
-                        returncode=proc.poll(),
+                        returncode=returncode,
                     )
-                if proc.poll() is not None:
+                returncode = self._poll_returncode(child_pid)
+                if returncode is not None:
                     self._read_available(master_fd, output, time.monotonic())
                     break
-            timed_out = proc.poll() is None and time.monotonic() >= deadline
+            timed_out = returncode is None and time.monotonic() >= deadline
             detail = (
                 "timed out waiting for ready marker"
                 if timed_out
@@ -150,10 +153,10 @@ class ProbeRunner:
                 detail,
                 timed_out=timed_out,
                 error="timeout" if timed_out else None,
-                returncode=proc.poll(),
+                returncode=returncode,
             )
         except OSError as exc:
-            error = "launch_error" if proc is None else "pty_error"
+            error = "launch_error" if child_pid is None else "pty_error"
             return self._result(
                 False,
                 spec,
@@ -161,15 +164,27 @@ class ProbeRunner:
                 start,
                 str(exc),
                 error=error,
-                returncode=proc.poll() if proc is not None else None,
+                returncode=returncode,
             )
         finally:
-            if proc is not None and proc.poll() is None:
-                self._terminate_process(proc)
-            if slave_fd is not None:
-                self._close_fd(slave_fd)
+            if child_pid is not None and returncode is None:
+                self._terminate_process(child_pid)
             if master_fd is not None:
                 self._close_fd(master_fd)
+
+    def _exec_child(
+        self,
+        argv: list[str],
+        executable: str,
+        workspace: Path,
+        env: dict[str, str],
+    ) -> None:
+        try:
+            os.chdir(workspace)
+            os.execvpe(executable, argv, env)
+        except OSError as exc:
+            os.write(2, f"failed to exec {argv[0]}: {exc}\n".encode())
+        os._exit(127)
 
     def _write_prompt_surface(self, workspace: Path, prompt_surface: str) -> None:
         (workspace / prompt_surface).write_text(
@@ -191,6 +206,10 @@ class ProbeRunner:
     def _write_probe_request(self, master_fd: int) -> None:
         for char in f"{PROBE_REQUEST}\r":
             os.write(master_fd, char.encode())
+
+    def _has_ready_response(self, output: bytearray, *, start_index: int) -> bool:
+        text = bytes(output[start_index:]).decode(errors="replace")
+        return any(line.strip() == PROBE_READY for line in text.splitlines())
 
     def _read_available(
         self,
@@ -241,19 +260,41 @@ class ProbeRunner:
             returncode=returncode,
         )
 
-    def _terminate_process(self, proc: subprocess.Popen[bytes]) -> None:
+    def _poll_returncode(self, pid: int) -> int | None:
         try:
-            os.killpg(proc.pid, signal.SIGTERM)
+            waited_pid, status = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            return 0
+        if waited_pid == 0:
+            return None
+        return self._status_to_returncode(status)
+
+    def _terminate_process(self, pid: int) -> None:
+        try:
+            os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
             return
-        try:
-            proc.wait(timeout=0.5)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
+        deadline = time.monotonic() + 0.5
+        while time.monotonic() < deadline:
+            if self._poll_returncode(pid) is not None:
                 return
-            proc.wait(timeout=0.5)
+            time.sleep(0.01)
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        deadline = time.monotonic() + 0.5
+        while time.monotonic() < deadline:
+            if self._poll_returncode(pid) is not None:
+                return
+            time.sleep(0.01)
+
+    def _status_to_returncode(self, status: int) -> int:
+        if os.WIFEXITED(status):
+            return os.WEXITSTATUS(status)
+        if os.WIFSIGNALED(status):
+            return -os.WTERMSIG(status)
+        return status
 
     def _close_fd(self, fd: int) -> None:
         try:

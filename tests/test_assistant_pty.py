@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from runtime.config import Settings
@@ -70,6 +71,26 @@ print("NOT_READY", flush=True)
     assert "NOT_READY" in result.output_excerpt
 
 
+def test_probe_ignores_startup_text_containing_ready_marker(tmp_path: Path) -> None:
+    cli = _write_fake_cli(
+        tmp_path,
+        f"""
+print("startup context mentions {PROBE_READY}", flush=True)
+""",
+    )
+    spec = InteractiveExecutorSpec(
+        name="fake",
+        argv=[str(cli)],
+        prompt_surface="AGENTS.md",
+    )
+
+    result = ProbeRunner().probe_executor(spec)
+
+    assert result.passed is False
+    assert result.detail == "expected ready marker not found"
+    assert f"startup context mentions {PROBE_READY}" in result.output_excerpt
+
+
 def test_probe_writes_minimal_workspace_surface(tmp_path: Path) -> None:
     marker_path = tmp_path / "surface.txt"
     cli = _write_fake_cli(
@@ -137,3 +158,36 @@ def test_probe_returns_failure_for_missing_executable(tmp_path: Path) -> None:
     assert result.passed is False
     assert result.error == "launch_error"
     assert "does-not-exist" in result.detail
+
+
+def test_probe_times_out_and_cleans_up_blocked_child(tmp_path: Path) -> None:
+    pid_path = tmp_path / "child.pid"
+    cli = _write_fake_cli(
+        tmp_path,
+        """
+from pathlib import Path
+import os
+import time
+
+Path(os.environ["PID_PATH"]).write_text(str(os.getpid()))
+time.sleep(30)
+""",
+    )
+    spec = InteractiveExecutorSpec(
+        name="blocked",
+        argv=[str(cli)],
+        prompt_surface="AGENTS.md",
+        env={"PID_PATH": str(pid_path)},
+    )
+
+    result = ProbeRunner().probe_executor(spec, timeout_seconds=1)
+
+    assert result.passed is False
+    assert result.timed_out is True
+    child_pid = int(pid_path.read_text())
+    try:
+        os.kill(child_pid, 0)
+    except ProcessLookupError:
+        pass
+    else:
+        raise AssertionError(f"child process {child_pid} was not cleaned up")
