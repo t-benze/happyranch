@@ -76,13 +76,21 @@ def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
     paths = system_assistant_paths(runtime_root)
     try:
         config = load_assistant_config(runtime_root)
-    except ValidationError:
+    except (UnicodeDecodeError, ValidationError):
         return AssistantStatus(
             state=AssistantState.STALE_OR_BROKEN,
             detail="assistant config is invalid",
         )
     if config is None:
         return AssistantStatus(state=AssistantState.UNINITIALIZED)
+    if paths.workspace.is_symlink():
+        return AssistantStatus(
+            state=AssistantState.STALE_OR_BROKEN,
+            selected_executor=config.selected_executor,
+            workspace_path=config.workspace_path,
+            detail="assistant workspace must not be a symlink",
+            latest_probe_results=config.latest_probe_results,
+        )
     configured_workspace = Path(config.workspace_path).expanduser().resolve(strict=False)
     expected_workspace = paths.workspace.resolve(strict=False)
     if configured_workspace != expected_workspace:

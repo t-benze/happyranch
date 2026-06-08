@@ -63,6 +63,18 @@ def test_classify_stale_when_config_is_invalid(tmp_path: Path) -> None:
     assert status.latest_probe_results == []
 
 
+def test_classify_stale_when_config_is_invalid_utf8(tmp_path: Path) -> None:
+    paths = system_assistant_paths(tmp_path)
+    paths.root.mkdir(parents=True)
+    paths.config_path.write_bytes(b"\xff\xfe\x00")
+
+    status = classify_assistant_state(tmp_path)
+
+    assert status.state == AssistantState.STALE_OR_BROKEN
+    assert status.detail == "assistant config is invalid"
+    assert status.latest_probe_results == []
+
+
 def test_classify_stale_when_workspace_path_does_not_match(tmp_path: Path) -> None:
     bootstrap_assistant_workspace(tmp_path, executor="codex")
     cfg = AssistantConfig(
@@ -76,6 +88,27 @@ def test_classify_stale_when_workspace_path_does_not_match(tmp_path: Path) -> No
 
     assert status.state == AssistantState.STALE_OR_BROKEN
     assert status.detail == "assistant workspace path does not match runtime"
+
+
+def test_classify_stale_when_workspace_is_symlink(tmp_path: Path) -> None:
+    paths = system_assistant_paths(tmp_path)
+    external_workspace = tmp_path / "external-workspace"
+    external_workspace.mkdir()
+    (external_workspace / "agent.yaml").write_text("name: system_assistant\n")
+    (external_workspace / "AGENTS.md").write_text("# System Assistant\n")
+    paths.root.mkdir(parents=True)
+    paths.workspace.symlink_to(external_workspace, target_is_directory=True)
+    cfg = AssistantConfig(
+        selected_executor="codex",
+        selected_command="codex",
+        workspace_path=str(external_workspace),
+    )
+
+    save_assistant_config(tmp_path, cfg)
+    status = classify_assistant_state(tmp_path)
+
+    assert status.state == AssistantState.STALE_OR_BROKEN
+    assert status.detail == "assistant workspace must not be a symlink"
 
 
 def test_classify_accepts_equivalent_workspace_path(tmp_path: Path) -> None:
