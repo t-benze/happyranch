@@ -146,7 +146,7 @@ async def get_assistant_status(request: Request) -> dict[str, Any]:
 
 
 @router.post("/assistant/probes")
-async def probe_assistant_executors(request: Request) -> dict[str, Any]:
+def probe_assistant_executors(request: Request) -> dict[str, Any]:
     _runtime_root(request)
     state: DaemonState = request.app.state.daemon
     runner = ProbeRunner()
