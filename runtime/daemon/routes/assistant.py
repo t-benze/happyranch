@@ -99,6 +99,42 @@ def _server_selected_command(
     return selected_executor
 
 
+def _normalize_probe_results(
+    probe_results: list[ProbeResultRow],
+    specs: list[InteractiveExecutorSpec],
+) -> list[dict[str, Any]]:
+    specs_by_name = {spec.name: spec for spec in specs}
+    normalized: list[dict[str, Any]] = []
+    for result in probe_results:
+        spec = specs_by_name.get(result.executor)
+        if spec is None:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "unknown_probe_executor", "executor": result.executor},
+            )
+        if result.passed and (
+            result.timed_out
+            or result.error is not None
+            or (result.returncode is not None and result.returncode != 0)
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "invalid_probe_result", "executor": result.executor},
+            )
+        row = result.model_dump()
+        argv = list(spec.argv)
+        row.update(
+            {
+                "command": argv[0] if argv else spec.name,
+                "argv": argv,
+                "name": spec.name,
+                "prompt_surface": spec.prompt_surface,
+            }
+        )
+        normalized.append(row)
+    return normalized
+
+
 def _assistant_error(code: str, exc: Exception) -> HTTPException:
     return HTTPException(status_code=409, detail={"code": code, "message": str(exc)})
 
@@ -129,7 +165,21 @@ async def configure_assistant(
     root = _runtime_root(request)
     state: DaemonState = request.app.state.daemon
     specs = build_executor_specs(state.settings)
-    probe_results = [result.model_dump() for result in body.probe_results]
+    paths = system_assistant_paths(root)
+    try:
+        AssistantConfig(
+            selected_executor=body.selected_executor,
+            selected_command=_server_selected_command(body.selected_executor, specs),
+            workspace_path=str(paths.workspace),
+            latest_probe_results=[],
+        )
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "unsupported_assistant_executor", "message": str(exc)},
+        ) from exc
+
+    probe_results = _normalize_probe_results(body.probe_results, specs)
     matching_probe = _matching_passed_probe(body.selected_executor, body.probe_results)
     if matching_probe is None:
         raise HTTPException(
@@ -137,7 +187,6 @@ async def configure_assistant(
             detail={"code": "selected_executor_not_probe_passed"},
         )
 
-    paths = system_assistant_paths(root)
     try:
         config = AssistantConfig(
             selected_executor=body.selected_executor,

@@ -199,11 +199,62 @@ def test_assistant_configure_rejects_extra_probe_fields(
     assert not paths.config_path.exists()
 
 
+def test_assistant_configure_rejects_unknown_probe_executor(
+    client: TestClient,
+    runtime,
+) -> None:
+    paths = system_assistant_paths(runtime.root)
+
+    response = client.post(
+        "/api/v1/assistant/configure",
+        json={
+            "selected_executor": "codex",
+            "probe_results": [
+                _passed_probe_result("codex"),
+                _passed_probe_result("not-real"),
+            ],
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "unknown_probe_executor"
+    assert not paths.config_path.exists()
+
+
+def test_assistant_configure_rejects_contradictory_passed_probe(
+    client: TestClient,
+    runtime,
+) -> None:
+    paths = system_assistant_paths(runtime.root)
+
+    response = client.post(
+        "/api/v1/assistant/configure",
+        json={
+            "selected_executor": "codex",
+            "probe_results": [
+                {
+                    **_passed_probe_result("codex"),
+                    "timed_out": True,
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "invalid_probe_result"
+    assert not paths.config_path.exists()
+
+
 def test_assistant_configure_writes_workspace_and_status(
     client: TestClient,
     runtime,
 ) -> None:
     probe_result = _passed_probe_result("codex")
+    expected_probe_result = {
+        **probe_result,
+        "command": "codex",
+        "argv": ["codex"],
+    }
 
     response = client.post(
         "/api/v1/assistant/configure",
@@ -216,7 +267,7 @@ def test_assistant_configure_writes_workspace_and_status(
     assert body["state"] == AssistantState.CONFIGURED
     assert body["selected_executor"] == "codex"
     assert body["workspace_path"] == str(paths.workspace)
-    assert body["latest_probe_results"] == [probe_result]
+    assert body["latest_probe_results"] == [expected_probe_result]
     assert (paths.workspace / "agent.yaml").is_file()
     assert (paths.workspace / "AGENTS.md").is_file()
     assert (paths.learnings_dir / "_index.md").is_file()
@@ -226,7 +277,7 @@ def test_assistant_configure_writes_workspace_and_status(
     assert config.selected_executor == "codex"
     assert config.selected_command == "codex"
     assert config.workspace_path == str(paths.workspace)
-    assert config.latest_probe_results == [probe_result]
+    assert config.latest_probe_results == [expected_probe_result]
 
 
 def test_assistant_configure_derives_command_from_server_specs(
@@ -243,6 +294,15 @@ def test_assistant_configure_derives_command_from_server_specs(
         **_passed_probe_result("codex"),
         "command": "/tmp/not-probed",
         "argv": ["/tmp/not-probed"],
+        "name": "forged-name",
+        "prompt_surface": "CLAUDE.md",
+    }
+    expected_probe_result = {
+        **probe_result,
+        "command": "/server/bin/codex",
+        "argv": ["/server/bin/codex"],
+        "name": "codex",
+        "prompt_surface": "AGENTS.md",
     }
 
     response = client.post(
@@ -254,7 +314,7 @@ def test_assistant_configure_derives_command_from_server_specs(
     config = load_assistant_config(runtime.root)
     assert config is not None
     assert config.selected_command == "/server/bin/codex"
-    assert config.latest_probe_results == [probe_result]
+    assert config.latest_probe_results == [expected_probe_result]
 
 
 def test_assistant_repair_refreshes_workspace(client: TestClient, runtime) -> None:
