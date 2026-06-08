@@ -94,6 +94,16 @@ def _managed_dir_invalid_detail(paths: SystemAssistantPaths) -> str | None:
     return None
 
 
+def _bootstrap_file_invalid_detail(path: Path, filename: str) -> str | None:
+    if path.is_symlink():
+        return f"assistant bootstrap file {filename} must not be a symlink"
+    if not path.exists():
+        return f"assistant bootstrap file {filename} is missing"
+    if not path.is_file():
+        return f"assistant bootstrap file {filename} is not a regular file"
+    return None
+
+
 def _ensure_managed_dir(path: Path, symlink_detail: str) -> None:
     if path.is_symlink():
         raise ValueError(symlink_detail)
@@ -148,21 +158,20 @@ def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
             detail=managed_invalid_detail,
             latest_probe_results=config.latest_probe_results,
         )
-    agent_path = paths.workspace / "agent.yaml"
-    if agent_path.is_symlink():
+    agent_invalid_detail = _bootstrap_file_invalid_detail(
+        paths.workspace / "agent.yaml",
+        "agent.yaml",
+    )
+    if agent_invalid_detail is not None:
         return AssistantStatus(
             state=AssistantState.STALE_OR_BROKEN,
             selected_executor=config.selected_executor,
             workspace_path=config.workspace_path,
-            detail="assistant bootstrap file agent.yaml must not be a symlink",
-            latest_probe_results=config.latest_probe_results,
-        )
-    if not agent_path.exists():
-        return AssistantStatus(
-            state=AssistantState.STALE_OR_BROKEN,
-            selected_executor=config.selected_executor,
-            workspace_path=config.workspace_path,
-            detail="assistant agent.yaml is missing",
+            detail=(
+                "assistant agent.yaml is missing"
+                if agent_invalid_detail == "assistant bootstrap file agent.yaml is missing"
+                else agent_invalid_detail
+            ),
             latest_probe_results=config.latest_probe_results,
         )
     expected = (
@@ -170,21 +179,16 @@ def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
         if config.selected_executor == AssistantExecutor.CLAUDE
         else "AGENTS.md"
     )
-    prompt_path = paths.workspace / expected
-    if prompt_path.is_symlink():
+    prompt_invalid_detail = _bootstrap_file_invalid_detail(
+        paths.workspace / expected,
+        expected,
+    )
+    if prompt_invalid_detail is not None:
         return AssistantStatus(
             state=AssistantState.STALE_OR_BROKEN,
             selected_executor=config.selected_executor,
             workspace_path=config.workspace_path,
-            detail=f"assistant bootstrap file {expected} must not be a symlink",
-            latest_probe_results=config.latest_probe_results,
-        )
-    if not prompt_path.exists():
-        return AssistantStatus(
-            state=AssistantState.STALE_OR_BROKEN,
-            selected_executor=config.selected_executor,
-            workspace_path=config.workspace_path,
-            detail=f"assistant bootstrap file {expected} is missing",
+            detail=prompt_invalid_detail,
             latest_probe_results=config.latest_probe_results,
         )
     learnings_index = paths.learnings_dir / "_index.md"

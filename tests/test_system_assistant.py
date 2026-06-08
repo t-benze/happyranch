@@ -252,6 +252,28 @@ def test_classify_stale_when_required_bootstrap_file_is_symlink(
     assert status.detail == f"assistant bootstrap file {filename} must not be a symlink"
 
 
+@pytest.mark.parametrize("filename", ["agent.yaml", "AGENTS.md", "CLAUDE.md"])
+def test_classify_stale_when_required_bootstrap_file_is_directory(
+    tmp_path: Path, filename: str
+) -> None:
+    executor = "claude" if filename == "CLAUDE.md" else "codex"
+    bootstrap_assistant_workspace(tmp_path, executor=executor)
+    workspace = system_assistant_paths(tmp_path).workspace
+    (workspace / filename).unlink()
+    (workspace / filename).mkdir()
+    cfg = AssistantConfig(
+        selected_executor=executor,
+        selected_command=executor,
+        workspace_path=str(workspace),
+    )
+
+    save_assistant_config(tmp_path, cfg)
+    status = classify_assistant_state(tmp_path)
+
+    assert status.state == AssistantState.STALE_OR_BROKEN
+    assert status.detail == f"assistant bootstrap file {filename} is not a regular file"
+
+
 def test_classify_stale_when_learnings_index_is_symlink(tmp_path: Path) -> None:
     bootstrap_assistant_workspace(tmp_path, executor="codex")
     paths = system_assistant_paths(tmp_path)
