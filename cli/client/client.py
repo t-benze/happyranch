@@ -54,6 +54,11 @@ class OpcClient:
         agent: str | None = None,
         since: str | None = None,
         limit: int | None = None,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        thread_id: str | None = None,
+        talk_id: str | None = None,
+        purpose: str | None = None,
     ) -> list[dict]:
         """Return per-session token usage rows for an org.
 
@@ -67,6 +72,11 @@ class OpcClient:
                 "agent": agent,
                 "since": since,
                 "limit": limit,
+                "scope_type": scope_type,
+                "scope_id": scope_id,
+                "thread_id": thread_id,
+                "talk_id": talk_id,
+                "purpose": purpose,
             }.items()
             if v is not None
         }
@@ -81,23 +91,37 @@ class OpcClient:
         task_id: str | None = None,
         agent: str | None = None,
         since: str | None = None,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        thread_id: str | None = None,
+        talk_id: str | None = None,
+        purpose: str | None = None,
     ) -> list[dict]:
-        """Return a token-usage rollup grouped by ``agent`` or ``task``.
+        """Return a token-usage rollup grouped by a supported token scope.
 
         Calls ``GET /api/v1/orgs/{slug}/tokens?group_by=...``. Filters
         AND-compose; ``None`` values are omitted. Raises on non-2xx.
         """
-        if group_by not in ("agent", "task"):
+        if group_by not in ("agent", "task", "scope", "thread", "talk"):
             raise ValueError(
-                f"group_by must be 'agent' or 'task', got: {group_by!r}"
+                "group_by must be 'agent', 'task', 'scope', 'thread', "
+                f"or 'talk', got: {group_by!r}"
             )
-        params: dict[str, str] = {"group_by": group_by}
-        if task_id is not None:
-            params["task_id"] = task_id
-        if agent is not None:
-            params["agent"] = agent
-        if since is not None:
-            params["since"] = since
+        params = {
+            k: v
+            for k, v in {
+                "group_by": group_by,
+                "task_id": task_id,
+                "agent": agent,
+                "since": since,
+                "scope_type": scope_type,
+                "scope_id": scope_id,
+                "thread_id": thread_id,
+                "talk_id": talk_id,
+                "purpose": purpose,
+            }.items()
+            if v is not None
+        }
         r = self.get(f"/api/v1/orgs/{slug}/tokens", params=params)
         r.raise_for_status()
         return r.json()["rollup"]

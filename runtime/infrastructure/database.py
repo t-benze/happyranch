@@ -258,7 +258,7 @@ class Database:
 
             CREATE TABLE IF NOT EXISTS session_token_usage (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                task_id    TEXT NOT NULL,
+                task_id    TEXT,
                 agent      TEXT NOT NULL,
                 session_id TEXT NOT NULL,
                 executor   TEXT NOT NULL,
@@ -269,11 +269,24 @@ class Database:
                 cache_creation_tokens INTEGER,
                 reasoning_tokens      INTEGER,
                 usage_raw_json TEXT,
+                scope_type TEXT,
+                scope_id TEXT,
+                thread_id TEXT,
+                talk_id TEXT,
+                invocation_purpose TEXT,
                 created_at TEXT NOT NULL,
                 UNIQUE (task_id, agent, session_id)
             );
             CREATE INDEX IF NOT EXISTS idx_session_token_usage_task   ON session_token_usage (task_id);
             CREATE INDEX IF NOT EXISTS idx_session_token_usage_agent  ON session_token_usage (agent, created_at);
+            CREATE INDEX IF NOT EXISTS idx_session_token_usage_scope
+                ON session_token_usage (scope_type, scope_id);
+            CREATE INDEX IF NOT EXISTS idx_session_token_usage_thread
+                ON session_token_usage (thread_id)
+                WHERE thread_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_session_token_usage_talk
+                ON session_token_usage (talk_id)
+                WHERE talk_id IS NOT NULL;
 
             CREATE TABLE IF NOT EXISTS escalation_notifications (
                 feishu_message_id TEXT PRIMARY KEY,
@@ -401,6 +414,7 @@ class Database:
             CREATE INDEX IF NOT EXISTS jobs_task_id_idx ON jobs(task_id);
             CREATE INDEX IF NOT EXISTS jobs_status_idx  ON jobs(status);
         """)
+        self._migrate_session_token_usage_scope_columns()
         # Best-effort migration for DBs created before `status` existed. SQLite
         # has no IF NOT EXISTS for ADD COLUMN; swallow the duplicate-column
         # error so this is idempotent across restarts.
@@ -612,6 +626,112 @@ class Database:
             # Normalize dead legacy values.
             self._conn.execute("UPDATE tasks SET status='failed' WHERE status='in_review'")
             self._conn.commit()
+
+    def _migrate_session_token_usage_scope_columns(self) -> None:
+        """Add scope columns and make task_id nullable for conversation usage."""
+        columns = {
+            row["name"]: row
+            for row in self._conn.execute(
+                "PRAGMA table_info(session_token_usage)"
+            ).fetchall()
+        }
+        if columns.get("task_id") and columns["task_id"]["notnull"]:
+            self._conn.execute(
+                "ALTER TABLE session_token_usage RENAME TO session_token_usage_old"
+            )
+            self._conn.execute(
+                """CREATE TABLE session_token_usage (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id    TEXT,
+                    agent      TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    executor   TEXT NOT NULL,
+                    model      TEXT,
+                    input_tokens          INTEGER,
+                    output_tokens         INTEGER,
+                    cache_read_tokens     INTEGER,
+                    cache_creation_tokens INTEGER,
+                    reasoning_tokens      INTEGER,
+                    usage_raw_json TEXT,
+                    scope_type TEXT,
+                    scope_id TEXT,
+                    thread_id TEXT,
+                    talk_id TEXT,
+                    invocation_purpose TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE (task_id, agent, session_id)
+                )"""
+            )
+            self._conn.execute(
+                """INSERT INTO session_token_usage
+                   (id, task_id, agent, session_id, executor, model,
+                    input_tokens, output_tokens, cache_read_tokens,
+                    cache_creation_tokens, reasoning_tokens, usage_raw_json,
+                    scope_type, scope_id, created_at)
+                   SELECT id, task_id, agent, session_id, executor, model,
+                          input_tokens, output_tokens, cache_read_tokens,
+                          cache_creation_tokens, reasoning_tokens, usage_raw_json,
+                          'task', task_id, created_at
+                     FROM session_token_usage_old"""
+            )
+            self._conn.execute("DROP TABLE session_token_usage_old")
+            columns = {
+                row["name"]: row
+                for row in self._conn.execute(
+                    "PRAGMA table_info(session_token_usage)"
+                ).fetchall()
+            }
+
+        for name in (
+            "scope_type",
+            "scope_id",
+            "thread_id",
+            "talk_id",
+            "invocation_purpose",
+        ):
+            if name not in columns:
+                try:
+                    self._conn.execute(
+                        f"ALTER TABLE session_token_usage ADD COLUMN {name} TEXT"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+
+        self._conn.execute(
+            "UPDATE session_token_usage SET scope_type = 'task' "
+            "WHERE scope_type IS NULL"
+        )
+        self._conn.execute(
+            "UPDATE session_token_usage SET scope_id = task_id "
+            "WHERE scope_id IS NULL AND task_id IS NOT NULL"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_token_usage_task "
+            "ON session_token_usage (task_id)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_token_usage_agent "
+            "ON session_token_usage (agent, created_at)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_token_usage_scope "
+            "ON session_token_usage (scope_type, scope_id)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_token_usage_thread "
+            "ON session_token_usage (thread_id) WHERE thread_id IS NOT NULL"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_token_usage_talk "
+            "ON session_token_usage (talk_id) WHERE talk_id IS NOT NULL"
+        )
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_session_token_usage_scope_unique "
+            "ON session_token_usage ("
+            "COALESCE(scope_type, 'task'), COALESCE(scope_id, task_id), "
+            "agent, session_id)"
+        )
+        self._conn.commit()
 
     def _backfill_revisit_of_task_id(self) -> None:
         # Called from _create_tables during __init__, which is single-threaded
@@ -1429,30 +1549,92 @@ class Database:
     @_synchronized
     def insert_session_token_usage(
         self,
-        task_id: str,
+        task_id: str | None,
         agent: str,
         session_id: str,
         executor: str,
         token_usage: TokenUsage,
+        scope_type: str = "task",
+        scope_id: str | None = None,
+        thread_id: str | None = None,
+        talk_id: str | None = None,
+        invocation_purpose: str | None = None,
     ) -> None:
-        """Insert one row per (task, agent, session). INSERT OR IGNORE on the
-        UNIQUE (task_id, agent, session_id) key — first write wins."""
+        """Insert one token usage row. INSERT OR IGNORE: first write wins."""
+        if scope_id is None and scope_type == "task":
+            scope_id = task_id
         self._conn.execute(
             """INSERT OR IGNORE INTO session_token_usage
                (task_id, agent, session_id, executor, model,
                 input_tokens, output_tokens, cache_read_tokens,
                 cache_creation_tokens, reasoning_tokens,
-                usage_raw_json, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                usage_raw_json, scope_type, scope_id, thread_id, talk_id,
+                invocation_purpose, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task_id, agent, session_id, executor, token_usage.model,
                 token_usage.input_tokens, token_usage.output_tokens,
                 token_usage.cache_read_tokens, token_usage.cache_creation_tokens,
                 token_usage.reasoning_tokens, token_usage.usage_raw_json,
+                scope_type, scope_id, thread_id, talk_id, invocation_purpose,
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
         self._conn.commit()
+
+    def _session_token_usage_filters(
+        self,
+        *,
+        since: str | None = None,
+        task_id: str | None = None,
+        agent: str | None = None,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        thread_id: str | None = None,
+        talk_id: str | None = None,
+        purpose: str | None = None,
+    ) -> tuple[list[str], list[object]]:
+        where: list[str] = []
+        params: list[object] = []
+        if since is not None:
+            where.append("created_at >= ?")
+            params.append(since)
+        if task_id is not None:
+            where.append("task_id = ?")
+            params.append(task_id)
+        if agent is not None:
+            where.append("agent = ?")
+            params.append(agent)
+        if scope_type is not None:
+            where.append("COALESCE(scope_type, 'task') = ?")
+            params.append(scope_type)
+        if scope_id is not None:
+            where.append("COALESCE(scope_id, task_id) = ?")
+            params.append(scope_id)
+        if thread_id is not None:
+            where.append("thread_id = ?")
+            params.append(thread_id)
+        if talk_id is not None:
+            where.append("talk_id = ?")
+            params.append(talk_id)
+        if purpose is not None:
+            where.append("invocation_purpose = ?")
+            params.append(purpose)
+        return where, params
+
+    @staticmethod
+    def _token_usage_rollup_select(group_expr: str, group_alias: str) -> str:
+        return f"""SELECT {group_expr} AS {group_alias},
+                         COUNT(*) AS sessions,
+                         COALESCE(SUM(input_tokens), 0)          AS input_tokens,
+                         COALESCE(SUM(output_tokens), 0)         AS output_tokens,
+                         COALESCE(SUM(cache_read_tokens), 0)     AS cache_read_tokens,
+                         COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,
+                         COALESCE(SUM(reasoning_tokens), 0)      AS reasoning_tokens,
+                         COALESCE(SUM(input_tokens), 0)
+                           + COALESCE(SUM(output_tokens), 0)
+                           + COALESCE(SUM(reasoning_tokens), 0)  AS total_tokens
+                  FROM session_token_usage"""
 
     @_synchronized
     def list_session_token_usage(
@@ -1461,20 +1643,30 @@ class Database:
         agent: str | None = None,
         since: str | None = None,
         limit: int | None = None,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        thread_id: str | None = None,
+        talk_id: str | None = None,
+        purpose: str | None = None,
     ) -> list[dict]:
         """Return per-session rows, newest first."""
-        where: list[str] = []
-        params: list[object] = []
-        if task_id is not None:
-            where.append("task_id = ?")
-            params.append(task_id)
-        if agent is not None:
-            where.append("agent = ?")
-            params.append(agent)
-        if since is not None:
-            where.append("created_at >= ?")
-            params.append(since)
-        sql = "SELECT * FROM session_token_usage"
+        where, params = self._session_token_usage_filters(
+            since=since,
+            task_id=task_id,
+            agent=agent,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            thread_id=thread_id,
+            talk_id=talk_id,
+            purpose=purpose,
+        )
+        sql = """SELECT *,
+                        COALESCE(scope_type, 'task') AS scope_type,
+                        COALESCE(scope_id, task_id) AS scope_id,
+                        COALESCE(input_tokens, 0)
+                          + COALESCE(output_tokens, 0)
+                          + COALESCE(reasoning_tokens, 0) AS total_tokens
+                 FROM session_token_usage"""
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY created_at DESC, id DESC"
@@ -1490,26 +1682,23 @@ class Database:
         since: str | None = None,
         task_id: str | None = None,
         agent: str | None = None,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        thread_id: str | None = None,
+        talk_id: str | None = None,
+        purpose: str | None = None,
     ) -> list[dict]:
-        where: list[str] = []
-        params: list[object] = []
-        if since is not None:
-            where.append("created_at >= ?")
-            params.append(since)
-        if task_id is not None:
-            where.append("task_id = ?")
-            params.append(task_id)
-        if agent is not None:
-            where.append("agent = ?")
-            params.append(agent)
-        sql = """SELECT agent,
-                        COUNT(*) AS sessions,
-                        SUM(input_tokens)          AS input_tokens,
-                        SUM(output_tokens)         AS output_tokens,
-                        SUM(cache_read_tokens)     AS cache_read_tokens,
-                        SUM(cache_creation_tokens) AS cache_creation_tokens,
-                        SUM(reasoning_tokens)      AS reasoning_tokens
-                 FROM session_token_usage"""
+        where, params = self._session_token_usage_filters(
+            since=since,
+            task_id=task_id,
+            agent=agent,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            thread_id=thread_id,
+            talk_id=talk_id,
+            purpose=purpose,
+        )
+        sql = self._token_usage_rollup_select("agent", "agent")
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " GROUP BY agent ORDER BY agent"
@@ -1522,29 +1711,127 @@ class Database:
         since: str | None = None,
         agent: str | None = None,
         task_id: str | None = None,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        thread_id: str | None = None,
+        talk_id: str | None = None,
+        purpose: str | None = None,
     ) -> list[dict]:
-        where: list[str] = []
-        params: list[object] = []
-        if since is not None:
-            where.append("created_at >= ?")
-            params.append(since)
-        if agent is not None:
-            where.append("agent = ?")
-            params.append(agent)
-        if task_id is not None:
-            where.append("task_id = ?")
-            params.append(task_id)
-        sql = """SELECT task_id,
-                        COUNT(*) AS sessions,
-                        SUM(input_tokens)          AS input_tokens,
-                        SUM(output_tokens)         AS output_tokens,
-                        SUM(cache_read_tokens)     AS cache_read_tokens,
-                        SUM(cache_creation_tokens) AS cache_creation_tokens,
-                        SUM(reasoning_tokens)      AS reasoning_tokens
-                 FROM session_token_usage"""
+        where, params = self._session_token_usage_filters(
+            since=since,
+            task_id=task_id,
+            agent=agent,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            thread_id=thread_id,
+            talk_id=talk_id,
+            purpose=purpose,
+        )
+        sql = self._token_usage_rollup_select("task_id", "task_id")
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " GROUP BY task_id ORDER BY task_id"
+        rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    @_synchronized
+    def aggregate_session_token_usage_by_scope(
+        self,
+        since: str | None = None,
+        task_id: str | None = None,
+        agent: str | None = None,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        thread_id: str | None = None,
+        talk_id: str | None = None,
+        purpose: str | None = None,
+    ) -> list[dict]:
+        where, params = self._session_token_usage_filters(
+            since=since,
+            task_id=task_id,
+            agent=agent,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            thread_id=thread_id,
+            talk_id=talk_id,
+            purpose=purpose,
+        )
+        sql = """SELECT COALESCE(scope_type, 'task') AS scope_type,
+                        COALESCE(scope_id, task_id) AS scope_id,
+                        COUNT(*) AS sessions,
+                        COALESCE(SUM(input_tokens), 0)          AS input_tokens,
+                        COALESCE(SUM(output_tokens), 0)         AS output_tokens,
+                        COALESCE(SUM(cache_read_tokens), 0)     AS cache_read_tokens,
+                        COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,
+                        COALESCE(SUM(reasoning_tokens), 0)      AS reasoning_tokens,
+                        COALESCE(SUM(input_tokens), 0)
+                          + COALESCE(SUM(output_tokens), 0)
+                          + COALESCE(SUM(reasoning_tokens), 0)  AS total_tokens
+                 FROM session_token_usage"""
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " GROUP BY COALESCE(scope_type, 'task'), COALESCE(scope_id, task_id)"
+        sql += " ORDER BY scope_type, scope_id"
+        rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    @_synchronized
+    def aggregate_session_token_usage_by_thread(
+        self,
+        since: str | None = None,
+        task_id: str | None = None,
+        agent: str | None = None,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        thread_id: str | None = None,
+        talk_id: str | None = None,
+        purpose: str | None = None,
+    ) -> list[dict]:
+        where, params = self._session_token_usage_filters(
+            since=since,
+            task_id=task_id,
+            agent=agent,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            thread_id=thread_id,
+            talk_id=talk_id,
+            purpose=purpose,
+        )
+        where.append("thread_id IS NOT NULL")
+        sql = self._token_usage_rollup_select("thread_id", "thread_id")
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " GROUP BY thread_id ORDER BY thread_id"
+        rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    @_synchronized
+    def aggregate_session_token_usage_by_talk(
+        self,
+        since: str | None = None,
+        task_id: str | None = None,
+        agent: str | None = None,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        thread_id: str | None = None,
+        talk_id: str | None = None,
+        purpose: str | None = None,
+    ) -> list[dict]:
+        where, params = self._session_token_usage_filters(
+            since=since,
+            task_id=task_id,
+            agent=agent,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            thread_id=thread_id,
+            talk_id=talk_id,
+            purpose=purpose,
+        )
+        where.append("talk_id IS NOT NULL")
+        sql = self._token_usage_rollup_select("talk_id", "talk_id")
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " GROUP BY talk_id ORDER BY talk_id"
         rows = self._conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 

@@ -33,6 +33,8 @@ def test_tokens_subcommand_parses_defaults():
     assert ns.json is False
     assert ns.by_agent is False
     assert ns.by_task is False
+    assert ns.by_thread is False
+    assert ns.by_talk is False
 
 
 def test_tokens_subcommand_parses_filters():
@@ -42,12 +44,22 @@ def test_tokens_subcommand_parses_filters():
         "--task-id", "TASK-1",
         "--agent", "dev",
         "--since", "2026-05-01",
+        "--scope-type", "thread",
+        "--scope-id", "THR-001",
+        "--thread-id", "THR-001",
+        "--talk-id", "TALK-001",
+        "--purpose", "reply",
         "--limit", "5",
         "--json",
     )
     assert ns.task_id == "TASK-1"
     assert ns.agent == "dev"
     assert ns.since == "2026-05-01"
+    assert ns.scope_type == "thread"
+    assert ns.scope_id == "THR-001"
+    assert ns.thread_id == "THR-001"
+    assert ns.talk_id == "TALK-001"
+    assert ns.purpose == "reply"
     assert ns.limit == 5
     assert ns.json is True
 
@@ -64,9 +76,19 @@ def test_tokens_subcommand_parses_by_task():
     assert ns.by_agent is False
 
 
-def test_tokens_subcommand_rejects_by_agent_and_by_task_together():
+def test_tokens_subcommand_parses_by_thread():
+    ns = _parse("tokens", "--org", "myorg", "--by-thread")
+    assert ns.by_thread is True
+
+
+def test_tokens_subcommand_parses_by_talk():
+    ns = _parse("tokens", "--org", "myorg", "--by-talk")
+    assert ns.by_talk is True
+
+
+def test_tokens_subcommand_rejects_multiple_rollups_together():
     with pytest.raises(SystemExit):
-        _parse("tokens", "--org", "myorg", "--by-agent", "--by-task")
+        _parse("tokens", "--org", "myorg", "--by-agent", "--by-task", "--by-thread")
 
 
 # ── cmd_tokens behaviour ───────────────────────────────────────
@@ -75,7 +97,9 @@ def test_tokens_subcommand_rejects_by_agent_and_by_task_together():
 def _mock_args(**overrides) -> argparse.Namespace:
     base = dict(
         org="myorg", task_id=None, agent=None, since=None, limit=None,
-        by_agent=False, by_task=False, json=False,
+        scope_type=None, scope_id=None, thread_id=None, talk_id=None,
+        purpose=None, by_agent=False, by_task=False, by_thread=False,
+        by_talk=False, json=False,
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -102,13 +126,25 @@ def test_cmd_tokens_forwards_explicit_limit_and_filters():
 
     fake = MagicMock()
     fake.list_tokens.return_value = []
-    args = _mock_args(task_id="TASK-7", agent="dev", since="2026-05-01", limit=3)
+    args = _mock_args(
+        task_id="TASK-7",
+        agent="dev",
+        since="2026-05-01",
+        limit=3,
+        scope_type="thread",
+        scope_id="THR-001",
+        thread_id="THR-001",
+        talk_id="TALK-001",
+        purpose="reply",
+    )
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
          patch("cli._shared._fetch_available_orgs", return_value=["myorg"]):
         cmd_tokens(args)
     fake.list_tokens.assert_called_once_with(
         slug="myorg", task_id="TASK-7", agent="dev",
-        since="2026-05-01", limit=3,
+        since="2026-05-01", limit=3, scope_type="thread",
+        scope_id="THR-001", thread_id="THR-001", talk_id="TALK-001",
+        purpose="reply",
     )
 
 
@@ -122,7 +158,8 @@ def test_cmd_tokens_calls_aggregate_when_by_agent():
         cmd_tokens(_mock_args(by_agent=True))
     fake.aggregate_tokens.assert_called_once_with(
         slug="myorg", group_by="agent",
-        task_id=None, agent=None, since=None,
+        task_id=None, agent=None, since=None, scope_type=None,
+        scope_id=None, thread_id=None, talk_id=None, purpose=None,
     )
     fake.list_tokens.assert_not_called()
 
@@ -137,7 +174,40 @@ def test_cmd_tokens_calls_aggregate_when_by_task():
         cmd_tokens(_mock_args(by_task=True))
     fake.aggregate_tokens.assert_called_once_with(
         slug="myorg", group_by="task",
-        task_id=None, agent=None, since=None,
+        task_id=None, agent=None, since=None, scope_type=None,
+        scope_id=None, thread_id=None, talk_id=None, purpose=None,
+    )
+    fake.list_tokens.assert_not_called()
+
+
+def test_cmd_tokens_calls_aggregate_when_by_thread():
+    from cli.main import cmd_tokens
+
+    fake = MagicMock()
+    fake.aggregate_tokens.return_value = []
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli._shared._fetch_available_orgs", return_value=["myorg"]):
+        cmd_tokens(_mock_args(by_thread=True, thread_id="THR-001"))
+    fake.aggregate_tokens.assert_called_once_with(
+        slug="myorg", group_by="thread",
+        task_id=None, agent=None, since=None, scope_type=None,
+        scope_id=None, thread_id="THR-001", talk_id=None, purpose=None,
+    )
+    fake.list_tokens.assert_not_called()
+
+
+def test_cmd_tokens_calls_aggregate_when_by_talk():
+    from cli.main import cmd_tokens
+
+    fake = MagicMock()
+    fake.aggregate_tokens.return_value = []
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli._shared._fetch_available_orgs", return_value=["myorg"]):
+        cmd_tokens(_mock_args(by_talk=True, talk_id="TALK-001"))
+    fake.aggregate_tokens.assert_called_once_with(
+        slug="myorg", group_by="talk",
+        task_id=None, agent=None, since=None, scope_type=None,
+        scope_id=None, thread_id=None, talk_id="TALK-001", purpose=None,
     )
     fake.list_tokens.assert_not_called()
 

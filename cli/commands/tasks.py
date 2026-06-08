@@ -310,10 +310,10 @@ def cmd_tokens(args: argparse.Namespace) -> None:
     """Show per-session token usage rows or rollup aggregates via the daemon.
 
     Default view is the most recent N (20 by default) ``session_token_usage``
-    rows, descending by ``created_at``. ``--by-agent`` / ``--by-task`` switch
-    to a rollup keyed by that column. ``--json`` emits raw JSON for either
-    view. ``total = (input or 0) + (output or 0) + (reasoning or 0)`` —
-    cache reads are reported separately, never folded into ``total``.
+    rows, descending by ``created_at``. ``--by-*`` switches to a rollup keyed
+    by that scope. ``--json`` emits raw JSON for either view. ``total =
+    (input or 0) + (output or 0) + (reasoning or 0)`` — cache reads are
+    reported separately, never folded into ``total``.
     """
     import json as _json
 
@@ -327,11 +327,29 @@ def cmd_tokens(args: argparse.Namespace) -> None:
         args_org=args.org, available=_shared._fetch_available_orgs(client),
     )
 
-    if args.by_agent or args.by_task:
-        group_by = "agent" if args.by_agent else "task"
+    filters = dict(
+        task_id=args.task_id,
+        agent=args.agent,
+        since=args.since,
+        scope_type=args.scope_type,
+        scope_id=args.scope_id,
+        thread_id=args.thread_id,
+        talk_id=args.talk_id,
+        purpose=args.purpose,
+    )
+
+    if args.by_agent or args.by_task or args.by_thread or args.by_talk:
+        if args.by_agent:
+            group_by = "agent"
+        elif args.by_task:
+            group_by = "task"
+        elif args.by_thread:
+            group_by = "thread"
+        else:
+            group_by = "talk"
         rollup = client.aggregate_tokens(
             slug=slug, group_by=group_by,
-            task_id=args.task_id, agent=args.agent, since=args.since,
+            **filters,
         )
         if args.json:
             print(_json.dumps(rollup, indent=2))
@@ -342,8 +360,14 @@ def cmd_tokens(args: argparse.Namespace) -> None:
         if group_by == "agent":
             header_label, key = "Agent", "agent"
             label_width = 22
-        else:
+        elif group_by == "task":
             header_label, key = "Task", "task_id"
+            label_width = 14
+        elif group_by == "thread":
+            header_label, key = "Thread", "thread_id"
+            label_width = 14
+        else:
+            header_label, key = "Talk", "talk_id"
             label_width = 14
         print(
             f"{header_label:<{label_width}} {'Sessions':>8} "
@@ -364,8 +388,11 @@ def cmd_tokens(args: argparse.Namespace) -> None:
         return
 
     rows = client.list_tokens(
-        slug=slug, task_id=args.task_id, agent=args.agent,
+        slug=slug,
         since=args.since, limit=args.limit if args.limit is not None else 20,
+        task_id=args.task_id, agent=args.agent, scope_type=args.scope_type,
+        scope_id=args.scope_id, thread_id=args.thread_id, talk_id=args.talk_id,
+        purpose=args.purpose,
     )
     if args.json:
         print(_json.dumps(rows, indent=2))
@@ -815,7 +842,7 @@ def register(sub) -> None:
 
     p_tokens = sub.add_parser(
         "tokens",
-        help="Show per-session token usage (or rollups via --by-agent / --by-task)",
+        help="Show scoped per-session token usage and rollups",
     )
     p_tokens.add_argument("--org", default=None,
                           help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
@@ -824,6 +851,17 @@ def register(sub) -> None:
     p_tokens.add_argument("--agent", default=None, help="Filter by agent name")
     p_tokens.add_argument("--since", default=None,
                           help="ISO-8601 date or timestamp; only rows at or after this time")
+    p_tokens.add_argument("--scope-type", dest="scope_type", default=None,
+                          choices=["task", "thread", "talk"],
+                          help="Filter by usage scope type")
+    p_tokens.add_argument("--scope-id", dest="scope_id", default=None,
+                          help="Filter by scope id, e.g. TASK-007 or THR-001")
+    p_tokens.add_argument("--thread-id", dest="thread_id", default=None,
+                          help="Filter by direct or task-attributed thread id")
+    p_tokens.add_argument("--talk-id", dest="talk_id", default=None,
+                          help="Filter by direct or task-attributed talk id")
+    p_tokens.add_argument("--purpose", default=None,
+                          help="Filter by thread invocation purpose")
     p_tokens.add_argument("--limit", type=int, default=None,
                           help="Cap to the most recent N rows (default: 20; ignored for rollups)")
     p_tokens.add_argument("--json", action="store_true",
@@ -833,6 +871,10 @@ def register(sub) -> None:
                                 help="Rollup: one row per agent")
     p_tokens_group.add_argument("--by-task", dest="by_task", action="store_true",
                                 help="Rollup: one row per task")
+    p_tokens_group.add_argument("--by-thread", dest="by_thread", action="store_true",
+                                help="Rollup: one row per thread")
+    p_tokens_group.add_argument("--by-talk", dest="by_talk", action="store_true",
+                                help="Rollup: one row per talk")
     p_tokens.set_defaults(func=cmd_tokens)
 
     p_dispatch = sub.add_parser("dispatch", help="Dispatch a new task from an open talk")
@@ -952,4 +994,3 @@ def register(sub) -> None:
         ),
     )
     p_revisit.set_defaults(func=cmd_revisit)
-

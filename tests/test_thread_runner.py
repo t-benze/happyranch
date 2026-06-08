@@ -12,6 +12,7 @@ from runtime.models import (
     ThreadMessageKind,
     ThreadParticipant,
     ThreadRecord,
+    TokenUsage,
 )
 
 
@@ -45,7 +46,12 @@ def test_build_prompt_includes_token_and_history():
 
 
 class FakeExecutorResult:
-    def __init__(self, success: bool, error: str = ""):
+    def __init__(
+        self,
+        success: bool,
+        error: str = "",
+        token_usage: TokenUsage | None = None,
+    ):
         self.success = success
         self.error = error
         self.returncode = 0
@@ -54,6 +60,7 @@ class FakeExecutorResult:
         self.agent_session_id = None
         self.stdout_tail = ""
         self.stderr_tail = ""
+        self.token_usage = token_usage
 
 
 class FakeOrgState:
@@ -112,6 +119,64 @@ async def test_run_invocation_no_callback_silent_decline(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_invocation_no_callback_writes_thread_token_usage(tmp_path, monkeypatch):
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    import runtime.daemon.thread_runner as runner_mod
+
+    class _FakeExec:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, **kwargs):
+            return FakeExecutorResult(
+                success=True,
+                token_usage=TokenUsage(
+                    input_tokens=40,
+                    output_tokens=6,
+                    model="claude-sonnet",
+                ),
+            )
+
+    monkeypatch.setattr(
+        runner_mod,
+        "_build_executor_for_provider",
+        lambda provider, settings, paths: _FakeExec(),
+    )
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+
+    rows = db.list_session_token_usage(scope_type="thread", thread_id="THR-001")
+    assert len(rows) == 1
+    assert rows[0]["task_id"] is None
+    assert rows[0]["agent"] == "alice"
+    assert rows[0]["session_id"] == "sess-x"
+    assert rows[0]["executor"] == "claude"
+    assert rows[0]["scope_id"] == "THR-001"
+    assert rows[0]["invocation_purpose"] == "reply"
+    assert rows[0]["input_tokens"] == 40
+    assert rows[0]["output_tokens"] == 6
+    assert rows[0]["model"] == "claude-sonnet"
+
+
+@pytest.mark.asyncio
 async def test_no_callback_failure_surfaces_executor_error(tmp_path, monkeypatch):
     db = Database(tmp_path / "happyranch.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
@@ -164,6 +229,65 @@ async def test_no_callback_failure_surfaces_executor_error(tmp_path, monkeypatch
     assert "529 Overloaded" in inv_after.decline_reason
     # The executor's redundant "Command exited with code N" envelope is stripped.
     assert "Command exited with code" not in inv_after.decline_reason
+
+
+@pytest.mark.asyncio
+async def test_failed_thread_invocation_writes_usage_when_executor_returns_it(
+    tmp_path, monkeypatch,
+):
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
+    )
+    inv = db.mint_thread_invocation(
+        thread_id="THR-001", agent_name="alice",
+        triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+    )
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    import runtime.daemon.thread_runner as runner_mod
+
+    class _FailExec:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, **kwargs):
+            r = FakeExecutorResult(
+                success=False,
+                error="Command exited with code 1: no callback",
+                token_usage=TokenUsage(usage_raw_json='{"usage":"partial"}'),
+            )
+            r.returncode = 1
+            return r
+
+    monkeypatch.setattr(
+        runner_mod,
+        "_build_executor_for_provider",
+        lambda provider, settings, paths: _FailExec(),
+    )
+
+    org = FakeOrgState(db=db, root=tmp_path)
+    await run_invocation(
+        org_state=org, invocation_token=inv.invocation_token,
+        settings=Settings(),
+    )
+
+    rows = db.list_session_token_usage(scope_type="thread", thread_id="THR-001")
+    assert len(rows) == 1
+    assert rows[0]["task_id"] is None
+    assert rows[0]["agent"] == "alice"
+    assert rows[0]["session_id"] == "sess-x"
+    assert rows[0]["executor"] == "claude"
+    assert rows[0]["scope_id"] == "THR-001"
+    assert rows[0]["invocation_purpose"] == "reply"
+    assert rows[0]["input_tokens"] is None
+    assert rows[0]["output_tokens"] is None
+    assert rows[0]["usage_raw_json"] == '{"usage":"partial"}'
 
 
 def test_thread_runner_builds_pi_executor():
