@@ -1485,6 +1485,19 @@ class Database:
             result.sort(key=lambda d: d["id"])
         return result
 
+    def get_audit_logs_for_agent_since(
+        self, agent: str, since: str, *, limit: int = 200,
+    ) -> list[dict]:
+        """Audit rows authored by ``agent`` with ``timestamp >= since`` (ISO),
+        capped to the most recent ``limit`` in chronological order.
+
+        Window-scoped accessor for the dream input window (spec "Input Window":
+        "audit rows involving the agent since window_start"). Distinct from
+        ``get_audit_logs(task_id)``, which is keyed on the scope-id column.
+        Delegates to ``query_audit_logs`` to avoid duplicating the filter SQL.
+        """
+        return self.query_audit_logs(agent=agent, since=since, limit=limit)
+
     # --- Task Results ---
 
     @_synchronized

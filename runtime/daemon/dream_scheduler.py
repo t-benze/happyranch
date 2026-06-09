@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -11,7 +12,9 @@ from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.models import DreamRecord, DreamStatus
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
-from runtime.orchestrator.org_config import DreamingConfig, load_org_config
+from runtime.orchestrator.org_config import DreamingConfig, OrgConfigError, load_org_config
+
+logger = logging.getLogger(__name__)
 
 
 def select_dream_agents(
@@ -23,6 +26,20 @@ def select_dream_agents(
 
     available = list(dict.fromkeys(available_agents))
     available_set = set(available)
+
+    # Spec "Org Configuration" rule 5: unknown include/exclude names fail config
+    # validation so typos do not silently skip agents. Validated here (not at
+    # org-config load) because this is the only point with the resolved candidate
+    # agent list — approved agent files with existing workspaces.
+    unknown = sorted(
+        {name for name in (*config.include_agents, *config.exclude_agents)
+         if name not in available_set}
+    )
+    if unknown:
+        raise OrgConfigError(
+            f"dreaming.agents references unknown agents: {unknown} "
+            f"(candidates: {sorted(available_set)})"
+        )
 
     if config.agent_mode == "whitelist":
         selected = [name for name in config.include_agents if name in available_set]
@@ -84,7 +101,15 @@ async def _enqueue(org, dream_id: str) -> None:
     await org.dream_queue.put(DreamJob(org_slug=org.slug, dream_id=dream_id))
 
 
-def schedule_due_dreams(*, org, now) -> int:
+def schedule_due_dreams(*, org, now, startup: bool = False) -> int:
+    """Schedule due dreams for an org.
+
+    ``startup`` distinguishes the one-time startup catch-up pass from the
+    steady-state loop. At startup, an already-passed dream is only enqueued
+    when ``catch_up_on_startup`` is true; otherwise a ``skipped`` row is
+    recorded so the steady-state loop will not pick it up later the same day.
+    The steady-state loop (``startup=False``) always enqueues due dreams.
+    """
     cfg = load_org_config(OrgPaths(root=org.root)).dreaming
     selected = select_dream_agents(_available_agents(org), cfg)
     count = 0
@@ -100,7 +125,7 @@ def schedule_due_dreams(*, org, now) -> int:
         if not decision.should_schedule:
             continue
         dream_id = org.db.next_dream_id()
-        dream = DreamRecord(
+        base = dict(
             id=dream_id,
             agent_name=agent,
             local_date=decision.local_date,
@@ -108,13 +133,23 @@ def schedule_due_dreams(*, org, now) -> int:
             window_start=_window_start(org, agent, now),
             window_end=now,
         )
-        org.db.insert_dream(dream)
+        if startup and not cfg.catch_up_on_startup:
+            # Missed run at startup, catch-up disabled: record a skipped row so
+            # the steady-state loop's existing-row guard suppresses re-scheduling
+            # today. Not enqueued, not counted.
+            org.db.insert_dream(DreamRecord(status=DreamStatus.SKIPPED, **base))
+            continue
+        org.db.insert_dream(DreamRecord(**base))
         AuditLogger(org.db).log_dream_scheduled(dream_id, agent, local_date=decision.local_date)
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(_enqueue(org, dream_id))
         except RuntimeError:
-            asyncio.run(_enqueue(org, dream_id))
+            # No running loop (synchronous callers/tests): enqueue directly via
+            # the unbounded queue. Avoids asyncio.run(), which resets the
+            # process-global event loop to None and breaks later sync code that
+            # calls asyncio.get_event_loop().
+            org.dream_queue.put_nowait(DreamJob(org_slug=org.slug, dream_id=dream_id))
         count += 1
     return count
 
@@ -134,8 +169,18 @@ def recover_running_dreams(org) -> int:
 
 
 async def dream_scheduler_loop(state, *, interval_seconds: int = 60) -> None:
+    # The first iteration runs after orgs are loaded and DB recovery has run;
+    # it IS the startup catch-up check (gated by catch_up_on_startup). Every
+    # subsequent iteration is steady-state on-time scheduling.
+    startup = True
     while True:
         now = datetime.now(timezone.utc)
         for org in list(state.orgs.values()):
-            schedule_due_dreams(org=org, now=now)
+            try:
+                schedule_due_dreams(org=org, now=now, startup=startup)
+            except OrgConfigError:
+                # A misconfigured org (e.g. unknown include/exclude agent) must
+                # not halt scheduling for every other org. Surface loudly.
+                logger.exception("dream scheduling skipped for org %s: invalid dreaming config", org.slug)
+        startup = False
         await asyncio.sleep(interval_seconds)

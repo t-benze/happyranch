@@ -8,10 +8,17 @@ from pydantic import BaseModel, Field
 
 from runtime.daemon.auth import require_token
 from runtime.daemon.routes._org_dep import OrgDep
+from runtime.daemon.routes.threads import (
+    FOUNDER_LITERAL,
+    _create_agent_thread_locked,
+    _publish_thread_event,
+)
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.dream_store import DreamStore
 from runtime.infrastructure.learnings_store import LearningEntry, LearningsStore
-from runtime.models import DreamKbCandidate, DreamStatus, ThreadMessageKind, ThreadRecord
+from runtime.models import DreamKbCandidate, DreamStatus
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.org_config import load_org_config
 
 router = APIRouter(dependencies=[require_token()])
 
@@ -128,18 +135,23 @@ async def complete_dream(slug: str, dream_id: str, body: DreamCompleteBody, org:
             raise HTTPException(status_code=400, detail={"code": "dream_not_running", "status": dream.status.value})
 
         founder_thread_id = None
+        founder_thread_seq: int | None = None
+        founder_thread_preview = ""
         if body.founder_thread.needed:
-            founder_thread_id = org.db.next_thread_id()
-            org.db.insert_thread(ThreadRecord(
-                id=founder_thread_id,
+            # Route founder-thread creation through the shared compose helper so
+            # the founder thread gets the same participant semantics, turn
+            # accounting, and thread_started/thread_message_sent audit rows as an
+            # agent-initiated compose. Recipients are @founder only: the dream
+            # agent is the sole participant; no other agent is looped in.
+            turn_cap = load_org_config(OrgPaths(root=org.root)).threads_default_turn_cap
+            founder_thread_preview = body.founder_thread.body_markdown.strip()
+            founder_thread_id, founder_thread_seq, _tokens, _addressed = _create_agent_thread_locked(
+                org,
+                composer=dream.agent_name,
                 subject=body.founder_thread.subject.strip(),
-                composed_by=dream.agent_name,
-            ))
-            org.db.append_thread_message(
-                thread_id=founder_thread_id,
-                speaker=dream.agent_name,
-                kind=ThreadMessageKind.MESSAGE,
-                body_markdown=body.founder_thread.body_markdown.strip(),
+                body_text=founder_thread_preview,
+                recipients=[FOUNDER_LITERAL],
+                turn_cap=turn_cap,
             )
 
         learnings_dir = org.root / "workspaces" / dream.agent_name / "learnings"
@@ -190,6 +202,17 @@ async def complete_dream(slug: str, dream_id: str, body: DreamCompleteBody, org:
             new_learnings_count=len(body.learnings),
             kb_candidate_count=len(body.kb_candidates),
             founder_thread_id=founder_thread_id,
+        )
+
+    if founder_thread_id is not None:
+        AuditLogger(org.db).log_dream_founder_thread_created(
+            dream_id, dream.agent_name, founder_thread_id=founder_thread_id,
+        )
+        await _publish_thread_event(
+            org, slug,
+            thread_id=founder_thread_id, seq=founder_thread_seq,
+            speaker=dream.agent_name, kind="message",
+            preview=founder_thread_preview, status="open",
         )
 
     AuditLogger(org.db).log_dream_completed(

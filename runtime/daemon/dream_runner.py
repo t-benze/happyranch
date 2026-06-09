@@ -11,6 +11,18 @@ from runtime.daemon.thread_runner import _build_executor_for_provider
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.models import DreamRecord, DreamStatus
 
+# Cap on the agent's window audit rows folded into the dream prompt. The most
+# recent N (chronological); keeps the prompt bounded on busy agents.
+_AUDIT_WINDOW_CAP = 200
+
+
+def _is_timeout(result) -> bool:
+    """Distinguish an executor timeout from an ordinary non-zero exit. Timeouts
+    leave returncode=None and carry the executor's 'timed out' error string
+    (see runtime/orchestrator/executors.py)."""
+    err = str(getattr(result, "error", "") or "").lower()
+    return "timed out" in err or "timeout" in err
+
 
 def build_dream_prompt(
     *,
@@ -74,7 +86,17 @@ async def run_dream(
     org_state.db.update_dream(dream_id, status=DreamStatus.RUNNING, started_at=now)
     AuditLogger(org_state.db).log_dream_started(dream_id, dream.agent_name)
 
-    recent_audit = org_state.db.get_audit_logs(dream_id)
+    # Spec "Input Window": include the agent's audit rows since window_start,
+    # not only the dream-scoped rows. window_start is set by the scheduler; fall
+    # back to no lower bound (capped recent rows) if absent.
+    if dream.window_start is not None:
+        recent_audit = org_state.db.get_audit_logs_for_agent_since(
+            dream.agent_name, dream.window_start.isoformat(), limit=_AUDIT_WINDOW_CAP,
+        )
+    else:
+        recent_audit = org_state.db.query_audit_logs(
+            agent=dream.agent_name, limit=_AUDIT_WINDOW_CAP,
+        )
     prompt = build_dream_prompt(
         org_slug=org_state.slug,
         dream=dream,
@@ -88,7 +110,7 @@ async def run_dream(
         executor_name = "claude"
     executor = executor_factory(executor_name, settings, None) if executor_factory else _build_executor_for_provider(executor_name, settings, None)
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(None, lambda: executor.run(
         workspace=workspace,
         prompt=prompt,
@@ -122,14 +144,23 @@ async def run_dream(
         )
         AuditLogger(org_state.db).log_dream_failed(dream_id, dream.agent_name, reason="no_callback")
         return
+    error = str(getattr(result, "error", "") or "executor_failed")
+    if _is_timeout(result):
+        # Spec "Failure Handling": timeout is a distinct terminal status; the
+        # successful-dream window is not advanced (get_last_successful_dream
+        # only counts COMPLETED).
+        org_state.db.update_dream(
+            dream_id,
+            status=DreamStatus.TIMEOUT,
+            ended_at=datetime.now(timezone.utc),
+            error=error,
+        )
+        AuditLogger(org_state.db).log_dream_timeout(dream_id, dream.agent_name, reason=error)
+        return
     org_state.db.update_dream(
         dream_id,
         status=DreamStatus.FAILED,
         ended_at=datetime.now(timezone.utc),
-        error=str(getattr(result, "error", "") or "executor_failed"),
+        error=error,
     )
-    AuditLogger(org_state.db).log_dream_failed(
-        dream_id,
-        dream.agent_name,
-        reason=str(getattr(result, "error", "") or "executor_failed"),
-    )
+    AuditLogger(org_state.db).log_dream_failed(dream_id, dream.agent_name, reason=error)

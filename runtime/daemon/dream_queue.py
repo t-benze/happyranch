@@ -23,6 +23,12 @@ class DreamQueue:
     async def put(self, job: DreamJob) -> None:
         await self._q.put(job)
 
+    def put_nowait(self, job: DreamJob) -> None:
+        """Enqueue without a running event loop. Safe because the queue is
+        unbounded (never raises QueueFull); used by the synchronous scheduling
+        path so it never has to spin up/tear down a process-global loop."""
+        self._q.put_nowait(job)
+
     async def get(self) -> DreamJob:
         return await self._q.get()
 

@@ -1235,3 +1235,25 @@ class AuditLogger:
             action="dream_failed",
             payload={"reason": reason},
         )
+
+    def log_dream_timeout(self, dream_id: str, agent: str, *, reason: str) -> None:
+        """Executor timeout for a dream. Distinct from log_dream_failed so the
+        timeout failure mode is queryable separately (spec "Audit And Token
+        Usage": dream_timeout). Does not advance the successful-dream window."""
+        self._db.insert_audit_log(
+            task_id=dream_id, agent=agent,
+            action="dream_timeout",
+            payload={"reason": reason},
+        )
+
+    def log_dream_founder_thread_created(
+        self, dream_id: str, agent: str, *, founder_thread_id: str,
+    ) -> None:
+        """A dream completion created a founder-only thread (spec "Audit And
+        Token Usage": dream_founder_thread_created). Scoped to the dream id;
+        the thread itself separately emits thread_started/thread_message_sent."""
+        self._db.insert_audit_log(
+            task_id=dream_id, agent=agent,
+            action="dream_founder_thread_created",
+            payload={"founder_thread_id": founder_thread_id},
+        )

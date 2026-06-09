@@ -3,9 +3,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from runtime.daemon.dream_scheduler import select_dream_agents, should_schedule_for_agent
 from runtime.models import DreamRecord, DreamStatus
-from runtime.orchestrator.org_config import DreamingConfig
+from runtime.orchestrator.org_config import DreamingConfig, OrgConfigError
 
 
 def test_select_dream_agents_all_with_exclude() -> None:
@@ -37,6 +39,26 @@ def test_select_dream_agents_whitelist_then_exclude() -> None:
 def test_select_dream_agents_disabled() -> None:
     cfg = DreamingConfig(enabled=False)
     assert select_dream_agents(["dev_agent"], cfg) == []
+
+
+def test_select_dream_agents_unknown_include_raises() -> None:
+    cfg = DreamingConfig(
+        enabled=True,
+        agent_mode="whitelist",
+        include_agents=["dev_agent", "no_such_agent"],
+    )
+    with pytest.raises(OrgConfigError, match="no_such_agent"):
+        select_dream_agents(["dev_agent", "qa_engineer"], cfg)
+
+
+def test_select_dream_agents_unknown_exclude_raises() -> None:
+    cfg = DreamingConfig(
+        enabled=True,
+        agent_mode="all",
+        exclude_agents=["typo_agent"],
+    )
+    with pytest.raises(OrgConfigError, match="typo_agent"):
+        select_dream_agents(["dev_agent", "qa_engineer"], cfg)
 
 
 def test_should_schedule_after_local_time_when_no_row() -> None:
