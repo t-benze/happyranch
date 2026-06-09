@@ -596,6 +596,98 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/dreams": {
+      "GET": {
+        "params": [
+          [
+            "agent",
+            "query"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "limit",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/dreams/status": {
+      "GET": {
+        "params": [
+          [
+            "agent",
+            "query"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/dreams/{dream_id}": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "dream_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/dreams/{dream_id}/complete": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "dream_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/jobs/": {
       "GET": {
         "params": [
@@ -1816,6 +1908,18 @@
             "query"
           ],
           [
+            "purpose",
+            "query"
+          ],
+          [
+            "scope_id",
+            "query"
+          ],
+          [
+            "scope_type",
+            "query"
+          ],
+          [
             "since",
             "query"
           ],
@@ -1824,7 +1928,15 @@
             "path"
           ],
           [
+            "talk_id",
+            "query"
+          ],
+          [
             "task_id",
+            "query"
+          ],
+          [
+            "thread_id",
             "query"
           ]
         ],

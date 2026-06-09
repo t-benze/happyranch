@@ -10,7 +10,7 @@ export type TaskListItem = TaskRecord;
 
 export const submitTask = (
   slug: string,
-  body: { team?: string; brief: string },
+  body: { team?: string; brief: string; owner?: string },
 ): Promise<TaskRecord> =>
   request(`/orgs/${slug}/tasks`, { method: 'POST', body });
 

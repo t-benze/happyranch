@@ -116,6 +116,20 @@ def _purpose_note(
         payload = (triggering_message.system_payload or {}) if triggering_message else {}
         task_id = payload.get("task_id", "?")
         status = payload.get("status", "?")
+        if status == "escalated":
+            reason = (payload.get("reason") or "").strip()
+            reason_clause = f': "{reason[:240]}"' if reason else ""
+            return (
+                f"Task {task_id} that you dispatched from this thread has "
+                f"ESCALATED to the founder{reason_clause}. The task is blocked "
+                f"awaiting a founder decision. Post a concise reply in this "
+                f"thread that states what you need from the founder and why, so "
+                f"she sees it in context (pull details via `happyranch details "
+                f"{task_id}`). Do not attempt to resolve the escalation "
+                f"yourself; do not dispatch a new task from this turn. Decline "
+                f"if the Feishu escalation already says everything and a thread "
+                f"restatement adds nothing."
+            )
         return (
             f"Task {task_id} that you dispatched from this thread reached "
             f"`{status}`. Compose a follow-up reply with the result (pull "
@@ -297,6 +311,39 @@ def _build_executor_for_provider(provider: str, settings: Settings, paths):
     )
 
 
+def _persist_thread_token_usage(
+    org_state,
+    *,
+    inv,
+    result,
+    executor_name: str,
+    invocation_token: str,
+) -> None:
+    token_usage = getattr(result, "token_usage", None)
+    if token_usage is None:
+        return
+    session_id = getattr(result, "session_id", None) or invocation_token
+    try:
+        org_state.db.insert_session_token_usage(
+            task_id=None,
+            agent=inv.agent_name,
+            session_id=session_id,
+            executor=executor_name,
+            token_usage=token_usage,
+            scope_type="thread",
+            scope_id=inv.thread_id,
+            thread_id=inv.thread_id,
+            invocation_purpose=inv.purpose.value,
+        )
+    except Exception as exc:
+        logger.warning(
+            "thread token usage persistence failed for %s/%s: %s",
+            inv.thread_id,
+            inv.agent_name,
+            exc,
+        )
+
+
 async def run_invocation(
     *,
     org_state,
@@ -451,6 +498,14 @@ async def run_invocation(
                 seq=inv.triggering_seq, kind="invocation_settled", status="failed",
             )
             return
+
+        _persist_thread_token_usage(
+            org_state,
+            inv=inv,
+            result=result,
+            executor_name=executor_name,
+            invocation_token=invocation_token,
+        )
 
         # Persist the (possibly forked / freshly-minted) session id + delta watermark.
         # Advanced only on a successful subprocess — a failed turn leaves the watermark

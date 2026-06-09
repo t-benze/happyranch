@@ -110,7 +110,10 @@ Slug resolution for per-org commands: explicit `--org <slug>` flag > `HAPPYRANCH
         |       +-- _pending/<name>.md # awaiting founder approval
         |-- workspaces/<agent>/        # per-agent workspace
         |-- kb/                        # per-org knowledge base
-        +-- talks/                     # founder<->agent transcripts
+        |-- talks/                     # founder<->agent transcripts
+        |-- threads/                   # multi-agent workchannel transcripts
+        |-- jobs/                      # JOB-NNN.{out,err,script}
+        +-- artifacts/                 # org-shared blob store
 ```
 
 The files under `org/` are the source of truth for that organization. You can hand-edit them between tasks (e.g., to refine an agent's system prompt) — the next `happyranch init-agent` regenerates the workspace bootstrap accordingly.
@@ -257,55 +260,54 @@ threads:
   # invocation_timeout_seconds: null  # optional override of session_timeout for thread turns
 ```
 
-A Textual TUI launches when you run `happyranch threads` with no subcommand:
+`happyranch threads --org <slug>` with no subcommand is kept as a compatibility
+stub. It prints a pointer to `happyranch web`; it does not launch a TUI.
 
-```bash
-happyranch threads --org <slug>
-```
-
-Keybindings: `N` new, `R` reply, `F` forward, `I` invite, `A` archive,
-`Enter` open selected, `Ctrl+R` refresh, `?` help, `Ctrl+C` quit.
-The TUI subscribes to per-org SSE events so the inbox and the selected
-thread stay live without polling.
-
-### Script requests
+### Jobs
 
 When an agent's executor refuses a command (e.g., a `gh` / `aws` / `stripe` /
-`sudo` invocation that needs founder-grade credentials), the agent can submit
-a script request for you to run. The agent's task self-blocks pending your
-review.
+`sudo` invocation that needs founder-grade credentials), or when an agent needs
+a long-running process, it can submit a job. Review-required jobs wait for
+founder approval; auto-run jobs start without review. Tasks can self-block on
+jobs and resume automatically when all listed jobs are terminal.
 
 ```bash
-happyranch scripts list                                    # default: --status pending
-happyranch scripts list --status all --agent <name>        # narrow by status/agent/task
-happyranch scripts show SR-019                             # see rationale, full script, output if terminal
-happyranch scripts run SR-019                              # TTY-gated confirm + live SSE stream
-happyranch scripts run SR-019 --cwd repos/web-app --timeout-seconds 600
-happyranch scripts reject SR-019 --reason "..."            # or omit --reason to be prompted
-happyranch scripts output SR-019                           # fetch the full captured output post-run
-happyranch scripts output SR-019 --stream stderr --max-bytes 5000000
+happyranch jobs list                                    # default: --status pending
+happyranch jobs list --status all --agent <name>        # narrow by status/agent/task
+happyranch jobs show JOB-019                            # see rationale, full script, output if terminal
+happyranch jobs run JOB-019                             # TTY-gated confirm + live SSE stream
+happyranch jobs run JOB-019 --cwd repos/web-app --timeout-seconds 600
+happyranch jobs reject JOB-019 --reason "..."           # or omit --reason to be prompted
+happyranch jobs output JOB-019                          # fetch the full captured output post-run
+happyranch jobs output JOB-019 --stream stderr --max-bytes 5000000
+happyranch jobs tail JOB-019 --stream stdout --lines 100
+happyranch jobs wait JOB-019 --timeout-seconds 30
+happyranch jobs stop JOB-019
 ```
 
-The same surface is in the web UI at `/scripts` (list with status chips,
+The same surface is in the web UI at `/jobs` (list with status chips,
 detail drawer with rationale + script preview, Run modal with cwd/timeout
-overrides, Reject modal, live SSE output panel). After a run completes, use
-`happyranch revisit <task-id>` to unblock the agent's task — the revisited
-session sees an injected header that points it at `happyranch scripts show
-SR-019` / `happyranch scripts output SR-019` so it can ingest the result.
+overrides, Reject modal, live SSE output panel). If an agent self-blocks with
+`waiting_on_job_ids`, the daemon resumes that task automatically when every
+listed job reaches `completed`, `failed`, or `rejected`; the resumed session
+gets an injected header pointing at `happyranch jobs show JOB-019` /
+`happyranch jobs output JOB-019`.
 
-Output is captured to `<runtime>/orgs/<slug>/scripts/SR-NNN.{out,err,script}`
+Output is captured to `<runtime>/orgs/<slug>/jobs/JOB-NNN.{out,err,script}`
 on disk (full output, no size cap in v1) plus a 64 KB head per stream in
 the database for fast rendering.
 
 Operational notes:
-- Scripts run inside the daemon process with `os.environ` inherited from the
+- Jobs run inside the daemon process with `os.environ` inherited from the
   daemon's launch shell. If you rotate credentials in your interactive shell,
   restart the daemon so the new env is picked up.
-- `scripts run` requires a TTY. To run non-interactively, use the web UI's
+- `jobs run` requires a TTY. To run non-interactively, use the web UI's
   Run modal (it has the same confirm step in a visual form).
 - If the daemon is killed mid-run, the next startup recovery scan marks any
   orphaned `running` rows as `failed`. Output captured up to the kill point
   is preserved on disk.
+- `happyranch scripts ...` remains as a deprecated alias for `happyranch jobs ...`
+  so older scripts keep working, but new docs and agent skills should use jobs.
 
 ### Managing repos
 
@@ -365,7 +367,7 @@ The daemon binds to port **8765** by default. Override with `HAPPYRANCH_DAEMON_P
 Operational settings come from two places, highest precedence first:
 
 1. **Environment variables** with the `HAPPYRANCH_` prefix (e.g. `HAPPYRANCH_QUEUE_WORKERS=6`).
-2. **`~/.happyranch/config.yaml`** — a YAML file in the daemon home (the same directory as `daemon.token` / `runtimes.yaml`; honors `HAPPYRANCH_DAEMON_HOME`). Keys are the setting names **without** the prefix, e.g.:
+2. **`~/.happyranch/config.yaml`** — a YAML file in the daemon home (the same directory as `auth_token` / `runtimes.yaml`; honors `HAPPYRANCH_DAEMON_HOME`). Keys are the setting names **without** the prefix, e.g.:
 
    ```yaml
    queue_workers: 6

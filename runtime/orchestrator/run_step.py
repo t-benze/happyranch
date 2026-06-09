@@ -86,16 +86,26 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
     next_count = task.orchestration_step_count + 1
     if next_count > max_steps:
         reason = f"max steps ({max_steps}) exceeded"
-        db.update_task(
+        # Atomic CAS on the eligible pre-state read at step 1. This guard runs
+        # BEFORE try_claim_for_step, so without it two duplicate deliveries of
+        # the same stale at-cap row would both escalate and double-post the
+        # thread `task_escalated` message + TASK_FOLLOWUP. If False: another
+        # worker escalated first (or /cancel landed) — drop silently.
+        if not db.try_escalate_over_budget(
             task_id,
-            status=TaskStatus.BLOCKED,
-            block_kind=BlockKind.ESCALATED,
-            note=reason,
-        )
+            expected_status=task.status,
+            expected_block_kind=task.block_kind,
+            reason=reason,
+        ):
+            logger.debug(
+                "run_step %s: lost over-budget escalate race, dropping", task_id,
+            )
+            return
         orch._audit.log_escalation(task_id, "orchestrator", reason)
         orch.notify_escalated(
             task_id=task_id, agent="orchestrator", reason=reason,
         )
+        _maybe_post_thread_escalation(orch, task_id, reason=reason)
         return
 
     # ---- 3. Atomic claim: unblock + increment + mark in_progress ----
@@ -179,6 +189,10 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             session_id=result.session_id,
             executor=orch._resolve_executor_name(agent),
             token_usage=result.token_usage,
+            scope_type="task",
+            scope_id=task_id,
+            thread_id=task.dispatched_from_thread_id,
+            talk_id=task.dispatched_from_talk_id,
         )
 
     # Cancel-race Guard B: /cancel can land between try_claim_for_step and
@@ -292,11 +306,11 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         return
 
     # ---- 6. Parse next step ----
-    # Only team managers speak the NextStep JSON protocol. Worker
-    # completions are plain prose/summary payloads — treating them as
-    # manager decisions reclassifies every non-JSON output_summary as
-    # `escalate` (see P1 in 2026-04-20 review).
-    if orch.teams.is_team_manager(agent):
+    # Orchestration is driven by task TYPE, not manager role. A type=task
+    # owner (any agent) speaks the NextStep protocol; a type=subtask is
+    # leaf-only. `task` is the early-fetched record; task_type is immutable
+    # provenance, safe to read post-claim.
+    if task.task_type == "task":
         decision = orch._parse_next_step(report)
         _step_audit_id = orch._audit.log_orchestration_step(
             task_id, next_count, decision.model_dump(exclude_none=True),
@@ -338,6 +352,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             task_id=task_id, agent=agent, reason=reason,
             last_summary=getattr(report, "output_summary", "") or "",
         )
+        _maybe_post_thread_escalation(orch, task_id, reason=reason)
         # parent stays blocked(DELEGATED) until this task reaches a terminal.
         return
 
@@ -358,18 +373,24 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
                 status=TaskStatus.FAILED, auto_revisit_spawned=False,
             )
             return
-        # Cross-team delegation guard: a manager may only delegate to workers
-        # on its own team. Violations feed a feedback step back (not a hard
-        # fail) so the manager can correct its decision on the next step.
-        off_team_legs = _chain_legs_off_team(orch.teams, manager=agent, decision=decision)
-        if off_team_legs:
-            caller_team = orch.teams.team_for_manager(agent)
-            parts = [f"{name!r} is on team {team!r}" for name, team in off_team_legs]
-            feedback = (
-                f"Invalid delegation: you are on team {caller_team!r}, "
-                f"but {'; '.join(parts)}. "
-                "Pick workers on your own team, or escalate."
-            )
+        # Target-scope guard. Managers: own-team agents or self. Non-manager
+        # owners: self only. Violations feed a feedback step back (not a hard
+        # fail) so the owner can correct its decision next step.
+        out_of_scope = _legs_out_of_scope(orch, owner=agent, decision=decision)
+        if out_of_scope:
+            parts = [f"{name!r} ({reason})" for name, reason in out_of_scope]
+            if orch.teams.is_team_manager(agent):
+                caller_team = orch.teams.team_for_manager(agent)
+                feedback = (
+                    f"Invalid delegation: you are on team {caller_team!r}, but "
+                    f"{'; '.join(parts)}. Pick agents on your own team or "
+                    "yourself, or escalate."
+                )
+            else:
+                feedback = (
+                    f"Invalid delegation: {'; '.join(parts)}. You may only "
+                    f"delegate sub-tasks to yourself ({agent!r}), or escalate."
+                )
             db.insert_task_result(
                 task_id=task_id,
                 agent=agent,
@@ -382,8 +403,6 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             orch._audit.log_orchestration_step(
                 task_id, next_count, {"action": "feedback", "reason": feedback},
             )
-            # step already counted on claim (try_claim_for_step increments
-            # orchestration_step_count atomically before the agent runs).
             db.update_task(task_id, status=TaskStatus.PENDING, block_kind=None)
             if orch._queue is not None:
                 orch._queue.put_nowait(orch._slug, task_id)
@@ -407,7 +426,10 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             # Earliest by created_at; tie-break on id for determinism.
             completed_children.sort(key=lambda c: (c.created_at, c.id))
             worker_of_record = completed_children[0].assigned_agent
-            if worker_of_record == decision.agent:
+            # Self-targeted delegation is a sequence step (self-decomposition),
+            # NOT a revise cycle — only bump when re-delegating to a DIFFERENT
+            # worker-of-record. `agent` is this task's owner.
+            if worker_of_record == decision.agent and decision.agent != agent:
                 db.increment_revision_count(task_id)
         child_id = db.next_task_id()
         child = TaskRecord(
@@ -418,6 +440,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             parent_task_id=task_id,
             status=TaskStatus.PENDING,
             session_timeout_seconds=task.session_timeout_seconds,
+            task_type="subtask",
         )
         # Atomic CAS: insert child + transition parent to BLOCKED(DELEGATED)
         # under the same RLock acquisition. Serializes against /cancel via
@@ -499,28 +522,30 @@ def _validate_delegate(orch: "Orchestrator", decision) -> str | None:
     return None
 
 
-def _chain_legs_off_team(
-    teams,
-    manager: str,
-    decision,
-) -> list[tuple[str, str | None]]:
-    """Return [(agent_name, agent_team)] for every leg in ``decision`` whose
-    agent is NOT on ``manager``'s team. Empty list means all legs are on-team.
-    """
-    caller_team = teams.team_for_manager(manager)
-    if caller_team is None:
-        # Manager itself isn't registered — surface every leg as off-team.
-        all_agents = [decision.agent] + [leg.agent for leg in (decision.then or [])]
-        return [(a, teams.team_for_agent(a)) for a in all_agents if a]
+def _legs_out_of_scope(orch: "Orchestrator", owner: str, decision) -> list[tuple[str, str]]:
+    """Return [(agent_name, reason)] for delegation legs `owner` may not target.
 
-    off: list[tuple[str, str | None]] = []
-    for agent_name in [decision.agent] + [leg.agent for leg in (decision.then or [])]:
-        if not agent_name:
-            continue
-        agent_team = teams.team_for_agent(agent_name)
-        if agent_team is None or agent_team != caller_team:
-            off.append((agent_name, agent_team))
-    return off
+    - Manager owner: may target agents on its own team, or itself.
+    - Non-manager owner: may target ONLY itself (self-decomposition).
+
+    Empty list = all legs in scope.
+    """
+    targets = [decision.agent] + [leg.agent for leg in (decision.then or [])]
+    out: list[tuple[str, str]] = []
+    if orch.teams.is_team_manager(owner):
+        caller_team = orch.teams.team_for_manager(owner)
+        for a in targets:
+            if not a or a == owner:        # self always allowed
+                continue
+            t = orch.teams.team_for_agent(a)
+            if caller_team is None or t != caller_team:
+                out.append((a, f"on team {t!r}" if t else "not on a team"))
+    else:
+        for a in targets:
+            if not a or a == owner:
+                continue
+            out.append((a, "non-manager owners may only delegate to themselves"))
+    return out
 
 
 def _default_agent_for_root(orch: "Orchestrator", task) -> str:
@@ -543,17 +568,24 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
     on the very first orchestration step (detected via audit log).
     """
     from runtime.orchestrator.capabilities import build_capabilities_prompt
-    if not orch.teams.is_team_manager(agent):
-        return ""
+    if task.task_type != "task":
+        return ""   # leaf sub-task: per-task instruction is the brief
     from runtime.orchestrator import prompt_loader
-    agent_names = _list_candidate_agents(orch, agent)
-    agents_for_prompt = []
-    for name in agent_names:
-        candidate = prompt_loader.load_agent(orch._paths, name)
-        desc = (candidate.description if candidate is not None else None) or name
+    is_mgr = orch.teams.is_team_manager(agent)
+    agents_for_prompt: list[dict] = []
+    if is_mgr:
+        for name in _list_candidate_agents(orch, agent):
+            candidate = prompt_loader.load_agent(orch._paths, name)
+            desc = (candidate.description if candidate is not None else None) or name
+            agents_for_prompt.append({"name": name, "description": desc})
+        # Self-targeting (spec §3): a manager may delegate a sub-task to itself
+        # to break its own work into a fresh bounded session. _list_candidate_agents
+        # only returns team workers (the manager is never in teams.yaml `workers`),
+        # so advertise self explicitly in the roster.
         agents_for_prompt.append({
-            "name": name,
-            "description": desc,
+            "name": agent,
+            "description": "yourself — delegate a sub-task to yourself to "
+                           "decompose your own work into a fresh bounded session",
         })
     prior_steps = _build_prior_steps_from_db(orch, task.id)
     base = build_capabilities_prompt(
@@ -562,6 +594,7 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
         max_steps=orch._settings.max_orchestration_steps,
         prior_steps=prior_steps,
         manager_name=agent,
+        self_only=not is_mgr,
     )
     headers: list[str] = []
     revisit = _revisit_header_if_applicable(orch, task.id)
@@ -589,7 +622,6 @@ def _list_candidate_agents(orch: "Orchestrator", calling_manager: str) -> list[s
     if caller_team is None:
         return []
     team_members = set(orch.teams.manager_for_team(caller_team).workers)
-    team_members.discard(calling_manager)  # manager should not delegate to itself
 
     if orch._paths.workspaces_dir.exists():
         names = sorted(
@@ -1205,6 +1237,7 @@ def _advance_chain_for_completed_child(
             assigned_agent=action.next_leg.agent,
             status=TaskStatus.PENDING,
             session_timeout_seconds=parent.session_timeout_seconds,
+            task_type="subtask",
         )
     )
 
@@ -1585,6 +1618,189 @@ def _maybe_resume_blocked_task(
     return True
 
 
+def _append_followup_system_and_reinvoke(
+    orch: "Orchestrator",
+    *,
+    thread_id: str,
+    dispatcher: str,
+    original_id: str,
+    source_task_id: str,
+    system_payload: dict,
+) -> None:
+    """Append a SYSTEM message + mint/enqueue a TASK_FOLLOWUP re-invocation.
+
+    Shared tail for `_maybe_post_thread_followup` (terminal) and
+    `_maybe_post_thread_escalation`. Race-aware: the atomic cap-projection +
+    conditional bump + mint is serialized by the RLock on
+    `mint_followup_invocation_with_cap_extend`. `original_id` is the original
+    dispatched task id (for audit keying); `source_task_id` is the task that
+    triggered this followup (terminal task or escalated task).
+    """
+    db = orch._db
+    audit = orch._audit
+
+    # Append system message (separate from the atomic cap+mint below — the
+    # system message ordering relative to concurrent system messages is not
+    # part of the atomicity invariant we're protecting).
+    from runtime.models import ThreadMessageKind as _TMK
+    sys_seq = db.append_thread_message(
+        thread_id=thread_id, speaker=dispatcher,
+        kind=_TMK.SYSTEM,
+        system_payload=system_payload,
+    )
+
+    # Atomic cap-projection + conditional bump + mint.  Closes the TOCTOU race
+    # where two concurrent root completions on the same thread both read the
+    # same pending count, both skip the bump, both mint, and leave the thread
+    # with more obligations than turn_cap.  The @_synchronized RLock on
+    # mint_followup_invocation_with_cap_extend serializes all three steps.
+    inv, new_cap = db.mint_followup_invocation_with_cap_extend(
+        thread_id=thread_id,
+        agent_name=dispatcher,
+        triggering_seq=sys_seq,
+    )
+    if new_cap is not None:
+        audit.log_thread_turn_cap_auto_extended(
+            thread_id, original_task_id=original_id,
+            reason="task_followup", new_cap=new_cap,
+        )
+    audit.log_thread_task_followup_enqueued(
+        thread_id, original_task_id=original_id, terminal_task_id=source_task_id,
+        dispatcher=dispatcher, invocation_token=inv.invocation_token,
+    )
+
+    # Enqueue onto the org's thread queue. The queue is bound to the daemon's
+    # main event loop, but run_step runs on a worker thread, so we cross the
+    # loop boundary via run_coroutine_threadsafe — same pattern as
+    # `_start_feishu_listeners` uses for cross-thread async bridging.
+    import asyncio as _asyncio
+    from runtime.daemon.thread_queue import ThreadJob as _ThreadJob
+    thread_queue = getattr(orch, "_thread_queue", None)
+    main_loop = getattr(orch, "_main_loop", None)
+    if thread_queue is not None and main_loop is not None:
+        try:
+            _asyncio.run_coroutine_threadsafe(
+                thread_queue.put(_ThreadJob(
+                    org_slug=orch._slug,
+                    invocation_token=inv.invocation_token,
+                )),
+                main_loop,
+            )
+        except Exception as exc:
+            audit.log_thread_followup_skipped(
+                thread_id, original_task_id=original_id, terminal_task_id=source_task_id,
+                reason="enqueue_failed", detail=str(exc),
+            )
+    else:
+        # Defence: queue or loop not yet wired (e.g., test orchestrator constructed
+        # without daemon context). Invocation stays PENDING; audit so the
+        # operator can detect it if needed. In production this path is never
+        # taken because _lifespan always calls _attach_thread_queue_wiring before
+        # the first task step runs.
+        audit.log_thread_followup_skipped(
+            thread_id, original_task_id=original_id, terminal_task_id=source_task_id,
+            reason="enqueue_unavailable",
+        )
+
+
+def _maybe_post_thread_escalation(
+    orch: "Orchestrator",
+    task_id: str,
+    *,
+    reason: str,
+) -> None:
+    """Post a `task_escalated` SYSTEM message + re-invoke the dispatcher when a
+    thread-dispatched task escalates to the founder.
+
+    Unlike `_maybe_post_thread_followup` (terminal-only, root-only because
+    terminals cascade up to the parent), escalations do NOT cascade
+    (run_step escalate branch: "parent stays blocked(DELEGATED)") and a team
+    manager can escalate at any depth. So we walk ancestors to the chain root,
+    then the revisit chain, to find the originating thread.
+
+    Spec: docs/superpowers/specs/2026-06-06-thread-escalation-surfacing-design.md
+    """
+    db = orch._db
+    audit = orch._audit
+
+    task = db.get_task(task_id)
+    if task is None:
+        return
+    # Re-read persisted state: the founder may have resolved/cancelled the
+    # escalation in the window between try_escalate and this call.
+    if not (task.status == TaskStatus.BLOCKED
+            and task.block_kind == BlockKind.ESCALATED):
+        return
+
+    # Resolve the originating thread. Escalation can fire on a child, so walk
+    # ancestors to the chain root first, then the revisit chain (only the
+    # dispatched root carries dispatched_from_thread_id).
+    from runtime.infrastructure.database import LineageTooDeep  # local: avoid cycle
+    try:
+        ancestors = db.walk_ancestors(task_id, max_hops=200)
+    except LineageTooDeep:
+        audit.log_thread_followup_skipped(
+            "(unresolved)", original_task_id=task_id, terminal_task_id=task_id,
+            reason="chain_too_deep",
+        )
+        return
+    root = ancestors[-1] if ancestors else task
+    chain = db.walk_revisit_chain(root.id, max_hops=200, truncate=True)
+    original = chain[-1] if chain else root
+    thread_id = original.dispatched_from_thread_id
+    if thread_id is None:
+        # Not a thread-dispatched chain; silent no-op (Feishu path untouched).
+        return
+
+    # Thread-state guard.
+    thread = db.get_thread(thread_id)
+    from runtime.models import ThreadStatus as _ThreadStatus
+    if thread is None or thread.status is not _ThreadStatus.OPEN:
+        audit.log_thread_followup_skipped(
+            thread_id, original_task_id=original.id, terminal_task_id=task_id,
+            reason="thread_not_open",
+            thread_status=(thread.status.value if thread else "missing"),
+            task_status="escalated",
+        )
+        return
+
+    # Dispatcher identity from the thread_dispatch audit row on the original.
+    dispatch_rows = [
+        r for r in db.get_audit_logs(thread_id)
+        if r["action"] == "thread_dispatch"
+        and _payload_dict(r).get("task_id") == original.id
+    ]
+    if not dispatch_rows:
+        audit.log_thread_followup_skipped(
+            thread_id, original_task_id=original.id, terminal_task_id=task_id,
+            reason="dispatcher_unresolved",
+        )
+        return
+    dispatcher = _payload_dict(dispatch_rows[0])["dispatcher"]
+
+    # `original_task_id` is the revisit-chain origin (thread-dispatch keying);
+    # `root_task_id` is the ancestor root of the escalating task. These are
+    # equal for a root escalation but differ when a child escalates inside a
+    # revisited chain — both are emitted for the dispatcher's downstream use.
+    system_payload = {
+        "kind_tag": "task_escalated",
+        "task_id": task_id,
+        "original_task_id": original.id,
+        "root_task_id": root.id,
+        "status": "escalated",
+        "reason": reason,
+        "revisit_chain_length": len(chain) if chain else 1,
+    }
+    _append_followup_system_and_reinvoke(
+        orch,
+        thread_id=thread_id,
+        dispatcher=dispatcher,
+        original_id=original.id,
+        source_task_id=task_id,
+        system_payload=system_payload,
+    )
+
+
 def _maybe_post_thread_followup(
     orch: "Orchestrator",
     task_id: str,
@@ -1608,8 +1824,6 @@ def _maybe_post_thread_followup(
 
     Spec: docs/superpowers/specs/2026-05-28-thread-task-followup-design.md §4-§6
     """
-    import json as _json
-
     # Predicate gate — first pass using caller's claim (cheap early-out).
     if status == TaskStatus.FAILED and auto_revisit_spawned:
         return
@@ -1707,68 +1921,14 @@ def _maybe_post_thread_followup(
         "revisit_chain_length": len(chain) if chain else 1,
     }
 
-    # Append system message (separate from the atomic cap+mint below — the
-    # system message ordering relative to concurrent system messages is not
-    # part of the atomicity invariant we're protecting).
-    from runtime.models import ThreadMessageKind as _TMK, ThreadInvocationPurpose as _TIP
-    sys_seq = db.append_thread_message(
-        thread_id=thread_id, speaker=dispatcher,
-        kind=_TMK.SYSTEM,
+    _append_followup_system_and_reinvoke(
+        orch,
+        thread_id=thread_id,
+        dispatcher=dispatcher,
+        original_id=original.id,
+        source_task_id=task_id,
         system_payload=system_payload,
     )
-
-    # Atomic cap-projection + conditional bump + mint.  Closes the TOCTOU race
-    # where two concurrent root completions on the same thread both read the
-    # same pending count, both skip the bump, both mint, and leave the thread
-    # with more obligations than turn_cap.  The @_synchronized RLock on
-    # mint_followup_invocation_with_cap_extend serializes all three steps.
-    inv, new_cap = db.mint_followup_invocation_with_cap_extend(
-        thread_id=thread_id,
-        agent_name=dispatcher,
-        triggering_seq=sys_seq,
-    )
-    if new_cap is not None:
-        audit.log_thread_turn_cap_auto_extended(
-            thread_id, original_task_id=original.id,
-            reason="task_followup", new_cap=new_cap,
-        )
-    audit.log_thread_task_followup_enqueued(
-        thread_id, original_task_id=original.id, terminal_task_id=task_id,
-        dispatcher=dispatcher, invocation_token=inv.invocation_token,
-    )
-
-    # Enqueue onto the org's thread queue. The queue is bound to the daemon's
-    # main event loop, but run_step runs on a worker thread, so we cross the
-    # loop boundary via run_coroutine_threadsafe — same pattern as
-    # `_start_feishu_listeners` uses for cross-thread async bridging.
-    import asyncio as _asyncio
-    from runtime.daemon.thread_queue import ThreadJob as _ThreadJob
-    thread_queue = getattr(orch, "_thread_queue", None)
-    main_loop = getattr(orch, "_main_loop", None)
-    if thread_queue is not None and main_loop is not None:
-        try:
-            _asyncio.run_coroutine_threadsafe(
-                thread_queue.put(_ThreadJob(
-                    org_slug=orch._slug,
-                    invocation_token=inv.invocation_token,
-                )),
-                main_loop,
-            )
-        except Exception as exc:
-            audit.log_thread_followup_skipped(
-                thread_id, original_task_id=original.id, terminal_task_id=task_id,
-                reason="enqueue_failed", detail=str(exc),
-            )
-    else:
-        # Defence: queue or loop not yet wired (e.g., test orchestrator constructed
-        # without daemon context). Invocation stays PENDING; audit so the
-        # operator can detect it if needed. In production this path is never
-        # taken because _lifespan always calls _attach_thread_queue_wiring before
-        # the first task step runs.
-        audit.log_thread_followup_skipped(
-            thread_id, original_task_id=original.id, terminal_task_id=task_id,
-            reason="enqueue_unavailable",
-        )
 
 
 def _payload_dict(row: dict) -> dict:

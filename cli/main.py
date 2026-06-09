@@ -25,6 +25,7 @@ from cli.commands import (
     agents,
     artifacts,
     assistant,
+    dreams,
     jobs,
     kb,
     learning,
@@ -32,6 +33,13 @@ from cli.commands import (
     talk,
     tasks,
     threads,
+)
+from cli.commands.dreams import (  # noqa: F401
+    _complete_payload_from_file as _dream_complete_payload_from_file,
+    cmd_dreams_complete,
+    cmd_dreams_list,
+    cmd_dreams_show,
+    cmd_dreams_status,
 )
 from cli.commands.runtime import (  # noqa: F401  (re-export for back-compat)
     cmd_init,
@@ -156,6 +164,7 @@ def build_parser() -> argparse.ArgumentParser:
     kb.register(sub)
     artifacts.register(sub)
     assistant.register(sub)
+    dreams.register(sub)
     talk.register(sub)
     threads.register(sub)
 

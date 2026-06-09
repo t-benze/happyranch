@@ -755,6 +755,7 @@ def test_run_step_worker_completion_is_done_not_parsed_as_eh_decision(
     db.insert_task(TaskRecord(
         id="T-CHD", brief="c",
         assigned_agent="dev_agent", parent_task_id="T-PAR",
+        task_type="subtask",
     ))
 
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
@@ -796,10 +797,12 @@ def test_run_step_delegated_worker_emits_review_verdict(
     db.insert_task(TaskRecord(
         id="T-OK", brief="ok",
         assigned_agent="dev_agent", parent_task_id="T-PAR",
+        task_type="subtask",
     ))
     db.insert_task(TaskRecord(
         id="T-BAD", brief="bad",
         assigned_agent="dev_agent", parent_task_id="T-PAR",
+        task_type="subtask",
     ))
 
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
@@ -1363,6 +1366,60 @@ def test_run_step_drops_delegate_when_cancelled_during_session(runtime, db, monk
     assert usage_rows[0]["output_tokens"] == 20
 
 
+@pytest.mark.parametrize(
+    ("task_id", "field", "origin_id"),
+    [
+        ("T-TALK", "dispatched_from_talk_id", "TALK-001"),
+        ("T-THREAD", "dispatched_from_thread_id", "THR-001"),
+    ],
+)
+def test_run_step_token_usage_carries_task_origin_scope(
+    runtime, db, monkeypatch, task_id, field, origin_id,
+):
+    from datetime import datetime, timezone
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.models import TokenUsage
+
+    task_kwargs = {
+        "id": task_id,
+        "brief": "x",
+        "assigned_agent": "engineering_head",
+        field: origin_id,
+    }
+    db.insert_task(TaskRecord(**task_kwargs))
+    orch = Orchestrator(
+        db=db, settings=Settings(), paths=runtime, slug="test",
+        teams=TeamsRegistry.load(runtime.root),
+    )
+    orch._queue = _SlugQueue()
+
+    def cancel_with_usage(*a, **k):
+        now = datetime.now(timezone.utc).isoformat()
+        db.update_task(
+            task_id,
+            status=TaskStatus.FAILED,
+            note="cancelled by founder: stop",
+            cancelled_at=now,
+            completed_at=now,
+        )
+        result = _make_result()
+        result.token_usage = TokenUsage(input_tokens=3, output_tokens=4)
+        return result, _make_report(output_summary="ignored")
+
+    monkeypatch.setattr(orch, "_run_agent", cancel_with_usage)
+
+    orch.run_step(task_id)
+
+    rows = db.list_session_token_usage(task_id=task_id)
+    assert len(rows) == 1
+    assert rows[0]["scope_type"] == "task"
+    assert rows[0]["scope_id"] == task_id
+    assert rows[0]["talk_id"] == (origin_id if field == "dispatched_from_talk_id" else None)
+    assert rows[0]["thread_id"] == (
+        origin_id if field == "dispatched_from_thread_id" else None
+    )
+
+
 # ---- Cancel-race Guard C: shared terminal predicate ----
 # See docs/superpowers/specs/2026-05-26-cancel-race-design.md §5.3.
 
@@ -1519,3 +1576,270 @@ def test_run_step_escalate_atomic_against_cancel_between_recheck_and_cas(
     assert t.cancelled_at is not None
     # block_kind stays None (cancel cleared it); not BLOCKED(ESCALATED).
     assert t.block_kind is None
+
+
+def _seed_open_thread_dispatch(db, *, thread_id, task_id, dispatcher, target):
+    # Sibling: _seed_dispatched_root in test_thread_task_followup.py also inserts
+    # the TaskRecord; this one does not — callers insert the task themselves.
+    from runtime.models import ThreadRecord
+    from runtime.infrastructure.audit_logger import AuditLogger
+    db.insert_thread(ThreadRecord(id=thread_id, subject="t"))
+    db.add_thread_participant(thread_id, dispatcher, added_by="founder")
+    AuditLogger(db).log_thread_dispatch(
+        thread_id, task_id=task_id, dispatcher=dispatcher,
+        target_agent=target, team="engineering",
+    )
+
+
+def test_run_step_escalate_surfaces_in_thread(runtime, db, monkeypatch):
+    import json
+    from runtime.models import ThreadInvocationPurpose
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    db.insert_task(TaskRecord(
+        id="T-1", brief="x", assigned_agent="engineering_head",
+        dispatched_from_thread_id="THR-9",
+    ))
+    _seed_open_thread_dispatch(db, thread_id="THR-9", task_id="T-1",
+                               dispatcher="engineering_head", target="engineering_head")
+
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()  # mirror existing escalate test; not used on escalate path
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(
+            output_summary=json.dumps({"action": "escalate", "reason": "needs founder auth"}),
+        )
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    orch.run_step("T-1")
+
+    t = db.get_task("T-1")
+    assert t.status == TaskStatus.BLOCKED and t.block_kind == BlockKind.ESCALATED
+    msgs = db.list_thread_messages("THR-9")
+    esc = [m for m in msgs if m.system_payload
+           and m.system_payload.get("kind_tag") == "task_escalated"]
+    assert len(esc) == 1
+    assert esc[0].system_payload["reason"] == "needs founder auth"
+    invs = db.list_thread_invocations("THR-9")
+    assert any(i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP for i in invs)
+
+
+def test_run_step_over_budget_surfaces_in_thread(runtime, db):
+    from runtime.models import ThreadInvocationPurpose
+    from runtime.orchestrator.orchestrator import Orchestrator
+    settings = Settings(max_orchestration_steps=3)
+    db.insert_task(TaskRecord(
+        id="T-1", brief="x", assigned_agent="engineering_head",
+        dispatched_from_thread_id="THR-9",
+    ))
+    db.update_task("T-1", orchestration_step_count=3)  # already at the cap
+    _seed_open_thread_dispatch(db, thread_id="THR-9", task_id="T-1",
+                               dispatcher="engineering_head", target="engineering_head")
+
+    orch = Orchestrator(db=db, settings=settings, paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    orch.run_step("T-1")
+
+    msgs = db.list_thread_messages("THR-9")
+    esc = [m for m in msgs if m.system_payload
+           and m.system_payload.get("kind_tag") == "task_escalated"]
+    assert len(esc) == 1
+    assert "max steps" in esc[0].system_payload["reason"]
+
+
+def test_non_manager_owner_of_task_type_emits_decision(runtime, db, monkeypatch):
+    """A type=task owned by a NON-manager parses its decision (done here)."""
+    import json
+    from runtime.orchestrator.orchestrator import Orchestrator
+    db.insert_task(TaskRecord(
+        id="T-1", brief="root", assigned_agent="dev_agent", task_type="task",
+    ))
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10),
+                        paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(
+            output_summary=json.dumps({"action": "done", "summary": "did it"}),
+        )
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    orch.run_step("T-1")
+
+    t = db.get_task("T-1")
+    assert t.status == TaskStatus.COMPLETED
+    assert t.note == "did it"
+
+
+def test_subtask_owner_is_leaf_even_if_decision_present(runtime, db, monkeypatch):
+    """A type=subtask owner does NOT orchestrate: a delegate decision in its
+    report is ignored and the task simply completes (leaf path)."""
+    import json
+    from runtime.orchestrator.orchestrator import Orchestrator
+    db.insert_task(TaskRecord(
+        id="T-2", brief="leaf", assigned_agent="engineering_head",
+        task_type="subtask",
+    ))
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10),
+                        paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        # Even though this is a manager AND emits a delegate, the subtask
+        # gate forces leaf completion.
+        return _make_result(), _make_report(
+            output_summary=json.dumps(
+                {"action": "delegate", "agent": "dev_agent", "prompt": "go"}),
+        )
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    orch.run_step("T-2")
+    t = db.get_task("T-2")
+    assert t.status == TaskStatus.COMPLETED          # leaf — no child spawned
+    assert db.get_children("T-2") == []
+
+
+def test_delegated_child_is_typed_subtask(runtime, db, monkeypatch):
+    import json
+    from runtime.orchestrator.orchestrator import Orchestrator
+    (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
+    db.insert_task(TaskRecord(
+        id="T-1", brief="root", assigned_agent="engineering_head",
+        task_type="task",
+    ))
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10),
+                        paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(
+            output_summary=json.dumps(
+                {"action": "delegate", "agent": "dev_agent", "prompt": "build"}),
+        )
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    orch.run_step("T-1")
+    children = db.get_children("T-1")
+    assert len(children) == 1
+    assert db.get_task(children[0]).task_type == "subtask"
+
+
+def test_non_manager_self_delegation_is_allowed(runtime, db, monkeypatch):
+    """dev_agent owns a type=task and delegates to ITSELF → child spawned."""
+    import json
+    from runtime.orchestrator.orchestrator import Orchestrator
+    (runtime.workspaces_dir / "dev_agent").mkdir(parents=True, exist_ok=True)
+    db.insert_task(TaskRecord(id="T-1", brief="root",
+                              assigned_agent="dev_agent", task_type="task"))
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10),
+                        paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    def fake(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(
+            output_summary=json.dumps(
+                {"action": "delegate", "agent": "dev_agent", "prompt": "phase 2"}))
+    monkeypatch.setattr(orch, "_run_agent", fake)
+
+    orch.run_step("T-1")
+    children = db.get_children("T-1")
+    assert len(children) == 1
+    assert db.get_task(children[0]).assigned_agent == "dev_agent"
+
+
+def test_non_manager_cross_agent_delegation_is_rejected(runtime, db, monkeypatch):
+    """dev_agent owning a type=task may NOT delegate to product_manager →
+    feedback step, task re-enqueued PENDING, no child."""
+    import json
+    from runtime.orchestrator.orchestrator import Orchestrator
+    (runtime.workspaces_dir / "product_manager").mkdir(parents=True, exist_ok=True)
+    db.insert_task(TaskRecord(id="T-1", brief="root",
+                              assigned_agent="dev_agent", task_type="task"))
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10),
+                        paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    def fake(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(
+            output_summary=json.dumps(
+                {"action": "delegate", "agent": "product_manager", "prompt": "x"}))
+    monkeypatch.setattr(orch, "_run_agent", fake)
+
+    orch.run_step("T-1")
+    assert db.get_children("T-1") == []
+    assert db.get_task("T-1").status == TaskStatus.PENDING   # re-enqueued for re-decide
+
+
+def test_manager_self_target_does_not_bump_revision_count(runtime, db, monkeypatch):
+    """A manager re-delegating to ITSELF is sequencing, not a revise loop —
+    revision_count must stay 0 so escalate-after-2-rounds doesn't misfire."""
+    import json
+    from runtime.orchestrator.orchestrator import Orchestrator
+    (runtime.workspaces_dir / "engineering_head").mkdir(parents=True, exist_ok=True)
+    # One already-completed self-child makes engineering_head the worker-of-record.
+    db.insert_task(TaskRecord(id="T-1", brief="root",
+                              assigned_agent="engineering_head", task_type="task"))
+    db.insert_task(TaskRecord(id="T-1-c1", brief="c1",
+                              assigned_agent="engineering_head",
+                              parent_task_id="T-1", task_type="subtask"))
+    db.update_task("T-1-c1", status=TaskStatus.COMPLETED)
+
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10),
+                        paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    def fake(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(
+            output_summary=json.dumps(
+                {"action": "delegate", "agent": "engineering_head",
+                 "prompt": "phase 2"}))
+    monkeypatch.setattr(orch, "_run_agent", fake)
+
+    orch.run_step("T-1")
+    assert db.get_task("T-1").revision_count == 0
+
+
+def test_build_agent_prompt_leaf_subtask_is_empty(runtime, db):
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _build_agent_prompt
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    t = TaskRecord(id="T-1", brief="x", assigned_agent="dev_agent",
+                   task_type="subtask")
+    assert _build_agent_prompt(orch, t, "dev_agent") == ""
+
+
+def test_build_agent_prompt_non_manager_task_is_self_only(runtime, db):
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _build_agent_prompt
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    t = TaskRecord(id="T-1", brief="x", assigned_agent="dev_agent",
+                   task_type="task")
+    p = _build_agent_prompt(orch, t, "dev_agent")
+    assert "Available Agents" not in p
+    assert "dev_agent" in p
+
+
+def test_build_agent_prompt_manager_roster_includes_self(runtime, db):
+    """Spec §3: a manager may self-target. The roster must advertise self so the
+    manager knows it can delegate a sub-task to itself (it is not in teams.yaml
+    `workers`, so it would otherwise be absent)."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _build_agent_prompt
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test",
+                        teams=TeamsRegistry.load(runtime.root))
+    t = TaskRecord(id="T-1", brief="x", assigned_agent="engineering_head",
+                   task_type="task")
+    p = _build_agent_prompt(orch, t, "engineering_head")
+    assert "Available Agents" in p          # full roster prompt
+    assert "engineering_head" in p          # self advertised in the roster
+    assert "yourself" in p

@@ -16,7 +16,7 @@ def _parse_frontmatter(text: str) -> dict:
     return yaml.safe_load(fm)
 
 
-@pytest.mark.parametrize("skill_name", ["start-task", "make-worktree", "manage-repo", "manage-agent", "talk"])
+@pytest.mark.parametrize("skill_name", ["start-task", "make-worktree", "manage-repo", "manage-agent", "talk", "dream"])
 def test_skill_has_required_frontmatter(skill_name: str) -> None:
     skill_md = SKILLS_ROOT / skill_name / "SKILL.md"
     assert skill_md.exists(), f"missing {skill_md}"
@@ -112,6 +112,22 @@ def test_talk_skill_documents_end_procedure() -> None:
 def test_talk_skill_documents_single_line_rationale() -> None:
     body = (SKILLS_ROOT / "talk" / "SKILL.md").read_text()
     assert "Bash(happyranch *)" in body
+
+
+def test_talk_skill_documents_self_only_dispatch() -> None:
+    body = (SKILLS_ROOT / "talk" / "SKILL.md").read_text()
+    assert "talk_dispatch_must_be_self" in body
+    assert "may only target" in body
+    assert "managers can dispatch to any agent in their team" not in body
+
+
+def test_dream_skill_documents_callback_contract() -> None:
+    body = (SKILLS_ROOT / "dream" / "SKILL.md").read_text()
+    assert "happyranch dreams complete" in body
+    assert "--from-file" in body
+    assert "body_path" in body
+    assert "private reflection" in body
+    assert "Do not write KB entries directly" in body
 
 
 def test_skill_cli_commands_exist() -> None:

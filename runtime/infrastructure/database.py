@@ -9,6 +9,9 @@ from pathlib import Path
 
 from runtime.models import (
     BlockKind,
+    DreamKbCandidate,
+    DreamRecord,
+    DreamStatus,
     TalkRecord,
     TaskRecord,
     TaskStatus,
@@ -22,6 +25,10 @@ from runtime.models import (
     ThreadStatus,
     TokenUsage,
 )
+
+
+def _parse_dt(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 class LineageTooDeep(Exception):
@@ -63,28 +70,13 @@ class Database:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
-        self._tasks_has_legacy_type_column: bool = False
         self._migrate_jobs_table_if_needed()
         self._create_tables()
-        self._detect_legacy_columns()
 
     @property
     def path(self) -> Path:
         """Alias for ``db_path``. Convenience for callers that prefer ``.path``."""
         return self.db_path
-
-    def _detect_legacy_columns(self) -> None:
-        """Detect legacy columns that may still exist on upgraded DBs.
-
-        Called once after _create_tables() completes. Fresh DBs never have the
-        ``type`` column (dropped in the Task-4 schema refactor). Runtimes
-        created before that change retain it as ``TEXT NOT NULL`` with no SQL
-        default — insert_task must supply a sentinel value or SQLite raises
-        IntegrityError.
-        """
-        cursor = self._conn.execute("PRAGMA table_info(tasks)")
-        columns = {row[1] for row in cursor.fetchall()}
-        self._tasks_has_legacy_type_column = "type" in columns
 
     def _migrate_jobs_table_if_needed(self) -> None:
         """Rename legacy ``script_requests`` table to ``jobs`` and ripple the
@@ -204,6 +196,7 @@ class Database:
                 assigned_agent TEXT,
                 team TEXT NOT NULL DEFAULT 'engineering',
                 brief TEXT NOT NULL,
+                task_type TEXT NOT NULL DEFAULT 'task',
                 revision_count INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -256,9 +249,55 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_talks_agent_status ON talks(agent_name, status);
             CREATE INDEX IF NOT EXISTS idx_talks_started ON talks(started_at);
 
+            CREATE TABLE IF NOT EXISTS dreams (
+                id TEXT PRIMARY KEY,
+                agent_name TEXT NOT NULL,
+                local_date TEXT NOT NULL,
+                scheduled_for TEXT NOT NULL,
+                window_start TEXT,
+                window_end TEXT NOT NULL,
+                started_at TEXT,
+                ended_at TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                summary TEXT,
+                transcript_path TEXT,
+                new_learnings_count INTEGER NOT NULL DEFAULT 0,
+                kb_candidate_count INTEGER NOT NULL DEFAULT 0,
+                founder_thread_id TEXT,
+                session_id TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(agent_name, local_date)
+            );
+            CREATE INDEX IF NOT EXISTS idx_dreams_agent_date
+                ON dreams(agent_name, local_date);
+            CREATE INDEX IF NOT EXISTS idx_dreams_status
+                ON dreams(status);
+
+            CREATE TABLE IF NOT EXISTS dream_kb_candidates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dream_id TEXT NOT NULL,
+                agent_name TEXT NOT NULL,
+                slug TEXT NOT NULL,
+                title TEXT NOT NULL,
+                topic TEXT NOT NULL,
+                rationale TEXT NOT NULL,
+                body_markdown TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                promoted_kb_slug TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(dream_id, slug),
+                FOREIGN KEY (dream_id) REFERENCES dreams(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_dream_candidates_dream
+                ON dream_kb_candidates(dream_id);
+            CREATE INDEX IF NOT EXISTS idx_dream_candidates_status
+                ON dream_kb_candidates(status);
+
             CREATE TABLE IF NOT EXISTS session_token_usage (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                task_id    TEXT NOT NULL,
+                task_id    TEXT,
                 agent      TEXT NOT NULL,
                 session_id TEXT NOT NULL,
                 executor   TEXT NOT NULL,
@@ -269,11 +308,14 @@ class Database:
                 cache_creation_tokens INTEGER,
                 reasoning_tokens      INTEGER,
                 usage_raw_json TEXT,
+                scope_type TEXT,
+                scope_id TEXT,
+                thread_id TEXT,
+                talk_id TEXT,
+                invocation_purpose TEXT,
                 created_at TEXT NOT NULL,
                 UNIQUE (task_id, agent, session_id)
             );
-            CREATE INDEX IF NOT EXISTS idx_session_token_usage_task   ON session_token_usage (task_id);
-            CREATE INDEX IF NOT EXISTS idx_session_token_usage_agent  ON session_token_usage (agent, created_at);
 
             CREATE TABLE IF NOT EXISTS escalation_notifications (
                 feishu_message_id TEXT PRIMARY KEY,
@@ -401,6 +443,7 @@ class Database:
             CREATE INDEX IF NOT EXISTS jobs_task_id_idx ON jobs(task_id);
             CREATE INDEX IF NOT EXISTS jobs_status_idx  ON jobs(status);
         """)
+        self._migrate_session_token_usage_scope_columns()
         # Best-effort migration for DBs created before `status` existed. SQLite
         # has no IF NOT EXISTS for ADD COLUMN; swallow the duplicate-column
         # error so this is idempotent across restarts.
@@ -519,11 +562,36 @@ class Database:
             # successful turn.
             "ALTER TABLE thread_participants ADD COLUMN agent_session_id TEXT",
             "ALTER TABLE thread_participants ADD COLUMN last_resumed_seq INTEGER NOT NULL DEFAULT 0",
+            # Legacy cleanup: drop the dead `type` column (dropped from the
+            # current schema in the Task-4 refactor; never read, only a
+            # "general" sentinel was written). Idempotent via the try/except
+            # below — DROP of an absent column raises OperationalError.
+            "ALTER TABLE tasks DROP COLUMN type",
         ):
             try:
                 self._conn.execute(ddl)
             except sqlite3.OperationalError:
                 pass
+        # task_type column + one-time provenance backfill. Coupled in a single
+        # try/except so the backfill UPDATE runs EXACTLY ONCE — when ADD COLUMN
+        # succeeds on the first upgrade. On later startups (and on fresh DBs,
+        # where CREATE TABLE already defines the column) ADD raises
+        # duplicate-column and the whole block is skipped. Existing rows with a
+        # parent were spawned from an ongoing task, so under the new model they
+        # are subtasks (leaf); roots keep the 'task' default. Without this
+        # backfill an in-flight pre-existing child would be mis-typed 'task' and
+        # run_step would parse its plain completion as a NextStep decision and
+        # escalate. (A task_type='task' row never has a parent, so the predicate
+        # is provenance-correct and safe even if it ever re-ran.)
+        try:
+            self._conn.execute(
+                "ALTER TABLE tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'task'"
+            )
+            self._conn.execute(
+                "UPDATE tasks SET task_type='subtask' WHERE parent_task_id IS NOT NULL"
+            )
+        except sqlite3.OperationalError:
+            pass
         # Index the reverse lookup (`WHERE revisit_of_task_id = ?`).
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tasks_revisit_of ON tasks(revisit_of_task_id)"
@@ -613,6 +681,112 @@ class Database:
             self._conn.execute("UPDATE tasks SET status='failed' WHERE status='in_review'")
             self._conn.commit()
 
+    def _migrate_session_token_usage_scope_columns(self) -> None:
+        """Add scope columns and make task_id nullable for conversation usage."""
+        columns = {
+            row["name"]: row
+            for row in self._conn.execute(
+                "PRAGMA table_info(session_token_usage)"
+            ).fetchall()
+        }
+        if columns.get("task_id") and columns["task_id"]["notnull"]:
+            self._conn.execute(
+                "ALTER TABLE session_token_usage RENAME TO session_token_usage_old"
+            )
+            self._conn.execute(
+                """CREATE TABLE session_token_usage (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id    TEXT,
+                    agent      TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    executor   TEXT NOT NULL,
+                    model      TEXT,
+                    input_tokens          INTEGER,
+                    output_tokens         INTEGER,
+                    cache_read_tokens     INTEGER,
+                    cache_creation_tokens INTEGER,
+                    reasoning_tokens      INTEGER,
+                    usage_raw_json TEXT,
+                    scope_type TEXT,
+                    scope_id TEXT,
+                    thread_id TEXT,
+                    talk_id TEXT,
+                    invocation_purpose TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE (task_id, agent, session_id)
+                )"""
+            )
+            self._conn.execute(
+                """INSERT INTO session_token_usage
+                   (id, task_id, agent, session_id, executor, model,
+                    input_tokens, output_tokens, cache_read_tokens,
+                    cache_creation_tokens, reasoning_tokens, usage_raw_json,
+                    scope_type, scope_id, created_at)
+                   SELECT id, task_id, agent, session_id, executor, model,
+                          input_tokens, output_tokens, cache_read_tokens,
+                          cache_creation_tokens, reasoning_tokens, usage_raw_json,
+                          'task', task_id, created_at
+                     FROM session_token_usage_old"""
+            )
+            self._conn.execute("DROP TABLE session_token_usage_old")
+            columns = {
+                row["name"]: row
+                for row in self._conn.execute(
+                    "PRAGMA table_info(session_token_usage)"
+                ).fetchall()
+            }
+
+        for name in (
+            "scope_type",
+            "scope_id",
+            "thread_id",
+            "talk_id",
+            "invocation_purpose",
+        ):
+            if name not in columns:
+                try:
+                    self._conn.execute(
+                        f"ALTER TABLE session_token_usage ADD COLUMN {name} TEXT"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+
+        self._conn.execute(
+            "UPDATE session_token_usage SET scope_type = 'task' "
+            "WHERE scope_type IS NULL"
+        )
+        self._conn.execute(
+            "UPDATE session_token_usage SET scope_id = task_id "
+            "WHERE scope_id IS NULL AND task_id IS NOT NULL"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_token_usage_task "
+            "ON session_token_usage (task_id)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_token_usage_agent "
+            "ON session_token_usage (agent, created_at)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_token_usage_scope "
+            "ON session_token_usage (scope_type, scope_id)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_token_usage_thread "
+            "ON session_token_usage (thread_id) WHERE thread_id IS NOT NULL"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_token_usage_talk "
+            "ON session_token_usage (talk_id) WHERE talk_id IS NOT NULL"
+        )
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_session_token_usage_scope_unique "
+            "ON session_token_usage ("
+            "COALESCE(scope_type, 'task'), COALESCE(scope_id, task_id), "
+            "agent, session_id)"
+        )
+        self._conn.commit()
+
     def _backfill_revisit_of_task_id(self) -> None:
         # Called from _create_tables during __init__, which is single-threaded
         # by construction (Database is instantiated once per daemon, before
@@ -667,32 +841,17 @@ class Database:
             task.note,
             task.orchestration_step_count,
             task.session_timeout_seconds,
+            task.task_type,
         )
-        if self._tasks_has_legacy_type_column:
-            # Legacy DBs (created before the Task-4 schema refactor) retain a
-            # `type TEXT NOT NULL` column with no SQL default. Supply a sentinel
-            # value to satisfy the NOT NULL constraint without re-adding the
-            # column to the current schema.
-            # params[0] = id; insert type="general" after id, then the rest.
-            self._conn.execute(
-                """INSERT INTO tasks (id, type, status, assigned_agent, team, brief,
-                   revision_count, created_at, updated_at, completed_at, parent_task_id,
-                   revisit_of_task_id, dispatched_from_talk_id, dispatched_from_thread_id,
-                   block_kind, note,
-                   orchestration_step_count, session_timeout_seconds)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (params[0], "general") + params[1:],
-            )
-        else:
-            self._conn.execute(
-                """INSERT INTO tasks (id, status, assigned_agent, team, brief,
-                   revision_count, created_at, updated_at, completed_at, parent_task_id,
-                   revisit_of_task_id, dispatched_from_talk_id, dispatched_from_thread_id,
-                   block_kind, note,
-                   orchestration_step_count, session_timeout_seconds)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                params,
-            )
+        self._conn.execute(
+            """INSERT INTO tasks (id, status, assigned_agent, team, brief,
+               revision_count, created_at, updated_at, completed_at, parent_task_id,
+               revisit_of_task_id, dispatched_from_talk_id, dispatched_from_thread_id,
+               block_kind, note,
+               orchestration_step_count, session_timeout_seconds, task_type)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            params,
+        )
         self._conn.commit()
 
     @_synchronized
@@ -724,6 +883,7 @@ class Database:
             cancelled_at=row["cancelled_at"],
             last_heartbeat=row["last_heartbeat"],
             session_timeout_seconds=row["session_timeout_seconds"],
+            task_type=row["task_type"],
         )
 
     @_synchronized
@@ -792,6 +952,7 @@ class Database:
                 cancelled_at=row["cancelled_at"],
                 last_heartbeat=row["last_heartbeat"],
                 session_timeout_seconds=row["session_timeout_seconds"],
+                task_type=row["task_type"],
             )
             for row in cursor.fetchall()
         ]
@@ -939,6 +1100,7 @@ class Database:
                 cancelled_at=row["cancelled_at"],
                 last_heartbeat=row["last_heartbeat"],
                 session_timeout_seconds=row["session_timeout_seconds"],
+                task_type=row["task_type"],
             )
             for row in cursor.fetchall()
         ]
@@ -1049,6 +1211,49 @@ class Database:
                  AND status NOT IN ('completed', 'failed')""",
             (TaskStatus.BLOCKED.value, BlockKind.ESCALATED.value, reason, now, task_id),
         )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    @_synchronized
+    def try_escalate_over_budget(
+        self,
+        task_id: str,
+        *,
+        expected_status: TaskStatus,
+        expected_block_kind: BlockKind | None,
+        reason: str,
+    ) -> bool:
+        """Atomic CAS for the run_step max-steps budget guard.
+
+        Transitions the row to BLOCKED(ESCALATED) with note=reason, but ONLY if
+        it still matches (expected_status, expected_block_kind) — the eligible
+        pre-state observed at run_step step 1. Returns True iff it transitioned.
+
+        Why this exists: the budget guard runs BEFORE try_claim_for_step, so it
+        has no upstream CAS. Two duplicate queue deliveries can both read the
+        same stale at-cap eligible row and both escalate, double-posting the
+        thread `task_escalated` message + TASK_FOLLOWUP invocation. The
+        conditional WHERE makes only the first writer win; the loser matches
+        zero rows and bails. A /cancel landing in the window also moves the row
+        out of the expected pre-state, so the CAS rejects it for free.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        if expected_block_kind is None:
+            cursor = self._conn.execute(
+                """UPDATE tasks
+                   SET status = ?, block_kind = ?, note = ?, updated_at = ?
+                   WHERE id = ? AND status = ? AND block_kind IS NULL""",
+                (TaskStatus.BLOCKED.value, BlockKind.ESCALATED.value, reason, now,
+                 task_id, expected_status.value),
+            )
+        else:
+            cursor = self._conn.execute(
+                """UPDATE tasks
+                   SET status = ?, block_kind = ?, note = ?, updated_at = ?
+                   WHERE id = ? AND status = ? AND block_kind = ?""",
+                (TaskStatus.BLOCKED.value, BlockKind.ESCALATED.value, reason, now,
+                 task_id, expected_status.value, expected_block_kind.value),
+            )
         self._conn.commit()
         return cursor.rowcount == 1
 
@@ -1280,6 +1485,19 @@ class Database:
             result.sort(key=lambda d: d["id"])
         return result
 
+    def get_audit_logs_for_agent_since(
+        self, agent: str, since: str, *, limit: int = 200,
+    ) -> list[dict]:
+        """Audit rows authored by ``agent`` with ``timestamp >= since`` (ISO),
+        capped to the most recent ``limit`` in chronological order.
+
+        Window-scoped accessor for the dream input window (spec "Input Window":
+        "audit rows involving the agent since window_start"). Distinct from
+        ``get_audit_logs(task_id)``, which is keyed on the scope-id column.
+        Delegates to ``query_audit_logs`` to avoid duplicating the filter SQL.
+        """
+        return self.query_audit_logs(agent=agent, since=since, limit=limit)
+
     # --- Task Results ---
 
     @_synchronized
@@ -1429,30 +1647,92 @@ class Database:
     @_synchronized
     def insert_session_token_usage(
         self,
-        task_id: str,
+        task_id: str | None,
         agent: str,
         session_id: str,
         executor: str,
         token_usage: TokenUsage,
+        scope_type: str = "task",
+        scope_id: str | None = None,
+        thread_id: str | None = None,
+        talk_id: str | None = None,
+        invocation_purpose: str | None = None,
     ) -> None:
-        """Insert one row per (task, agent, session). INSERT OR IGNORE on the
-        UNIQUE (task_id, agent, session_id) key — first write wins."""
+        """Insert one token usage row. INSERT OR IGNORE: first write wins."""
+        if scope_id is None and scope_type == "task":
+            scope_id = task_id
         self._conn.execute(
             """INSERT OR IGNORE INTO session_token_usage
                (task_id, agent, session_id, executor, model,
                 input_tokens, output_tokens, cache_read_tokens,
                 cache_creation_tokens, reasoning_tokens,
-                usage_raw_json, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                usage_raw_json, scope_type, scope_id, thread_id, talk_id,
+                invocation_purpose, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task_id, agent, session_id, executor, token_usage.model,
                 token_usage.input_tokens, token_usage.output_tokens,
                 token_usage.cache_read_tokens, token_usage.cache_creation_tokens,
                 token_usage.reasoning_tokens, token_usage.usage_raw_json,
+                scope_type, scope_id, thread_id, talk_id, invocation_purpose,
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
         self._conn.commit()
+
+    def _session_token_usage_filters(
+        self,
+        *,
+        since: str | None = None,
+        task_id: str | None = None,
+        agent: str | None = None,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        thread_id: str | None = None,
+        talk_id: str | None = None,
+        purpose: str | None = None,
+    ) -> tuple[list[str], list[object]]:
+        where: list[str] = []
+        params: list[object] = []
+        if since is not None:
+            where.append("created_at >= ?")
+            params.append(since)
+        if task_id is not None:
+            where.append("task_id = ?")
+            params.append(task_id)
+        if agent is not None:
+            where.append("agent = ?")
+            params.append(agent)
+        if scope_type is not None:
+            where.append("COALESCE(scope_type, 'task') = ?")
+            params.append(scope_type)
+        if scope_id is not None:
+            where.append("COALESCE(scope_id, task_id) = ?")
+            params.append(scope_id)
+        if thread_id is not None:
+            where.append("thread_id = ?")
+            params.append(thread_id)
+        if talk_id is not None:
+            where.append("talk_id = ?")
+            params.append(talk_id)
+        if purpose is not None:
+            where.append("invocation_purpose = ?")
+            params.append(purpose)
+        return where, params
+
+    @staticmethod
+    def _token_usage_rollup_select(group_expr: str, group_alias: str) -> str:
+        return f"""SELECT {group_expr} AS {group_alias},
+                         COUNT(*) AS sessions,
+                         COALESCE(SUM(input_tokens), 0)          AS input_tokens,
+                         COALESCE(SUM(output_tokens), 0)         AS output_tokens,
+                         COALESCE(SUM(cache_read_tokens), 0)     AS cache_read_tokens,
+                         COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,
+                         COALESCE(SUM(reasoning_tokens), 0)      AS reasoning_tokens,
+                         COALESCE(SUM(input_tokens), 0)
+                           + COALESCE(SUM(output_tokens), 0)
+                           + COALESCE(SUM(reasoning_tokens), 0)  AS total_tokens
+                  FROM session_token_usage"""
 
     @_synchronized
     def list_session_token_usage(
@@ -1461,20 +1741,30 @@ class Database:
         agent: str | None = None,
         since: str | None = None,
         limit: int | None = None,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        thread_id: str | None = None,
+        talk_id: str | None = None,
+        purpose: str | None = None,
     ) -> list[dict]:
         """Return per-session rows, newest first."""
-        where: list[str] = []
-        params: list[object] = []
-        if task_id is not None:
-            where.append("task_id = ?")
-            params.append(task_id)
-        if agent is not None:
-            where.append("agent = ?")
-            params.append(agent)
-        if since is not None:
-            where.append("created_at >= ?")
-            params.append(since)
-        sql = "SELECT * FROM session_token_usage"
+        where, params = self._session_token_usage_filters(
+            since=since,
+            task_id=task_id,
+            agent=agent,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            thread_id=thread_id,
+            talk_id=talk_id,
+            purpose=purpose,
+        )
+        sql = """SELECT *,
+                        COALESCE(scope_type, 'task') AS scope_type,
+                        COALESCE(scope_id, task_id) AS scope_id,
+                        COALESCE(input_tokens, 0)
+                          + COALESCE(output_tokens, 0)
+                          + COALESCE(reasoning_tokens, 0) AS total_tokens
+                 FROM session_token_usage"""
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY created_at DESC, id DESC"
@@ -1490,26 +1780,23 @@ class Database:
         since: str | None = None,
         task_id: str | None = None,
         agent: str | None = None,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        thread_id: str | None = None,
+        talk_id: str | None = None,
+        purpose: str | None = None,
     ) -> list[dict]:
-        where: list[str] = []
-        params: list[object] = []
-        if since is not None:
-            where.append("created_at >= ?")
-            params.append(since)
-        if task_id is not None:
-            where.append("task_id = ?")
-            params.append(task_id)
-        if agent is not None:
-            where.append("agent = ?")
-            params.append(agent)
-        sql = """SELECT agent,
-                        COUNT(*) AS sessions,
-                        SUM(input_tokens)          AS input_tokens,
-                        SUM(output_tokens)         AS output_tokens,
-                        SUM(cache_read_tokens)     AS cache_read_tokens,
-                        SUM(cache_creation_tokens) AS cache_creation_tokens,
-                        SUM(reasoning_tokens)      AS reasoning_tokens
-                 FROM session_token_usage"""
+        where, params = self._session_token_usage_filters(
+            since=since,
+            task_id=task_id,
+            agent=agent,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            thread_id=thread_id,
+            talk_id=talk_id,
+            purpose=purpose,
+        )
+        sql = self._token_usage_rollup_select("agent", "agent")
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " GROUP BY agent ORDER BY agent"
@@ -1522,29 +1809,127 @@ class Database:
         since: str | None = None,
         agent: str | None = None,
         task_id: str | None = None,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        thread_id: str | None = None,
+        talk_id: str | None = None,
+        purpose: str | None = None,
     ) -> list[dict]:
-        where: list[str] = []
-        params: list[object] = []
-        if since is not None:
-            where.append("created_at >= ?")
-            params.append(since)
-        if agent is not None:
-            where.append("agent = ?")
-            params.append(agent)
-        if task_id is not None:
-            where.append("task_id = ?")
-            params.append(task_id)
-        sql = """SELECT task_id,
-                        COUNT(*) AS sessions,
-                        SUM(input_tokens)          AS input_tokens,
-                        SUM(output_tokens)         AS output_tokens,
-                        SUM(cache_read_tokens)     AS cache_read_tokens,
-                        SUM(cache_creation_tokens) AS cache_creation_tokens,
-                        SUM(reasoning_tokens)      AS reasoning_tokens
-                 FROM session_token_usage"""
+        where, params = self._session_token_usage_filters(
+            since=since,
+            task_id=task_id,
+            agent=agent,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            thread_id=thread_id,
+            talk_id=talk_id,
+            purpose=purpose,
+        )
+        sql = self._token_usage_rollup_select("task_id", "task_id")
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " GROUP BY task_id ORDER BY task_id"
+        rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    @_synchronized
+    def aggregate_session_token_usage_by_scope(
+        self,
+        since: str | None = None,
+        task_id: str | None = None,
+        agent: str | None = None,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        thread_id: str | None = None,
+        talk_id: str | None = None,
+        purpose: str | None = None,
+    ) -> list[dict]:
+        where, params = self._session_token_usage_filters(
+            since=since,
+            task_id=task_id,
+            agent=agent,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            thread_id=thread_id,
+            talk_id=talk_id,
+            purpose=purpose,
+        )
+        sql = """SELECT COALESCE(scope_type, 'task') AS scope_type,
+                        COALESCE(scope_id, task_id) AS scope_id,
+                        COUNT(*) AS sessions,
+                        COALESCE(SUM(input_tokens), 0)          AS input_tokens,
+                        COALESCE(SUM(output_tokens), 0)         AS output_tokens,
+                        COALESCE(SUM(cache_read_tokens), 0)     AS cache_read_tokens,
+                        COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,
+                        COALESCE(SUM(reasoning_tokens), 0)      AS reasoning_tokens,
+                        COALESCE(SUM(input_tokens), 0)
+                          + COALESCE(SUM(output_tokens), 0)
+                          + COALESCE(SUM(reasoning_tokens), 0)  AS total_tokens
+                 FROM session_token_usage"""
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " GROUP BY COALESCE(scope_type, 'task'), COALESCE(scope_id, task_id)"
+        sql += " ORDER BY scope_type, scope_id"
+        rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    @_synchronized
+    def aggregate_session_token_usage_by_thread(
+        self,
+        since: str | None = None,
+        task_id: str | None = None,
+        agent: str | None = None,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        thread_id: str | None = None,
+        talk_id: str | None = None,
+        purpose: str | None = None,
+    ) -> list[dict]:
+        where, params = self._session_token_usage_filters(
+            since=since,
+            task_id=task_id,
+            agent=agent,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            thread_id=thread_id,
+            talk_id=talk_id,
+            purpose=purpose,
+        )
+        where.append("thread_id IS NOT NULL")
+        sql = self._token_usage_rollup_select("thread_id", "thread_id")
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " GROUP BY thread_id ORDER BY thread_id"
+        rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    @_synchronized
+    def aggregate_session_token_usage_by_talk(
+        self,
+        since: str | None = None,
+        task_id: str | None = None,
+        agent: str | None = None,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        thread_id: str | None = None,
+        talk_id: str | None = None,
+        purpose: str | None = None,
+    ) -> list[dict]:
+        where, params = self._session_token_usage_filters(
+            since=since,
+            task_id=task_id,
+            agent=agent,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            thread_id=thread_id,
+            talk_id=talk_id,
+            purpose=purpose,
+        )
+        where.append("talk_id IS NOT NULL")
+        sql = self._token_usage_rollup_select("talk_id", "talk_id")
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " GROUP BY talk_id ORDER BY talk_id"
         rows = self._conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
@@ -2573,6 +2958,178 @@ class Database:
     def last_closed_talk_for_agent(self, agent: str) -> TalkRecord | None:
         rows = self.list_talks(agent=agent, status="closed", limit=1)
         return rows[0] if rows else None
+
+    # --- Dreams ---
+
+    @_synchronized
+    def next_dream_id(self) -> str:
+        cursor = self._conn.execute(
+            "SELECT MAX(CAST(SUBSTR(id, 7) AS INTEGER)) AS m "
+            "FROM dreams WHERE id GLOB 'DREAM-[0-9]*'"
+        )
+        n = (cursor.fetchone()["m"] or 0) + 1
+        return f"DREAM-{n:03d}"
+
+    def _dream_row_to_model(self, row) -> DreamRecord:
+        return DreamRecord(
+            id=row["id"],
+            agent_name=row["agent_name"],
+            local_date=row["local_date"],
+            scheduled_for=_parse_dt(row["scheduled_for"]),
+            window_start=_parse_dt(row["window_start"]) if row["window_start"] else None,
+            window_end=_parse_dt(row["window_end"]),
+            started_at=_parse_dt(row["started_at"]) if row["started_at"] else None,
+            ended_at=_parse_dt(row["ended_at"]) if row["ended_at"] else None,
+            status=DreamStatus(row["status"]),
+            summary=row["summary"],
+            transcript_path=row["transcript_path"],
+            new_learnings_count=row["new_learnings_count"],
+            kb_candidate_count=row["kb_candidate_count"],
+            founder_thread_id=row["founder_thread_id"],
+            session_id=row["session_id"],
+            error=row["error"],
+            created_at=_parse_dt(row["created_at"]),
+        )
+
+    @_synchronized
+    def insert_dream(self, dream: DreamRecord) -> None:
+        self._conn.execute(
+            """INSERT INTO dreams (
+                id, agent_name, local_date, scheduled_for, window_start, window_end,
+                started_at, ended_at, status, summary, transcript_path,
+                new_learnings_count, kb_candidate_count, founder_thread_id,
+                session_id, error, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                dream.id, dream.agent_name, dream.local_date,
+                dream.scheduled_for.isoformat(),
+                dream.window_start.isoformat() if dream.window_start else None,
+                dream.window_end.isoformat(),
+                dream.started_at.isoformat() if dream.started_at else None,
+                dream.ended_at.isoformat() if dream.ended_at else None,
+                dream.status.value, dream.summary, dream.transcript_path,
+                dream.new_learnings_count, dream.kb_candidate_count,
+                dream.founder_thread_id, dream.session_id, dream.error,
+                dream.created_at.isoformat(),
+            ),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def get_dream(self, dream_id: str) -> DreamRecord | None:
+        row = self._conn.execute("SELECT * FROM dreams WHERE id = ?", (dream_id,)).fetchone()
+        return self._dream_row_to_model(row) if row else None
+
+    @_synchronized
+    def get_dream_for_agent_date(self, agent_name: str, local_date: str) -> DreamRecord | None:
+        row = self._conn.execute(
+            "SELECT * FROM dreams WHERE agent_name = ? AND local_date = ?",
+            (agent_name, local_date),
+        ).fetchone()
+        return self._dream_row_to_model(row) if row else None
+
+    @_synchronized
+    def list_dreams(self, *, agent: str | None = None, limit: int = 50) -> list[DreamRecord]:
+        limit = max(1, min(limit, 500))
+        params: list[object] = []
+        where = ""
+        if agent is not None:
+            where = "WHERE agent_name = ?"
+            params.append(agent)
+        rows = self._conn.execute(
+            f"SELECT * FROM dreams {where} ORDER BY scheduled_for DESC LIMIT ?",
+            (*params, limit),
+        ).fetchall()
+        return [self._dream_row_to_model(row) for row in rows]
+
+    @_synchronized
+    def get_last_successful_dream(self, agent_name: str) -> DreamRecord | None:
+        row = self._conn.execute(
+            "SELECT * FROM dreams WHERE agent_name = ? AND status = 'completed' "
+            "ORDER BY ended_at DESC LIMIT 1",
+            (agent_name,),
+        ).fetchone()
+        return self._dream_row_to_model(row) if row else None
+
+    @_synchronized
+    def update_dream(self, dream_id: str, **fields: object) -> None:
+        allowed = {
+            "started_at", "ended_at", "status", "summary", "transcript_path",
+            "new_learnings_count", "kb_candidate_count", "founder_thread_id",
+            "session_id", "error",
+        }
+        bad = set(fields) - allowed
+        if bad:
+            raise ValueError(f"unsupported dream fields: {sorted(bad)}")
+        if not fields:
+            return
+        values = []
+        assignments = []
+        for key, value in fields.items():
+            assignments.append(f"{key} = ?")
+            if hasattr(value, "value"):
+                value = value.value
+            if hasattr(value, "isoformat"):
+                value = value.isoformat()
+            values.append(value)
+        values.append(dream_id)
+        self._conn.execute(
+            f"UPDATE dreams SET {', '.join(assignments)} WHERE id = ?",
+            values,
+        )
+        self._conn.commit()
+
+    def _dream_candidate_row_to_model(self, row) -> DreamKbCandidate:
+        return DreamKbCandidate(
+            id=row["id"],
+            dream_id=row["dream_id"],
+            agent_name=row["agent_name"],
+            slug=row["slug"],
+            title=row["title"],
+            topic=row["topic"],
+            rationale=row["rationale"],
+            body_markdown=row["body_markdown"],
+            status=row["status"],
+            promoted_kb_slug=row["promoted_kb_slug"],
+            created_at=_parse_dt(row["created_at"]),
+            updated_at=_parse_dt(row["updated_at"]),
+        )
+
+    @_synchronized
+    def insert_dream_kb_candidate(self, candidate: DreamKbCandidate) -> None:
+        self._conn.execute(
+            """INSERT INTO dream_kb_candidates (
+                dream_id, agent_name, slug, title, topic, rationale,
+                body_markdown, status, promoted_kb_slug, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                candidate.dream_id, candidate.agent_name, candidate.slug,
+                candidate.title, candidate.topic, candidate.rationale,
+                candidate.body_markdown, candidate.status,
+                candidate.promoted_kb_slug, candidate.created_at.isoformat(),
+                candidate.updated_at.isoformat(),
+            ),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def list_dream_kb_candidates(
+        self, *, dream_id: str | None = None, agent: str | None = None,
+    ) -> list[DreamKbCandidate]:
+        clauses = []
+        params: list[object] = []
+        if dream_id is not None:
+            clauses.append("dream_id = ?")
+            params.append(dream_id)
+        if agent is not None:
+            clauses.append("agent_name = ?")
+            params.append(agent)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._conn.execute(
+            f"SELECT * FROM dream_kb_candidates {where} ORDER BY created_at DESC",
+            params,
+        ).fetchall()
+        return [self._dream_candidate_row_to_model(row) for row in rows]
 
     # --- Escalation Notifications ---
 

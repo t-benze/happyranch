@@ -1,6 +1,6 @@
 ---
 name: happyranch
-description: Manage the HappyRanch AI tourism organization via the `happyranch` CLI — submit tasks, stream events, check agent performance tiers, inspect audit logs, approve agent enrollments, operate the shared knowledge base, manage threads (compose/send/invite/archive), and record founder-resolved precedents. Use when the user asks about HappyRanch tasks, agents, threads, the daemon/runtime, the knowledge base, or the one-person-company system.
+description: Manage the HappyRanch AI tourism organization via the `happyranch` CLI — submit tasks, stream events, inspect audit logs, approve agent enrollments, operate the shared knowledge base, manage threads (compose/send/invite/archive), and record founder-resolved precedents. Use when the user asks about HappyRanch tasks, agents, threads, the daemon/runtime, the knowledge base, or the one-person-company system.
 metadata:
   {
     "openclaw":
@@ -13,13 +13,13 @@ metadata:
 
 # HappyRanch
 
-Manage the HappyRanch (one-person company) AI tourism organization: submit tasks to the EH-driven orchestrator, watch them stream, review agent performance tiers, handle the agent enrollment flow, recall past task context, and operate the shared knowledge base.
+Manage the HappyRanch (one-person company) AI tourism organization: submit tasks to the manager-driven orchestrator, watch them stream, handle the agent enrollment flow, recall past task context, and operate the shared knowledge base.
 
-> Commands below use the skill-local shim `scripts/happyranch`, which auto-detects the project root from the skill's own location and invokes `uv --project <root> run happyranch`. The skill source lives at `<my-opc>/skills/happyranch/` and is symlinked from `~/.claude/skills/happyranch` for user-level availability — the shim uses `cd -P` so it always resolves back to the real checkout. Override with `HAPPYRANCH_PROJECT_DIR` if the skill is ever relocated outside the project tree.
+> Commands below use the skill-local shim `scripts/happyranch`, which auto-detects the project root from the skill's own location and invokes `uv --project <root> run happyranch`. The skill source lives at `<project>/skills/happyranch/`; the shim uses `cd -P` so it resolves back to the real checkout. Override with `HAPPYRANCH_PROJECT_DIR` if the skill is ever relocated outside the project tree.
 
 ## Prerequisites
 
-- `my-opc` project checked out — the shim walks `scripts/ → happyranch/ → skills/ → project root` from its own real path
+- HappyRanch project checked out — the shim walks `scripts/ → happyranch/ → skills/ → project root` from its own real path
 - `uv sync` run once in the project (creates `.venv/bin/happyranch`)
 - Daemon running:
   ```bash
@@ -95,10 +95,6 @@ scripts/happyranch tokens --json                                # raw JSON for p
 ## Agents
 
 ```bash
-# Performance tiers (green ≥90%, yellow 75–89%, red <75% — 30-day rolling)
-scripts/happyranch agents
-scripts/happyranch agents --detail
-
 # Initialize or refresh workspaces (CLAUDE.md, settings, skills, repo clones)
 scripts/happyranch init-agent                  # all agents
 scripts/happyranch init-agent dev_agent        # specific agent
@@ -212,12 +208,12 @@ scripts/happyranch talk abandon --talk-id TALK-007 --reason "superseded by TALK-
 
 ## Threads
 
-Email-style multi-agent workchannels (THR-NNN). The founder composes, agents reply/decline/dispatch into them, and the founder eventually archives with close-outs. The TUI at `scripts/happyranch threads` (no subcommand) is optional — the CLI below covers every founder operation.
+Email-style multi-agent workchannels (THR-NNN). The founder composes, agents reply/decline/self-dispatch into them, and the founder can archive or later resume them. The web UI is the primary founder surface; `scripts/happyranch threads` with no subcommand is only a compatibility stub that points to `happyranch web`.
 
 ```bash
 # Browse
 scripts/happyranch threads list                                          # default 50, all statuses
-scripts/happyranch threads list --status open                            # status ∈ open|archiving|archived|abandoned
+scripts/happyranch threads list --status open                            # status ∈ open|archived
 scripts/happyranch threads list --limit 100
 scripts/happyranch threads show THR-001                                  # metadata + full transcript
 scripts/happyranch threads show THR-001 --json                           # raw JSON for piping
@@ -230,8 +226,7 @@ scripts/happyranch threads compose \
 
 # Follow-up message in an existing thread — body comes from a JSON file
 # /tmp/thread-send-THR-001.json:
-#   {"body_markdown": "Updated context: …", "addressed_to": ["engineering_head"]}
-# addressed_to MUST be a subset of current participants, or ["@all"].
+#   {"body_markdown": "Updated context: …"}
 scripts/happyranch threads send --thread-id THR-001 --from-file /tmp/thread-send-THR-001.json
 
 # Invite a new participant mid-thread (founder only; system message is posted)
@@ -240,13 +235,13 @@ scripts/happyranch threads invite --thread-id THR-001 --agent qa_engineer
 # Raise the turn cap when a thread is hitting the limit
 scripts/happyranch threads extend --thread-id THR-001 --new-cap 50
 
-# Abandon (no close-outs, frozen with reason)
-scripts/happyranch threads abandon --thread-id THR-001 --reason "superseded by THR-007"
-
-# Archive (Phase A → Phase B). Requests close-outs from every participant.
+# Archive synchronously. Writes transcript and flips status to archived.
 # /tmp/thread-archive-THR-001.json:
-#   {"summary": "Decision: extend grace to 14 days in peak…", "request_close_outs": true}
+#   {"summary": "Decision: extend grace to 14 days in peak…"}
 scripts/happyranch threads archive --thread-id THR-001 --from-file /tmp/thread-archive-THR-001.json
+
+# Reopen an archived thread
+scripts/happyranch threads resume --thread-id THR-001
 
 # Forward a finished talk or thread into a NEW thread (decision continuity)
 scripts/happyranch threads forward --source TALK-042 --recipients "engineering_head,product_manager" \
@@ -254,32 +249,37 @@ scripts/happyranch threads forward --source TALK-042 --recipients "engineering_h
 scripts/happyranch threads forward --source THR-001 --recipients "qa_engineer"
 ```
 
-Valid recipient names = active agents in `<runtime>/orgs/<slug>/org/agents/*.md` that ALSO have a workspace under `<runtime>/orgs/<slug>/workspaces/`. The daemon returns `404 {"code": "unknown_agent", "agent": "<name>"}` for any mismatch (typo, terminated agent, pending-approval agent without an `.md`). The TUI surfaces this detail since commit `70758ea`; the CLI prints the same JSON.
+Valid recipient names = active agents in `<runtime>/orgs/<slug>/org/agents/*.md` that ALSO have a workspace under `<runtime>/orgs/<slug>/workspaces/`. The daemon returns `404 {"code": "unknown_agent", "agent": "<name>"}` for any mismatch (typo, terminated agent, pending-approval agent without an `.md`). The CLI prints the same JSON, and the web UI surfaces the error.
 
-`happyranch threads reply | decline | dispatch | close-out` are **agent-side** callbacks driven by the `thread` skill inside an invocation — the founder does not run them directly.
+`happyranch threads reply | decline | dispatch` are **agent-side** callbacks driven by the `thread` skill inside an invocation — the founder does not run them directly.
 
-## Script requests
+## Jobs
 
-Agents who hit a permission wall can submit a script for execution with founder-grade credentials.
+Agents who hit a permission wall or need a long-running subprocess can submit a job.
 
 ```bash
-# List pending script requests (optionally filter by status, agent, or task)
-scripts/happyranch scripts list [--status pending|all|...] [--agent <name>] [--task <task-id>]
+# List pending jobs (optionally filter by status, agent, or task)
+scripts/happyranch jobs list [--status pending|all|...] [--agent <name>] [--task <task-id>]
 
 # Show details, rationale, script body, and output if terminal
-scripts/happyranch scripts show SR-NNN
+scripts/happyranch jobs show JOB-NNN
 
 # TTY-gated run with live SSE stream of stdout/stderr
-scripts/happyranch scripts run SR-NNN [--cwd <path>] [--timeout-seconds <int>]
+scripts/happyranch jobs run JOB-NNN [--cwd <path>] [--timeout-seconds <int>]
 
-# Reject a request with a reason (prompts for reason if omitted)
-scripts/happyranch scripts reject SR-NNN [--reason <text>]
+# Reject a review-required job with a reason (prompts for reason if omitted)
+scripts/happyranch jobs reject JOB-NNN [--reason <text>]
 
 # Fetch captured output (stdout, stderr, or both); --max-bytes caps the read tail
-scripts/happyranch scripts output SR-NNN [--stream stdout|stderr|both] [--max-bytes <int>]
+scripts/happyranch jobs output JOB-NNN [--stream stdout|stderr|both] [--max-bytes <int>]
+
+# Agent/founder inspection helpers
+scripts/happyranch jobs tail JOB-NNN [--stream stdout|stderr] [--lines 50]
+scripts/happyranch jobs wait JOB-NNN [--timeout-seconds 30]
+scripts/happyranch jobs stop JOB-NNN
 ```
 
-Scripts run inside the daemon process with the daemon's inherited `os.environ`. If you rotate credentials interactively, restart the daemon so the new env is picked up.
+Jobs run inside the daemon process with the daemon's inherited `os.environ`. If you rotate credentials interactively, restart the daemon so the new env is picked up. `scripts/happyranch scripts ...` remains as a deprecated alias for older automation, but new work should use `jobs`.
 
 ## Audit Log
 
@@ -363,7 +363,7 @@ scripts/happyranch init-agent                                   # bootstrap work
 
 ## Safety Rules
 
-- **Safe (no confirmation):** `run`, `tail`, `details`, `tasks`, `tokens`, `recall`, `audit`, `agents`, `enrollments`, `init-agent`, `orgs`, `kb list`, `kb get`, `kb search`, `kb reindex`, `threads list`, `threads show`, `talk status`, `talk list`, `talk show`, `scripts list`, `scripts show`, `scripts output`
+- **Safe (no confirmation):** `run`, `tail`, `details`, `tasks`, `tokens`, `recall`, `audit`, `enrollments`, `init-agent`, `orgs`, `kb list`, `kb get`, `kb search`, `kb reindex`, `threads list`, `threads show`, `talk status`, `talk list`, `talk show`, `jobs list`, `jobs show`, `jobs output`, `jobs tail`, `jobs wait`
 - **Confirm with user first:**
   - `use` — changes which container the daemon serves (affects all subsequent commands)
   - `orgs unload` — detaches an org from the daemon (files remain, but live state is dropped)
@@ -378,12 +378,12 @@ scripts/happyranch init-agent                                   # bootstrap work
   - `cancel --no-cascade` — extra dangerous; leaves live children parentless
   - `talk start` / `talk resume` / `talk abandon` — opens or terminates a founder↔agent conversation (agent invocation triggered)
   - `threads compose` / `threads send` / `threads invite` / `threads extend` — visible to participants and triggers agent invocations
-  - `threads abandon` / `threads archive` / `threads forward` — irreversible thread terminal transitions / new-thread spawn
-  - `scripts run` — TTY-gated; executes the SR body inside the daemon process with the daemon's env
-  - `scripts reject` — irreversible terminal transition for an SR
+  - `threads archive` / `threads resume` / `threads forward` — visible thread state transitions / new-thread spawn
+  - `jobs run` — TTY-gated; executes the job body inside the daemon process with the daemon's env
+  - `jobs reject` / `jobs stop` — terminal or interrupting transition for a job
 - **Agent-callback subcommands — do NOT invoke by hand:**
-  - `report-completion`, `progress`, `learning {add,update,promote,reindex}`, `manage-agent`, `manage-repo`, `dispatch`, `talk end`, `threads {reply,decline,dispatch,close-out}`, `scripts submit`
-  - These run inside an agent session under the `Bash(happyranch:*)` allow rule. Invoking them manually falsifies audit data and review-verdict rows. Read-side verbs (learning `list|get|search`, `scripts list|show|output`, `talk list|show|status`) are safe for ad-hoc inspection.
+  - `report-completion`, `progress`, `learning {add,update,promote,reindex}`, `manage-agent`, `manage-repo`, `dispatch`, `talk end`, `threads {reply,decline,dispatch}`, `jobs submit`
+  - These run inside an agent session under the `Bash(happyranch:*)` allow rule. Invoking them manually falsifies audit data and review-verdict rows. Read-side verbs (learning `list|get|search`, `jobs list|show|output|tail|wait`, `talk list|show|status`) are safe for ad-hoc inspection.
 
 ## Troubleshooting
 
@@ -393,5 +393,5 @@ scripts/happyranch init-agent                                   # bootstrap work
 - **Task silently ends as `failed`** → likely a blocked agent callback. Check `scripts/happyranch audit <id>` for the `session_end` event; the project's CLAUDE.md explains the `Bash(happyranch:*)` allowlist requirement and the single-line `--from-file` convention.
 - **Task sits in `blocked(delegated)` forever** → a child task hasn't finished or its terminal event never arrived. `scripts/happyranch tasks` shows children; drill in with `scripts/happyranch details <child>`. The parent auto-resumes when the last child terminates.
 - **Task is in `blocked(escalated)`** → waiting on founder resolution. Read the `note` field via `scripts/happyranch details <id>`, then use the resolve-escalation flow above.
-- **`compose failed: HTTP 404: {"code":"unknown_agent","agent":"..."}`** → the recipient is either a typo, a terminated agent, or a pending-approval agent without an active `.md` in `<runtime>/orgs/<slug>/org/agents/`. Confirm names with `scripts/happyranch agents` and re-try.
+- **`compose failed: HTTP 404: {"code":"unknown_agent","agent":"..."}`** → the recipient is either a typo, a terminated agent, or a pending-approval agent without an active `.md` in `<runtime>/orgs/<slug>/org/agents/`. Confirm names in the web UI or under `<runtime>/orgs/<slug>/org/agents/`, then re-try.
 - **`No such file or directory`** / `uv: command not found` → install `uv` and ensure the project root resolution is working (set `HAPPYRANCH_PROJECT_DIR` if the skill is in an unusual location). Shim calls `uv --project` under the hood; nothing else is expected on PATH.

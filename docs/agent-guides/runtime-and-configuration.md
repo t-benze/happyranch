@@ -46,6 +46,10 @@ request/reply check. Existing runtimes that predate the feature remain valid;
 `happyranch assistant` tells the user to run `happyranch assistant init` when no
 assistant config exists.
 
+## Org Config: Dreaming
+
+Per-org `dreaming:` config controls the private nightly reflection scheduler: enablement, local schedule time/timezone, catch-up behavior, and agent include/exclude selection.
+
 ## Session Timeout Resolution
 
 `Orchestrator._resolve_session_timeout(agent_name, task_id=...)` walks three layers:

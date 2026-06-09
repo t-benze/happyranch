@@ -93,6 +93,17 @@ Traps:
 - Dispatcher identity comes from the `task_dispatched` audit row.
 - Cross-thread enqueue uses `asyncio.run_coroutine_threadsafe(queue.put(job), main_loop)`.
 
+## Dreams
+
+Dreams are private scheduled reflection runs, separate from tasks, talks, and threads. Per-org config lives under `dreaming:` in `<runtime>/orgs/<slug>/org/config.yaml`. A dream may write per-agent learnings, persist KB candidates, and create a founder-only thread when there is meaningful output.
+
+Traps:
+
+- Dreams are not `TaskRecord`s and must not appear in task metrics.
+- Dreams produce KB candidates, not KB entries.
+- Startup catch-up runs at most today's missed dream; it does not replay every missed day.
+- Failed or timed-out dreams do not advance the next input window.
+
 ## Thread / Talk Dispatch Self-Only Rule
 
 `/threads/{id}/dispatch` and `/talks/{id}/dispatch` reject calls where `effective_target != dispatcher`. Spec: `docs/superpowers/specs/2026-05-28-thread-talk-self-dispatch-only-design.md`.

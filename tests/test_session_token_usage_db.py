@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 from runtime.infrastructure.database import Database
 from runtime.models import TokenUsage
 
@@ -22,6 +24,51 @@ def test_insert_and_list_session_token_usage(db: Database):
     assert r["executor"] == "claude"
     assert r["input_tokens"] == 10
     assert r["output_tokens"] == 20
+
+
+def test_legacy_session_token_usage_table_migrates_before_scope_indexes(tmp_path):
+    db_path = tmp_path / "legacy-token-usage.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript("""
+        CREATE TABLE session_token_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id    TEXT NOT NULL,
+            agent      TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            executor   TEXT NOT NULL,
+            model      TEXT,
+            input_tokens          INTEGER,
+            output_tokens         INTEGER,
+            cache_read_tokens     INTEGER,
+            cache_creation_tokens INTEGER,
+            reasoning_tokens      INTEGER,
+            usage_raw_json TEXT,
+            created_at TEXT NOT NULL,
+            UNIQUE (task_id, agent, session_id)
+        );
+    """)
+    conn.execute(
+        """INSERT INTO session_token_usage
+           (task_id, agent, session_id, executor, input_tokens, created_at)
+           VALUES ('TASK-1', 'dev_agent', 'sess-a', 'claude', 10, '2026-06-09T00:00:00Z')"""
+    )
+    conn.commit()
+    conn.close()
+
+    db = Database(db_path)
+
+    rows = db.list_session_token_usage(task_id="TASK-1", scope_type="task")
+    columns = {row["name"] for row in db._conn.execute(
+        "PRAGMA table_info(session_token_usage)"
+    ).fetchall()}
+    indexes = {row["name"] for row in db._conn.execute(
+        "PRAGMA index_list(session_token_usage)"
+    ).fetchall()}
+
+    assert rows[0]["scope_type"] == "task"
+    assert rows[0]["scope_id"] == "TASK-1"
+    assert {"scope_type", "scope_id", "thread_id", "talk_id"} <= columns
+    assert "idx_session_token_usage_scope" in indexes
 
 
 def test_insert_or_ignore_on_duplicate_unique_key(db: Database):
@@ -121,6 +168,106 @@ def test_round_trip_all_fields_populated(db: Database):
     assert r["created_at"] is not None
 
 
+def test_insert_thread_scoped_session_token_usage(db: Database):
+    db.insert_session_token_usage(
+        task_id=None,
+        agent="alice",
+        session_id="TOK-1",
+        executor="claude",
+        token_usage=_usage(input_tokens=12, output_tokens=3, model="sonnet"),
+        scope_type="thread",
+        scope_id="THR-001",
+        thread_id="THR-001",
+        invocation_purpose="reply",
+    )
+
+    rows = db.list_session_token_usage(scope_type="thread", thread_id="THR-001")
+
+    assert len(rows) == 1
+    assert rows[0]["task_id"] is None
+    assert rows[0]["scope_type"] == "thread"
+    assert rows[0]["scope_id"] == "THR-001"
+    assert rows[0]["thread_id"] == "THR-001"
+    assert rows[0]["talk_id"] is None
+    assert rows[0]["invocation_purpose"] == "reply"
+    assert rows[0]["total_tokens"] == 15
+
+
+def test_existing_task_writes_default_to_task_scope(db: Database):
+    db.insert_session_token_usage(
+        task_id="TASK-1",
+        agent="dev_agent",
+        session_id="sess-a",
+        executor="claude",
+        token_usage=_usage(input_tokens=10, output_tokens=20),
+    )
+
+    rows = db.list_session_token_usage(task_id="TASK-1", scope_type="task")
+
+    assert len(rows) == 1
+    assert rows[0]["scope_type"] == "task"
+    assert rows[0]["scope_id"] == "TASK-1"
+
+
+def test_aggregate_by_thread_and_talk(db: Database):
+    db.insert_session_token_usage(
+        task_id=None,
+        agent="alice",
+        session_id="thread-a",
+        executor="claude",
+        token_usage=_usage(input_tokens=10, output_tokens=2),
+        scope_type="thread",
+        scope_id="THR-001",
+        thread_id="THR-001",
+        invocation_purpose="bootstrap",
+    )
+    db.insert_session_token_usage(
+        task_id=None,
+        agent="bob",
+        session_id="thread-b",
+        executor="claude",
+        token_usage=_usage(input_tokens=20, output_tokens=3),
+        scope_type="thread",
+        scope_id="THR-001",
+        thread_id="THR-001",
+        invocation_purpose="reply",
+    )
+    db.insert_session_token_usage(
+        task_id="TASK-9",
+        agent="alice",
+        session_id="talk-task",
+        executor="codex",
+        token_usage=_usage(input_tokens=7, output_tokens=4),
+        scope_type="task",
+        scope_id="TASK-9",
+        talk_id="TALK-001",
+    )
+
+    by_thread = db.aggregate_session_token_usage_by_thread()
+    by_talk = db.aggregate_session_token_usage_by_talk()
+
+    assert by_thread == [{
+        "thread_id": "THR-001",
+        "sessions": 2,
+        "input_tokens": 30,
+        "output_tokens": 5,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+        "reasoning_tokens": 0,
+        "total_tokens": 35,
+    }]
+    assert by_talk == [{
+        "talk_id": "TALK-001",
+        "sessions": 1,
+        "input_tokens": 7,
+        "output_tokens": 4,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+        "reasoning_tokens": 0,
+        "total_tokens": 11,
+    }]
+
+
 def test_aggregate_by_agent_filters_by_since(db: Database):
     """ISO timestamps compare lexicographically. since= filters out older rows."""
     import time
@@ -208,3 +355,20 @@ def test_aggregate_by_task_filters_by_task_id(db: Database):
     assert rollup[0]["task_id"] == "T1"
     assert rollup[0]["sessions"] == 2
     assert rollup[0]["input_tokens"] == 30
+
+
+def test_insert_token_usage_supports_dream_scope(db: Database):
+    db.insert_session_token_usage(
+        task_id=None,
+        agent="dev_agent",
+        session_id="dream-session",
+        executor="claude",
+        token_usage=TokenUsage(input_tokens=10, output_tokens=5, model="test"),
+        scope_type="dream",
+        scope_id="DREAM-001",
+    )
+
+    rows = db.list_session_token_usage(scope_type="dream", scope_id="DREAM-001")
+    assert len(rows) == 1
+    assert rows[0]["scope_type"] == "dream"
+    assert rows[0]["scope_id"] == "DREAM-001"
