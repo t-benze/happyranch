@@ -29,6 +29,7 @@ class SystemAssistantPaths:
     root: Path
     config_path: Path
     workspace: Path
+    knowledge_dir: Path
     learnings_dir: Path
     logs_dir: Path
 
@@ -64,6 +65,7 @@ def system_assistant_paths(runtime_root: Path) -> SystemAssistantPaths:
         root=root,
         config_path=root / "config.json",
         workspace=workspace,
+        knowledge_dir=workspace / "happyranch",
         learnings_dir=workspace / "learnings",
         logs_dir=workspace / "logs",
     )
@@ -74,6 +76,7 @@ def _managed_dir_entries(paths: SystemAssistantPaths) -> list[tuple[Path, str]]:
         (paths.root.parent, "assistant system directory"),
         (paths.root, "assistant root"),
         (paths.workspace, "assistant workspace"),
+        (paths.knowledge_dir, "assistant knowledge directory"),
         (paths.learnings_dir, "assistant learnings directory"),
         (paths.logs_dir, "assistant logs directory"),
     ]
@@ -136,6 +139,16 @@ def _learnings_index_invalid_detail(path: Path) -> str | None:
         return None
     if not path.is_file():
         return "assistant learnings index is not a regular file"
+    return None
+
+
+def _knowledge_index_invalid_detail(path: Path) -> str | None:
+    if path.is_symlink():
+        return "assistant knowledge index must not be a symlink"
+    if not path.exists():
+        return "assistant knowledge index is missing"
+    if not path.is_file():
+        return "assistant knowledge index is not a regular file"
     return None
 
 
@@ -277,6 +290,17 @@ def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
             detail=learnings_index_invalid_detail,
             latest_probe_results=config.latest_probe_results,
         )
+    knowledge_index_invalid_detail = _knowledge_index_invalid_detail(
+        paths.knowledge_dir / "README.md",
+    )
+    if knowledge_index_invalid_detail is not None:
+        return AssistantStatus(
+            state=AssistantState.STALE_OR_BROKEN,
+            selected_executor=config.selected_executor,
+            workspace_path=config.workspace_path,
+            detail=knowledge_index_invalid_detail,
+            latest_probe_results=config.latest_probe_results,
+        )
     return AssistantStatus(
         state=AssistantState.CONFIGURED,
         selected_executor=config.selected_executor,
@@ -305,6 +329,12 @@ Authority boundary:
 - Run mutating HappyRanch commands only after explicit user confirmation.
 - Do not silently edit runtime config, org definitions, agent files, or teams.
 - Do not act as an org agent, team member, manager, or task worker.
+
+Knowledge:
+- Start with `happyranch/README.md` in this workspace.
+- Use the copied HappyRanch guides under `happyranch/docs/`, `happyranch/protocol/`,
+  and `happyranch/skills/` as your local source of truth.
+- Prefer `happyranch` CLI commands when inspecting or changing a runtime.
 """
 
 
@@ -320,6 +350,119 @@ def _reject_existing_invalid_bootstrap_file(path: Path, filename: str) -> None:
     raise ValueError(invalid_detail)
 
 
+_KNOWLEDGE_SOURCES = [
+    ("README.md", "README.md"),
+    ("docs/agent-guides/project-layout.md", "docs/agent-guides/project-layout.md"),
+    (
+        "docs/agent-guides/runtime-and-configuration.md",
+        "docs/agent-guides/runtime-and-configuration.md",
+    ),
+    (
+        "docs/agent-guides/agent-executors-and-permissions.md",
+        "docs/agent-guides/agent-executors-and-permissions.md",
+    ),
+    (
+        "docs/agent-guides/orchestrator-contracts.md",
+        "docs/agent-guides/orchestrator-contracts.md",
+    ),
+    ("docs/agent-guides/web-and-cli.md", "docs/agent-guides/web-and-cli.md"),
+    (
+        "docs/agent-guides/features-and-invariants.md",
+        "docs/agent-guides/features-and-invariants.md",
+    ),
+    ("protocol/00-completion-contract.md", "protocol/00-completion-contract.md"),
+    ("protocol/05-runtime-blueprint.md", "protocol/05-runtime-blueprint.md"),
+    ("protocol/05b-agent-runtime.md", "protocol/05b-agent-runtime.md"),
+    ("protocol/05c-orchestrator.md", "protocol/05c-orchestrator.md"),
+    ("protocol/06-knowledge-base.md", "protocol/06-knowledge-base.md"),
+    ("protocol/skills/talk/SKILL.md", "protocol/skills/talk/SKILL.md"),
+    ("protocol/skills/jobs/SKILL.md", "protocol/skills/jobs/SKILL.md"),
+    ("skills/happyranch/SKILL.md", "skills/happyranch/SKILL.md"),
+]
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def _write_file(path: Path, content: str, *, symlink_detail: str) -> None:
+    _reject_symlink(path, symlink_detail)
+    if path.exists() and not path.is_file():
+        raise ValueError(f"assistant knowledge file is not a regular file: {path.name}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+
+
+def _copy_knowledge_file(source: Path, destination: Path) -> bool:
+    if not source.is_file():
+        return False
+    _write_file(
+        destination,
+        source.read_text(errors="replace"),
+        symlink_detail="assistant knowledge file must not be a symlink",
+    )
+    return True
+
+
+def _write_knowledge_pack(paths: SystemAssistantPaths) -> None:
+    _reject_symlink(
+        paths.knowledge_dir,
+        "assistant knowledge directory must not be a symlink",
+    )
+    _ensure_managed_dir(
+        paths.knowledge_dir,
+        "assistant knowledge directory must not be a symlink",
+        "assistant knowledge directory is not a directory",
+    )
+    root = _project_root()
+    copied: list[str] = []
+    missing: list[str] = []
+    for source_rel, dest_rel in _KNOWLEDGE_SOURCES:
+        source = root / source_rel
+        destination = paths.knowledge_dir / dest_rel
+        if _copy_knowledge_file(source, destination):
+            copied.append(dest_rel)
+        else:
+            missing.append(source_rel)
+    index = "\n".join(
+        [
+            "# HappyRanch System Assistant Knowledge",
+            "",
+            "This directory is a local, runtime-global knowledge pack for the",
+            "HappyRanch system assistant. Use these files before answering",
+            "questions about HappyRanch setup, protocol, runtime layout, CLI",
+            "commands, agent execution, orchestration, knowledge base behavior,",
+            "threads, jobs, artifacts, and callbacks.",
+            "",
+            "Core facts:",
+            "- HappyRanch is a multi-agent organization runtime supervised by a founder.",
+            "- Runtime containers use schema v2: `<runtime>/orgs/<slug>/...`.",
+            "- The system assistant is runtime-global under `<runtime>/system/assistant/`.",
+            "- Org agents are discovered from `org/agents/*.md`; the system assistant is not an org agent.",
+            "- Prefer the `happyranch` CLI for runtime side effects.",
+            "",
+            "Read first:",
+            "- `docs/agent-guides/runtime-and-configuration.md`",
+            "- `docs/agent-guides/web-and-cli.md`",
+            "- `docs/agent-guides/agent-executors-and-permissions.md`",
+            "- `protocol/05-runtime-blueprint.md`",
+            "- `skills/happyranch/SKILL.md`",
+            "",
+            "Copied files:",
+            *[f"- `{name}`" for name in copied],
+            "",
+            "Missing source files at bootstrap time:",
+            *([f"- `{name}`" for name in missing] if missing else ["- None"]),
+            "",
+        ]
+    )
+    _write_file(
+        paths.knowledge_dir / "README.md",
+        index,
+        symlink_detail="assistant knowledge index must not be a symlink",
+    )
+
+
 def bootstrap_assistant_workspace(runtime_root: Path, *, executor: str) -> None:
     selected_executor = _validate_executor(executor)
     paths = system_assistant_paths(runtime_root)
@@ -329,6 +472,10 @@ def bootstrap_assistant_workspace(runtime_root: Path, *, executor: str) -> None:
     )
     _reject_symlink(paths.root, "assistant root must not be a symlink")
     _reject_symlink(paths.workspace, "assistant workspace must not be a symlink")
+    _reject_symlink(
+        paths.knowledge_dir,
+        "assistant knowledge directory must not be a symlink",
+    )
     _reject_symlink(
         paths.learnings_dir,
         "assistant learnings directory must not be a symlink",
@@ -351,6 +498,14 @@ def bootstrap_assistant_workspace(runtime_root: Path, *, executor: str) -> None:
     )
     if learnings_index_invalid_detail is not None:
         raise ValueError(learnings_index_invalid_detail)
+    knowledge_index_invalid_detail = _knowledge_index_invalid_detail(
+        paths.knowledge_dir / "README.md",
+    )
+    if (
+        knowledge_index_invalid_detail is not None
+        and knowledge_index_invalid_detail != "assistant knowledge index is missing"
+    ):
+        raise ValueError(knowledge_index_invalid_detail)
     _ensure_managed_dir(
         paths.root.parent,
         "assistant system directory must not be a symlink",
@@ -366,6 +521,7 @@ def bootstrap_assistant_workspace(runtime_root: Path, *, executor: str) -> None:
         "assistant workspace must not be a symlink",
         "assistant workspace is not a directory",
     )
+    _write_knowledge_pack(paths)
     _ensure_managed_dir(
         paths.learnings_dir,
         "assistant learnings directory must not be a symlink",

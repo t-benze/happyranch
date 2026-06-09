@@ -24,6 +24,7 @@ def test_system_assistant_paths_are_runtime_global(tmp_path: Path) -> None:
     assert paths.root == tmp_path / "system" / "assistant"
     assert paths.config_path == tmp_path / "system" / "assistant" / "config.json"
     assert paths.workspace == tmp_path / "system" / "assistant" / "workspace"
+    assert paths.knowledge_dir == tmp_path / "system" / "assistant" / "workspace" / "happyranch"
     assert "orgs" not in paths.root.parts
 
 
@@ -733,6 +734,23 @@ def test_classify_stale_when_learnings_index_is_directory(tmp_path: Path) -> Non
     assert status.detail == "assistant learnings index is not a regular file"
 
 
+def test_classify_stale_when_knowledge_index_is_missing(tmp_path: Path) -> None:
+    bootstrap_assistant_workspace(tmp_path, executor="codex")
+    paths = system_assistant_paths(tmp_path)
+    (paths.knowledge_dir / "README.md").unlink()
+    cfg = AssistantConfig(
+        selected_executor="codex",
+        selected_command="codex",
+        workspace_path=str(paths.workspace),
+    )
+
+    save_assistant_config(tmp_path, cfg)
+    status = classify_assistant_state(tmp_path)
+
+    assert status.state == AssistantState.STALE_OR_BROKEN
+    assert status.detail == "assistant knowledge index is missing"
+
+
 def test_classify_stale_when_claude_prompt_file_is_missing(tmp_path: Path) -> None:
     bootstrap_assistant_workspace(tmp_path, executor="claude")
     workspace = system_assistant_paths(tmp_path).workspace
@@ -824,6 +842,14 @@ def test_bootstrap_agents_backed_workspace_writes_agents_surface(
     agents_md = (workspace / "AGENTS.md").read_text()
     assert "System Assistant" in agents_md
     assert "explicit user confirmation" in agents_md
+    assert "happyranch/README.md" in agents_md
+    knowledge_index = workspace / "happyranch" / "README.md"
+    assert knowledge_index.is_file()
+    knowledge = knowledge_index.read_text()
+    assert "HappyRanch System Assistant Knowledge" in knowledge
+    assert "runtime-and-configuration.md" in knowledge
+    assert (workspace / "happyranch" / "docs" / "agent-guides" / "web-and-cli.md").is_file()
+    assert (workspace / "happyranch" / "skills" / "happyranch" / "SKILL.md").is_file()
     assert (workspace / "learnings" / "_index.md").exists()
     assert (workspace / "logs").is_dir()
 

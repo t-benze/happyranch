@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 from pathlib import Path
+import shutil
 from typing import Any
 
 from fastapi import (
@@ -92,6 +94,26 @@ def _probe_result_to_dict(
     }
 
 
+def _spec_with_argv(spec: InteractiveExecutorSpec, argv: list[str]) -> InteractiveExecutorSpec:
+    return InteractiveExecutorSpec(
+        name=spec.name,
+        argv=argv,
+        prompt_surface=spec.prompt_surface,
+        env=getattr(spec, "env", {}),
+    )
+
+
+def _resolved_argv_for_spec(spec: InteractiveExecutorSpec) -> list[str]:
+    env = os.environ.copy()
+    env.update(getattr(spec, "env", {}))
+    if not spec.argv:
+        return []
+    executable = shutil.which(spec.argv[0], path=env.get("PATH"))
+    if executable is None:
+        return list(spec.argv)
+    return [executable, *spec.argv[1:]]
+
+
 def _spec_for_executor(
     selected_executor: str,
     specs: list[InteractiveExecutorSpec],
@@ -148,10 +170,13 @@ def _normalize_probe_results(
 def _probe_selected_executor(
     selected_executor: str,
     specs: list[InteractiveExecutorSpec],
+    *,
+    timeout_seconds: float,
 ) -> tuple[InteractiveExecutorSpec, dict[str, Any]]:
     spec = _spec_for_executor(selected_executor, specs)
-    result = ProbeRunner().probe_executor(spec)
-    row = _probe_result_to_dict(spec, result)
+    result = ProbeRunner().probe_executor(spec, timeout_seconds=timeout_seconds)
+    row_spec = _spec_with_argv(spec, _resolved_argv_for_spec(spec)) if result.passed else spec
+    row = _probe_result_to_dict(row_spec, result)
     if not result.passed:
         raise HTTPException(
             status_code=400,
@@ -160,7 +185,7 @@ def _probe_selected_executor(
                 "probe_result": row,
             },
         )
-    return spec, row
+    return row_spec, row
 
 
 def _assistant_error(code: str, exc: Exception) -> HTTPException:
@@ -247,10 +272,14 @@ def probe_assistant_executors(request: Request) -> dict[str, Any]:
     _runtime_root(request)
     state: DaemonState = request.app.state.daemon
     runner = ProbeRunner()
-    probe_results = [
-        _probe_result_to_dict(spec, runner.probe_executor(spec))
-        for spec in build_executor_specs(state.settings)
-    ]
+    probe_results = []
+    for spec in build_executor_specs(state.settings):
+        result = runner.probe_executor(
+            spec,
+            timeout_seconds=state.settings.assistant_probe_timeout_seconds,
+        )
+        row_spec = _spec_with_argv(spec, _resolved_argv_for_spec(spec)) if result.passed else spec
+        probe_results.append(_probe_result_to_dict(row_spec, result))
     return {"probe_results": probe_results}
 
 
@@ -279,7 +308,12 @@ async def configure_assistant(
         ) from exc
 
     _normalize_probe_results(body.probe_results, specs)
-    spec, selected_probe_result = _probe_selected_executor(body.selected_executor, specs)
+    spec, selected_probe_result = await asyncio.to_thread(
+        _probe_selected_executor,
+        body.selected_executor,
+        specs,
+        timeout_seconds=state.settings.assistant_probe_timeout_seconds,
+    )
 
     try:
         config = AssistantConfig(

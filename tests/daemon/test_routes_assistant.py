@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
+import shutil
 import sys
 from typing import Any
 
@@ -63,7 +64,7 @@ def _patch_probe_runner(
     from runtime.daemon.routes import assistant as assistant_route
 
     class FakeProbeRunner:
-        def probe_executor(self, spec: Any) -> ProbeResult:
+        def probe_executor(self, spec: Any, *, timeout_seconds: float = 3) -> ProbeResult:
             return ProbeResult(
                 passed=passed,
                 executor=spec.name,
@@ -87,6 +88,13 @@ def _daemon_probe_result(executor: str, argv: list[str]) -> dict[str, Any]:
         "elapsed_seconds": 0.02,
         "returncode": None,
     }
+
+
+def _expected_resolved_argv(argv: list[str]) -> list[str]:
+    if not argv:
+        return []
+    executable = shutil.which(argv[0])
+    return [executable, *argv[1:]] if executable is not None else argv
 
 
 def test_assistant_status_no_active_runtime(tmp_home: Path, auth: dict[str, str]) -> None:
@@ -143,7 +151,12 @@ def test_assistant_probes_returns_fake_probe_results(
         prompt_surface: str
 
     class FakeProbeRunner:
-        def probe_executor(self, spec: FakeSpec) -> ProbeResult:
+        def probe_executor(
+            self,
+            spec: FakeSpec,
+            *,
+            timeout_seconds: float = 3,
+        ) -> ProbeResult:
             return ProbeResult(
                 passed=spec.name == "codex",
                 executor=spec.name,
@@ -187,8 +200,8 @@ def test_assistant_probes_returns_fake_probe_results(
             {
                 "passed": True,
                 "executor": "codex",
-                "command": "/bin/codex",
-                "argv": ["/bin/codex"],
+                "command": _expected_resolved_argv(["/bin/codex"])[0],
+                "argv": _expected_resolved_argv(["/bin/codex"]),
                 "name": "codex",
                 "prompt_surface": "AGENTS.md",
                 "output_excerpt": "codex output",
@@ -200,6 +213,43 @@ def test_assistant_probes_returns_fake_probe_results(
             },
         ]
     }
+
+
+def test_assistant_probes_use_configured_timeout(
+    runtime,
+    auth: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from runtime.daemon.routes import assistant as assistant_route
+
+    seen_timeouts: list[float] = []
+
+    class FakeProbeRunner:
+        def probe_executor(self, spec: Any, *, timeout_seconds: float = 3) -> ProbeResult:
+            seen_timeouts.append(timeout_seconds)
+            return ProbeResult(
+                passed=False,
+                executor=spec.name,
+                output_excerpt="",
+                detail="fake",
+                elapsed_seconds=0.01,
+                timed_out=True,
+                error="timeout",
+                returncode=None,
+            )
+
+    monkeypatch.setattr(assistant_route, "ProbeRunner", FakeProbeRunner)
+    state = DaemonState.from_runtime(
+        runtime,
+        Settings(assistant_probe_timeout_seconds=42),
+    )
+    client = TestClient(create_app(state))
+    client.headers.update(auth)
+
+    response = client.post("/api/v1/assistant/probes")
+
+    assert response.status_code == 200, response.text
+    assert seen_timeouts == [42, 42, 42, 42]
 
 
 def test_assistant_configure_requires_daemon_passing_probe(
@@ -316,7 +366,8 @@ def test_assistant_configure_writes_workspace_and_status(
 ) -> None:
     _patch_probe_runner(monkeypatch)
     probe_result = _passed_probe_result("codex")
-    expected_probe_result = _daemon_probe_result("codex", ["codex"])
+    expected_argv = _expected_resolved_argv(["codex"])
+    expected_probe_result = _daemon_probe_result("codex", expected_argv)
 
     response = client.post(
         "/api/v1/assistant/configure",
@@ -337,8 +388,8 @@ def test_assistant_configure_writes_workspace_and_status(
     config = load_assistant_config(runtime.root)
     assert config is not None
     assert config.selected_executor == "codex"
-    assert config.selected_command == "codex"
-    assert config.selected_argv == ["codex"]
+    assert config.selected_command == expected_argv[0]
+    assert config.selected_argv == expected_argv
     assert config.workspace_path == str(paths.workspace)
     assert config.latest_probe_results == [expected_probe_result]
 

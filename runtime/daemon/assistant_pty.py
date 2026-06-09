@@ -30,6 +30,8 @@ _OUTPUT_EXCERPT_BYTES = 4096
 _READY_EXIT_OBSERVATION_SECONDS = 0.25
 _SESSION_REPLAY_CHARS = 8192
 _SESSION_SUBSCRIBER_QUEUE_SIZE = 256
+_DEFAULT_PTY_ROWS = 24
+_DEFAULT_PTY_COLS = 80
 _PTY_EXEC_HELPER_MODULE = "runtime.daemon.pty_exec_helper"
 
 
@@ -190,6 +192,12 @@ class AssistantPtySession:
         if executable is None:
             raise FileNotFoundError(f"executable not found: {self.argv[0]}")
         master_fd, slave_fd = pty.openpty()
+        with contextlib.suppress(OSError, ValueError):
+            _set_pty_window_size(
+                master_fd,
+                rows=_DEFAULT_PTY_ROWS,
+                cols=_DEFAULT_PTY_COLS,
+            )
         launch_argv = _build_session_launch_argv(
             executable=executable,
             argv=self.argv,
