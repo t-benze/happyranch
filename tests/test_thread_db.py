@@ -34,7 +34,7 @@ def test_dispatched_from_talk_id_round_trips(tmp_path):
 
 
 from runtime.models import (
-    ThreadInvocation, ThreadInvocationPurpose, ThreadInvocationStatus,
+    ThreadAttachment, ThreadInvocation, ThreadInvocationPurpose, ThreadInvocationStatus,
     ThreadMessage, ThreadMessageKind, ThreadParticipant, ThreadRecord,
     ThreadStatus,
 )
@@ -171,6 +171,98 @@ def test_append_thread_system_message(tmp_path):
     )
     msgs = db.list_thread_messages("THR-001")
     assert msgs[0].system_payload["kind_tag"] == "participant_added"
+
+
+def test_thread_message_attachments_roundtrip(db) -> None:
+    db.insert_thread(ThreadRecord(id="THR-001", subject="Files"))
+    seq = db.append_thread_message(
+        thread_id="THR-001",
+        speaker="founder",
+        kind=ThreadMessageKind.MESSAGE,
+        body_markdown=None,
+        attachments=[
+            ThreadAttachment(
+                artifact_name="THR-001-report.pdf",
+                display_name="report.pdf",
+                size_bytes=123,
+                content_type="application/pdf",
+                uploaded_by="founder",
+            ),
+            ThreadAttachment(
+                artifact_name="THR-001-data.csv",
+                display_name="data.csv",
+                size_bytes=42,
+                content_type="text/csv",
+                uploaded_by="founder",
+            ),
+        ],
+    )
+
+    messages = db.list_thread_messages("THR-001")
+
+    assert seq == 1
+    assert len(messages) == 1
+    assert messages[0].attachments == [
+        ThreadAttachment(
+            artifact_name="THR-001-report.pdf",
+            display_name="report.pdf",
+            size_bytes=123,
+            content_type="application/pdf",
+            uploaded_by="founder",
+        ),
+        ThreadAttachment(
+            artifact_name="THR-001-data.csv",
+            display_name="data.csv",
+            size_bytes=42,
+            content_type="text/csv",
+            uploaded_by="founder",
+        ),
+    ]
+
+
+def test_thread_message_attachments_default_empty(db) -> None:
+    db.insert_thread(ThreadRecord(id="THR-001", subject="No files"))
+    db.append_thread_message(
+        thread_id="THR-001",
+        speaker="founder",
+        kind=ThreadMessageKind.MESSAGE,
+        body_markdown="hello",
+    )
+
+    assert db.list_thread_messages("THR-001")[0].attachments == []
+
+
+def test_thread_message_attachment_failure_rolls_back_parent_message(db) -> None:
+    db.insert_thread(ThreadRecord(id="THR-001", subject="Bad file"))
+
+    with pytest.raises(Exception):
+        db.append_thread_message(
+            thread_id="THR-001",
+            speaker="founder",
+            kind=ThreadMessageKind.MESSAGE,
+            body_markdown="bad attachment",
+            attachments=[
+                ThreadAttachment.model_construct(
+                    artifact_name="THR-001-bad.txt",
+                    display_name=None,
+                    uploaded_by="founder",
+                ),
+            ],
+        )
+
+    assert db.list_thread_messages("THR-001") == []
+
+    seq = db.append_thread_message(
+        thread_id="THR-001",
+        speaker="founder",
+        kind=ThreadMessageKind.MESSAGE,
+        body_markdown="good message",
+    )
+
+    messages = db.list_thread_messages("THR-001")
+    assert seq == 1
+    assert len(messages) == 1
+    assert messages[0].body_markdown == "good message"
 
 
 def test_mint_thread_invocation(tmp_path):

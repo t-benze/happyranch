@@ -260,6 +260,14 @@ class ThreadParticipant(BaseModel):
     added_by: str = "founder"
 
 
+class ThreadAttachment(BaseModel):
+    artifact_name: str
+    display_name: str
+    size_bytes: int | None = None
+    content_type: str | None = None
+    uploaded_by: str
+
+
 class ThreadMessage(BaseModel):
     id: int | None = None
     thread_id: str
@@ -269,6 +277,7 @@ class ThreadMessage(BaseModel):
     body_markdown: str | None = None
     decline_reason: str | None = None
     system_payload: dict | None = None
+    attachments: list[ThreadAttachment] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_now)
 
 

@@ -92,6 +92,39 @@ describe('threads api mirror', () => {
     expect(url).toMatch(/since_seq=7/);
   });
 
+  test('sendThreadFollowUp can include attachments', async () => {
+    seedToken();
+    let received: unknown = null;
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/threads/THR-001/send`, async ({ request: req }) => {
+        received = await req.json();
+        return HttpResponse.json({ thread_id: 'THR-001', seq: 2 });
+      }),
+    );
+
+    await sendThreadFollowUp(SLUG, 'THR-001', {
+      body_markdown: '',
+      attachments: [
+        {
+          artifact_name: 'THR-001-report.pdf',
+          display_name: 'report.pdf',
+          content_type: 'application/pdf',
+        },
+      ],
+    });
+
+    expect(received).toEqual({
+      body_markdown: '',
+      attachments: [
+        {
+          artifact_name: 'THR-001-report.pdf',
+          display_name: 'report.pdf',
+          content_type: 'application/pdf',
+        },
+      ],
+    });
+  });
+
   test.each([
     ['sendThreadFollowUp', () => sendThreadFollowUp(SLUG, 'THR-001', { body_markdown: 'x' }), '/send'],
     ['inviteToThread', () => inviteToThread(SLUG, 'THR-001', { agent_name: 'a' }), '/invite'],

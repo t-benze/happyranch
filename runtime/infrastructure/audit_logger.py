@@ -686,12 +686,17 @@ class AuditLogger:
         seq: int,
         speaker: str,
         kind: str,
+        attachment_names: list[str] | None = None,
     ) -> None:
+        payload: dict[str, object] = {"seq": seq, "kind": kind}
+        if attachment_names:
+            payload["attachment_count"] = len(attachment_names)
+            payload["attachment_names"] = attachment_names
         self._db.insert_audit_log(
             task_id=thread_id,
             agent=speaker,
             action="thread_message_sent",
-            payload={"seq": seq, "kind": kind},
+            payload=payload,
         )
 
     def log_thread_decline_consumed(

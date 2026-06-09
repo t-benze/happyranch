@@ -10,6 +10,7 @@ function msg(seq: number, responders: ResponderStatusEntry[]): ThreadMessage {
     body_markdown: 'hi',
     decline_reason: null,
     system_payload: null,
+    attachments: [],
     created_at: '2026-06-03T10:00:00Z',
     responder_status: responders,
   };

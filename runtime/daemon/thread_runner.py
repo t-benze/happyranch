@@ -88,12 +88,30 @@ _EXECUTOR_MAP = {
 }
 
 
+def _render_attachments_for_prompt(m: ThreadMessage) -> str:
+    if not m.attachments:
+        return ""
+    lines = ["Attachments:"]
+    for attachment in m.attachments:
+        size = (
+            f", {attachment.size_bytes} bytes"
+            if attachment.size_bytes is not None
+            else ""
+        )
+        lines.append(
+            f"- {attachment.display_name} "
+            f"(`artifact:{attachment.artifact_name}`{size})"
+        )
+    return "\n".join(lines)
+
+
 def _render_message(m: ThreadMessage) -> str:
     ts = m.created_at.isoformat()
     if m.kind is ThreadMessageKind.MESSAGE:
         head = f"[Message {m.seq} — {m.speaker} · {ts}]"
         body = m.body_markdown or ""
-        return "\n".join(filter(None, [head, "", body])) + "\n---"
+        attachments = _render_attachments_for_prompt(m)
+        return "\n".join(filter(None, [head, "", body, attachments])) + "\n---"
     if m.kind is ThreadMessageKind.DECLINE:
         return (
             f"[Message {m.seq} — {m.speaker} · {ts}]\n"

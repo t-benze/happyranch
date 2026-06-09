@@ -130,6 +130,17 @@ def test_dream_skill_documents_callback_contract() -> None:
     assert "Do not write KB entries directly" in body
 
 
+def test_thread_skill_documents_attachment_flow() -> None:
+    body = (SKILLS_ROOT / "thread" / "SKILL.md").read_text()
+    assert "--attach" in body
+    assert "happyranch artifacts put" in body
+    assert "happyranch artifacts get" in body
+    assert (
+        "happyranch threads reply --org <slug> --thread-id <id> --from-file "
+        "/tmp/thread-reply-<id>-<seq>.json"
+    ) in body
+
+
 def test_skill_cli_commands_exist() -> None:
     """Every `happyranch <subcommand>` referenced by a skill must be a real subcommand."""
     from cli.main import build_parser

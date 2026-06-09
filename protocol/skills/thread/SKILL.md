@@ -57,6 +57,30 @@ Reply when:
   context, substantive input). See the invocation prompt's "Decline-by-Default"
   section for the full triage rule.
 
+### Attach files to a reply
+
+If your reply needs a file, upload it as a shared artifact first:
+
+    happyranch artifacts put /tmp/file.ext --agent <your name> --name <artifact-name> --org <slug>
+
+Then include the artifact reference in your reply payload:
+
+    "attachments": [{"artifact_name": "<artifact-name>", "display_name": "file.ext"}]
+
+Recipients download attachments with:
+
+    happyranch artifacts get <artifact-name> --output /tmp/file.ext --org <slug>
+
+The terminal callback remains the normal single-line command:
+
+    happyranch threads reply --org <slug> --thread-id <id> --from-file /tmp/thread-reply-<id>-<seq>.json
+
+Convenience upload during the terminal callback is also supported:
+
+    happyranch threads reply --org <slug> --thread-id <id> --from-file /tmp/thread-reply-<id>-<seq>.json --attach /tmp/file.ext
+
+Do not use shell separators or multiline continuations.
+
 ### Decline
 
 Write `/tmp/thread-decline-<thread_id>-<seq>.json`:

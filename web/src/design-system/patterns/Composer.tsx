@@ -12,8 +12,10 @@
  * by other surfaces (e.g. NewThreadDialog).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Paperclip, X } from 'lucide-react';
 import { Button } from '@/design-system/primitives/Button';
 import { useOrgSlug } from '@/lib/orgSlug';
+import { MAX_THREAD_ATTACHMENTS, REMOVE_ATTACHMENT_LABEL } from '@/lib/threadAttachments';
 import { MentionTextarea } from './MentionTextarea';
 import type { AgentSummary } from '@/lib/api/agents';
 
@@ -24,6 +26,11 @@ interface DraftHandle {
   draft: string;
   setDraft: (next: string) => void;
   clearDraft: () => void;
+}
+
+export interface PendingAttachment {
+  id: string;
+  file: File;
 }
 
 function useThreadDraft(orgSlug: string, threadId: string): DraftHandle {
@@ -83,7 +90,9 @@ interface ComposerProps {
    * Broadcast model: the send is always delivered to all thread participants;
    * no per-message addressing is needed.
    */
-  onSend: (markdown: string) => unknown | Promise<unknown>;
+  onSend: (markdown: string, attachments: PendingAttachment[]) => unknown | Promise<unknown>;
+  attachments?: PendingAttachment[];
+  onAttachmentsChange?: (attachments: PendingAttachment[]) => void;
   /** Lets a parent focus the textarea (e.g. the R keyboard shortcut). */
   registerFocus?: (focus: () => void) => void;
 
@@ -100,17 +109,25 @@ export function Composer({
   placeholder,
   registerFocus,
   onSend,
+  attachments = [],
+  onAttachmentsChange,
   agents = [],
   threadId = '',
 }: ComposerProps): JSX.Element {
   const orgSlug = useOrgSlug();
   const { draft, setDraft, clearDraft } = useThreadDraft(orgSlug, threadId);
+  const canSend = Boolean(draft.trim() || attachments.length);
+
+  const removeAttachment = (id: string) => {
+    onAttachmentsChange?.(attachments.filter((item) => item.id !== id));
+  };
 
   const submit = async () => {
-    if (!draft.trim() || disabled || pending) return;
+    if (!canSend || disabled || pending) return;
     try {
-      await onSend(draft);
+      await onSend(draft, attachments);
       clearDraft();
+      onAttachmentsChange?.([]);
     } catch {
       // Composition surfaces via errorMessage; draft is preserved for retry.
     }
@@ -130,13 +147,61 @@ export function Composer({
         ariaLabel="Compose follow-up"
         registerFocus={registerFocus}
       />
+      <div className="flex flex-col gap-2">
+        <label className="border-border-subtle bg-surface text-caption hover:bg-surface-hover inline-flex w-fit cursor-pointer items-center gap-2 rounded-md border px-2 py-1">
+          <Paperclip className="h-3.5 w-3.5" aria-hidden="true" />
+          <span>Attach files</span>
+          <input
+            aria-label="Attach files"
+            type="file"
+            multiple
+            className="sr-only"
+            disabled={disabled || pending}
+            onChange={(event) => {
+              const files = Array.from(event.currentTarget.files ?? []).slice(
+                0,
+                MAX_THREAD_ATTACHMENTS,
+              );
+              onAttachmentsChange?.([
+                ...attachments,
+                ...files.map((file) => ({
+                  id: `${file.name}-${file.size}-${file.lastModified}`,
+                  file,
+                })),
+              ].slice(0, MAX_THREAD_ATTACHMENTS));
+              event.currentTarget.value = '';
+            }}
+          />
+        </label>
+        {attachments.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {attachments.map((item) => (
+              <span
+                key={item.id}
+                className="border-border-subtle bg-surface-raised text-caption inline-flex max-w-full items-center gap-2 rounded-md border px-2 py-1"
+              >
+                <span className="max-w-64 truncate">{item.file.name}</span>
+                <button
+                  type="button"
+                  className="text-text-muted hover:text-text"
+                  aria-label={REMOVE_ATTACHMENT_LABEL}
+                  onClick={() => removeAttachment(item.id)}
+                  disabled={disabled || pending}
+                >
+                  <X className="h-3.5 w-3.5" aria-hidden="true" />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
       <div className="flex items-center justify-between gap-2">
         {errorMessage ? (
           <span className="text-caption text-feedback-danger">{errorMessage}</span>
         ) : (
           <span className="text-caption text-text-muted">{helper ?? ''}</span>
         )}
-        <Button onClick={submit} disabled={disabled || !draft.trim() || pending}>
+        <Button onClick={submit} disabled={disabled || !canSend || pending}>
           {pending ? 'Sending…' : 'Send'}
         </Button>
       </div>

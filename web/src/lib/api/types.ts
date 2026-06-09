@@ -180,6 +180,20 @@ export interface ResponderStatusEntry {
   started_at: string | null;
 }
 
+export interface ThreadAttachment {
+  artifact_name: string;
+  display_name: string;
+  size_bytes: number | null;
+  content_type: string | null;
+  uploaded_by: string;
+}
+
+export interface ThreadAttachmentRef {
+  artifact_name: string;
+  display_name?: string;
+  content_type?: string | null;
+}
+
 export interface ThreadMessage {
   seq: number;
   speaker: string; // "founder" | <agent_name>
@@ -187,6 +201,7 @@ export interface ThreadMessage {
   body_markdown: string | null;
   decline_reason: string | null;
   system_payload: Record<string, unknown> | null;
+  attachments: ThreadAttachment[];
   created_at: string;
   responder_status: ResponderStatusEntry[];
 }

@@ -13,6 +13,8 @@
 import React from 'react';
 import { AgentChip } from './AgentChip';
 import { Markdown } from './Markdown';
+import { formatAttachmentSize } from '@/lib/threadAttachments';
+import type { ThreadAttachment } from '@/lib/api/types';
 
 export type MessageVariant = 'founder' | 'worker' | 'manager' | 'decline' | 'system';
 
@@ -30,6 +32,8 @@ interface MessageBubbleProps {
   declineReason?: string | null;
   /** Used for `system` variant — a pre-rendered one-line description. */
   systemDescription?: React.ReactNode;
+  attachments?: ThreadAttachment[];
+  attachmentHref?: (artifactName: string) => string;
 }
 
 function fmtTs(iso: string): string {
@@ -63,7 +67,17 @@ export function MessageBubble(props: MessageBubbleProps): JSX.Element {
     );
   }
 
-  const { variant, seq, speaker, speakerRole, timestamp, body, declineReason } = props;
+  const {
+    variant,
+    seq,
+    speaker,
+    speakerRole,
+    timestamp,
+    body,
+    declineReason,
+    attachments,
+    attachmentHref,
+  } = props;
 
   return (
     <article className={VARIANT_CONTAINER[variant]}>
@@ -84,6 +98,25 @@ export function MessageBubble(props: MessageBubbleProps): JSX.Element {
         </p>
       ) : (
         <Markdown body={body ?? ''} />
+      )}
+      {variant !== 'decline' && attachments && attachments.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {attachments.map((attachment) => {
+            const formattedSize = formatAttachmentSize(attachment.size_bytes);
+            return (
+              <a
+                key={attachment.artifact_name}
+                href={attachmentHref?.(attachment.artifact_name) ?? '#'}
+                className="border-border-subtle bg-surface text-caption hover:bg-surface-hover inline-flex max-w-full items-center gap-2 rounded-md border px-2 py-1"
+              >
+                <span className="max-w-64 truncate">{attachment.display_name}</span>
+                {formattedSize && (
+                  <span className="text-text-muted shrink-0">{formattedSize}</span>
+                )}
+              </a>
+            );
+          })}
+        </div>
       )}
     </article>
   );

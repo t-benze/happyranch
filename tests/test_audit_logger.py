@@ -168,6 +168,23 @@ def test_log_talk_ended(db):
     assert rows[0]["payload"]["new_kb_slugs"] == ["alipay-refund"]
 
 
+def test_log_thread_message_sent_with_attachments(db) -> None:
+    logger = AuditLogger(db)
+
+    logger.log_thread_message_sent(
+        "THR-001",
+        seq=3,
+        speaker="founder",
+        kind="message",
+        attachment_names=["a.pdf", "b.csv"],
+    )
+
+    rows = db.get_audit_logs("THR-001")
+    assert rows[0]["action"] == "thread_message_sent"
+    assert rows[0]["payload"]["attachment_count"] == 2
+    assert rows[0]["payload"]["attachment_names"] == ["a.pdf", "b.csv"]
+
+
 def test_log_task_dispatched_records_payload(db):
     AuditLogger(db).log_task_dispatched(
         task_id="TASK-001",
