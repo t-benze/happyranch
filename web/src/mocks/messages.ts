@@ -10,6 +10,8 @@
  */
 import type { ThreadMessage } from '@/lib/api/types';
 
+type MockMessageSeed = Omit<ThreadMessage, 'attachments'>;
+
 export const MOCK_PARTICIPANTS: Record<string, string[]> = {
   'THR-001': ['founder', 'engineering_head', 'ops_lead'],
   'THR-002': ['founder', 'ops_lead'],
@@ -17,7 +19,7 @@ export const MOCK_PARTICIPANTS: Record<string, string[]> = {
   'THR-004': ['founder', 'support_lead'],
 };
 
-export const MOCK_MESSAGES: Record<string, ThreadMessage[]> = {
+const MOCK_MESSAGE_SEEDS: Record<string, MockMessageSeed[]> = {
   'THR-001': [
     {
       seq: 1,
@@ -221,3 +223,10 @@ export const MOCK_MESSAGES: Record<string, ThreadMessage[]> = {
     },
   ],
 };
+
+export const MOCK_MESSAGES: Record<string, ThreadMessage[]> = Object.fromEntries(
+  Object.entries(MOCK_MESSAGE_SEEDS).map(([threadId, messages]) => [
+    threadId,
+    messages.map((message) => ({ ...message, attachments: [] })),
+  ]),
+);

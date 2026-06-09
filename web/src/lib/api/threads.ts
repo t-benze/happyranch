@@ -6,6 +6,7 @@
  */
 import { request } from './client';
 import type {
+  ThreadAttachmentRef,
   ThreadDetailResponse,
   ThreadMessage,
   ThreadRecord,
@@ -15,6 +16,7 @@ export interface ComposeThreadBody {
   subject: string;
   recipients: string[];
   body_markdown: string;
+  attachments?: ThreadAttachmentRef[];
   forwarded_from_id?: string;
   forwarded_from_kind?: 'thread' | 'talk';
 }
@@ -47,7 +49,7 @@ export const listThreadMessages = (
 export const sendThreadFollowUp = (
   slug: string,
   threadId: string,
-  body: { body_markdown: string },
+  body: { body_markdown: string; attachments?: ThreadAttachmentRef[] },
 ): Promise<{ seq: number; thread_id: string }> =>
   request(`/orgs/${slug}/threads/${threadId}/send`, { method: 'POST', body });
 
