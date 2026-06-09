@@ -1,4 +1,4 @@
-import { apiFetch } from './client'
+import { request } from './client'
 
 export interface DreamRecord {
   dream_id: string
@@ -35,21 +35,20 @@ export async function getDreamStatus(
   org: string,
   params: { agent?: string } = {},
 ): Promise<DreamStatusResponse> {
-  const qs = new URLSearchParams()
-  if (params.agent) qs.set('agent', params.agent)
-  return apiFetch<DreamStatusResponse>(`/api/v1/orgs/${org}/dreams/status?${qs}`)
+  return request<DreamStatusResponse>(`/orgs/${org}/dreams/status`, {
+    params: { agent: params.agent },
+  })
 }
 
 export async function listDreams(
   org: string,
   params: { agent?: string; limit?: number } = {},
 ): Promise<DreamListResponse> {
-  const qs = new URLSearchParams()
-  if (params.agent) qs.set('agent', params.agent)
-  if (params.limit) qs.set('limit', String(params.limit))
-  return apiFetch<DreamListResponse>(`/api/v1/orgs/${org}/dreams?${qs}`)
+  return request<DreamListResponse>(`/orgs/${org}/dreams`, {
+    params: { agent: params.agent, limit: params.limit },
+  })
 }
 
 export async function getDream(org: string, dreamId: string): Promise<DreamDetailResponse> {
-  return apiFetch<DreamDetailResponse>(`/api/v1/orgs/${org}/dreams/${dreamId}`)
+  return request<DreamDetailResponse>(`/orgs/${org}/dreams/${dreamId}`)
 }
