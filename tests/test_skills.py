@@ -132,7 +132,7 @@ def test_dream_skill_documents_callback_contract() -> None:
 
 def test_thread_skill_documents_attachment_flow() -> None:
     body = (SKILLS_ROOT / "thread" / "SKILL.md").read_text()
-    assert "--attach" not in body
+    assert "--attach" in body
     assert "happyranch artifacts put" in body
     assert "happyranch artifacts get" in body
     assert (

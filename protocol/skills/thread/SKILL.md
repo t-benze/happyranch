@@ -75,6 +75,10 @@ The terminal callback remains the normal single-line command:
 
     happyranch threads reply --org <slug> --thread-id <id> --from-file /tmp/thread-reply-<id>-<seq>.json
 
+Convenience upload during the terminal callback is also supported:
+
+    happyranch threads reply --org <slug> --thread-id <id> --from-file /tmp/thread-reply-<id>-<seq>.json --attach /tmp/file.ext
+
 Do not use shell separators or multiline continuations.
 
 ### Decline

@@ -2,12 +2,65 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from cli import _shared
 from cli._shared import _fmt_ts, _ok, resolve_org_slug
 from cli.client.client import OpcClient
+
+_SAFE_ARTIFACT_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _safe_artifact_basename(path: Path) -> str:
+    cleaned = _SAFE_ARTIFACT_CHARS.sub("-", path.name).strip(".-")
+    return cleaned or "attachment.bin"
+
+
+def _artifact_name_for_attach(
+    thread_id: str | None,
+    path: Path,
+    *,
+    collision_index: int = 1,
+) -> str:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    prefix = thread_id or "thread-draft"
+    suffix = f"{collision_index}-" if collision_index > 1 else ""
+    return f"{prefix}-{stamp}-{suffix}{_safe_artifact_basename(path)}"
+
+
+def _merge_uploaded_attachments(
+    *,
+    client: OpcClient,
+    slug: str,
+    payload: dict,
+    attach_paths: list[Path] | None,
+    agent: str,
+    thread_id: str | None,
+) -> dict:
+    refs = list(payload.get("attachments") or [])
+    generated_names: dict[str, int] = {}
+    for path in attach_paths or []:
+        artifact_name = _artifact_name_for_attach(thread_id, path)
+        generated_names[artifact_name] = generated_names.get(artifact_name, 0) + 1
+        if generated_names[artifact_name] > 1:
+            artifact_name = _artifact_name_for_attach(
+                thread_id,
+                path,
+                collision_index=generated_names[artifact_name],
+            )
+        info = client.put_artifact(
+            slug=slug,
+            local_path=path,
+            name=artifact_name,
+            agent=agent,
+        )
+        refs.append({"artifact_name": info["name"], "display_name": path.name})
+    if refs or attach_paths:
+        payload["attachments"] = refs
+    return payload
 
 
 def cmd_threads_tui(args: argparse.Namespace) -> None:
@@ -51,6 +104,14 @@ def cmd_threads_compose(args: argparse.Namespace) -> None:
             payload["talk_id"] = args.talk_id
             payload.pop("task_id", None)
             payload.pop("session_id", None)
+        payload = _merge_uploaded_attachments(
+            client=client,
+            slug=slug,
+            payload=payload,
+            attach_paths=getattr(args, "attach", None),
+            agent=payload.get("composer", ""),
+            thread_id=None,
+        )
         r = client.post(
             f"/api/v1/orgs/{slug}/threads/compose-as-agent", json=payload,
         )
@@ -65,9 +126,9 @@ def cmd_threads_compose(args: argparse.Namespace) -> None:
         return
 
     # Founder path — unchanged.
-    if not (args.subject and args.recipients and args.body):
+    if not (args.subject and args.recipients and (args.body or getattr(args, "attach", None))):
         print(
-            "error: --subject, --recipients, --body required for founder compose",
+            "error: --subject, --recipients, and --body or --attach required for founder compose",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -75,8 +136,16 @@ def cmd_threads_compose(args: argparse.Namespace) -> None:
     payload = {
         "subject": args.subject,
         "recipients": recipients,
-        "body_markdown": args.body,
+        "body_markdown": args.body or "",
     }
+    payload = _merge_uploaded_attachments(
+        client=client,
+        slug=slug,
+        payload=payload,
+        attach_paths=getattr(args, "attach", None),
+        agent="founder",
+        thread_id=None,
+    )
     r = client.post(f"/api/v1/orgs/{slug}/threads", json=payload)
     if not _ok(r):
         return
@@ -120,6 +189,14 @@ def cmd_threads_reply(args: argparse.Namespace) -> None:
         print(f"Error reading {args.from_file}: {exc}")
         sys.exit(1)
     thread_id = args.thread_id or body.get("thread_id", "")
+    body = _merge_uploaded_attachments(
+        client=client,
+        slug=slug,
+        payload=body,
+        attach_paths=getattr(args, "attach", None),
+        agent=body.get("speaker", ""),
+        thread_id=thread_id,
+    )
     r = client.post(f"/api/v1/orgs/{slug}/threads/{thread_id}/reply", json=body)
     if not _ok(r):
         return
@@ -219,6 +296,14 @@ def cmd_threads_send(args: argparse.Namespace) -> None:
     except (OSError, ValueError) as exc:
         print(f"Error reading {args.from_file}: {exc}")
         sys.exit(1)
+    payload = _merge_uploaded_attachments(
+        client=client,
+        slug=slug,
+        payload=payload,
+        attach_paths=getattr(args, "attach", None),
+        agent="founder",
+        thread_id=args.thread_id,
+    )
     r = client.post(f"/api/v1/orgs/{slug}/threads/{args.thread_id}/send", json=payload)
     if not _ok(r):
         return
@@ -393,6 +478,7 @@ def register(sub) -> None:
         "--body", default=None,
         help="Opening message body (founder path)",
     )
+    p_threads_compose.add_argument("--attach", action="append", type=Path, default=[])
     p_threads_compose.set_defaults(func=cmd_threads_compose)
 
     p_threads_list = threads_sub.add_parser("list", help="List threads")
@@ -405,6 +491,7 @@ def register(sub) -> None:
     p_threads_reply.add_argument("--org", default=None, help="Org slug")
     p_threads_reply.add_argument("--thread-id", dest="thread_id", default=None)
     p_threads_reply.add_argument("--from-file", required=True)
+    p_threads_reply.add_argument("--attach", action="append", type=Path, default=[])
     p_threads_reply.set_defaults(func=cmd_threads_reply)
 
     p_threads_decline = threads_sub.add_parser("decline", help="Agent callback: decline a thread turn")
@@ -429,6 +516,7 @@ def register(sub) -> None:
     p_threads_send.add_argument("--org", default=None, help="Org slug")
     p_threads_send.add_argument("--thread-id", dest="thread_id", required=True)
     p_threads_send.add_argument("--from-file", dest="from_file", required=True)
+    p_threads_send.add_argument("--attach", action="append", type=Path, default=[])
     p_threads_send.set_defaults(func=cmd_threads_send)
 
     p_threads_invite = threads_sub.add_parser("invite", help="Founder: invite a participant to a thread")
