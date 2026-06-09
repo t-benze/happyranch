@@ -112,6 +112,7 @@ def test_compose_accepts_attachment_only_message(client, auth_headers, org_state
     assert messages[0].body_markdown is None
     assert messages[0].attachments[0].artifact_name == "compose-report.pdf"
     assert messages[0].attachments[0].display_name == "compose-report.pdf"
+    assert messages[0].attachments[0].content_type == "application/pdf"
 
 
 # ---------------------------------------------------------------------------

@@ -13,6 +13,7 @@
 import React from 'react';
 import { AgentChip } from './AgentChip';
 import { Markdown } from './Markdown';
+import { formatAttachmentSize } from '@/lib/threadAttachments';
 import type { ThreadAttachment } from '@/lib/api/types';
 
 export type MessageVariant = 'founder' | 'worker' | 'manager' | 'decline' | 'system';
@@ -100,18 +101,21 @@ export function MessageBubble(props: MessageBubbleProps): JSX.Element {
       )}
       {variant !== 'decline' && attachments && attachments.length > 0 && (
         <div className="mt-3 flex flex-wrap gap-2">
-          {attachments.map((attachment) => (
-            <a
-              key={attachment.artifact_name}
-              href={attachmentHref?.(attachment.artifact_name) ?? '#'}
-              className="border-border-subtle bg-surface text-caption hover:bg-surface-hover inline-flex max-w-full items-center gap-2 rounded-md border px-2 py-1"
-            >
-              <span className="max-w-64 truncate">{attachment.display_name}</span>
-              {attachment.size_bytes !== null && (
-                <span className="text-text-muted shrink-0">{attachment.size_bytes}B</span>
-              )}
-            </a>
-          ))}
+          {attachments.map((attachment) => {
+            const formattedSize = formatAttachmentSize(attachment.size_bytes);
+            return (
+              <a
+                key={attachment.artifact_name}
+                href={attachmentHref?.(attachment.artifact_name) ?? '#'}
+                className="border-border-subtle bg-surface text-caption hover:bg-surface-hover inline-flex max-w-full items-center gap-2 rounded-md border px-2 py-1"
+              >
+                <span className="max-w-64 truncate">{attachment.display_name}</span>
+                {formattedSize && (
+                  <span className="text-text-muted shrink-0">{formattedSize}</span>
+                )}
+              </a>
+            );
+          })}
         </div>
       )}
     </article>

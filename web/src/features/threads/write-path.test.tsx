@@ -180,7 +180,13 @@ describe('ThreadsPage — write path', () => {
     await waitFor(() =>
       expect(sent).toEqual({
         body_markdown: '',
-        attachments: [{ artifact_name: 'THR-001-report.pdf', display_name: 'report.pdf' }],
+        attachments: [
+          {
+            artifact_name: 'THR-001-report.pdf',
+            display_name: 'report.pdf',
+            content_type: 'application/pdf',
+          },
+        ],
       }),
     );
   });
@@ -222,7 +228,7 @@ describe('ThreadsPage — write path', () => {
                 {
                   artifact_name: 'THR-001-report.pdf',
                   display_name: 'report.pdf',
-                  size_bytes: 3,
+                  size_bytes: 5 * 1024 * 1024,
                   content_type: null,
                   uploaded_by: 'founder',
                 },
@@ -238,9 +244,11 @@ describe('ThreadsPage — write path', () => {
 
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/threads/THR-001` });
 
-    expect(await screen.findByRole('link', { name: /report\.pdf/i })).toHaveAttribute(
+    const link = await screen.findByRole('link', { name: /report\.pdf/i });
+    expect(link).toHaveAttribute(
       'href',
       '/api/v1/orgs/alpha/artifacts/THR-001-report.pdf',
     );
+    expect(link).toHaveTextContent('5 MB');
   });
 });

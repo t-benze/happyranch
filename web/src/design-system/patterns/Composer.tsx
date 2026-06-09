@@ -15,6 +15,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Paperclip, X } from 'lucide-react';
 import { Button } from '@/design-system/primitives/Button';
 import { useOrgSlug } from '@/lib/orgSlug';
+import { MAX_THREAD_ATTACHMENTS, REMOVE_ATTACHMENT_LABEL } from '@/lib/threadAttachments';
 import { MentionTextarea } from './MentionTextarea';
 import type { AgentSummary } from '@/lib/api/agents';
 
@@ -157,14 +158,17 @@ export function Composer({
             className="sr-only"
             disabled={disabled || pending}
             onChange={(event) => {
-              const files = Array.from(event.currentTarget.files ?? []).slice(0, 5);
+              const files = Array.from(event.currentTarget.files ?? []).slice(
+                0,
+                MAX_THREAD_ATTACHMENTS,
+              );
               onAttachmentsChange?.([
                 ...attachments,
                 ...files.map((file) => ({
                   id: `${file.name}-${file.size}-${file.lastModified}`,
                   file,
                 })),
-              ].slice(0, 5));
+              ].slice(0, MAX_THREAD_ATTACHMENTS));
               event.currentTarget.value = '';
             }}
           />
@@ -180,7 +184,7 @@ export function Composer({
                 <button
                   type="button"
                   className="text-text-muted hover:text-text"
-                  aria-label={`Remove ${item.file.name}`}
+                  aria-label={REMOVE_ATTACHMENT_LABEL}
                   onClick={() => removeAttachment(item.id)}
                   disabled={disabled || pending}
                 >

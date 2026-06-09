@@ -104,12 +104,24 @@ describe('threads api mirror', () => {
 
     await sendThreadFollowUp(SLUG, 'THR-001', {
       body_markdown: '',
-      attachments: [{ artifact_name: 'THR-001-report.pdf', display_name: 'report.pdf' }],
+      attachments: [
+        {
+          artifact_name: 'THR-001-report.pdf',
+          display_name: 'report.pdf',
+          content_type: 'application/pdf',
+        },
+      ],
     });
 
     expect(received).toEqual({
       body_markdown: '',
-      attachments: [{ artifact_name: 'THR-001-report.pdf', display_name: 'report.pdf' }],
+      attachments: [
+        {
+          artifact_name: 'THR-001-report.pdf',
+          display_name: 'report.pdf',
+          content_type: 'application/pdf',
+        },
+      ],
     });
   });
 

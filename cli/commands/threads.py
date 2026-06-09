@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import mimetypes
 import re
 import sys
 from datetime import datetime, timezone
@@ -57,7 +58,11 @@ def _merge_uploaded_attachments(
             name=artifact_name,
             agent=agent,
         )
-        refs.append({"artifact_name": info["name"], "display_name": path.name})
+        refs.append({
+            "artifact_name": info["name"],
+            "display_name": path.name,
+            "content_type": mimetypes.guess_type(path.name)[0],
+        })
     if refs or attach_paths:
         payload["attachments"] = refs
     return payload
@@ -478,7 +483,7 @@ def register(sub) -> None:
         "--body", default=None,
         help="Opening message body (founder path)",
     )
-    p_threads_compose.add_argument("--attach", action="append", type=Path, default=[])
+    p_threads_compose.add_argument("--attach", action="append", type=Path, default=None)
     p_threads_compose.set_defaults(func=cmd_threads_compose)
 
     p_threads_list = threads_sub.add_parser("list", help="List threads")
@@ -491,7 +496,7 @@ def register(sub) -> None:
     p_threads_reply.add_argument("--org", default=None, help="Org slug")
     p_threads_reply.add_argument("--thread-id", dest="thread_id", default=None)
     p_threads_reply.add_argument("--from-file", required=True)
-    p_threads_reply.add_argument("--attach", action="append", type=Path, default=[])
+    p_threads_reply.add_argument("--attach", action="append", type=Path, default=None)
     p_threads_reply.set_defaults(func=cmd_threads_reply)
 
     p_threads_decline = threads_sub.add_parser("decline", help="Agent callback: decline a thread turn")
@@ -516,7 +521,7 @@ def register(sub) -> None:
     p_threads_send.add_argument("--org", default=None, help="Org slug")
     p_threads_send.add_argument("--thread-id", dest="thread_id", required=True)
     p_threads_send.add_argument("--from-file", dest="from_file", required=True)
-    p_threads_send.add_argument("--attach", action="append", type=Path, default=[])
+    p_threads_send.add_argument("--attach", action="append", type=Path, default=None)
     p_threads_send.set_defaults(func=cmd_threads_send)
 
     p_threads_invite = threads_sub.add_parser("invite", help="Founder: invite a participant to a thread")

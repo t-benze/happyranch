@@ -99,6 +99,23 @@ def test_threads_parser_accepts_repeated_attach_flags(tmp_path: Path) -> None:
     assert ns.attach == [a, b]
 
 
+def test_threads_parser_attach_defaults_to_none(tmp_path: Path) -> None:
+    from cli.main import build_parser
+
+    ns = build_parser().parse_args([
+        "threads",
+        "reply",
+        "--org",
+        "alpha",
+        "--thread-id",
+        "THR-001",
+        "--from-file",
+        str(tmp_path / "reply.json"),
+    ])
+
+    assert ns.attach is None
+
+
 def test_threads_send_attach_uploads_and_merges_refs(tmp_path: Path, monkeypatch) -> None:
     from cli.main import cmd_threads_send
 
@@ -142,6 +159,7 @@ def test_threads_send_attach_uploads_and_merges_refs(tmp_path: Path, monkeypatch
         {
             "artifact_name": "THR-001-20260609T000000Z-report.pdf",
             "display_name": "report.pdf",
+            "content_type": "application/pdf",
         },
     ]
 
@@ -184,10 +202,12 @@ def test_threads_send_attach_disambiguates_duplicate_generated_names(
         {
             "artifact_name": "THR-001-20260609T000000Z-report.pdf",
             "display_name": "report.pdf",
+            "content_type": "application/pdf",
         },
         {
             "artifact_name": "THR-001-20260609T000000Z-2-report.pdf",
             "display_name": "report.pdf",
+            "content_type": "application/pdf",
         },
     ]
 
@@ -236,6 +256,7 @@ def test_threads_reply_attach_uses_speaker_for_upload_attribution(
         {
             "artifact_name": "THR-001-20260609T000000Z-analysis.md",
             "display_name": "analysis.md",
+            "content_type": "text/markdown",
         },
     ]
 
@@ -284,6 +305,7 @@ def test_threads_compose_attach_uploads_with_founder_attribution(
         {
             "artifact_name": "thread-draft-20260609T000000Z-data.csv",
             "display_name": "data.csv",
+            "content_type": "text/csv",
         },
     ]
 
@@ -343,5 +365,6 @@ def test_threads_compose_as_agent_attach_uses_composer_attribution(
         {
             "artifact_name": "thread-draft-20260609T000000Z-notes.md",
             "display_name": "notes.md",
+            "content_type": "text/markdown",
         },
     ]

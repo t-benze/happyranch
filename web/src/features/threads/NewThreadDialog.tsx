@@ -13,6 +13,12 @@ import { FormField } from '@/design-system/patterns/FormField';
 import { MentionTextarea } from '@/design-system/patterns/MentionTextarea';
 import { artifacts as artifactsApi, ApiError } from '@/lib/api';
 import { useOrgSlug } from '@/lib/orgSlug';
+import {
+  MAX_THREAD_ATTACHMENTS,
+  REMOVE_ATTACHMENT_LABEL,
+  attachmentContentType,
+  safeArtifactName,
+} from '@/lib/threadAttachments';
 import { useComposeThread } from '@/hooks/threads';
 import { describeError } from './strings';
 import { RecipientsInput } from './RecipientsInput';
@@ -36,17 +42,6 @@ interface Props {
   onCreated: (threadId: string) => void;
   /** Agents list used for @-mention autocomplete in the body. */
   agents?: AgentSummary[];
-}
-
-function safeArtifactBasename(file: File): string {
-  return file.name.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[.-]+|[.-]+$/g, '') ||
-    'attachment.bin';
-}
-
-function safeDraftArtifactName(file: File, collisionIndex = 1): string {
-  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
-  const disambiguator = collisionIndex > 1 ? `${collisionIndex}-` : '';
-  return `thread-draft-${stamp}-${disambiguator}${safeArtifactBasename(file)}`;
 }
 
 export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = [] }: Props): JSX.Element {
@@ -86,18 +81,22 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
       const refs: ThreadAttachmentRef[] = [];
       const generatedNames = new Map<string, number>();
       for (const pending of pendingAttachments) {
-        let artifactName = safeDraftArtifactName(pending.file);
+        let artifactName = safeArtifactName('thread-draft', pending.file);
         const count = (generatedNames.get(artifactName) ?? 0) + 1;
         generatedNames.set(artifactName, count);
         if (count > 1) {
-          artifactName = safeDraftArtifactName(pending.file, count);
+          artifactName = safeArtifactName('thread-draft', pending.file, count);
         }
         const uploaded = await artifactsApi.uploadArtifact(slug, {
           file: pending.file,
           name: artifactName,
           agent: 'founder',
         });
-        refs.push({ artifact_name: uploaded.name, display_name: pending.file.name });
+        refs.push({
+          artifact_name: uploaded.name,
+          display_name: pending.file.name,
+          content_type: attachmentContentType(pending.file),
+        });
       }
       const result = await compose.mutateAsync({
         subject: subject.trim(),
@@ -175,14 +174,17 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
                 className="sr-only"
                 disabled={compose.isPending}
                 onChange={(event) => {
-                  const files = Array.from(event.currentTarget.files ?? []).slice(0, 5);
+                  const files = Array.from(event.currentTarget.files ?? []).slice(
+                    0,
+                    MAX_THREAD_ATTACHMENTS,
+                  );
                   setPendingAttachments((current) => [
                     ...current,
                     ...files.map((file) => ({
                       id: `${file.name}-${file.size}-${file.lastModified}`,
                       file,
                     })),
-                  ].slice(0, 5));
+                  ].slice(0, MAX_THREAD_ATTACHMENTS));
                   event.currentTarget.value = '';
                 }}
               />
@@ -199,7 +201,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
                   <button
                     type="button"
                     className="text-text-muted hover:text-text"
-                    aria-label={`Remove ${item.file.name}`}
+                    aria-label={REMOVE_ATTACHMENT_LABEL}
                     onClick={() =>
                       setPendingAttachments((current) =>
                         current.filter((attachment) => attachment.id !== item.id),

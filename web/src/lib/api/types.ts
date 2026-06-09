@@ -191,6 +191,7 @@ export interface ThreadAttachment {
 export interface ThreadAttachmentRef {
   artifact_name: string;
   display_name?: string;
+  content_type?: string | null;
 }
 
 export interface ThreadMessage {

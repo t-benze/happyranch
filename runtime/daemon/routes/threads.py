@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json as _json
+import mimetypes
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
@@ -155,6 +156,7 @@ def _create_agent_thread_locked(
 class AttachmentRefBody(BaseModel):
     artifact_name: str
     display_name: str | None = None
+    content_type: str | None = None
 
 
 class ComposeBody(BaseModel):
@@ -188,6 +190,21 @@ def _validate_display_name(name: str) -> None:
             status_code=422,
             detail={"code": "invalid_attachment_display_name", "name": name},
         )
+
+
+def _normalize_content_type(content_type: str | None, artifact_name: str) -> str | None:
+    if content_type is None or not content_type.strip():
+        return mimetypes.guess_type(artifact_name)[0]
+    normalized = content_type.strip()
+    if len(normalized) > 200 or any(ord(ch) < 32 for ch in normalized):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_attachment_content_type",
+                "content_type": content_type,
+            },
+        )
+    return normalized
 
 
 def _attachments_preview(attachments: list[ThreadAttachment]) -> str:
@@ -242,6 +259,7 @@ def _normalize_attachments(
         else:
             display_name = ref.display_name.strip()
         _validate_display_name(display_name)
+        content_type = _normalize_content_type(ref.content_type, artifact_name)
         if not path.exists():
             raise HTTPException(
                 status_code=404,
@@ -253,7 +271,7 @@ def _normalize_attachments(
                 artifact_name=artifact_name,
                 display_name=display_name,
                 size_bytes=stat.st_size,
-                content_type=None,
+                content_type=content_type,
                 uploaded_by=uploaded_by,
             )
         )

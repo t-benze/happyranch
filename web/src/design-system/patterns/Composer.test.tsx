@@ -91,6 +91,8 @@ describe('Composer / drafts', () => {
     );
 
     await user.upload(screen.getByLabelText(/Attach files/i), file);
+    expect(screen.getByRole('button', { name: 'Remove attachment' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /report\.pdf/i })).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /^Send$/i }));
 
     expect(onSend).toHaveBeenCalledWith('', [
