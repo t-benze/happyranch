@@ -27,6 +27,10 @@ There is no `.env` support. `settings_customise_sources` drops dotenv and adds `
 
 Slug resolution for per-org commands: explicit `--org <slug>` > `HAPPYRANCH_ORG_SLUG` > auto-infer only when exactly one org exists > error. Container-level commands such as `happyranch init`, `happyranch use`, and `happyranch orgs ...` take no `--org`.
 
+## Org Config: Dreaming
+
+Per-org `dreaming:` config controls the private nightly reflection scheduler: enablement, local schedule time/timezone, catch-up behavior, and agent include/exclude selection.
+
 ## Session Timeout Resolution
 
 `Orchestrator._resolve_session_timeout(agent_name, task_id=...)` walks three layers:

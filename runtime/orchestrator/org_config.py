@@ -6,7 +6,9 @@ defaults exactly as before.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
@@ -34,9 +36,21 @@ class FeishuNotificationsConfig:
 
 
 @dataclass(frozen=True)
+class DreamingConfig:
+    enabled: bool = False
+    schedule_time: str = "02:00"
+    timezone: str = "UTC"
+    catch_up_on_startup: bool = True
+    agent_mode: str = "all"
+    include_agents: list[str] = field(default_factory=list)
+    exclude_agents: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class OrgConfig:
     session_timeout_seconds: int | None = None
     feishu_notifications: FeishuNotificationsConfig | None = None
+    dreaming: DreamingConfig = field(default_factory=DreamingConfig)
     threads_enabled: bool = True
     threads_default_turn_cap: int = 500
     threads_invocation_timeout_seconds: int | None = None
@@ -53,6 +67,16 @@ class OrgConfig:
         return _build_org_config(data, path)
 
 
+def _validate_agent_list(value: object, name: str, path: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise OrgConfigError(f"{path}: dreaming.agents.{name} must be a list")
+    if not all(isinstance(item, str) for item in value):
+        raise OrgConfigError(f"{path}: dreaming.agents.{name} entries must be strings")
+    return list(value)
+
+
 def _validate_positive_int(
     value: object, name: str, *, min_v: int, max_v: int, path: str,
 ) -> int:
@@ -63,6 +87,56 @@ def _validate_positive_int(
             f"{path}: {name} must be in [{min_v}, {max_v}], got {value}"
         )
     return value
+
+
+def _parse_dreaming(block: dict, path: str) -> DreamingConfig:
+    if not isinstance(block, dict):
+        raise OrgConfigError(f"{path}: dreaming must be a mapping")
+
+    enabled = block.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise OrgConfigError(f"{path}: dreaming.enabled must be a boolean")
+
+    schedule = block.get("schedule", {})
+    if schedule is None:
+        schedule = {}
+    if not isinstance(schedule, dict):
+        raise OrgConfigError(f"{path}: dreaming.schedule must be a mapping")
+    schedule_time = schedule.get("time", "02:00")
+    if not isinstance(schedule_time, str) or not re.match(r"^[0-2][0-9]:[0-5][0-9]$", schedule_time):
+        raise OrgConfigError(f"{path}: dreaming.schedule.time must be HH:MM")
+    hour = int(schedule_time[:2])
+    if hour > 23:
+        raise OrgConfigError(f"{path}: dreaming.schedule.time must be HH:MM")
+    timezone = schedule.get("timezone", "UTC")
+    if not isinstance(timezone, str):
+        raise OrgConfigError(f"{path}: dreaming.schedule.timezone must be a string")
+    try:
+        ZoneInfo(timezone)
+    except ZoneInfoNotFoundError as exc:
+        raise OrgConfigError(f"{path}: unknown dreaming.schedule.timezone {timezone!r}") from exc
+    catch_up = schedule.get("catch_up_on_startup", True)
+    if not isinstance(catch_up, bool):
+        raise OrgConfigError(f"{path}: dreaming.schedule.catch_up_on_startup must be a boolean")
+
+    agents = block.get("agents", {})
+    if agents is None:
+        agents = {}
+    if not isinstance(agents, dict):
+        raise OrgConfigError(f"{path}: dreaming.agents must be a mapping")
+    mode = agents.get("mode", "all")
+    if mode not in {"all", "whitelist"}:
+        raise OrgConfigError(f"{path}: dreaming.agents.mode must be one of ['all', 'whitelist']")
+
+    return DreamingConfig(
+        enabled=enabled,
+        schedule_time=schedule_time,
+        timezone=timezone,
+        catch_up_on_startup=catch_up,
+        agent_mode=mode,
+        include_agents=_validate_agent_list(agents.get("include"), "include", path),
+        exclude_agents=_validate_agent_list(agents.get("exclude"), "exclude", path),
+    )
 
 
 def _parse_feishu_notifications(
@@ -185,6 +259,11 @@ def _build_org_config(data: dict, path: str) -> OrgConfig:
             raise OrgConfigError(f"{path}: feishu_notifications must be a mapping")
         feishu_cfg = _parse_feishu_notifications(feishu_block, path)
 
+    dreaming_block = data.get("dreaming")
+    dreaming_cfg = DreamingConfig()
+    if dreaming_block is not None:
+        dreaming_cfg = _parse_dreaming(dreaming_block, path)
+
     threads_block = data.get("threads")
     threads_kwargs: dict = {}
     if threads_block is not None:
@@ -193,6 +272,7 @@ def _build_org_config(data: dict, path: str) -> OrgConfig:
     return OrgConfig(
         session_timeout_seconds=timeout,
         feishu_notifications=feishu_cfg,
+        dreaming=dreaming_cfg,
         **threads_kwargs,
     )
 

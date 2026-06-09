@@ -15,6 +15,7 @@ from pathlib import Path
 import lark_oapi as lark
 
 from runtime.config import Settings
+from runtime.daemon.dream_queue import DreamQueue
 from runtime.daemon.event_bus import EventBus
 from runtime.daemon.sessions import SessionTracker
 from runtime.daemon.thread_queue import ThreadQueue
@@ -62,6 +63,7 @@ class OrgState:
     kb_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     teams_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     thread_queue: ThreadQueue = field(default_factory=ThreadQueue)
+    dream_queue: DreamQueue = field(default_factory=DreamQueue)
     event_bus: EventBus = field(init=False)
     thread_store: ThreadStore = field(init=False)
 

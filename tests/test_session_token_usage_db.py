@@ -355,3 +355,20 @@ def test_aggregate_by_task_filters_by_task_id(db: Database):
     assert rollup[0]["task_id"] == "T1"
     assert rollup[0]["sessions"] == 2
     assert rollup[0]["input_tokens"] == 30
+
+
+def test_insert_token_usage_supports_dream_scope(db: Database):
+    db.insert_session_token_usage(
+        task_id=None,
+        agent="dev_agent",
+        session_id="dream-session",
+        executor="claude",
+        token_usage=TokenUsage(input_tokens=10, output_tokens=5, model="test"),
+        scope_type="dream",
+        scope_id="DREAM-001",
+    )
+
+    rows = db.list_session_token_usage(scope_type="dream", scope_id="DREAM-001")
+    assert len(rows) == 1
+    assert rows[0]["scope_type"] == "dream"
+    assert rows[0]["scope_id"] == "DREAM-001"

@@ -66,6 +66,86 @@ async def _publish_thread_event(
     )
 
 
+def _create_agent_thread_locked(
+    org,
+    *,
+    composer: str,
+    subject: str,
+    body_text: str,
+    recipients: list[str],
+    turn_cap: int,
+    composed_from_task_id: str | None = None,
+    composed_from_talk_id: str | None = None,
+) -> tuple[str, int, list[str], list[str]]:
+    """DB-write core of an agent-initiated compose. Caller MUST hold org.db_lock.
+
+    Inserts the thread, adds the composer plus every non-@founder recipient as a
+    participant, appends the opening message, increments turns, emits
+    thread_started + thread_message_sent audit rows, and mints REPLY invocations
+    for every addressed agent (recipients minus @founder minus the composer).
+
+    Returns (thread_id, seq, tokens_to_enqueue, addressed_agents). The caller
+    enqueues the tokens and publishes the thread event after releasing the lock.
+
+    Extracted so non-HTTP callers (e.g. dream completion creating a founder-only
+    thread) reuse the exact participant/turn/audit semantics without going
+    through the authenticated compose route.
+    """
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for name in recipients:
+        if name in seen:
+            continue
+        seen.add(name)
+        deduped.append(name)
+    addressed_agents = [
+        name for name in deduped if name != FOUNDER_LITERAL and name != composer
+    ]
+
+    thread_id = org.db.next_thread_id()
+    org.db.insert_thread(ThreadRecord(
+        id=thread_id, subject=subject, turn_cap=turn_cap,
+        composed_by=composer,
+        composed_from_task_id=composed_from_task_id,
+        composed_from_talk_id=composed_from_talk_id,
+    ))
+    # Composer + every recipient become participants. @founder is NOT a row
+    # (spec §3.3); skip it. The composer is added once explicitly; the loop
+    # skips them if they're also in recipients to avoid a duplicate insert.
+    org.db.add_thread_participant(thread_id, composer, added_by=composer)
+    for name in deduped:
+        if name == FOUNDER_LITERAL or name == composer:
+            continue
+        org.db.add_thread_participant(thread_id, name, added_by=composer)
+
+    seq = org.db.append_thread_message(
+        thread_id=thread_id, speaker=composer,
+        kind=ThreadMessageKind.MESSAGE,
+        body_markdown=body_text,
+    )
+    org.db.increment_thread_turns_used(thread_id, by=1)
+    AuditLogger(org.db).log_thread_started(
+        thread_id,
+        subject=subject,
+        initial_recipients=deduped,
+        forwarded_from_id=None,
+        composed_by=composer,
+        composed_from_task_id=composed_from_task_id,
+        composed_from_talk_id=composed_from_talk_id,
+    )
+    AuditLogger(org.db).log_thread_message_sent(
+        thread_id, seq=seq, speaker=composer, kind="message",
+    )
+    tokens_to_enqueue: list[str] = []
+    for name in addressed_agents:
+        inv = org.db.mint_thread_invocation(
+            thread_id=thread_id, agent_name=name,
+            triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
+        )
+        tokens_to_enqueue.append(inv.invocation_token)
+    return thread_id, seq, tokens_to_enqueue, addressed_agents
+
+
 class ComposeBody(BaseModel):
     subject: str
     recipients: list[str]
@@ -310,60 +390,20 @@ async def compose_thread_as_agent(
     org_cfg = load_org_config(org_paths)
     turn_cap = org_cfg.threads_default_turn_cap
 
-    # Broadcast: every participant except the composer-speaker gets a REPLY.
-    # @founder is not a participant; no founder mint.
-    addressed_agents = [
-        name for name in recipients
-        if name != FOUNDER_LITERAL and name != body.composer
-    ]
-
     composed_from_task_id = body.task_id if has_task else None
     composed_from_talk_id = body.talk_id if has_talk else None
 
     async with org.db_lock:
-        thread_id = org.db.next_thread_id()
-        org.db.insert_thread(ThreadRecord(
-            id=thread_id, subject=subject, turn_cap=turn_cap,
-            composed_by=body.composer,
-            composed_from_task_id=composed_from_task_id,
-            composed_from_talk_id=composed_from_talk_id,
-        ))
-        # Composer + every recipient become participants. @founder is NOT a
-        # row (spec §3.3); skip it when iterating recipients. The composer
-        # is added once explicitly; the loop skips them if they're also in
-        # recipients to avoid a duplicate insert (which would silently no-op
-        # but is wasteful).
-        org.db.add_thread_participant(thread_id, body.composer, added_by=body.composer)
-        for name in recipients:
-            if name == FOUNDER_LITERAL or name == body.composer:
-                continue
-            org.db.add_thread_participant(thread_id, name, added_by=body.composer)
-
-        seq = org.db.append_thread_message(
-            thread_id=thread_id, speaker=body.composer,
-            kind=ThreadMessageKind.MESSAGE,
-            body_markdown=body_text,
-        )
-        org.db.increment_thread_turns_used(thread_id, by=1)
-        AuditLogger(org.db).log_thread_started(
-            thread_id,
+        thread_id, seq, tokens_to_enqueue, addressed_agents = _create_agent_thread_locked(
+            org,
+            composer=body.composer,
             subject=subject,
-            initial_recipients=recipients,
-            forwarded_from_id=None,
-            composed_by=body.composer,
+            body_text=body_text,
+            recipients=recipients,
+            turn_cap=turn_cap,
             composed_from_task_id=composed_from_task_id,
             composed_from_talk_id=composed_from_talk_id,
         )
-        AuditLogger(org.db).log_thread_message_sent(
-            thread_id, seq=seq, speaker=body.composer, kind="message",
-        )
-        tokens_to_enqueue: list[str] = []
-        for name in addressed_agents:
-            inv = org.db.mint_thread_invocation(
-                thread_id=thread_id, agent_name=name,
-                triggering_seq=seq, purpose=ThreadInvocationPurpose.REPLY,
-            )
-            tokens_to_enqueue.append(inv.invocation_token)
 
     for tok in tokens_to_enqueue:
         await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=tok))

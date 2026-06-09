@@ -128,6 +128,50 @@ class StepRecord(BaseModel):
     success: bool
 
 
+class DreamStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    TIMEOUT = "timeout"
+    SKIPPED = "skipped"
+
+
+class DreamRecord(BaseModel):
+    id: str
+    agent_name: str
+    local_date: str
+    scheduled_for: datetime
+    window_end: datetime
+    window_start: datetime | None = None
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    status: DreamStatus = DreamStatus.PENDING
+    summary: str | None = None
+    transcript_path: str | None = None
+    new_learnings_count: int = 0
+    kb_candidate_count: int = 0
+    founder_thread_id: str | None = None
+    session_id: str | None = None
+    error: str | None = None
+    created_at: datetime = Field(default_factory=_now)
+
+
+class DreamKbCandidate(BaseModel):
+    id: int | None = None
+    dream_id: str
+    agent_name: str
+    slug: str
+    title: str
+    topic: str
+    rationale: str
+    body_markdown: str
+    status: Literal["pending", "promoted", "rejected", "superseded"] = "pending"
+    promoted_kb_slug: str | None = None
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+
 class TokenUsage(BaseModel):
     """Per-session token usage, unified across executors.
 
