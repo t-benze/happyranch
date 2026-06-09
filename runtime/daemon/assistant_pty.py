@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 from dataclasses import dataclass, field
 import errno
+import fcntl
 import os
 from pathlib import Path
 import pty
@@ -13,8 +14,10 @@ import signal
 import shutil
 import shlex
 import subprocess
+import struct
 import sys
 import tempfile
+import termios
 import time
 
 from runtime.config import Settings
@@ -26,6 +29,7 @@ PROBE_READY = "HAPPYRANCH_ASSISTANT_PTY_PROBE_READY"
 _OUTPUT_EXCERPT_BYTES = 4096
 _READY_EXIT_OBSERVATION_SECONDS = 0.25
 _SESSION_REPLAY_CHARS = 8192
+_SESSION_SUBSCRIBER_QUEUE_SIZE = 256
 _PTY_EXEC_HELPER_MODULE = "runtime.daemon.pty_exec_helper"
 
 
@@ -118,6 +122,12 @@ def _write_all(fd: int, data: bytes) -> None:
         offset += os.write(fd, data[offset:])
 
 
+def _set_pty_window_size(fd: int, *, rows: int, cols: int) -> None:
+    if rows <= 0 or cols <= 0:
+        raise ValueError("terminal size must be positive")
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+
+
 def _parse_selected_command(command: str) -> list[str]:
     try:
         argv = shlex.split(command)
@@ -150,10 +160,18 @@ def _build_session_launch_argv(
 
 
 class AssistantPtySession:
-    def __init__(self, *, command: str, workspace: Path) -> None:
+    def __init__(
+        self,
+        *,
+        command: str,
+        workspace: Path,
+        argv: list[str] | None = None,
+    ) -> None:
         self.command = command
         self.workspace = workspace
-        self.argv = _parse_selected_command(command)
+        self.argv = list(argv) if argv is not None else _parse_selected_command(command)
+        if not self.argv:
+            raise ValueError("assistant command is empty")
         self.master_fd: int | None = None
         self.process: subprocess.Popen[bytes] | None = None
         self._reader_task: asyncio.Task[None] | None = None
@@ -198,8 +216,18 @@ class AssistantPtySession:
         self._terminal_sent = False
         self._reader_task = asyncio.create_task(self._reader_loop())
 
-    def matches(self, *, command: str, workspace: Path) -> bool:
-        return self.command == command and self.workspace == workspace
+    def matches(
+        self,
+        *,
+        command: str,
+        workspace: Path,
+        argv: list[str] | None = None,
+    ) -> bool:
+        return (
+            self.command == command
+            and self.workspace == workspace
+            and (argv is None or self.argv == argv)
+        )
 
     def is_running(self) -> bool:
         if self._closed or self.process is None:
@@ -207,7 +235,9 @@ class AssistantPtySession:
         return self.process.poll() is None
 
     def subscribe(self) -> asyncio.Queue[str | None]:
-        queue: asyncio.Queue[str | None] = asyncio.Queue()
+        queue: asyncio.Queue[str | None] = asyncio.Queue(
+            maxsize=len(self._replay) + _SESSION_SUBSCRIBER_QUEUE_SIZE
+        )
         for text in self._replay:
             queue.put_nowait(text)
         self._subscribers.add(queue)
@@ -221,6 +251,16 @@ class AssistantPtySession:
             raise RuntimeError("assistant session is closed")
         data = text.encode()
         await asyncio.to_thread(_write_all, self.master_fd, data)
+
+    async def resize(self, *, rows: int, cols: int) -> None:
+        if self.master_fd is None or self._closed:
+            raise RuntimeError("assistant session is closed")
+        await asyncio.to_thread(
+            _set_pty_window_size,
+            self.master_fd,
+            rows=rows,
+            cols=cols,
+        )
 
     async def close(self) -> None:
         if self._closed and self.master_fd is None and self.process is None:
@@ -283,7 +323,19 @@ class AssistantPtySession:
                 removed = self._replay.pop(0)
                 self._replay_chars -= len(removed)
         for queue in list(self._subscribers):
-            queue.put_nowait(text)
+            try:
+                queue.put_nowait(text)
+            except asyncio.QueueFull:
+                self._close_slow_subscriber(queue)
+
+    def _close_slow_subscriber(self, queue: asyncio.Queue[str | None]) -> None:
+        self._subscribers.discard(queue)
+        while True:
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+        queue.put_nowait(None)
 
     async def _handle_natural_exit(self) -> None:
         self._closed = True
@@ -312,17 +364,23 @@ class AssistantSessionManager:
         self._session: AssistantPtySession | None = None
         self._lock = asyncio.Lock()
 
-    async def get_or_start(self, *, command: str, workspace: Path) -> AssistantPtySession:
+    async def get_or_start(
+        self,
+        *,
+        command: str,
+        workspace: Path,
+        argv: list[str] | None = None,
+    ) -> AssistantPtySession:
         async with self._lock:
             if (
                 self._session is not None
-                and self._session.matches(command=command, workspace=workspace)
+                and self._session.matches(command=command, workspace=workspace, argv=argv)
                 and self._session.is_running()
             ):
                 return self._session
             if self._session is not None:
                 await self._session.close()
-            session = AssistantPtySession(command=command, workspace=workspace)
+            session = AssistantPtySession(command=command, workspace=workspace, argv=argv)
             await session.start()
             self._session = session
             return session
@@ -483,14 +541,18 @@ class ProbeRunner:
                         output,
                         deadline,
                     )
-                    if returncode is not None and returncode != 0:
+                    if returncode is not None:
                         return self._result(
                             False,
                             spec,
                             output,
                             start,
                             f"ready marker observed but executor exited {returncode}",
-                            error="nonzero_exit",
+                            error=(
+                                "not_interactive"
+                                if returncode == 0
+                                else "nonzero_exit"
+                            ),
                             returncode=returncode,
                         )
                     return self._result(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -29,6 +30,8 @@ class _LoopProxy:
         self._loop = loop
         self._callback_count = callback_count
         self.removed = False
+        self.signal_handler: Any | None = None
+        self.signal_removed = False
 
     def create_future(self) -> asyncio.Future[None]:
         return self._loop.create_future()
@@ -41,6 +44,13 @@ class _LoopProxy:
     def remove_reader(self, fd: int) -> None:
         assert fd == 123
         self.removed = True
+
+    def add_signal_handler(self, sig: Any, callback: Any) -> None:
+        self.signal_handler = callback
+
+    def remove_signal_handler(self, sig: Any) -> bool:
+        self.signal_removed = True
+        return True
 
 
 class _ConnectContext:
@@ -213,40 +223,35 @@ def test_cmd_assistant_attach_stale_prints_repair_hint(capsys) -> None:
     assert "reconfigure" in out
 
 
-def test_ws_url_converts_http_to_ws_with_token() -> None:
-    from cli.commands.assistant import _ws_url
+def test_ws_url_converts_http_to_ws_without_token() -> None:
+    from cli.commands.assistant import _ws_headers, _ws_url
 
     client = MagicMock()
     client.base_url = "http://127.0.0.1:4567"
     client.headers = {"Authorization": "Bearer test-token"}
 
-    assert _ws_url(client) == (
-        "ws://127.0.0.1:4567/api/v1/assistant/session?token=test-token"
-    )
+    assert _ws_url(client) == "ws://127.0.0.1:4567/api/v1/assistant/session"
+    assert _ws_headers(client) == {"Authorization": "Bearer test-token"}
 
 
-def test_ws_url_converts_https_to_wss_with_token() -> None:
+def test_ws_url_converts_https_to_wss_without_token() -> None:
     from cli.commands.assistant import _ws_url
 
     client = MagicMock()
     client.base_url = "https://example.test:8443"
     client.headers = {"Authorization": "Bearer secure-token"}
 
-    assert _ws_url(client) == (
-        "wss://example.test:8443/api/v1/assistant/session?token=secure-token"
-    )
+    assert _ws_url(client) == "wss://example.test:8443/api/v1/assistant/session"
 
 
-def test_ws_url_encodes_special_token_chars() -> None:
-    from cli.commands.assistant import _ws_url
+def test_ws_headers_preserve_special_token_chars() -> None:
+    from cli.commands.assistant import _ws_headers
 
     client = MagicMock()
     client.base_url = "http://127.0.0.1:4567"
     client.headers = {"Authorization": "Bearer a+b/c?d&e"}
 
-    assert _ws_url(client) == (
-        "ws://127.0.0.1:4567/api/v1/assistant/session?token=a%2Bb%2Fc%3Fd%26e"
-    )
+    assert _ws_headers(client) == {"Authorization": "Bearer a+b/c?d&e"}
 
 
 def test_attach_bridge_restores_terminal_when_connect_fails(monkeypatch) -> None:
@@ -258,7 +263,7 @@ def test_attach_bridge_restores_terminal_when_connect_fails(monkeypatch) -> None
     restored = _fake_terminal(monkeypatch, _FakeStdin([""]))
     monkeypatch.setattr(
         "cli.commands.assistant.websockets.connect",
-        lambda url: _ConnectContext(exc=OSError("cannot connect")),
+        lambda url, **_kwargs: _ConnectContext(exc=OSError("cannot connect")),
     )
 
     with pytest.raises(OSError, match="cannot connect"):
@@ -282,7 +287,7 @@ async def test_attach_bridge_restores_terminal_and_surfaces_stdin_read_failure(
     monkeypatch.setattr("asyncio.get_running_loop", lambda: loop_proxy)
     monkeypatch.setattr(
         "cli.commands.assistant.websockets.connect",
-        lambda url: _ConnectContext(_IdleWebSocket()),
+        lambda url, **_kwargs: _ConnectContext(_IdleWebSocket()),
     )
 
     with pytest.raises(OSError, match="stdin broke"):
@@ -311,7 +316,7 @@ async def test_attach_bridge_surfaces_send_failure_and_restores_terminal(
     monkeypatch.setattr("asyncio.get_running_loop", lambda: loop_proxy)
     monkeypatch.setattr(
         "cli.commands.assistant.websockets.connect",
-        lambda url: _ConnectContext(FailingSendWebSocket()),
+        lambda url, **_kwargs: _ConnectContext(FailingSendWebSocket()),
     )
 
     with pytest.raises(OSError, match="send failed"):
@@ -345,12 +350,48 @@ async def test_attach_bridge_sends_stdin_chars_in_order(monkeypatch) -> None:
     monkeypatch.setattr("asyncio.get_running_loop", lambda: loop_proxy)
     monkeypatch.setattr(
         "cli.commands.assistant.websockets.connect",
-        lambda url: _ConnectContext(websocket),
+        lambda url, **_kwargs: _ConnectContext(websocket),
     )
 
     await asyncio.wait_for(_attach_bridge(client), timeout=1)
 
     assert websocket.sent == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_attach_bridge_sends_initial_resize(monkeypatch) -> None:
+    from cli.commands.assistant import _attach_bridge
+
+    class RecordingWebSocket(_IdleWebSocket):
+        def __init__(self) -> None:
+            super().__init__()
+            self.sent: list[str] = []
+
+        async def send(self, message: str) -> None:
+            self.sent.append(message)
+
+    websocket = RecordingWebSocket()
+    client = MagicMock()
+    client.base_url = "http://127.0.0.1:4567"
+    client.headers = {"Authorization": "Bearer token"}
+    _fake_terminal(monkeypatch, _FakeStdin([""]))
+    monkeypatch.setattr(
+        "os.get_terminal_size",
+        lambda fd: os.terminal_size((132, 43)),
+    )
+    loop = asyncio.get_running_loop()
+    loop_proxy = _LoopProxy(loop, callback_count=1)
+    monkeypatch.setattr("asyncio.get_running_loop", lambda: loop_proxy)
+    monkeypatch.setattr(
+        "cli.commands.assistant.websockets.connect",
+        lambda url, **_kwargs: _ConnectContext(websocket),
+    )
+
+    await asyncio.wait_for(_attach_bridge(client), timeout=1)
+
+    assert websocket.sent[0] == "__HAPPYRANCH_ASSISTANT_RESIZE__ 43 132"
+    assert loop_proxy.signal_handler is not None
+    assert loop_proxy.signal_removed is True
 
 
 def test_cmd_assistant_init_selects_only_passing_executor(

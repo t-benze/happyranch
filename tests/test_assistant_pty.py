@@ -224,6 +224,36 @@ def test_probe_passes_when_marker_returned(tmp_path: Path) -> None:
         tmp_path,
         f"""
 import sys
+import time
+
+seen = sys.stdin.readline()
+if {PROBE_REQUEST!r} not in seen:
+    raise SystemExit(1)
+nonce = seen.strip().split(maxsplit=1)[1]
+print(f"{PROBE_READY} {{nonce}}", flush=True)
+time.sleep(30)
+""",
+    )
+    spec = InteractiveExecutorSpec(
+        name="fake",
+        argv=[str(cli)],
+        prompt_surface="AGENTS.md",
+    )
+
+    result = ProbeRunner().probe_executor(spec)
+
+    assert result.passed is True
+    assert result.executor == "fake"
+    assert PROBE_READY in result.output_excerpt
+    assert result.error is None
+    assert result.elapsed_seconds >= 0
+
+
+def test_probe_fails_when_marker_returned_then_zero_exit(tmp_path: Path) -> None:
+    cli = _write_fake_cli(
+        tmp_path,
+        f"""
+import sys
 
 seen = sys.stdin.readline()
 if {PROBE_REQUEST!r} not in seen:
@@ -240,11 +270,9 @@ print(f"{PROBE_READY} {{nonce}}", flush=True)
 
     result = ProbeRunner().probe_executor(spec)
 
-    assert result.passed is True
-    assert result.executor == "fake"
-    assert PROBE_READY in result.output_excerpt
-    assert result.error is None
-    assert result.elapsed_seconds >= 0
+    assert result.passed is False
+    assert result.returncode == 0
+    assert result.error == "not_interactive"
 
 
 def test_probe_cleans_up_successful_live_executor(tmp_path: Path) -> None:
@@ -479,6 +507,7 @@ def test_probe_writes_minimal_workspace_surface(tmp_path: Path) -> None:
 from pathlib import Path
 import os
 import sys
+import time
 
 surface = Path("CLAUDE.md")
 content = surface.read_text()
@@ -488,6 +517,7 @@ Path(os.environ["SURFACE_MARKER_PATH"]).write_text(
 )
 nonce = request.split(maxsplit=1)[1]
 print(f"{PROBE_READY} {{nonce}}", flush=True)
+time.sleep(30)
 """,
     )
     spec = InteractiveExecutorSpec(

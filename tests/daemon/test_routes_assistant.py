@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
+import sys
 from typing import Any
 
 import pytest
@@ -51,6 +52,43 @@ def _passed_probe_result(executor: str = "codex") -> dict[str, Any]:
     }
 
 
+def _patch_probe_runner(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    passed: bool = True,
+    detail: str = "ready marker observed",
+    error: str | None = None,
+    returncode: int | None = None,
+) -> None:
+    from runtime.daemon.routes import assistant as assistant_route
+
+    class FakeProbeRunner:
+        def probe_executor(self, spec: Any) -> ProbeResult:
+            return ProbeResult(
+                passed=passed,
+                executor=spec.name,
+                output_excerpt=f"{spec.name} daemon probe",
+                detail=detail,
+                elapsed_seconds=0.02,
+                timed_out=False,
+                error=error,
+                returncode=returncode,
+            )
+
+    monkeypatch.setattr(assistant_route, "ProbeRunner", FakeProbeRunner)
+
+
+def _daemon_probe_result(executor: str, argv: list[str]) -> dict[str, Any]:
+    return {
+        **_passed_probe_result(executor),
+        "command": argv[0],
+        "argv": argv,
+        "output_excerpt": f"{executor} daemon probe",
+        "elapsed_seconds": 0.02,
+        "returncode": None,
+    }
+
+
 def test_assistant_status_no_active_runtime(tmp_home: Path, auth: dict[str, str]) -> None:
     client = _idle_client(auth)
 
@@ -79,6 +117,17 @@ def test_assistant_status_requires_http_auth(client: TestClient) -> None:
     response = no_auth.get("/api/v1/assistant/status")
 
     assert response.status_code == 401
+
+
+def test_parse_resize_control_frame() -> None:
+    from runtime.daemon.routes.assistant import _parse_resize_control
+
+    assert _parse_resize_control("__HAPPYRANCH_ASSISTANT_RESIZE__ 43 132") == (
+        43,
+        132,
+    )
+    assert _parse_resize_control("__HAPPYRANCH_ASSISTANT_RESIZE__ 0 132") is None
+    assert _parse_resize_control("hello") is None
 
 
 def test_assistant_probes_returns_fake_probe_results(
@@ -153,23 +202,27 @@ def test_assistant_probes_returns_fake_probe_results(
     }
 
 
-def test_assistant_configure_requires_passing_probe(client: TestClient) -> None:
+def test_assistant_configure_requires_daemon_passing_probe(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_probe_runner(
+        monkeypatch,
+        passed=False,
+        detail="not ready",
+        error="timeout",
+    )
     response = client.post(
         "/api/v1/assistant/configure",
         json={
             "selected_executor": "codex",
-            "probe_results": [
-                {
-                    **_passed_probe_result("codex"),
-                    "passed": False,
-                    "detail": "not ready",
-                }
-            ],
+            "probe_results": [_passed_probe_result("codex")],
         },
     )
 
     assert response.status_code == 400
-    assert response.json()["detail"]["code"] == "selected_executor_not_probe_passed"
+    assert response.json()["detail"]["code"] == "selected_executor_probe_failed"
+    assert response.json()["detail"]["probe_result"]["passed"] is False
 
 
 def test_assistant_configure_rejects_unsupported_executor_without_workspace(
@@ -259,13 +312,11 @@ def test_assistant_configure_rejects_contradictory_passed_probe(
 def test_assistant_configure_writes_workspace_and_status(
     client: TestClient,
     runtime,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _patch_probe_runner(monkeypatch)
     probe_result = _passed_probe_result("codex")
-    expected_probe_result = {
-        **probe_result,
-        "command": "codex",
-        "argv": ["codex"],
-    }
+    expected_probe_result = _daemon_probe_result("codex", ["codex"])
 
     response = client.post(
         "/api/v1/assistant/configure",
@@ -287,6 +338,7 @@ def test_assistant_configure_writes_workspace_and_status(
     assert config is not None
     assert config.selected_executor == "codex"
     assert config.selected_command == "codex"
+    assert config.selected_argv == ["codex"]
     assert config.workspace_path == str(paths.workspace)
     assert config.latest_probe_results == [expected_probe_result]
 
@@ -294,7 +346,9 @@ def test_assistant_configure_writes_workspace_and_status(
 def test_assistant_configure_derives_command_from_server_specs(
     runtime,
     auth: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _patch_probe_runner(monkeypatch)
     state = DaemonState.from_runtime(
         runtime,
         Settings(codex_cli_path="/server/bin/codex"),
@@ -308,13 +362,7 @@ def test_assistant_configure_derives_command_from_server_specs(
         "name": "forged-name",
         "prompt_surface": "CLAUDE.md",
     }
-    expected_probe_result = {
-        **probe_result,
-        "command": "/server/bin/codex",
-        "argv": ["/server/bin/codex"],
-        "name": "codex",
-        "prompt_surface": "AGENTS.md",
-    }
+    expected_probe_result = _daemon_probe_result("codex", ["/server/bin/codex"])
 
     response = client.post(
         "/api/v1/assistant/configure",
@@ -325,6 +373,7 @@ def test_assistant_configure_derives_command_from_server_specs(
     config = load_assistant_config(runtime.root)
     assert config is not None
     assert config.selected_command == "/server/bin/codex"
+    assert config.selected_argv == ["/server/bin/codex"]
     assert config.latest_probe_results == [expected_probe_result]
 
 
@@ -358,6 +407,7 @@ def test_assistant_websocket_streams_to_selected_cli(
             FakeSpec(name="codex", argv=[str(fake_cli)], prompt_surface="AGENTS.md"),
         ],
     )
+    _patch_probe_runner(monkeypatch)
     response = client.post(
         "/api/v1/assistant/configure",
         json={
@@ -370,7 +420,8 @@ def test_assistant_websocket_streams_to_selected_cli(
     try:
         token = paths_mod.read_token()
         with client.websocket_connect(
-            f"/api/v1/assistant/session?token={token}"
+            "/api/v1/assistant/session",
+            headers={"Authorization": f"Bearer {token}"},
         ) as websocket:
             assert websocket.receive_text().strip() == "assistant ready"
 
@@ -394,12 +445,13 @@ def test_assistant_websocket_rejects_bad_token_without_starting_session(
     (paths.learnings_dir / "_index.md").write_text("# Learnings\n")
     save_assistant_config(
         runtime.root,
-        AssistantConfig(
-            selected_executor="codex",
-            selected_command="/should/not/start",
-            workspace_path=str(paths.workspace),
-            latest_probe_results=[],
-        ),
+            AssistantConfig(
+                selected_executor="codex",
+                selected_command="/should/not/start",
+                selected_argv=["/should/not/start"],
+                workspace_path=str(paths.workspace),
+                latest_probe_results=[],
+            ),
     )
 
     class NoStartSessions:
@@ -409,7 +461,10 @@ def test_assistant_websocket_rejects_bad_token_without_starting_session(
     client.app.state.daemon.assistant_sessions = NoStartSessions()
 
     with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect("/api/v1/assistant/session?token=bad-token"):
+        with client.websocket_connect(
+            "/api/v1/assistant/session",
+            headers={"Authorization": "Bearer bad-token"},
+        ):
             pass
 
     assert exc_info.value.code == 1008
@@ -425,7 +480,10 @@ def test_assistant_websocket_uninitialized_sends_hint_without_starting_session(
     client.app.state.daemon.assistant_sessions = NoStartSessions()
     token = paths_mod.read_token()
 
-    with client.websocket_connect(f"/api/v1/assistant/session?token={token}") as websocket:
+    with client.websocket_connect(
+        "/api/v1/assistant/session",
+        headers={"Authorization": f"Bearer {token}"},
+    ) as websocket:
         assert websocket.receive_text() == (
             "assistant_init_required: configure the system assistant before attaching"
         )
@@ -441,12 +499,13 @@ def test_assistant_repair_refreshes_workspace(client: TestClient, runtime) -> No
     paths.root.mkdir(parents=True)
     save_assistant_config(
         runtime.root,
-        AssistantConfig(
-            selected_executor="claude",
-            selected_command="/usr/local/bin/claude",
-            workspace_path=str(paths.workspace),
-            latest_probe_results=[probe_result],
-        ),
+            AssistantConfig(
+                selected_executor="claude",
+                selected_command=sys.executable,
+                selected_argv=[sys.executable],
+                workspace_path=str(paths.workspace),
+                latest_probe_results=[probe_result],
+            ),
     )
 
     response = client.post("/api/v1/assistant/repair")

@@ -3,16 +3,21 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
+import os
+import signal
 import termios
 import sys
 import tty
 from typing import Any
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlparse
 
 import websockets
 from websockets.exceptions import WebSocketException
 
 from cli.client.client import DaemonNotRunning, DaemonStateInconsistent, OpcClient
+
+_RESIZE_CONTROL_PREFIX = "__HAPPYRANCH_ASSISTANT_RESIZE__"
 
 
 def _client() -> OpcClient:
@@ -113,9 +118,21 @@ def cmd_assistant_init(args: argparse.Namespace) -> None:
 def _ws_url(client: OpcClient) -> str:
     parsed = urlparse(client.base_url)
     scheme = "wss" if parsed.scheme == "https" else "ws"
-    token = client.headers["Authorization"].removeprefix("Bearer ")
-    query = urlencode({"token": token})
-    return f"{scheme}://{parsed.netloc}/api/v1/assistant/session?{query}"
+    return f"{scheme}://{parsed.netloc}/api/v1/assistant/session"
+
+
+def _ws_headers(client: OpcClient) -> dict[str, str]:
+    return {"Authorization": client.headers["Authorization"]}
+
+
+def _resize_control_message(fd: int) -> str | None:
+    try:
+        size = os.get_terminal_size(fd)
+    except OSError:
+        return None
+    if size.lines <= 0 or size.columns <= 0:
+        return None
+    return f"{_RESIZE_CONTROL_PREFIX} {size.lines} {size.columns}"
 
 
 async def _attach_bridge(client: OpcClient) -> None:
@@ -124,12 +141,16 @@ async def _attach_bridge(client: OpcClient) -> None:
 
     try:
         tty.setraw(fd)
-        async with websockets.connect(_ws_url(client)) as websocket:
+        async with websockets.connect(
+            _ws_url(client),
+            additional_headers=_ws_headers(client),
+        ) as websocket:
             loop = asyncio.get_running_loop()
             bridge_done = loop.create_future()
             stdin_queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=1024)
             backpressure_tasks: set[asyncio.Task[Any]] = set()
             reader_active = False
+            resize_handler_registered = False
 
             def remove_stdin_reader() -> None:
                 nonlocal reader_active
@@ -180,6 +201,31 @@ async def _attach_bridge(client: OpcClient) -> None:
                     return
                 queue_stdin_item(data)
 
+            def queue_resize() -> None:
+                message = _resize_control_message(fd)
+                if message is not None:
+                    queue_stdin_item(message)
+
+            def add_resize_handler() -> None:
+                nonlocal resize_handler_registered
+                add_signal_handler = getattr(loop, "add_signal_handler", None)
+                if add_signal_handler is None:
+                    return
+                try:
+                    add_signal_handler(signal.SIGWINCH, queue_resize)
+                except (NotImplementedError, RuntimeError, ValueError):
+                    return
+                resize_handler_registered = True
+
+            def remove_resize_handler() -> None:
+                if not resize_handler_registered:
+                    return
+                remove_signal_handler = getattr(loop, "remove_signal_handler", None)
+                if remove_signal_handler is None:
+                    return
+                with contextlib.suppress(RuntimeError, ValueError):
+                    remove_signal_handler(signal.SIGWINCH)
+
             async def send_stdin_to_websocket() -> None:
                 try:
                     while True:
@@ -191,6 +237,8 @@ async def _attach_bridge(client: OpcClient) -> None:
                     fail_bridge(exc)
                     raise
 
+            queue_resize()
+            add_resize_handler()
             add_stdin_reader()
             try:
                 receive_task = asyncio.create_task(_write_websocket_output(websocket))
@@ -225,6 +273,7 @@ async def _attach_bridge(client: OpcClient) -> None:
                     raise error
             finally:
                 remove_stdin_reader()
+                remove_resize_handler()
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
 

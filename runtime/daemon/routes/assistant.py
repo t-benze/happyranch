@@ -14,7 +14,7 @@ from fastapi import (
     WebSocketDisconnect,
     status,
 )
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from runtime.daemon import paths as daemon_paths
 from runtime.daemon.assistant_pty import (
@@ -37,13 +37,14 @@ from runtime.system_assistant import (
 )
 
 router = APIRouter()
+_RESIZE_CONTROL_PREFIX = "__HAPPYRANCH_ASSISTANT_RESIZE__"
 
 
 class ConfigureAssistantRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     selected_executor: str
-    probe_results: list["ProbeResultRow"]
+    probe_results: list["ProbeResultRow"] = Field(default_factory=list)
 
 
 class ProbeResultRow(BaseModel):
@@ -91,24 +92,21 @@ def _probe_result_to_dict(
     }
 
 
-def _matching_passed_probe(
-    selected_executor: str,
-    probe_results: list[ProbeResultRow],
-) -> ProbeResultRow | None:
-    for result in probe_results:
-        if result.executor == selected_executor and result.passed is True:
-            return result
-    return None
-
-
-def _server_selected_command(
+def _spec_for_executor(
     selected_executor: str,
     specs: list[InteractiveExecutorSpec],
-) -> str:
+) -> InteractiveExecutorSpec:
     for spec in specs:
         if spec.name == selected_executor:
-            return spec.argv[0] if spec.argv else spec.name
-    return selected_executor
+            return spec
+    raise HTTPException(
+        status_code=400,
+        detail={"code": "unsupported_assistant_executor"},
+    )
+
+
+def _server_selected_command(spec: InteractiveExecutorSpec) -> str:
+    return spec.argv[0] if spec.argv else spec.name
 
 
 def _normalize_probe_results(
@@ -147,6 +145,24 @@ def _normalize_probe_results(
     return normalized
 
 
+def _probe_selected_executor(
+    selected_executor: str,
+    specs: list[InteractiveExecutorSpec],
+) -> tuple[InteractiveExecutorSpec, dict[str, Any]]:
+    spec = _spec_for_executor(selected_executor, specs)
+    result = ProbeRunner().probe_executor(spec)
+    row = _probe_result_to_dict(spec, result)
+    if not result.passed:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "selected_executor_probe_failed",
+                "probe_result": row,
+            },
+        )
+    return spec, row
+
+
 def _assistant_error(code: str, exc: Exception) -> HTTPException:
     return HTTPException(status_code=409, detail={"code": code, "message": str(exc)})
 
@@ -155,7 +171,10 @@ def _websocket_token_is_valid(websocket: WebSocket) -> bool:
     expected = daemon_paths.read_token()
     if expected is None:
         return False
-    return websocket.query_params.get("token") == expected
+    authorization = websocket.headers.get("authorization")
+    if authorization == f"Bearer {expected}":
+        return True
+    return False
 
 
 def _assistant_init_hint(state: AssistantState, detail: str | None) -> str:
@@ -181,6 +200,22 @@ async def _safe_websocket_close(websocket: WebSocket, *, code: int) -> None:
         return
 
 
+def _parse_resize_control(text: str) -> tuple[int, int] | None:
+    if not text.startswith(_RESIZE_CONTROL_PREFIX):
+        return None
+    parts = text.split()
+    if len(parts) != 3:
+        return None
+    try:
+        rows = int(parts[1])
+        cols = int(parts[2])
+    except ValueError:
+        return None
+    if rows <= 0 or cols <= 0:
+        return None
+    return rows, cols
+
+
 async def _pump_assistant_output(
     websocket: WebSocket,
     session: AssistantPtySession,
@@ -192,7 +227,7 @@ async def _pump_assistant_output(
             if text is None:
                 await _safe_websocket_close(
                     websocket,
-                    code=status.WS_1011_INTERNAL_ERROR,
+                    code=status.WS_1000_NORMAL_CLOSURE,
                 )
                 return
             if not await _safe_websocket_send_text(websocket, text):
@@ -227,11 +262,13 @@ async def configure_assistant(
     root = _runtime_root(request)
     state: DaemonState = request.app.state.daemon
     specs = build_executor_specs(state.settings)
+    spec = _spec_for_executor(body.selected_executor, specs)
     paths = system_assistant_paths(root)
     try:
         AssistantConfig(
             selected_executor=body.selected_executor,
-            selected_command=_server_selected_command(body.selected_executor, specs),
+            selected_command=_server_selected_command(spec),
+            selected_argv=list(spec.argv),
             workspace_path=str(paths.workspace),
             latest_probe_results=[],
         )
@@ -241,20 +278,16 @@ async def configure_assistant(
             detail={"code": "unsupported_assistant_executor", "message": str(exc)},
         ) from exc
 
-    probe_results = _normalize_probe_results(body.probe_results, specs)
-    matching_probe = _matching_passed_probe(body.selected_executor, body.probe_results)
-    if matching_probe is None:
-        raise HTTPException(
-            status_code=400,
-            detail={"code": "selected_executor_not_probe_passed"},
-        )
+    _normalize_probe_results(body.probe_results, specs)
+    spec, selected_probe_result = _probe_selected_executor(body.selected_executor, specs)
 
     try:
         config = AssistantConfig(
             selected_executor=body.selected_executor,
-            selected_command=_server_selected_command(body.selected_executor, specs),
+            selected_command=_server_selected_command(spec),
+            selected_argv=list(spec.argv),
             workspace_path=str(paths.workspace),
-            latest_probe_results=probe_results,
+            latest_probe_results=[selected_probe_result],
         )
     except ValidationError as exc:
         raise HTTPException(
@@ -327,6 +360,7 @@ async def attach_assistant_session(websocket: WebSocket) -> None:
     try:
         session = await state_obj.assistant_sessions.get_or_start(
             command=config.selected_command,
+            argv=config.selected_argv,
             workspace=system_assistant_paths(root).workspace,
         )
     except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
@@ -339,6 +373,11 @@ async def attach_assistant_session(websocket: WebSocket) -> None:
     try:
         while True:
             text = await websocket.receive_text()
+            resize = _parse_resize_control(text)
+            if resize is not None:
+                rows, cols = resize
+                await session.resize(rows=rows, cols=cols)
+                continue
             await session.write_text(text)
     except WebSocketDisconnect:
         return

@@ -3,11 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+import shutil
 from typing import Any
 
 import yaml
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 
 class AssistantState(StrEnum):
@@ -37,8 +38,15 @@ class AssistantConfig(BaseModel):
 
     selected_executor: AssistantExecutor
     selected_command: str
+    selected_argv: list[str] = Field(default_factory=list)
     workspace_path: str
     latest_probe_results: list[dict[str, Any]] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _default_selected_argv(self) -> AssistantConfig:
+        if not self.selected_argv:
+            self.selected_argv = [self.selected_command]
+        return self
 
 
 class AssistantStatus(BaseModel):
@@ -198,6 +206,22 @@ def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
             selected_executor=config.selected_executor,
             workspace_path=config.workspace_path,
             detail="assistant workspace path does not match runtime",
+            latest_probe_results=config.latest_probe_results,
+        )
+    if not config.selected_argv or not config.selected_argv[0]:
+        return AssistantStatus(
+            state=AssistantState.STALE_OR_BROKEN,
+            selected_executor=config.selected_executor,
+            workspace_path=config.workspace_path,
+            detail="assistant selected command is empty",
+            latest_probe_results=config.latest_probe_results,
+        )
+    if shutil.which(config.selected_argv[0]) is None:
+        return AssistantStatus(
+            state=AssistantState.STALE_OR_BROKEN,
+            selected_executor=config.selected_executor,
+            workspace_path=config.workspace_path,
+            detail=f"assistant selected command not found: {config.selected_argv[0]}",
             latest_probe_results=config.latest_probe_results,
         )
     managed_invalid_detail = _managed_dir_invalid_detail(paths)
