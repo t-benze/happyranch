@@ -152,10 +152,12 @@ const EXCLUDED_PATHS = new Map<string, string>([
   ['POST /api/v1/orgs/{slug}/threads/compose-as-agent', 'agent callback — not exercised from the Web UI'],
   // jobs agent callback
   ['POST /api/v1/orgs/{slug}/jobs/submit', 'agent callback (matches /report-completion pattern)'],
-  // Artifacts — agent-facing v1 (CLI only). Founder UI deferred until needed.
-  ['POST /api/v1/orgs/{slug}/artifacts', 'agent-facing v1 — CLI only, founder UI deferred'],
-  ['GET /api/v1/orgs/{slug}/artifacts', 'agent-facing v1 — CLI only, founder UI deferred'],
-  ['GET /api/v1/orgs/{slug}/artifacts/{name}', 'agent-facing v1 — CLI only, founder UI deferred'],
+  // Artifacts — agent-facing v1, now also surfaced read+create in the founder
+  // assets UI (web/src/features/assets) via uploadArtifact() / listArtifacts() /
+  // artifactDownloadPath(). No delete or update route exists (backend-gated).
+  ['POST /api/v1/orgs/{slug}/artifacts', 'agent-facing v1; also founder assets UI upload'],
+  ['GET /api/v1/orgs/{slug}/artifacts', 'agent-facing v1; also founder assets UI list'],
+  ['GET /api/v1/orgs/{slug}/artifacts/{name}', 'agent-facing v1; also founder assets UI download'],
   // dreams agent callback
   ['POST /api/v1/orgs/{slug}/dreams/{dream_id}/complete', 'agent callback'],
 ]);

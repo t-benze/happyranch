@@ -13,6 +13,10 @@ export interface UploadArtifactArgs {
   agent: string;
 }
 
+export interface ListArtifactsResponse {
+  artifacts: ArtifactInfo[];
+}
+
 function parseArtifactError(status: number, body: unknown): ApiError {
   let code: string | null = null;
   let detail: unknown = body;
@@ -78,6 +82,39 @@ export async function uploadArtifact(
   }
   if (!res.ok) throw parseArtifactError(res.status, body);
   return body as ArtifactInfo;
+}
+
+async function listWithToken(slug: string, token: string): Promise<Response> {
+  return fetch(`${API_PREFIX}/orgs/${slug}/artifacts`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/json',
+    },
+    credentials: 'same-origin',
+  });
+}
+
+export async function listArtifacts(slug: string): Promise<ListArtifactsResponse> {
+  let token = await getToken();
+  let res = await listWithToken(slug, token);
+  if (res.status === 401) {
+    clearToken();
+    token = await getToken();
+    res = await listWithToken(slug, token);
+  }
+
+  let body: unknown = null;
+  const text = await res.text();
+  if (text) {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = text;
+    }
+  }
+  if (!res.ok) throw parseArtifactError(res.status, body);
+  return body as ListArtifactsResponse;
 }
 
 export function artifactDownloadPath(slug: string, artifactName: string): string {
