@@ -114,6 +114,13 @@ def test_talk_skill_documents_single_line_rationale() -> None:
     assert "Bash(happyranch *)" in body
 
 
+def test_talk_skill_documents_self_only_dispatch() -> None:
+    body = (SKILLS_ROOT / "talk" / "SKILL.md").read_text()
+    assert "talk_dispatch_must_be_self" in body
+    assert "may only target" in body
+    assert "managers can dispatch to any agent in their team" not in body
+
+
 def test_skill_cli_commands_exist() -> None:
     """Every `happyranch <subcommand>` referenced by a skill must be a real subcommand."""
     from cli.main import build_parser

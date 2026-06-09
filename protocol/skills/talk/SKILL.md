@@ -119,7 +119,7 @@ The `--from-file` pattern matches `happyranch report-completion`, `happyranch ma
 
 - Don't start tasks (`happyranch run ...`) from inside a talk — that's out of scope for v1. If something actionable comes up, tell the founder explicitly and let them submit.
 - **Exception:** `happyranch manage-agent` (enroll / update / terminate) is allowed during a talk via the talk-path payload (pass `talk_id` instead of `task_id`+`session_id`). See the `manage-agent` skill. Record any such call in your `transcript_markdown` so the founder has a human-readable record at talk-end.
-- **Exception:** `happyranch dispatch` (create a new task from inside the talk) is allowed via the talk-path payload — see the `dispatch` skill. Workers can only dispatch to themselves; team managers can dispatch to any agent in their team. Cross-team dispatch is forbidden. Record any such call in your `transcript_markdown` so the founder has a human-readable record at talk-end.
+- **Exception:** `happyranch dispatch` (create a new task from inside the talk) is allowed via the talk-path payload — see the `dispatch` skill. It may only target yourself, whether you are a worker or manager; cross-agent and cross-team dispatch are forbidden. Record any such call in your `transcript_markdown` so the founder has a human-readable record at talk-end.
 - **Exception:** Composing a thread to loop in another agent is allowed
   via the talk-path payload (`--talk-id` on `happyranch threads compose`).
   See the `thread` skill. Record the thread_id in your
