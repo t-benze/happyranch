@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import inspect
 import os
 import signal
 import termios
@@ -125,6 +126,19 @@ def _ws_headers(client: OpcClient) -> dict[str, str]:
     return {"Authorization": client.headers["Authorization"]}
 
 
+def _connect_websocket(url: str, headers: dict[str, str]) -> Any:
+    parameters = inspect.signature(websockets.connect).parameters
+    header_kw = "additional_headers" if "additional_headers" in parameters else "extra_headers"
+    try:
+        return websockets.connect(url, **{header_kw: headers})
+    except TypeError as exc:
+        if header_kw == "additional_headers" and "additional_headers" in str(exc):
+            return websockets.connect(url, extra_headers=headers)
+        if header_kw == "extra_headers" and "extra_headers" in str(exc):
+            return websockets.connect(url, additional_headers=headers)
+        raise
+
+
 def _resize_control_message(fd: int) -> str | None:
     try:
         size = os.get_terminal_size(fd)
@@ -141,10 +155,7 @@ async def _attach_bridge(client: OpcClient) -> None:
 
     try:
         tty.setraw(fd)
-        async with websockets.connect(
-            _ws_url(client),
-            additional_headers=_ws_headers(client),
-        ) as websocket:
+        async with _connect_websocket(_ws_url(client), _ws_headers(client)) as websocket:
             loop = asyncio.get_running_loop()
             bridge_done = loop.create_future()
             stdin_queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=1024)

@@ -254,6 +254,98 @@ def test_ws_headers_preserve_special_token_chars() -> None:
     assert _ws_headers(client) == {"Authorization": "Bearer a+b/c?d&e"}
 
 
+def test_connect_websocket_uses_additional_headers(monkeypatch) -> None:
+    from cli.commands.assistant import _connect_websocket
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_connect(
+        url: str,
+        *,
+        additional_headers: dict[str, str] | None = None,
+    ) -> object:
+        calls.append({"url": url, "additional_headers": additional_headers})
+        return object()
+
+    monkeypatch.setattr("cli.commands.assistant.websockets.connect", fake_connect)
+
+    result = _connect_websocket("ws://example.test", {"Authorization": "Bearer t"})
+
+    assert result is not None
+    assert calls == [
+        {
+            "url": "ws://example.test",
+            "additional_headers": {"Authorization": "Bearer t"},
+        },
+    ]
+
+
+def test_connect_websocket_supports_legacy_extra_headers(monkeypatch) -> None:
+    from cli.commands.assistant import _connect_websocket
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_connect(
+        url: str,
+        *,
+        extra_headers: dict[str, str] | None = None,
+    ) -> object:
+        calls.append({"url": url, "extra_headers": extra_headers})
+        return object()
+
+    monkeypatch.setattr("cli.commands.assistant.websockets.connect", fake_connect)
+
+    result = _connect_websocket("ws://example.test", {"Authorization": "Bearer t"})
+
+    assert result is not None
+    assert calls == [
+        {
+            "url": "ws://example.test",
+            "extra_headers": {"Authorization": "Bearer t"},
+        },
+    ]
+
+
+def test_connect_websocket_falls_back_after_type_error(monkeypatch) -> None:
+    from cli.commands.assistant import _connect_websocket
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_connect(
+        url: str,
+        *,
+        additional_headers: dict[str, str] | None = None,
+        **kwargs: Any,
+    ) -> object:
+        calls.append(
+            {
+                "url": url,
+                "additional_headers": additional_headers,
+                **kwargs,
+            }
+        )
+        if additional_headers is not None:
+            raise TypeError("unexpected keyword argument 'additional_headers'")
+        return object()
+
+    monkeypatch.setattr("cli.commands.assistant.websockets.connect", fake_connect)
+
+    result = _connect_websocket("ws://example.test", {"Authorization": "Bearer t"})
+
+    assert result is not None
+    assert calls == [
+        {
+            "url": "ws://example.test",
+            "additional_headers": {"Authorization": "Bearer t"},
+        },
+        {
+            "url": "ws://example.test",
+            "additional_headers": None,
+            "extra_headers": {"Authorization": "Bearer t"},
+        },
+    ]
+
+
 def test_attach_bridge_restores_terminal_when_connect_fails(monkeypatch) -> None:
     from cli.commands.assistant import _run_attach_bridge
 

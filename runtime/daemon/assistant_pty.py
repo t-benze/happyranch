@@ -470,6 +470,8 @@ class ProbeRunner:
         child_pid: int | None = None
         exec_ready_fd: int | None = None
         exec_signal_fd: int | None = None
+        start_ready_fd: int | None = None
+        start_signal_fd: int | None = None
         returncode: int | None = None
         output = bytearray()
         try:
@@ -495,11 +497,26 @@ class ProbeRunner:
                     error="launch_error",
                 )
             exec_ready_fd, exec_signal_fd = os.pipe()
+            start_ready_fd, start_signal_fd = os.pipe()
             os.set_inheritable(exec_signal_fd, False)
             child_pid, master_fd = pty.fork()
             if child_pid == 0:
                 self._close_fd(exec_ready_fd)
+                self._close_fd(start_signal_fd)
+                self._wait_for_start_signal(start_ready_fd)
+                self._close_fd(start_ready_fd)
                 self._exec_child(spec.argv, executable, workspace, env, exec_signal_fd)
+            self._close_fd(start_ready_fd)
+            start_ready_fd = None
+            with contextlib.suppress(OSError, ValueError):
+                _set_pty_window_size(
+                    master_fd,
+                    rows=_DEFAULT_PTY_ROWS,
+                    cols=_DEFAULT_PTY_COLS,
+                )
+            self._write_all(start_signal_fd, b"1")
+            self._close_fd(start_signal_fd)
+            start_signal_fd = None
             self._close_fd(exec_signal_fd)
             exec_signal_fd = None
             exec_started, exec_error = self._wait_for_child_exec(
@@ -609,6 +626,10 @@ class ProbeRunner:
                 self._close_fd(exec_signal_fd)
             if exec_ready_fd is not None:
                 self._close_fd(exec_ready_fd)
+            if start_signal_fd is not None:
+                self._close_fd(start_signal_fd)
+            if start_ready_fd is not None:
+                self._close_fd(start_ready_fd)
             if master_fd is not None:
                 self._close_fd(master_fd)
 
@@ -652,6 +673,15 @@ class ProbeRunner:
                 ]
             )
         )
+
+    def _wait_for_start_signal(self, fd: int) -> None:
+        while True:
+            try:
+                chunk = os.read(fd, 1)
+            except OSError:
+                return
+            if chunk == b"" or chunk:
+                return
 
     def _write_probe_request(self, master_fd: int, probe_request: str) -> None:
         self._write_all(master_fd, f"{probe_request}\r".encode())

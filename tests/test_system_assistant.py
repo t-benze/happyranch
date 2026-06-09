@@ -751,6 +751,27 @@ def test_classify_stale_when_knowledge_index_is_missing(tmp_path: Path) -> None:
     assert status.detail == "assistant knowledge index is missing"
 
 
+def test_bootstrap_rejects_nested_knowledge_symlink_without_writing_target(
+    tmp_path: Path,
+) -> None:
+    paths = system_assistant_paths(tmp_path)
+    paths.knowledge_dir.mkdir(parents=True)
+    external_docs = tmp_path / "external-docs"
+    external_docs.mkdir()
+    (paths.knowledge_dir / "docs").symlink_to(
+        external_docs,
+        target_is_directory=True,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="assistant knowledge directory must not be a symlink",
+    ):
+        bootstrap_assistant_workspace(tmp_path, executor="codex")
+
+    assert not any(external_docs.iterdir())
+
+
 def test_classify_stale_when_claude_prompt_file_is_missing(tmp_path: Path) -> None:
     bootstrap_assistant_workspace(tmp_path, executor="claude")
     workspace = system_assistant_paths(tmp_path).workspace

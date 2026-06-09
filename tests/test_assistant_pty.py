@@ -249,6 +249,39 @@ time.sleep(30)
     assert result.elapsed_seconds >= 0
 
 
+def test_probe_starts_executor_with_default_pty_size(tmp_path: Path) -> None:
+    cli = _write_fake_cli(
+        tmp_path,
+        f"""
+import fcntl
+import struct
+import sys
+import termios
+import time
+
+raw_size = fcntl.ioctl(0, termios.TIOCGWINSZ, b"\\0" * 8)
+rows, cols, _, _ = struct.unpack("HHHH", raw_size)
+seen = sys.stdin.readline()
+nonce = seen.strip().split(maxsplit=1)[1]
+if rows != 24 or cols != 80:
+    print(f"unexpected size: {{rows}}x{{cols}}", flush=True)
+    raise SystemExit(1)
+print(f"{PROBE_READY} {{nonce}}", flush=True)
+time.sleep(30)
+""",
+    )
+    spec = InteractiveExecutorSpec(
+        name="sized",
+        argv=[str(cli)],
+        prompt_surface="AGENTS.md",
+    )
+
+    result = ProbeRunner().probe_executor(spec)
+
+    assert result.passed is True
+    assert "unexpected size" not in result.output_excerpt
+
+
 def test_probe_fails_when_marker_returned_then_zero_exit(tmp_path: Path) -> None:
     cli = _write_fake_cli(
         tmp_path,

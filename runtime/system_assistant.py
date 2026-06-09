@@ -385,20 +385,52 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def _write_file(path: Path, content: str, *, symlink_detail: str) -> None:
+def _ensure_safe_child_parent(base: Path, path: Path) -> None:
+    try:
+        relative_parent = path.parent.relative_to(base)
+    except ValueError as exc:
+        raise ValueError("assistant knowledge path escapes knowledge directory") from exc
+    if any(part == ".." for part in relative_parent.parts):
+        raise ValueError("assistant knowledge path escapes knowledge directory")
+    if base.is_symlink():
+        raise ValueError("assistant knowledge directory must not be a symlink")
+    current = base
+    for part in relative_parent.parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError("assistant knowledge directory must not be a symlink")
+        if current.exists() and not current.is_dir():
+            raise ValueError("assistant knowledge parent is not a directory")
+        current.mkdir(exist_ok=True)
+        if current.is_symlink():
+            raise ValueError("assistant knowledge directory must not be a symlink")
+    base_resolved = base.resolve(strict=True)
+    parent_resolved = path.parent.resolve(strict=True)
+    if not parent_resolved.is_relative_to(base_resolved):
+        raise ValueError("assistant knowledge path escapes knowledge directory")
+
+
+def _write_file(
+    path: Path,
+    content: str,
+    *,
+    base: Path,
+    symlink_detail: str,
+) -> None:
+    _ensure_safe_child_parent(base, path)
     _reject_symlink(path, symlink_detail)
     if path.exists() and not path.is_file():
         raise ValueError(f"assistant knowledge file is not a regular file: {path.name}")
-    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
 
 
-def _copy_knowledge_file(source: Path, destination: Path) -> bool:
+def _copy_knowledge_file(source: Path, destination: Path, *, base: Path) -> bool:
     if not source.is_file():
         return False
     _write_file(
         destination,
         source.read_text(errors="replace"),
+        base=base,
         symlink_detail="assistant knowledge file must not be a symlink",
     )
     return True
@@ -420,7 +452,7 @@ def _write_knowledge_pack(paths: SystemAssistantPaths) -> None:
     for source_rel, dest_rel in _KNOWLEDGE_SOURCES:
         source = root / source_rel
         destination = paths.knowledge_dir / dest_rel
-        if _copy_knowledge_file(source, destination):
+        if _copy_knowledge_file(source, destination, base=paths.knowledge_dir):
             copied.append(dest_rel)
         else:
             missing.append(source_rel)
@@ -459,6 +491,7 @@ def _write_knowledge_pack(paths: SystemAssistantPaths) -> None:
     _write_file(
         paths.knowledge_dir / "README.md",
         index,
+        base=paths.knowledge_dir,
         symlink_detail="assistant knowledge index must not be a symlink",
     )
 
