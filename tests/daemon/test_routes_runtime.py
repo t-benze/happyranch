@@ -11,6 +11,14 @@ from runtime.daemon.state import DaemonState
 from runtime.runtime import RuntimeDir
 
 
+class _CloseTrackingSessions:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    async def close_all(self) -> None:
+        self.close_calls += 1
+
+
 @pytest.fixture
 def auth(monkeypatch, tmp_path):
     home = tmp_path / "happyranch-home"
@@ -39,6 +47,27 @@ def test_post_runtime_registers(tmp_path: Path, auth) -> None:
     assert r.status_code == 200
     assert r.json()["runtime"] == str(target.resolve())
     assert state.runtime is not None
+
+
+def test_post_runtime_closes_assistant_session_on_swap(
+    tmp_path: Path,
+    auth,
+) -> None:
+    rt = RuntimeDir.init(tmp_path / "rt-current")
+    _seed_org(rt, "alpha")
+    state = DaemonState.from_runtime(rt, Settings())
+    sessions = _CloseTrackingSessions()
+    state.assistant_sessions = sessions
+    client = TestClient(create_app(state))
+
+    response = client.post(
+        "/api/v1/runtime",
+        headers=auth,
+        json={"path": str(tmp_path / "rt-new")},
+    )
+
+    assert response.status_code == 200, response.text
+    assert sessions.close_calls == 1
 
 
 def _seed_org(rt: RuntimeDir, slug: str) -> None:
@@ -92,3 +121,26 @@ def test_post_runtime_swap_idempotent_to_same_path(tmp_path: Path, auth) -> None
         json={"path": str(rt.root)},
     )
     assert r.status_code == 200, r.text
+
+
+def test_use_runtime_closes_assistant_session_on_swap(tmp_path: Path, auth) -> None:
+    from runtime.daemon import runtimes as reg
+
+    current = RuntimeDir.init(tmp_path / "rt-current")
+    target = RuntimeDir.init(tmp_path / "rt-target")
+    reg.register(target.root)
+    _seed_org(current, "alpha")
+    _seed_org(target, "beta")
+    state = DaemonState.from_runtime(current, Settings())
+    sessions = _CloseTrackingSessions()
+    state.assistant_sessions = sessions
+    client = TestClient(create_app(state))
+
+    response = client.post(
+        "/api/v1/runtime/use",
+        headers=auth,
+        json={"path": str(target.root)},
+    )
+
+    assert response.status_code == 200, response.text
+    assert sessions.close_calls == 1

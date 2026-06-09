@@ -97,6 +97,14 @@ def _expected_resolved_argv(argv: list[str]) -> list[str]:
     return [executable, *argv[1:]] if executable is not None else argv
 
 
+class _CloseTrackingSessions:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    async def close_all(self) -> None:
+        self.close_calls += 1
+
+
 def test_assistant_status_no_active_runtime(tmp_home: Path, auth: dict[str, str]) -> None:
     client = _idle_client(auth)
 
@@ -428,6 +436,26 @@ def test_assistant_configure_derives_command_from_server_specs(
     assert config.latest_probe_results == [expected_probe_result]
 
 
+def test_assistant_configure_closes_active_session(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_probe_runner(monkeypatch)
+    sessions = _CloseTrackingSessions()
+    client.app.state.daemon.assistant_sessions = sessions
+
+    response = client.post(
+        "/api/v1/assistant/configure",
+        json={
+            "selected_executor": "codex",
+            "probe_results": [_passed_probe_result("codex")],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert sessions.close_calls == 1
+
+
 def test_assistant_websocket_streams_to_selected_cli(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -570,6 +598,28 @@ def test_assistant_repair_refreshes_workspace(client: TestClient, runtime) -> No
     assert (paths.workspace / "agent.yaml").is_file()
     assert (paths.workspace / "CLAUDE.md").is_file()
     assert (paths.learnings_dir / "_index.md").is_file()
+
+
+def test_assistant_repair_closes_active_session(client: TestClient, runtime) -> None:
+    paths = system_assistant_paths(runtime.root)
+    paths.root.mkdir(parents=True)
+    save_assistant_config(
+        runtime.root,
+            AssistantConfig(
+                selected_executor="claude",
+                selected_command=sys.executable,
+                selected_argv=[sys.executable],
+                workspace_path=str(paths.workspace),
+                latest_probe_results=[_passed_probe_result("claude")],
+            ),
+    )
+    sessions = _CloseTrackingSessions()
+    client.app.state.daemon.assistant_sessions = sessions
+
+    response = client.post("/api/v1/assistant/repair")
+
+    assert response.status_code == 200, response.text
+    assert sessions.close_calls == 1
 
 
 def test_assistant_repair_invalid_config_returns_conflict(

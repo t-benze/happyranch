@@ -330,6 +330,7 @@ async def configure_assistant(
         ) from exc
 
     try:
+        await state.assistant_sessions.close_all()
         bootstrap_assistant_workspace(root, executor=body.selected_executor)
         save_assistant_config(root, config)
     except ValueError as exc:
@@ -348,6 +349,8 @@ async def repair_assistant(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail={"code": "assistant_not_configured"})
 
     try:
+        state: DaemonState = request.app.state.daemon
+        await state.assistant_sessions.close_all()
         bootstrap_assistant_workspace(root, executor=config.selected_executor)
         save_assistant_config(root, config)
     except ValueError as exc:

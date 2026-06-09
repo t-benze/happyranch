@@ -70,6 +70,7 @@ async def register_runtime(body: RuntimePath, request: Request) -> dict:
             for org in list(daemon.orgs.values()):
                 org.close()
             daemon.orgs.clear()
+            await daemon.assistant_sessions.close_all()
         _swap(daemon, runtime)
     ensure_workers_started(daemon)
     return {"runtime": str(path.resolve())}
@@ -99,6 +100,7 @@ async def use_runtime(body: RuntimePath, request: Request) -> dict:
         for org in list(daemon.orgs.values()):
             org.close()
         daemon.orgs.clear()
+        await daemon.assistant_sessions.close_all()
         _swap(daemon, runtime)
     ensure_workers_started(daemon)
     return {"runtime": str(path)}
