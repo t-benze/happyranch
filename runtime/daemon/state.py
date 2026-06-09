@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from runtime.config import Settings
+from runtime.daemon.assistant_pty import AssistantSessionManager
 from runtime.daemon.org_state import OrgState
 from runtime.daemon.queue import TaskQueue
 from runtime.orchestrator.org_validation import OrgConsistencyError
@@ -27,6 +28,10 @@ class DaemonState:
     broken_orgs: dict[str, str] = field(default_factory=dict)
     queue: TaskQueue = field(default_factory=TaskQueue)
     orgs_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    assistant_lifecycle_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    assistant_sessions: AssistantSessionManager = field(
+        default_factory=AssistantSessionManager
+    )
 
     @classmethod
     def idle(cls, settings: Settings) -> "DaemonState":
@@ -110,6 +115,7 @@ class DaemonState:
                 org.close()
 
     async def close_all(self) -> None:
+        await self.assistant_sessions.close_all()
         async with self.orgs_lock:
             for org in self.orgs.values():
                 org.close()

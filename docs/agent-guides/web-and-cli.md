@@ -32,6 +32,17 @@ happyranch web [--no-open]
 
 Slug resolution for per-org commands: explicit `--org <slug>` > `HAPPYRANCH_ORG_SLUG` > auto-infer only when exactly one org exists > error. Container-level commands take no `--org`.
 
+System assistant commands are container-level:
+
+```bash
+happyranch assistant init [--repair|--reconfigure]
+happyranch assistant status
+happyranch assistant
+```
+
+`happyranch assistant` attaches to the daemon-owned PTY for the runtime-global
+system assistant. It does not take `--org`.
+
 Full founder-facing CLI docs: `skills/happyranch/SKILL.md`.
 
 ## Agent-Side Callbacks
