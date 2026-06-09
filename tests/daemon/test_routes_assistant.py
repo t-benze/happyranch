@@ -148,6 +148,37 @@ def test_parse_resize_control_frame() -> None:
     assert _parse_resize_control("hello") is None
 
 
+def test_websocket_token_is_valid_parses_bearer_and_compares(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from starlette.datastructures import Headers
+
+    from runtime.daemon.routes import assistant as assistant_route
+
+    expected = "s3cret-bearer-token"
+
+    def _fake_ws(authorization: str | None) -> Any:
+        raw = {} if authorization is None else {"authorization": authorization}
+        return SimpleNamespace(headers=Headers(raw))
+
+    monkeypatch.setattr(assistant_route.daemon_paths, "read_token", lambda: expected)
+
+    # Valid 'Bearer <token>' header is accepted.
+    assert assistant_route._websocket_token_is_valid(_fake_ws(f"Bearer {expected}")) is True
+    # A non-matching token is rejected.
+    assert assistant_route._websocket_token_is_valid(_fake_ws("Bearer wrong-token")) is False
+    # Fail-closed: missing Authorization header.
+    assert assistant_route._websocket_token_is_valid(_fake_ws(None)) is False
+    # Fail-closed: header carries the token but lacks the 'Bearer ' prefix.
+    assert assistant_route._websocket_token_is_valid(_fake_ws(expected)) is False
+
+    # Fail-closed: no expected token on disk, even with a well-formed header.
+    monkeypatch.setattr(assistant_route.daemon_paths, "read_token", lambda: None)
+    assert assistant_route._websocket_token_is_valid(_fake_ws(f"Bearer {expected}")) is False
+
+
 def test_assistant_probes_returns_fake_probe_results(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

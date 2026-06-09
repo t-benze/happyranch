@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import os
 from pathlib import Path
+import secrets
 import shutil
 from typing import Any
 
@@ -209,9 +210,13 @@ def _websocket_token_is_valid(websocket: WebSocket) -> bool:
     if expected is None:
         return False
     authorization = websocket.headers.get("authorization")
-    if authorization == f"Bearer {expected}":
-        return True
-    return False
+    if authorization is None:
+        return False
+    prefix = "Bearer "
+    if not authorization.startswith(prefix):
+        return False
+    candidate = authorization[len(prefix):]
+    return secrets.compare_digest(candidate, expected)
 
 
 def _assistant_init_hint(state: AssistantState, detail: str | None) -> str:
