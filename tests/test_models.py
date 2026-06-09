@@ -271,3 +271,32 @@ def test_completion_report_accepts_optional_verdict():
         output_summary="built it",
     )
     assert r2.verdict is None
+
+
+def test_dream_status_values() -> None:
+    from runtime.models import DreamStatus
+
+    assert DreamStatus.PENDING.value == "pending"
+    assert DreamStatus.RUNNING.value == "running"
+    assert DreamStatus.COMPLETED.value == "completed"
+    assert DreamStatus.FAILED.value == "failed"
+    assert DreamStatus.TIMEOUT.value == "timeout"
+    assert DreamStatus.SKIPPED.value == "skipped"
+
+
+def test_dream_record_defaults() -> None:
+    from datetime import datetime, timezone
+    from runtime.models import DreamRecord, DreamStatus
+
+    rec = DreamRecord(
+        id="DREAM-001",
+        agent_name="dev_agent",
+        local_date="2026-06-09",
+        scheduled_for=datetime(2026, 6, 9, 2, 0, tzinfo=timezone.utc),
+        window_end=datetime(2026, 6, 9, 2, 0, tzinfo=timezone.utc),
+    )
+
+    assert rec.status == DreamStatus.PENDING
+    assert rec.new_learnings_count == 0
+    assert rec.kb_candidate_count == 0
+    assert rec.founder_thread_id is None

@@ -1193,3 +1193,45 @@ class AuditLogger:
                 "status": status,
             },
         )
+
+    # --- Dream audit events ---
+
+    def log_dream_scheduled(self, dream_id: str, agent: str, *, local_date: str) -> None:
+        self._db.insert_audit_log(
+            task_id=dream_id, agent=agent,
+            action="dream_scheduled",
+            payload={"local_date": local_date},
+        )
+
+    def log_dream_started(self, dream_id: str, agent: str) -> None:
+        self._db.insert_audit_log(
+            task_id=dream_id, agent=agent,
+            action="dream_started",
+            payload={},
+        )
+
+    def log_dream_completed(
+        self,
+        dream_id: str,
+        agent: str,
+        *,
+        new_learnings_count: int,
+        kb_candidate_count: int,
+        founder_thread_id: str | None,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=dream_id, agent=agent,
+            action="dream_completed",
+            payload={
+                "new_learnings_count": new_learnings_count,
+                "kb_candidate_count": kb_candidate_count,
+                "founder_thread_id": founder_thread_id,
+            },
+        )
+
+    def log_dream_failed(self, dream_id: str, agent: str, *, reason: str) -> None:
+        self._db.insert_audit_log(
+            task_id=dream_id, agent=agent,
+            action="dream_failed",
+            payload={"reason": reason},
+        )

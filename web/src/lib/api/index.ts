@@ -1,6 +1,7 @@
 export * as agents from './agents';
 export * as audit from './audit';
 export * as dashboard from './dashboard';
+export * as dreams from './dreams';
 export * as health from './health';
 export * as kb from './kb';
 export * as orgs from './orgs';

@@ -101,6 +101,10 @@ const INCLUDED_PATHS = new Set<string>([
   'GET /api/v1/orgs/{slug}/jobs/{job_id}/tail',
   'POST /api/v1/orgs/{slug}/jobs/{job_id}/wait',
   'POST /api/v1/orgs/{slug}/jobs/{job_id}/stop',
+  // dreams — founder-facing list/show/status; completion is agent callback
+  'GET /api/v1/orgs/{slug}/dreams/status',
+  'GET /api/v1/orgs/{slug}/dreams',
+  'GET /api/v1/orgs/{slug}/dreams/{dream_id}',
   // dashboard — founder-facing summary rollup
   'GET /api/v1/orgs/{slug}/dashboard/summary',
   // agents — founder-facing (enrollment + read-only learnings)
@@ -147,6 +151,8 @@ const EXCLUDED_PATHS = new Map<string, string>([
   ['POST /api/v1/orgs/{slug}/artifacts', 'agent-facing v1 — CLI only, founder UI deferred'],
   ['GET /api/v1/orgs/{slug}/artifacts', 'agent-facing v1 — CLI only, founder UI deferred'],
   ['GET /api/v1/orgs/{slug}/artifacts/{name}', 'agent-facing v1 — CLI only, founder UI deferred'],
+  // dreams agent callback
+  ['POST /api/v1/orgs/{slug}/dreams/{dream_id}/complete', 'agent callback'],
 ]);
 
 describe('openapi coverage', () => {
