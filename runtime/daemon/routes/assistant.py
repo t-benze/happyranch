@@ -73,6 +73,18 @@ def _runtime_root(request: Request) -> Path:
     return state.runtime.root
 
 
+def _require_current_runtime_root(state: DaemonState, expected_root: Path) -> Path:
+    if state.runtime is None:
+        raise HTTPException(status_code=409, detail={"code": "no_active_runtime"})
+    current_root = state.runtime.root
+    if current_root != expected_root:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "assistant_runtime_changed"},
+        )
+    return current_root
+
+
 def _probe_result_to_dict(
     spec: InteractiveExecutorSpec,
     result: ProbeResult,
@@ -331,9 +343,23 @@ async def configure_assistant(
 
     try:
         async with state.assistant_lifecycle_lock:
+            root = _require_current_runtime_root(state, root)
+            paths = system_assistant_paths(root)
+            config = AssistantConfig(
+                selected_executor=body.selected_executor,
+                selected_command=_server_selected_command(spec),
+                selected_argv=list(spec.argv),
+                workspace_path=str(paths.workspace),
+                latest_probe_results=[selected_probe_result],
+            )
             await state.assistant_sessions.close_all()
             bootstrap_assistant_workspace(root, executor=body.selected_executor)
             save_assistant_config(root, config)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "unsupported_assistant_executor", "message": str(exc)},
+        ) from exc
     except ValueError as exc:
         raise _assistant_error("assistant_workspace_invalid", exc) from exc
     return classify_assistant_state(root).model_dump()
@@ -341,17 +367,19 @@ async def configure_assistant(
 
 @router.post("/assistant/repair", dependencies=[require_token()])
 async def repair_assistant(request: Request) -> dict[str, Any]:
-    root = _runtime_root(request)
-    try:
-        config = load_assistant_config(root)
-    except (OSError, UnicodeDecodeError, ValueError, ValidationError) as exc:
-        raise _assistant_error("assistant_config_invalid", exc) from exc
-    if config is None:
-        raise HTTPException(status_code=409, detail={"code": "assistant_not_configured"})
-
     try:
         state: DaemonState = request.app.state.daemon
         async with state.assistant_lifecycle_lock:
+            root = _runtime_root(request)
+            try:
+                config = load_assistant_config(root)
+            except (OSError, UnicodeDecodeError, ValueError, ValidationError) as exc:
+                raise _assistant_error("assistant_config_invalid", exc) from exc
+            if config is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "assistant_not_configured"},
+                )
             await state.assistant_sessions.close_all()
             bootstrap_assistant_workspace(root, executor=config.selected_executor)
             save_assistant_config(root, config)

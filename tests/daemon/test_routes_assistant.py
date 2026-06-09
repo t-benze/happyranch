@@ -460,6 +460,49 @@ def test_assistant_configure_closes_active_session(
     assert sessions.close_calls == 1
 
 
+def test_assistant_configure_rejects_runtime_changed_during_probe(
+    client: TestClient,
+    runtime,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from runtime.daemon.routes import assistant as assistant_route
+    from runtime.runtime import RuntimeDir
+
+    state = client.app.state.daemon
+    next_runtime = RuntimeDir.init(tmp_path / "next-runtime")
+
+    def fake_probe_selected_executor(
+        selected_executor: str,
+        specs: list[Any],
+        *,
+        timeout_seconds: float,
+    ) -> tuple[Any, dict[str, Any]]:
+        del timeout_seconds
+        spec = next(spec for spec in specs if spec.name == selected_executor)
+        state.runtime = next_runtime
+        return spec, _daemon_probe_result(selected_executor, list(spec.argv))
+
+    monkeypatch.setattr(
+        assistant_route,
+        "_probe_selected_executor",
+        fake_probe_selected_executor,
+    )
+
+    response = client.post(
+        "/api/v1/assistant/configure",
+        json={
+            "selected_executor": "codex",
+            "probe_results": [_passed_probe_result("codex")],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "assistant_runtime_changed"
+    assert not system_assistant_paths(runtime.root).config_path.exists()
+    assert not system_assistant_paths(next_runtime.root).config_path.exists()
+
+
 def test_assistant_websocket_streams_to_selected_cli(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -688,6 +731,39 @@ def test_assistant_repair_closes_active_session(client: TestClient, runtime) -> 
 
     assert response.status_code == 200, response.text
     assert sessions.close_calls == 1
+
+
+def test_assistant_repair_loads_config_under_lifecycle_lock(
+    client: TestClient,
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from runtime.daemon.routes import assistant as assistant_route
+
+    paths = system_assistant_paths(runtime.root)
+    config = AssistantConfig(
+        selected_executor="claude",
+        selected_command=sys.executable,
+        selected_argv=[sys.executable],
+        workspace_path=str(paths.workspace),
+        latest_probe_results=[_passed_probe_result("claude")],
+    )
+    lock_states: list[bool] = []
+
+    def fake_load_assistant_config(_root: Path) -> AssistantConfig:
+        lock_states.append(client.app.state.daemon.assistant_lifecycle_lock.locked())
+        return config
+
+    monkeypatch.setattr(
+        assistant_route,
+        "load_assistant_config",
+        fake_load_assistant_config,
+    )
+
+    response = client.post("/api/v1/assistant/repair")
+
+    assert response.status_code == 200, response.text
+    assert lock_states == [True]
 
 
 def test_assistant_repair_invalid_config_returns_conflict(
