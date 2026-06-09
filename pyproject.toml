@@ -38,3 +38,20 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["runtime", "cli"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"README.md" = "runtime/system_knowledge/README.md"
+"docs/agent-guides/project-layout.md" = "runtime/system_knowledge/docs/agent-guides/project-layout.md"
+"docs/agent-guides/runtime-and-configuration.md" = "runtime/system_knowledge/docs/agent-guides/runtime-and-configuration.md"
+"docs/agent-guides/agent-executors-and-permissions.md" = "runtime/system_knowledge/docs/agent-guides/agent-executors-and-permissions.md"
+"docs/agent-guides/orchestrator-contracts.md" = "runtime/system_knowledge/docs/agent-guides/orchestrator-contracts.md"
+"docs/agent-guides/web-and-cli.md" = "runtime/system_knowledge/docs/agent-guides/web-and-cli.md"
+"docs/agent-guides/features-and-invariants.md" = "runtime/system_knowledge/docs/agent-guides/features-and-invariants.md"
+"protocol/00-completion-contract.md" = "runtime/system_knowledge/protocol/00-completion-contract.md"
+"protocol/05-runtime-blueprint.md" = "runtime/system_knowledge/protocol/05-runtime-blueprint.md"
+"protocol/05b-agent-runtime.md" = "runtime/system_knowledge/protocol/05b-agent-runtime.md"
+"protocol/05c-orchestrator.md" = "runtime/system_knowledge/protocol/05c-orchestrator.md"
+"protocol/06-knowledge-base.md" = "runtime/system_knowledge/protocol/06-knowledge-base.md"
+"protocol/skills/talk/SKILL.md" = "runtime/system_knowledge/protocol/skills/talk/SKILL.md"
+"protocol/skills/jobs/SKILL.md" = "runtime/system_knowledge/protocol/skills/jobs/SKILL.md"
+"skills/happyranch/SKILL.md" = "runtime/system_knowledge/skills/happyranch/SKILL.md"

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from runtime import system_assistant as system_assistant_module
 from runtime.system_assistant import (
     AssistantConfig,
     AssistantState,
@@ -26,6 +27,64 @@ def test_system_assistant_paths_are_runtime_global(tmp_path: Path) -> None:
     assert paths.workspace == tmp_path / "system" / "assistant" / "workspace"
     assert paths.knowledge_dir == tmp_path / "system" / "assistant" / "workspace" / "happyranch"
     assert "orgs" not in paths.root.parts
+
+
+def _write_knowledge_sources(root: Path, *, marker: str = "packaged") -> None:
+    for source_rel, _dest_rel in system_assistant_module._KNOWLEDGE_SOURCES:
+        source = root / source_rel
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(f"{marker}: {source_rel}\n")
+
+
+def test_bootstrap_prefers_packaged_knowledge_resources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "package-resources"
+    source_root = tmp_path / "source-root"
+    _write_knowledge_sources(package_root, marker="packaged")
+    _write_knowledge_sources(source_root, marker="source")
+    monkeypatch.setattr(
+        system_assistant_module,
+        "_packaged_knowledge_root",
+        lambda: package_root,
+    )
+    monkeypatch.setattr(
+        system_assistant_module,
+        "_source_knowledge_root",
+        lambda: source_root,
+    )
+
+    bootstrap_assistant_workspace(tmp_path / "runtime", executor="codex")
+
+    copied_guide = (
+        system_assistant_paths(tmp_path / "runtime").knowledge_dir
+        / "docs"
+        / "agent-guides"
+        / "runtime-and-configuration.md"
+    ).read_text()
+    assert "packaged: docs/agent-guides/runtime-and-configuration.md" in copied_guide
+    assert "source: docs/agent-guides/runtime-and-configuration.md" not in copied_guide
+
+
+def test_bootstrap_fails_when_knowledge_sources_are_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_site_packages = tmp_path / "site-packages"
+    fake_site_packages.mkdir()
+    (fake_site_packages / "README.md").write_text("unrelated package readme\n")
+    monkeypatch.setattr(system_assistant_module, "_packaged_knowledge_root", lambda: None)
+    monkeypatch.setattr(
+        system_assistant_module,
+        "__file__",
+        str(fake_site_packages / "runtime" / "system_assistant.py"),
+    )
+
+    with pytest.raises(ValueError, match="assistant knowledge sources are unavailable"):
+        bootstrap_assistant_workspace(tmp_path / "runtime", executor="codex")
+
+    assert not system_assistant_paths(tmp_path / "runtime").config_path.exists()
 
 
 def test_classify_uninitialized_when_config_missing(tmp_path: Path) -> None:

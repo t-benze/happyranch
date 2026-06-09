@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from importlib import resources
+from importlib.resources.abc import Traversable
 from pathlib import Path
 import shutil
 from typing import Any
@@ -379,10 +381,33 @@ _KNOWLEDGE_SOURCES = [
     ("protocol/skills/jobs/SKILL.md", "protocol/skills/jobs/SKILL.md"),
     ("skills/happyranch/SKILL.md", "skills/happyranch/SKILL.md"),
 ]
+_KNOWLEDGE_PACKAGE = "runtime.system_knowledge"
+_SOURCE_ROOT_MARKERS = (
+    "pyproject.toml",
+    "docs/agent-guides/runtime-and-configuration.md",
+    "protocol/05-runtime-blueprint.md",
+)
 
 
-def _project_root() -> Path:
-    return Path(__file__).resolve().parent.parent
+def _packaged_knowledge_root() -> Traversable | None:
+    try:
+        root = resources.files(_KNOWLEDGE_PACKAGE)
+    except ModuleNotFoundError:
+        return None
+    if all((root / source_rel).is_file() for source_rel, _ in _KNOWLEDGE_SOURCES):
+        return root
+    return None
+
+
+def _source_knowledge_root() -> Path:
+    root = Path(__file__).resolve().parent.parent
+    if all((root / marker).is_file() for marker in _SOURCE_ROOT_MARKERS):
+        return root
+    raise ValueError("assistant knowledge sources are unavailable")
+
+
+def _knowledge_source_root() -> Path | Traversable:
+    return _packaged_knowledge_root() or _source_knowledge_root()
 
 
 def _ensure_safe_child_parent(base: Path, path: Path) -> None:
@@ -424,12 +449,12 @@ def _write_file(
     path.write_text(content)
 
 
-def _copy_knowledge_file(source: Path, destination: Path, *, base: Path) -> bool:
+def _copy_knowledge_file(source: Path | Traversable, destination: Path, *, base: Path) -> bool:
     if not source.is_file():
         return False
     _write_file(
         destination,
-        source.read_text(errors="replace"),
+        source.read_bytes().decode("utf-8", errors="replace"),
         base=base,
         symlink_detail="assistant knowledge file must not be a symlink",
     )
@@ -446,7 +471,7 @@ def _write_knowledge_pack(paths: SystemAssistantPaths) -> None:
         "assistant knowledge directory must not be a symlink",
         "assistant knowledge directory is not a directory",
     )
-    root = _project_root()
+    root = _knowledge_source_root()
     copied: list[str] = []
     missing: list[str] = []
     for source_rel, dest_rel in _KNOWLEDGE_SOURCES:
