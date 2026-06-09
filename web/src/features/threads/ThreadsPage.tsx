@@ -19,8 +19,9 @@ import { InboxRow } from '@/design-system/patterns/InboxRow';
 import { KbdChip } from '@/design-system/patterns/KbdChip';
 import { MessageBubble, type MessageVariant } from '@/design-system/patterns/MessageBubble';
 import { ThreadHeader } from '@/design-system/patterns/ThreadHeader';
-import { ApiError } from '@/lib/api';
-import type { ThreadMessage } from '@/lib/api/types';
+import { artifacts as artifactsApi, ApiError } from '@/lib/api';
+import type { ThreadAttachmentRef, ThreadMessage } from '@/lib/api/types';
+import type { PendingAttachment } from '@/design-system/patterns/Composer';
 import { useAgentsList } from '@/hooks/agents';
 import { isGPrefixArmed } from '@/hooks/global-jump';
 import {
@@ -54,6 +55,17 @@ function useNowMs(active: boolean): number {
 
 const STATUS_TABS = ['open', 'archived'] as const;
 type StatusTab = (typeof STATUS_TABS)[number];
+
+function safeArtifactBasename(file: File): string {
+  return file.name.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[.-]+|[.-]+$/g, '') ||
+    'attachment.bin';
+}
+
+function safeArtifactName(prefix: string, file: File, collisionIndex = 1): string {
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+  const disambiguator = collisionIndex > 1 ? `${collisionIndex}-` : '';
+  return `${prefix}-${stamp}-${disambiguator}${safeArtifactBasename(file)}`;
+}
 
 export function ThreadsPage(): JSX.Element {
   const routes = useThreadRoutes();
@@ -100,6 +112,11 @@ export function ThreadsPage(): JSX.Element {
   // Send mutation lives at the page level so the Composer pattern is pure.
   const sendFollowUp = useSendFollowUp(threadId ?? '');
   const [composerError, setComposerError] = useState<string | null>(null);
+  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
+
+  useEffect(() => {
+    setPendingAttachments([]);
+  }, [threadId]);
 
   // Dialog state
   const [showNew, setShowNew] = useState(false);
@@ -137,11 +154,31 @@ export function ThreadsPage(): JSX.Element {
     setShowNew(true);
   };
 
-  const onSendFollowUp = async (markdown: string) => {
-    if (!threadId) return;
+  const onSendFollowUp = async (markdown: string, attachments: PendingAttachment[]) => {
+    if (!threadId || !slug) return;
     setComposerError(null);
     try {
-      await sendFollowUp.mutateAsync({ body_markdown: markdown });
+      const refs: ThreadAttachmentRef[] = [];
+      const generatedNames = new Map<string, number>();
+      for (const pending of attachments) {
+        let artifactName = safeArtifactName(threadId, pending.file);
+        const count = (generatedNames.get(artifactName) ?? 0) + 1;
+        generatedNames.set(artifactName, count);
+        if (count > 1) {
+          artifactName = safeArtifactName(threadId, pending.file, count);
+        }
+        const uploaded = await artifactsApi.uploadArtifact(slug, {
+          file: pending.file,
+          name: artifactName,
+          agent: 'founder',
+        });
+        refs.push({ artifact_name: uploaded.name, display_name: pending.file.name });
+      }
+      await sendFollowUp.mutateAsync({
+        body_markdown: markdown.trim(),
+        ...(refs.length ? { attachments: refs } : {}),
+      });
+      setPendingAttachments([]);
     } catch (err) {
       if (err instanceof ApiError) {
         setComposerError(describeError(err.code, `HTTP ${err.status}`));
@@ -273,6 +310,8 @@ export function ThreadsPage(): JSX.Element {
               errorMessage={composerError}
               helper="Sends as founder — all participants are notified."
               onSend={onSendFollowUp}
+              attachments={pendingAttachments}
+              onAttachmentsChange={setPendingAttachments}
               registerFocus={(focus) => { composerFocusRef.current = focus; }}
             />
           }
@@ -460,6 +499,8 @@ function MessageTranscript({ messages, loading, slug, nowMs }: TranscriptProps):
             body={m.body_markdown}
             declineReason={m.decline_reason}
             systemDescription={m.kind === 'system' ? describeSystem(m.system_payload, slug) : undefined}
+            attachments={m.attachments}
+            attachmentHref={slug ? (artifactName) => artifactsApi.artifactDownloadPath(slug, artifactName) : undefined}
           />
           {m.kind === 'message' && (
             <ResponderStatusStrip statuses={m.responder_status ?? []} nowMs={nowMs} />

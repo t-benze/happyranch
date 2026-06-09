@@ -1,7 +1,8 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Composer } from './Composer';
+import { Composer, type PendingAttachment } from './Composer';
 
 const NOOP_SEND = vi.fn(async () => {});
 
@@ -78,7 +79,45 @@ describe('Composer / drafts', () => {
     expect(localStorage.getItem('happyranch:draft:test-org:THR-002')).toBe('retry-me');
     expect(ta.value).toBe('retry-me');
   });
+
+  it('can send with only an attachment selected', async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn(async () => {});
+    const file = new File(['pdf'], 'report.pdf', { type: 'application/pdf' });
+    render(
+      <WithOrgSlug slug="test-org">
+        <ControlledComposer onSend={onSend} />
+      </WithOrgSlug>,
+    );
+
+    await user.upload(screen.getByLabelText(/Attach files/i), file);
+    await user.click(screen.getByRole('button', { name: /^Send$/i }));
+
+    expect(onSend).toHaveBeenCalledWith('', [
+      expect.objectContaining({
+        file,
+      }),
+    ]);
+  });
 });
+
+function ControlledComposer({
+  onSend,
+}: {
+  onSend: (markdown: string, attachments: PendingAttachment[]) => Promise<void>;
+}) {
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  return (
+    <Composer
+      agents={[]}
+      threadId="THR-attachment"
+      pending={false}
+      onSend={onSend}
+      attachments={attachments}
+      onAttachmentsChange={setAttachments}
+    />
+  );
+}
 
 // Helper: wraps children in a StaticOrgProvider so Composer's
 // useOrgSlug() resolves to a known slug under jsdom.
@@ -133,7 +172,7 @@ describe('Composer / mentions', () => {
     await user.type(ta, 'please review');
     await user.keyboard('{Enter}');
     // Broadcast model: onSend receives only markdown; no addressedTo second arg.
-    expect(onSend).toHaveBeenCalledWith('hi @design_lead please review');
+    expect(onSend).toHaveBeenCalledWith('hi @design_lead please review', []);
   });
 
   it('send with no mentions falls back to @all', async () => {
@@ -153,7 +192,7 @@ describe('Composer / mentions', () => {
     await user.type(ta, 'plain message');
     await user.keyboard('{Enter}');
     // Broadcast model: onSend receives only markdown.
-    expect(onSend).toHaveBeenCalledWith('plain message');
+    expect(onSend).toHaveBeenCalledWith('plain message', []);
   });
 
   it('Shift+Enter inserts a newline and does not send', async () => {
@@ -194,6 +233,6 @@ describe('Composer / mentions', () => {
     await user.type(ta, 'heads-up @all');
     await user.keyboard('{Enter}');
     // Broadcast model: onSend receives only markdown.
-    expect(onSend).toHaveBeenCalledWith('heads-up @all');
+    expect(onSend).toHaveBeenCalledWith('heads-up @all', []);
   });
 });
