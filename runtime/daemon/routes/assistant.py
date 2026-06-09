@@ -330,9 +330,10 @@ async def configure_assistant(
         ) from exc
 
     try:
-        await state.assistant_sessions.close_all()
-        bootstrap_assistant_workspace(root, executor=body.selected_executor)
-        save_assistant_config(root, config)
+        async with state.assistant_lifecycle_lock:
+            await state.assistant_sessions.close_all()
+            bootstrap_assistant_workspace(root, executor=body.selected_executor)
+            save_assistant_config(root, config)
     except ValueError as exc:
         raise _assistant_error("assistant_workspace_invalid", exc) from exc
     return classify_assistant_state(root).model_dump()
@@ -350,9 +351,10 @@ async def repair_assistant(request: Request) -> dict[str, Any]:
 
     try:
         state: DaemonState = request.app.state.daemon
-        await state.assistant_sessions.close_all()
-        bootstrap_assistant_workspace(root, executor=config.selected_executor)
-        save_assistant_config(root, config)
+        async with state.assistant_lifecycle_lock:
+            await state.assistant_sessions.close_all()
+            bootstrap_assistant_workspace(root, executor=config.selected_executor)
+            save_assistant_config(root, config)
     except ValueError as exc:
         raise _assistant_error("assistant_workspace_invalid", exc) from exc
     return classify_assistant_state(root).model_dump()
@@ -367,39 +369,42 @@ async def attach_assistant_session(websocket: WebSocket) -> None:
     await websocket.accept()
     state_obj = websocket.app.state.daemon
     assert isinstance(state_obj, DaemonState)
-    if state_obj.runtime is None:
-        await websocket.send_text("assistant_init_required: no active runtime")
-        await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
-        return
-
-    root = state_obj.runtime.root
-    assistant_status = classify_assistant_state(root)
-    if assistant_status.state != AssistantState.CONFIGURED:
-        await websocket.send_text(
-            _assistant_init_hint(assistant_status.state, assistant_status.detail)
-        )
-        await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
-        return
-
     try:
-        config = load_assistant_config(root)
-    except (OSError, UnicodeDecodeError, ValueError, ValidationError) as exc:
-        await websocket.send_text(
-            _assistant_init_hint(AssistantState.STALE_OR_BROKEN, str(exc))
-        )
-        await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
-        return
-    if config is None:
-        await websocket.send_text(_assistant_init_hint(AssistantState.UNINITIALIZED, None))
-        await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
-        return
+        async with state_obj.assistant_lifecycle_lock:
+            if state_obj.runtime is None:
+                await websocket.send_text("assistant_init_required: no active runtime")
+                await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
+                return
 
-    try:
-        session = await state_obj.assistant_sessions.get_or_start(
-            command=config.selected_command,
-            argv=config.selected_argv,
-            workspace=system_assistant_paths(root).workspace,
-        )
+            root = state_obj.runtime.root
+            assistant_status = classify_assistant_state(root)
+            if assistant_status.state != AssistantState.CONFIGURED:
+                await websocket.send_text(
+                    _assistant_init_hint(assistant_status.state, assistant_status.detail)
+                )
+                await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
+                return
+
+            try:
+                config = load_assistant_config(root)
+            except (OSError, UnicodeDecodeError, ValueError, ValidationError) as exc:
+                await websocket.send_text(
+                    _assistant_init_hint(AssistantState.STALE_OR_BROKEN, str(exc))
+                )
+                await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
+                return
+            if config is None:
+                await websocket.send_text(
+                    _assistant_init_hint(AssistantState.UNINITIALIZED, None)
+                )
+                await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
+                return
+
+            session = await state_obj.assistant_sessions.get_or_start(
+                command=config.selected_command,
+                argv=config.selected_argv,
+                workspace=system_assistant_paths(root).workspace,
+            )
     except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
         await websocket.send_text(f"assistant_launch_failed: {exc}")
         await websocket.close(code=status.WS_1011_INTERNAL_ERROR)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -12,10 +13,12 @@ from runtime.runtime import RuntimeDir
 
 
 class _CloseTrackingSessions:
-    def __init__(self) -> None:
+    def __init__(self, *, lock: asyncio.Lock) -> None:
+        self.lock = lock
         self.close_calls = 0
 
     async def close_all(self) -> None:
+        assert self.lock.locked()
         self.close_calls += 1
 
 
@@ -56,7 +59,7 @@ def test_post_runtime_closes_assistant_session_on_swap(
     rt = RuntimeDir.init(tmp_path / "rt-current")
     _seed_org(rt, "alpha")
     state = DaemonState.from_runtime(rt, Settings())
-    sessions = _CloseTrackingSessions()
+    sessions = _CloseTrackingSessions(lock=state.assistant_lifecycle_lock)
     state.assistant_sessions = sessions
     client = TestClient(create_app(state))
 
@@ -132,7 +135,7 @@ def test_use_runtime_closes_assistant_session_on_swap(tmp_path: Path, auth) -> N
     _seed_org(current, "alpha")
     _seed_org(target, "beta")
     state = DaemonState.from_runtime(current, Settings())
-    sessions = _CloseTrackingSessions()
+    sessions = _CloseTrackingSessions(lock=state.assistant_lifecycle_lock)
     state.assistant_sessions = sessions
     client = TestClient(create_app(state))
 

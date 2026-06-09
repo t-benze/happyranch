@@ -98,10 +98,12 @@ def _expected_resolved_argv(argv: list[str]) -> list[str]:
 
 
 class _CloseTrackingSessions:
-    def __init__(self) -> None:
+    def __init__(self, *, lock: asyncio.Lock) -> None:
+        self.lock = lock
         self.close_calls = 0
 
     async def close_all(self) -> None:
+        assert self.lock.locked()
         self.close_calls += 1
 
 
@@ -441,7 +443,9 @@ def test_assistant_configure_closes_active_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_probe_runner(monkeypatch)
-    sessions = _CloseTrackingSessions()
+    sessions = _CloseTrackingSessions(
+        lock=client.app.state.daemon.assistant_lifecycle_lock,
+    )
     client.app.state.daemon.assistant_sessions = sessions
 
     response = client.post(
@@ -572,6 +576,68 @@ def test_assistant_websocket_uninitialized_sends_hint_without_starting_session(
     assert exc_info.value.code == 1000
 
 
+def test_assistant_websocket_starts_session_under_lifecycle_lock(
+    client: TestClient,
+    runtime,
+) -> None:
+    paths = system_assistant_paths(runtime.root)
+    paths.workspace.mkdir(parents=True)
+    (paths.workspace / "agent.yaml").write_text("name: system_assistant\n")
+    (paths.workspace / "AGENTS.md").write_text("# Assistant\n")
+    paths.learnings_dir.mkdir(parents=True)
+    (paths.learnings_dir / "_index.md").write_text("# Learnings\n")
+    paths.knowledge_dir.mkdir(parents=True)
+    (paths.knowledge_dir / "README.md").write_text("# Knowledge\n")
+    paths.logs_dir.mkdir(parents=True)
+    save_assistant_config(
+        runtime.root,
+        AssistantConfig(
+            selected_executor="codex",
+            selected_command=sys.executable,
+            selected_argv=[sys.executable],
+            workspace_path=str(paths.workspace),
+            latest_probe_results=[],
+        ),
+    )
+
+    class FakeSession:
+        def subscribe(self) -> asyncio.Queue[str | None]:
+            queue: asyncio.Queue[str | None] = asyncio.Queue()
+            queue.put_nowait("fake ready")
+            return queue
+
+        def unsubscribe(self, _queue: asyncio.Queue[str | None]) -> None:
+            pass
+
+        async def write_text(self, _text: str) -> None:
+            pass
+
+        async def resize(self, *, rows: int, cols: int) -> None:
+            pass
+
+    class LockCheckingSessions:
+        def __init__(self) -> None:
+            self.started_under_lock = False
+
+        async def get_or_start(self, **_kwargs: Any) -> FakeSession:
+            self.started_under_lock = (
+                client.app.state.daemon.assistant_lifecycle_lock.locked()
+            )
+            return FakeSession()
+
+    sessions = LockCheckingSessions()
+    client.app.state.daemon.assistant_sessions = sessions
+    token = paths_mod.read_token()
+
+    with client.websocket_connect(
+        "/api/v1/assistant/session",
+        headers={"Authorization": f"Bearer {token}"},
+    ) as websocket:
+        assert websocket.receive_text() == "fake ready"
+
+    assert sessions.started_under_lock is True
+
+
 def test_assistant_repair_refreshes_workspace(client: TestClient, runtime) -> None:
     paths = system_assistant_paths(runtime.root)
     probe_result = _passed_probe_result("claude")
@@ -613,7 +679,9 @@ def test_assistant_repair_closes_active_session(client: TestClient, runtime) -> 
                 latest_probe_results=[_passed_probe_result("claude")],
             ),
     )
-    sessions = _CloseTrackingSessions()
+    sessions = _CloseTrackingSessions(
+        lock=client.app.state.daemon.assistant_lifecycle_lock,
+    )
     client.app.state.daemon.assistant_sessions = sessions
 
     response = client.post("/api/v1/assistant/repair")

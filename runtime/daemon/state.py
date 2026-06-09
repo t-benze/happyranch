@@ -28,6 +28,7 @@ class DaemonState:
     broken_orgs: dict[str, str] = field(default_factory=dict)
     queue: TaskQueue = field(default_factory=TaskQueue)
     orgs_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    assistant_lifecycle_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     assistant_sessions: AssistantSessionManager = field(
         default_factory=AssistantSessionManager
     )
