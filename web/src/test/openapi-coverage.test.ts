@@ -160,6 +160,10 @@ const EXCLUDED_PATHS = new Map<string, string>([
   ['GET /api/v1/orgs/{slug}/artifacts/{name}', 'agent-facing v1; also founder assets UI download'],
   // dreams agent callback
   ['POST /api/v1/orgs/{slug}/dreams/{dream_id}/complete', 'agent callback'],
+  // KB view-tracking read surface — agent-CLI `happyranch kb stats` only; not
+  // wired into the SPA. Read-only (never increments), so no surface-header
+  // concern. See kb-view-tracking-caller-signal.
+  ['GET /api/v1/orgs/{slug}/kb/stats', 'agent-CLI read surface; not in SPA'],
 ]);
 
 describe('openapi coverage', () => {
