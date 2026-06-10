@@ -3,7 +3,7 @@
 > Status: proposed
 > Current Source: This spec (proposed; pending founder approval). On approval, executable truth will be `runtime/daemon/`, `runtime/orchestrator/org_config.py`, the work-hours store, the working-hours scheduler/runner, and tests.
 > Superseded By: None
-> Notes: Design proposed for founder review. Working-hours wakes are **task-producing triggers** — a wake self-dispatches normal root tasks and is itself *not* a task, talk, or thread. The wake-trigger machinery reuses the nightly-dreaming scheduler/runner skeleton (`2026-06-09-nightly-dreaming-design.md`), but unlike dreams the work lands on the existing task surface and appears in task lists and metrics.
+> Notes: Design proposed for founder review. All seven open design questions are now **resolved** (see the "Resolved Decisions" record at the end); the PR remains do-not-merge pending final founder approval. Working-hours wakes are **task-producing triggers** — a wake self-dispatches normal root tasks and is itself *not* a task, talk, or thread. The wake-trigger machinery reuses the nightly-dreaming scheduler/runner skeleton (`2026-06-09-nightly-dreaming-design.md`), but unlike dreams the work lands on the existing task surface and appears in task lists and metrics.
 
 ## Goal
 
@@ -36,7 +36,7 @@ Working hours reuse the dreaming scheduler/queue/runner skeleton and the executo
 
 ## Org And Per-Agent Configuration
 
-Working hours are opt-in per org in `<runtime>/orgs/<slug>/org/config.yaml`, with three resolution tiers (lowest to highest precedence: **org default → role default → agent override**).
+Working hours are opt-in per org in `<runtime>/orgs/<slug>/org/config.yaml`, with three resolution tiers (lowest to highest precedence: **org default → team default → agent override**).
 
 ```yaml
 working_hours:
@@ -60,18 +60,21 @@ working_hours:
     include: []                 # used when mode=whitelist
     exclude: []                 # always subtracted last
 
-  # Tier 2 (middle): per-role defaults, keyed by the agent file `role` value.
-  roles:
-    worker:
+  # Tier 2 (middle): per-team defaults, keyed by the agent's team.
+  teams:
+    engineering:
       interval: "3h"
-    manager:
-      interval: "4h"
+    customer_service:
+      mode: continuous
+      interval: "30m"
 
   # Tier 3 (highest): per-agent overrides, keyed by agent name.
+  # (The customer_service team already defaults to continuous/30m above, so
+  # its members need no per-agent entry; overrides are for one-off exceptions.)
   overrides:
-    customer_service:
+    triage_bot:
       mode: continuous          # window + days are ignored in continuous mode
-      interval: "15m"
+      interval: "1h"            # a single agent that wakes hourly, around the clock
     dev_agent:
       mode: windowed
       window: { start: "09:00", end: "18:00", timezone: "Asia/Shanghai" }
@@ -93,7 +96,7 @@ Identical to dreaming:
 For each selected agent, the **effective schedule** is computed by overlaying the three tiers **leaf-key by leaf-key** in precedence order. The merge is at the granularity of: `mode`, `window.start`, `window.end`, `window.timezone`, `interval`, `days`, `catch_up_on_startup`. Each leaf takes the value from the highest tier that sets it; unset leaves inherit downward. Tier keys:
 
 - **Tier 1** `working_hours.default`.
-- **Tier 2** `working_hours.roles.<role>`, where `<role>` is the agent file `role` field (`worker` | `manager`). *(See Open Question 1 — `role` vs `team` keying.)*
+- **Tier 2** `working_hours.teams.<team>`, where `<team>` is the agent's team (the `team` it belongs to in `teams.yaml`). Team keying gives per-function defaults — e.g. a `customer_service` team continuous by default while an `engineering` team stays windowed — without per-agent overrides for every member.
 - **Tier 3** `working_hours.overrides.<agent_name>`.
 
 The `mode` discriminator changes which leaves are meaningful:
@@ -111,9 +114,10 @@ Config load (`OrgConfigError` on failure) must reject:
 - Unknown `window.timezone` (must resolve via `ZoneInfo`, mirroring dreaming).
 - Malformed `interval` (not `Nh`/`Nm`, non-positive).
 - For **windowed**: `interval` longer than the window length (would yield zero in-window slots after `start`).
-- For **continuous**: `interval` that does not evenly divide 24h (keeps slot boundaries aligned across local dates — see Open Question 6).
+- For **continuous**: `interval` that does not evenly divide 24h. This constraint is settled: it keeps slot boundaries aligned across local dates so the `00:00` slot always exists and the grid restarts cleanly at midnight.
 - `days` containing anything outside `{mon,tue,wed,thu,fri,sat,sun}`.
 - Unknown agent names in `agents.include`/`agents.exclude` (resolved-candidate check).
+- Unknown team names under `working_hours.teams.<team>` (checked against the org's `teams.yaml` at the resolved-candidate point, so a typo'd team key does not silently fail to apply).
 - An `overrides.<name>` whose effective `mode` is `windowed` but which, after merge, lacks a complete window/days set.
 
 Validation that depends on the resolved candidate-agent list (unknown-name checks) happens at the scheduler's selection step, exactly as `select_dream_agents` does today; structural validation happens at `OrgConfig` load.
@@ -186,8 +190,7 @@ Parse contract:
 
 - **Locate** the first markdown H2 whose text is exactly `## Routine Tasks`. The section body runs from that header to the next H2 (`## `) or EOF.
 - **Routines** are the top-level markdown list items (`- ` or `1. `) in that body. Each list item's text (including nested continuation lines indented under it) is one routine.
-- Each routine becomes the seed for **one** self-dispatched root task. The default team is the **waking agent's own team**.
-- An optional leading inline tag `- (team: <name>) <text>` is accepted **only** when `<name>` is the agent's own team; any other team value fails the wake (cross-team dispatch is forbidden — see Security). *(See Open Question 5.)*
+- Each routine becomes the seed for **one** self-dispatched root task. Spawned tasks are **always** on the waking agent's own team; there is no per-routine team selector (a wake has no cross-team path — see Security).
 - Non-list prose appearing before the first list item is a **preamble**: injected into the wake prompt as shared context but spawning no task.
 - **Absent section** (no `## Routine Tasks` header), or a section with **zero list items** (empty/preamble-only), is treated as "no routines" → the scheduler **skips silently**: no `work_hours` row is inserted and no wake is enqueued for that agent/slot. No error, no audit noise.
 - A **cap** of `MAX_ROUTINES_PER_WAKE` (proposed: 20) bounds how many tasks one wake may spawn; routines beyond the cap are dropped and the drop is recorded in the wake summary and audit (no silent truncation).
@@ -206,6 +209,10 @@ Each wake is one executor invocation (a `WakeRunner`, mirroring `DreamRunner`). 
 
 The wake session is **not** asked to do the routine work itself — only to phrase and dispatch it. The real work happens in the spawned root tasks via the normal loop.
 
+### Always a session (settled)
+
+Every slot runs a real wake executor session that reads the checklist and self-dispatches; there is **no** daemon-direct spawn path in v1. This is settled — it honors ruling #1 ("the wake invocation reads the checklist and self-dispatches") and keeps wake-trigger cost attributable under the `work_hour` token scope (a daemon-direct spawn would produce zero-token, unattributable task births). The trade-off is one executor invocation per slot per agent. That cost is bounded by choosing sane intervals: a 15-minute continuous agent is **96 wakes/day**, so a continuous customer-service agent should normally run a **30–60 minute** interval rather than 15 minutes. The interval is a per-agent/team/org config leaf, so the founder tunes the cost/responsiveness trade-off directly.
+
 ## Invocation Contract
 
 The wake session completes by a single-line callback (mirrors `happyranch dreams complete`):
@@ -220,7 +227,7 @@ Payload shape:
 {
   "summary": "Launched 3 routine tasks for the 09:00 windowed wake.",
   "routines": [
-    { "slug": "triage-tickets", "brief": "Triage and resolve any customer tickets opened since the last wake; escalate billing disputes.", "team": "customer_service" },
+    { "slug": "triage-tickets", "brief": "Triage and resolve any customer tickets opened since the last wake; escalate billing disputes." },
     { "slug": "followups",      "brief": "Send scheduled follow-ups for tickets awaiting customer reply > 24h." }
   ]
 }
@@ -229,8 +236,12 @@ Payload shape:
 Daemon-side handling of `work-hours spawn`:
 
 1. Validate the target `WORKHOUR-NNN` exists and is `running` (reject `completed`/`failed`/`skipped`/`pending` with a clear 409 — single-use, so the endpoint cannot be reused as a generic task-spawn backdoor).
-2. Validate the payload: `summary` required; each `routines[]` needs a non-empty `brief`; `team`, when present, **must equal the waking agent's own team**.
-3. For each routine, create one root task via the orchestrator's existing entrypoint — `Orchestrator.create_task(brief, team=<agent team>)` followed by `enqueue_task(...)` — exactly the path a founder-created root task takes. The task then flows through the normal manager-decision / worker loop. *(See Open Question 2 — worker-vs-manager targeting/attribution.)*
+2. Validate the payload: `summary` required; each `routines[]` needs a non-empty `brief`. There is no per-routine `team` field — every spawned task lands on the waking agent's own team (see Security).
+3. For each routine, create one root task **targeted to the waking agent as its executor** — the task is born on the waking agent's own team with `assigned_agent = <waking agent>` pre-set, then enqueued exactly as a founder-created root task is. The waking agent is thus the owner/executor of its own routine work, not merely the team entrypoint:
+   - When the waking agent is a **worker**, it executes the spawned task directly — bounded work → report — rather than the task being triaged through the team manager's decision loop.
+   - When the waking agent is a **team manager**, the spawned task naturally enters that manager's own decision loop (the manager *is* the assigned agent), where it may decompose and delegate.
+
+   This is the **intended orchestrator semantics**. At build time the implementer must verify, via GitNexus impact analysis, that the root-task entrypoint supports pre-setting the executor (`assigned_agent`) at creation and that `run_step` honors a pre-set `assigned_agent` instead of defaulting the root to the team manager — and must confirm how the waking agent is attributed as the task's originator **without adding a column to the `tasks` table** (provenance today is the reverse linkage `work_hours.spawned_task_ids`; any forward originator marker must reuse an existing field). If executor targeting turns out to require changing the task-creation contract or any load-bearing invariant, that is a **founder escalation**, not an in-spec assertion.
 4. Record the resulting `task_id`s into `work_hours.spawned_task_ids` (JSON) and set `spawned_task_count`; write a `work_hour_spawned` audit row carrying the id list.
 5. Mark the work-hour `completed`, write the transcript, and store `summary`.
 
@@ -240,7 +251,7 @@ Validation:
 
 - `summary` required.
 - At least one routine with a non-empty `brief`; routine count must not exceed `MAX_ROUTINES_PER_WAKE`.
-- `team` (per routine), if set, must equal the agent's own team; otherwise the whole callback fails and the work-hour is marked `failed` with no tasks spawned.
+- No per-routine team selector exists; the spawn handler always uses the waking agent's own team and targets the waking agent as executor.
 
 ## Scheduler
 
@@ -259,7 +270,7 @@ Startup catch-up behavior:
 - The first loop iteration is the startup catch-up pass (mirrors the dream loop's `startup=True` first tick), run once after orgs are loaded and DB recovery has run.
 - It enqueues **at most one** wake per agent — the single most recent due slot of the current local_date — and only when the effective `catch_up_on_startup` is true.
 - When `catch_up_on_startup` is false, a missed current slot is recorded as a `skipped` row so the steady-state guard suppresses re-scheduling it later the same day (mirrors dreaming's skipped-row trick).
-- Intermediate missed slots earlier in the day are **never** backfilled; historical days are never replayed. *(See Open Question 3.)*
+- Intermediate missed slots earlier in the day are **never** backfilled; historical days are never replayed. This is settled: only the single most-recent due slot is considered at startup. A 24h continuous agent recovering from, say, a 2h outage fires **once** (the latest due slot), not once per missed interval.
 
 Queue behavior:
 
@@ -278,7 +289,7 @@ Mirrors dreaming, adapted for the spawn step:
 - **Timeout**: mark `timeout`, preserve timeout error (distinct audit action so token/audit reporting can separate it). No tasks spawned.
 - **Missing callback**: mark `failed`/`timeout` at the same invocation-timeout boundary used for dreams.
 - **Callback validation failure**: mark `failed`, preserve validation error, spawn no tasks.
-- **Partial spawn**: the daemon validates the entire payload before creating any task. If task creation nonetheless fails partway, the already-created root tasks are real and proceed normally; their ids are still recorded in `spawned_task_ids`, and the work-hour is marked `failed` with a `partial_spawn` error. No attempt is made to roll back created tasks. *(See Open Question 4.)*
+- **Partial spawn**: the daemon validates the entire payload before creating any task. If task creation nonetheless fails partway, the already-created root tasks are real and proceed normally; their ids are still recorded in `spawned_task_ids`, and the work-hour is marked `failed` with a `partial_spawn` error. No attempt is made to roll back created tasks — this no-rollback behavior is settled (already-spawned routine work is real work and should not be discarded because a sibling spawn failed).
 - **Daemon restart while running**: startup recovery marks stale `running` work-hours `failed` with reason `daemon_restart` (mirrors `recover_running_dreams`). Tasks already spawned before the crash proceed; the slot's unique row prevents a duplicate wake for that slot.
 - **Duplicate scheduling**: DB uniqueness on `(agent_name, local_date, slot)` is authoritative.
 
@@ -318,7 +329,7 @@ Token usage: the wake executor session records usage with `scope_type = "work_ho
 - The wake callback follows the single-line `happyranch ... --from-file <path>` convention. No multi-line callbacks.
 - A wake invocation gets only the baseline `happyranch` CLI side-effect channel plus ordinary read/write inside the agent workspace. It receives **no** special permission to edit org config, write the KB directly, alter permissions, or dispatch *other* agents.
 - The `work-hours spawn` endpoint is **single-use and slot-scoped**: it accepts only a `running` `WORKHOUR-NNN` and rejects everything else, so it cannot be reused as a generic "spawn arbitrary root tasks" backdoor. Each accepted call transitions the work-hour to `completed`/`failed`.
-- **Self-team only**: spawned root tasks are created on the waking agent's own team. A per-routine `team` tag is honored only when it equals that team; any cross-team value fails the wake. This preserves the self-dispatch doctrine — cross-team work routes through thread `compose`, never through a wake.
+- **Self-team only (structural)**: spawned root tasks are always created on the waking agent's own team and targeted to the waking agent as executor. There is no per-routine team selector and no other parameter through which a wake could reach another team, so the self-dispatch doctrine holds by construction — cross-team work routes through thread `compose`, never through a wake.
 - No change to the permission model, Codex sandbox, opencode permission map, Claude allow-rule generator, auth, daemon bearer-token flow, Feishu, or notification routing.
 
 ## OpenAPI And Web Contract
@@ -333,18 +344,19 @@ Unit tests:
 
 - `OrgConfig` parses a valid `working_hours:` block (windowed and continuous).
 - Invalid mode, malformed window times, `start >= end`, unknown timezone, malformed interval, interval > window length (windowed), interval not dividing 24h (continuous), bad `days`, and unknown include/exclude agents each fail clearly.
-- Three-tier precedence resolution: org default ← role default ← agent override, leaf-by-leaf; partial overrides inherit unset leaves.
+- Three-tier precedence resolution: org default ← team default (`teams.<team>`) ← agent override, leaf-by-leaf; partial overrides inherit unset leaves. An agent's team default applies to every member of that team unless an agent override sets the leaf.
+- Unknown team key under `working_hours.teams.<team>` fails validation at the resolved-candidate point.
 - Continuous mode ignores `window` and `days`.
 - Slot-grid computation: windowed (anchored at `window.start`, stepped by interval, bounded by `window.end`, day-filtered) and continuous (anchored at `00:00`, full-day), including the continuous midnight rollover assigning `00:00` to the new local_date.
 - `(agent, local_date, slot)` uniqueness allows multiple slots/day but blocks duplicates; continuous and windowed both honored.
 - Startup catch-up enqueues only the latest due slot, never replays earlier slots or historical days; `catch_up_on_startup:false` records a `skipped` row.
-- `## Routine Tasks` parse: list-item extraction, preamble handling, team-tag acceptance/rejection, cap enforcement (with recorded drop), absent/empty section → no wake scheduled.
+- `## Routine Tasks` parse: list-item extraction, preamble handling, cap enforcement (with recorded drop), absent/empty section → no wake scheduled.
 
 Daemon / route tests:
 
 - `work-hours spawn` on a `running` work-hour creates one root task per routine, records `spawned_task_ids`/`spawned_task_count`, writes `work_hour_spawned` audit + transcript, and marks `completed`.
 - Spawned tasks appear in the normal task list / queue (verifying the task-producing contract).
-- Cross-team `team` tag is rejected; the work-hour is marked `failed` with no tasks spawned.
+- **Executor targeting**: each spawned root task is created on the waking agent's own team with `assigned_agent = <waking agent>`. A **worker** wake's task is executed directly by that worker (bounded work → report), not routed into the team manager's decision loop; a **manager** wake's task enters that manager's own decision loop. (Asserts the Q2 ruling against the orchestrator's actual root-task entrypoint behavior — pre-set `assigned_agent` honored, not overridden by the team-manager default.)
 - `work-hours spawn` on a non-`running` work-hour is rejected (single-use guard).
 - Failed and timed-out wakes spawn no tasks; partial-spawn records created ids and marks `failed`.
 - Startup recovery marks stale `running` work-hours `failed`.
@@ -383,14 +395,16 @@ Likely modified modules:
 
 The implementation should reuse the dreaming scheduler/queue/runner skeleton and shared executor/token-parsing/bootstrap helpers, while keeping the wake decoupled from `TaskRecord` (linkage is only the recorded `spawned_task_ids`), from dream lifecycle, and from talk/thread state. The wake prompt is composed in `wake_runner` (no `protocol/` edit needed to ship).
 
-## Open Design Questions
+## Resolved Decisions
 
-These could not be fully resolved from the locked rulings and need a founder decision before implementation:
+All seven design questions raised in the proposal have been ruled on and are now baked into the spec body above. This record preserves the question → ruling → who-ruled trail; the body is authoritative.
 
-1. **Middle-tier key — `role` vs `team`.** The ruling specifies precedence "agent override > role default > org default." This spec keys Tier 2 by the agent file `role` field (`worker`/`manager`), which is coarse. Keying by `team` would give finer per-function control (e.g. a `customer_service` team continuous by default). Confirm `role`, or switch Tier 2 to `team`.
-2. **Worker-vs-manager root-task targeting.** A self-dispatched root task created via `create_task(brief, team)` enters the team's normal entrypoint (manager-decision loop). For a *worker* agent whose routine is "do X," is the intended shape (a) a root task the worker executes directly (true self-dispatch, bounded work → report), or (b) a root task the team manager triages and may delegate back? The runtime's existing root-task entrypoint implies (b); the word "self-dispatch" implies (a). Needs a ruling on targeting and on how the waking agent is attributed as originator.
-3. **Missed-slot policy.** This spec backfills only the single most-recent due slot at startup and never backfills intermediate missed slots within a day (mirroring dreaming's no-replay). Confirm this is the desired behavior for a 24h customer-service agent (i.e. after a 2h outage it does not fire the 2 missed 15-min slots, only the latest).
-4. **Partial-spawn atomicity.** On a mid-creation failure, this spec keeps the already-created root tasks and marks the work-hour `failed` (no rollback). Confirm, versus a stricter all-or-nothing transaction around task creation.
-5. **Per-routine team tag.** This spec restricts the optional `(team: …)` routine tag to the agent's own team (cross-team forbidden, per the self-dispatch doctrine). Confirm, or disallow the tag entirely.
-6. **Interval format and divisibility.** Proposed format `Nh`/`Nm`; continuous intervals must evenly divide 24h to keep slot boundaries aligned across dates. Confirm the format and the divisibility constraint (alternative: allow any interval and accept a short final pre-midnight bucket).
-7. **Always-a-session vs daemon-direct spawn.** This spec runs a token-consuming wake executor session every slot (honoring ruling #1 "the wake invocation reads the checklist and self-dispatches" and the token-attribution requirement). For agents whose routines are static, a cheaper alternative is for the daemon to parse `## Routine Tasks` and spawn the tasks directly with no wake session (zero wake tokens). Confirm we always want a session (cost: one executor invocation per slot per agent — material for a 15-min continuous agent = 96 wakes/day).
+| # | Question | Ruling | Ruled by |
+| --- | --- | --- | --- |
+| Q1 | Middle-tier key — `role` vs `team`. | **Key Tier 2 by `team`.** Precedence is `org default → team default (working_hours.teams.<team>) → agent override`. Team keying gives per-function defaults (e.g. a `customer_service` team continuous by default) without per-agent entries. *(Baked into: Org And Per-Agent Configuration — config block, precedence list, validation; Test Plan.)* | Engineering Manager (founder-unvetoed) |
+| Q2 | Worker-vs-manager root-task targeting. | **The waking agent is the owner/executor of its own routine tasks.** Each spawned root task is created targeted to the waking agent (`assigned_agent = <waking agent>`): a worker executes its task directly (bounded work → report), a manager's task enters that manager's own decision loop. Intended orchestrator semantics; implementer must verify the entrypoint supports executor targeting and originator attribution (no new `tasks` column) via GitNexus impact analysis at build time, and escalate to the founder if it requires a task-creation-contract change. *(Baked into: Invocation Contract steps 2–3; Test Plan executor-targeting item.)* | Founder |
+| Q3 | Missed-slot policy. | **Confirm no-backfill.** Only the single most-recent due slot is considered at startup; intermediate missed slots are never backfilled and historical days are never replayed. A 24h agent recovering from an outage fires once, not once per missed interval. *(Baked into: Non-Goals; Scheduler — startup catch-up.)* | Engineering Manager (unvetoed) |
+| Q4 | Partial-spawn atomicity. | **Confirm no-rollback.** Already-created root tasks proceed; the wake is marked `failed` with a `partial_spawn` error. Already-spawned routine work is real work and is not discarded. *(Baked into: Failure Handling — partial spawn.)* | Engineering Manager (unvetoed) |
+| Q5 | Per-routine team tag. | **Drop the tag entirely for v1.** Spawned tasks are always on the waking agent's own team, so the optional `(team: …)` selector is dead weight. Removed from the parse contract, payload shape, daemon validation, Security, and Test Plan. The self-team-only invariant now holds structurally (no cross-team path from a wake). *(Baked into: Routine Tasks parse contract; Invocation Contract payload + validation; Security; Test Plan.)* | Engineering Manager (unvetoed) |
+| Q6 | Interval format and divisibility. | **Confirm `Nh`/`Nm` format with the divide-24h constraint** for continuous mode (keeps slot boundaries aligned across local dates so `00:00` always exists). *(Baked into: Interval And Slot Grid; Validation.)* | Engineering Manager (unvetoed) |
+| Q7 | Always-a-session vs daemon-direct spawn. | **Keep the always-a-session model.** One wake executor invocation per slot reads the checklist and self-dispatches; no daemon-direct spawn path in v1 (it would produce unattributable, zero-token task births). Cost note retained; recommend sane continuous intervals (30–60m for a CS agent) to bound the 96-wakes/day worst case. *(Baked into: Wake Input And Prompt — "Always a session (settled)".)* | Founder |
