@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  python-unit:
+    name: Python unit (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    # No Python linter configured in-repo; add ruff via founder approval to enable Python lint.
+    strategy:
+      fail-fast: false
+      matrix:
+        # Matrix justified by pyproject requires-python = ">=3.11,<3.14".
+        python-version: ['3.11', '3.12', '3.13']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+      - name: Sync dependencies (frozen)
+        run: uv sync --frozen
+      # pyproject addopts = -m 'not integration', so this default run is unit-only.
+      - name: Run unit tests
+        run: uv run pytest tests/ -v
+
+  web:
+    name: Web (Node 20)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Typecheck
+        run: npm run typecheck
+      # Runs prebuild (build:registry) then tsc + vite build.
+      - name: Build
+        run: npm run build
+      # Bare `vitest` is watch mode and would hang CI; `vitest run` is non-watch.
+      # Run after build so the build:registry output exists.
+      - name: Test (non-watch)
+        run: npx vitest run
