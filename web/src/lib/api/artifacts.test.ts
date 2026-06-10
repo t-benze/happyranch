@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { uploadArtifact } from './artifacts';
+import { listArtifacts, uploadArtifact } from './artifacts';
 
 const SLUG = 'alpha';
 
@@ -41,5 +41,59 @@ describe('artifacts api mirror', () => {
     });
     expect(init.body).toBeInstanceOf(FormData);
     expect((init.body as FormData).get('file')).toBeInstanceOf(File);
+  });
+
+  test('listArtifacts GETs the collection with the bearer token', async () => {
+    seedToken();
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          artifacts: [
+            { name: 'a.pdf', size_bytes: 3, modified_at: '2026-06-09T00:00:00Z' },
+            { name: 'b.csv', size_bytes: 9, modified_at: '2026-06-10T00:00:00Z' },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const result = await listArtifacts(SLUG);
+
+    expect(result.artifacts).toHaveLength(2);
+    expect(result.artifacts[0]?.name).toBe('a.pdf');
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`/api/v1/orgs/${SLUG}/artifacts`);
+    expect(init.method).toBe('GET');
+    expect(init.headers).toMatchObject({
+      Authorization: 'Bearer tok',
+      Accept: 'application/json',
+    });
+  });
+
+  test('listArtifacts drops a stale token and retries once on 401', async () => {
+    seedToken();
+    // First GET 401s; listArtifacts clears the token, which forces getToken()
+    // to re-bootstrap, then the GET is retried once and succeeds.
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('', { status: 401 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ token: 'tok2' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ artifacts: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+
+    const result = await listArtifacts(SLUG);
+
+    expect(result.artifacts).toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/v1/auth/bootstrap');
   });
 });
