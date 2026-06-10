@@ -20,7 +20,14 @@ class DaemonStateInconsistent(RuntimeError):
 class OpcClient:
     def __init__(self, base_url: str, token: str) -> None:
         self.base_url = base_url
-        self.headers = {"Authorization": f"Bearer {token}"}
+        # X-HappyRanch-Surface is a descriptive source LABEL identifying the
+        # agent CLI, not an auth signal — never gate authz on it. The web SPA
+        # must NOT send it so daemon routes can count agent-CLI reads only.
+        # See KB: kb-view-tracking-caller-signal.
+        self.headers = {
+            "Authorization": f"Bearer {token}",
+            "X-HappyRanch-Surface": "cli",
+        }
         self._client = httpx.Client(base_url=base_url, headers=self.headers, timeout=30.0)
 
     @classmethod

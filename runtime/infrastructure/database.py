@@ -460,6 +460,12 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS jobs_task_id_idx ON jobs(task_id);
             CREATE INDEX IF NOT EXISTS jobs_status_idx  ON jobs(status);
+
+            CREATE TABLE IF NOT EXISTS kb_views (
+                slug           TEXT PRIMARY KEY,
+                view_count     INTEGER NOT NULL DEFAULT 0,
+                last_viewed_at TEXT
+            );
         """)
         self._migrate_session_token_usage_scope_columns()
         # Best-effort migration for DBs created before `status` existed. SQLite
@@ -1949,6 +1955,42 @@ class Database:
             sql += " WHERE " + " AND ".join(where)
         sql += " GROUP BY talk_id ORDER BY talk_id"
         rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    # --- KB views ---
+
+    @_synchronized
+    def record_kb_view(self, slug: str) -> None:
+        """Increment the view counter for a KB entry, stamping last_viewed_at.
+
+        UPSERT: inserts the row at count 1 on first view, otherwise increments
+        the existing count. Caller decides *when* to record (agent-CLI reads
+        only — see kb-view-tracking-caller-signal). This is a metric write, not
+        an audit row; it never routes through audit_log.
+        """
+        now = _now().isoformat()
+        self._conn.execute(
+            """INSERT INTO kb_views (slug, view_count, last_viewed_at)
+               VALUES (?, 1, ?)
+               ON CONFLICT(slug) DO UPDATE SET
+                 view_count = view_count + 1,
+                 last_viewed_at = excluded.last_viewed_at""",
+            (slug, now),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def kb_view_stats(self) -> list[dict]:
+        """Return per-slug view tallies, most-viewed first.
+
+        Ordered by view_count DESC, then last_viewed_at DESC so ties surface
+        the most recently read entry first.
+        """
+        rows = self._conn.execute(
+            """SELECT slug, view_count, last_viewed_at
+               FROM kb_views
+               ORDER BY view_count DESC, last_viewed_at DESC"""
+        ).fetchall()
         return [dict(r) for r in rows]
 
     # --- Talks ---

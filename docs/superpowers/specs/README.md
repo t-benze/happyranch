@@ -85,3 +85,4 @@ New specs should include a short status block near the top:
 | `2026-06-08-thread-talk-token-usage-scope-design.md` | implemented | Current token reporting contract: README, `runtime/daemon/routes/tokens.py`, and OpenAPI snapshot. |
 | `2026-06-09-nightly-dreaming-design.md` | implemented | Current private scheduled per-agent reflection mechanism; implemented in `runtime/daemon/dream_runner.py`, `dream_scheduler.py`, `dream_queue.py`, `runtime/infrastructure/dream_store.py`, and `runtime/daemon/routes/dreams.py`. |
 | `2026-06-09-thread-file-attachments-design.md` | proposed | Artifact-backed thread attachment design; pending implementation. |
+| `2026-06-10-kb-view-tracking-design.md` | implemented | Agent-CLI KB view tracking; implemented in `runtime/daemon/routes/kb.py`, `runtime/infrastructure/database.py`, `cli/commands/kb.py`. Caller-signal mechanism in KB `kb-view-tracking-caller-signal`. |
