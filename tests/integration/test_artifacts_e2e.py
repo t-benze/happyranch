@@ -78,6 +78,72 @@ def test_put_list_get_roundtrip(
     ), f"no audit entry for report.pdf; entries={entries}"
 
 
+def test_delete_roundtrip(
+    live_daemon,
+    runtime,
+) -> None:
+    """PUT → disk → DELETE → gone-from-disk → list-omits → delete-audit roundtrip."""
+    port = live_daemon
+    slug = DEFAULT_TEST_SLUG
+    base = f"http://127.0.0.1:{port}/api/v1/orgs/{slug}"
+    headers = _auth_headers()
+
+    # ── 1. PUT the artifact.
+    put_resp = httpx.post(
+        f"{base}/artifacts",
+        params={"name": "doomed.txt", "agent": "dev_agent"},
+        files={"file": ("doomed.txt", b"delete-me", "text/plain")},
+        headers=headers,
+        timeout=10.0,
+    )
+    assert put_resp.status_code == 200, put_resp.text
+    artifact_path = runtime / "artifacts" / "doomed.txt"
+    assert artifact_path.exists()
+
+    # ── 2. DELETE removes it.
+    del_resp = httpx.request(
+        "DELETE",
+        f"{base}/artifacts/doomed.txt",
+        params={"agent": "founder"},
+        headers=headers,
+        timeout=10.0,
+    )
+    assert del_resp.status_code == 200, del_resp.text
+    assert del_resp.json() == {"name": "doomed.txt", "deleted": True}
+    assert not artifact_path.exists()
+
+    # ── 3. LIST no longer shows it.
+    list_resp = httpx.get(f"{base}/artifacts", headers=headers, timeout=10.0)
+    assert list_resp.status_code == 200, list_resp.text
+    names = [a["name"] for a in list_resp.json()["artifacts"]]
+    assert "doomed.txt" not in names, f"deleted artifact still listed: {names}"
+
+    # ── 4. A second DELETE is a 404.
+    miss_resp = httpx.request(
+        "DELETE",
+        f"{base}/artifacts/doomed.txt",
+        params={"agent": "founder"},
+        headers=headers,
+        timeout=10.0,
+    )
+    assert miss_resp.status_code == 404
+    assert miss_resp.json()["detail"]["code"] == "artifact_not_found"
+
+    # ── 5. Audit row exists for artifact_delete with the correct name.
+    audit_resp = httpx.get(
+        f"{base}/audit",
+        params={"action": "artifact_delete"},
+        headers=headers,
+        timeout=10.0,
+    )
+    assert audit_resp.status_code == 200, audit_resp.text
+    entries = audit_resp.json().get("entries", [])
+    assert any(
+        e.get("payload", {}).get("name") == "doomed.txt"
+        for e in entries
+    ), f"no audit entry for artifact_delete; entries={entries}"
+
+
 def test_lifespan_creates_artifacts_dir_for_existing_org(
     live_daemon,
     runtime,

@@ -1,7 +1,7 @@
-import { screen } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
@@ -73,5 +73,104 @@ describe('AssetsPage', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/letters, digits/i);
     expect(postHit).toBe(false);
+  });
+
+  describe('delete', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    test('confirms, deletes, and removes the row on success', async () => {
+      sessionStorage.setItem('happyranch.token', 'tok');
+      stubBaseHandlers();
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      let assets = [
+        { name: 'doomed.pdf', size_bytes: 1024, modified_at: '2026-06-09T00:00:00Z' },
+      ];
+      let deleteHit = false;
+      server.use(
+        http.get(`/api/v1/orgs/${SLUG}/artifacts`, () =>
+          HttpResponse.json({ artifacts: assets }),
+        ),
+        http.delete(`/api/v1/orgs/${SLUG}/artifacts/:name`, ({ params }) => {
+          deleteHit = true;
+          const target = decodeURIComponent(params.name as string);
+          assets = assets.filter((a) => a.name !== target);
+          return HttpResponse.json({ name: target, deleted: true });
+        }),
+      );
+
+      const user = userEvent.setup();
+      renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/assets` });
+
+      await screen.findByText('doomed.pdf');
+      await user.click(screen.getByRole('button', { name: /Delete doomed\.pdf/i }));
+
+      expect(window.confirm).toHaveBeenCalledTimes(1);
+      await waitFor(() =>
+        expect(screen.queryByText('doomed.pdf')).not.toBeInTheDocument(),
+      );
+      expect(deleteHit).toBe(true);
+    });
+
+    test('does not delete when the confirm is dismissed', async () => {
+      sessionStorage.setItem('happyranch.token', 'tok');
+      stubBaseHandlers();
+      vi.spyOn(window, 'confirm').mockReturnValue(false);
+      let deleteHit = false;
+      server.use(
+        http.get(`/api/v1/orgs/${SLUG}/artifacts`, () =>
+          HttpResponse.json({
+            artifacts: [
+              { name: 'doomed.pdf', size_bytes: 1024, modified_at: '2026-06-09T00:00:00Z' },
+            ],
+          }),
+        ),
+        http.delete(`/api/v1/orgs/${SLUG}/artifacts/:name`, () => {
+          deleteHit = true;
+          return HttpResponse.json({ name: 'doomed.pdf', deleted: true });
+        }),
+      );
+
+      const user = userEvent.setup();
+      renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/assets` });
+
+      await screen.findByText('doomed.pdf');
+      await user.click(screen.getByRole('button', { name: /Delete doomed\.pdf/i }));
+
+      expect(window.confirm).toHaveBeenCalledTimes(1);
+      expect(deleteHit).toBe(false);
+      expect(screen.getByText('doomed.pdf')).toBeInTheDocument();
+    });
+
+    test('surfaces an error and keeps the row when delete fails', async () => {
+      sessionStorage.setItem('happyranch.token', 'tok');
+      stubBaseHandlers();
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      server.use(
+        http.get(`/api/v1/orgs/${SLUG}/artifacts`, () =>
+          HttpResponse.json({
+            artifacts: [
+              { name: 'doomed.pdf', size_bytes: 1024, modified_at: '2026-06-09T00:00:00Z' },
+            ],
+          }),
+        ),
+        http.delete(`/api/v1/orgs/${SLUG}/artifacts/:name`, () =>
+          HttpResponse.json(
+            { detail: { code: 'artifact_not_found', name: 'doomed.pdf' } },
+            { status: 404 },
+          ),
+        ),
+      );
+
+      const user = userEvent.setup();
+      renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/assets` });
+
+      await screen.findByText('doomed.pdf');
+      await user.click(screen.getByRole('button', { name: /Delete doomed\.pdf/i }));
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(/no longer exists/i);
+      expect(screen.getByText('doomed.pdf')).toBeInTheDocument();
+    });
   });
 });

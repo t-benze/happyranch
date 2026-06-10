@@ -119,6 +119,8 @@ const INCLUDED_PATHS = new Set<string>([
   'POST /api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries/search',
   // teams — founder-facing
   'GET /api/v1/orgs/{slug}/teams',
+  // artifacts — founder assets UI delete (mirror: deleteArtifact in lib/api/artifacts.ts)
+  'DELETE /api/v1/orgs/{slug}/artifacts/{name}',
 ]);
 
 /**

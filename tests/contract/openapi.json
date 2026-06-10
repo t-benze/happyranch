@@ -519,6 +519,30 @@
       }
     },
     "/api/v1/orgs/{slug}/artifacts/{name}": {
+      "DELETE": {
+        "params": [
+          [
+            "agent",
+            "query"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "name",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      },
       "GET": {
         "params": [
           [

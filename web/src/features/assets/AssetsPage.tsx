@@ -1,15 +1,16 @@
 /**
- * Assets page — founder-facing browse + download + upload for the org-shared
- * artifact store (`happyranch assets ...` on the CLI).
+ * Assets page — founder-facing browse + download + upload + delete for the
+ * org-shared artifact store (`happyranch assets ...` on the CLI; delete is
+ * web-only — there is no CLI delete verb).
  *
- * The daemon exposes only POST (upload), GET (list), and GET /{name}
- * (download); there is intentionally NO delete or update, so this surface is
- * read + create only. Uploads are validated client-side against the same
- * size/name constraints the daemon enforces so the founder sees an inline
- * error instead of a 400/413.
+ * The daemon exposes POST (upload), GET (list), GET /{name} (download), and
+ * DELETE /{name} (delete); there is intentionally NO update route (POST is an
+ * idempotent create-or-overwrite). Uploads are validated client-side against
+ * the same size/name constraints the daemon enforces so the founder sees an
+ * inline error instead of a 400/413. Deletes require an explicit confirm.
  */
 import { useId, useRef, useState } from 'react';
-import { Download, Upload } from 'lucide-react';
+import { Download, Trash2, Upload } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { artifacts as artifactsApi, ApiError } from '@/lib/api';
 import { useOrgSlug } from '@/lib/orgSlug';
@@ -31,6 +32,14 @@ function describeUploadError(err: unknown): string {
   return String(err);
 }
 
+function describeDeleteError(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.code === 'artifact_not_found') return 'That asset no longer exists.';
+    return `Delete failed (HTTP ${err.status}).`;
+  }
+  return String(err);
+}
+
 export function AssetsPage(): JSX.Element {
   const slug = useOrgSlug();
   const qc = useQueryClient();
@@ -39,6 +48,7 @@ export function AssetsPage(): JSX.Element {
   const [file, setFile] = useState<File | null>(null);
   const [name, setName] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const listQuery = useQuery({
     queryKey: ['artifacts', slug],
@@ -50,7 +60,7 @@ export function AssetsPage(): JSX.Element {
       artifactsApi.uploadArtifact(slug, {
         file: args.file,
         name: args.name,
-        agent: 'founder',
+        agent: artifactsApi.ARTIFACT_WRITE_AGENT,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['artifacts', slug] });
@@ -61,6 +71,22 @@ export function AssetsPage(): JSX.Element {
     },
     onError: (err: unknown) => setError(describeUploadError(err)),
   });
+
+  const del = useMutation({
+    mutationFn: (artifactName: string) => artifactsApi.deleteArtifact(slug, artifactName),
+    onSuccess: () => {
+      setDeleteError(null);
+      qc.invalidateQueries({ queryKey: ['artifacts', slug] });
+    },
+    onError: (err: unknown) => setDeleteError(describeDeleteError(err)),
+  });
+
+  const requestDelete = (artifactName: string) => {
+    setDeleteError(null);
+    // Never delete on a single unconfirmed click.
+    if (!window.confirm(`Delete "${artifactName}"? This cannot be undone.`)) return;
+    del.mutate(artifactName);
+  };
 
   const submit = () => {
     setError(null);
@@ -92,8 +118,8 @@ export function AssetsPage(): JSX.Element {
         <header>
           <h1 className="text-fg text-lg font-semibold">Shared assets</h1>
           <p className="text-fg-muted text-sm">
-            Org-wide artifacts. Browse, download, or upload a new file. Delete and
-            rename are not supported.
+            Org-wide artifacts. Browse, download, upload a new file, or delete an
+            existing one. Rename is not supported.
           </p>
         </header>
 
@@ -156,41 +182,60 @@ export function AssetsPage(): JSX.Element {
               body="Upload a file above to share it across the org."
             />
           ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-fg-muted border-border border-b text-left">
-                  <th className="py-2 pr-4 font-medium">Name</th>
-                  <th className="py-2 pr-4 font-medium">Size</th>
-                  <th className="py-2 pr-4 font-medium">Modified</th>
-                  <th className="py-2 font-medium">
-                    <span className="sr-only">Download</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {artifacts.map((a) => (
-                  <tr key={a.name} className="border-border/50 border-b">
-                    <td className="text-fg py-2 pr-4 break-all">{a.name}</td>
-                    <td className="text-fg-muted py-2 pr-4 whitespace-nowrap">
-                      {formatAttachmentSize(a.size_bytes) ?? '—'}
-                    </td>
-                    <td className="text-fg-muted py-2 pr-4 whitespace-nowrap">
-                      {a.modified_at}
-                    </td>
-                    <td className="py-2">
-                      <a
-                        href={artifactsApi.artifactDownloadPath(slug, a.name)}
-                        download={a.name}
-                        className="text-accent inline-flex items-center gap-1 hover:underline"
-                      >
-                        <Download size={14} aria-hidden="true" />
-                        Download
-                      </a>
-                    </td>
+            <>
+              {deleteError && (
+                <p role="alert" className="text-feedback-danger mb-2 text-sm">
+                  {deleteError}
+                </p>
+              )}
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-fg-muted border-border border-b text-left">
+                    <th className="py-2 pr-4 font-medium">Name</th>
+                    <th className="py-2 pr-4 font-medium">Size</th>
+                    <th className="py-2 pr-4 font-medium">Modified</th>
+                    <th className="py-2 font-medium">
+                      <span className="sr-only">Actions</span>
+                    </th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {artifacts.map((a) => (
+                    <tr key={a.name} className="border-border/50 border-b">
+                      <td className="text-fg py-2 pr-4 break-all">{a.name}</td>
+                      <td className="text-fg-muted py-2 pr-4 whitespace-nowrap">
+                        {formatAttachmentSize(a.size_bytes) ?? '—'}
+                      </td>
+                      <td className="text-fg-muted py-2 pr-4 whitespace-nowrap">
+                        {a.modified_at}
+                      </td>
+                      <td className="py-2">
+                        <div className="flex items-center gap-4 whitespace-nowrap">
+                          <a
+                            href={artifactsApi.artifactDownloadPath(slug, a.name)}
+                            download={a.name}
+                            className="text-accent inline-flex items-center gap-1 hover:underline"
+                          >
+                            <Download size={14} aria-hidden="true" />
+                            Download
+                          </a>
+                          <button
+                            type="button"
+                            onClick={() => requestDelete(a.name)}
+                            disabled={del.isPending && del.variables === a.name}
+                            aria-label={`Delete ${a.name}`}
+                            className="text-feedback-danger inline-flex items-center gap-1 hover:underline disabled:opacity-50"
+                          >
+                            <Trash2 size={14} aria-hidden="true" />
+                            {del.isPending && del.variables === a.name ? 'Deleting…' : 'Delete'}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
           )}
         </section>
       </div>
