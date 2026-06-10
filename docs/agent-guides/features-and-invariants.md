@@ -49,7 +49,7 @@ For current behavior always prefer `protocol/`, `docs/agent-guides/`, tests, the
 
 ### Background / reflection
 
-- **Nightly dreaming.** Private scheduled per-agent reflection runs, separate from tasks/talks/threads, that may write learnings, propose KB candidates, and open a founder-only thread on meaningful output. Spec `docs/superpowers/specs/2026-06-09-nightly-dreaming-design.md`; impl `runtime/infrastructure/dream_store.py`, `runtime/daemon/dream_runner.py`, `runtime/daemon/dream_scheduler.py`, `runtime/daemon/dream_queue.py`, `runtime/daemon/routes/dreams.py`. See [Dreams](#dreams) below for traps. (The spec README still labels this "not implemented yet"; the listed modules show it is now implemented.)
+- **Nightly dreaming.** Private scheduled per-agent reflection runs, separate from tasks/talks/threads, that may write learnings, propose KB candidates, and open a founder-only thread on meaningful output. Spec `docs/superpowers/specs/2026-06-09-nightly-dreaming-design.md`; impl `runtime/infrastructure/dream_store.py`, `runtime/daemon/dream_runner.py`, `runtime/daemon/dream_scheduler.py`, `runtime/daemon/dream_queue.py`, `runtime/daemon/routes/dreams.py`. See [Dreams](#dreams) below for traps.
 
 ## Knowledge Base
 

@@ -83,5 +83,5 @@ New specs should include a short status block near the top:
 | `2026-06-06-thread-escalation-surfacing-design.md` | implemented | Current thread escalation/follow-up behavior in run-step/thread code. |
 | `2026-06-08-system-assistant-design.md` | current | Current system-assistant design companion; verify against implementation before editing. |
 | `2026-06-08-thread-talk-token-usage-scope-design.md` | implemented | Current token reporting contract: README, `runtime/daemon/routes/tokens.py`, and OpenAPI snapshot. |
-| `2026-06-09-nightly-dreaming-design.md` | current | Planned private scheduled reflection mechanism; not implemented yet. |
+| `2026-06-09-nightly-dreaming-design.md` | implemented | Current private scheduled per-agent reflection mechanism; implemented in `runtime/daemon/dream_runner.py`, `dream_scheduler.py`, `dream_queue.py`, `runtime/infrastructure/dream_store.py`, and `runtime/daemon/routes/dreams.py`. |
 | `2026-06-09-thread-file-attachments-design.md` | proposed | Artifact-backed thread attachment design; pending implementation. |
