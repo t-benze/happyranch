@@ -116,7 +116,7 @@ export function AssetsPage(): JSX.Element {
     <div className="bg-surface-canvas h-full overflow-y-auto p-4">
       <div className="mx-auto flex max-w-3xl flex-col gap-6">
         <header>
-          <h1 className="text-fg text-lg font-semibold">Shared assets</h1>
+          <h1 className="text-fg text-lg font-semibold">Shared artifacts</h1>
           <p className="text-fg-muted text-sm">
             Org-wide artifacts. Browse, download, upload a new file, or delete an
             existing one. Rename is not supported.
@@ -169,7 +169,7 @@ export function AssetsPage(): JSX.Element {
           </div>
         </section>
 
-        <section aria-label="Assets list">
+        <section aria-label="Artifacts list">
           {listQuery.isLoading ? (
             <p className="text-fg-muted">Loading…</p>
           ) : listQuery.isError ? (
@@ -178,7 +178,7 @@ export function AssetsPage(): JSX.Element {
             </p>
           ) : artifacts.length === 0 ? (
             <EmptyState
-              title="No assets"
+              title="No artifacts"
               body="Upload a file above to share it across the org."
             />
           ) : (

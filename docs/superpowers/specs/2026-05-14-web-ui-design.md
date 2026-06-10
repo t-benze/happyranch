@@ -306,11 +306,11 @@ The TUI removal lands in the same PR as the web app reaching parity. Until that 
 
 Each step has independent verification (lint, unit, contract, manual). Detailed sequencing belongs in the implementation plan, not this spec.
 
-## 15. Assets surface (delivered 2026-06-10, scope A)
+## 15. Artifacts surface (delivered 2026-06-10, scope A)
 
 Per founder decision THR-007, the org-shared artifact store (the `happyranch assets put|list|get` CLI surface) gets a founder-facing web page. **Round one is read + create only** — the daemon (`runtime/daemon/routes/artifacts.py`) exposes exactly three routes and intentionally has **no delete and no update**, so the UI exposes none either.
 
-- **Route.** `/orgs/:slug/assets` → `features/assets/AssetsPage.tsx`, registered in `routes.tsx` alongside the other `/orgs/:slug` feature pages. An `Assets` tab is added to the `TopBar` nav using the standard slug-guarded `placeholderTab` pattern.
+- **Route.** `/orgs/:slug/assets` → `features/assets/AssetsPage.tsx`, registered in `routes.tsx` alongside the other `/orgs/:slug` feature pages. An `Artifacts` tab is added to the `TopBar` nav using the standard slug-guarded `placeholderTab` pattern.
 - **CRUD coverage.**
   - **Create (upload)** — `POST /api/v1/orgs/{slug}/artifacts` via the existing `uploadArtifact()`, attributed `agent: 'founder'`.
   - **Read (list)** — `GET /api/v1/orgs/{slug}/artifacts` via a new thin `listArtifacts(slug)` client wrapper (mirrors `uploadArtifact()`'s bearer-token + 401-retry shape; reuses the existing error parser).
