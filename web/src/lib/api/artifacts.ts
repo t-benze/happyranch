@@ -3,7 +3,7 @@ import { API_PREFIX, ApiError } from './client';
 
 /**
  * The agent identity attributed to browser-driven artifact writes (upload +
- * delete) for audit. Founder is the only actor behind the web assets UI; both
+ * delete) for audit. Founder is the only actor behind the web artifacts UI; both
  * write paths reuse this single source so the audit attribution stays
  * consistent.
  */
