@@ -40,6 +40,16 @@ def test_constructor_uses_token_for_auth(tmp_home: Path) -> None:
     assert client.headers["Authorization"].startswith("Bearer ")
 
 
+def test_constructor_sets_cli_surface_header(tmp_home: Path) -> None:
+    """The CLI client tags every request with the agent-surface label so
+    daemon routes can count agent-CLI reads only (kb-view-tracking-caller-signal).
+    """
+    paths_mod.port_file().write_text("12345")
+    paths_mod.ensure_token()
+    client = OpcClient.from_env()
+    assert client.headers["X-HappyRanch-Surface"] == "cli"
+
+
 class _StarletteTransport(httpx.BaseTransport):
     """Wraps Starlette's TestClient as an httpx sync transport."""
 

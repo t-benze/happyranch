@@ -23,7 +23,6 @@ There is no `.env` support. `settings_customise_sources` drops dotenv and adds `
 | `HAPPYRANCH_MAX_ORCHESTRATION_STEPS` | `50` | Max manager decision steps before escalation |
 | `HAPPYRANCH_QUEUE_WORKERS` | `3` | Daemon-wide `run_step` worker slots; must be greater than 0 |
 | `HAPPYRANCH_SESSION_TIMEOUT_SECONDS` | `1800` | Global agent-session timeout default |
-| `HAPPYRANCH_ASSISTANT_PROBE_TIMEOUT_SECONDS` | `15.0` | System assistant interactive PTY probe timeout |
 | `HAPPYRANCH_ORG_SLUG` | unset | Default org slug for per-org CLI commands |
 
 Slug resolution for per-org commands: explicit `--org <slug>` > `HAPPYRANCH_ORG_SLUG` > auto-infer only when exactly one org exists > error. Container-level commands such as `happyranch init`, `happyranch use`, and `happyranch orgs ...` take no `--org`.
@@ -41,10 +40,15 @@ happyranch assistant init --repair
 happyranch assistant init --reconfigure
 ```
 
-Initialization probes supported agentic CLIs through an interactive PTY
-request/reply check. Existing runtimes that predate the feature remain valid;
-`happyranch assistant` tells the user to run `happyranch assistant init` when no
-assistant config exists.
+Onboarding is by self-registration. `happyranch assistant init` prepares or
+repairs the assistant workspace and writes registration instructions; the
+founder opens their own agentic CLI there and it completes configuration by
+calling back `happyranch assistant register --from-file <payload>` declaring an
+agent-chosen `{executor, command, argv}`. The daemon validates the payload
+structurally only — non-empty fields and `shutil.which(argv[0])` resolves (no
+allowlist, no absolute-path requirement, no `$PATH` guard) — then auto-configures
+with no separate approval. `happyranch assistant` tells the user to run
+`happyranch assistant init` when no assistant config exists.
 
 ## Org Config: Dreaming
 

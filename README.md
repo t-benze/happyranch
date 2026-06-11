@@ -118,6 +118,35 @@ Slug resolution for per-org commands: explicit `--org <slug>` flag > `HAPPYRANCH
 
 The files under `org/` are the source of truth for that organization. You can hand-edit them between tasks (e.g., to refine an agent's system prompt) — the next `happyranch init-agent` regenerates the workspace bootstrap accordingly.
 
+## System Assistant
+
+The system assistant is a runtime-global agentic CLI you can attach to for ad-hoc help across the whole container. It is **not** an org agent; it lives under `<runtime>/system/assistant/` and onboards by self-registration — you pick whichever CLI you already have installed (`claude`, `codex`, `opencode`, `pi`, or another) and let it register itself.
+
+```bash
+# 1. Prepare (or repair) the runtime-global assistant workspace at
+#    <runtime>/system/assistant/workspace. When no assistant is configured
+#    yet, this prints the next steps to register one.
+happyranch assistant init
+happyranch assistant init --reconfigure   # redo config for an already-configured assistant
+happyranch assistant init --repair        # fix a broken/partial config
+#    --reconfigure and --repair are mutually exclusive.
+
+# 2. Open your own agentic CLI (claude, codex, opencode, pi, ...) IN that
+#    workspace and ask it to register itself. It calls back:
+happyranch assistant register --from-file <payload.json>
+#    The payload declares an agent-chosen {executor, command, argv}.
+#    Flag form instead of a file:
+happyranch assistant register --executor claude --command claude --argv '["claude"]'
+
+# 3. Attach over the WebSocket PTY (attach is the default subcommand, so
+#    bare `happyranch assistant` does the same thing).
+happyranch assistant            # == happyranch assistant attach
+happyranch assistant attach
+happyranch assistant status     # show configuration state and selected executor
+```
+
+On register, the daemon validates the payload structurally only — non-empty fields and `shutil.which(argv[0])` resolves (no allowlist, no absolute-path requirement, no `$PATH` guard) — then auto-configures with no separate approval. See [`docs/agent-guides/runtime-and-configuration.md`](docs/agent-guides/runtime-and-configuration.md) for the full configuration contract.
+
 ## Commands
 
 Every per-org command takes `--org <slug>`; container-level commands do not.

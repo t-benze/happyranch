@@ -1,6 +1,6 @@
 {
   "paths": {
-    "/api/v1/assistant/configure": {
+    "/api/v1/assistant/init": {
       "POST": {
         "params": [
           [
@@ -14,7 +14,7 @@
         ]
       }
     },
-    "/api/v1/assistant/probes": {
+    "/api/v1/assistant/register": {
       "POST": {
         "params": [
           [
@@ -1090,6 +1090,24 @@
           [
             "q",
             "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/kb/stats": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
           ],
           [
             "slug",

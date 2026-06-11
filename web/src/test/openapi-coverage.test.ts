@@ -131,8 +131,8 @@ const INCLUDED_PATHS = new Set<string>([
 const EXCLUDED_PATHS = new Map<string, string>([
   // System assistant setup is CLI-only for now; web attachment/client can be added with the WebSocket surface.
   ['GET /api/v1/assistant/status', 'system assistant CLI setup/status only'],
-  ['POST /api/v1/assistant/probes', 'system assistant CLI setup probes only'],
-  ['POST /api/v1/assistant/configure', 'system assistant CLI setup only'],
+  ['POST /api/v1/assistant/init', 'system assistant CLI registration setup only'],
+  ['POST /api/v1/assistant/register', 'system assistant CLI registration callback only'],
   ['POST /api/v1/assistant/repair', 'system assistant CLI repair only'],
   // task agent callbacks
   ['POST /api/v1/orgs/{slug}/tasks/{task_id}/completion', 'agent callback'],
@@ -162,6 +162,10 @@ const EXCLUDED_PATHS = new Map<string, string>([
   ['GET /api/v1/orgs/{slug}/artifacts/{name}', 'agent-facing v1; also founder artifacts UI download'],
   // dreams agent callback
   ['POST /api/v1/orgs/{slug}/dreams/{dream_id}/complete', 'agent callback'],
+  // KB view-tracking read surface — agent-CLI `happyranch kb stats` only; not
+  // wired into the SPA. Read-only (never increments), so no surface-header
+  // concern. See kb-view-tracking-caller-signal.
+  ['GET /api/v1/orgs/{slug}/kb/stats', 'agent-CLI read surface; not in SPA'],
 ]);
 
 describe('openapi coverage', () => {

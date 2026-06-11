@@ -101,6 +101,23 @@ def cmd_kb_search(args: argparse.Namespace) -> None:
 
 
 
+def cmd_kb_stats(args: argparse.Namespace) -> None:
+    client = OpcClient.from_env()
+    org_slug = resolve_org_slug(
+        args_org=args.org, available=_shared._fetch_available_orgs(client),
+    )
+    r = client.get(f"/api/v1/orgs/{org_slug}/kb/stats")
+    if not _ok(r):
+        return
+    entries = r.json()["entries"]
+    if not entries:
+        print("no views recorded")
+        return
+    for e in entries:
+        print(f"{e['slug']:40s}  {e['view_count']:>6d}  {_fmt_ts(e['last_viewed_at'])}")
+
+
+
 def cmd_kb_add(args: argparse.Namespace) -> None:
     if not args.org:
         print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
@@ -188,6 +205,10 @@ def register(sub) -> None:
     p_kb_get.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
     p_kb_get.add_argument("slug")
     p_kb_get.set_defaults(func=cmd_kb_get)
+
+    p_kb_stats = kb_sub.add_parser("stats", help="Show KB entries by agent-CLI view count")
+    p_kb_stats.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
+    p_kb_stats.set_defaults(func=cmd_kb_stats)
 
     p_kb_search = kb_sub.add_parser("search", help="Search KB entries")
     p_kb_search.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
