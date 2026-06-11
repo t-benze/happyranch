@@ -138,6 +138,8 @@ const EXCLUDED_PATHS = new Map<string, string>([
   // agent self-service
   ['POST /api/v1/orgs/{slug}/agents/manage', 'agent enrollment via skill'],
   ['POST /api/v1/orgs/{slug}/agents/{agent_name}/repos', 'agent manage-repo callback'],
+  // founder set-executor — CLI-only (happyranch set-executor); not wired into the SPA
+  ['PUT /api/v1/orgs/{slug}/agents/{agent_name}/executor', 'founder CLI set-executor only; not in SPA'],
   // learnings writes (legacy + structured)
   ['POST /api/v1/orgs/{slug}/agents/{agent_name}/learnings', 'legacy agent learning append'],
   ['POST /api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries/', 'agent-only write'],
