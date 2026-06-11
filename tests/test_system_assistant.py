@@ -96,15 +96,6 @@ def test_save_and_load_config_round_trips(tmp_path: Path) -> None:
         selected_executor="codex",
         selected_command="codex",
         workspace_path=str(tmp_path / "system" / "assistant" / "workspace"),
-        latest_probe_results=[
-            {
-                "executor": "codex",
-                "status": "passed",
-                "command": "codex",
-                "checked_at": "2026-06-08T00:00:00Z",
-                "latency_ms": 12,
-            }
-        ],
     )
 
     save_assistant_config(tmp_path, cfg)
@@ -301,7 +292,6 @@ def test_load_config_rejects_config_symlink(tmp_path: Path) -> None:
                 "selected_executor": "codex",
                 "selected_command": "codex",
                 "workspace_path": str(paths.workspace),
-                "latest_probe_results": [],
             }
         )
         + "\n"
@@ -388,7 +378,6 @@ def test_classify_stale_when_config_is_invalid(tmp_path: Path) -> None:
 
     assert status.state == AssistantState.STALE_OR_BROKEN
     assert status.detail == "assistant config is invalid"
-    assert status.latest_probe_results == []
 
 
 def test_classify_stale_when_config_is_directory(tmp_path: Path) -> None:
@@ -402,7 +391,6 @@ def test_classify_stale_when_config_is_directory(tmp_path: Path) -> None:
 
     assert status.state == AssistantState.STALE_OR_BROKEN
     assert status.detail == "assistant config is invalid"
-    assert status.latest_probe_results == []
 
 
 def test_classify_stale_when_config_is_symlink_to_valid_json(tmp_path: Path) -> None:
@@ -415,7 +403,6 @@ def test_classify_stale_when_config_is_symlink_to_valid_json(tmp_path: Path) -> 
                 "selected_executor": "codex",
                 "selected_command": "codex",
                 "workspace_path": str(paths.workspace),
-                "latest_probe_results": [],
             }
         )
         + "\n"
@@ -448,7 +435,6 @@ def test_classify_stale_when_config_is_invalid_utf8(tmp_path: Path) -> None:
 
     assert status.state == AssistantState.STALE_OR_BROKEN
     assert status.detail == "assistant config is invalid"
-    assert status.latest_probe_results == []
 
 
 def test_classify_stale_when_config_has_extra_field(tmp_path: Path) -> None:
@@ -460,7 +446,6 @@ def test_classify_stale_when_config_has_extra_field(tmp_path: Path) -> None:
                 "selected_executor": "codex",
                 "selected_command": "codex",
                 "workspace_path": str(paths.workspace),
-                "latest_probe_results": [],
                 "unexpected": True,
             }
         )
@@ -482,7 +467,6 @@ def test_classify_stale_when_workspace_path_is_malformed(tmp_path: Path) -> None
                 "selected_executor": "codex",
                 "selected_command": "codex",
                 "workspace_path": "bad\u0000path",
-                "latest_probe_results": [],
             }
         )
         + "\n"
@@ -505,7 +489,6 @@ def test_classify_stale_when_workspace_path_has_unknown_user(
                 "selected_executor": "codex",
                 "selected_command": "codex",
                 "workspace_path": "~definitely_missing_user/workspace",
-                "latest_probe_results": [],
             }
         )
         + "\n"
@@ -868,16 +851,15 @@ def test_classify_stale_when_agents_prompt_file_is_missing(
     assert status.detail == "assistant bootstrap file AGENTS.md is missing"
 
 
-def test_classify_stale_when_executor_is_invalid(tmp_path: Path) -> None:
+def test_classify_stale_when_selected_command_not_found(tmp_path: Path) -> None:
     paths = system_assistant_paths(tmp_path)
     paths.root.mkdir(parents=True)
     paths.config_path.write_text(
         json.dumps(
             {
                 "selected_executor": "bogus",
-                "selected_command": "bogus",
+                "selected_command": "bogus-cli-does-not-exist",
                 "workspace_path": str(paths.workspace),
-                "latest_probe_results": [],
             }
         )
         + "\n"
@@ -886,7 +868,7 @@ def test_classify_stale_when_executor_is_invalid(tmp_path: Path) -> None:
     status = classify_assistant_state(tmp_path)
 
     assert status.state == AssistantState.STALE_OR_BROKEN
-    assert status.detail == "assistant config is invalid"
+    assert status.detail == "assistant selected command not found: bogus-cli-does-not-exist"
 
 
 @pytest.mark.parametrize("executor", ["claude", "codex", "opencode", "pi"])
@@ -957,9 +939,20 @@ def test_bootstrap_switches_prompt_surface_from_claude_to_codex(
     assert (workspace / "AGENTS.md").exists()
 
 
-def test_bootstrap_rejects_invalid_executor(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="unsupported assistant executor"):
-        bootstrap_assistant_workspace(tmp_path, executor="bogus")
+def test_bootstrap_accepts_arbitrary_executor_string(tmp_path: Path) -> None:
+    bootstrap_assistant_workspace(tmp_path, executor="my-custom-cli")
+
+    workspace = system_assistant_paths(tmp_path).workspace
+    agent_yaml = yaml.safe_load((workspace / "agent.yaml").read_text())
+    assert agent_yaml["executor"] == "my-custom-cli"
+    # Non-claude executors get the AGENTS.md prompt surface.
+    assert (workspace / "AGENTS.md").is_file()
+    assert not (workspace / "CLAUDE.md").exists()
+
+
+def test_bootstrap_rejects_empty_executor(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="assistant executor must be a non-empty string"):
+        bootstrap_assistant_workspace(tmp_path, executor="  ")
 
 
 def test_bootstrap_rejects_workspace_symlink_without_writing_target(
@@ -1136,3 +1129,61 @@ def test_bootstrap_rejects_dangling_learnings_index_symlink_without_writing_targ
         bootstrap_assistant_workspace(tmp_path, executor="codex")
 
     assert not target.exists()
+
+
+def test_assistant_config_accepts_arbitrary_executor_string(tmp_path: Path) -> None:
+    config = AssistantConfig(
+        selected_executor="my-custom-cli",
+        selected_command="my-custom-cli",
+        selected_argv=["my-custom-cli"],
+        workspace_path=str(tmp_path / "ws"),
+    )
+    assert config.selected_executor == "my-custom-cli"
+
+
+def test_assistant_config_rejects_empty_executor(tmp_path: Path) -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        AssistantConfig(
+            selected_executor="",
+            selected_command="claude",
+            selected_argv=["claude"],
+            workspace_path=str(tmp_path / "ws"),
+        )
+
+
+def test_assistant_config_has_no_probe_results_field() -> None:
+    assert "latest_probe_results" not in AssistantConfig.model_fields
+
+
+def test_prepare_registration_workspace_writes_both_prompt_files(tmp_path: Path) -> None:
+    from runtime.system_assistant import prepare_assistant_registration_workspace
+
+    prepare_assistant_registration_workspace(tmp_path)
+
+    paths = system_assistant_paths(tmp_path)
+    claude = (paths.workspace / "CLAUDE.md").read_text()
+    agents = (paths.workspace / "AGENTS.md").read_text()
+    assert "happyranch assistant register --from-file" in claude
+    assert claude == agents
+
+
+def test_clear_assistant_config_removes_config_file(tmp_path: Path) -> None:
+    from runtime.system_assistant import clear_assistant_config
+
+    paths = system_assistant_paths(tmp_path)
+    save_assistant_config(
+        tmp_path,
+        AssistantConfig(
+            selected_executor="claude",
+            selected_command="claude",
+            selected_argv=["claude"],
+            workspace_path=str(paths.workspace),
+        ),
+    )
+    assert paths.config_path.exists()
+
+    clear_assistant_config(tmp_path)
+    assert not paths.config_path.exists()
+    assert load_assistant_config(tmp_path) is None
