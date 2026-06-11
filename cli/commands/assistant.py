@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import inspect
 import os
+from pathlib import Path
 import signal
 import termios
 import sys
@@ -48,51 +49,8 @@ def cmd_assistant_status(args: argparse.Namespace) -> None:
     _print_status(r.json())
 
 
-def _probe_passed(result: dict[str, Any]) -> bool:
-    return result.get("passed") is True
-
-
-def _probe_failure_reason(result: dict[str, Any]) -> str | None:
-    reason = result.get("detail") or result.get("reason") or result.get("error")
-    if reason:
-        return str(reason)
-    status = result.get("status")
-    return str(status) if status else None
-
-
-def _choose_executor(results: list[dict[str, Any]]) -> str:
-    passing = [r for r in results if _probe_passed(r)]
-    if not passing:
-        print("No PTY-capable executor passed the HappyRanch probe.")
-        for result in results:
-            print(f"- {result.get('executor')}: {_probe_failure_reason(result) or 'failed'}")
-            if result.get("hint"):
-                print(f"  hint: {result['hint']}")
-        sys.exit(2)
-    print("PTY-capable executors:")
-    for idx, result in enumerate(passing, start=1):
-        executor = str(result["executor"])
-        print(f"{idx}. {executor} ({result.get('command', executor)})")
-    while True:
-        raw = input("Select executor: ").strip()
-        try:
-            selected = passing[int(raw) - 1]
-        except (ValueError, IndexError):
-            print(f"Enter a number from 1 to {len(passing)}.")
-            continue
-        return str(selected["executor"])
-
-
 def cmd_assistant_init(args: argparse.Namespace) -> None:
     client = _client()
-    status = client.get("/api/v1/assistant/status")
-    if status.status_code != 200:
-        print(f"Error ({status.status_code}): {status.text}")
-        sys.exit(1)
-    body = status.json()
-    if body["state"] == "configured" and not args.reconfigure and not args.repair:
-        _print_status(body)
-        return
     if args.repair and not args.reconfigure:
         r = client.post("/api/v1/assistant/repair")
         if r.status_code != 200:
@@ -100,20 +58,47 @@ def cmd_assistant_init(args: argparse.Namespace) -> None:
             sys.exit(1)
         _print_status(r.json())
         return
-    probes = client.post("/api/v1/assistant/probes")
-    if probes.status_code != 200:
-        print(f"Error ({probes.status_code}): {probes.text}")
-        sys.exit(1)
-    results = probes.json()["probe_results"]
-    selected = _choose_executor(results)
-    configured = client.post(
-        "/api/v1/assistant/configure",
-        json={"selected_executor": selected, "probe_results": results},
+    r = client.post(
+        "/api/v1/assistant/init",
+        json={"reconfigure": bool(args.reconfigure)},
     )
-    if configured.status_code != 200:
-        print(f"Error ({configured.status_code}): {configured.text}")
+    if r.status_code != 200:
+        print(f"Error ({r.status_code}): {r.text}")
         sys.exit(1)
-    _print_status(configured.json())
+    body = r.json()
+    _print_status(body)
+    if body["state"] != "configured":
+        workspace = body.get("workspace_path") or "<runtime>/system/assistant/workspace"
+        print()
+        print("Next steps to register your assistant CLI:")
+        print("1. Open your agentic CLI (claude, codex, opencode, pi, ...) in:")
+        print(f"     {workspace}")
+        print("2. Ask it to register itself; it will run:")
+        print("     happyranch assistant register --from-file <payload.json>")
+
+
+def cmd_assistant_register(args: argparse.Namespace) -> None:
+    client = _client()
+    import json as _json
+
+    if args.from_file:
+        try:
+            body = _json.loads(Path(args.from_file).read_text())
+        except (OSError, _json.JSONDecodeError, ValueError) as exc:
+            print(f"Error reading register file {args.from_file}: {exc}")
+            sys.exit(1)
+    else:
+        body = {
+            "executor": args.executor,
+            "command": args.command,
+            "argv": _json.loads(args.argv) if args.argv else [],
+        }
+
+    r = client.post("/api/v1/assistant/register", json=body)
+    if r.status_code != 200:
+        print(f"Error ({r.status_code}): {r.text}")
+        sys.exit(1)
+    _print_status(r.json())
 
 
 def _ws_url(client: OpcClient) -> str:
@@ -342,6 +327,25 @@ def register(
     group.add_argument("--repair", action="store_true")
     group.add_argument("--reconfigure", action="store_true")
     p_init.set_defaults(func=cmd_assistant_init)
+
+    p_register = assistant_sub.add_parser(
+        "register",
+        help="register the current agentic CLI as the system assistant",
+    )
+    p_register.add_argument(
+        "--from-file",
+        dest="from_file",
+        default=None,
+        help="Path to a JSON file with {executor, command, argv}",
+    )
+    p_register.add_argument("--executor", default=None)
+    p_register.add_argument("--command", default=None)
+    p_register.add_argument(
+        "--argv",
+        default=None,
+        help="JSON array string for argv (e.g. '[\"claude\"]')",
+    )
+    p_register.set_defaults(func=cmd_assistant_register)
 
     p_status = assistant_sub.add_parser("status", help="show system assistant status")
     p_status.set_defaults(func=cmd_assistant_status)
