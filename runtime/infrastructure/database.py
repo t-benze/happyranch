@@ -296,6 +296,31 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_dream_candidates_status
                 ON dream_kb_candidates(status);
 
+            CREATE TABLE IF NOT EXISTS work_hours (
+                id TEXT PRIMARY KEY,
+                agent_name TEXT NOT NULL,
+                local_date TEXT NOT NULL,
+                slot TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                scheduled_for TEXT NOT NULL,
+                started_at TEXT,
+                ended_at TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                routine_count INTEGER NOT NULL DEFAULT 0,
+                spawned_task_ids TEXT,
+                spawned_task_count INTEGER NOT NULL DEFAULT 0,
+                summary TEXT,
+                transcript_path TEXT,
+                session_id TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(agent_name, local_date, slot)
+            );
+            CREATE INDEX IF NOT EXISTS idx_work_hours_agent_date
+                ON work_hours(agent_name, local_date);
+            CREATE INDEX IF NOT EXISTS idx_work_hours_status
+                ON work_hours(status);
+
             CREATE TABLE IF NOT EXISTS session_token_usage (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 task_id    TEXT,
