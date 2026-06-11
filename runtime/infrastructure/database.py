@@ -26,6 +26,7 @@ from runtime.models import (
     ThreadStatus,
     TokenUsage,
 )
+from runtime.infrastructure.work_hours_store import WorkHoursStore
 
 
 def _parse_dt(value: str) -> datetime:
@@ -73,6 +74,10 @@ class Database:
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._migrate_jobs_table_if_needed()
         self._create_tables()
+        # Working-hours CRUD lives in its own module but shares THIS connection
+        # and lock so the single-connection serialization invariant (see
+        # `_synchronized`) is preserved across both surfaces.
+        self.work_hours = WorkHoursStore(self._conn, self._lock)
 
     @property
     def path(self) -> Path:
