@@ -90,7 +90,7 @@ def cmd_assistant_register(args: argparse.Namespace) -> None:
     else:
         body = {
             "executor": args.executor,
-            "command": args.command,
+            "command": args.register_command,
             "argv": _json.loads(args.argv) if args.argv else [],
         }
 
@@ -339,7 +339,8 @@ def register(
         help="Path to a JSON file with {executor, command, argv}",
     )
     p_register.add_argument("--executor", default=None)
-    p_register.add_argument("--command", default=None)
+    # dest avoids colliding with the top-level subparsers' dest="command".
+    p_register.add_argument("--command", dest="register_command", default=None)
     p_register.add_argument(
         "--argv",
         default=None,
