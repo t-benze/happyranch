@@ -13,6 +13,6 @@ export * as tasks from './tasks';
 export * as teams from './teams';
 export * as threads from './threads';
 export * as tokens from './tokens';
-export { ApiError, request, type RequestOptions } from './client';
+export { ApiError, request, API_PREFIX, type RequestOptions } from './client';
 export { subscribeSSE, type SSEOptions } from './sse';
 export type * from './types';

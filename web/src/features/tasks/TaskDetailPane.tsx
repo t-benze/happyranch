@@ -12,7 +12,7 @@ import { StatusBadge } from '@/design-system/patterns/StatusBadge';
 import { Markdown } from '@/design-system/patterns/Markdown';
 import { useTask, useTaskRecall, useTasksRoutes } from '@/hooks/tasks';
 import { useJobsList } from '@/hooks/jobs';
-import { getTask } from '@/lib/api/tasks';
+import { tasks } from '@/lib/api';
 import type { ActiveChainResponse } from '@/lib/api/types';
 import { TaskRecallTree } from './TaskRecallTree';
 import { TaskEventsLog } from './TaskEventsLog';
@@ -78,7 +78,7 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
   // fetch; this select picks the active_chain envelope field that useTask drops.
   const activeChainQuery = useQuery({
     queryKey: ['task', slug, taskId],
-    queryFn: () => getTask(slug as string, taskId),
+    queryFn: () => tasks.getTask(slug as string, taskId),
     select: (r) => r.active_chain ?? null,
     enabled: !!slug && !!taskId,
   });

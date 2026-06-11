@@ -4,7 +4,7 @@ import {
   fetchEventSource,
 } from '@microsoft/fetch-event-source';
 import { getToken } from '@/lib/auth';
-import { API_PREFIX } from '@/lib/api/client';
+import { API_PREFIX } from '@/lib/api';
 
 export interface JobEvent {
   kind: 'stdout' | 'stderr' | 'terminal';

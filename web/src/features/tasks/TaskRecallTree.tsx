@@ -64,7 +64,7 @@ export function TaskRecallTree({ node, depth = 0 }: { node: TaskRecallNode; dept
       )}
       {node.output_summary && (
         <div className="mt-2 border-l-2 border-border-subtle pl-3">
-          <div className="text-fg-muted text-[10px] font-medium tracking-wider uppercase">
+          <div className="text-fg-muted text-xs font-medium tracking-wider uppercase">
             Outcome
           </div>
           <CollapsibleBody body={node.output_summary} label="summary" muted />
