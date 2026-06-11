@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useJobOutput } from '@/hooks/jobs';
-import { jobs } from '@/lib/api';
+// eslint-disable-next-line no-restricted-imports -- no @/hooks accessor exposes the job tail/SSE helpers; routed direct per THR-011 founder ruling (option 3), pending a future hook
+import { jobEventsPath, tailJob } from '@/lib/api/jobs';
 import { useJobEventStream } from './jobEventsHook';
 import type { JobRecord } from '@/lib/api/types';
 
@@ -25,15 +26,15 @@ export function OutputPanel({ job, slug }: Props): JSX.Element | null {
     queryKey: ['job-tail-seed', slug, job.id],
     queryFn: () =>
       Promise.all([
-        jobs.tailJob(slug, job.id, { stream: 'stdout', lines: TAIL_LINES }),
-        jobs.tailJob(slug, job.id, { stream: 'stderr', lines: TAIL_LINES }),
+        tailJob(slug, job.id, { stream: 'stdout', lines: TAIL_LINES }),
+        tailJob(slug, job.id, { stream: 'stderr', lines: TAIL_LINES }),
       ]).then(([out, err]) => ({ stdout: out.lines, stderr: err.lines })),
     enabled: isLive,
     staleTime: Infinity, // one-shot seed; never refetch automatically
   });
 
   const { events, terminal } = useJobEventStream(
-    isLive ? jobs.jobEventsPath(slug, job.id) : null,
+    isLive ? jobEventsPath(slug, job.id) : null,
     isLive,
   );
 
