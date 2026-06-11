@@ -157,6 +157,40 @@ class DreamRecord(BaseModel):
     created_at: datetime = Field(default_factory=_now)
 
 
+class WorkHourMode(StrEnum):
+    WINDOWED = "windowed"
+    CONTINUOUS = "continuous"
+
+
+class WorkHourStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    TIMEOUT = "timeout"
+    SKIPPED = "skipped"
+
+
+class WorkHourRecord(BaseModel):
+    id: str
+    agent_name: str
+    local_date: str
+    slot: str
+    mode: WorkHourMode
+    scheduled_for: datetime
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    status: WorkHourStatus = WorkHourStatus.PENDING
+    routine_count: int = 0
+    spawned_task_ids: list[str] = Field(default_factory=list)
+    spawned_task_count: int = 0
+    summary: str | None = None
+    transcript_path: str | None = None
+    session_id: str | None = None
+    error: str | None = None
+    created_at: datetime = Field(default_factory=_now)
+
+
 class DreamKbCandidate(BaseModel):
     id: int | None = None
     dream_id: str
