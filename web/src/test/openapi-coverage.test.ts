@@ -119,7 +119,7 @@ const INCLUDED_PATHS = new Set<string>([
   'POST /api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries/search',
   // teams — founder-facing
   'GET /api/v1/orgs/{slug}/teams',
-  // artifacts — founder assets UI delete (mirror: deleteArtifact in lib/api/artifacts.ts)
+  // artifacts — founder artifacts UI delete (mirror: deleteArtifact in lib/api/artifacts.ts)
   'DELETE /api/v1/orgs/{slug}/artifacts/{name}',
 ]);
 
@@ -155,11 +155,11 @@ const EXCLUDED_PATHS = new Map<string, string>([
   // jobs agent callback
   ['POST /api/v1/orgs/{slug}/jobs/submit', 'agent callback (matches /report-completion pattern)'],
   // Artifacts — agent-facing v1, now also surfaced read+create in the founder
-  // assets UI (web/src/features/assets) via uploadArtifact() / listArtifacts() /
+  // artifacts UI (web/src/features/artifacts) via uploadArtifact() / listArtifacts() /
   // artifactDownloadPath(). No delete or update route exists (backend-gated).
-  ['POST /api/v1/orgs/{slug}/artifacts', 'agent-facing v1; also founder assets UI upload'],
-  ['GET /api/v1/orgs/{slug}/artifacts', 'agent-facing v1; also founder assets UI list'],
-  ['GET /api/v1/orgs/{slug}/artifacts/{name}', 'agent-facing v1; also founder assets UI download'],
+  ['POST /api/v1/orgs/{slug}/artifacts', 'agent-facing v1; also founder artifacts UI upload'],
+  ['GET /api/v1/orgs/{slug}/artifacts', 'agent-facing v1; also founder artifacts UI list'],
+  ['GET /api/v1/orgs/{slug}/artifacts/{name}', 'agent-facing v1; also founder artifacts UI download'],
   // dreams agent callback
   ['POST /api/v1/orgs/{slug}/dreams/{dream_id}/complete', 'agent callback'],
 ]);

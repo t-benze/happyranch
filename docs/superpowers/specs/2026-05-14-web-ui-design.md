@@ -308,14 +308,14 @@ Each step has independent verification (lint, unit, contract, manual). Detailed 
 
 ## 15. Artifacts surface (delivered 2026-06-10, scope A)
 
-Per founder decision THR-007, the org-shared artifact store (the `happyranch assets put|list|get` CLI surface) gets a founder-facing web page. **Round one is read + create only** — the daemon (`runtime/daemon/routes/artifacts.py`) exposes exactly three routes and intentionally has **no delete and no update**, so the UI exposes none either.
+Per founder decision THR-007, the org-shared artifact store (the `happyranch artifacts put|list|get` CLI surface) gets a founder-facing web page. **Round one is read + create only** — the daemon (`runtime/daemon/routes/artifacts.py`) exposes exactly three routes and intentionally has **no delete and no update**, so the UI exposes none either.
 
-- **Route.** `/orgs/:slug/assets` → `features/assets/AssetsPage.tsx`, registered in `routes.tsx` alongside the other `/orgs/:slug` feature pages. An `Artifacts` tab is added to the `TopBar` nav using the standard slug-guarded `placeholderTab` pattern.
+- **Route.** `/orgs/:slug/artifacts` → `features/artifacts/ArtifactsPage.tsx`, registered in `routes.tsx` alongside the other `/orgs/:slug` feature pages. An `Artifacts` tab is added to the `TopBar` nav using the standard slug-guarded `placeholderTab` pattern.
 - **CRUD coverage.**
   - **Create (upload)** — `POST /api/v1/orgs/{slug}/artifacts` via the existing `uploadArtifact()`, attributed `agent: 'founder'`.
   - **Read (list)** — `GET /api/v1/orgs/{slug}/artifacts` via a new thin `listArtifacts(slug)` client wrapper (mirrors `uploadArtifact()`'s bearer-token + 401-retry shape; reuses the existing error parser).
   - **Read (download)** — `GET /api/v1/orgs/{slug}/artifacts/{name}` via a plain `<a href>` built from the existing `artifactDownloadPath()`.
   - **Update / Delete** — **not present.** No daemon route exists; out of scope and backend-gated.
-- **Client-side validation.** The upload form rejects, before calling the API, anything that would 400/413 on the daemon: per-file size cap of 10 MB and a name matching `^[A-Za-z0-9._-]+$` of at most 200 characters (`features/assets/validation.ts`). Violations surface as an inline error.
-- **Non-goal update.** This supersedes the v1 "no file uploads" non-goal (§2) for the assets surface specifically, consistent with the thread-attachment upload path already shipped. Markdown-only bodies remain the rule for thread/talk message text.
+- **Client-side validation.** The upload form rejects, before calling the API, anything that would 400/413 on the daemon: per-file size cap of 10 MB and a name matching `^[A-Za-z0-9._-]+$` of at most 200 characters (`features/artifacts/validation.ts`). Violations surface as an inline error.
+- **Non-goal update.** This supersedes the v1 "no file uploads" non-goal (§2) for the artifacts surface specifically, consistent with the thread-attachment upload path already shipped. Markdown-only bodies remain the rule for thread/talk message text.
 - **Tests.** Validation unit tests (oversize / bad-char / >200-char / happy path), a `listArtifacts()` wiring unit test (happy path + 401-retry), and an MSW feature-integration test (list renders with download links; invalid name blocks the POST client-side).

@@ -1,6 +1,6 @@
 /**
- * Assets page — founder-facing browse + download + upload + delete for the
- * org-shared artifact store (`happyranch assets ...` on the CLI; delete is
+ * Artifacts page — founder-facing browse + download + upload + delete for the
+ * org-shared artifact store (`happyranch artifacts ...` on the CLI; delete is
  * web-only — there is no CLI delete verb).
  *
  * The daemon exposes POST (upload), GET (list), GET /{name} (download), and
@@ -34,13 +34,13 @@ function describeUploadError(err: unknown): string {
 
 function describeDeleteError(err: unknown): string {
   if (err instanceof ApiError) {
-    if (err.code === 'artifact_not_found') return 'That asset no longer exists.';
+    if (err.code === 'artifact_not_found') return 'That artifact no longer exists.';
     return `Delete failed (HTTP ${err.status}).`;
   }
   return String(err);
 }
 
-export function AssetsPage(): JSX.Element {
+export function ArtifactsPage(): JSX.Element {
   const slug = useOrgSlug();
   const qc = useQueryClient();
   const idBase = useId();
@@ -124,10 +124,10 @@ export function AssetsPage(): JSX.Element {
         </header>
 
         <section
-          aria-label="Upload asset"
+          aria-label="Upload artifact"
           className="border-border bg-bg-subtle flex flex-col gap-3 rounded-md border p-4"
         >
-          <h2 className="text-fg text-sm font-semibold">Upload asset</h2>
+          <h2 className="text-fg text-sm font-semibold">Upload artifact</h2>
           <div className="flex flex-col gap-1">
             <Label htmlFor={fileId}>File</Label>
             <Input
@@ -174,7 +174,7 @@ export function AssetsPage(): JSX.Element {
             <p className="text-fg-muted">Loading…</p>
           ) : listQuery.isError ? (
             <p role="alert" className="text-feedback-danger text-sm">
-              Could not load assets.
+              Could not load artifacts.
             </p>
           ) : artifacts.length === 0 ? (
             <EmptyState

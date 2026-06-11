@@ -16,8 +16,8 @@ function stubBaseHandlers() {
   );
 }
 
-describe('AssetsPage', () => {
-  test('lists assets with download links via GET /artifacts', async () => {
+describe('ArtifactsPage', () => {
+  test('lists artifacts with download links via GET /artifacts', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubBaseHandlers();
     server.use(
@@ -34,7 +34,7 @@ describe('AssetsPage', () => {
       ),
     );
 
-    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/assets` });
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/artifacts` });
 
     const link = await screen.findByRole('link', { name: /Download/i });
     expect(link).toHaveAttribute(
@@ -64,7 +64,7 @@ describe('AssetsPage', () => {
     );
 
     const user = userEvent.setup();
-    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/assets` });
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/artifacts` });
 
     const file = new File(['hi'], 'report.pdf', { type: 'application/pdf' });
     await user.upload(await screen.findByLabelText(/^File$/i), file);
@@ -84,24 +84,24 @@ describe('AssetsPage', () => {
       sessionStorage.setItem('happyranch.token', 'tok');
       stubBaseHandlers();
       vi.spyOn(window, 'confirm').mockReturnValue(true);
-      let assets = [
+      let artifacts = [
         { name: 'doomed.pdf', size_bytes: 1024, modified_at: '2026-06-09T00:00:00Z' },
       ];
       let deleteHit = false;
       server.use(
         http.get(`/api/v1/orgs/${SLUG}/artifacts`, () =>
-          HttpResponse.json({ artifacts: assets }),
+          HttpResponse.json({ artifacts }),
         ),
         http.delete(`/api/v1/orgs/${SLUG}/artifacts/:name`, ({ params }) => {
           deleteHit = true;
           const target = decodeURIComponent(params.name as string);
-          assets = assets.filter((a) => a.name !== target);
+          artifacts = artifacts.filter((a) => a.name !== target);
           return HttpResponse.json({ name: target, deleted: true });
         }),
       );
 
       const user = userEvent.setup();
-      renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/assets` });
+      renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/artifacts` });
 
       await screen.findByText('doomed.pdf');
       await user.click(screen.getByRole('button', { name: /Delete doomed\.pdf/i }));
@@ -133,7 +133,7 @@ describe('AssetsPage', () => {
       );
 
       const user = userEvent.setup();
-      renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/assets` });
+      renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/artifacts` });
 
       await screen.findByText('doomed.pdf');
       await user.click(screen.getByRole('button', { name: /Delete doomed\.pdf/i }));
@@ -164,7 +164,7 @@ describe('AssetsPage', () => {
       );
 
       const user = userEvent.setup();
-      renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/assets` });
+      renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/artifacts` });
 
       await screen.findByText('doomed.pdf');
       await user.click(screen.getByRole('button', { name: /Delete doomed\.pdf/i }));
