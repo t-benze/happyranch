@@ -57,7 +57,6 @@ class Settings(BaseSettings):
 
     # Task constraints
     session_timeout_seconds: int = 1800  # 30 minutes
-    assistant_probe_timeout_seconds: float = Field(default=15.0, gt=0)
 
     # Orchestration loop
     max_orchestration_steps: int = 50
