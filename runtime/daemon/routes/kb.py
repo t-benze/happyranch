@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 _log = logging.getLogger(__name__)
@@ -62,14 +62,36 @@ def search_kb(slug: str, org: OrgDep, q: str, limit: int = 20) -> dict:
     }
 
 
+# Declared BEFORE /kb/{entry_slug} so the literal path is not captured by the
+# slug path param (same ordering reason as /kb/search above).
+@router.get("/kb/stats")
+def kb_view_stats(slug: str, org: OrgDep) -> dict:
+    """Return KB entries by agent-CLI view count, most-viewed first.
+
+    Reads from the daemon `kb_views` tally (agent-CLI reads only — web reads
+    are not counted). See kb-view-tracking-caller-signal.
+    """
+    return {"entries": org.db.kb_view_stats()}
+
+
 @router.get("/kb/{entry_slug}")
-def get_kb(slug: str, entry_slug: str, org: OrgDep) -> dict:
+def get_kb(slug: str, entry_slug: str, org: OrgDep, request: Request) -> dict:
     try:
         entry = _store(org).read_entry(entry_slug)
     except NotFound:
         raise HTTPException(
             status_code=404, detail={"code": "not_found", "slug": entry_slug}
         )
+    # Count agent-CLI reads only: the CLI client tags requests with
+    # X-HappyRanch-Surface: cli; the web SPA does not. Record only after a
+    # successful entry read (never on the 404 path above). A tracking-write
+    # failure must never 500 the read — mirror the non-fatal regenerate_index
+    # pattern and log-and-continue so the 200 body still returns.
+    if request.headers.get("x-happyranch-surface") == "cli":
+        try:
+            org.db.record_kb_view(entry_slug)
+        except Exception:  # noqa: BLE001 — view tracking is non-fatal
+            _log.warning("kb_views record failed for %s", entry_slug, exc_info=True)
     return {
         "slug": entry.slug,
         "title": entry.title,

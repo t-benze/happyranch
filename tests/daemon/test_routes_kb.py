@@ -316,6 +316,87 @@ def test_kb_precedent_route_removed(tmp_home, app, auth_headers):
     assert r.status_code == 422
 
 
+_CLI_HEADER = {"X-HappyRanch-Surface": "cli"}
+
+
+def test_kb_get_with_cli_surface_header_increments_view(tmp_home, app, org_state, auth_headers):
+    _seed_kb(org_state.root)
+    client = TestClient(app)
+    headers = {**auth_headers, **_CLI_HEADER}
+    r = client.get("/api/v1/orgs/alpha/kb/alipay-refund-endpoint", headers=headers)
+    assert r.status_code == 200
+    stats = org_state.db.kb_view_stats()
+    assert stats == [
+        {
+            "slug": "alipay-refund-endpoint",
+            "view_count": 1,
+            "last_viewed_at": stats[0]["last_viewed_at"],
+        }
+    ]
+    assert stats[0]["last_viewed_at"] is not None
+
+
+def test_kb_get_without_surface_header_does_not_increment(tmp_home, app, org_state, auth_headers):
+    """A web read (no X-HappyRanch-Surface header) must not be counted."""
+    _seed_kb(org_state.root)
+    client = TestClient(app)
+    r = client.get("/api/v1/orgs/alpha/kb/alipay-refund-endpoint", headers=auth_headers)
+    assert r.status_code == 200
+    assert org_state.db.kb_view_stats() == []
+
+
+def test_kb_get_view_tracking_failure_does_not_500(tmp_home, app, org_state, auth_headers, monkeypatch):
+    """A tracking-write failure must never 500 the read; the 200 body still returns."""
+    _seed_kb(org_state.root)
+
+    def _boom(_slug: str) -> None:
+        raise RuntimeError("kb_views write exploded")
+
+    monkeypatch.setattr(org_state.db, "record_kb_view", _boom)
+    client = TestClient(app)
+    headers = {**auth_headers, **_CLI_HEADER}
+    r = client.get("/api/v1/orgs/alpha/kb/alipay-refund-endpoint", headers=headers)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["slug"] == "alipay-refund-endpoint"
+    assert "Details." in body["body"]
+
+
+def test_kb_get_404_does_not_increment(tmp_home, app, org_state, auth_headers):
+    _seed_kb(org_state.root)
+    client = TestClient(app)
+    headers = {**auth_headers, **_CLI_HEADER}
+    r = client.get("/api/v1/orgs/alpha/kb/ghost", headers=headers)
+    assert r.status_code == 404
+    assert org_state.db.kb_view_stats() == []
+
+
+def test_kb_stats_endpoint_reflects_tally(tmp_home, app, org_state, auth_headers):
+    _seed_kb(org_state.root)
+    client = TestClient(app)
+    headers = {**auth_headers, **_CLI_HEADER}
+    client.get("/api/v1/orgs/alpha/kb/hk-visa-90day", headers=headers)
+    client.get("/api/v1/orgs/alpha/kb/hk-visa-90day", headers=headers)
+    client.get("/api/v1/orgs/alpha/kb/alipay-refund-endpoint", headers=headers)
+
+    r = client.get("/api/v1/orgs/alpha/kb/stats", headers=auth_headers)
+    assert r.status_code == 200
+    entries = r.json()["entries"]
+    assert [e["slug"] for e in entries] == ["hk-visa-90day", "alipay-refund-endpoint"]
+    assert entries[0]["view_count"] == 2
+    assert entries[1]["view_count"] == 1
+    assert all(e["last_viewed_at"] is not None for e in entries)
+
+
+def test_kb_stats_path_not_captured_by_slug_param(tmp_home, app, org_state, auth_headers):
+    """/kb/stats must route to the stats handler, not be read as slug='stats'."""
+    _seed_kb(org_state.root)
+    client = TestClient(app)
+    r = client.get("/api/v1/orgs/alpha/kb/stats", headers=auth_headers)
+    assert r.status_code == 200
+    assert "entries" in r.json()
+
+
 def test_kb_accepts_arbitrary_type(tmp_home, app, org_state, auth_headers):
     """Founders or agents can write a 'precedent'-typed entry through the
     plain add route — no special route, no --as-founder gate."""
