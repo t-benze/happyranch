@@ -211,4 +211,3 @@ else:
     assert output == ["ctty ok: True\r\n"]
     assert session.is_running() is False
     assert session.master_fd is None
-
