@@ -1,6 +1,6 @@
 {
   "paths": {
-    "/api/v1/assistant/configure": {
+    "/api/v1/assistant/init": {
       "POST": {
         "params": [
           [
@@ -14,7 +14,7 @@
         ]
       }
     },
-    "/api/v1/assistant/probes": {
+    "/api/v1/assistant/register": {
       "POST": {
         "params": [
           [

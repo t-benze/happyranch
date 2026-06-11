@@ -1,7 +1,7 @@
 # System Assistant: Self-Registration Replaces Executor Probing
 
-> Status: current
-> Current Source: this spec (until implemented, then see docs/agent-guides/features-and-invariants.md)
+> Status: implemented
+> Current Source: docs/agent-guides/features-and-invariants.md (system assistant entry)
 > Supersedes: docs/superpowers/specs/2026-06-08-system-assistant-design.md (executor probing / `assistant probes` / `assistant configure` onboarding only; runtime attach, workspace, KB/learnings unchanged)
 
 ## Problem

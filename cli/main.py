@@ -53,6 +53,7 @@ from cli.commands.runtime import (  # noqa: F401  (re-export for back-compat)
 from cli.commands.assistant import (  # noqa: F401  (re-export for back-compat)
     cmd_assistant_attach,
     cmd_assistant_init,
+    cmd_assistant_register,
     cmd_assistant_status,
 )
 from cli.commands.tasks import (  # noqa: F401  (re-export for back-compat)

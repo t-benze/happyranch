@@ -6,7 +6,6 @@ from importlib import resources
 from importlib.resources.abc import Traversable
 from pathlib import Path
 import shutil
-from typing import Any
 
 import yaml
 
@@ -17,13 +16,6 @@ class AssistantState(StrEnum):
     UNINITIALIZED = "uninitialized"
     CONFIGURED = "configured"
     STALE_OR_BROKEN = "stale_or_broken"
-
-
-class AssistantExecutor(StrEnum):
-    CLAUDE = "claude"
-    CODEX = "codex"
-    OPENCODE = "opencode"
-    PI = "pi"
 
 
 @dataclass(frozen=True)
@@ -39,14 +31,15 @@ class SystemAssistantPaths:
 class AssistantConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    selected_executor: AssistantExecutor
+    selected_executor: str
     selected_command: str
     selected_argv: list[str] = Field(default_factory=list)
     workspace_path: str
-    latest_probe_results: list[dict[str, Any]] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _default_selected_argv(self) -> AssistantConfig:
+    def _normalize(self) -> AssistantConfig:
+        if not self.selected_executor.strip():
+            raise ValueError("selected_executor must be a non-empty string")
         if not self.selected_argv:
             self.selected_argv = [self.selected_command]
         return self
@@ -54,10 +47,9 @@ class AssistantConfig(BaseModel):
 
 class AssistantStatus(BaseModel):
     state: AssistantState
-    selected_executor: AssistantExecutor | None = None
+    selected_executor: str | None = None
     workspace_path: str | None = None
     detail: str | None = None
-    latest_probe_results: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def system_assistant_paths(runtime_root: Path) -> SystemAssistantPaths:
@@ -221,7 +213,6 @@ def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
             selected_executor=config.selected_executor,
             workspace_path=config.workspace_path,
             detail="assistant workspace path does not match runtime",
-            latest_probe_results=config.latest_probe_results,
         )
     if not config.selected_argv or not config.selected_argv[0]:
         return AssistantStatus(
@@ -229,7 +220,6 @@ def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
             selected_executor=config.selected_executor,
             workspace_path=config.workspace_path,
             detail="assistant selected command is empty",
-            latest_probe_results=config.latest_probe_results,
         )
     if shutil.which(config.selected_argv[0]) is None:
         return AssistantStatus(
@@ -237,7 +227,6 @@ def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
             selected_executor=config.selected_executor,
             workspace_path=config.workspace_path,
             detail=f"assistant selected command not found: {config.selected_argv[0]}",
-            latest_probe_results=config.latest_probe_results,
         )
     managed_invalid_detail = _managed_dir_invalid_detail(paths)
     if managed_invalid_detail is not None:
@@ -246,7 +235,6 @@ def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
             selected_executor=config.selected_executor,
             workspace_path=config.workspace_path,
             detail=managed_invalid_detail,
-            latest_probe_results=config.latest_probe_results,
         )
     agent_invalid_detail = _bootstrap_file_invalid_detail(
         paths.workspace / "agent.yaml",
@@ -262,13 +250,8 @@ def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
                 if agent_invalid_detail == "assistant bootstrap file agent.yaml is missing"
                 else agent_invalid_detail
             ),
-            latest_probe_results=config.latest_probe_results,
         )
-    expected = (
-        "CLAUDE.md"
-        if config.selected_executor == AssistantExecutor.CLAUDE
-        else "AGENTS.md"
-    )
+    expected = "CLAUDE.md" if config.selected_executor == "claude" else "AGENTS.md"
     prompt_invalid_detail = _bootstrap_file_invalid_detail(
         paths.workspace / expected,
         expected,
@@ -279,7 +262,6 @@ def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
             selected_executor=config.selected_executor,
             workspace_path=config.workspace_path,
             detail=prompt_invalid_detail,
-            latest_probe_results=config.latest_probe_results,
         )
     learnings_index_invalid_detail = _learnings_index_invalid_detail(
         paths.learnings_dir / "_index.md",
@@ -290,7 +272,6 @@ def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
             selected_executor=config.selected_executor,
             workspace_path=config.workspace_path,
             detail=learnings_index_invalid_detail,
-            latest_probe_results=config.latest_probe_results,
         )
     knowledge_index_invalid_detail = _knowledge_index_invalid_detail(
         paths.knowledge_dir / "README.md",
@@ -301,21 +282,19 @@ def classify_assistant_state(runtime_root: Path) -> AssistantStatus:
             selected_executor=config.selected_executor,
             workspace_path=config.workspace_path,
             detail=knowledge_index_invalid_detail,
-            latest_probe_results=config.latest_probe_results,
         )
     return AssistantStatus(
         state=AssistantState.CONFIGURED,
         selected_executor=config.selected_executor,
         workspace_path=config.workspace_path,
-        latest_probe_results=config.latest_probe_results,
     )
 
 
-def _validate_executor(executor: str | AssistantExecutor) -> AssistantExecutor:
-    try:
-        return AssistantExecutor(executor)
-    except ValueError as exc:
-        raise ValueError(f"unsupported assistant executor: {executor}") from exc
+def _validate_executor(executor: str) -> str:
+    value = executor.strip()
+    if not value:
+        raise ValueError("assistant executor must be a non-empty string")
+    return value
 
 
 def _assistant_prompt() -> str:
@@ -338,6 +317,71 @@ Knowledge:
   and `happyranch/skills/` as your local source of truth.
 - Prefer `happyranch` CLI commands when inspecting or changing a runtime.
 """
+
+
+def _registration_prompt() -> str:
+    return """# Register as the HappyRanch System Assistant
+
+You have been opened in the HappyRanch system assistant workspace, but no
+assistant is configured yet. Register yourself so HappyRanch can re-launch you
+for future sessions.
+
+Steps:
+1. Write a JSON file (for example `register.json`) in this workspace with:
+   {
+     "executor": "<your CLI name, e.g. claude>",
+     "command": "<the command that launches you, e.g. claude>",
+     "argv": ["<command>", "<any>", "<args>"]
+   }
+2. Run this exact single-line command:
+   happyranch assistant register --from-file register.json
+
+After registration succeeds, this file is replaced with your operating
+instructions.
+"""
+
+
+def prepare_assistant_registration_workspace(runtime_root: Path) -> None:
+    paths = system_assistant_paths(runtime_root)
+    _reject_symlink(
+        paths.root.parent,
+        "assistant system directory must not be a symlink",
+    )
+    _reject_symlink(paths.root, "assistant root must not be a symlink")
+    _reject_symlink(paths.workspace, "assistant workspace must not be a symlink")
+    _reject_existing_invalid_bootstrap_file(
+        paths.workspace / "AGENTS.md",
+        "AGENTS.md",
+    )
+    _reject_existing_invalid_bootstrap_file(
+        paths.workspace / "CLAUDE.md",
+        "CLAUDE.md",
+    )
+    _ensure_managed_dir(
+        paths.root.parent,
+        "assistant system directory must not be a symlink",
+        "assistant system directory is not a directory",
+    )
+    _ensure_managed_dir(
+        paths.root,
+        "assistant root must not be a symlink",
+        "assistant root is not a directory",
+    )
+    _ensure_managed_dir(
+        paths.workspace,
+        "assistant workspace must not be a symlink",
+        "assistant workspace is not a directory",
+    )
+    prompt = _registration_prompt()
+    (paths.workspace / "CLAUDE.md").write_text(prompt)
+    (paths.workspace / "AGENTS.md").write_text(prompt)
+
+
+def clear_assistant_config(runtime_root: Path) -> None:
+    paths = system_assistant_paths(runtime_root)
+    if paths.config_path.is_symlink():
+        raise ValueError("assistant config must not be a symlink")
+    paths.config_path.unlink(missing_ok=True)
 
 
 def _reject_symlink(path: Path, detail: str) -> None:
@@ -594,7 +638,7 @@ def bootstrap_assistant_workspace(runtime_root: Path, *, executor: str) -> None:
         yaml.safe_dump(
             {
                 "name": "system_assistant",
-                "executor": selected_executor.value,
+                "executor": selected_executor,
                 "repos": {},
             },
             sort_keys=False,
@@ -605,7 +649,7 @@ def bootstrap_assistant_workspace(runtime_root: Path, *, executor: str) -> None:
     prompt = _assistant_prompt()
     claude_path = paths.workspace / "CLAUDE.md"
     agents_path = paths.workspace / "AGENTS.md"
-    if selected_executor == AssistantExecutor.CLAUDE:
+    if selected_executor == "claude":
         agents_path.unlink(missing_ok=True)
         claude_path.write_text(prompt)
     else:

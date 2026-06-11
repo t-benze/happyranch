@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
 from pathlib import Path
 import secrets
 import shutil
@@ -20,13 +19,7 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from runtime.daemon import paths as daemon_paths
-from runtime.daemon.assistant_pty import (
-    AssistantPtySession,
-    InteractiveExecutorSpec,
-    ProbeResult,
-    ProbeRunner,
-    build_executor_specs,
-)
+from runtime.daemon.assistant_pty import AssistantPtySession
 from runtime.daemon.auth import require_token
 from runtime.daemon.state import DaemonState
 from runtime.system_assistant import (
@@ -34,7 +27,9 @@ from runtime.system_assistant import (
     AssistantState,
     bootstrap_assistant_workspace,
     classify_assistant_state,
+    clear_assistant_config,
     load_assistant_config,
+    prepare_assistant_registration_workspace,
     save_assistant_config,
     system_assistant_paths,
 )
@@ -43,28 +38,18 @@ router = APIRouter()
 _RESIZE_CONTROL_PREFIX = "__HAPPYRANCH_ASSISTANT_RESIZE__"
 
 
-class ConfigureAssistantRequest(BaseModel):
+class InitAssistantRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    selected_executor: str
-    probe_results: list["ProbeResultRow"] = Field(default_factory=list)
+    reconfigure: bool = False
 
 
-class ProbeResultRow(BaseModel):
+class RegisterAssistantRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    passed: bool
     executor: str
     command: str
-    argv: list[str]
-    name: str
-    prompt_surface: str
-    output_excerpt: str
-    detail: str
-    elapsed_seconds: float
-    timed_out: bool
-    error: str | None
-    returncode: int | None
+    argv: list[str] = Field(default_factory=list)
 
 
 def _runtime_root(request: Request) -> Path:
@@ -84,121 +69,6 @@ def _require_current_runtime_root(state: DaemonState, expected_root: Path) -> Pa
             detail={"code": "assistant_runtime_changed"},
         )
     return current_root
-
-
-def _probe_result_to_dict(
-    spec: InteractiveExecutorSpec,
-    result: ProbeResult,
-) -> dict[str, Any]:
-    argv = list(spec.argv)
-    return {
-        "passed": bool(result.passed),
-        "executor": result.executor,
-        "command": argv[0] if argv else spec.name,
-        "argv": argv,
-        "name": spec.name,
-        "prompt_surface": spec.prompt_surface,
-        "output_excerpt": result.output_excerpt,
-        "detail": result.detail,
-        "elapsed_seconds": result.elapsed_seconds,
-        "timed_out": result.timed_out,
-        "error": result.error,
-        "returncode": result.returncode,
-    }
-
-
-def _spec_with_argv(spec: InteractiveExecutorSpec, argv: list[str]) -> InteractiveExecutorSpec:
-    return InteractiveExecutorSpec(
-        name=spec.name,
-        argv=argv,
-        prompt_surface=spec.prompt_surface,
-        env=getattr(spec, "env", {}),
-    )
-
-
-def _resolved_argv_for_spec(spec: InteractiveExecutorSpec) -> list[str]:
-    env = os.environ.copy()
-    env.update(getattr(spec, "env", {}))
-    if not spec.argv:
-        return []
-    executable = shutil.which(spec.argv[0], path=env.get("PATH"))
-    if executable is None:
-        return list(spec.argv)
-    return [executable, *spec.argv[1:]]
-
-
-def _spec_for_executor(
-    selected_executor: str,
-    specs: list[InteractiveExecutorSpec],
-) -> InteractiveExecutorSpec:
-    for spec in specs:
-        if spec.name == selected_executor:
-            return spec
-    raise HTTPException(
-        status_code=400,
-        detail={"code": "unsupported_assistant_executor"},
-    )
-
-
-def _server_selected_command(spec: InteractiveExecutorSpec) -> str:
-    return spec.argv[0] if spec.argv else spec.name
-
-
-def _normalize_probe_results(
-    probe_results: list[ProbeResultRow],
-    specs: list[InteractiveExecutorSpec],
-) -> list[dict[str, Any]]:
-    specs_by_name = {spec.name: spec for spec in specs}
-    normalized: list[dict[str, Any]] = []
-    for result in probe_results:
-        spec = specs_by_name.get(result.executor)
-        if spec is None:
-            raise HTTPException(
-                status_code=400,
-                detail={"code": "unknown_probe_executor", "executor": result.executor},
-            )
-        if result.passed and (
-            result.timed_out
-            or result.error is not None
-            or (result.returncode is not None and result.returncode != 0)
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail={"code": "invalid_probe_result", "executor": result.executor},
-            )
-        row = result.model_dump()
-        argv = list(spec.argv)
-        row.update(
-            {
-                "command": argv[0] if argv else spec.name,
-                "argv": argv,
-                "name": spec.name,
-                "prompt_surface": spec.prompt_surface,
-            }
-        )
-        normalized.append(row)
-    return normalized
-
-
-def _probe_selected_executor(
-    selected_executor: str,
-    specs: list[InteractiveExecutorSpec],
-    *,
-    timeout_seconds: float,
-) -> tuple[InteractiveExecutorSpec, dict[str, Any]]:
-    spec = _spec_for_executor(selected_executor, specs)
-    result = ProbeRunner().probe_executor(spec, timeout_seconds=timeout_seconds)
-    row_spec = _spec_with_argv(spec, _resolved_argv_for_spec(spec)) if result.passed else spec
-    row = _probe_result_to_dict(row_spec, result)
-    if not result.passed:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "code": "selected_executor_probe_failed",
-                "probe_result": row,
-            },
-        )
-    return row_spec, row
 
 
 def _assistant_error(code: str, exc: Exception) -> HTTPException:
@@ -284,66 +154,68 @@ async def get_assistant_status(request: Request) -> dict[str, Any]:
     return classify_assistant_state(root).model_dump()
 
 
-@router.post("/assistant/probes", dependencies=[require_token()])
-def probe_assistant_executors(request: Request) -> dict[str, Any]:
-    _runtime_root(request)
-    state: DaemonState = request.app.state.daemon
-    runner = ProbeRunner()
-    probe_results = []
-    for spec in build_executor_specs(state.settings):
-        result = runner.probe_executor(
-            spec,
-            timeout_seconds=state.settings.assistant_probe_timeout_seconds,
-        )
-        row_spec = _spec_with_argv(spec, _resolved_argv_for_spec(spec)) if result.passed else spec
-        probe_results.append(_probe_result_to_dict(row_spec, result))
-    return {"probe_results": probe_results}
-
-
-@router.post("/assistant/configure", dependencies=[require_token()])
-async def configure_assistant(
-    body: ConfigureAssistantRequest,
+@router.post("/assistant/init", dependencies=[require_token()])
+async def init_assistant(
+    body: InitAssistantRequest,
     request: Request,
 ) -> dict[str, Any]:
     root = _runtime_root(request)
     state: DaemonState = request.app.state.daemon
-    specs = build_executor_specs(state.settings)
-    spec = _spec_for_executor(body.selected_executor, specs)
+    try:
+        async with state.assistant_lifecycle_lock:
+            root = _require_current_runtime_root(state, root)
+            current = classify_assistant_state(root)
+            if current.state == AssistantState.CONFIGURED and not body.reconfigure:
+                return current.model_dump()
+            if body.reconfigure:
+                await state.assistant_sessions.close_all()
+                clear_assistant_config(root)
+            prepare_assistant_registration_workspace(root)
+    except ValueError as exc:
+        raise _assistant_error("assistant_workspace_invalid", exc) from exc
+    return classify_assistant_state(root).model_dump()
+
+
+@router.post("/assistant/register", dependencies=[require_token()])
+async def register_assistant(
+    body: RegisterAssistantRequest,
+    request: Request,
+) -> dict[str, Any]:
+    root = _runtime_root(request)
+    state: DaemonState = request.app.state.daemon
+
+    executor = body.executor.strip()
+    command = body.command.strip()
+    argv = [a for a in body.argv if a and a.strip()] or ([command] if command else [])
+    if not executor or not command or not argv:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "assistant_registration_invalid",
+                "message": "executor, command, and argv must be non-empty",
+            },
+        )
+    if shutil.which(argv[0]) is None:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "assistant_executable_not_found",
+                "executable": argv[0],
+            },
+        )
+
     paths = system_assistant_paths(root)
     try:
-        AssistantConfig(
-            selected_executor=body.selected_executor,
-            selected_command=_server_selected_command(spec),
-            selected_argv=list(spec.argv),
-            workspace_path=str(paths.workspace),
-            latest_probe_results=[],
-        )
-    except ValidationError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail={"code": "unsupported_assistant_executor", "message": str(exc)},
-        ) from exc
-
-    _normalize_probe_results(body.probe_results, specs)
-    spec, selected_probe_result = await asyncio.to_thread(
-        _probe_selected_executor,
-        body.selected_executor,
-        specs,
-        timeout_seconds=state.settings.assistant_probe_timeout_seconds,
-    )
-
-    try:
         config = AssistantConfig(
-            selected_executor=body.selected_executor,
-            selected_command=_server_selected_command(spec),
-            selected_argv=list(spec.argv),
+            selected_executor=executor,
+            selected_command=command,
+            selected_argv=argv,
             workspace_path=str(paths.workspace),
-            latest_probe_results=[selected_probe_result],
         )
     except ValidationError as exc:
         raise HTTPException(
             status_code=400,
-            detail={"code": "unsupported_assistant_executor", "message": str(exc)},
+            detail={"code": "assistant_registration_invalid", "message": str(exc)},
         ) from exc
 
     try:
@@ -351,20 +223,14 @@ async def configure_assistant(
             root = _require_current_runtime_root(state, root)
             paths = system_assistant_paths(root)
             config = AssistantConfig(
-                selected_executor=body.selected_executor,
-                selected_command=_server_selected_command(spec),
-                selected_argv=list(spec.argv),
+                selected_executor=executor,
+                selected_command=command,
+                selected_argv=argv,
                 workspace_path=str(paths.workspace),
-                latest_probe_results=[selected_probe_result],
             )
             await state.assistant_sessions.close_all()
-            bootstrap_assistant_workspace(root, executor=body.selected_executor)
+            bootstrap_assistant_workspace(root, executor=executor)
             save_assistant_config(root, config)
-    except ValidationError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail={"code": "unsupported_assistant_executor", "message": str(exc)},
-        ) from exc
     except ValueError as exc:
         raise _assistant_error("assistant_workspace_invalid", exc) from exc
     return classify_assistant_state(root).model_dump()
