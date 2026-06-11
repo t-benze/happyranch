@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from pathlib import Path
-import shutil
 import sys
 from typing import Any
 
@@ -13,7 +11,6 @@ from starlette.websockets import WebSocketDisconnect
 
 from runtime.config import Settings
 from runtime.daemon import paths as paths_mod
-from runtime.daemon.assistant_pty import ProbeResult
 from runtime.daemon.app import create_app
 from runtime.daemon.state import DaemonState
 from runtime.system_assistant import (
@@ -34,67 +31,6 @@ def _idle_client(auth: dict[str, str]) -> TestClient:
     client = TestClient(create_app(DaemonState.idle(Settings())))
     client.headers.update(auth)
     return client
-
-
-def _passed_probe_result(executor: str = "codex") -> dict[str, Any]:
-    return {
-        "passed": True,
-        "executor": executor,
-        "command": f"/usr/local/bin/{executor}",
-        "argv": [f"/usr/local/bin/{executor}"],
-        "name": executor,
-        "prompt_surface": "CLAUDE.md" if executor == "claude" else "AGENTS.md",
-        "output_excerpt": "ready",
-        "detail": "ready marker observed",
-        "elapsed_seconds": 0.01,
-        "timed_out": False,
-        "error": None,
-        "returncode": 0,
-    }
-
-
-def _patch_probe_runner(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    passed: bool = True,
-    detail: str = "ready marker observed",
-    error: str | None = None,
-    returncode: int | None = None,
-) -> None:
-    from runtime.daemon.routes import assistant as assistant_route
-
-    class FakeProbeRunner:
-        def probe_executor(self, spec: Any, *, timeout_seconds: float = 3) -> ProbeResult:
-            return ProbeResult(
-                passed=passed,
-                executor=spec.name,
-                output_excerpt=f"{spec.name} daemon probe",
-                detail=detail,
-                elapsed_seconds=0.02,
-                timed_out=False,
-                error=error,
-                returncode=returncode,
-            )
-
-    monkeypatch.setattr(assistant_route, "ProbeRunner", FakeProbeRunner)
-
-
-def _daemon_probe_result(executor: str, argv: list[str]) -> dict[str, Any]:
-    return {
-        **_passed_probe_result(executor),
-        "command": argv[0],
-        "argv": argv,
-        "output_excerpt": f"{executor} daemon probe",
-        "elapsed_seconds": 0.02,
-        "returncode": None,
-    }
-
-
-def _expected_resolved_argv(argv: list[str]) -> list[str]:
-    if not argv:
-        return []
-    executable = shutil.which(argv[0])
-    return [executable, *argv[1:]] if executable is not None else argv
 
 
 class _CloseTrackingSessions:
@@ -125,7 +61,6 @@ def test_assistant_status_uninitialized(client: TestClient) -> None:
         "selected_executor": None,
         "workspace_path": None,
         "detail": None,
-        "latest_probe_results": [],
     }
 
 
@@ -179,368 +114,102 @@ def test_websocket_token_is_valid_parses_bearer_and_compares(
     assert assistant_route._websocket_token_is_valid(_fake_ws(f"Bearer {expected}")) is False
 
 
-def test_assistant_probes_returns_fake_probe_results(
-    client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from runtime.daemon.routes import assistant as assistant_route
-
-    @dataclass(frozen=True)
-    class FakeSpec:
-        name: str
-        argv: list[str]
-        prompt_surface: str
-
-    class FakeProbeRunner:
-        def probe_executor(
-            self,
-            spec: FakeSpec,
-            *,
-            timeout_seconds: float = 3,
-        ) -> ProbeResult:
-            return ProbeResult(
-                passed=spec.name == "codex",
-                executor=spec.name,
-                output_excerpt=f"{spec.name} output",
-                detail="fake result",
-                elapsed_seconds=0.25,
-                timed_out=False,
-                error=None,
-                returncode=0,
-            )
-
-    monkeypatch.setattr(
-        assistant_route,
-        "build_executor_specs",
-        lambda _settings: [
-            FakeSpec(name="claude", argv=["/bin/claude"], prompt_surface="CLAUDE.md"),
-            FakeSpec(name="codex", argv=["/bin/codex"], prompt_surface="AGENTS.md"),
-        ],
-    )
-    monkeypatch.setattr(assistant_route, "ProbeRunner", FakeProbeRunner)
-
-    response = client.post("/api/v1/assistant/probes")
-
-    assert response.status_code == 200, response.text
-    assert response.json() == {
-        "probe_results": [
-            {
-                "passed": False,
-                "executor": "claude",
-                "command": "/bin/claude",
-                "argv": ["/bin/claude"],
-                "name": "claude",
-                "prompt_surface": "CLAUDE.md",
-                "output_excerpt": "claude output",
-                "detail": "fake result",
-                "elapsed_seconds": 0.25,
-                "timed_out": False,
-                "error": None,
-                "returncode": 0,
-            },
-            {
-                "passed": True,
-                "executor": "codex",
-                "command": _expected_resolved_argv(["/bin/codex"])[0],
-                "argv": _expected_resolved_argv(["/bin/codex"]),
-                "name": "codex",
-                "prompt_surface": "AGENTS.md",
-                "output_excerpt": "codex output",
-                "detail": "fake result",
-                "elapsed_seconds": 0.25,
-                "timed_out": False,
-                "error": None,
-                "returncode": 0,
-            },
-        ]
-    }
-
-
-def test_assistant_probes_use_configured_timeout(
-    runtime,
-    auth: dict[str, str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from runtime.daemon.routes import assistant as assistant_route
-
-    seen_timeouts: list[float] = []
-
-    class FakeProbeRunner:
-        def probe_executor(self, spec: Any, *, timeout_seconds: float = 3) -> ProbeResult:
-            seen_timeouts.append(timeout_seconds)
-            return ProbeResult(
-                passed=False,
-                executor=spec.name,
-                output_excerpt="",
-                detail="fake",
-                elapsed_seconds=0.01,
-                timed_out=True,
-                error="timeout",
-                returncode=None,
-            )
-
-    monkeypatch.setattr(assistant_route, "ProbeRunner", FakeProbeRunner)
-    state = DaemonState.from_runtime(
-        runtime,
-        Settings(assistant_probe_timeout_seconds=42),
-    )
-    client = TestClient(create_app(state))
-    client.headers.update(auth)
-
-    response = client.post("/api/v1/assistant/probes")
-
-    assert response.status_code == 200, response.text
-    assert seen_timeouts == [42, 42, 42, 42]
-
-
-def test_assistant_configure_requires_daemon_passing_probe(
-    client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _patch_probe_runner(
-        monkeypatch,
-        passed=False,
-        detail="not ready",
-        error="timeout",
-    )
+def test_assistant_register_configures_with_valid_payload(client: TestClient) -> None:
     response = client.post(
-        "/api/v1/assistant/configure",
-        json={
-            "selected_executor": "codex",
-            "probe_results": [_passed_probe_result("codex")],
-        },
+        "/api/v1/assistant/register",
+        json={"executor": "claude", "command": "sh", "argv": ["sh"]},
     )
-
-    assert response.status_code == 400
-    assert response.json()["detail"]["code"] == "selected_executor_probe_failed"
-    assert response.json()["detail"]["probe_result"]["passed"] is False
-
-
-def test_assistant_configure_rejects_unsupported_executor_without_workspace(
-    client: TestClient,
-    runtime,
-) -> None:
-    paths = system_assistant_paths(runtime.root)
-
-    response = client.post(
-        "/api/v1/assistant/configure",
-        json={
-            "selected_executor": "not-real",
-            "probe_results": [_passed_probe_result("not-real")],
-        },
-    )
-
-    assert response.status_code == 400
-    assert response.json()["detail"]["code"] == "unsupported_assistant_executor"
-    assert not paths.root.exists()
-
-
-def test_assistant_configure_rejects_extra_probe_fields(
-    client: TestClient,
-    runtime,
-) -> None:
-    paths = system_assistant_paths(runtime.root)
-    probe_result = {
-        **_passed_probe_result("codex"),
-        "unexpected": "must not persist",
-    }
-
-    response = client.post(
-        "/api/v1/assistant/configure",
-        json={"selected_executor": "codex", "probe_results": [probe_result]},
-    )
-
-    assert response.status_code == 422
-    assert not paths.config_path.exists()
-
-
-def test_assistant_configure_rejects_unknown_probe_executor(
-    client: TestClient,
-    runtime,
-) -> None:
-    paths = system_assistant_paths(runtime.root)
-
-    response = client.post(
-        "/api/v1/assistant/configure",
-        json={
-            "selected_executor": "codex",
-            "probe_results": [
-                _passed_probe_result("codex"),
-                _passed_probe_result("not-real"),
-            ],
-        },
-    )
-
-    assert response.status_code == 400
-    assert response.json()["detail"]["code"] == "unknown_probe_executor"
-    assert not paths.config_path.exists()
-
-
-def test_assistant_configure_rejects_contradictory_passed_probe(
-    client: TestClient,
-    runtime,
-) -> None:
-    paths = system_assistant_paths(runtime.root)
-
-    response = client.post(
-        "/api/v1/assistant/configure",
-        json={
-            "selected_executor": "codex",
-            "probe_results": [
-                {
-                    **_passed_probe_result("codex"),
-                    "timed_out": True,
-                }
-            ],
-        },
-    )
-
-    assert response.status_code == 400
-    assert response.json()["detail"]["code"] == "invalid_probe_result"
-    assert not paths.config_path.exists()
-
-
-def test_assistant_configure_writes_workspace_and_status(
-    client: TestClient,
-    runtime,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _patch_probe_runner(monkeypatch)
-    probe_result = _passed_probe_result("codex")
-    expected_argv = _expected_resolved_argv(["codex"])
-    expected_probe_result = _daemon_probe_result("codex", expected_argv)
-
-    response = client.post(
-        "/api/v1/assistant/configure",
-        json={"selected_executor": "codex", "probe_results": [probe_result]},
-    )
-
     assert response.status_code == 200, response.text
     body = response.json()
-    paths = system_assistant_paths(runtime.root)
-    assert body["state"] == AssistantState.CONFIGURED
-    assert body["selected_executor"] == "codex"
-    assert body["workspace_path"] == str(paths.workspace)
-    assert body["latest_probe_results"] == [expected_probe_result]
-    assert (paths.workspace / "agent.yaml").is_file()
-    assert (paths.workspace / "AGENTS.md").is_file()
-    assert (paths.learnings_dir / "_index.md").is_file()
-
-    config = load_assistant_config(runtime.root)
-    assert config is not None
-    assert config.selected_executor == "codex"
-    assert config.selected_command == expected_argv[0]
-    assert config.selected_argv == expected_argv
-    assert config.workspace_path == str(paths.workspace)
-    assert config.latest_probe_results == [expected_probe_result]
+    assert body["state"] == "configured"
+    assert body["selected_executor"] == "claude"
 
 
-def test_assistant_configure_derives_command_from_server_specs(
-    runtime,
-    auth: dict[str, str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _patch_probe_runner(monkeypatch)
-    state = DaemonState.from_runtime(
-        runtime,
-        Settings(codex_cli_path="/server/bin/codex"),
-    )
-    client = TestClient(create_app(state))
-    client.headers.update(auth)
-    probe_result = {
-        **_passed_probe_result("codex"),
-        "command": "/tmp/not-probed",
-        "argv": ["/tmp/not-probed"],
-        "name": "forged-name",
-        "prompt_surface": "CLAUDE.md",
-    }
-    expected_probe_result = _daemon_probe_result("codex", ["/server/bin/codex"])
-
+def test_assistant_register_rejects_missing_executable(client: TestClient) -> None:
     response = client.post(
-        "/api/v1/assistant/configure",
-        json={"selected_executor": "codex", "probe_results": [probe_result]},
+        "/api/v1/assistant/register",
+        json={
+            "executor": "ghost",
+            "command": "definitely-not-a-real-binary-xyz",
+            "argv": ["definitely-not-a-real-binary-xyz"],
+        },
     )
-
-    assert response.status_code == 200, response.text
-    config = load_assistant_config(runtime.root)
-    assert config is not None
-    assert config.selected_command == "/server/bin/codex"
-    assert config.selected_argv == ["/server/bin/codex"]
-    assert config.latest_probe_results == [expected_probe_result]
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "assistant_executable_not_found"
 
 
-def test_assistant_configure_closes_active_session(
-    client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _patch_probe_runner(monkeypatch)
+def test_assistant_register_rejects_empty_executor(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/assistant/register",
+        json={"executor": "  ", "command": "sh", "argv": ["sh"]},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "assistant_registration_invalid"
+
+
+def test_assistant_register_rejects_extra_fields(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/assistant/register",
+        json={"executor": "claude", "command": "sh", "argv": ["sh"], "x": 1},
+    )
+    assert response.status_code == 422
+
+
+def test_assistant_register_closes_active_session(client: TestClient) -> None:
     sessions = _CloseTrackingSessions(
         lock=client.app.state.daemon.assistant_lifecycle_lock,
     )
     client.app.state.daemon.assistant_sessions = sessions
 
     response = client.post(
-        "/api/v1/assistant/configure",
-        json={
-            "selected_executor": "codex",
-            "probe_results": [_passed_probe_result("codex")],
-        },
+        "/api/v1/assistant/register",
+        json={"executor": "claude", "command": "sh", "argv": ["sh"]},
     )
 
     assert response.status_code == 200, response.text
     assert sessions.close_calls == 1
 
 
-def test_assistant_configure_rejects_runtime_changed_during_probe(
-    client: TestClient,
-    runtime,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from runtime.daemon.routes import assistant as assistant_route
-    from runtime.runtime import RuntimeDir
+def test_assistant_init_prepares_registration_workspace(client: TestClient) -> None:
+    response = client.post("/api/v1/assistant/init", json={})
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "uninitialized"
 
-    state = client.app.state.daemon
-    next_runtime = RuntimeDir.init(tmp_path / "next-runtime")
 
-    def fake_probe_selected_executor(
-        selected_executor: str,
-        specs: list[Any],
-        *,
-        timeout_seconds: float,
-    ) -> tuple[Any, dict[str, Any]]:
-        del timeout_seconds
-        spec = next(spec for spec in specs if spec.name == selected_executor)
-        state.runtime = next_runtime
-        return spec, _daemon_probe_result(selected_executor, list(spec.argv))
-
-    monkeypatch.setattr(
-        assistant_route,
-        "_probe_selected_executor",
-        fake_probe_selected_executor,
+def test_assistant_init_reconfigure_clears_existing_config(client: TestClient) -> None:
+    configured = client.post(
+        "/api/v1/assistant/register",
+        json={"executor": "claude", "command": "sh", "argv": ["sh"]},
     )
+    assert configured.json()["state"] == "configured"
 
-    response = client.post(
-        "/api/v1/assistant/configure",
-        json={
-            "selected_executor": "codex",
-            "probe_results": [_passed_probe_result("codex")],
-        },
+    response = client.post("/api/v1/assistant/init", json={"reconfigure": True})
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "uninitialized"
+
+
+def test_assistant_init_reconfigure_closes_active_session(client: TestClient) -> None:
+    configured = client.post(
+        "/api/v1/assistant/register",
+        json={"executor": "claude", "command": "sh", "argv": ["sh"]},
     )
+    assert configured.json()["state"] == "configured"
 
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "assistant_runtime_changed"
-    assert not system_assistant_paths(runtime.root).config_path.exists()
-    assert not system_assistant_paths(next_runtime.root).config_path.exists()
+    sessions = _CloseTrackingSessions(
+        lock=client.app.state.daemon.assistant_lifecycle_lock,
+    )
+    client.app.state.daemon.assistant_sessions = sessions
+
+    response = client.post("/api/v1/assistant/init", json={"reconfigure": True})
+
+    assert response.status_code == 200, response.text
+    assert sessions.close_calls == 1
 
 
 def test_assistant_websocket_streams_to_selected_cli(
     client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    from runtime.daemon.routes import assistant as assistant_route
-
     fake_cli = tmp_path / "fake-assistant"
     fake_cli.write_text(
         "#!/usr/bin/env python3\n"
@@ -551,28 +220,16 @@ def test_assistant_websocket_streams_to_selected_cli(
     )
     fake_cli.chmod(0o755)
 
-    @dataclass(frozen=True)
-    class FakeSpec:
-        name: str
-        argv: list[str]
-        prompt_surface: str
-
-    monkeypatch.setattr(
-        assistant_route,
-        "build_executor_specs",
-        lambda _settings: [
-            FakeSpec(name="codex", argv=[str(fake_cli)], prompt_surface="AGENTS.md"),
-        ],
-    )
-    _patch_probe_runner(monkeypatch)
     response = client.post(
-        "/api/v1/assistant/configure",
+        "/api/v1/assistant/register",
         json={
-            "selected_executor": "codex",
-            "probe_results": [_passed_probe_result("codex")],
+            "executor": "codex",
+            "command": str(fake_cli),
+            "argv": [str(fake_cli)],
         },
     )
     assert response.status_code == 200, response.text
+    assert response.json()["state"] == "configured"
 
     try:
         token = paths_mod.read_token()
@@ -602,13 +259,12 @@ def test_assistant_websocket_rejects_bad_token_without_starting_session(
     (paths.learnings_dir / "_index.md").write_text("# Learnings\n")
     save_assistant_config(
         runtime.root,
-            AssistantConfig(
-                selected_executor="codex",
-                selected_command="/should/not/start",
-                selected_argv=["/should/not/start"],
-                workspace_path=str(paths.workspace),
-                latest_probe_results=[],
-            ),
+        AssistantConfig(
+            selected_executor="codex",
+            selected_command="/should/not/start",
+            selected_argv=["/should/not/start"],
+            workspace_path=str(paths.workspace),
+        ),
     )
 
     class NoStartSessions:
@@ -670,7 +326,6 @@ def test_assistant_websocket_starts_session_under_lifecycle_lock(
             selected_command=sys.executable,
             selected_argv=[sys.executable],
             workspace_path=str(paths.workspace),
-            latest_probe_results=[],
         ),
     )
 
@@ -714,17 +369,15 @@ def test_assistant_websocket_starts_session_under_lifecycle_lock(
 
 def test_assistant_repair_refreshes_workspace(client: TestClient, runtime) -> None:
     paths = system_assistant_paths(runtime.root)
-    probe_result = _passed_probe_result("claude")
     paths.root.mkdir(parents=True)
     save_assistant_config(
         runtime.root,
-            AssistantConfig(
-                selected_executor="claude",
-                selected_command=sys.executable,
-                selected_argv=[sys.executable],
-                workspace_path=str(paths.workspace),
-                latest_probe_results=[probe_result],
-            ),
+        AssistantConfig(
+            selected_executor="claude",
+            selected_command=sys.executable,
+            selected_argv=[sys.executable],
+            workspace_path=str(paths.workspace),
+        ),
     )
 
     response = client.post("/api/v1/assistant/repair")
@@ -734,7 +387,6 @@ def test_assistant_repair_refreshes_workspace(client: TestClient, runtime) -> No
     assert body["state"] == AssistantState.CONFIGURED
     assert body["selected_executor"] == "claude"
     assert body["workspace_path"] == str(paths.workspace)
-    assert body["latest_probe_results"] == [probe_result]
     assert (paths.workspace / "agent.yaml").is_file()
     assert (paths.workspace / "CLAUDE.md").is_file()
     assert (paths.learnings_dir / "_index.md").is_file()
@@ -745,13 +397,12 @@ def test_assistant_repair_closes_active_session(client: TestClient, runtime) -> 
     paths.root.mkdir(parents=True)
     save_assistant_config(
         runtime.root,
-            AssistantConfig(
-                selected_executor="claude",
-                selected_command=sys.executable,
-                selected_argv=[sys.executable],
-                workspace_path=str(paths.workspace),
-                latest_probe_results=[_passed_probe_result("claude")],
-            ),
+        AssistantConfig(
+            selected_executor="claude",
+            selected_command=sys.executable,
+            selected_argv=[sys.executable],
+            workspace_path=str(paths.workspace),
+        ),
     )
     sessions = _CloseTrackingSessions(
         lock=client.app.state.daemon.assistant_lifecycle_lock,
@@ -777,7 +428,6 @@ def test_assistant_repair_loads_config_under_lifecycle_lock(
         selected_command=sys.executable,
         selected_argv=[sys.executable],
         workspace_path=str(paths.workspace),
-        latest_probe_results=[_passed_probe_result("claude")],
     )
     lock_states: list[bool] = []
 
@@ -817,7 +467,7 @@ def test_assistant_repair_invalid_config_schema_returns_conflict(
 ) -> None:
     paths = system_assistant_paths(runtime.root)
     paths.root.mkdir(parents=True)
-    paths.config_path.write_text('{"selected_executor": "not-real"}\n')
+    paths.config_path.write_text('{"selected_executor": "codex"}\n')
     no_raise_client = TestClient(client.app, raise_server_exceptions=False)
     no_raise_client.headers.update(client.headers)
 
@@ -837,11 +487,11 @@ def test_assistant_repair_requires_config(client: TestClient) -> None:
 @pytest.mark.parametrize(
     ("method", "path", "json"),
     [
-        ("post", "/api/v1/assistant/probes", None),
+        ("post", "/api/v1/assistant/init", {}),
         (
             "post",
-            "/api/v1/assistant/configure",
-            {"selected_executor": "codex", "probe_results": [_passed_probe_result()]},
+            "/api/v1/assistant/register",
+            {"executor": "claude", "command": "sh", "argv": ["sh"]},
         ),
         ("post", "/api/v1/assistant/repair", None),
     ],
