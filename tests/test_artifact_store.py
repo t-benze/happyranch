@@ -125,3 +125,23 @@ def test_path_for_returns_resolved_path(tmp_path: Path) -> None:
     p = store.path_for("a.txt")
     assert p == tmp_path / "artifacts" / "a.txt"
     assert p.exists()
+
+
+def test_delete_removes_file(tmp_path: Path) -> None:
+    store = ArtifactStore(tmp_path / "artifacts")
+    store.put("gone.txt", b"bye")
+    assert (tmp_path / "artifacts" / "gone.txt").exists()
+    store.delete("gone.txt")
+    assert not (tmp_path / "artifacts" / "gone.txt").exists()
+
+
+def test_delete_missing_raises(tmp_path: Path) -> None:
+    store = ArtifactStore(tmp_path / "artifacts")
+    with pytest.raises(ArtifactNotFound):
+        store.delete("missing.txt")
+
+
+def test_delete_rejects_invalid_name(tmp_path: Path) -> None:
+    store = ArtifactStore(tmp_path / "artifacts")
+    with pytest.raises(InvalidArtifactName):
+        store.delete("../etc/passwd")

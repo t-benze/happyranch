@@ -5,8 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { AppProvider } from '@/design-system/providers/AppProvider';
 import { AddAgentDialog } from './AddAgentDialog';
-import * as agentsApi from '@/lib/api/agents';
-import * as teamsApi from '@/lib/api/teams';
+import { agents as agentsApi, teams as teamsApi } from '@/lib/api';
 
 function renderDialog(props: { open?: boolean; onOpenChange?: (v: boolean) => void } = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });

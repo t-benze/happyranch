@@ -90,7 +90,7 @@ export function TaskEventsLog({ taskId }: { taskId: string }): JSX.Element {
               )}
             </button>
             {hasPayload && isOpen && (
-              <pre className="bg-bg-subtle text-fg-muted mt-1 ml-4 overflow-x-auto rounded-sm p-2 font-mono text-[11px] whitespace-pre-wrap">
+              <pre className="bg-bg-subtle text-fg-muted mt-1 ml-4 overflow-x-auto rounded-sm p-2 font-mono text-xs whitespace-pre-wrap">
                 {JSON.stringify(ev.payload, null, 2)}
               </pre>
             )}

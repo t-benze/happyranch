@@ -30,7 +30,7 @@ Read these before changing behavior:
 
 ## Tech Stack
 
-- Python 3.11+ with `uv`.
+- Python 3.12+ with `uv`.
 - FastAPI daemon in `runtime/daemon/`.
 - CLI HTTP client in `cli/`.
 - React 18 + TypeScript strict + Tailwind v4 + TanStack Query v5 + React Router v6 in `web/`.

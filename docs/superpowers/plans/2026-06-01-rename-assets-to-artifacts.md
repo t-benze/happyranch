@@ -1,5 +1,7 @@
 # Rename `assets` → `artifacts` and per-agent `artifacts/` → `output/` Implementation Plan
 
+> **Status — 2026-06-11: IMPLEMENTED.** The backend/CLI/migration/audit half of the `assets` → `artifacts` rename is merged to `main` (confirmed by the TASK-104 reconciliation). The web-frontend half — `web/src/features/assets/` → `features/artifacts/`, `AssetsPage` → `ArtifactsPage`, the `/orgs/:slug/artifacts` SPA route, and doc parity — landed on PR #78 (branch `task/TASK-070`) via TASK-113. This plan is retained as implementation history.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Rename the org-shared blob-store feature from `assets` to `artifacts`, and rename the per-agent task-output convention from `artifacts/<task_id>/` to `output/<task_id>/`. The two renames are non-colliding because Phase 1 vacates the name `artifacts` before Phase 2 claims it for the org-shared store.

@@ -485,6 +485,21 @@ def test_log_artifact_put_writes_event(db) -> None:
     assert row["payload"] == {"name": "report.pdf", "size_bytes": 11}
 
 
+def test_log_artifact_delete_writes_event(db) -> None:
+    logger = AuditLogger(db)
+    logger.log_artifact_delete(name="report.pdf", agent="dev_agent")
+
+    rows = db.get_audit_logs_by_action("artifact_delete")
+    assert len(rows) == 1
+    row = rows[0]
+    # Mirrors log_artifact_put's exact row shape: same artifact:<name>
+    # namespacing prefix, a new action string, payload carries the name.
+    assert row["task_id"] == "artifact:report.pdf"
+    assert row["agent"] == "dev_agent"
+    assert row["action"] == "artifact_delete"
+    assert row["payload"] == {"name": "report.pdf"}
+
+
 def test_log_artifact_put_does_not_collide_with_task_id(tmp_path) -> None:
     """Artifact names like 'TASK-123' must NOT pollute task-scoped audit history."""
     from runtime.infrastructure.database import Database

@@ -13,6 +13,7 @@ from runtime.daemon.org_state import OrgState
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.infrastructure.artifact_store import (
     MAX_ARTIFACT_BYTES,
+    ArtifactNotFound,
     ArtifactStore,
     InvalidArtifactName,
 )
@@ -93,3 +94,29 @@ async def get_artifact(slug: str, name: str, org: OrgDep) -> FileResponse:
             detail={"code": "artifact_not_found", "name": name},
         )
     return FileResponse(path=str(path), filename=name)
+
+
+@router.delete("/artifacts/{name}")
+async def delete_artifact(
+    slug: str,
+    name: str,
+    org: OrgDep,
+    agent: str = Query(...),
+) -> dict:
+    try:
+        _store(org).delete(name)
+    except InvalidArtifactName as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_artifact_name", "name": name, "message": str(exc)},
+        ) from exc
+    except ArtifactNotFound as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "artifact_not_found", "name": name},
+        ) from exc
+
+    # Construct AuditLogger on demand — matches put_artifact.
+    AuditLogger(org.db).log_artifact_delete(name=name, agent=agent)
+
+    return {"name": name, "deleted": True}

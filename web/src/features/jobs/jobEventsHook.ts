@@ -4,6 +4,7 @@ import {
   fetchEventSource,
 } from '@microsoft/fetch-event-source';
 import { getToken } from '@/lib/auth';
+// eslint-disable-next-line no-restricted-imports -- no @/hooks accessor exposes API_PREFIX; routed direct per THR-011 founder ruling (option 3), pending a future hook
 import { API_PREFIX } from '@/lib/api/client';
 
 export interface JobEvent {

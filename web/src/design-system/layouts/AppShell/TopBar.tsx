@@ -89,8 +89,7 @@ export function TopBar(): JSX.Element {
           width="22"
           height="22"
           aria-hidden="true"
-          className="text-accent"
-          style={{ color: '#4ade80' }}
+          className="text-[#4ade80]"
         >
           <g transform="rotate(-7 50 44)">
             <path
@@ -112,16 +111,8 @@ export function TopBar(): JSX.Element {
             strokeLinejoin="round"
           />
         </svg>
-        <span
-          style={{
-            fontFamily: "'Baloo 2', sans-serif",
-            fontWeight: 800,
-            fontSize: '1rem',
-            letterSpacing: '-0.03em',
-            lineHeight: 1,
-          }}
-        >
-          <span style={{ color: '#4ade80' }}>Happy</span>
+        <span className="font-['Baloo_2',sans-serif] text-[1rem] leading-none font-extrabold tracking-[-0.03em]">
+          <span className="text-[#4ade80]">Happy</span>
           <span className="text-fg">Ranch</span>
         </span>
       </div>
@@ -138,7 +129,7 @@ export function TopBar(): JSX.Element {
           Agents
         </NavTab>
         <NavTab {...placeholderTab('jobs')}>Jobs</NavTab>
-        <NavTab {...placeholderTab('assets')}>Assets</NavTab>
+        <NavTab {...placeholderTab('artifacts')}>Artifacts</NavTab>
         <NavTab {...placeholderTab('assistant')}>Assistant</NavTab>
       </nav>
       <div className="ml-auto flex items-center gap-2">

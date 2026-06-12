@@ -1,0 +1,27 @@
+name: Nightly integration
+
+on:
+  schedule:
+    # 07:00 UTC nightly — off-peak. Adjust the cron if you prefer another window.
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+
+jobs:
+  integration:
+    name: Python integration (3.12)
+    runs-on: ubuntu-latest
+    # Integration tests spawn a real daemon + fake CLIs; cap the job so a hung
+    # daemon can't run for the full 6h default.
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: true
+          python-version: '3.12'
+      - name: Sync dependencies (frozen)
+        run: uv sync --frozen
+      - name: Run integration tests
+        run: uv run pytest tests/ -v -m integration

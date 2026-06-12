@@ -22,7 +22,7 @@ import {
 import { useComposeThread } from '@/hooks/threads';
 import { describeError } from './strings';
 import { RecipientsInput } from './RecipientsInput';
-import type { AgentSummary } from '@/lib/api/agents';
+import type { AgentSummary } from '@/lib/api/types';
 import type { PendingAttachment } from '@/design-system/patterns/Composer';
 import type { ThreadAttachmentRef } from '@/lib/api/types';
 

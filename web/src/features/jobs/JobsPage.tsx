@@ -78,12 +78,12 @@ function JobCard({ job, to, active }: JobCardProps): JSX.Element {
         <span className="text-id-task font-mono">{job.id}</span>
         <JobStatusBadge status={job.status} />
         {job.persistent && (
-          <span className="text-mono-sm border-border-subtle rounded-sm border px-1 py-px font-mono text-[10px] uppercase tracking-wider text-fg-muted">
+          <span className="text-mono-sm border-border-subtle rounded-sm border px-1 py-px font-mono uppercase tracking-wider text-fg-muted">
             persistent
           </span>
         )}
         {job.review_required && (
-          <span className="text-mono-sm border-border-subtle rounded-sm border px-1 py-px font-mono text-[10px] uppercase tracking-wider text-fg-muted">
+          <span className="text-mono-sm border-border-subtle rounded-sm border px-1 py-px font-mono uppercase tracking-wider text-fg-muted">
             review
           </span>
         )}

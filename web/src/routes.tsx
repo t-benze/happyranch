@@ -11,7 +11,7 @@ import { TopBar } from '@/design-system/layouts/AppShell/TopBar';
 import { useOrgsList } from '@/hooks/orgs';
 import { OrgProvider } from '@/lib/orgSlug';
 import { AgentsPage } from '@/features/agents/AgentsPage';
-import { AssetsPage } from '@/features/assets/AssetsPage';
+import { ArtifactsPage } from '@/features/artifacts/ArtifactsPage';
 import { JobsPage } from '@/features/jobs/JobsPage';
 import { CommandPaletteHost } from '@/host/CommandPaletteHost';
 import { HelpDrawerHost } from '@/host/HelpDrawerHost';
@@ -100,7 +100,7 @@ export function AppRoutes(): JSX.Element {
           <Route path="agents/:agent_name" element={<AgentsPage />} />
           <Route path="jobs" element={<JobsPage />} />
           <Route path="jobs/:job_id" element={<JobsPage />} />
-          <Route path="assets" element={<AssetsPage />} />
+          <Route path="artifacts" element={<ArtifactsPage />} />
           <Route path="assistant" element={<SystemAssistantPage />} />
         </Route>
         <Route path="*" element={<NotFound />} />
