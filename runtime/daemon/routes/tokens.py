@@ -34,11 +34,13 @@ def list_tokens(
 
     Filters AND-compose. ``since`` is an ISO-8601 timestamp matched against
     ``created_at``. ``limit`` only applies to the per-session listing.
-    ``group_by`` accepts ``agent``, ``task``, ``scope``, ``thread``, or
-    ``talk``. Talk lifecycle APIs are executor-free; ``talk`` rollups show
-    talk-attributed task rows today and future direct talk executor rows.
+    ``group_by`` accepts ``agent``, ``task``, ``failed_task``, ``scope``,
+    ``thread``, or ``talk``. ``failed_task`` rolls up per-(task, agent) token
+    burn for tasks in the terminal ``failed`` status only (read-only JOIN to
+    the tasks table). Talk lifecycle APIs are executor-free; ``talk`` rollups
+    show talk-attributed task rows today and future direct talk executor rows.
     """
-    valid_groups = ("agent", "task", "scope", "thread", "talk")
+    valid_groups = ("agent", "task", "failed_task", "scope", "thread", "talk")
     if group_by is not None and group_by not in valid_groups:
         raise HTTPException(
             status_code=400,
@@ -62,6 +64,11 @@ def list_tokens(
         return {"rollup": rollup}
     if group_by == "task":
         rollup = org.db.aggregate_session_token_usage_by_task(
+            **filters,
+        )
+        return {"rollup": rollup}
+    if group_by == "failed_task":
+        rollup = org.db.aggregate_session_token_usage_by_failed_task(
             **filters,
         )
         return {"rollup": rollup}

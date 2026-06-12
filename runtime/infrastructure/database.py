@@ -1857,6 +1857,59 @@ class Database:
         return [dict(r) for r in rows]
 
     @_synchronized
+    def aggregate_session_token_usage_by_failed_task(
+        self,
+        since: str | None = None,
+        agent: str | None = None,
+        task_id: str | None = None,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        thread_id: str | None = None,
+        talk_id: str | None = None,
+        purpose: str | None = None,
+    ) -> list[dict]:
+        """Per-(task, agent) token rollup for FAILED tasks only.
+
+        Read-only INNER JOIN of ``session_token_usage`` to ``tasks`` on the
+        canonical ``task_id`` (= ``tasks.id``), keeping only usage tied to a
+        task in the terminal ``failed`` status. Caller filters AND-compose via
+        the shared filter helper, applied inside the subquery so the JOIN
+        cannot collide on ``created_at`` (a column both tables carry).
+        """
+        where, params = self._session_token_usage_filters(
+            since=since,
+            task_id=task_id,
+            agent=agent,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            thread_id=thread_id,
+            talk_id=talk_id,
+            purpose=purpose,
+        )
+        subquery = "SELECT * FROM session_token_usage"
+        if where:
+            subquery += " WHERE " + " AND ".join(where)
+        sql = f"""SELECT s.task_id AS task_id,
+                         s.agent AS agent,
+                         COUNT(*) AS sessions,
+                         COALESCE(SUM(s.input_tokens), 0)          AS input_tokens,
+                         COALESCE(SUM(s.output_tokens), 0)         AS output_tokens,
+                         COALESCE(SUM(s.cache_read_tokens), 0)     AS cache_read_tokens,
+                         COALESCE(SUM(s.cache_creation_tokens), 0) AS cache_creation_tokens,
+                         COALESCE(SUM(s.reasoning_tokens), 0)      AS reasoning_tokens,
+                         COALESCE(SUM(s.input_tokens), 0)
+                           + COALESCE(SUM(s.output_tokens), 0)
+                           + COALESCE(SUM(s.reasoning_tokens), 0)  AS total_tokens
+                  FROM ({subquery}) s
+                  JOIN tasks t ON t.id = s.task_id
+                  WHERE t.status = ?
+                  GROUP BY s.task_id, s.agent
+                  ORDER BY s.task_id, s.agent"""
+        params.append(TaskStatus.FAILED.value)
+        rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    @_synchronized
     def aggregate_session_token_usage_by_scope(
         self,
         since: str | None = None,
