@@ -67,6 +67,7 @@ export function MentionAutocomplete({
     <div
       role="listbox"
       aria-label="Mention agents"
+      // eslint-disable-next-line react/forbid-dom-props -- runtime pixel coordinates (anchor-derived left/top, min/maxWidth, zIndex) computed at render time; no static utility class can express a viewport-relative portal position
       style={style}
       className="border-border-default bg-surface-overlay text-text-primary text-caption rounded-md border shadow-lg"
     >

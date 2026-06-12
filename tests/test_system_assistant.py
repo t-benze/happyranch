@@ -19,6 +19,32 @@ from runtime.system_assistant import (
 )
 
 
+@pytest.fixture
+def resolve_executor_commands(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ``shutil.which`` resolve the real executor commands to a fake path.
+
+    The configured-path classify tests bootstrap a workspace for a real
+    executor (codex/claude/opencode/pi) and expect classification to proceed
+    past the ``shutil.which`` binary check in ``classify_assistant_state``. On a
+    clean CI runner those binaries are absent from PATH, so without this the
+    check short-circuits to ``STALE_OR_BROKEN`` and the assertions fail for an
+    environmental reason rather than the logic under test. Resolving only the
+    known executor names keeps every assertion real while removing the
+    host-binary dependency; any other command (e.g. the ``bogus-cli`` not-found
+    negative test) delegates to the real ``shutil.which`` and still resolves to
+    ``None``.
+    """
+    real_which = system_assistant_module.shutil.which
+    known_executors = {"codex", "claude", "opencode", "pi"}
+
+    def fake_which(cmd, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if cmd in known_executors:
+            return f"/fake/bin/{cmd}"
+        return real_which(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(system_assistant_module.shutil, "which", fake_which)
+
+
 def test_system_assistant_paths_are_runtime_global(tmp_path: Path) -> None:
     paths = system_assistant_paths(tmp_path)
 
@@ -639,7 +665,9 @@ def test_classify_stale_when_managed_directory_is_symlink(
     assert status.detail == detail
 
 
-def test_classify_accepts_equivalent_workspace_path(tmp_path: Path) -> None:
+def test_classify_accepts_equivalent_workspace_path(
+    tmp_path: Path, resolve_executor_commands: None
+) -> None:
     bootstrap_assistant_workspace(tmp_path, executor="codex")
     cfg = AssistantConfig(
         selected_executor="codex",
@@ -655,7 +683,9 @@ def test_classify_accepts_equivalent_workspace_path(tmp_path: Path) -> None:
     assert status.state == AssistantState.CONFIGURED
 
 
-def test_classify_stale_when_agent_yaml_is_missing(tmp_path: Path) -> None:
+def test_classify_stale_when_agent_yaml_is_missing(
+    tmp_path: Path, resolve_executor_commands: None
+) -> None:
     bootstrap_assistant_workspace(tmp_path, executor="codex")
     (system_assistant_paths(tmp_path).workspace / "agent.yaml").unlink()
     cfg = AssistantConfig(
@@ -673,7 +703,7 @@ def test_classify_stale_when_agent_yaml_is_missing(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("filename", ["agent.yaml", "AGENTS.md", "CLAUDE.md"])
 def test_classify_stale_when_required_bootstrap_file_is_symlink(
-    tmp_path: Path, filename: str
+    tmp_path: Path, filename: str, resolve_executor_commands: None
 ) -> None:
     executor = "claude" if filename == "CLAUDE.md" else "codex"
     bootstrap_assistant_workspace(tmp_path, executor=executor)
@@ -697,7 +727,7 @@ def test_classify_stale_when_required_bootstrap_file_is_symlink(
 
 @pytest.mark.parametrize("filename", ["agent.yaml", "AGENTS.md", "CLAUDE.md"])
 def test_classify_stale_when_required_bootstrap_file_is_directory(
-    tmp_path: Path, filename: str
+    tmp_path: Path, filename: str, resolve_executor_commands: None
 ) -> None:
     executor = "claude" if filename == "CLAUDE.md" else "codex"
     bootstrap_assistant_workspace(tmp_path, executor=executor)
@@ -717,7 +747,9 @@ def test_classify_stale_when_required_bootstrap_file_is_directory(
     assert status.detail == f"assistant bootstrap file {filename} is not a regular file"
 
 
-def test_classify_stale_when_learnings_index_is_symlink(tmp_path: Path) -> None:
+def test_classify_stale_when_learnings_index_is_symlink(
+    tmp_path: Path, resolve_executor_commands: None
+) -> None:
     bootstrap_assistant_workspace(tmp_path, executor="codex")
     paths = system_assistant_paths(tmp_path)
     target = tmp_path / "index-target.md"
@@ -738,7 +770,7 @@ def test_classify_stale_when_learnings_index_is_symlink(tmp_path: Path) -> None:
 
 
 def test_classify_stale_when_learnings_index_is_dangling_symlink(
-    tmp_path: Path,
+    tmp_path: Path, resolve_executor_commands: None
 ) -> None:
     bootstrap_assistant_workspace(tmp_path, executor="codex")
     paths = system_assistant_paths(tmp_path)
@@ -758,7 +790,9 @@ def test_classify_stale_when_learnings_index_is_dangling_symlink(
     assert status.detail == "assistant learnings index must not be a symlink"
 
 
-def test_classify_stale_when_learnings_index_is_directory(tmp_path: Path) -> None:
+def test_classify_stale_when_learnings_index_is_directory(
+    tmp_path: Path, resolve_executor_commands: None
+) -> None:
     bootstrap_assistant_workspace(tmp_path, executor="codex")
     paths = system_assistant_paths(tmp_path)
     (paths.learnings_dir / "_index.md").unlink()
@@ -776,7 +810,9 @@ def test_classify_stale_when_learnings_index_is_directory(tmp_path: Path) -> Non
     assert status.detail == "assistant learnings index is not a regular file"
 
 
-def test_classify_stale_when_knowledge_index_is_missing(tmp_path: Path) -> None:
+def test_classify_stale_when_knowledge_index_is_missing(
+    tmp_path: Path, resolve_executor_commands: None
+) -> None:
     bootstrap_assistant_workspace(tmp_path, executor="codex")
     paths = system_assistant_paths(tmp_path)
     (paths.knowledge_dir / "README.md").unlink()
@@ -814,7 +850,9 @@ def test_bootstrap_rejects_nested_knowledge_symlink_without_writing_target(
     assert not any(external_docs.iterdir())
 
 
-def test_classify_stale_when_claude_prompt_file_is_missing(tmp_path: Path) -> None:
+def test_classify_stale_when_claude_prompt_file_is_missing(
+    tmp_path: Path, resolve_executor_commands: None
+) -> None:
     bootstrap_assistant_workspace(tmp_path, executor="claude")
     workspace = system_assistant_paths(tmp_path).workspace
     (workspace / "CLAUDE.md").unlink()
@@ -833,7 +871,7 @@ def test_classify_stale_when_claude_prompt_file_is_missing(tmp_path: Path) -> No
 
 @pytest.mark.parametrize("executor", ["codex", "opencode", "pi"])
 def test_classify_stale_when_agents_prompt_file_is_missing(
-    tmp_path: Path, executor: str
+    tmp_path: Path, executor: str, resolve_executor_commands: None
 ) -> None:
     bootstrap_assistant_workspace(tmp_path, executor=executor)
     workspace = system_assistant_paths(tmp_path).workspace
@@ -873,7 +911,7 @@ def test_classify_stale_when_selected_command_not_found(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("executor", ["claude", "codex", "opencode", "pi"])
 def test_classify_configured_when_workspace_matches_config(
-    tmp_path: Path, executor: str
+    tmp_path: Path, executor: str, resolve_executor_commands: None
 ) -> None:
     bootstrap_assistant_workspace(tmp_path, executor=executor)
     cfg = AssistantConfig(

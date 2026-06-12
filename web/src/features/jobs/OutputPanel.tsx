@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useJobOutput } from '@/hooks/jobs';
+// eslint-disable-next-line no-restricted-imports -- no @/hooks accessor exposes the job tail/SSE helpers; routed direct per THR-011 founder ruling (option 3), pending a future hook
 import { jobEventsPath, tailJob } from '@/lib/api/jobs';
 import { useJobEventStream } from './jobEventsHook';
 import type { JobRecord } from '@/lib/api/types';

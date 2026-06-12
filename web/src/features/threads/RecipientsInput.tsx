@@ -9,7 +9,7 @@
  */
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { MentionAutocomplete } from '@/design-system/patterns/MentionAutocomplete';
-import type { AgentSummary } from '@/lib/api/agents';
+import type { AgentSummary } from '@/lib/api/types';
 
 interface Props {
   id?: string;

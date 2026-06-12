@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { AddOrgDialog } from './AddOrgDialog';
-import * as orgsApi from '@/lib/api/orgs';
+import { orgs as orgsApi } from '@/lib/api';
 
 function renderDialog(onClose = vi.fn()) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
