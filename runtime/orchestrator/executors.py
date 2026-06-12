@@ -47,6 +47,28 @@ class ExecutorResult:
 _TAIL_BYTES = 2000
 
 
+def _claude_canonical_model(obj: dict) -> str | None:
+    """Resolve the session's model id from a Claude result envelope.
+
+    Claude Code's `--output-format json` result no longer carries a top-level
+    ``model`` string (confirmed against Claude Code 2.1.x live output); the
+    model id(s) live under ``modelUsage``, keyed by id. When a session spans
+    multiple models, pick the one with the most output_tokens — the
+    "canonical model this session ran on", mirroring the opencode last-model
+    doctrine. Falls back to a legacy top-level ``model`` for older envelopes.
+    """
+    model_usage = obj.get("modelUsage")
+    if isinstance(model_usage, dict) and model_usage:
+        def _out(entry: object) -> int:
+            return entry.get("outputTokens") or 0 if isinstance(entry, dict) else 0
+
+        best_key = max(model_usage, key=lambda k: _out(model_usage[k]))
+        if isinstance(best_key, str) and best_key:
+            return best_key
+    legacy = obj.get("model")
+    return legacy if isinstance(legacy, str) and legacy else None
+
+
 def _parse_claude_usage(stdout: str) -> TokenUsage | None:
     """Parse Claude Code's `--output-format json` stdout into TokenUsage.
 
@@ -64,7 +86,7 @@ def _parse_claude_usage(stdout: str) -> TokenUsage | None:
     usage = obj.get("usage") if isinstance(obj, dict) else None
     if not isinstance(usage, dict):
         return TokenUsage(
-            model=obj.get("model") if isinstance(obj, dict) else None,
+            model=_claude_canonical_model(obj) if isinstance(obj, dict) else None,
             usage_raw_json=stdout[:_TAIL_BYTES],
         )
     return TokenUsage(
@@ -73,7 +95,7 @@ def _parse_claude_usage(stdout: str) -> TokenUsage | None:
         cache_read_tokens=usage.get("cache_read_input_tokens"),
         cache_creation_tokens=usage.get("cache_creation_input_tokens"),
         reasoning_tokens=None,
-        model=obj.get("model"),
+        model=_claude_canonical_model(obj),
         usage_raw_json=json.dumps(usage),
     )
 
@@ -99,13 +121,17 @@ def _parse_claude_session_id(stdout: str) -> str | None:
 def _parse_codex_usage(stdout: str) -> TokenUsage | None:
     """Parse Codex `exec --json` NDJSON event stream into TokenUsage.
 
-    Walks events, picks the last `session_complete`. Returns None on empty
-    stdout, TokenUsage with NULL token fields if no session_complete found
+    Walks events, picks the last `turn.completed` — the terminal event that
+    carries the cumulative ``usage`` object in Codex >= 0.137 (confirmed
+    against codex-cli 0.137.0 live output). Returns None on empty stdout,
+    TokenUsage with NULL token fields if no terminal usage event is found
     (forensic preservation), populated TokenUsage on success.
 
-    Note: the Codex event name "session_complete" is the documented terminal
-    event. Verify against the running Codex CLI version during integration
-    testing — if the schema changes, only this function needs updating.
+    Note: Codex `exec --json` v0.137.0 emits no model field on any event, so
+    ``model`` stays NULL (read defensively in case a later version adds it).
+    Verify the terminal event name/keys against the running Codex CLI version
+    during integration testing — if the schema changes, only this function
+    needs updating.
     """
     if not stdout or not stdout.strip():
         return None
@@ -118,19 +144,19 @@ def _parse_codex_usage(stdout: str) -> TokenUsage | None:
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if isinstance(event, dict) and event.get("type") == "session_complete":
+        if isinstance(event, dict) and event.get("type") == "turn.completed":
             last_complete = event
     if last_complete is None:
         return TokenUsage(usage_raw_json=stdout[:_TAIL_BYTES])
-    tu = last_complete.get("token_usage") or {}
-    if not isinstance(tu, dict):
-        tu = {}
+    usage = last_complete.get("usage")
+    if not isinstance(usage, dict):
+        usage = {}
     return TokenUsage(
-        input_tokens=tu.get("input_tokens"),
-        output_tokens=tu.get("output_tokens"),
-        cache_read_tokens=tu.get("cached_tokens"),
+        input_tokens=usage.get("input_tokens"),
+        output_tokens=usage.get("output_tokens"),
+        cache_read_tokens=usage.get("cached_input_tokens"),
         cache_creation_tokens=None,
-        reasoning_tokens=tu.get("reasoning_tokens"),
+        reasoning_tokens=usage.get("reasoning_output_tokens"),
         model=last_complete.get("model"),
         usage_raw_json=json.dumps(last_complete),
     )

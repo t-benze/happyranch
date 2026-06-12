@@ -1,4 +1,4 @@
-{"type":"agent_message","content":"hello"}
-{"type":"tool_call","name":"shell","args":{}}
-{"type":"agent_message","content":"done"}
-{"type":"session_complete","model":"gpt-5","token_usage":{"input_tokens":34887,"output_tokens":9003,"cached_tokens":15003,"reasoning_tokens":1234}}
+{"type":"thread.started","thread_id":"019eb87f-c169-7901-bab9-cdfc180419c4"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"done"}}
+{"type":"turn.completed","usage":{"input_tokens":34887,"cached_input_tokens":15003,"output_tokens":9003,"reasoning_output_tokens":1234}}
