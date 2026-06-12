@@ -1,5 +1,5 @@
 /**
- * Client-side guards for the assets upload form. These mirror the daemon's
+ * Client-side guards for the artifacts upload form. These mirror the daemon's
  * artifact constraints (CLAUDE.md "Shared Assets") so the founder gets an
  * inline error instead of a 400/413 round-trip.
  */

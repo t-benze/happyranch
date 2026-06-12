@@ -1,6 +1,14 @@
 import { clearToken, getToken } from '../auth';
 import { API_PREFIX, ApiError } from './client';
 
+/**
+ * The agent identity attributed to browser-driven artifact writes (upload +
+ * delete) for audit. Founder is the only actor behind the web artifacts UI; both
+ * write paths reuse this single source so the audit attribution stays
+ * consistent.
+ */
+export const ARTIFACT_WRITE_AGENT = 'founder';
+
 export interface ArtifactInfo {
   name: string;
   size_bytes: number;
@@ -119,4 +127,42 @@ export async function listArtifacts(slug: string): Promise<ListArtifactsResponse
 
 export function artifactDownloadPath(slug: string, artifactName: string): string {
   return `${API_PREFIX}/orgs/${slug}/artifacts/${encodeURIComponent(artifactName)}`;
+}
+
+async function deleteWithToken(slug: string, name: string, token: string): Promise<Response> {
+  const params = new URLSearchParams({ agent: ARTIFACT_WRITE_AGENT });
+  return fetch(
+    `${API_PREFIX}/orgs/${slug}/artifacts/${encodeURIComponent(name)}?${params.toString()}`,
+    {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+      },
+      credentials: 'same-origin',
+    },
+  );
+}
+
+export async function deleteArtifact(slug: string, name: string): Promise<void> {
+  let token = await getToken();
+  let res = await deleteWithToken(slug, name, token);
+  if (res.status === 401) {
+    clearToken();
+    token = await getToken();
+    res = await deleteWithToken(slug, name, token);
+  }
+
+  if (!res.ok) {
+    let body: unknown = null;
+    const text = await res.text();
+    if (text) {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = text;
+      }
+    }
+    throw parseArtifactError(res.status, body);
+  }
 }

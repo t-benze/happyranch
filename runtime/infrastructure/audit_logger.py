@@ -496,6 +496,16 @@ class AuditLogger:
             payload={"name": name, "size_bytes": size_bytes},
         )
 
+    def log_artifact_delete(self, name: str, agent: str) -> None:
+        # Mirrors log_artifact_put's row shape: same artifact:<name> namespacing
+        # so deletes never collide with TASK-/TALK-/SR- ids in get_audit_logs(task_id).
+        self._db.insert_audit_log(
+            task_id=f"artifact:{name}",
+            agent=agent,
+            action="artifact_delete",
+            payload={"name": name},
+        )
+
     def log_talk_started(
         self, talk_id: str, agent_name: str, resumed_from: str | None,
     ) -> None:

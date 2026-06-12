@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { listArtifacts, uploadArtifact } from './artifacts';
+import { ApiError } from './client';
+import { deleteArtifact, listArtifacts, uploadArtifact } from './artifacts';
 
 const SLUG = 'alpha';
 
@@ -93,6 +94,66 @@ describe('artifacts api mirror', () => {
     const result = await listArtifacts(SLUG);
 
     expect(result.artifacts).toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/v1/auth/bootstrap');
+  });
+
+  test('deleteArtifact DELETEs with the agent query param and bearer token', async () => {
+    seedToken();
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(
+        new Response(JSON.stringify({ name: 'a b.pdf', deleted: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+
+    await expect(deleteArtifact(SLUG, 'a b.pdf')).resolves.toBeUndefined();
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain(`/api/v1/orgs/${SLUG}/artifacts/a%20b.pdf`);
+    expect(url).toContain('agent=founder');
+    expect(init.method).toBe('DELETE');
+    expect(init.headers).toMatchObject({
+      Authorization: 'Bearer tok',
+      Accept: 'application/json',
+    });
+  });
+
+  test('deleteArtifact maps a 404 to ApiError with artifact_not_found', async () => {
+    seedToken();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ detail: { code: 'artifact_not_found', name: 'gone.pdf' } }),
+        { status: 404, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const err = await deleteArtifact(SLUG, 'gone.pdf').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).toMatchObject({ status: 404, code: 'artifact_not_found' });
+  });
+
+  test('deleteArtifact drops a stale token and retries once on 401', async () => {
+    seedToken();
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('', { status: 401 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ token: 'tok2' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ name: 'x.pdf', deleted: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+
+    await expect(deleteArtifact(SLUG, 'x.pdf')).resolves.toBeUndefined();
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/v1/auth/bootstrap');
   });

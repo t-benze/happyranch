@@ -76,10 +76,12 @@ Per-org artifacts live at `<runtime>/orgs/<slug>/artifacts/`. They are opaque fi
 
 Implementation: `runtime/infrastructure/artifact_store.py` and `runtime/daemon/routes/artifacts.py`. CLI: `happyranch artifacts {put,list,get}`.
 
+Route surface: `POST /artifacts` (upload), `GET /artifacts` (list), `GET /artifacts/{name}` (download), `DELETE /artifacts/{name}` (delete). There is no update route — `POST` is an idempotent create-or-overwrite. Delete is exposed in the founder web artifacts UI only; there is **no** `happyranch artifacts delete` CLI verb.
+
 Traps:
 
 - Agent access is CLI-only by design; sandboxed executors block direct writes outside the workspace.
-- `artifact_put` audit rows use `task_id="artifact:<name>"`; the prefix is mandatory.
+- `artifact_put` **and** `artifact_delete` audit rows use `task_id="artifact:<name>"`; the prefix is mandatory (artifact names are user-controlled and would otherwise collide with `TASK-`/`TALK-`/`SR-` scopes).
 - Artifacts are blobs, not KB entries. Do not dump markdown that belongs in KB into `artifacts/`.
 
 ## Revisit

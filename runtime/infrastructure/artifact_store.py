@@ -91,6 +91,13 @@ class ArtifactStore:
             raise ArtifactNotFound(name)
         return path.read_bytes()
 
+    def delete(self, name: str) -> None:
+        self.validate_name(name)
+        if not self.path_for(name).exists():
+            raise ArtifactNotFound(name)
+        # Single-file unlink is atomic enough; no locking needed.
+        (self._root / name).unlink()
+
     def exists(self, name: str) -> bool:
         try:
             return self.path_for(name).exists()
