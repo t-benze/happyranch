@@ -33,6 +33,25 @@ def _idle_client(auth: dict[str, str]) -> TestClient:
     return client
 
 
+def _receive_until(websocket: Any, needle: str, *, max_reads: int = 10) -> str:
+    """Drain WS text frames until one contains ``needle``.
+
+    The assistant session runs over a PTY, so the pty echoes the typed input
+    back as its own line, racing with the fake CLI's ``print('echo: ' + line)``
+    output. A single ``receive_text()`` may grab whichever lands first, so read
+    up to ``max_reads`` frames before giving up.
+    """
+    seen: list[str] = []
+    for _ in range(max_reads):
+        frame = websocket.receive_text()
+        seen.append(frame)
+        if needle in frame:
+            return frame
+    raise AssertionError(
+        f"{needle!r} not seen within {max_reads} WS frames; received {seen!r}"
+    )
+
+
 class _CloseTrackingSessions:
     def __init__(self, *, lock: asyncio.Lock) -> None:
         self.lock = lock
@@ -288,7 +307,7 @@ def test_assistant_websocket_streams_to_selected_cli(
 
             websocket.send_text("hello from websocket\n")
 
-            assert "echo: hello from websocket" in websocket.receive_text()
+            _receive_until(websocket, "echo: hello from websocket")
     finally:
         asyncio.run(client.app.state.daemon.assistant_sessions.close_all())
 
@@ -336,7 +355,7 @@ def test_assistant_websocket_accepts_subprotocol_token_and_echoes(
 
             websocket.send_text("hi over subprotocol\n")
 
-            assert "echo: hi over subprotocol" in websocket.receive_text()
+            _receive_until(websocket, "echo: hi over subprotocol")
     finally:
         asyncio.run(client.app.state.daemon.assistant_sessions.close_all())
 

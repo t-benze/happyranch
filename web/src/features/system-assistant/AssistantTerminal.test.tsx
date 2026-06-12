@@ -25,7 +25,7 @@ const RESIZE_CONTROL_PREFIX = '__HAPPYRANCH_ASSISTANT_RESIZE__';
 // above imports, so anything its factories close over must come from vi.hoisted.
 const h = vi.hoisted(() => ({
   // Latest constructed Terminal/FitAddon instances.
-  term: null as null | Record<string, ReturnType<typeof vi.fn>>,
+  term: null as null | Record<string, ReturnType<typeof vi.fn> | number>,
   fit: null as null | Record<string, ReturnType<typeof vi.fn>>,
   // Captured xterm event callbacks (the source wraps sendResize / ws.send).
   resizeHandler: null as null | (() => void),
@@ -40,10 +40,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: vi.fn().mockImplementation(() => {
-    const term: Record<string, ReturnType<typeof vi.fn>> & {
-      rows: number;
-      cols: number;
-    } = {
+    const term: Record<string, ReturnType<typeof vi.fn> | number> = {
       // rows !== cols on purpose: a swapped interpolation would still pass an
       // equal-value assertion, so distinct values pin the rows-then-cols order.
       rows: 24,
