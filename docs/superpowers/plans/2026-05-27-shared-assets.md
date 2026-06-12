@@ -9,7 +9,7 @@
 > out-of-scope for v1 below, has since shipped: `DELETE /artifacts/{name}`
 > (`ArtifactStore.delete` + `AuditLogger.log_artifact_delete`, action
 > `artifact_delete`, same `artifact:<name>` audit scope as `artifact_put`),
-> surfaced as a confirm-gated delete control in the founder web assets UI.
+> surfaced as a confirm-gated delete control in the founder web artifacts UI.
 > Update (PUT/PATCH) remains out of scope — `POST` is an idempotent
 > create-or-overwrite. There is **no** CLI `artifacts delete` verb; delete is
 > web + daemon route only.

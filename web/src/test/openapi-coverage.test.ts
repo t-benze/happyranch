@@ -154,9 +154,12 @@ const EXCLUDED_PATHS = new Map<string, string>([
   ['POST /api/v1/orgs/{slug}/threads/compose-as-agent', 'agent callback — not exercised from the Web UI'],
   // jobs agent callback
   ['POST /api/v1/orgs/{slug}/jobs/submit', 'agent callback (matches /report-completion pattern)'],
-  // Artifacts — agent-facing v1, now also surfaced read+create in the founder
+  // Artifacts — agent-facing v1, also surfaced read+create in the founder
   // artifacts UI (web/src/features/artifacts) via uploadArtifact() / listArtifacts() /
-  // artifactDownloadPath(). No delete or update route exists (backend-gated).
+  // artifactDownloadPath(). The DELETE route is browser-facing (mirrored by
+  // deleteArtifact(); listed in the founder-facing set above), so it is not
+  // excluded here. No update route exists (POST is an idempotent
+  // create-or-overwrite; backend-gated).
   ['POST /api/v1/orgs/{slug}/artifacts', 'agent-facing v1; also founder artifacts UI upload'],
   ['GET /api/v1/orgs/{slug}/artifacts', 'agent-facing v1; also founder artifacts UI list'],
   ['GET /api/v1/orgs/{slug}/artifacts/{name}', 'agent-facing v1; also founder artifacts UI download'],
