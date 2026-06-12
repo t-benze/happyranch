@@ -2488,3 +2488,28 @@ def test_cmd_cancel_omits_actor_when_unset(capsys):
 
     _, kwargs = fake.post.call_args
     assert "actor" not in kwargs["json"]
+
+
+def test_set_executor_subcommand():
+    parser = build_parser()
+    args = parser.parse_args(["set-executor", "dev_agent", "--executor", "pi"])
+    assert args.command == "set-executor"
+    assert args.agent == "dev_agent"
+    assert args.executor == "pi"
+    assert args.clean is False
+
+
+def test_set_executor_subcommand_clean_and_org():
+    parser = build_parser()
+    args = parser.parse_args(
+        ["set-executor", "dev_agent", "--executor", "codex", "--clean", "--org", "alpha"]
+    )
+    assert args.clean is True
+    assert args.org == "alpha"
+    assert args.executor == "codex"
+
+
+def test_set_executor_rejects_unknown_executor():
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["set-executor", "dev_agent", "--executor", "gpt"])

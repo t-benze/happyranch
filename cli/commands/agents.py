@@ -37,6 +37,19 @@ def cmd_init_agent(args: argparse.Namespace) -> None:
                 return
             agent = event.get("agent", "")
             phase = event.get("phase", "")
+            # Executor drift: org .md frontmatter disagrees with the workspace
+            # agent.yaml. init does NOT auto-reconcile — surface the values and
+            # the exact command to fix it.
+            if phase == "executor_drift":
+                print(
+                    f"  [{agent}] WARNING executor drift: "
+                    f"org={event.get('org_executor')} "
+                    f"workspace={event.get('workspace_executor')}"
+                )
+                hint = event.get("hint")
+                if hint:
+                    print(f"           {hint}")
+                continue
             # The daemon emits {"phase": "error", "detail": "<reason>"} when a
             # workspace init fails. Surface the reason — without it the user
             # sees "[dev_agent] error" with no clue what broke.
@@ -245,6 +258,54 @@ def cmd_reject_agent(args: argparse.Namespace) -> None:
 
 
 
+def cmd_set_executor(args: argparse.Namespace) -> None:
+    """Founder action: switch an existing agent's executor end-to-end.
+
+    Reconciles the org .md frontmatter, the workspace agent.yaml, and the
+    executor bootstrap in one call, then prints before/after state. Warns
+    about stale Claude-only files when switching away from Claude; pass
+    ``--clean`` to delete them.
+    """
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    slug = resolve_org_slug(
+        args_org=args.org, available=_shared._fetch_available_orgs(client),
+    )
+    r = client.request(
+        "PUT",
+        f"/api/v1/orgs/{slug}/agents/{args.agent}/executor",
+        json={"executor": args.executor, "clean": args.clean},
+    )
+    if not _ok(r):
+        return
+    result = r.json()
+    before = result["before"]
+    after = result["after"]
+
+    def _fmt(val: object) -> str:
+        return str(val) if val is not None else "(no workspace)"
+
+    print(f"Executor switch for {result['agent']}:")
+    print(f"  org frontmatter:      {before['org_executor']} -> {after['org_executor']}")
+    print(
+        f"  workspace agent.yaml: {_fmt(before['workspace_executor'])} -> "
+        f"{_fmt(after['workspace_executor'])}"
+    )
+    stale = result.get("stale_files") or []
+    if stale:
+        if result.get("cleaned"):
+            print(f"  removed stale Claude files: {', '.join(result.get('removed') or [])}")
+        else:
+            print("  WARNING: stale Claude-only files remain (no longer managed by the new executor):")
+            for name in stale:
+                print(f"    - {name}")
+            print("  Re-run with --clean to delete them.")
+
+
+
 def register(sub) -> None:
     p_init_agent = sub.add_parser("init-agent", help="Initialize agent workspaces with system prompts and repo clone")
     p_init_agent.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
@@ -292,4 +353,20 @@ def register(sub) -> None:
     p_reject.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
     p_reject.add_argument("name", help="Agent name to reject")
     p_reject.set_defaults(func=cmd_reject_agent)
+
+    p_setexec = sub.add_parser(
+        "set-executor",
+        help="Switch an existing agent's executor (org frontmatter + workspace agent.yaml + bootstrap)",
+    )
+    p_setexec.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
+    p_setexec.add_argument("agent", help="Agent name to switch")
+    p_setexec.add_argument(
+        "--executor", required=True, choices=["claude", "codex", "opencode", "pi"],
+        help="New executor",
+    )
+    p_setexec.add_argument(
+        "--clean", action="store_true",
+        help="Delete stale Claude-only files (CLAUDE.md, .claude/) when switching away from Claude",
+    )
+    p_setexec.set_defaults(func=cmd_set_executor)
 

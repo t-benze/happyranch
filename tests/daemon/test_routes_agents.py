@@ -1431,3 +1431,250 @@ def test_reject_agent_unlinks_file(
     )
     assert r.status_code == 200
     assert prompt_loader.load_pending_agent(_paths(org_state), "seo_agent") is None
+
+
+# ---------------------------------------------------------------------------
+# Founder set-executor route (PUT /agents/{agent_name}/executor)
+# ---------------------------------------------------------------------------
+
+def test_validate_executor_helper_accepts_and_rejects() -> None:
+    """The standalone validator passes the supported set and rejects others
+    with a 422 that lists the valid values."""
+    import pytest
+    from fastapi import HTTPException
+    from runtime.daemon.routes.agents import _validate_executor
+
+    for ok in ("claude", "codex", "opencode", "pi"):
+        _validate_executor(ok)  # must not raise
+
+    with pytest.raises(HTTPException) as ei:
+        _validate_executor("gpt")
+    assert ei.value.status_code == 422
+    assert ei.value.detail["code"] == "invalid_executor"
+    assert ei.value.detail["got"] == "gpt"
+    assert "claude" in ei.value.detail["valid"] and "pi" in ei.value.detail["valid"]
+
+
+def test_set_executor_switches_org_and_workspace(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Happy path: org frontmatter + workspace agent.yaml both flip, bootstrap
+    is regenerated with the NEW provider, before/after state is reported."""
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        mock_ctx = MockCB.return_value
+        mock_ctx.ensure_workspace_ready.return_value = None
+        r = TestClient(app).put(
+            "/api/v1/orgs/alpha/agents/dev_agent/executor",
+            json={"executor": "pi"},
+            headers=auth_headers,
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["before"]["org_executor"] == "claude"
+    assert body["after"]["org_executor"] == "pi"
+    assert body["before"]["workspace_executor"] == "claude"
+    assert body["after"]["workspace_executor"] == "pi"
+
+    # org .md frontmatter updated
+    from runtime.orchestrator import prompt_loader
+    reloaded = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert reloaded is not None and reloaded.executor == "pi"
+    # workspace agent.yaml updated
+    from runtime.daemon.agent_config import load_agent_config
+    assert load_agent_config(workspace)["executor"] == "pi"
+    # bootstrap regenerated with the NEW provider
+    assert mock_ctx.ensure_workspace_ready.call_args.kwargs.get("provider") == "pi"
+
+
+def test_set_executor_invalid_returns_422_and_no_mutation(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Unknown executor is rejected at the boundary; org frontmatter untouched."""
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "gpt"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert detail["code"] == "invalid_executor"
+    assert detail["got"] == "gpt"
+    assert "claude" in detail["valid"]
+
+    from runtime.orchestrator import prompt_loader
+    unchanged = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert unchanged is not None and unchanged.executor == "claude"
+
+
+def test_set_executor_unknown_agent_returns_404(
+    tmp_home, app, auth_headers,
+) -> None:
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/ghost/executor",
+        json={"executor": "pi"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 404
+    assert r.json()["detail"]["code"] == "agent_not_found"
+
+
+def _seed_claude_workspace_files(workspace) -> None:
+    """Create the Claude-only workspace files that go stale on a switch away."""
+    (workspace / "CLAUDE.md").write_text("# stale claude bootstrap\n")
+    claude_dir = workspace / ".claude"
+    claude_dir.mkdir()
+    (claude_dir / "settings.json").write_text("{}\n")
+
+
+def test_set_executor_away_from_claude_warns_stale_by_default(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Default behavior warns about stale CLAUDE.md/.claude and deletes nothing."""
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    _seed_claude_workspace_files(workspace)
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        MockCB.return_value.ensure_workspace_ready.return_value = None
+        r = TestClient(app).put(
+            "/api/v1/orgs/alpha/agents/dev_agent/executor",
+            json={"executor": "pi"},
+            headers=auth_headers,
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert set(body["stale_files"]) == {"CLAUDE.md", ".claude"}
+    assert body["cleaned"] is False
+    assert body["removed"] == []
+    # Nothing deleted without --clean.
+    assert (workspace / "CLAUDE.md").exists()
+    assert (workspace / ".claude").exists()
+
+
+def test_set_executor_clean_deletes_stale_claude_files(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """--clean deletes the stale Claude-only files and reports them removed."""
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    _seed_claude_workspace_files(workspace)
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        MockCB.return_value.ensure_workspace_ready.return_value = None
+        r = TestClient(app).put(
+            "/api/v1/orgs/alpha/agents/dev_agent/executor",
+            json={"executor": "pi", "clean": True},
+            headers=auth_headers,
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["cleaned"] is True
+    assert set(body["removed"]) == {"CLAUDE.md", ".claude"}
+    assert not (workspace / "CLAUDE.md").exists()
+    assert not (workspace / ".claude").exists()
+
+
+def test_set_executor_to_claude_reports_no_stale(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Switching TO Claude reports no stale files — the symmetric case (stale
+    AGENTS.md/.agents) is deliberately out of scope for this change."""
+    _seed_active_agent(org_state, "dev_agent", executor="codex")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: codex\n")
+    (workspace / "AGENTS.md").write_text("# codex bootstrap\n")
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        MockCB.return_value.ensure_workspace_ready.return_value = None
+        r = TestClient(app).put(
+            "/api/v1/orgs/alpha/agents/dev_agent/executor",
+            json={"executor": "claude"},
+            headers=auth_headers,
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["stale_files"] == []
+    assert body["cleaned"] is False
+    # AGENTS.md is intentionally left untouched (out of scope, not deleted).
+    assert (workspace / "AGENTS.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# init-agent executor-drift WARN (additive SSE event; no auto-reconcile)
+# ---------------------------------------------------------------------------
+
+def _stream_init_events(app, auth_headers, agent: str) -> list[dict]:
+    import json as _json
+    events: list[dict] = []
+    client = TestClient(app)
+    with client.stream(
+        "POST", "/api/v1/orgs/alpha/agents/init",
+        json={"agent": agent}, headers=auth_headers,
+    ) as r:
+        assert r.status_code == 200
+        for line in r.iter_lines():
+            if line.startswith("data:"):
+                events.append(_json.loads(line[len("data:"):].strip()))
+    return events
+
+
+def test_init_emits_executor_drift_and_does_not_reconcile(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """When org frontmatter != workspace agent.yaml on an EXISTING workspace,
+    init emits an executor_drift event and changes nothing."""
+    _seed_active_agent(org_state, "dev_agent", executor="pi")  # org wants pi
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")  # ws still claude
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        mock_ctx = MockCB.return_value
+        mock_ctx.clone_repo.return_value = True
+        mock_ctx.ensure_workspace_ready.return_value = None
+        mock_ctx.create_agent_dirs.return_value = None
+        events = _stream_init_events(app, auth_headers, "dev_agent")
+
+    drift = [e for e in events if e.get("phase") == "executor_drift"]
+    assert len(drift) == 1, events
+    assert drift[0]["agent"] == "dev_agent"
+    assert drift[0]["org_executor"] == "pi"
+    assert drift[0]["workspace_executor"] == "claude"
+    assert "set-executor" in drift[0]["hint"]
+    assert "--executor pi" in drift[0]["hint"]
+
+    # No silent auto-reconcile on either surface.
+    from runtime.daemon.agent_config import load_agent_config
+    assert load_agent_config(workspace)["executor"] == "claude"
+    from runtime.orchestrator import prompt_loader
+    assert prompt_loader.load_agent(_paths(org_state), "dev_agent").executor == "pi"
+
+
+def test_init_no_drift_event_when_aligned(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """No executor_drift event when org frontmatter and agent.yaml agree."""
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        mock_ctx = MockCB.return_value
+        mock_ctx.clone_repo.return_value = True
+        mock_ctx.ensure_workspace_ready.return_value = None
+        mock_ctx.create_agent_dirs.return_value = None
+        events = _stream_init_events(app, auth_headers, "dev_agent")
+
+    assert [e for e in events if e.get("phase") == "executor_drift"] == []

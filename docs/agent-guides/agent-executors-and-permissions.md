@@ -29,6 +29,28 @@ repos:
 
 `happyranch init-agent` creates a default `agent.yaml` with empty repos if missing.
 
+## Switching an Existing Agent's Executor
+
+An agent's executor lives in two places that must stay in sync: the org agent `.md` frontmatter (`executor:`) and the workspace `agent.yaml`. The orchestrator resolves the executor at dispatch time from `agent.yaml` (`_resolve_executor_name`), so hand-editing only the frontmatter has no runtime effect.
+
+Switch an existing agent end-to-end with the founder command:
+
+```bash
+happyranch set-executor --org <org> <agent> --executor <claude|codex|opencode|pi>
+```
+
+It reconciles all three surfaces in one call — the `.md` frontmatter (atomic rewrite), `agent.yaml` (`set_executor`), and the executor bootstrap (`ensure_workspace_ready` with the new provider) — then prints before/after state for both the frontmatter and `agent.yaml`. An unsupported executor is rejected with the list of valid values.
+
+Switching **away from Claude** leaves the Claude-only files (`CLAUDE.md`, `.claude/`) behind, because the new adapter writes `AGENTS.md`/`.agents/` and never deletes them. By default the command **warns** that these files are stale and names them; it never auto-deletes. Pass `--clean` to delete them:
+
+```bash
+happyranch set-executor --org <org> <agent> --executor pi --clean
+```
+
+(The symmetric case — switching *to* Claude leaves `AGENTS.md`/`.agents/`/`opencode.json` stale — is not yet handled.)
+
+`happyranch init-agent` does **not** auto-reconcile this drift. For an existing workspace whose frontmatter and `agent.yaml` disagree, init emits an `executor_drift` warning event (with the `set-executor` command to run) and changes nothing — a broad init must not silently mass-switch executors.
+
 ## Permission Model
 
 Agents call the orchestrator CLI as their sanctioned side-effect channel: `happyranch report-completion`, `happyranch learning`, `happyranch manage-repo`, `happyranch manage-agent`, `happyranch dispatch`, and related callbacks. Baseline allow rule for every agent: `happyranch`.

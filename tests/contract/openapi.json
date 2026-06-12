@@ -234,6 +234,28 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/agents/{agent_name}/executor": {
+      "PUT": {
+        "params": [
+          [
+            "agent_name",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/agents/{agent_name}/learnings": {
       "POST": {
         "params": [
