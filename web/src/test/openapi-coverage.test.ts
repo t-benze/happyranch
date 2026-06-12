@@ -119,6 +119,13 @@ const INCLUDED_PATHS = new Set<string>([
   'POST /api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries/search',
   // teams — founder-facing
   'GET /api/v1/orgs/{slug}/teams',
+  // system assistant — founder-facing setup surfaced in the SPA
+  // (web/src/features/system-assistant) via lib/api/assistant.ts. The
+  // WebSocket PTY at /assistant/session is not in OpenAPI (FastAPI omits WS).
+  'GET /api/v1/assistant/status',
+  'POST /api/v1/assistant/init',
+  'POST /api/v1/assistant/register',
+  'POST /api/v1/assistant/repair',
 ]);
 
 /**
@@ -127,11 +134,6 @@ const INCLUDED_PATHS = new Set<string>([
  * forge). Spec §2 enumerates the rationale.
  */
 const EXCLUDED_PATHS = new Map<string, string>([
-  // System assistant setup is CLI-only for now; web attachment/client can be added with the WebSocket surface.
-  ['GET /api/v1/assistant/status', 'system assistant CLI setup/status only'],
-  ['POST /api/v1/assistant/init', 'system assistant CLI registration setup only'],
-  ['POST /api/v1/assistant/register', 'system assistant CLI registration callback only'],
-  ['POST /api/v1/assistant/repair', 'system assistant CLI repair only'],
   // task agent callbacks
   ['POST /api/v1/orgs/{slug}/tasks/{task_id}/completion', 'agent callback'],
   ['POST /api/v1/orgs/{slug}/tasks/{task_id}/progress', 'agent callback'],

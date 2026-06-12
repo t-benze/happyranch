@@ -114,6 +114,50 @@ def test_websocket_token_is_valid_parses_bearer_and_compares(
     assert assistant_route._websocket_token_is_valid(_fake_ws(f"Bearer {expected}")) is False
 
 
+def test_websocket_token_is_valid_accepts_subprotocol_bearer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """THR-006 Option A: browsers cannot set the Authorization header on
+    ``new WebSocket()``, so the bearer token may also arrive via the
+    ``Sec-WebSocket-Protocol`` subprotocol ``happyranch.bearer.<token>``."""
+    from types import SimpleNamespace
+
+    from starlette.datastructures import Headers
+
+    from runtime.daemon.routes import assistant as assistant_route
+
+    expected = "s3cret-bearer-token"
+
+    def _fake_ws(headers: dict[str, str]) -> Any:
+        # No ``scope`` attribute -> the reader falls back to the
+        # Sec-WebSocket-Protocol header, exactly like a real upgrade.
+        return SimpleNamespace(headers=Headers(headers))
+
+    monkeypatch.setattr(assistant_route.daemon_paths, "read_token", lambda: expected)
+
+    # Browser path: token offered via the subprotocol is accepted.
+    assert assistant_route._websocket_token_is_valid(
+        _fake_ws({"sec-websocket-protocol": f"happyranch.bearer.{expected}"})
+    ) is True
+    # The bearer subprotocol is found even alongside other offered protocols.
+    assert assistant_route._websocket_token_is_valid(
+        _fake_ws({"sec-websocket-protocol": f"chat, happyranch.bearer.{expected}"})
+    ) is True
+    # Fail-closed: a non-matching token via the subprotocol is rejected.
+    assert assistant_route._websocket_token_is_valid(
+        _fake_ws({"sec-websocket-protocol": "happyranch.bearer.wrong-token"})
+    ) is False
+    # Fail-closed: no bearer subprotocol offered at all.
+    assert assistant_route._websocket_token_is_valid(
+        _fake_ws({"sec-websocket-protocol": "chat"})
+    ) is False
+    # Fail-closed: no expected token on disk, even with a well-formed subprotocol.
+    monkeypatch.setattr(assistant_route.daemon_paths, "read_token", lambda: None)
+    assert assistant_route._websocket_token_is_valid(
+        _fake_ws({"sec-websocket-protocol": f"happyranch.bearer.{expected}"})
+    ) is False
+
+
 def test_assistant_register_configures_with_valid_payload(client: TestClient) -> None:
     response = client.post(
         "/api/v1/assistant/register",
@@ -237,6 +281,9 @@ def test_assistant_websocket_streams_to_selected_cli(
             "/api/v1/assistant/session",
             headers={"Authorization": f"Bearer {token}"},
         ) as websocket:
+            # The HTTP Authorization-header path is unchanged: no subprotocol
+            # was offered, so none is echoed back.
+            assert websocket.accepted_subprotocol is None
             assert websocket.receive_text().strip() == "assistant ready"
 
             websocket.send_text("hello from websocket\n")
@@ -244,6 +291,94 @@ def test_assistant_websocket_streams_to_selected_cli(
             assert "echo: hello from websocket" in websocket.receive_text()
     finally:
         asyncio.run(client.app.state.daemon.assistant_sessions.close_all())
+
+
+def test_assistant_websocket_accepts_subprotocol_token_and_echoes(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """THR-006 Option A: a browser authenticates by offering the bearer token
+    via the Sec-WebSocket-Protocol subprotocol (no Authorization header), and
+    the server echoes the accepted subprotocol back on accept()."""
+    fake_cli = tmp_path / "fake-assistant"
+    fake_cli.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "print('assistant ready', flush=True)\n"
+        "for line in sys.stdin:\n"
+        "    print('echo: ' + line.strip(), flush=True)\n"
+    )
+    fake_cli.chmod(0o755)
+
+    response = client.post(
+        "/api/v1/assistant/register",
+        json={
+            "executor": "codex",
+            "command": str(fake_cli),
+            "argv": [str(fake_cli)],
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "configured"
+
+    token = paths_mod.read_token()
+    subprotocol = f"happyranch.bearer.{token}"
+    # A fresh client WITHOUT the Authorization header — auth must succeed on
+    # the subprotocol alone.
+    browser = TestClient(client.app)
+    try:
+        with browser.websocket_connect(
+            "/api/v1/assistant/session",
+            subprotocols=[subprotocol],
+        ) as websocket:
+            assert websocket.accepted_subprotocol == subprotocol
+            assert websocket.receive_text().strip() == "assistant ready"
+
+            websocket.send_text("hi over subprotocol\n")
+
+            assert "echo: hi over subprotocol" in websocket.receive_text()
+    finally:
+        asyncio.run(client.app.state.daemon.assistant_sessions.close_all())
+
+
+def test_assistant_websocket_rejects_bad_subprotocol_token(
+    client: TestClient,
+    runtime,
+) -> None:
+    """A bad token offered via the subprotocol is rejected fail-closed
+    (close 1008 before accept) and never starts a session."""
+    paths = system_assistant_paths(runtime.root)
+    paths.root.mkdir(parents=True)
+    paths.workspace.mkdir(parents=True)
+    (paths.workspace / "agent.yaml").write_text("name: system_assistant\n")
+    (paths.workspace / "AGENTS.md").write_text("# Assistant\n")
+    (paths.learnings_dir).mkdir(parents=True)
+    (paths.learnings_dir / "_index.md").write_text("# Learnings\n")
+    save_assistant_config(
+        runtime.root,
+        AssistantConfig(
+            selected_executor="codex",
+            selected_command="/should/not/start",
+            selected_argv=["/should/not/start"],
+            workspace_path=str(paths.workspace),
+        ),
+    )
+
+    class NoStartSessions:
+        async def get_or_start(self, **_kwargs: Any) -> None:
+            raise AssertionError("unauthorized websocket started assistant session")
+
+    client.app.state.daemon.assistant_sessions = NoStartSessions()
+
+    browser = TestClient(client.app)
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with browser.websocket_connect(
+            "/api/v1/assistant/session",
+            subprotocols=["happyranch.bearer.bad-token"],
+        ):
+            pass
+
+    assert exc_info.value.code == 1008
 
 
 def test_assistant_websocket_rejects_bad_token_without_starting_session(

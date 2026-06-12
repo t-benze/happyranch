@@ -23,6 +23,7 @@ import { DashboardPage } from '@/features/dashboard/DashboardPage';
 import { KbPage } from '@/features/kb/KbPage';
 import { TalksPage } from '@/features/talks/TalksPage';
 import { TasksPage } from '@/features/tasks/TasksPage';
+import { SystemAssistantPage } from '@/features/system-assistant/SystemAssistantPage';
 import { ThreadsPage } from '@/features/threads/ThreadsPage';
 import { PROTOTYPES_DISABLED, prototypeRoutes } from '@/prototypes';
 import { DESIGN_ROUTE_DISABLED, designRoutes } from '@/design-system/__design__';
@@ -100,6 +101,7 @@ export function AppRoutes(): JSX.Element {
           <Route path="jobs" element={<JobsPage />} />
           <Route path="jobs/:job_id" element={<JobsPage />} />
           <Route path="assets" element={<AssetsPage />} />
+          <Route path="assistant" element={<SystemAssistantPage />} />
         </Route>
         <Route path="*" element={<NotFound />} />
       </Route>

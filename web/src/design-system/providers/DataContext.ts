@@ -34,6 +34,8 @@ import type { audit as auditApi } from '@/lib/api';
 import type { agents as agentsApi } from '@/lib/api';
 import type { jobs as jobsApi } from '@/lib/api';
 import type {
+  AssistantRegisterBody,
+  AssistantStatus,
   DashboardSummaryResponse,
   JobListResponse,
   JobRecord,
@@ -251,6 +253,23 @@ export interface HealthApi {
 }
 
 // ---------------------------------------------------------------------------
+// AssistantApi — the global (non-org-scoped) System Assistant surface:
+// status poll + init/register/repair mutations + the imperative PTY opener.
+// ---------------------------------------------------------------------------
+
+export interface AssistantApi {
+  useAssistantStatus: () => QueryLike<AssistantStatus>;
+  useInitAssistant: () => MutationLike<{ reconfigure: boolean }, AssistantStatus>;
+  useRegisterAssistant: () => MutationLike<AssistantRegisterBody, AssistantStatus>;
+  useRepairAssistant: () => MutationLike<void, AssistantStatus>;
+  /**
+   * Opens the PTY WebSocket (bearer-subprotocol auth). Imperative and
+   * real-only; the prototype mock rejects since no daemon sits behind it.
+   */
+  openSession: () => Promise<WebSocket>;
+}
+
+// ---------------------------------------------------------------------------
 // AgentsApi — minimal read-only roster used by the Composer for
 // @-mention autocomplete. Lives on DataContext so prototypes can swap
 // in canned fixtures.
@@ -395,6 +414,7 @@ export interface DataContextValue {
   talks: TalksApi;
   teams: TeamsApi;
   health: HealthApi;
+  assistant: AssistantApi;
   jobs: JobsApi;
   dashboard: DashboardApi;
   /**

@@ -36,6 +36,10 @@ from runtime.system_assistant import (
 
 router = APIRouter()
 _RESIZE_CONTROL_PREFIX = "__HAPPYRANCH_ASSISTANT_RESIZE__"
+# Browsers cannot set the Authorization header on ``new WebSocket()``, so the
+# bearer token may also be offered as a ``Sec-WebSocket-Protocol`` subprotocol
+# ``happyranch.bearer.<token>`` (THR-006 Option A).
+_BEARER_SUBPROTOCOL_PREFIX = "happyranch.bearer."
 
 
 class InitAssistantRequest(BaseModel):
@@ -75,17 +79,50 @@ def _assistant_error(code: str, exc: Exception) -> HTTPException:
     return HTTPException(status_code=409, detail={"code": code, "message": str(exc)})
 
 
+def _offered_subprotocols(websocket: WebSocket) -> list[str]:
+    """The subprotocols the client offered on the WS upgrade.
+
+    Reads the ASGI ``scope["subprotocols"]`` list when present (real servers
+    and the Starlette test client populate it from the upgrade header), falling
+    back to parsing the raw ``Sec-WebSocket-Protocol`` header otherwise.
+    """
+    scope = getattr(websocket, "scope", None)
+    if isinstance(scope, dict):
+        offered = scope.get("subprotocols")
+        if offered:
+            return list(offered)
+    header = websocket.headers.get("sec-websocket-protocol")
+    if header:
+        return [part.strip() for part in header.split(",") if part.strip()]
+    return []
+
+
+def _websocket_bearer_subprotocol(websocket: WebSocket) -> str | None:
+    """The ``happyranch.bearer.<token>`` subprotocol the client offered, if any."""
+    for offered in _offered_subprotocols(websocket):
+        if offered.startswith(_BEARER_SUBPROTOCOL_PREFIX):
+            return offered
+    return None
+
+
 def _websocket_token_is_valid(websocket: WebSocket) -> bool:
     expected = daemon_paths.read_token()
     if expected is None:
         return False
-    authorization = websocket.headers.get("authorization")
-    if authorization is None:
-        return False
     prefix = "Bearer "
-    if not authorization.startswith(prefix):
+    authorization = websocket.headers.get("authorization")
+    if authorization is not None and authorization.startswith(prefix):
+        candidate: str | None = authorization[len(prefix):]
+    else:
+        # Browser path (THR-006 Option A): token via the bearer subprotocol.
+        subprotocol = _websocket_bearer_subprotocol(websocket)
+        candidate = (
+            subprotocol[len(_BEARER_SUBPROTOCOL_PREFIX):]
+            if subprotocol is not None
+            else None
+        )
+    if candidate is None:
         return False
-    candidate = authorization[len(prefix):]
     return secrets.compare_digest(candidate, expected)
 
 
@@ -265,7 +302,10 @@ async def attach_assistant_session(websocket: WebSocket) -> None:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
-    await websocket.accept()
+    # Echo back the bearer subprotocol the browser offered (THR-006 Option A)
+    # so the handshake completes; the CLI path offers none, so accept(None) —
+    # the prior behaviour — is preserved unchanged.
+    await websocket.accept(subprotocol=_websocket_bearer_subprotocol(websocket))
     state_obj = websocket.app.state.daemon
     assert isinstance(state_obj, DaemonState)
     try:
