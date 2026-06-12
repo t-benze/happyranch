@@ -121,6 +121,11 @@ class ProviderThrottle:
         """Acquire a provider slot, honor spacing, run ``launch``, and absorb
         transient 429s with backoff before returning the result.
 
+        The 429 backoff/retry fires only for a launch that was rate-limited AND
+        did **not** succeed; a successful session is never relaunched (idempotent
+        re-launch is safe only because a failed rate-limited attempt did no
+        useful work and never called ``report-completion``).
+
         The slot is released in a ``finally`` so it is freed on success, error,
         timeout, AND exception. During a backoff sleep the slot is explicitly
         released and re-acquired — a backing-off session must not keep a slot
@@ -148,10 +153,22 @@ class ProviderThrottle:
             for attempt in range(attempts):
                 self._spacing_gate(provider)
                 result = launch()
-                # Return on a clean result, or once the backoff schedule is
-                # exhausted — the surviving rate-limit then falls through to the
-                # existing classifier / auto-revisit path.
-                if not getattr(result, "rate_limited", False) or attempt == attempts - 1:
+                # The reactive 429 retry fires ONLY for a launch that BOTH
+                # matched a rate-limit signature AND did not succeed. A
+                # successful session is never relaunched even if its output
+                # happened to contain a rate-limit phrase — relaunching it would
+                # duplicate side effects (commits, pushes, completion rows,
+                # thread replies). ``success`` defaults True so an indeterminate
+                # result is treated as success (conservative: never spuriously
+                # relaunched). Genuine transient 429s ARE failures, so this gate
+                # does not weaken de-bursting. Return on a non-retry-worthy
+                # result, or once the backoff schedule is exhausted — the
+                # survivor then falls through to the existing classifier /
+                # auto-revisit path.
+                retry_worthy = getattr(result, "rate_limited", False) and not getattr(
+                    result, "success", True
+                )
+                if not retry_worthy or attempt == attempts - 1:
                     return result
                 backoff = self._backoff_seconds[attempt]
                 if on_event is not None:

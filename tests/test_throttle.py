@@ -222,7 +222,9 @@ def test_rate_limit_backoff_runs_full_schedule_then_falls_through():
 
     def always_limited():
         calls.append(1)
-        return SimpleNamespace(rate_limited=True, marker="limited")
+        # A genuine 429 is a FAILURE result (non-zero exit / session-limit
+        # error), so the retry gate (rate_limited AND not success) fires.
+        return SimpleNamespace(rate_limited=True, success=False, marker="limited")
 
     out = throttle.run("claude", always_limited, on_event=lambda a, p: events.append((a, p)))
 
@@ -242,12 +244,66 @@ def test_rate_limit_retry_stops_once_an_attempt_is_healthy():
         ceiling_default=2, spacing_seconds=0.0, backoff_seconds=[5, 15, 45],
         sleep=clock.sleep, monotonic=clock.monotonic,
     )
-    results = [SimpleNamespace(rate_limited=True), _ok(tag="recovered")]
+    results = [SimpleNamespace(rate_limited=True, success=False), _ok(tag="recovered")]
 
     out = throttle.run("claude", lambda: results.pop(0))
 
     assert out.tag == "recovered"
     assert clock.sleeps == [5]   # only one backoff before the healthy attempt
+
+
+def test_successful_result_flagged_rate_limited_is_not_relaunched():
+    """REGRESSION (issue #85 reviewer HIGH): a SUCCESSFUL session whose output
+    merely matched a rate-limit signature must NOT be relaunched. The reactive
+    429 retry is gated on launch FAILURE — relaunching a successful session
+    would duplicate side effects (commits, pushes, completion rows, thread
+    replies), violating the design memo's retry-safety premise.
+    """
+    clock = FakeClock()
+    throttle = ProviderThrottle(
+        ceiling_default=2, spacing_seconds=0.0, backoff_seconds=[5, 15, 45],
+        sleep=clock.sleep, monotonic=clock.monotonic,
+    )
+    calls = []
+    events: list[tuple[str, dict]] = []
+
+    def succeeded_but_flagged():
+        # returncode==0 / success=True, yet output matched a rate-limit phrase.
+        calls.append(1)
+        return SimpleNamespace(success=True, rate_limited=True, tag="done")
+
+    out = throttle.run(
+        "claude", succeeded_but_flagged, on_event=lambda a, p: events.append((a, p))
+    )
+
+    assert out.tag == "done"
+    assert len(calls) == 1                       # launched EXACTLY once — never relaunched
+    assert clock.sleeps == []                    # no backoff sleep
+    assert not [a for a, _ in events if a == RATE_LIMIT_BACKOFF_ACTION]  # no backoff audit event
+
+
+def test_failed_rate_limited_result_still_retries_full_schedule():
+    """GUARD against over-correcting: a genuine transient 429 (success=False,
+    rate_limited=True) IS a failure and MUST still drive the full backoff/retry
+    schedule and re-launch. The gate only suppresses retry of SUCCESSFUL
+    sessions; it does not weaken the throttle's de-bursting purpose.
+    """
+    clock = FakeClock()
+    throttle = ProviderThrottle(
+        ceiling_default=2, spacing_seconds=0.0, backoff_seconds=[5, 15, 45],
+        sleep=clock.sleep, monotonic=clock.monotonic,
+    )
+    calls = []
+
+    def failed_and_limited():
+        calls.append(1)
+        return SimpleNamespace(success=False, rate_limited=True, marker="429")
+
+    out = throttle.run("claude", failed_and_limited)
+
+    assert len(calls) == 4                       # 1 initial + 3 re-launches
+    assert clock.sleeps == [5, 15, 45]           # full schedule
+    assert out.marker == "429"                   # falls through after exhaustion
 
 
 def test_slot_released_during_backoff_sleep():
@@ -265,7 +321,7 @@ def test_slot_released_during_backoff_sleep():
     throttle = ProviderThrottle(
         ceiling_default=1, spacing_seconds=0.0, backoff_seconds=[5], sleep=blocking_sleep
     )
-    first_results = [SimpleNamespace(rate_limited=True), _ok(tag="retry")]
+    first_results = [SimpleNamespace(rate_limited=True, success=False), _ok(tag="retry")]
     holder = threading.Thread(target=lambda: throttle.run("claude", lambda: first_results.pop(0)))
     holder.start()
     assert sleeping.wait(timeout=5)   # first launch is now backing off → slot freed

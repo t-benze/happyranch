@@ -55,8 +55,8 @@ acquire provider slot                       # ── per-provider CEILING (block
   for attempt in range(1 + len(backoff)):
     spacing_gate(provider)                   # ── proactive SPACING
     result = <existing Popen + communicate>
-    if not result.rate_limited or no attempts left:
-        return result
+    if not (result.rate_limited and not result.success) or no attempts left:
+        return result                        # ── retry ONLY a FAILED, rate-limited launch
     release slot; sleep(backoff[attempt]); re-acquire slot   # ── reactive 429 BACKOFF
 release slot                                 # ── finally: freed on success/error/timeout/exception
 ```
@@ -81,10 +81,18 @@ exception.
 
 ### Retry idempotency
 
-The 429 retry re-launches **only** when the prior attempt was rate-limited — the
-subprocess did no useful work and never called `report-completion`. `on_started`
-simply re-stamps the new pid into `SessionTracker` (overwrite, safe). A
-partial/successful session is never retried.
+The 429 retry re-launches **only** when the prior attempt both **failed**
+(`success` is False / non-zero exit / session-limit error) **and** was
+rate-limited — the subprocess did no useful work and never called
+`report-completion`, so re-launching is idempotent. `on_started` simply
+re-stamps the new pid into `SessionTracker` (overwrite, safe). A
+partial/successful session is **never** retried, even when its output matched a
+rate-limit signature. The gate is `rate_limited and not success` in
+`ProviderThrottle.run`, with `success` defaulting True so an indeterminate
+result is treated as success (conservative: never spuriously relaunched).
+Because a genuine transient 429 IS a failure, gating on failure does not weaken
+the de-bursting purpose — every real 429 is still absorbed before the
+auto-revisit path.
 
 ### Normalized `rate_limited`
 
@@ -147,8 +155,15 @@ thread-scoped audit rows do.
 ## Known risk
 
 `is_rate_limit_signature` matches the same stdout/stderr substrings the
-classifier has always used. A genuinely successful session whose output happens
-to contain "rate limit" / "hit your limit · reset" would be flagged and retried.
-This self-referential false-positive risk is inherited from the pre-existing
-classifier heuristic; the centralized helper does not broaden it. Documented here
-as the reviewer-focus point.
+classifier has always used, so a genuinely **successful** session whose output
+happens to contain "rate limit" / "hit your limit · reset" still has
+`rate_limited=True` set on its `ExecutorResult`. That flag is cosmetic on the
+success path: the reactive 429 retry is gated on launch **failure**
+(`rate_limited and not success`), so a successful flagged session is **never**
+relaunched — no duplicated commits/pushes/completion rows/thread replies. The
+flag's only other consumer, `run_step._classify_failure_kind`, runs solely on
+failures, so the success-path flag has no downstream effect. The self-referential
+false-positive risk is therefore contained to a harmless flag, not a spurious
+relaunch (regression tests:
+`test_successful_result_flagged_rate_limited_is_not_relaunched` and
+`test_failed_rate_limited_result_still_retries_full_schedule`).

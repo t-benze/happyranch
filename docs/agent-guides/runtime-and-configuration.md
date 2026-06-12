@@ -42,7 +42,7 @@ Keyed by provider string (`claude | codex | opencode | pi | ...`), so saturating
 | `executor_ceiling_default` | `8` | Per-provider `BoundedSemaphore` size; max concurrent subprocesses for one provider across both pools. Must be > 0. |
 | `executor_ceiling_overrides` | `{}` | Per-provider ceiling override (config.yaml), e.g. `{"codex": 12}`. |
 | `executor_launch_spacing_seconds` | `1.5` | Minimum interval between same-provider launches. `0` disables. Cross-provider launches are never spaced against each other. |
-| `executor_rate_limit_backoff_seconds` | `[5, 15, 45]` | On a detected rate limit the launch releases its slot, sleeps `backoff[attempt]`, re-acquires, and retries. After the schedule is exhausted the result falls through to `run_step._classify_failure_kind`. `[]` disables retries. |
+| `executor_rate_limit_backoff_seconds` | `[5, 15, 45]` | On a rate limit in a **failed** launch (the retry is gated on `rate_limited and not success`, so a successful session is never relaunched) the launch releases its slot, sleeps `backoff[attempt]`, re-acquires, and retries. After the schedule is exhausted the result falls through to `run_step._classify_failure_kind`. `[]` disables retries. |
 
 Rate-limit detection is normalized: `_run_command` sets `ExecutorResult.rate_limited` from `is_rate_limit_signature(...)` and the classifier prefers that field over its legacy string heuristic. Two additive audit actions surface the activity through the existing `insert_audit_log` (no schema change): `executor_slot_wait` (`{provider, wait_seconds, ceiling}`) when a launch waited for a slot, and `executor_rate_limit_backoff` (`{provider, attempt, backoff_seconds}`) per 429 retry.
 
