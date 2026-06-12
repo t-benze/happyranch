@@ -21,19 +21,15 @@ describe('tokens api', () => {
     });
   });
 
-  it('listFailedTaskTokens pins group_by=failed_task', async () => {
+  it('listTokens forwards the failed_task rollup with other filters', async () => {
     const spy = vi.spyOn(clientModule, 'request').mockResolvedValue({ rollup: [] });
-    await tokens.listFailedTaskTokens('test');
-    expect(spy).toHaveBeenCalledWith('/orgs/test/tokens', {
-      params: { group_by: 'failed_task' },
+    await tokens.listTokens('test', {
+      group_by: 'failed_task',
+      agent: 'qa',
+      since: '2026-06-01',
     });
-  });
-
-  it('listFailedTaskTokens AND-composes other filters', async () => {
-    const spy = vi.spyOn(clientModule, 'request').mockResolvedValue({ rollup: [] });
-    await tokens.listFailedTaskTokens('test', { agent: 'qa', since: '2026-06-01' });
     expect(spy).toHaveBeenCalledWith('/orgs/test/tokens', {
-      params: { agent: 'qa', since: '2026-06-01', group_by: 'failed_task' },
+      params: { group_by: 'failed_task', agent: 'qa', since: '2026-06-01' },
     });
   });
 });

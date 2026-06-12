@@ -63,16 +63,3 @@ export const listTokens = (
   params?: ListTokensParams,
 ): Promise<{ rows: TokenUsageEntry[] } | { rollup: TokenUsageRollup[] }> =>
   request(`/orgs/${slug}/tokens`, { params: params ? { ...params } : undefined });
-
-/**
- * Read-only token-burn rollup for FAILED tasks only, grouped per (task, agent).
- * Thin wrapper over {@link listTokens} pinning `group_by=failed_task`; other
- * filters AND-compose as usual.
- */
-export const listFailedTaskTokens = (
-  slug: string,
-  params?: Omit<ListTokensParams, 'group_by'>,
-): Promise<{ rollup: TokenUsageRollup[] }> =>
-  listTokens(slug, { ...params, group_by: 'failed_task' }) as Promise<{
-    rollup: TokenUsageRollup[];
-  }>;
