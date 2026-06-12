@@ -8,10 +8,14 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from runtime.config import Settings
 from runtime.models import TokenUsage
 from runtime.orchestrator._paths import OrgPaths
+
+if TYPE_CHECKING:
+    from runtime.orchestrator.throttle import OnThrottleEvent
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +46,12 @@ class ExecutorResult:
     # to resume thread sessions via `--resume` (issue #53). None for executors that
     # don't emit one and on parse failure.
     agent_session_id: str | None = None
+    # True when the subprocess output matched a known provider rate-limit
+    # signature (issue #85). Set centrally in ``_run_command`` so every executor
+    # exposes one normalized field; ``run_step._classify_failure_kind`` prefers
+    # it over its legacy stdout/stderr string heuristic, and the per-provider
+    # throttle uses it to drive 429 backoff.
+    rate_limited: bool = False
 
 
 _TAIL_BYTES = 2000
@@ -190,6 +200,21 @@ def _parse_pi_usage(stdout: str) -> TokenUsage | None:
     return TokenUsage(usage_raw_json=stdout[:_TAIL_BYTES])
 
 
+def is_rate_limit_signature(text: str) -> bool:
+    """True when ``text`` matches a known provider rate-limit signature.
+
+    The single source of truth for rate-limit detection (issue #85). Used by
+    ``_run_command`` to set ``ExecutorResult.rate_limited`` across all executors
+    and by ``run_step._classify_failure_kind`` as the back-compat string
+    fallback — keeping both layers in lock-step. Intentionally matches the
+    exact patterns the classifier has always used (Claude's
+    "hit your limit · resets at HH:MM" and the generic "rate limit") so the
+    normalized field and the legacy heuristic never disagree.
+    """
+    haystack = (text or "").lower()
+    return ("hit your limit" in haystack and "reset" in haystack) or "rate limit" in haystack
+
+
 def _run_command(
     cmd: list[str],
     workspace: Path,
@@ -199,81 +224,104 @@ def _run_command(
     on_started: Callable[[int], None] | None = None,
     usage_parser: Callable[[str], "TokenUsage | None"] | None = None,
     session_id_parser: Callable[[str], "str | None"] | None = None,
+    provider: str = "claude",
+    on_throttle_event: "OnThrottleEvent | None" = None,
 ) -> ExecutorResult:
+    """Run one agent subprocess under the per-provider throttle (issue #85).
+
+    The Popen+communicate body is wrapped in ``_launch`` and handed to the
+    process-wide ``ProviderThrottle``: it acquires a per-``provider`` slot,
+    honors inter-launch spacing, and on a detected rate limit releases the slot,
+    sleeps the backoff, and re-launches — ``_launch`` is idempotent because a
+    rate-limited attempt did no useful work (never called ``report-completion``)
+    and ``on_started`` simply re-stamps the new pid into SessionTracker.
+    """
     sid = session_id or f"sess-{uuid.uuid4().hex}"
     workspace.mkdir(parents=True, exist_ok=True)
-    start_time = time.monotonic()
-    # Popen (not subprocess.run) because the daemon needs the pid handed to
-    # SessionTracker BEFORE we block in communicate(), so /cancel can SIGTERM
-    # the process mid-session. stdin=PIPE unconditionally — Codex reads its
-    # prompt from stdin; Claude ignores it when nothing is written.
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(workspace),
-        stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    if on_started is not None:
-        on_started(proc.pid)
-    try:
-        stdout, stderr = proc.communicate(input=input_text, timeout=timeout_seconds)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        # Drain pipes so we don't leak FDs on the retry-free path.
-        try:
-            proc.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
-        return ExecutorResult(
-            success=False,
-            duration_seconds=int(time.monotonic() - start_time),
-            session_id=sid,
-            error=f"Session timed out after {timeout_seconds} seconds",
+
+    def _launch() -> ExecutorResult:
+        start_time = time.monotonic()
+        # Popen (not subprocess.run) because the daemon needs the pid handed to
+        # SessionTracker BEFORE we block in communicate(), so /cancel can SIGTERM
+        # the process mid-session. stdin=PIPE unconditionally — Codex reads its
+        # prompt from stdin; Claude ignores it when nothing is written.
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(workspace),
+            stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
         )
-    full_stdout = stdout or ""
-    full_stderr = stderr or ""
-    stdout_tail = full_stdout[-_TAIL_BYTES:]
-    stderr_tail = full_stderr[-_TAIL_BYTES:]
-    if proc.returncode != 0:
-        # Subprocess failed → no token_usage row, per spec §4.3.
-        error_summary = (full_stderr or full_stdout or "").strip()
-        if error_summary:
-            error_summary = f": {error_summary}"
+        if on_started is not None:
+            on_started(proc.pid)
+        try:
+            stdout, stderr = proc.communicate(input=input_text, timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            # Drain pipes so we don't leak FDs on the retry-free path.
+            try:
+                proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            return ExecutorResult(
+                success=False,
+                duration_seconds=int(time.monotonic() - start_time),
+                session_id=sid,
+                error=f"Session timed out after {timeout_seconds} seconds",
+            )
+        full_stdout = stdout or ""
+        full_stderr = stderr or ""
+        stdout_tail = full_stdout[-_TAIL_BYTES:]
+        stderr_tail = full_stderr[-_TAIL_BYTES:]
+        # Normalize the rate-limit signal centrally so every provider sets the
+        # same field (issue #85). Sniff both streams — providers vary on whether
+        # the limit message lands on stdout (Claude, rc=0) or stderr.
+        rate_limited = is_rate_limit_signature(full_stdout + "\n" + full_stderr)
+        if proc.returncode != 0:
+            # Subprocess failed → no token_usage row, per spec §4.3.
+            error_summary = (full_stderr or full_stdout or "").strip()
+            if error_summary:
+                error_summary = f": {error_summary}"
+            return ExecutorResult(
+                success=False,
+                duration_seconds=int(time.monotonic() - start_time),
+                session_id=sid,
+                returncode=proc.returncode,
+                stdout_tail=stdout_tail,
+                stderr_tail=stderr_tail,
+                error=f"Command exited with code {proc.returncode}{error_summary}",
+                rate_limited=rate_limited,
+            )
+        token_usage: TokenUsage | None = None
+        if usage_parser is not None:
+            try:
+                token_usage = usage_parser(full_stdout)
+            except Exception as exc:  # parser must never break the task
+                logger.warning("usage parser raised: %s", exc)
+                token_usage = None
+        agent_session_id: str | None = None
+        if session_id_parser is not None:
+            try:
+                agent_session_id = session_id_parser(full_stdout)
+            except Exception as exc:  # parser must never break the task
+                logger.warning("session-id parser raised: %s", exc)
+                agent_session_id = None
         return ExecutorResult(
-            success=False,
+            success=True,
             duration_seconds=int(time.monotonic() - start_time),
             session_id=sid,
             returncode=proc.returncode,
             stdout_tail=stdout_tail,
             stderr_tail=stderr_tail,
-            error=f"Command exited with code {proc.returncode}{error_summary}",
+            token_usage=token_usage,
+            agent_session_id=agent_session_id,
+            rate_limited=rate_limited,
         )
-    token_usage: TokenUsage | None = None
-    if usage_parser is not None:
-        try:
-            token_usage = usage_parser(full_stdout)
-        except Exception as exc:  # parser must never break the task
-            logger.warning("usage parser raised: %s", exc)
-            token_usage = None
-    agent_session_id: str | None = None
-    if session_id_parser is not None:
-        try:
-            agent_session_id = session_id_parser(full_stdout)
-        except Exception as exc:  # parser must never break the task
-            logger.warning("session-id parser raised: %s", exc)
-            agent_session_id = None
-    return ExecutorResult(
-        success=True,
-        duration_seconds=int(time.monotonic() - start_time),
-        session_id=sid,
-        returncode=proc.returncode,
-        stdout_tail=stdout_tail,
-        stderr_tail=stderr_tail,
-        token_usage=token_usage,
-        agent_session_id=agent_session_id,
-    )
+
+    from runtime.orchestrator.throttle import get_throttle
+
+    return get_throttle().run(provider, _launch, on_throttle_event)
 
 
 class ClaudeExecutor:
@@ -291,6 +339,7 @@ class ClaudeExecutor:
         timeout_seconds: int = 1800,
         on_started: Callable[[int], None] | None = None,
         resume_session_id: str | None = None,
+        on_throttle_event: "OnThrottleEvent | None" = None,
     ) -> ExecutorResult:
         # The workspace's .claude/settings.json `permissions.allow` list is not
         # honoured in headless `-p` mode (observed empirically: Claude Code
@@ -328,6 +377,8 @@ class ClaudeExecutor:
             on_started=on_started,
             usage_parser=_parse_claude_usage,
             session_id_parser=_parse_claude_session_id,
+            provider="claude",
+            on_throttle_event=on_throttle_event,
         )
 
 
@@ -343,6 +394,7 @@ class CodexExecutor:
         session_id: str | None = None,
         timeout_seconds: int = 1800,
         on_started: Callable[[int], None] | None = None,
+        on_throttle_event: "OnThrottleEvent | None" = None,
     ) -> ExecutorResult:
         cmd = [
             self._cli_path,
@@ -371,6 +423,8 @@ class CodexExecutor:
             input_text=prompt,
             on_started=on_started,
             usage_parser=_parse_codex_usage,
+            provider="codex",
+            on_throttle_event=on_throttle_event,
         )
 
 
@@ -399,6 +453,7 @@ class OpencodeExecutor:
         session_id: str | None = None,
         timeout_seconds: int = 1800,
         on_started: Callable[[int], None] | None = None,
+        on_throttle_event: "OnThrottleEvent | None" = None,
     ) -> ExecutorResult:
         cmd = [
             self._cli_path,
@@ -417,6 +472,8 @@ class OpencodeExecutor:
             timeout_seconds,
             on_started=on_started,
             usage_parser=_parse_opencode_usage,
+            provider="opencode",
+            on_throttle_event=on_throttle_event,
         )
 
 
@@ -439,6 +496,7 @@ class PiExecutor:
         session_id: str | None = None,
         timeout_seconds: int = 1800,
         on_started: Callable[[int], None] | None = None,
+        on_throttle_event: "OnThrottleEvent | None" = None,
     ) -> ExecutorResult:
         cmd = [
             self._cli_path,
@@ -454,6 +512,8 @@ class PiExecutor:
             timeout_seconds,
             on_started=on_started,
             usage_parser=_parse_pi_usage,
+            provider="pi",
+            on_throttle_event=on_throttle_event,
         )
 
 

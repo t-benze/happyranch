@@ -50,12 +50,12 @@ def db(runtime: OrgPaths) -> Database:
 
 
 def _result(*, success=False, error=None, returncode=None,
-            stdout_tail="", stderr_tail=""):
+            stdout_tail="", stderr_tail="", rate_limited=False):
     from runtime.orchestrator.executors import ExecutorResult
     return ExecutorResult(
         success=success, duration_seconds=1, session_id="sess",
         returncode=returncode, stdout_tail=stdout_tail,
-        stderr_tail=stderr_tail, error=error,
+        stderr_tail=stderr_tail, error=error, rate_limited=rate_limited,
     )
 
 
@@ -119,6 +119,31 @@ def test_classify_timeout_beats_rate_limit_string():
         stdout_tail="(some hit your limit · resets text earlier in session)",
     )
     assert _classify_failure_kind(r, None, mode="session_failure") == "session_timeout"
+
+
+def test_classify_prefers_rate_limited_field_without_string_signature():
+    """issue #85: the normalized ExecutorResult.rate_limited field classifies as
+    rate_limit even when no legacy string signature is present in the tails."""
+    from runtime.orchestrator.run_step import _classify_failure_kind
+    r = _result(success=False, returncode=1, stderr_tail="boom", rate_limited=True)
+    assert _classify_failure_kind(r, None, mode="session_failure") == "rate_limit"
+
+
+def test_classify_rate_limited_field_beats_executor_error():
+    """A non-zero rc that would otherwise be 'executor_error' is classified as
+    rate_limit when the normalized field is set — the field is preferred."""
+    from runtime.orchestrator.run_step import _classify_failure_kind
+    r = _result(success=False, returncode=137, stderr_tail="killed", rate_limited=True)
+    assert _classify_failure_kind(r, None, mode="session_failure") == "rate_limit"
+
+
+def test_classify_string_fallback_still_works_when_field_unset():
+    """Back-compat: results that predate the field (rate_limited=False) still
+    classify via the legacy stdout/stderr string heuristic."""
+    from runtime.orchestrator.run_step import _classify_failure_kind
+    r = _result(success=False, returncode=1,
+                stderr_tail="HTTP 429: rate limit exceeded", rate_limited=False)
+    assert _classify_failure_kind(r, None, mode="session_failure") == "rate_limit"
 
 
 # ---------------------------------------------------------------------------
