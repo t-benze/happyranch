@@ -117,6 +117,22 @@ def _build_session_launch_argv(
     slave_fd: int,
     cwd: Path,
 ) -> list[str]:
+    # The system assistant launches its executor straight through this PTY and
+    # never goes through CodexExecutor.run, so the localhost-network override
+    # that org agents get must be re-applied here for codex. Codex's
+    # `workspace-write` sandbox blocks all outbound sockets by default,
+    # including localhost; without this override the assistant's `happyranch`
+    # CLI calls die with `httpx.ConnectError: [Errno 1] Operation not permitted`
+    # (the same TASK-080 class of failure CodexExecutor guards against —
+    # see runtime/orchestrator/executors.py). `-c` is a global codex option
+    # (`Usage: codex [OPTIONS] [PROMPT]`), placed immediately after the
+    # executable. claude/opencode don't use Codex sandboxing, so they get
+    # nothing.
+    codex_network_override = (
+        ["-c", "sandbox_workspace_write.network_access=true"]
+        if os.path.basename(argv[0]) == "codex"
+        else []
+    )
     return [
         sys.executable,
         "-m",
@@ -127,6 +143,7 @@ def _build_session_launch_argv(
         str(cwd),
         "--",
         executable,
+        *codex_network_override,
         *argv[1:],
     ]
 
