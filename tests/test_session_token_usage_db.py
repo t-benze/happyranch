@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 from runtime.infrastructure.database import Database
-from runtime.models import TokenUsage
+from runtime.models import TaskRecord, TaskStatus, TokenUsage
 
 
 def _usage(input_tokens=100, output_tokens=50, **kw):
@@ -372,3 +372,90 @@ def test_insert_token_usage_supports_dream_scope(db: Database):
     assert len(rows) == 1
     assert rows[0]["scope_type"] == "dream"
     assert rows[0]["scope_id"] == "DREAM-001"
+
+
+def test_aggregate_by_failed_task_groups_per_task_and_agent(db: Database):
+    # FAILED tasks contribute; non-failed tasks (completed/blocked) are excluded.
+    db.insert_task(TaskRecord(id="T-FAIL-1", brief="x", status=TaskStatus.FAILED))
+    db.insert_task(TaskRecord(id="T-FAIL-2", brief="x", status=TaskStatus.FAILED))
+    db.insert_task(TaskRecord(id="T-DONE", brief="x", status=TaskStatus.COMPLETED))
+    db.insert_task(TaskRecord(id="T-BLOCKED", brief="x", status=TaskStatus.BLOCKED))
+
+    # T-FAIL-1: two agents -> two rollup rows.
+    db.insert_session_token_usage(
+        task_id="T-FAIL-1", agent="dev", session_id="s1", executor="claude",
+        token_usage=_usage(input_tokens=10, output_tokens=5),
+    )
+    db.insert_session_token_usage(
+        task_id="T-FAIL-1", agent="dev", session_id="s2", executor="claude",
+        token_usage=_usage(input_tokens=20, output_tokens=10, reasoning_tokens=3),
+    )
+    db.insert_session_token_usage(
+        task_id="T-FAIL-1", agent="qa", session_id="s3", executor="codex",
+        token_usage=_usage(input_tokens=100, output_tokens=40),
+    )
+    # T-FAIL-2: single agent.
+    db.insert_session_token_usage(
+        task_id="T-FAIL-2", agent="dev", session_id="s4", executor="claude",
+        token_usage=_usage(input_tokens=7, output_tokens=3),
+    )
+    # Excluded: completed + blocked tasks must not appear.
+    db.insert_session_token_usage(
+        task_id="T-DONE", agent="dev", session_id="s5", executor="claude",
+        token_usage=_usage(input_tokens=999, output_tokens=999),
+    )
+    db.insert_session_token_usage(
+        task_id="T-BLOCKED", agent="dev", session_id="s6", executor="claude",
+        token_usage=_usage(input_tokens=888, output_tokens=888),
+    )
+
+    rollup = db.aggregate_session_token_usage_by_failed_task()
+    keyed = {(r["task_id"], r["agent"]): r for r in rollup}
+
+    # Only the two failed tasks appear; non-failed excluded entirely.
+    assert {r["task_id"] for r in rollup} == {"T-FAIL-1", "T-FAIL-2"}
+
+    dev1 = keyed[("T-FAIL-1", "dev")]
+    assert dev1["sessions"] == 2
+    assert dev1["input_tokens"] == 30
+    assert dev1["output_tokens"] == 15
+    assert dev1["reasoning_tokens"] == 3
+    # total = input + output + reasoning
+    assert dev1["total_tokens"] == 48
+
+    qa1 = keyed[("T-FAIL-1", "qa")]
+    assert qa1["sessions"] == 1
+    assert qa1["input_tokens"] == 100
+    assert qa1["output_tokens"] == 40
+
+    dev2 = keyed[("T-FAIL-2", "dev")]
+    assert dev2["sessions"] == 1
+    assert dev2["input_tokens"] == 7
+
+
+def test_aggregate_by_failed_task_empty_when_no_failed_tasks(db: Database):
+    db.insert_task(TaskRecord(id="T-DONE", brief="x", status=TaskStatus.COMPLETED))
+    db.insert_session_token_usage(
+        task_id="T-DONE", agent="dev", session_id="s1", executor="claude",
+        token_usage=_usage(input_tokens=10),
+    )
+    assert db.aggregate_session_token_usage_by_failed_task() == []
+
+
+def test_aggregate_by_failed_task_filters_compose(db: Database):
+    db.insert_task(TaskRecord(id="T-FAIL-1", brief="x", status=TaskStatus.FAILED))
+    db.insert_task(TaskRecord(id="T-FAIL-2", brief="x", status=TaskStatus.FAILED))
+    db.insert_session_token_usage(
+        task_id="T-FAIL-1", agent="dev", session_id="s1", executor="claude",
+        token_usage=_usage(input_tokens=10),
+    )
+    db.insert_session_token_usage(
+        task_id="T-FAIL-2", agent="dev", session_id="s2", executor="claude",
+        token_usage=_usage(input_tokens=20),
+    )
+    # agent filter AND-composes with the failed-status JOIN.
+    rollup = db.aggregate_session_token_usage_by_failed_task(task_id="T-FAIL-1")
+    assert len(rollup) == 1
+    assert rollup[0]["task_id"] == "T-FAIL-1"
+    assert rollup[0]["agent"] == "dev"
+    assert rollup[0]["input_tokens"] == 10

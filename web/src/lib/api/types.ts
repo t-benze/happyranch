@@ -251,6 +251,28 @@ export interface HealthResponse {
 }
 
 // ---------------------------------------------------------------------------
+// System assistant
+// ---------------------------------------------------------------------------
+
+/** Mirror of runtime/system_assistant.py::AssistantState. */
+export type AssistantState = 'uninitialized' | 'configured' | 'stale_or_broken';
+
+/** Mirror of runtime/system_assistant.py::AssistantStatus. */
+export interface AssistantStatus {
+  state: AssistantState;
+  selected_executor: string | null;
+  workspace_path: string | null;
+  detail: string | null;
+}
+
+/** Body of POST /assistant/register. */
+export interface AssistantRegisterBody {
+  executor: string;
+  command: string;
+  argv: string[];
+}
+
+// ---------------------------------------------------------------------------
 // Agents
 // ---------------------------------------------------------------------------
 

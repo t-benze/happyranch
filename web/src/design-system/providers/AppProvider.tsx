@@ -22,6 +22,7 @@ import { useState, type ReactNode } from 'react';
 import { TooltipProvider } from '@/design-system/primitives/Tooltip';
 import { DataContext } from './DataContext';
 import { realAgentsApi } from './_real-agents';
+import { realAssistantApi } from './_real-assistant';
 import { realAuditApi } from './_real-audit';
 import { realDashboardApi } from './_real-dashboard';
 import { realHealthApi } from './_real-health';
@@ -76,6 +77,7 @@ export function AppProvider({ children, client }: AppProviderProps): JSX.Element
           talks: realTalksApi,
           teams: realTeamsApi,
           health: realHealthApi,
+          assistant: realAssistantApi,
           jobs: realJobsApi,
           useThreadRoutes: useRealThreadRoutes,
           useTasksRoutes: useRealTasksRoutes,

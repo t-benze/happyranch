@@ -43,6 +43,17 @@ happyranch assistant
 `happyranch assistant` attaches to the daemon-owned PTY for the runtime-global
 system assistant. It does not take `--org`.
 
+The same surface is founder-facing in the web app at `/orgs/:slug/assistant`
+(`web/src/features/system-assistant/`): status / init / register / repair over the
+four HTTP routes (now in `INCLUDED_PATHS` with TS mirrors in
+`web/src/lib/api/assistant.ts`), plus an in-browser xterm.js terminal attached to the
+`/assistant/session` WebSocket PTY. Because browsers cannot set the `Authorization`
+header on `new WebSocket()`, the browser authenticates by offering the bearer token as
+the `Sec-WebSocket-Protocol` subprotocol `happyranch.bearer.<token>` (THR-006 Option A);
+the daemon validates and echoes it back. The WS route is not in OpenAPI (FastAPI omits
+WS), so it is not part of the `openapi-coverage` route set. See
+`docs/superpowers/specs/2026-06-12-system-assistant-web-ui-design.md`.
+
 Full founder-facing CLI docs: `skills/happyranch/SKILL.md`.
 
 ## Agent-Side Callbacks

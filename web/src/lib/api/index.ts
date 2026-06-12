@@ -1,5 +1,6 @@
 export * as agents from './agents';
 export * as artifacts from './artifacts';
+export * as assistant from './assistant';
 export * as audit from './audit';
 export * as dashboard from './dashboard';
 export * as dreams from './dreams';

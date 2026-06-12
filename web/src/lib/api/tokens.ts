@@ -37,7 +37,13 @@ export interface TokenUsageRollup {
   total_tokens: number;
 }
 
-export type TokenUsageGroupBy = 'agent' | 'task' | 'scope' | 'thread' | 'talk';
+export type TokenUsageGroupBy =
+  | 'agent'
+  | 'task'
+  | 'failed_task'
+  | 'scope'
+  | 'thread'
+  | 'talk';
 
 export interface ListTokensParams {
   task_id?: string;
