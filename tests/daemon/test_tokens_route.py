@@ -378,3 +378,67 @@ def test_tokens_group_by_task_with_task_id_filter(
     assert rollup[0]["sessions"] == 1
     assert rollup[0]["input_tokens"] == 100
     assert rollup[0]["output_tokens"] == 50
+
+
+def _seed_failed(state) -> None:
+    """Two failed tasks + one completed task, each with token usage."""
+    from runtime.models import TaskRecord, TaskStatus
+
+    state.db.insert_task(TaskRecord(id="TASK-F1", brief="x", status=TaskStatus.FAILED))
+    state.db.insert_task(TaskRecord(id="TASK-F2", brief="x", status=TaskStatus.FAILED))
+    state.db.insert_task(TaskRecord(id="TASK-OK", brief="x", status=TaskStatus.COMPLETED))
+    state.db.insert_session_token_usage(
+        task_id="TASK-F1", agent="dev_agent", session_id="s1", executor="claude",
+        token_usage=TokenUsage(input_tokens=10, output_tokens=5),
+    )
+    state.db.insert_session_token_usage(
+        task_id="TASK-F1", agent="qa_engineer", session_id="s2", executor="codex",
+        token_usage=TokenUsage(input_tokens=20, output_tokens=8),
+    )
+    state.db.insert_session_token_usage(
+        task_id="TASK-F2", agent="dev_agent", session_id="s3", executor="claude",
+        token_usage=TokenUsage(input_tokens=7, output_tokens=3),
+    )
+    # Completed task usage must be excluded from the failed-task rollup.
+    state.db.insert_session_token_usage(
+        task_id="TASK-OK", agent="dev_agent", session_id="s4", executor="claude",
+        token_usage=TokenUsage(input_tokens=999, output_tokens=999),
+    )
+
+
+def test_tokens_group_by_failed_task_returns_rollup(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    _seed_failed(org_state)
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tokens",
+        params={"group_by": "failed_task"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert "rollup" in body and "rows" not in body
+    keyed = {(row["task_id"], row["agent"]): row for row in body["rollup"]}
+    # Only failed tasks appear; the completed task is excluded.
+    assert {row["task_id"] for row in body["rollup"]} == {"TASK-F1", "TASK-F2"}
+    assert keyed[("TASK-F1", "dev_agent")]["sessions"] == 1
+    assert keyed[("TASK-F1", "dev_agent")]["input_tokens"] == 10
+    assert keyed[("TASK-F1", "qa_engineer")]["input_tokens"] == 20
+    assert keyed[("TASK-F2", "dev_agent")]["input_tokens"] == 7
+
+
+def test_tokens_group_by_failed_task_composes_with_agent_filter(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    _seed_failed(org_state)
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tokens",
+        params={"group_by": "failed_task", "agent": "qa_engineer"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    rollup = r.json()["rollup"]
+    assert len(rollup) == 1
+    assert rollup[0]["task_id"] == "TASK-F1"
+    assert rollup[0]["agent"] == "qa_engineer"
+    assert rollup[0]["input_tokens"] == 20
