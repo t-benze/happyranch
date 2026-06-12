@@ -20,7 +20,7 @@ Agents are dynamic — a manager can propose new agents via the `manage-agent` s
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.12+
 - [uv](https://docs.astral.sh/uv/)
 - At least one supported agent CLI installed and authenticated:
   - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)
