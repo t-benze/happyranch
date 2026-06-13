@@ -69,6 +69,10 @@ def test_claude_executor_launches_with_current_semantics(mock_subprocess, tmp_pa
     call_args = mock_subprocess.Popen.call_args
     cmd = call_args[0][0]
     assert cmd[:2] == ["claude", "-p"]
+    # The executor prepends the shared session-lifetime preamble to every prompt.
+    sent = cmd[2]
+    assert sent.endswith("Implement Alipay support")
+    assert "<session-lifetime>" in sent
     assert "--permission-mode" in cmd
     assert "auto" in cmd
     assert "--allowedTools" in cmd
@@ -138,9 +142,10 @@ def test_codex_executor_launches_exec_with_explicit_sandbox(mock_subprocess, tmp
     c_index = cmd.index("-c")
     assert cmd[c_index + 1] == "sandbox_workspace_write.network_access=true"
     # Prompt is passed through communicate(input=...), not Popen(input=...).
-    assert mock_subprocess.Popen.return_value.communicate.call_args.kwargs[
-        "input"
-    ] == "Implement Alipay support"
+    # The executor prepends the shared session-lifetime preamble to every prompt.
+    sent = mock_subprocess.Popen.return_value.communicate.call_args.kwargs["input"]
+    assert sent.endswith("Implement Alipay support")
+    assert "<session-lifetime>" in sent
 
 
 @patch("runtime.orchestrator.executors.subprocess")
@@ -206,7 +211,10 @@ def test_opencode_executor_launches_run_with_workspace_dir(mock_subprocess, tmp_
     assert "--format" in cmd
     assert cmd[cmd.index("--format") + 1] == "json"
     assert "--prompt" in cmd
-    assert cmd[cmd.index("--prompt") + 1] == "Implement Alipay support"
+    # The executor prepends the shared session-lifetime preamble to every prompt.
+    sent = cmd[cmd.index("--prompt") + 1]
+    assert sent.endswith("Implement Alipay support")
+    assert "<session-lifetime>" in sent
     # Permission discipline lives in opencode.json — bypass flag must NOT be present.
     assert "--dangerously-skip-permissions" not in cmd
 
@@ -230,7 +238,10 @@ def test_pi_executor_launches_print_mode_with_json_events(mock_subprocess, tmp_p
 
     cmd = mock_subprocess.Popen.call_args[0][0]
     assert cmd[:2] == ["pi", "-p"]
-    assert cmd[cmd.index("-p") + 1] == "Implement Alipay support"
+    # The executor prepends the shared session-lifetime preamble to every prompt.
+    sent = cmd[cmd.index("-p") + 1]
+    assert sent.endswith("Implement Alipay support")
+    assert "<session-lifetime>" in sent
     assert "--mode" in cmd
     assert cmd[cmd.index("--mode") + 1] == "json"
 

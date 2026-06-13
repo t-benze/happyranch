@@ -276,6 +276,30 @@ def _run_command(
     )
 
 
+# Prepended to every executor prompt, regardless of session type. A
+# daemon-spawned session is a single non-interactive `... -p`/headless process:
+# when the model yields its turn, the subprocess exits. Agents otherwise treat
+# the session like an interactive loop and defer their callback to a "next
+# turn" via ScheduleWakeup or a backgrounded command — neither of which
+# survives process exit — so the session ends with no completion callback and
+# the task auto-rejects (TASK-295 class of failure). The invariant is
+# session-type agnostic (task `report-completion`, thread reply, etc.) because
+# every session kind funnels through this shared executor layer.
+_SESSION_LIFETIME_PREAMBLE = (
+    "<session-lifetime>\n"
+    "This is a single non-interactive turn. When you end your turn this "
+    "process exits immediately — there is NO later turn, no scheduled "
+    "wake-up, and any backgrounded command is killed on exit. Complete every "
+    "callback this session requires (e.g. `happyranch report-completion`, a "
+    "thread reply) as the FINAL action of THIS turn, before you yield. Never "
+    "use ScheduleWakeup or a `run_in_background` command to defer it. If you "
+    "are waiting on something external (CI, a deploy, a long build), do NOT "
+    "wait for it to finish: report your terminal-or-in-flight status now, and "
+    "use a `job` or `thread` for genuine async work.\n"
+    "</session-lifetime>\n\n"
+)
+
+
 class ClaudeExecutor:
     def __init__(self, claude_cli_path: str, permission_mode: str, settings: Settings, paths: OrgPaths | None = None) -> None:
         self._cli_path = claude_cli_path
@@ -292,6 +316,7 @@ class ClaudeExecutor:
         on_started: Callable[[int], None] | None = None,
         resume_session_id: str | None = None,
     ) -> ExecutorResult:
+        prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         # The workspace's .claude/settings.json `permissions.allow` list is not
         # honoured in headless `-p` mode (observed empirically: Claude Code
         # 2.1.105 records `command_permissions.allowedTools: []` regardless of
@@ -344,6 +369,7 @@ class CodexExecutor:
         timeout_seconds: int = 1800,
         on_started: Callable[[int], None] | None = None,
     ) -> ExecutorResult:
+        prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         cmd = [
             self._cli_path,
             "exec",
@@ -400,6 +426,7 @@ class OpencodeExecutor:
         timeout_seconds: int = 1800,
         on_started: Callable[[int], None] | None = None,
     ) -> ExecutorResult:
+        prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         cmd = [
             self._cli_path,
             "run",
@@ -440,6 +467,7 @@ class PiExecutor:
         timeout_seconds: int = 1800,
         on_started: Callable[[int], None] | None = None,
     ) -> ExecutorResult:
+        prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         cmd = [
             self._cli_path,
             "-p",
