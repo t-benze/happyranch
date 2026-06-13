@@ -517,6 +517,129 @@ The bot replies with a confirmation card containing the new task ID and an `happ
 
 **Security:** the configured `chat_id` is the trust boundary — anyone with write access to that chat can dispatch tasks and trigger revisits.
 
+### Nightly dreaming
+
+Dreaming lets each agent run a private nightly reflection on a per-org schedule. It is **opt-in and inert until configured**: with no `dreaming` block (or `enabled: false`), no agent is ever dreamed and behavior is unchanged. Add a `dreaming` block to `<runtime>/orgs/<slug>/org/config.yaml` to turn it on:
+
+```yaml
+dreaming:
+  enabled: true
+  schedule:
+    time: "02:00"                # local wall-clock HH:MM (24h); default 02:00
+    timezone: "Asia/Shanghai"    # any IANA zone; default UTC
+    catch_up_on_startup: true    # default true — run a missed slot once on daemon startup
+  agents:
+    mode: all                    # all | whitelist; default all
+    include: []                  # agents dreamed when mode=whitelist
+    exclude: []                  # always subtracted from the selected set, in both modes
+```
+
+| Field | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | Master switch. `false` or block absent → dreaming is a no-op for this org. |
+| `schedule.time` | `"02:00"` | Local clock time of the nightly slot, `HH:MM` (hour `00`–`23`). |
+| `schedule.timezone` | `"UTC"` | IANA timezone name; an unknown zone fails config validation. |
+| `schedule.catch_up_on_startup` | `true` | If the daemon was down over a slot, run it once on next startup. |
+| `agents.mode` | `"all"` | `all` selects every eligible agent; `whitelist` selects only `agents.include`. |
+| `agents.include` | `[]` | Agent names dreamed when `mode: whitelist`. |
+| `agents.exclude` | `[]` | Agent names always removed from the selection, under either mode. |
+
+Eligible agents are the approved agent files under `org/agents/*.md` that have a workspace. Unknown names in `include`/`exclude` fail config validation so a typo never silently skips an agent.
+
+Founder CLI:
+
+```bash
+happyranch dreams status --org <slug> [--agent <name>]   # scheduler state / next slot
+happyranch dreams list   --org <slug> [--agent <name>] [--limit 20] [--json]
+happyranch dreams show   --org <slug> DREAM-NNN [--json]
+```
+
+### Working hours
+
+Working hours wake selected agents on a configured cadence so they perform their standing duties without the founder dispatching each one. A wake is a **trigger, not the work**: on each wake the agent reads its own `## Routine Tasks` checklist (below) and self-dispatches one normal root task per routine.
+
+Like dreaming, it is **opt-in and inert until configured**. An agent is woken only when all of these hold: `working_hours.enabled: true`, the agent is selected, a schedule resolves for it, **and** its agent file has a non-empty `## Routine Tasks` section. Absent any of these, no `work_hours` row is created and behavior is unchanged.
+
+Schedules resolve through three tiers, overlaid **leaf-by-leaf**, lowest to highest precedence: org `default` → `teams.<team>` (the agent's team) → `overrides.<agent>`. Each tier may set only the leaves it wants to change; unset leaves inherit from the tier below.
+
+```yaml
+working_hours:
+  enabled: true
+
+  # Tier 1 (lowest): org-wide default schedule.
+  default:
+    mode: windowed                 # windowed | continuous
+    window:
+      start: "09:00"               # local clock HH:MM (hour 00-23)
+      end: "18:00"                 # must be after start
+      timezone: "Asia/Shanghai"    # IANA zone for this window
+    interval: "2h"                 # Nh / Nm, positive; must be <= window length
+    days: [mon, tue, wed, thu, fri]  # subset of mon..sun
+    catch_up_on_startup: true      # default true
+
+  # Which agents are eligible at all (same semantics as dreaming.agents).
+  agents:
+    mode: all                      # all | whitelist; default all
+    include: []                    # used when mode=whitelist
+    exclude: []                    # always subtracted last
+
+  # Tier 2 (middle): per-team partial overrides, keyed by the agent's team.
+  teams:
+    customer_service:
+      mode: continuous             # interval-only; window + days are ignored
+      interval: "30m"              # must evenly divide 24h in continuous mode
+
+  # Tier 3 (highest): per-agent partial overrides, keyed by agent name.
+  overrides:
+    dev_agent:
+      interval: "1h"               # inherits windowed 09:00-18:00 weekdays from default
+```
+
+Worked example. With the config above:
+
+- **`dev_agent`** (a `windowed` agent) inherits `mode: windowed`, the `09:00`–`18:00` `Asia/Shanghai` window and `mon`–`fri` days from `default`, and only overrides `interval` to `1h` — so it wakes hourly on weekday business hours.
+- **A customer-service agent** picks up `mode: continuous` + `interval: "30m"` from its team tier — interval-only, no window or days — so it wakes every 30 minutes around the clock.
+
+| Field | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | Master switch. `false` or block absent → working hours is a no-op for this org. |
+| `mode` | — (required after resolution) | `windowed` (uses `window` + `days`) or `continuous` (interval-only; `window`/`days` ignored). |
+| `window.start` / `window.end` | — (required for `windowed`) | Local `HH:MM`; `start` must be before `end`. |
+| `window.timezone` | — | IANA zone for the window. In `continuous` mode supply a bare `timezone:` leaf instead. |
+| `interval` | — (required after resolution) | `Nh` or `Nm`, positive. `windowed`: must be ≤ window length. `continuous`: must evenly divide 24h. |
+| `days` | — (required for `windowed`) | List from `mon, tue, wed, thu, fri, sat, sun`. |
+| `catch_up_on_startup` | `true` | Run a missed slot once on daemon startup. |
+| `agents.mode` / `include` / `exclude` | `all` / `[]` / `[]` | Eligibility selection, identical to `dreaming.agents`. |
+
+#### `## Routine Tasks` (per-agent)
+
+The routines a wake dispatches come from a `## Routine Tasks` H2 section in the agent's file at `org/agents/<name>.md`. Each top-level list item under that heading becomes one self-dispatched root task; prose before the first list item is shared preamble (context, not a task). An **absent or empty section means the agent has no routines and is never woken**, even if otherwise selected. (Up to 20 routines per wake are dispatched; any beyond that are dropped and the count is recorded.)
+
+```markdown
+## Routine Tasks
+
+Run each item as an independent task; keep them surgical.
+
+- Triage any GitHub issues opened since the last wake and label them.
+- Check open PRs for failing CI and ping the author on any that have been red > 2h.
+```
+
+A `continuous` customer-service agent's file would carry its own list, e.g.:
+
+```markdown
+## Routine Tasks
+
+- Sweep the unanswered-tickets queue and draft replies for anything older than 15 minutes.
+```
+
+Founder CLI:
+
+```bash
+happyranch work-hours status --org <slug> [--agent <name>]   # scheduler state / next slot
+happyranch work-hours list   --org <slug> [--agent <name>] [--limit 20] [--json]
+happyranch work-hours show   --org <slug> WORKHOUR-NNN [--json]
+```
+
 ## Agent Workspaces
 
 Each agent runs in its own persistent workspace inside the org directory. After `happyranch init-agent`, each workspace contains:
