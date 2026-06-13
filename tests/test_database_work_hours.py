@@ -30,6 +30,7 @@ _EXPECTED_COLUMNS = {
     "ended_at": (0, None),
     "status": (1, "'pending'"),
     "routine_count": (1, "0"),
+    "dropped_count": (1, "0"),
     "spawned_task_ids": (0, None),
     "spawned_task_count": (1, "0"),
     "summary": (0, None),
