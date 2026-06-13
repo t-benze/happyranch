@@ -28,7 +28,9 @@ router = APIRouter(dependencies=[require_token()])
 # Terminal statuses for task-active gating. Referenced by both the cancel
 # route (l.~700) and the agent-callback routes (submit_completion, submit_progress)
 # so it lives at module scope rather than next to its first use.
-_TERMINAL_TASK_STATUSES = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED})
+_TERMINAL_TASK_STATUSES = frozenset({
+    TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.RESOLVED_SUPERSEDED,
+})
 
 
 def _require_task_active(task_id: str, task: TaskRecord | None) -> None:

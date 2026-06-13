@@ -135,11 +135,25 @@ def test_completion_report_output_dir_defaults_to_none():
     assert r.output_dir is None
 
 
-def test_task_status_has_five_values():
+def test_task_status_values():
     from runtime.models import TaskStatus
     assert {s.value for s in TaskStatus} == {
         "pending", "in_progress", "blocked", "completed", "failed",
+        "resolved_superseded",
     }
+
+
+def test_resolved_superseded_joins_every_terminal_predicate():
+    """A missed terminal consumer that treats RESOLVED_SUPERSEDED as
+    non-terminal (or crashes on it) is the main risk of this additive status,
+    so lock the wiring across all three predicates."""
+    from runtime.models import TaskStatus
+    from runtime.orchestrator.run_step import TERMINAL_STATES
+    from runtime.daemon.routes.tasks import _TERMINAL_TASK_STATUSES
+    from runtime.daemon.org_state import OrgState
+    assert TaskStatus.RESOLVED_SUPERSEDED in TERMINAL_STATES
+    assert TaskStatus.RESOLVED_SUPERSEDED in _TERMINAL_TASK_STATUSES
+    assert TaskStatus.RESOLVED_SUPERSEDED in OrgState._TERMINAL_STATUS_TO_EVENT
 
 
 def test_block_kind_has_delegated_and_escalated():

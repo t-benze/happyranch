@@ -14,6 +14,14 @@ class TaskStatus(StrEnum):
     BLOCKED = "blocked"
     COMPLETED = "completed"
     FAILED = "failed"
+    # Terminal. A blocked(escalated|delegated) task whose follow-up work moved
+    # to a human-authorized continuation (founder `revisit` / thread-dispatch)
+    # is closed here instead of re-running — distinct from COMPLETED so the
+    # audit trail shows it was superseded, not finished by an agent. Joins
+    # every terminal predicate (TERMINAL_STATES, _TERMINAL_TASK_STATUSES,
+    # _TERMINAL_STATUS_TO_EVENT). See protocol/05c-orchestrator.md and
+    # docs/agent-guides/features-and-invariants.md (escalation).
+    RESOLVED_SUPERSEDED = "resolved_superseded"
 
 
 class BlockKind(StrEnum):

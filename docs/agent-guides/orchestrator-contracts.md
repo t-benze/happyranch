@@ -25,9 +25,11 @@ Fields: `name`, `team`, `role`, `executor`, `description`, `allow_rules`, `repos
 
 ## Task Status Vocabularies
 
-Agents self-report `status="completed"|"blocked"` via `happyranch report-completion`. The orchestrator-owned `TaskStatus` on the `tasks` row is distinct: `pending`, `in_progress`, `blocked`, `completed`, or `failed`.
+Agents self-report `status="completed"|"blocked"` via `happyranch report-completion`. The orchestrator-owned `TaskStatus` on the `tasks` row is distinct: `pending`, `in_progress`, `blocked`, `completed`, `failed`, or `resolved_superseded`.
 
 `block_kind` specifies why a task is blocked: `delegated`, `escalated`, or `blocked_on_job`.
+
+`resolved_superseded` is a terminal state, peer to `completed`/`failed`. A `blocked(escalated|delegated)` task transitions here when a human-authorized continuation (founder `revisit`, or a founder/manager thread-dispatch) names it in lineage: the predecessor is closed (block_kind cleared, audit cites the continuation root task_id) instead of being re-run. The close never re-enqueues the superseded task; it still wakes a delegated parent via the normal parent-wake path, and the delegated close is gated on all children being terminal so no live sibling is abandoned or SIGTERM'd. It joins every terminal predicate (`TERMINAL_STATES`, `_TERMINAL_TASK_STATUSES`, `_TERMINAL_STATUS_TO_EVENT`). Query the backlog with `happyranch tasks --status blocked --block-kind escalated|delegated`.
 
 ## Manager Decision Contract
 

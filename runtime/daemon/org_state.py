@@ -70,6 +70,10 @@ class OrgState:
     _TERMINAL_STATUS_TO_EVENT = {
         TaskStatus.COMPLETED: "task_complete",
         TaskStatus.FAILED: "task_failed",
+        # A superseded-resolution is a non-failure terminal, so it replays as a
+        # completion-class event; `_synthesize_terminal_event` carries the
+        # precise label in `outcome` ("resolved_superseded").
+        TaskStatus.RESOLVED_SUPERSEDED: "task_complete",
     }
 
     def __post_init__(self) -> None:

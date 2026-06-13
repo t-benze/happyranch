@@ -151,7 +151,7 @@ There are four types of permission blocks, each handled differently:
 
 ### Task state machine
 
-#### States (5)
+#### States (6)
 - **pending** — created; no agent subprocess started yet.
 - **in_progress** — an agent subprocess is running *right now* for this task.
 - **blocked** — suspended, awaiting an external event. Requires `block_kind`:
@@ -159,6 +159,7 @@ There are four types of permission blocks, each handled differently:
   - `escalated` — waiting on the founder (via `happyranch resolve-escalation`).
 - **completed** — terminal, success.
 - **failed** — terminal, unsuccessful.
+- **resolved_superseded** — terminal. A `blocked(escalated|delegated)` task closed because a human-authorized continuation (founder `revisit`, or a founder/manager thread-dispatch) superseded it; the close cites the successor task and does **not** re-run the work.
 
 #### Transitions
 
@@ -168,6 +169,7 @@ pending → (run_step pickup) → in_progress → { completed | failed | blocked
 blocked(delegated) → (child terminates, sibling sweep clears) → in_progress (re-entry)
 blocked(escalated) → (POST /resolve-escalation approve) → pending (re-enqueued; manager's next prompt carries an ESCALATION RESOLVED header with the founder's rationale)
 blocked(escalated) → (POST /resolve-escalation reject)  → failed (cascade-fails the parent if any)
+blocked(escalated|delegated) → (revisit / thread-dispatch names it in lineage) → resolved_superseded (terminal; block_kind cleared, audit cites the continuation root task_id; NO re-enqueue. The delegated close is gated on all children being terminal and never cascade-SIGTERMs live siblings)
 ```
 
 #### Execution model

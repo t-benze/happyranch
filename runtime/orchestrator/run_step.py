@@ -25,7 +25,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-TERMINAL_STATES = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED})
+TERMINAL_STATES = frozenset({
+    TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.RESOLVED_SUPERSEDED,
+})
 
 
 def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:

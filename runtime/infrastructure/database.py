@@ -1236,7 +1236,7 @@ class Database:
                SET status = ?, block_kind = ?, note = ?, updated_at = ?
                WHERE id = ?
                  AND cancelled_at IS NULL
-                 AND status NOT IN ('completed', 'failed')""",
+                 AND status NOT IN ('completed', 'failed', 'resolved_superseded')""",
             (TaskStatus.BLOCKED.value, BlockKind.ESCALATED.value, reason, now, task_id),
         )
         self._conn.commit()
@@ -1311,7 +1311,9 @@ class Database:
         row = cursor.fetchone()
         if row is None:
             return False
-        if row["cancelled_at"] is not None or row["status"] in ("completed", "failed"):
+        if row["cancelled_at"] is not None or row["status"] in (
+            "completed", "failed", "resolved_superseded",
+        ):
             return False
         # Both writes under same RLock — atomic vs cancel route.
         # insert_task() commits, but the lock is still held until this method

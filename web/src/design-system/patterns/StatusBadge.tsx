@@ -15,7 +15,8 @@ export type TaskStatus =
   | 'in_progress'
   | 'blocked'
   | 'completed'
-  | 'failed';
+  | 'failed'
+  | 'resolved_superseded';
 export type BlockKind = 'delegated' | 'escalated';
 
 interface StatusBadgeProps {
@@ -25,7 +26,8 @@ interface StatusBadgeProps {
 
 // Reuse tokens to keep the palette tight. The mapping mirrors semantic
 // kinship: in_progress→open (green), completed→archived (grey),
-// failed→abandoned tint (red).
+// failed→abandoned tint (red), resolved_superseded→archived (grey, a clean
+// non-failure terminal like completed).
 const STATUS_CLASS: Record<ThreadStatus | TaskStatus, string> = {
   open: 'bg-tier-green-tint text-status-open',
   archived: 'border border-border-subtle bg-transparent text-status-archived',
@@ -34,10 +36,12 @@ const STATUS_CLASS: Record<ThreadStatus | TaskStatus, string> = {
   blocked: 'bg-tier-yellow-tint text-status-blocked',
   completed: 'border border-border-subtle bg-transparent text-status-archived',
   failed: 'bg-tier-red-tint text-status-abandoned',
+  resolved_superseded: 'border border-border-subtle bg-transparent text-status-archived',
 };
 
 function label(status: ThreadStatus | TaskStatus, blockKind?: BlockKind | null): string {
   if (status === 'blocked' && blockKind) return `blocked (${blockKind})`;
+  if (status === 'resolved_superseded') return 'resolved (superseded)';
   return status;
 }
 
@@ -68,6 +72,7 @@ export const meta = {
       "blocked",
       "completed",
       "failed",
+      "resolved_superseded",
     ],
   },
   consumes: ["components.badge"],
