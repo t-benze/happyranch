@@ -97,7 +97,7 @@ Traps:
 - `revisit_of_task_id` is a sideways reference, not an ancestor edge. `walk_ancestors` must not follow it.
 - Per-task overrides copied to revisit roots are narrow; auto-revisit copies only `session_timeout_seconds`.
 - Auto-resolve to `resolved_superseded` must NEVER fire without a recorded successor task_id / thread ruling in the audit citation. The negative case (un-ruled escalation stays blocked) is a tested invariant.
-- On the thread-dispatch path the continuation carries an optional `resolves <task_id>`, honored **only** for a manager-authorized dispatch (the founder supersedes via `revisit`). A worker self-dispatch naming `resolves` is rejected `403 thread_supersede_not_authorized` and never closes the predecessor — the maker-checker boundary, tested both directions.
+- On the thread-dispatch path the continuation carries an optional `resolves <task_id>`, honored **only** for a manager-authorized dispatch (the founder supersedes via `revisit`). A worker self-dispatch naming `resolves` is rejected `403 thread_supersede_not_authorized` and never closes the predecessor — the maker-checker boundary, tested both directions. The authorization is **own-team**, not merely manager-status: the supersede additionally requires `predecessor.team == the dispatcher's own team`, so a manager naming another team's blocked task is rejected `403 thread_supersede_cross_team_forbidden` and `resolves` is not a cross-team task-close primitive (own-team authority, matching delegation target scope elsewhere).
 
 ## Session-Timeout Auto-Route
 

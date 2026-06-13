@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -604,6 +606,57 @@ def test_worker_self_dispatch_cannot_supersede_predecessor(
     assert "escalation_superseded" not in [
         e["action"] for e in org_state.db.get_audit_logs("TASK-900")
     ]
+
+
+def test_manager_cannot_supersede_other_teams_predecessor(
+    tmp_home, app, org_state, auth_headers,
+):
+    """Own-team authority (THR-018 §3a): a team-A manager (thread participant)
+    naming a blocked(escalated) predecessor OWNED BY team B may NOT auto-close
+    it. The supersede is gated on predecessor.team == the dispatcher's OWN team,
+    not merely manager-status — so `resolves` is not a cross-team task-close
+    primitive. 403, and team B's predecessor (status, block_kind, audit rows,
+    notification) is wholly untouched; no successor root is orphaned."""
+    client = TestClient(app)
+    _seed_agent(org_state, "engineering_head", role="manager")  # team "engineering"
+    tid, token = _start_thread(client, org_state, auth_headers, recipient="engineering_head")
+    # Predecessor owned by a DIFFERENT team, blocked(escalated).
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-900", brief="other team's escalation", team="marketing",
+        assigned_agent="growth_agent",
+        status=TaskStatus.BLOCKED, block_kind=BlockKind.ESCALATED,
+    ))
+    # An open escalation notification we can assert is NOT consumed.
+    org_state.db.mint_escalation_notification(
+        "fmsg-cross-team", org_slug="alpha", task_id="TASK-900", chat_id="chat-1",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/dispatch",
+        json={"thread_id": tid, "invocation_token": token,
+              "dispatcher": "engineering_head",
+              "brief": "poach the other team's task", "resolves": "TASK-900"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 403, resp.text
+    detail = resp.json()["detail"]
+    assert detail["code"] == "thread_supersede_cross_team_forbidden"
+    assert detail["resolves"] == "TASK-900"
+    assert detail["predecessor_team"] == "marketing"
+    assert detail["dispatcher_team"] == "engineering"
+    # Team B's predecessor is wholly untouched — no cross-team close primitive.
+    pred = org_state.db.get_task("TASK-900")
+    assert pred.status == TaskStatus.BLOCKED
+    assert pred.block_kind == BlockKind.ESCALATED
+    assert "escalation_superseded" not in [
+        e["action"] for e in org_state.db.get_audit_logs("TASK-900")
+    ]
+    # The escalation notification was NOT consumed.
+    assert len(org_state.db.list_open_notifications_for_task("TASK-900")) == 1
+    # The gate rejects before task creation — no successor root is orphaned.
+    inv = org_state.db.get_invocation_any_status(token)
+    assert inv.dispatched_task_id is None
 
 
 # ---------------------------------------------------------------------------

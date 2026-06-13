@@ -1048,6 +1048,20 @@ async def dispatch_from_thread_endpoint(
                 status_code=404,
                 detail={"code": "predecessor_not_found", "resolves": resolves},
             )
+        # Own-team authority: a manager may only supersede a predecessor in their
+        # OWN team. `is_manager` alone is insufficient — without this gate a
+        # team-A manager who is a thread participant could close team B's blocked
+        # task (the delegation target scope is own-team/self everywhere else).
+        # Rejected before eligibility/supersede so team B's task is never touched
+        # and before task creation so no successor root is orphaned.
+        if predecessor.team != dispatcher_team:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "thread_supersede_cross_team_forbidden",
+                        "resolves": resolves,
+                        "predecessor_team": predecessor.team,
+                        "dispatcher_team": dispatcher_team},
+            )
         pred_block_kind = _eligible_supersede_block_kind(org, predecessor)
         if pred_block_kind is None:
             raise HTTPException(
