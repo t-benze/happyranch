@@ -51,6 +51,7 @@ def _sweep_on_startup(
     """
     # Imported lazily to avoid a startup-time cycle (run_step → daemon types).
     from runtime.orchestrator.run_step import (
+        TERMINAL_STATES,
         _enqueue_parent_if_waiting,
         _maybe_spawn_auto_revisit,
         _notify_failure_if_eligible,
@@ -103,8 +104,7 @@ def _sweep_on_startup(
             queue.enqueue(slug, task_id)
         elif t.status == TaskStatus.BLOCKED and t.block_kind == BlockKind.DELEGATED:
             children = [db.get_task(cid) for cid in db.get_children(task_id)]
-            if all(c is not None and c.status in {TaskStatus.COMPLETED,
-                                                  TaskStatus.FAILED}
+            if all(c is not None and c.status in TERMINAL_STATES
                    for c in children):
                 queue.enqueue(slug, task_id)
         # blocked(ESCALATED) falls through: founder owns the transition.

@@ -79,6 +79,9 @@ def test_org_state_terminal_event_map_covers_new_statuses():
     assert OrgState._TERMINAL_STATUS_TO_EVENT == {
         TaskStatus.COMPLETED: "task_complete",
         TaskStatus.FAILED: "task_failed",
+        # resolved_superseded replays as a completion-class terminal; the
+        # precise label rides in the synthesized event's `outcome`.
+        TaskStatus.RESOLVED_SUPERSEDED: "task_complete",
     }
 
 

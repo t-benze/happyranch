@@ -330,6 +330,7 @@ def test_updates_this_week_combines_kb_and_learnings(
 
 from runtime.orchestrator.dashboard_summary import (
     compute_escalations_open, compute_active_by_team,
+    compute_stale_blocked_escalations,
 )
 
 
@@ -357,6 +358,70 @@ def test_escalations_reads_question_from_audit_payload(db: Database) -> None:
     assert rows[0].task_id == "TASK-101"
     assert rows[0].question == "Photo licensing unclear"
     assert rows[0].age_seconds == 30 * 60
+
+
+def test_stale_blocked_escalations_empty(db: Database) -> None:
+    now = datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc)
+    assert compute_stale_blocked_escalations(db, now=now) == []
+
+
+def test_stale_blocked_escalations_includes_old_escalated_and_delegated(db: Database) -> None:
+    now = datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc)
+    old = now - timedelta(hours=30)  # past the 24h threshold
+    for tid, kind in [("TASK-1", "escalated"), ("TASK-2", "delegated")]:
+        db._conn.execute(
+            "INSERT INTO tasks (id, brief, assigned_agent, team, status, block_kind, created_at, updated_at) "
+            "VALUES (?, 'b', 'dev_agent', 'engineering', 'blocked', ?, ?, ?)",
+            (tid, kind, old.isoformat(), old.isoformat()),
+        )
+    db._conn.commit()
+    rows = compute_stale_blocked_escalations(db, now=now)
+    assert {r.task_id for r in rows} == {"TASK-1", "TASK-2"}
+    assert {r.block_kind for r in rows} == {"escalated", "delegated"}
+    assert all(r.age_seconds == 30 * 3600 for r in rows)
+
+
+def test_stale_blocked_escalations_excludes_fresh_and_other_kinds(db: Database) -> None:
+    now = datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc)
+    fresh = now - timedelta(hours=2)   # within threshold → excluded
+    old = now - timedelta(hours=30)
+    rows_to_insert = [
+        ("TASK-fresh", "escalated", fresh),       # too new
+        ("TASK-job", "blocked_on_job", old),      # wrong block_kind
+    ]
+    for tid, kind, ts in rows_to_insert:
+        db._conn.execute(
+            "INSERT INTO tasks (id, brief, assigned_agent, team, status, block_kind, created_at, updated_at) "
+            "VALUES (?, 'b', 'dev_agent', 'engineering', 'blocked', ?, ?, ?)",
+            (tid, kind, ts.isoformat(), ts.isoformat()),
+        )
+    # A completed task is never blocked → excluded.
+    db._conn.execute(
+        "INSERT INTO tasks (id, brief, assigned_agent, team, status, created_at, updated_at) "
+        "VALUES ('TASK-done', 'b', 'dev_agent', 'engineering', 'completed', ?, ?)",
+        (old.isoformat(), old.isoformat()),
+    )
+    db._conn.commit()
+    assert compute_stale_blocked_escalations(db, now=now) == []
+
+
+def test_stale_blocked_escalations_oldest_first(db: Database) -> None:
+    now = datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc)
+    older = now - timedelta(hours=48)
+    newer = now - timedelta(hours=26)
+    db._conn.execute(
+        "INSERT INTO tasks (id, brief, assigned_agent, team, status, block_kind, created_at, updated_at) "
+        "VALUES ('TASK-newer', 'b', 'dev_agent', 'engineering', 'blocked', 'escalated', ?, ?)",
+        (newer.isoformat(), newer.isoformat()),
+    )
+    db._conn.execute(
+        "INSERT INTO tasks (id, brief, assigned_agent, team, status, block_kind, created_at, updated_at) "
+        "VALUES ('TASK-older', 'b', 'dev_agent', 'engineering', 'blocked', 'delegated', ?, ?)",
+        (older.isoformat(), older.isoformat()),
+    )
+    db._conn.commit()
+    rows = compute_stale_blocked_escalations(db, now=now)
+    assert [r.task_id for r in rows] == ["TASK-older", "TASK-newer"]
 
 
 def test_active_by_team_groups_in_progress(db: Database) -> None:
@@ -447,6 +512,7 @@ def test_compose_returns_full_shape(
     assert len(resp.heartbeat) == 24
     assert resp.narrative_counts.completed_today == 0
     assert resp.escalations == []
+    assert resp.stale_blocked_escalations == []
     assert resp.active_by_team == []
     assert resp.recent_activity == []
     assert resp.updates_this_week == []

@@ -41,6 +41,14 @@ class EscalationRow(BaseModel):
     age_seconds: int
 
 
+class StaleBlockedRow(BaseModel):
+    task_id: str
+    agent: str
+    team: str
+    block_kind: Literal["escalated", "delegated"]
+    age_seconds: int
+
+
 class ActiveByTeam(BaseModel):
     team: str
     count: int
@@ -75,6 +83,7 @@ class DashboardSummaryResponse(BaseModel):
     heartbeat: list[HeartbeatBucket]
     narrative_counts: NarrativeCounts
     escalations: list[EscalationRow]
+    stale_blocked_escalations: list[StaleBlockedRow]
     active_by_team: list[ActiveByTeam]
     recent_activity: list[ActivityRow]
     updates_this_week: list[UpdateRow]
@@ -363,6 +372,47 @@ def compute_escalations_open(db: Database, *, now: datetime) -> list[EscalationR
     return result
 
 
+# Tasks blocked(escalated|delegated) longer than this are "stale" — they look
+# open but the follow-up work has almost certainly moved elsewhere (a thread
+# ruling + fresh dispatch). Surfaced as a recurring visible metric so the
+# backlog can never silently rot again (THR-018 tier #3, §3c). 24h sits at the
+# low end of the spec's 24–48h window so a forgotten escalation shows up within
+# a working day.
+_STALE_BLOCKED_THRESHOLD_HOURS = 24
+
+
+def compute_stale_blocked_escalations(
+    db: Database, *, now: datetime, threshold_hours: int = _STALE_BLOCKED_THRESHOLD_HOURS,
+) -> list[StaleBlockedRow]:
+    """Tasks in blocked(escalated|delegated) older than `threshold_hours`.
+
+    Age is measured from ``updated_at`` (the last transition, i.e. when the
+    task entered its blocked state). Oldest first. Read-only aggregation."""
+    cutoff = (now - timedelta(hours=threshold_hours)).isoformat()
+    rows = db.fetch_all_readonly(
+        "SELECT id, assigned_agent, team, block_kind, updated_at FROM tasks "
+        "WHERE status = 'blocked' AND block_kind IN ('escalated', 'delegated') "
+        "  AND updated_at < ? "
+        "ORDER BY updated_at ASC",
+        (cutoff,),
+    )
+    moment = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    result: list[StaleBlockedRow] = []
+    for r in rows:
+        updated = datetime.fromisoformat(r["updated_at"])
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=timezone.utc)
+        age = int((moment - updated).total_seconds())
+        result.append(StaleBlockedRow(
+            task_id=r["id"],
+            agent=r["assigned_agent"],
+            team=r["team"],
+            block_kind=r["block_kind"],
+            age_seconds=max(0, age),
+        ))
+    return result
+
+
 def compute_active_by_team(db: Database) -> list[ActiveByTeam]:
     """tasks with status='in_progress' grouped by team."""
     rows = db.fetch_all_readonly(
@@ -454,6 +504,7 @@ def compose_dashboard_summary(
         heartbeat=compute_heartbeat_24h(db, now=now),
         narrative_counts=compute_narrative_counts_today(db, now=now, kb_store=kb_store),
         escalations=compute_escalations_open(db, now=now),
+        stale_blocked_escalations=compute_stale_blocked_escalations(db, now=now),
         active_by_team=compute_active_by_team(db),
         recent_activity=compute_recent_activity(db, n=6),
         updates_this_week=compute_updates_this_week(db, now=now, kb_store=kb_store, n=12),

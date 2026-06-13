@@ -167,10 +167,39 @@ def test_cmd_tasks_calls_list_endpoint(capsys):
     ]}
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
          patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
-        args = MagicMock(org=None, limit=20)
+        args = MagicMock(org=None, limit=20, status=None, block_kind=None)
         cmd_tasks(args)
     fake.get.assert_called_once_with("/api/v1/orgs/alpha/tasks", params={"limit": 20})
     assert "TASK-001" in capsys.readouterr().out
+
+
+def test_tasks_status_and_block_kind_args_parse():
+    parser = build_parser()
+    args = parser.parse_args(
+        ["tasks", "--status", "blocked", "--block-kind", "escalated"],
+    )
+    assert args.status == "blocked"
+    assert args.block_kind == "escalated"
+    # Defaults are None so the filters are omitted from the query unless set.
+    bare = parser.parse_args(["tasks"])
+    assert bare.status is None
+    assert bare.block_kind is None
+
+
+def test_cmd_tasks_forwards_status_filters(capsys):
+    from cli.main import cmd_tasks
+
+    fake = MagicMock()
+    fake.get.return_value.status_code = 200
+    fake.get.return_value.json.return_value = {"tasks": []}
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
+        args = MagicMock(org=None, limit=20, status="blocked", block_kind="escalated")
+        cmd_tasks(args)
+    fake.get.assert_called_once_with(
+        "/api/v1/orgs/alpha/tasks",
+        params={"limit": 20, "status": "blocked", "block_kind": "escalated"},
+    )
 
 
 def test_cmd_tasks_shows_assigned_agent_column(capsys):

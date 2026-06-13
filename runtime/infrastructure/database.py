@@ -916,10 +916,13 @@ class Database:
         limit: int = 20,
         assigned_agent: str | None = None,
         before_task_id: str | None = None,
+        status: TaskStatus | str | None = None,
+        block_kind: BlockKind | str | None = None,
     ) -> list[TaskRecord]:
         # Cursor pagination: callers pass the last task_id of the previous page
         # as `before_task_id`; we resolve its created_at and emit the next page
-        # using (created_at, id) DESC for a stable tiebreak.
+        # using (created_at, id) DESC for a stable tiebreak. `status` and
+        # `block_kind` are optional equality filters (read-only backlog queries).
         cursor_created_at: str | None = None
         if before_task_id is not None:
             row = self._conn.execute(
@@ -929,30 +932,31 @@ class Database:
                 return []
             cursor_created_at = row["created_at"]
 
-        if assigned_agent is not None and cursor_created_at is not None:
-            cursor = self._conn.execute(
-                "SELECT * FROM tasks WHERE assigned_agent = ? "
-                "AND (created_at, id) < (?, ?) "
-                "ORDER BY created_at DESC, id DESC LIMIT ?",
-                (assigned_agent, cursor_created_at, before_task_id, limit),
-            )
-        elif assigned_agent is not None:
-            cursor = self._conn.execute(
-                "SELECT * FROM tasks WHERE assigned_agent = ? "
-                "ORDER BY created_at DESC, id DESC LIMIT ?",
-                (assigned_agent, limit),
-            )
-        elif cursor_created_at is not None:
-            cursor = self._conn.execute(
-                "SELECT * FROM tasks WHERE (created_at, id) < (?, ?) "
-                "ORDER BY created_at DESC, id DESC LIMIT ?",
-                (cursor_created_at, before_task_id, limit),
-            )
-        else:
-            cursor = self._conn.execute(
-                "SELECT * FROM tasks ORDER BY created_at DESC, id DESC LIMIT ?",
-                (limit,),
-            )
+        # Assemble the WHERE clause dynamically: with four optional filter
+        # dimensions (agent, status, block_kind, cursor) an if/elif tree would
+        # be 2**4 branches. StrEnum members stringify to their value, so str()
+        # accepts both the enum and a raw query-param string.
+        conditions: list[str] = []
+        params: list = []
+        if assigned_agent is not None:
+            conditions.append("assigned_agent = ?")
+            params.append(assigned_agent)
+        if status is not None:
+            conditions.append("status = ?")
+            params.append(str(status))
+        if block_kind is not None:
+            conditions.append("block_kind = ?")
+            params.append(str(block_kind))
+        if cursor_created_at is not None:
+            conditions.append("(created_at, id) < (?, ?)")
+            params.extend([cursor_created_at, before_task_id])
+        where = f"WHERE {' AND '.join(conditions)} " if conditions else ""
+        params.append(limit)
+        cursor = self._conn.execute(
+            f"SELECT * FROM tasks {where}"
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            tuple(params),
+        )
         return [
             TaskRecord(
                 id=row["id"],
@@ -1232,7 +1236,7 @@ class Database:
                SET status = ?, block_kind = ?, note = ?, updated_at = ?
                WHERE id = ?
                  AND cancelled_at IS NULL
-                 AND status NOT IN ('completed', 'failed')""",
+                 AND status NOT IN ('completed', 'failed', 'resolved_superseded')""",
             (TaskStatus.BLOCKED.value, BlockKind.ESCALATED.value, reason, now, task_id),
         )
         self._conn.commit()
@@ -1307,7 +1311,9 @@ class Database:
         row = cursor.fetchone()
         if row is None:
             return False
-        if row["cancelled_at"] is not None or row["status"] in ("completed", "failed"):
+        if row["cancelled_at"] is not None or row["status"] in (
+            "completed", "failed", "resolved_superseded",
+        ):
             return False
         # Both writes under same RLock — atomic vs cancel route.
         # insert_task() commits, but the lock is still held until this method

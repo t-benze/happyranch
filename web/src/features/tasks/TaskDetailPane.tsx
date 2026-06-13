@@ -66,6 +66,7 @@ const TERMINAL_STATUSES: ReadonlySet<string> = new Set([
   'failed',
   'completed',
   'cancelled',
+  'resolved_superseded',
 ]);
 
 export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {

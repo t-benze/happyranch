@@ -1388,12 +1388,20 @@
             "query"
           ],
           [
+            "block_kind",
+            "query"
+          ],
+          [
             "limit",
             "query"
           ],
           [
             "slug",
             "path"
+          ],
+          [
+            "status",
+            "query"
           ]
         ],
         "responses": [

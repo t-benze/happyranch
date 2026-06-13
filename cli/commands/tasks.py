@@ -100,7 +100,12 @@ def cmd_tasks(args: argparse.Namespace) -> None:
     slug = resolve_org_slug(
         args_org=args.org, available=_shared._fetch_available_orgs(client),
     )
-    r = client.get(f"/api/v1/orgs/{slug}/tasks", params={"limit": args.limit})
+    params: dict = {"limit": args.limit}
+    if getattr(args, "status", None):
+        params["status"] = args.status
+    if getattr(args, "block_kind", None):
+        params["block_kind"] = args.block_kind
+    r = client.get(f"/api/v1/orgs/{slug}/tasks", params=params)
     if not _ok(r):
         return
     tasks = r.json()["tasks"]
@@ -829,6 +834,16 @@ def register(sub) -> None:
     p_tasks = sub.add_parser("tasks", help="List recent tasks")
     p_tasks.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
     p_tasks.add_argument("--limit", type=int, default=20, help="Max tasks to show")
+    p_tasks.add_argument(
+        "--status", default=None,
+        help="Filter by task status (e.g. blocked, in_progress, completed, "
+             "failed, pending, resolved_superseded)",
+    )
+    p_tasks.add_argument(
+        "--block-kind", dest="block_kind", default=None,
+        help="Filter by block kind (escalated, delegated, blocked_on_job); "
+             "most useful with --status blocked",
+    )
     p_tasks.set_defaults(func=cmd_tasks)
 
     p_audit = sub.add_parser("audit", help="Show filtered audit-log entries")

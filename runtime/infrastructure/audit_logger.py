@@ -453,6 +453,40 @@ class AuditLogger:
             payload={"new_root": new_root},
         )
 
+    def log_escalation_superseded(
+        self,
+        predecessor_task_id: str,
+        *,
+        successor_root: str,
+        prior_block_kind: str,
+        actor: str,
+        founder_note: str | None = None,
+        thread_id: str | None = None,
+    ) -> None:
+        """Record that a blocked(escalated|delegated) task was auto-resolved to
+        RESOLVED_SUPERSEDED because a human-authorized continuation
+        (`successor_root`) superseded it.
+
+        The `successor_root` citation IS the maker-checker evidence: this
+        transition NEVER fires without a concrete successor task_id, which only
+        exists because a human (founder `revisit` / founder-or-manager
+        thread-dispatch) authorized the continuation. `actor` records which
+        surface triggered it; `thread_id` (set on the thread-dispatch path)
+        cites the dispatching thread ruling. THR-018 tier #3, §3a.
+        """
+        self._db.insert_audit_log(
+            task_id=predecessor_task_id,
+            agent="founder",
+            action="escalation_superseded",
+            payload={
+                "successor_root": successor_root,
+                "prior_block_kind": prior_block_kind,
+                "actor": actor,
+                "founder_note": founder_note,
+                "thread_id": thread_id,
+            },
+        )
+
     def log_task_dispatched(
         self,
         *,

@@ -25,7 +25,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-TERMINAL_STATES = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED})
+TERMINAL_STATES = frozenset({
+    TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.RESOLVED_SUPERSEDED,
+})
 
 
 def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
@@ -1820,6 +1822,11 @@ def _maybe_post_thread_followup(
 
     Fire predicate (spec §4):
       - status == COMPLETED                                → always fire
+      - status == RESOLVED_SUPERSEDED                      → always fire (terminal,
+                                                             completion-class — a
+                                                             thread-originated task
+                                                             auto-resolved by a
+                                                             continuation; THR-018 §3a)
       - status == FAILED and not auto_revisit_spawned      → true terminal, fire
       - status == FAILED and auto_revisit_spawned          → no-op (revisit chain
                                                              will call this helper
@@ -1835,7 +1842,9 @@ def _maybe_post_thread_followup(
     # Predicate gate — first pass using caller's claim (cheap early-out).
     if status == TaskStatus.FAILED and auto_revisit_spawned:
         return
-    if status not in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+    if status not in (
+        TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.RESOLVED_SUPERSEDED,
+    ):
         return
 
     db = orch._db
@@ -1849,7 +1858,9 @@ def _maybe_post_thread_followup(
     # failed+cancelled_at; _complete() short-circuits in that race, leaving
     # the row at FAILED. Trust the DB, not the caller's claim.
     actual_status = terminal_task.status
-    if actual_status not in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+    if actual_status not in (
+        TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.RESOLVED_SUPERSEDED,
+    ):
         # Row isn't terminal yet — caller raced ahead of the DB write.
         # Bail; the eventual real terminal will re-enter this helper.
         return
@@ -1916,7 +1927,9 @@ def _maybe_post_thread_followup(
 
     # Build system payload using DB-actual status (not the caller's claim) so
     # a cancel race at Site D doesn't emit task_completed for a FAILED row.
-    kind_tag = "task_completed" if actual_status == TaskStatus.COMPLETED else "task_failed"
+    # Completion-class terminals (COMPLETED, RESOLVED_SUPERSEDED) → task_completed;
+    # only FAILED (incl. cancelled) maps to task_failed.
+    kind_tag = "task_failed" if actual_status == TaskStatus.FAILED else "task_completed"
     system_payload = {
         "kind_tag": kind_tag,
         "task_id": task_id,

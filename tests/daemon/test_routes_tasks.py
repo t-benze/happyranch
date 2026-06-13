@@ -64,6 +64,42 @@ def test_list_tasks_filter_by_assigned_agent(
     assert ids == ["TASK-A"]
 
 
+def test_list_tasks_filter_by_status_and_block_kind(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """?status=blocked&block_kind=escalated surfaces the escalation backlog in
+    one query (THR-018 tier #3, §3b)."""
+    from datetime import datetime, timezone
+    from runtime.models import TaskRecord, TaskStatus, BlockKind
+
+    now = datetime.now(timezone.utc)
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-ESC", brief="esc", team="engineering", assigned_agent="dev_agent",
+        status=TaskStatus.BLOCKED, block_kind=BlockKind.ESCALATED,
+        created_at=now, updated_at=now,
+    ))
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-DEL", brief="del", team="engineering", assigned_agent="dev_agent",
+        status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED,
+        created_at=now, updated_at=now,
+    ))
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-OK", brief="ok", team="engineering", assigned_agent="dev_agent",
+        status=TaskStatus.COMPLETED, created_at=now, updated_at=now,
+    ))
+
+    blocked = TestClient(app).get(
+        "/api/v1/orgs/alpha/tasks?status=blocked", headers=auth_headers,
+    ).json()
+    assert {t["task_id"] for t in blocked["tasks"]} == {"TASK-ESC", "TASK-DEL"}
+
+    escalated = TestClient(app).get(
+        "/api/v1/orgs/alpha/tasks?status=blocked&block_kind=escalated",
+        headers=auth_headers,
+    ).json()
+    assert [t["task_id"] for t in escalated["tasks"]] == ["TASK-ESC"]
+
+
 def test_list_tasks_cursor_pagination(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
@@ -1147,14 +1183,23 @@ def test_revisit_handles_escalated_predecessor(
         note="halted",
     )
     r = TestClient(app).post(
-        "/api/v1/orgs/alpha/tasks/TASK-052/revisit", json={}, headers=auth_headers,
+        "/api/v1/orgs/alpha/tasks/TASK-052/revisit", json={"founder_note": "ruled"},
+        headers=auth_headers,
     )
     assert r.status_code == 200
-    assert r.json()["predecessor_status"] == "blocked-escalated"
-    # Predecessor stays blocked(escalated) — revisit is not resolve-escalation.
+    body = r.json()
+    assert body["predecessor_status"] == "blocked-escalated"
+    # THR-018 tier #3 §3a: revisit now auto-resolves a blocked(escalated)
+    # predecessor to the terminal RESOLVED_SUPERSEDED, citing the continuation.
     pre = db.get_task("TASK-052")
-    assert pre.status == TaskStatus.BLOCKED
-    assert pre.block_kind == BlockKind.ESCALATED
+    assert pre.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert pre.block_kind is None
+    payload = next(
+        e["payload"] for e in db.get_audit_logs("TASK-052")
+        if e["action"] == "escalation_superseded"
+    )
+    assert payload["successor_root"] == body["new_root_task_id"]
+    assert payload["prior_block_kind"] == "escalated"
 
 
 def test_revisit_handles_completed_predecessor(

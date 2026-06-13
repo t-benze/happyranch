@@ -17,7 +17,10 @@ export type TaskStatus =
   | 'in_progress'
   | 'blocked'
   | 'completed'
-  | 'failed';
+  | 'failed'
+  // Terminal: blocked task closed because its follow-up moved to a
+  // human-authorized continuation (revisit / thread-dispatch).
+  | 'resolved_superseded';
 
 export type BlockKind = 'delegated' | 'escalated';
 

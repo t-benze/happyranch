@@ -88,12 +88,16 @@ Traps:
 
 `happyranch revisit <task-id>` spawns a new root task inheriting brief and team from a terminal predecessor. Old lineage is frozen. It is TTY-gated and has no `--yes` bypass. Spec: `docs/superpowers/specs/2026-04-21-opc-revisit-design.md`.
 
-Eligible predecessor states: failed, founder-cancelled failed, blocked/escalated, or completed.
+Eligible predecessor states: failed, founder-cancelled failed, blocked/escalated, blocked/delegated, or completed.
+
+**Auto-resolve forcing function (THR-018 tier #3).** When `revisit` (or a founder/manager thread-dispatch) creates a continuation whose predecessor root is `blocked(escalated|delegated)`, that predecessor is auto-transitioned to the terminal `resolved_superseded` state — block_kind cleared, audit citing the new continuation root task_id (+ founder note / thread ruling). This is the maker-checker boundary: auto-resolution fires **only** because a human authorized the continuation; an un-ruled escalation with no continuation is never auto-closed. The close does **not** re-enqueue the predecessor (it would otherwise spawn a wasted manager session), but it preserves parent-wake (`_enqueue_parent_if_waiting`) so a delegated parent still learns its branch reached terminal. The delegated close is gated on **all children being terminal** and never reuses the `cancel` cascade, so live siblings are never SIGTERM'd.
 
 Traps:
 
 - `revisit_of_task_id` is a sideways reference, not an ancestor edge. `walk_ancestors` must not follow it.
 - Per-task overrides copied to revisit roots are narrow; auto-revisit copies only `session_timeout_seconds`.
+- Auto-resolve to `resolved_superseded` must NEVER fire without a recorded successor task_id / thread ruling in the audit citation. The negative case (un-ruled escalation stays blocked) is a tested invariant.
+- On the thread-dispatch path the continuation carries an optional `resolves <task_id>`, honored **only** for a manager-authorized dispatch (the founder supersedes via `revisit`). A worker self-dispatch naming `resolves` is rejected `403 thread_supersede_not_authorized` and never closes the predecessor — the maker-checker boundary, tested both directions.
 
 ## Session-Timeout Auto-Route
 
@@ -143,6 +147,7 @@ Traps:
 - Only root tasks fire followups.
 - Dispatcher identity comes from the `task_dispatched` audit row.
 - Cross-thread enqueue uses `asyncio.run_coroutine_threadsafe(queue.put(job), main_loop)`.
+- Terminal gate is completion/failed **plus** `resolved_superseded` (completion-class → `task_completed` kind). A thread-originated task auto-resolved by a continuation must still emit its followup; missing this terminal silently drops the superseded state from the thread lifecycle.
 
 ## Dreams
 
