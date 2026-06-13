@@ -1183,14 +1183,23 @@ def test_revisit_handles_escalated_predecessor(
         note="halted",
     )
     r = TestClient(app).post(
-        "/api/v1/orgs/alpha/tasks/TASK-052/revisit", json={}, headers=auth_headers,
+        "/api/v1/orgs/alpha/tasks/TASK-052/revisit", json={"founder_note": "ruled"},
+        headers=auth_headers,
     )
     assert r.status_code == 200
-    assert r.json()["predecessor_status"] == "blocked-escalated"
-    # Predecessor stays blocked(escalated) — revisit is not resolve-escalation.
+    body = r.json()
+    assert body["predecessor_status"] == "blocked-escalated"
+    # THR-018 tier #3 §3a: revisit now auto-resolves a blocked(escalated)
+    # predecessor to the terminal RESOLVED_SUPERSEDED, citing the continuation.
     pre = db.get_task("TASK-052")
-    assert pre.status == TaskStatus.BLOCKED
-    assert pre.block_kind == BlockKind.ESCALATED
+    assert pre.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert pre.block_kind is None
+    payload = next(
+        e["payload"] for e in db.get_audit_logs("TASK-052")
+        if e["action"] == "escalation_superseded"
+    )
+    assert payload["successor_root"] == body["new_root_task_id"]
+    assert payload["prior_block_kind"] == "escalated"
 
 
 def test_revisit_handles_completed_predecessor(

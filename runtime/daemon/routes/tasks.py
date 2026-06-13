@@ -739,6 +739,22 @@ async def revisit_from_notification(
     predecessor = chain[-1]  # root is last; chain is [flagged, ..., root]
 
     prior_status = _classify_predecessor_status(predecessor)
+    # Gap-B (THR-018 §3): a blocked(delegated) predecessor is revisit-eligible
+    # only when ALL its children are terminal. Superseding it must never
+    # abandon — or cascade-SIGTERM — a live sibling, so a delegated parent with
+    # any in-flight child stays ineligible (falls into the 409 below). The
+    # all-terminal gate is the safety boundary for the non-cascading close.
+    if (
+        prior_status is None
+        and predecessor.status == TaskStatus.BLOCKED
+        and predecessor.block_kind == BlockKind.DELEGATED
+    ):
+        from runtime.orchestrator.run_step import TERMINAL_STATES
+        children = [org.db.get_task(c) for c in org.db.get_children(predecessor.id)]
+        if children and all(
+            c is not None and c.status in TERMINAL_STATES for c in children
+        ):
+            prior_status = "blocked-delegated"
     if prior_status is None:
         from runtime.models import BlockKind as _BK
         raise HTTPException(
@@ -789,6 +805,40 @@ async def revisit_from_notification(
         audit.log_revisit_spawned(
             predecessor_task_id=predecessor.id, new_root=new_id,
         )
+        # §3(a) forcing function: a blocked(escalated|delegated) predecessor is
+        # auto-resolved to the terminal RESOLVED_SUPERSEDED — block_kind
+        # cleared, audit citing the new continuation root (the maker-checker
+        # evidence). It is NOT re-enqueued (that would spawn a wasted manager
+        # session); parent-wake is preserved below. Distinct from the founder's
+        # manual `resolve-escalation approve`, which intentionally re-runs work.
+        if prior_status in ("blocked-escalated", "blocked-delegated"):
+            from datetime import datetime as _dt, timezone as _tz
+            prior_block_kind = (
+                "escalated" if prior_status == "blocked-escalated" else "delegated"
+            )
+            superseded_note = f"Resolved: superseded by continuation {new_id}"
+            if founder_note:
+                superseded_note += f" — {founder_note}"
+            org.db.update_task(
+                predecessor.id,
+                status=TaskStatus.RESOLVED_SUPERSEDED,
+                block_kind=None,
+                note=superseded_note,
+                completed_at=_dt.now(_tz.utc).isoformat(),
+            )
+            audit.log_escalation_superseded(
+                predecessor.id,
+                successor_root=new_id,
+                prior_block_kind=prior_block_kind,
+                actor=actor,
+                founder_note=founder_note,
+            )
+            # An escalated predecessor may have an open Feishu notification; the
+            # continuation resolves it, so consume any open rows.
+            for nrow in org.db.list_open_notifications_for_task(predecessor.id):
+                org.db.consume_escalation_notification(
+                    nrow["feishu_message_id"], consumed_by="superseded",
+                )
         # When the founder uses the CLI to revisit, any open Feishu failure
         # notification row for this task is implicitly resolved — consume
         # it with cli-fallback so a later in-thread REVISIT reply silently
@@ -802,6 +852,14 @@ async def revisit_from_notification(
                     )
 
     enqueue_task(state, org.slug, new_id)
+
+    # Preserve parent-wake: the superseded predecessor just reached a terminal,
+    # so a delegated parent (if any) must learn its branch is done. Mirrors the
+    # reject path in resolve_escalation_in_process; runs outside the db_lock.
+    # The superseded task itself is NEVER re-enqueued (no queue.put_nowait).
+    if prior_status in ("blocked-escalated", "blocked-delegated"):
+        from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+        _enqueue_parent_if_waiting(org.orchestrator, predecessor.id)
 
     return RevisitResult(
         new_root_id=new_id,
