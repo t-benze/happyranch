@@ -511,6 +511,33 @@ def test_no_dispatched_from_thread_no_op(orch_with_db):
     assert not any(r["action"].startswith("thread_") for r in audit_rows)
 
 
+def test_superseded_thread_dispatched_task_fires_followup(orch_with_db):
+    """THR-018 §3a: RESOLVED_SUPERSEDED is a terminal (completion-class) status.
+
+    A thread-dispatched task auto-resolved to RESOLVED_SUPERSEDED by a
+    continuation must emit its task-followup so the thread-visible lifecycle
+    doesn't silently drop the new terminal state. Regression for the HIGH#2
+    missed-terminal-consumer gap.
+    """
+    from runtime.orchestrator.run_step import _maybe_post_thread_followup
+    orch = orch_with_db
+    _seed_dispatched_root(orch)
+    orch._db.update_task("TASK-1", status=TaskStatus.RESOLVED_SUPERSEDED)
+    _maybe_post_thread_followup(orch, "TASK-1",
+                                status=TaskStatus.RESOLVED_SUPERSEDED,
+                                auto_revisit_spawned=False)
+    invs = orch._db.list_thread_invocations("THR-1")
+    followups = [i for i in invs if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP]
+    assert len(followups) == 1
+    # Completion-class: the system message uses the task_completed kind_tag.
+    sys_msgs = [
+        m for m in orch._db.list_thread_messages("THR-1")
+        if m.kind == ThreadMessageKind.SYSTEM
+    ]
+    assert sys_msgs[-1].system_payload["kind_tag"] == "task_completed"
+    assert sys_msgs[-1].system_payload["status"] == "resolved_superseded"
+
+
 # ---------------------------------------------------------------------------
 # Task 8 (enqueue fix) — verify cross-thread enqueue via run_coroutine_threadsafe
 # ---------------------------------------------------------------------------

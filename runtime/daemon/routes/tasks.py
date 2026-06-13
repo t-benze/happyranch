@@ -697,6 +697,92 @@ def _classify_predecessor_status(task: TaskRecord) -> str | None:
     return None
 
 
+def _delegated_children_all_terminal(org, predecessor_id: str) -> bool:
+    """True iff a blocked(delegated) predecessor has at least one child and ALL
+    its children are terminal.
+
+    The non-cascading safety gate (Gap-B): a delegated parent may be superseded
+    only when no live sibling would be abandoned — and never via cancel's
+    SIGTERM cascade. THR-018 tier #3.
+    """
+    from runtime.orchestrator.run_step import TERMINAL_STATES
+    children = [org.db.get_task(c) for c in org.db.get_children(predecessor_id)]
+    return bool(children) and all(
+        c is not None and c.status in TERMINAL_STATES for c in children
+    )
+
+
+def _eligible_supersede_block_kind(org, predecessor: TaskRecord) -> str | None:
+    """Return 'escalated'/'delegated' if `predecessor` is a blocked task that a
+    human-authorized continuation may auto-resolve to RESOLVED_SUPERSEDED, else
+    None.
+
+    Delegated requires all children terminal (Gap-B safety gate). Used by the
+    thread-dispatch supersede path, which names its predecessor explicitly via
+    `resolves`; the revisit path derives the same eligibility from its lineage
+    walk + `_classify_predecessor_status`. THR-018 tier #3 §3a.
+    """
+    if predecessor.status != TaskStatus.BLOCKED:
+        return None
+    if predecessor.block_kind == BlockKind.ESCALATED:
+        return "escalated"
+    if (
+        predecessor.block_kind == BlockKind.DELEGATED
+        and _delegated_children_all_terminal(org, predecessor.id)
+    ):
+        return "delegated"
+    return None
+
+
+def _supersede_predecessor_locked(
+    org,
+    audit,
+    *,
+    predecessor_id: str,
+    successor_root: str,
+    prior_block_kind: str,
+    actor: str,
+    note_suffix: str | None = None,
+    thread_id: str | None = None,
+) -> None:
+    """Transition a blocked(escalated|delegated) predecessor to the terminal
+    RESOLVED_SUPERSEDED status — block_kind cleared, audit citing the concrete
+    successor root (the maker-checker evidence) and, on the thread path, the
+    dispatching thread ruling.
+
+    Caller MUST hold ``org.db_lock``. Gap-A: this NEVER re-enqueues the
+    predecessor (no ``queue.put_nowait``) — a terminal close must not spawn a
+    wasted manager session. The caller runs ``_enqueue_parent_if_waiting`` AFTER
+    releasing the lock so a delegated parent still learns its branch reached
+    terminal. Shared by the founder-`revisit` and founder/manager thread-dispatch
+    continuation paths so the two surfaces cannot drift. THR-018 tier #3 §3a.
+    """
+    note = f"Resolved: superseded by continuation {successor_root}"
+    if note_suffix:
+        note += f" — {note_suffix}"
+    org.db.update_task(
+        predecessor_id,
+        status=TaskStatus.RESOLVED_SUPERSEDED,
+        block_kind=None,
+        note=note,
+        completed_at=datetime.now(timezone.utc).isoformat(),
+    )
+    audit.log_escalation_superseded(
+        predecessor_id,
+        successor_root=successor_root,
+        prior_block_kind=prior_block_kind,
+        actor=actor,
+        founder_note=note_suffix,
+        thread_id=thread_id,
+    )
+    # An escalated/delegated predecessor may carry an open Feishu escalation
+    # notification; the continuation resolves it, so consume any open rows.
+    for nrow in org.db.list_open_notifications_for_task(predecessor_id):
+        org.db.consume_escalation_notification(
+            nrow["feishu_message_id"], consumed_by="superseded",
+        )
+
+
 async def revisit_from_notification(
     org,
     state,
@@ -748,13 +834,9 @@ async def revisit_from_notification(
         prior_status is None
         and predecessor.status == TaskStatus.BLOCKED
         and predecessor.block_kind == BlockKind.DELEGATED
+        and _delegated_children_all_terminal(org, predecessor.id)
     ):
-        from runtime.orchestrator.run_step import TERMINAL_STATES
-        children = [org.db.get_task(c) for c in org.db.get_children(predecessor.id)]
-        if children and all(
-            c is not None and c.status in TERMINAL_STATES for c in children
-        ):
-            prior_status = "blocked-delegated"
+        prior_status = "blocked-delegated"
     if prior_status is None:
         from runtime.models import BlockKind as _BK
         raise HTTPException(
@@ -812,33 +894,17 @@ async def revisit_from_notification(
         # session); parent-wake is preserved below. Distinct from the founder's
         # manual `resolve-escalation approve`, which intentionally re-runs work.
         if prior_status in ("blocked-escalated", "blocked-delegated"):
-            from datetime import datetime as _dt, timezone as _tz
             prior_block_kind = (
                 "escalated" if prior_status == "blocked-escalated" else "delegated"
             )
-            superseded_note = f"Resolved: superseded by continuation {new_id}"
-            if founder_note:
-                superseded_note += f" — {founder_note}"
-            org.db.update_task(
-                predecessor.id,
-                status=TaskStatus.RESOLVED_SUPERSEDED,
-                block_kind=None,
-                note=superseded_note,
-                completed_at=_dt.now(_tz.utc).isoformat(),
-            )
-            audit.log_escalation_superseded(
-                predecessor.id,
+            _supersede_predecessor_locked(
+                org, audit,
+                predecessor_id=predecessor.id,
                 successor_root=new_id,
                 prior_block_kind=prior_block_kind,
                 actor=actor,
-                founder_note=founder_note,
+                note_suffix=founder_note,
             )
-            # An escalated predecessor may have an open Feishu notification; the
-            # continuation resolves it, so consume any open rows.
-            for nrow in org.db.list_open_notifications_for_task(predecessor.id):
-                org.db.consume_escalation_notification(
-                    nrow["feishu_message_id"], consumed_by="superseded",
-                )
         # When the founder uses the CLI to revisit, any open Feishu failure
         # notification row for this task is implicitly resolved — consume
         # it with cli-fallback so a later in-thread REVISIT reply silently

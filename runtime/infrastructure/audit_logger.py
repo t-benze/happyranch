@@ -461,6 +461,7 @@ class AuditLogger:
         prior_block_kind: str,
         actor: str,
         founder_note: str | None = None,
+        thread_id: str | None = None,
     ) -> None:
         """Record that a blocked(escalated|delegated) task was auto-resolved to
         RESOLVED_SUPERSEDED because a human-authorized continuation
@@ -470,7 +471,8 @@ class AuditLogger:
         transition NEVER fires without a concrete successor task_id, which only
         exists because a human (founder `revisit` / founder-or-manager
         thread-dispatch) authorized the continuation. `actor` records which
-        surface triggered it. THR-018 tier #3, §3a.
+        surface triggered it; `thread_id` (set on the thread-dispatch path)
+        cites the dispatching thread ruling. THR-018 tier #3, §3a.
         """
         self._db.insert_audit_log(
             task_id=predecessor_task_id,
@@ -481,6 +483,7 @@ class AuditLogger:
                 "prior_block_kind": prior_block_kind,
                 "actor": actor,
                 "founder_note": founder_note,
+                "thread_id": thread_id,
             },
         )
 

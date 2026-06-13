@@ -97,6 +97,7 @@ Traps:
 - `revisit_of_task_id` is a sideways reference, not an ancestor edge. `walk_ancestors` must not follow it.
 - Per-task overrides copied to revisit roots are narrow; auto-revisit copies only `session_timeout_seconds`.
 - Auto-resolve to `resolved_superseded` must NEVER fire without a recorded successor task_id / thread ruling in the audit citation. The negative case (un-ruled escalation stays blocked) is a tested invariant.
+- On the thread-dispatch path the continuation carries an optional `resolves <task_id>`, honored **only** for a manager-authorized dispatch (the founder supersedes via `revisit`). A worker self-dispatch naming `resolves` is rejected `403 thread_supersede_not_authorized` and never closes the predecessor — the maker-checker boundary, tested both directions.
 
 ## Session-Timeout Auto-Route
 
@@ -146,6 +147,7 @@ Traps:
 - Only root tasks fire followups.
 - Dispatcher identity comes from the `task_dispatched` audit row.
 - Cross-thread enqueue uses `asyncio.run_coroutine_threadsafe(queue.put(job), main_loop)`.
+- Terminal gate is completion/failed **plus** `resolved_superseded` (completion-class → `task_completed` kind). A thread-originated task auto-resolved by a continuation must still emit its followup; missing this terminal silently drops the superseded state from the thread lifecycle.
 
 ## Dreams
 
