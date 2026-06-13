@@ -109,10 +109,10 @@ class OpcClient:
         Calls ``GET /api/v1/orgs/{slug}/tokens?group_by=...``. Filters
         AND-compose; ``None`` values are omitted. Raises on non-2xx.
         """
-        if group_by not in ("agent", "task", "scope", "thread", "talk"):
+        if group_by not in ("agent", "task", "scope", "thread", "talk", "purpose"):
             raise ValueError(
                 "group_by must be 'agent', 'task', 'scope', 'thread', "
-                f"or 'talk', got: {group_by!r}"
+                f"'talk', or 'purpose', got: {group_by!r}"
             )
         params = {
             k: v

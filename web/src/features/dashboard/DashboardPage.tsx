@@ -16,6 +16,7 @@ import { Heartbeat } from './components/Heartbeat';
 import { NarrativeParagraph } from './components/NarrativeParagraph';
 import { OrgPulseTable } from './components/OrgPulseTable';
 import { EscalationInboxRow } from './components/EscalationInboxRow';
+import { TopTokenThreadsPanel } from './components/TopTokenThreadsPanel';
 
 function relativeAge(iso: string, now: Date): string {
   const seconds = Math.max(
@@ -170,6 +171,10 @@ export function DashboardPage(): JSX.Element {
             <Panel title="Org pulse · last 7 days" meta="acceptance">
               <OrgPulseTable rows={s.org_pulse} />
             </Panel>
+
+            {/* Self-contained cost-oversight card — fetches its own
+                /tokens?group_by=thread data, not DashboardSummaryResponse. */}
+            <TopTokenThreadsPanel />
 
             <Panel title="Recent activity">
               {s.recent_activity.length === 0 ? (

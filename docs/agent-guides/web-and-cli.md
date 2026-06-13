@@ -56,6 +56,47 @@ WS), so it is not part of the `openapi-coverage` route set. See
 
 Full founder-facing CLI docs: `skills/happyranch/SKILL.md`.
 
+### Token usage
+
+`happyranch tokens` shows `session_token_usage`. Default is the most recent rows;
+a `--by-*` flag (mutually exclusive) switches to a rollup:
+
+```bash
+happyranch tokens --by-agent | --by-task | --by-thread | --by-talk | --by-purpose
+```
+
+`--by-purpose` groups by `invocation_purpose` (route `group_by=purpose`). Filters
+(`--since`, `--thread-id`, `--talk-id`, `--agent`, `--purpose`, `--scope-type`,
+`--scope-id`, `--task-id`) AND-compose with any view.
+
+Rollup modifiers (presentation-side; require a `--by-*` flag):
+
+- `--top N` — rank by churn (`total`) DESC and keep the top N; ties: sessions DESC then key ASC.
+- `--over-threshold N` — keep only groups whose churn strictly exceeds N (applied **before** `--top`); empty result prints a "nothing would alert" line.
+
+**Churn invariant:** `total = input + output + reasoning`. `CacheR`
+(cache reads) rides in its own column and is **never** folded into `total`
+or used to sort/threshold — it overstates burn ~10–100×.
+
+The `--by-agent`/`--by-thread`/`--by-talk` rollups add a **Model** column
+(none on `--by-task`/`--by-purpose`). Its label is classified at render time —
+a single presentation constant `MODEL_FIX_CUTOVER_TS` draws the pre/post line,
+never SQL:
+
+| Label | Meaning |
+| --- | --- |
+| `<model-id>` | one observed model |
+| `(mixed)` | >1 model, or observed+NULL mixed, or NULL spanning codex+claude |
+| `(cli-unreported)` | all-NULL codex (codex emits no model field) |
+| `(unknown — pre-fix)` | all-NULL claude, all before the cutover (frozen history) |
+| `(unknown — ANOMALY)` | all-NULL claude, any at/after the cutover (parser-drift canary) |
+
+The founder dashboard carries a read-only **Top token threads** card (a
+window selector for 24h/7d/30d) backed by the same `/tokens?group_by=thread`
+route. It ranks threads by churn (`total`) DESC client-side, shows cache reads
+as a muted secondary number (never in the bar or the rank), and labels each
+thread's Model with the same precedence as the CLI table above.
+
 ## Agent-Side Callbacks
 
 These are invoked by skills inside agent sessions. Do not invoke them by hand; doing so falsifies audit data.

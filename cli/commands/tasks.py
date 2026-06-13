@@ -313,14 +313,110 @@ def cmd_audit(args: argparse.Namespace) -> None:
 
 
 
+# ── Token-usage presentation helpers (THR-015 Track B, spec §2/§3/§6/§7) ──
+#
+# Phase-1 leg B is a pure presentation surface over the existing rollup route.
+# The cutover that separates frozen pre-fix history from the model-population
+# fix (Track A, PR #83 / merge 3292962) is a SINGLE module-level constant — it
+# never appears in SQL, only re-labels NULL-model rows at render time (O2).
+# Founder gave no exact daemon-deploy timestamp; the merge instant is the
+# documented safe lower bound (any earlier row definitely ran old code) and is
+# trivially changeable here.
+MODEL_FIX_CUTOVER_TS = "2026-06-12T15:38:50Z"
+
+
+def _churn(row: dict) -> int:
+    """A rollup row's churn = ``total_tokens`` (input + output + reasoning).
+
+    The churn invariant in one place: ``cache_read``/``cache_creation`` never
+    participate in ranking, thresholds, or sort. Falls back to recomputing
+    from the component sums if the route ever omits ``total_tokens``.
+    """
+    total = row.get("total_tokens")
+    if total is not None:
+        return total
+    return (
+        (row.get("input_tokens") or 0)
+        + (row.get("output_tokens") or 0)
+        + (row.get("reasoning_tokens") or 0)
+    )
+
+
+def over_threshold(row: dict, n: int) -> bool:
+    """Return True iff a rollup row's churn strictly exceeds ``n``.
+
+    The single passive predicate behind ``--over-threshold`` (spec §3.3) and
+    the future would-alert seam (§7). The comparison lives here and nowhere
+    else so the read-only query and any later alerter cannot drift apart.
+    """
+    return _churn(row) > n
+
+
+def _parse_cutover_ts(value: str):
+    """Parse an ISO-8601 timestamp to an aware datetime for cutover compares.
+
+    DB rows stamp ``created_at`` as ``...+00:00``; ``MODEL_FIX_CUTOVER_TS`` uses
+    ``Z``. A lexicographic string compare would mislabel rows at the boundary
+    ('+' < 'Z'), so both sides are parsed to datetimes. Mirrors the canonical
+    idiom in ``cli/_shared.py:_fmt_ts``.
+    """
+    from datetime import datetime, timezone
+    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def classify_model(row: dict) -> str:
+    """Render the Model label for a by-agent/by-thread/by-talk rollup row.
+
+    Consumes Leg A's 7 cutover-INDEPENDENT classification primitives and
+    applies the spec-§2/§6 precedence. Pure presentation — token totals stay
+    authoritative regardless of the label.
+    """
+    model_distinct = row.get("model_distinct") or 0
+    non_null = row.get("non_null_sessions") or 0
+    null_codex = row.get("null_codex_sessions") or 0
+    null_claude = row.get("null_claude_sessions") or 0
+    null_present = (null_codex + null_claude) > 0
+
+    if non_null > 0:
+        # one or more observed (non-NULL) models on this rollup
+        if model_distinct > 1 or null_present:
+            return "(mixed)"
+        return row.get("model_any") or "(mixed)"
+
+    # every session on this rollup has a NULL model
+    if null_codex > 0 and null_claude > 0:
+        return "(mixed)"            # all-NULL spanning codex + claude
+    if null_codex > 0:
+        return "(cli-unreported)"   # codex emits no model field, ever (O1)
+    if null_claude > 0:
+        # claude NULLs split on the cutover: frozen pre-fix history vs a
+        # post-fix anomaly worth investigating (parser-drift canary, §2/§6)
+        max_ts = row.get("null_claude_max_created_at")
+        if (
+            max_ts is not None
+            and _parse_cutover_ts(max_ts) >= _parse_cutover_ts(MODEL_FIX_CUTOVER_TS)
+        ):
+            return "(unknown — ANOMALY)"
+        return "(unknown — pre-fix)"
+    return "(unknown)"              # no sessions at all (defensive)
+
+
 def cmd_tokens(args: argparse.Namespace) -> None:
     """Show per-session token usage rows or rollup aggregates via the daemon.
 
     Default view is the most recent N (20 by default) ``session_token_usage``
     rows, descending by ``created_at``. ``--by-*`` switches to a rollup keyed
-    by that scope. ``--json`` emits raw JSON for either view. ``total =
-    (input or 0) + (output or 0) + (reasoning or 0)`` — cache reads are
-    reported separately, never folded into ``total``.
+    by that scope (``--by-purpose`` decomposes by ``invocation_purpose``).
+    ``--top N`` ranks a rollup by churn DESC and slices to N; ``--over-threshold
+    N`` keeps only groups whose churn strictly exceeds N (applied before
+    ``--top``). The by-agent/by-thread/by-talk rollups gain a ``Model`` column
+    classified from Leg A's primitives (``--by-purpose``/``--by-task`` have
+    none). ``--json`` emits raw JSON for any view. ``total = (input or 0) +
+    (output or 0) + (reasoning or 0)`` — cache reads are reported separately,
+    never folded into ``total`` (the churn invariant).
     """
     import json as _json
 
@@ -345,42 +441,71 @@ def cmd_tokens(args: argparse.Namespace) -> None:
         purpose=args.purpose,
     )
 
-    if args.by_agent or args.by_task or args.by_thread or args.by_talk:
+    any_rollup = (
+        args.by_agent or args.by_task or args.by_thread
+        or args.by_talk or args.by_purpose
+    )
+    # --top / --over-threshold rank or filter rollup GROUPS; they are
+    # meaningless on the per-row listing (spec §3.1/§3.3).
+    if args.top is not None and not any_rollup:
+        print("Error: --top requires a --by-* rollup flag")
+        sys.exit(2)
+    if args.over_threshold is not None and not any_rollup:
+        print("Error: --over-threshold requires a --by-* rollup flag")
+        sys.exit(2)
+
+    if any_rollup:
         if args.by_agent:
-            group_by = "agent"
+            group_by, header_label, key, label_width = "agent", "Agent", "agent", 22
         elif args.by_task:
-            group_by = "task"
+            group_by, header_label, key, label_width = "task", "Task", "task_id", 14
         elif args.by_thread:
-            group_by = "thread"
+            group_by, header_label, key, label_width = "thread", "Thread", "thread_id", 14
+        elif args.by_talk:
+            group_by, header_label, key, label_width = "talk", "Talk", "talk_id", 14
         else:
-            group_by = "talk"
+            group_by, header_label, key, label_width = "purpose", "Purpose", "purpose", 20
+        # Model classification only exists on the by-agent/by-thread/by-talk
+        # rollups (Leg A emits the primitives there only); purpose/task have
+        # no Model column (spec §3.2).
+        show_model = group_by in ("agent", "thread", "talk")
+
         rollup = client.aggregate_tokens(
             slug=slug, group_by=group_by,
             **filters,
         )
+        # Passive threshold predicate FIRST (§3.3), then churn rank-cut (§3.1).
+        if args.over_threshold is not None:
+            rollup = [r for r in rollup if over_threshold(r, args.over_threshold)]
+        if args.top is not None:
+            # churn DESC; ties: sessions DESC then group-key ASC for stability.
+            rollup = sorted(
+                rollup,
+                key=lambda r: (-_churn(r), -(r.get("sessions") or 0), r.get(key) or ""),
+            )[: args.top]
+
         if args.json:
             print(_json.dumps(rollup, indent=2))
             return
         if not rollup:
-            print("No token usage rows match the filters.")
+            if args.over_threshold is not None:
+                print(f"No {group_by} over {args.over_threshold:,} tokens in window.")
+            else:
+                print("No token usage rows match the filters.")
             return
-        if group_by == "agent":
-            header_label, key = "Agent", "agent"
-            label_width = 22
-        elif group_by == "task":
-            header_label, key = "Task", "task_id"
-            label_width = 14
-        elif group_by == "thread":
-            header_label, key = "Thread", "thread_id"
-            label_width = 14
+        if show_model:
+            model_width = 22
+            print(
+                f"{header_label:<{label_width}} {'Model':<{model_width}} {'Sessions':>8} "
+                f"{'Input':>12} {'Output':>12} {'CacheR':>12} {'Total':>14}"
+            )
+            print("-" * (label_width + 1 + model_width + 1 + 8 + 1 + 12 + 1 + 12 + 1 + 12 + 1 + 14))
         else:
-            header_label, key = "Talk", "talk_id"
-            label_width = 14
-        print(
-            f"{header_label:<{label_width}} {'Sessions':>8} "
-            f"{'Input':>12} {'Output':>12} {'CacheR':>12} {'Total':>14}"
-        )
-        print("-" * (label_width + 1 + 8 + 1 + 12 + 1 + 12 + 1 + 12 + 1 + 14))
+            print(
+                f"{header_label:<{label_width}} {'Sessions':>8} "
+                f"{'Input':>12} {'Output':>12} {'CacheR':>12} {'Total':>14}"
+            )
+            print("-" * (label_width + 1 + 8 + 1 + 12 + 1 + 12 + 1 + 12 + 1 + 14))
         for r in rollup:
             inp = r.get("input_tokens") or 0
             out = r.get("output_tokens") or 0
@@ -388,10 +513,17 @@ def cmd_tokens(args: argparse.Namespace) -> None:
             cr = r.get("cache_read_tokens") or 0
             total = inp + out + rea
             label = r.get(key) or "-"
-            print(
-                f"{label:<{label_width}} {r['sessions']:>8} "
-                f"{inp:>12,} {out:>12,} {cr:>12,} {total:>14,}"
-            )
+            if show_model:
+                print(
+                    f"{label:<{label_width}} {classify_model(r):<{model_width}} "
+                    f"{r['sessions']:>8} "
+                    f"{inp:>12,} {out:>12,} {cr:>12,} {total:>14,}"
+                )
+            else:
+                print(
+                    f"{label:<{label_width}} {r['sessions']:>8} "
+                    f"{inp:>12,} {out:>12,} {cr:>12,} {total:>14,}"
+                )
         return
 
     rows = client.list_tokens(
@@ -885,6 +1017,10 @@ def register(sub) -> None:
                           help="Filter by thread invocation purpose")
     p_tokens.add_argument("--limit", type=int, default=None,
                           help="Cap to the most recent N rows (default: 20; ignored for rollups)")
+    p_tokens.add_argument("--top", type=int, default=None,
+                          help="Rank a --by-* rollup by churn (total) DESC and keep the top N")
+    p_tokens.add_argument("--over-threshold", dest="over_threshold", type=int, default=None,
+                          help="Keep only --by-* groups whose churn (total) strictly exceeds N")
     p_tokens.add_argument("--json", action="store_true",
                           help="Emit raw JSON instead of the human-readable table")
     p_tokens_group = p_tokens.add_mutually_exclusive_group()
@@ -896,6 +1032,8 @@ def register(sub) -> None:
                                 help="Rollup: one row per thread")
     p_tokens_group.add_argument("--by-talk", dest="by_talk", action="store_true",
                                 help="Rollup: one row per talk")
+    p_tokens_group.add_argument("--by-purpose", dest="by_purpose", action="store_true",
+                                help="Rollup: one row per invocation purpose")
     p_tokens.set_defaults(func=cmd_tokens)
 
     p_dispatch = sub.add_parser("dispatch", help="Dispatch a new task from an open talk")

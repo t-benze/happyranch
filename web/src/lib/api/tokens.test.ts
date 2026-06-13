@@ -32,4 +32,15 @@ describe('tokens api', () => {
       params: { group_by: 'failed_task', agent: 'qa', since: '2026-06-01' },
     });
   });
+
+  it('listTokens forwards the purpose rollup scoped to a thread', async () => {
+    const spy = vi.spyOn(clientModule, 'request').mockResolvedValue({ rollup: [] });
+    await tokens.listTokens('test', {
+      group_by: 'purpose',
+      thread_id: 'THR-015',
+    });
+    expect(spy).toHaveBeenCalledWith('/orgs/test/tokens', {
+      params: { group_by: 'purpose', thread_id: 'THR-015' },
+    });
+  });
 });
