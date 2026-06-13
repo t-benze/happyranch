@@ -182,6 +182,7 @@ class WorkHourRecord(BaseModel):
     ended_at: datetime | None = None
     status: WorkHourStatus = WorkHourStatus.PENDING
     routine_count: int = 0
+    dropped_count: int = 0
     spawned_task_ids: list[str] = Field(default_factory=list)
     spawned_task_count: int = 0
     summary: str | None = None

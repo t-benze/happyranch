@@ -254,6 +254,7 @@ def schedule_due_wakes(*, org, now: datetime, startup: bool = False) -> int:
                     scheduled_for=scheduled_for,
                     status=WorkHourStatus.SKIPPED,
                     routine_count=len(parsed.routines),
+                    dropped_count=parsed.dropped,
                 ))
             continue
 
@@ -267,9 +268,11 @@ def schedule_due_wakes(*, org, now: datetime, startup: bool = False) -> int:
             scheduled_for=scheduled_for,
             status=WorkHourStatus.PENDING,
             routine_count=len(parsed.routines),
+            dropped_count=parsed.dropped,
         ))
         AuditLogger(org.db).log_work_hour_scheduled(
             work_hour_id, agent, local_date=local_date, slot=slot, mode=schedule.mode,
+            dropped=parsed.dropped,
         )
         try:
             loop = asyncio.get_running_loop()

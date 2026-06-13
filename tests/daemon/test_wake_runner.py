@@ -62,3 +62,17 @@ def test_prompt_handles_empty_preamble() -> None:
     prompt = _prompt(preamble="")
     assert "## Routine Tasks (verbatim from your agent file)" in prompt
     assert "- Triage open customer tickets." in prompt
+
+
+def test_prompt_surfaces_dropped_routine_count() -> None:
+    # No silent truncation: when routines were dropped past the cap, the wake
+    # session must be told so it doesn't assume it is spawning everything.
+    prompt = _prompt(dropped=5)
+    lower = prompt.lower()
+    assert "dropped" in lower
+    assert "5" in prompt
+
+
+def test_prompt_omits_dropped_line_when_none() -> None:
+    prompt = _prompt(dropped=0)
+    assert "dropped" not in prompt.lower()

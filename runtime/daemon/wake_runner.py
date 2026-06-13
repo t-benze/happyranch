@@ -39,6 +39,7 @@ def build_wake_prompt(
     mode: str,
     preamble: str,
     routines: list[str],
+    dropped: int = 0,
 ) -> str:
     """Compose the wake-session prompt.
 
@@ -51,6 +52,13 @@ def build_wake_prompt(
     """
     routine_block = "\n".join(routines) if routines else "(none)"
     preamble_block = f"{preamble}\n\n" if preamble else ""
+    # No silent truncation: if routines were dropped past the cap, tell the
+    # session so it does not assume the list below is the agent's full set.
+    dropped_block = (
+        f"\nNOTE: {dropped} routine(s) beyond the per-wake cap were DROPPED and "
+        f"are NOT included below; only the first {len(routines)} are shown.\n"
+        if dropped > 0 else ""
+    )
     return f"""# Working-Hours Wake
 
 You are {agent_name} ({role}) on the {team} team in HappyRanch org `{org_slug}`.
@@ -70,7 +78,7 @@ Do not call create_task directly and do not dispatch other agents: the spawn
 endpoint creates the root tasks on your own team, targeted to you as executor.
 
 ## Routine Tasks (verbatim from your agent file)
-
+{dropped_block}
 {preamble_block}{routine_block}
 """
 
@@ -127,6 +135,7 @@ async def run_wake(
         mode=record.mode.value,
         preamble=parsed.preamble,
         routines=parsed.routines,
+        dropped=parsed.dropped,
     )
 
     executor_name = _executor_name(workspace)

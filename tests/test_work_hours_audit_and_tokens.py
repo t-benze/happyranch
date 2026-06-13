@@ -23,7 +23,7 @@ def test_audit_methods_write_workhour_scope_id(tmp_path) -> None:
     # The established generic-scope-id overload: task_id column stores WORKHOUR-NNN.
     assert scheduled[0]["task_id"] == "WORKHOUR-001"
     assert scheduled[0]["payload"] == {
-        "local_date": "2026-06-11", "slot": "09:00", "mode": "windowed",
+        "local_date": "2026-06-11", "slot": "09:00", "mode": "windowed", "dropped": 0,
     }
 
     spawned = db.get_audit_logs_by_action("work_hour_spawned")

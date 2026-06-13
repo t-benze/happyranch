@@ -312,6 +312,7 @@ class Database:
                 ended_at TEXT,
                 status TEXT NOT NULL DEFAULT 'pending',
                 routine_count INTEGER NOT NULL DEFAULT 0,
+                dropped_count INTEGER NOT NULL DEFAULT 0,
                 spawned_task_ids TEXT,
                 spawned_task_count INTEGER NOT NULL DEFAULT 0,
                 summary TEXT,

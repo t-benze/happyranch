@@ -1272,11 +1272,14 @@ class AuditLogger:
 
     def log_work_hour_scheduled(
         self, work_hour_id: str, agent: str, *, local_date: str, slot: str, mode: str,
+        dropped: int = 0,
     ) -> None:
+        # ``dropped`` records routines discarded past MAX_ROUTINES_PER_WAKE so
+        # the cap leaves an audit trail (no silent truncation).
         self._db.insert_audit_log(
             task_id=work_hour_id, agent=agent,
             action="work_hour_scheduled",
-            payload={"local_date": local_date, "slot": slot, "mode": mode},
+            payload={"local_date": local_date, "slot": slot, "mode": mode, "dropped": dropped},
         )
 
     def log_work_hour_started(self, work_hour_id: str, agent: str) -> None:

@@ -34,6 +34,7 @@ _UPDATABLE = {
     "ended_at",
     "status",
     "routine_count",
+    "dropped_count",
     "spawned_task_ids",
     "spawned_task_count",
     "summary",
@@ -69,6 +70,7 @@ class WorkHoursStore:
             ended_at=_parse_dt(row["ended_at"]) if row["ended_at"] else None,
             status=WorkHourStatus(row["status"]),
             routine_count=row["routine_count"],
+            dropped_count=row["dropped_count"],
             spawned_task_ids=json.loads(row["spawned_task_ids"]) if row["spawned_task_ids"] else [],
             spawned_task_count=row["spawned_task_count"],
             summary=row["summary"],
@@ -83,16 +85,16 @@ class WorkHoursStore:
             self._conn.execute(
                 """INSERT INTO work_hours (
                     id, agent_name, local_date, slot, mode, scheduled_for,
-                    started_at, ended_at, status, routine_count,
+                    started_at, ended_at, status, routine_count, dropped_count,
                     spawned_task_ids, spawned_task_count, summary,
                     transcript_path, session_id, error, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     record.id, record.agent_name, record.local_date, record.slot,
                     record.mode.value, record.scheduled_for.isoformat(),
                     record.started_at.isoformat() if record.started_at else None,
                     record.ended_at.isoformat() if record.ended_at else None,
-                    record.status.value, record.routine_count,
+                    record.status.value, record.routine_count, record.dropped_count,
                     json.dumps(record.spawned_task_ids), record.spawned_task_count,
                     record.summary, record.transcript_path, record.session_id,
                     record.error, record.created_at.isoformat(),

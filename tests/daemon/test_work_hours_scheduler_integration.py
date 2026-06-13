@@ -103,6 +103,37 @@ def test_windowed_silent_on_weekend_but_continuous_fires(org_state, monkeypatch)
     assert cw is not None
 
 
+def test_dropped_routines_recorded_on_row_and_audit(org_state, monkeypatch):
+    # >MAX_ROUTINES_PER_WAKE routines: the cap keeps the first MAX and the
+    # overflow is DROPPED. No silent truncation: the drop must be persisted on
+    # the work_hour row AND present in the work_hour_scheduled audit payload.
+    from runtime.orchestrator.routine_parser import MAX_ROUTINES_PER_WAKE
+
+    total = MAX_ROUTINES_PER_WAKE + 5
+    routine_lines = "\n".join(f"- Routine {i}." for i in range(total))
+    over_cap_agent = (
+        "---\nname: dev_agent\nteam: engineering\nrole: worker\nexecutor: claude\n---\n\n"
+        "You are a developer.\n\n"
+        f"## Routine Tasks\n\n{routine_lines}\n"
+    )
+    _seed(org_state, agents=(over_cap_agent,))
+    _capture(org_state, monkeypatch)
+    now = datetime(2026, 6, 11, 9, 30, tzinfo=_SH)
+
+    schedule_due_wakes(org=org_state, now=now)
+
+    dev = org_state.db.work_hours.get_for_agent_date_slot("dev_agent", "2026-06-11", "09:00")
+    assert dev is not None
+    # Only MAX routines kept; the dropped count is recorded, not discarded.
+    assert dev.routine_count == MAX_ROUTINES_PER_WAKE
+    assert dev.dropped_count == 5
+
+    scheduled = org_state.db.get_audit_logs_by_action("work_hour_scheduled")
+    assert len(scheduled) == 1
+    assert scheduled[0]["task_id"] == dev.id
+    assert scheduled[0]["payload"]["dropped"] == 5
+
+
 def test_continuous_midnight_rollover_assigns_slot_to_new_date(org_state, monkeypatch):
     _seed(org_state)
     _capture(org_state, monkeypatch)
