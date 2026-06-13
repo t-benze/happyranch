@@ -518,12 +518,20 @@ class Orchestrator:
             if self._sessions is not None:
                 self._sessions.set_pid(task_id, agent_name, pid)
 
+        # Layer-1 throttle audit surfacing (issue #85): the per-provider throttle
+        # in executors._run_command calls this on a slot wait or a 429 backoff.
+        # Additive action+payload via the existing insert_audit_log — no new
+        # columns, no row-shape change. Scoped to the task_id + agent in hand.
+        def _on_throttle_event(action: str, payload: dict) -> None:
+            self._db.insert_audit_log(task_id, agent_name, action, payload)
+
         result = executor.run(
             workspace=workspace,
             prompt=full_prompt,
             session_id=session_id,
             timeout_seconds=self._resolve_session_timeout(agent_name, task_id=task_id),
             on_started=_on_started,
+            on_throttle_event=_on_throttle_event,
         )
         self._audit.log_session_end(
             task_id=task_id,

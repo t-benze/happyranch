@@ -17,6 +17,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from runtime.models import BlockKind, TaskStatus
+from runtime.orchestrator.executors import is_rate_limit_signature
 from runtime.orchestrator.org_config import load_org_config
 
 if TYPE_CHECKING:
@@ -1383,6 +1384,13 @@ def _classify_failure_kind(result, report, *, mode: str) -> str:
     if err.startswith("Session timed out after"):
         return "session_timeout"
 
+    # Prefer the normalized ``rate_limited`` field set centrally in
+    # ``executors._run_command`` (issue #85); fall back to the legacy stdout/
+    # stderr string heuristic for results that predate the field. Both layers
+    # use the same ``is_rate_limit_signature`` patterns, so they never disagree.
+    if getattr(result, "rate_limited", False):
+        return "rate_limit"
+
     haystack = (
         err.lower()
         + " "
@@ -1390,7 +1398,7 @@ def _classify_failure_kind(result, report, *, mode: str) -> str:
         + " "
         + (getattr(result, "stderr_tail", "") or "").lower()
     )
-    if ("hit your limit" in haystack and "reset" in haystack) or "rate limit" in haystack:
+    if is_rate_limit_signature(haystack):
         return "rate_limit"
 
     if success and report is None:

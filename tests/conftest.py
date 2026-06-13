@@ -34,3 +34,24 @@ def test_runtime(tmp_dir: Path) -> OrgPaths:
 def db(tmp_dir: Path) -> Database:
     """A fresh Database instance backed by a temporary file."""
     return Database(tmp_dir / "test.db")
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_throttle():
+    """Install a no-spacing, no-backoff, roomy-ceiling executor throttle for the
+    whole unit suite (issue #85).
+
+    The real defaults (spacing 1.5s, backoff [5,15,45]) would make any test that
+    launches a provider subprocess sleep on real wall-clock time. The dedicated
+    throttle tests construct their own ``ProviderThrottle`` instances, so this
+    global neutralization doesn't weaken their coverage.
+    """
+    from runtime.orchestrator import throttle
+
+    throttle.set_throttle(
+        throttle.ProviderThrottle(
+            ceiling_default=64, spacing_seconds=0.0, backoff_seconds=()
+        )
+    )
+    yield
+    throttle.reset_throttle()
