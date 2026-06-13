@@ -30,9 +30,9 @@ Keep this file short. It is loaded at the start of every Claude Code session. De
 ## Commands
 
 ```bash
-uv run pytest tests/ -v                  # unit tests only (default)
-uv run pytest tests/ -v -m integration   # integration tests
-uv run pytest tests/ -v -m ""            # unit + integration
+uv run python -m pytest tests/ -v                  # unit tests only (default)
+uv run python -m pytest tests/ -v -m integration   # integration tests
+uv run python -m pytest tests/ -v -m ""            # unit + integration
 
 scripts/daemon.sh start
 scripts/daemon.sh status
@@ -60,7 +60,7 @@ Every browser-callable daemon route maps to one TS function in `web/src/lib/api/
 
 - Python snapshot: `tests/contract/test_openapi_snapshot.py`.
 - TS coverage: `web/src/test/openapi-coverage.test.ts`.
-- Regenerate intentional OpenAPI changes with `HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py`.
+- Regenerate intentional OpenAPI changes with `HAPPYRANCH_REGEN_OPENAPI=1 uv run python -m pytest tests/contract/test_openapi_snapshot.py`.
 
 ## GitNexus
 
