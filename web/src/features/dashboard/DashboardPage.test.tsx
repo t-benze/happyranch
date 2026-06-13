@@ -49,6 +49,12 @@ function seedShell(): void {
     http.get('/api/v1/health', () =>
       HttpResponse.json({ status: 'ok', active_runtime: '/Users/x/happyranch' }),
     ),
+    // The self-contained TopTokenThreadsPanel fetches its own thread rollup
+    // on every established-org render; answer it (empty) so msw's
+    // onUnhandledRequest:'error' guard stays satisfied.
+    http.get(`/api/v1/orgs/${SLUG}/tokens`, () =>
+      HttpResponse.json({ rollup: [] }),
+    ),
   );
 }
 

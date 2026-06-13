@@ -91,6 +91,12 @@ never SQL:
 | `(unknown — pre-fix)` | all-NULL claude, all before the cutover (frozen history) |
 | `(unknown — ANOMALY)` | all-NULL claude, any at/after the cutover (parser-drift canary) |
 
+The founder dashboard carries a read-only **Top token threads** card (a
+window selector for 24h/7d/30d) backed by the same `/tokens?group_by=thread`
+route. It ranks threads by churn (`total`) DESC client-side, shows cache reads
+as a muted secondary number (never in the bar or the rank), and labels each
+thread's Model with the same precedence as the CLI table above.
+
 ## Agent-Side Callbacks
 
 These are invoked by skills inside agent sessions. Do not invoke them by hand; doing so falsifies audit data.
