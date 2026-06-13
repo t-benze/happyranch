@@ -26,6 +26,7 @@ from runtime.models import (
     ThreadStatus,
     TokenUsage,
 )
+from runtime.infrastructure.work_hours_store import WorkHoursStore
 
 
 def _parse_dt(value: str) -> datetime:
@@ -73,6 +74,10 @@ class Database:
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._migrate_jobs_table_if_needed()
         self._create_tables()
+        # Working-hours CRUD lives in its own module but shares THIS connection
+        # and lock so the single-connection serialization invariant (see
+        # `_synchronized`) is preserved across both surfaces.
+        self.work_hours = WorkHoursStore(self._conn, self._lock)
 
     @property
     def path(self) -> Path:
@@ -295,6 +300,32 @@ class Database:
                 ON dream_kb_candidates(dream_id);
             CREATE INDEX IF NOT EXISTS idx_dream_candidates_status
                 ON dream_kb_candidates(status);
+
+            CREATE TABLE IF NOT EXISTS work_hours (
+                id TEXT PRIMARY KEY,
+                agent_name TEXT NOT NULL,
+                local_date TEXT NOT NULL,
+                slot TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                scheduled_for TEXT NOT NULL,
+                started_at TEXT,
+                ended_at TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                routine_count INTEGER NOT NULL DEFAULT 0,
+                dropped_count INTEGER NOT NULL DEFAULT 0,
+                spawned_task_ids TEXT,
+                spawned_task_count INTEGER NOT NULL DEFAULT 0,
+                summary TEXT,
+                transcript_path TEXT,
+                session_id TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(agent_name, local_date, slot)
+            );
+            CREATE INDEX IF NOT EXISTS idx_work_hours_agent_date
+                ON work_hours(agent_name, local_date);
+            CREATE INDEX IF NOT EXISTS idx_work_hours_status
+                ON work_hours(status);
 
             CREATE TABLE IF NOT EXISTS session_token_usage (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -916,10 +947,13 @@ class Database:
         limit: int = 20,
         assigned_agent: str | None = None,
         before_task_id: str | None = None,
+        status: TaskStatus | str | None = None,
+        block_kind: BlockKind | str | None = None,
     ) -> list[TaskRecord]:
         # Cursor pagination: callers pass the last task_id of the previous page
         # as `before_task_id`; we resolve its created_at and emit the next page
-        # using (created_at, id) DESC for a stable tiebreak.
+        # using (created_at, id) DESC for a stable tiebreak. `status` and
+        # `block_kind` are optional equality filters (read-only backlog queries).
         cursor_created_at: str | None = None
         if before_task_id is not None:
             row = self._conn.execute(
@@ -929,30 +963,31 @@ class Database:
                 return []
             cursor_created_at = row["created_at"]
 
-        if assigned_agent is not None and cursor_created_at is not None:
-            cursor = self._conn.execute(
-                "SELECT * FROM tasks WHERE assigned_agent = ? "
-                "AND (created_at, id) < (?, ?) "
-                "ORDER BY created_at DESC, id DESC LIMIT ?",
-                (assigned_agent, cursor_created_at, before_task_id, limit),
-            )
-        elif assigned_agent is not None:
-            cursor = self._conn.execute(
-                "SELECT * FROM tasks WHERE assigned_agent = ? "
-                "ORDER BY created_at DESC, id DESC LIMIT ?",
-                (assigned_agent, limit),
-            )
-        elif cursor_created_at is not None:
-            cursor = self._conn.execute(
-                "SELECT * FROM tasks WHERE (created_at, id) < (?, ?) "
-                "ORDER BY created_at DESC, id DESC LIMIT ?",
-                (cursor_created_at, before_task_id, limit),
-            )
-        else:
-            cursor = self._conn.execute(
-                "SELECT * FROM tasks ORDER BY created_at DESC, id DESC LIMIT ?",
-                (limit,),
-            )
+        # Assemble the WHERE clause dynamically: with four optional filter
+        # dimensions (agent, status, block_kind, cursor) an if/elif tree would
+        # be 2**4 branches. StrEnum members stringify to their value, so str()
+        # accepts both the enum and a raw query-param string.
+        conditions: list[str] = []
+        params: list = []
+        if assigned_agent is not None:
+            conditions.append("assigned_agent = ?")
+            params.append(assigned_agent)
+        if status is not None:
+            conditions.append("status = ?")
+            params.append(str(status))
+        if block_kind is not None:
+            conditions.append("block_kind = ?")
+            params.append(str(block_kind))
+        if cursor_created_at is not None:
+            conditions.append("(created_at, id) < (?, ?)")
+            params.extend([cursor_created_at, before_task_id])
+        where = f"WHERE {' AND '.join(conditions)} " if conditions else ""
+        params.append(limit)
+        cursor = self._conn.execute(
+            f"SELECT * FROM tasks {where}"
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            tuple(params),
+        )
         return [
             TaskRecord(
                 id=row["id"],
@@ -1232,7 +1267,7 @@ class Database:
                SET status = ?, block_kind = ?, note = ?, updated_at = ?
                WHERE id = ?
                  AND cancelled_at IS NULL
-                 AND status NOT IN ('completed', 'failed')""",
+                 AND status NOT IN ('completed', 'failed', 'resolved_superseded')""",
             (TaskStatus.BLOCKED.value, BlockKind.ESCALATED.value, reason, now, task_id),
         )
         self._conn.commit()
@@ -1307,7 +1342,9 @@ class Database:
         row = cursor.fetchone()
         if row is None:
             return False
-        if row["cancelled_at"] is not None or row["status"] in ("completed", "failed"):
+        if row["cancelled_at"] is not None or row["status"] in (
+            "completed", "failed", "resolved_superseded",
+        ):
             return False
         # Both writes under same RLock — atomic vs cancel route.
         # insert_task() commits, but the lock is still held until this method
@@ -1745,7 +1782,25 @@ class Database:
         return where, params
 
     @staticmethod
-    def _token_usage_rollup_select(group_expr: str, group_alias: str) -> str:
+    def _token_usage_rollup_select(
+        group_expr: str,
+        group_alias: str,
+        *,
+        include_model_classification: bool = False,
+    ) -> str:
+        # Cutover-INDEPENDENT primitives a renderer applies the model-name
+        # precedence over (the MODEL_FIX_CUTOVER_TS comparison itself is a
+        # presentation concern, never in SQL). total_tokens is unaffected.
+        model_cols = ""
+        if include_model_classification:
+            model_cols = """,
+                         COUNT(DISTINCT model) AS model_distinct,
+                         MAX(model) AS model_any,
+                         SUM(CASE WHEN model IS NOT NULL THEN 1 ELSE 0 END) AS non_null_sessions,
+                         SUM(CASE WHEN model IS NULL AND executor = 'codex' THEN 1 ELSE 0 END) AS null_codex_sessions,
+                         SUM(CASE WHEN model IS NULL AND executor = 'claude' THEN 1 ELSE 0 END) AS null_claude_sessions,
+                         MIN(CASE WHEN model IS NULL AND executor = 'claude' THEN created_at END) AS null_claude_min_created_at,
+                         MAX(CASE WHEN model IS NULL AND executor = 'claude' THEN created_at END) AS null_claude_max_created_at"""
         return f"""SELECT {group_expr} AS {group_alias},
                          COUNT(*) AS sessions,
                          COALESCE(SUM(input_tokens), 0)          AS input_tokens,
@@ -1755,7 +1810,7 @@ class Database:
                          COALESCE(SUM(reasoning_tokens), 0)      AS reasoning_tokens,
                          COALESCE(SUM(input_tokens), 0)
                            + COALESCE(SUM(output_tokens), 0)
-                           + COALESCE(SUM(reasoning_tokens), 0)  AS total_tokens
+                           + COALESCE(SUM(reasoning_tokens), 0)  AS total_tokens{model_cols}
                   FROM session_token_usage"""
 
     @_synchronized
@@ -1820,7 +1875,9 @@ class Database:
             talk_id=talk_id,
             purpose=purpose,
         )
-        sql = self._token_usage_rollup_select("agent", "agent")
+        sql = self._token_usage_rollup_select(
+            "agent", "agent", include_model_classification=True
+        )
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " GROUP BY agent ORDER BY agent"
@@ -1853,6 +1910,59 @@ class Database:
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " GROUP BY task_id ORDER BY task_id"
+        rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    @_synchronized
+    def aggregate_session_token_usage_by_failed_task(
+        self,
+        since: str | None = None,
+        agent: str | None = None,
+        task_id: str | None = None,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        thread_id: str | None = None,
+        talk_id: str | None = None,
+        purpose: str | None = None,
+    ) -> list[dict]:
+        """Per-(task, agent) token rollup for FAILED tasks only.
+
+        Read-only INNER JOIN of ``session_token_usage`` to ``tasks`` on the
+        canonical ``task_id`` (= ``tasks.id``), keeping only usage tied to a
+        task in the terminal ``failed`` status. Caller filters AND-compose via
+        the shared filter helper, applied inside the subquery so the JOIN
+        cannot collide on ``created_at`` (a column both tables carry).
+        """
+        where, params = self._session_token_usage_filters(
+            since=since,
+            task_id=task_id,
+            agent=agent,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            thread_id=thread_id,
+            talk_id=talk_id,
+            purpose=purpose,
+        )
+        subquery = "SELECT * FROM session_token_usage"
+        if where:
+            subquery += " WHERE " + " AND ".join(where)
+        sql = f"""SELECT s.task_id AS task_id,
+                         s.agent AS agent,
+                         COUNT(*) AS sessions,
+                         COALESCE(SUM(s.input_tokens), 0)          AS input_tokens,
+                         COALESCE(SUM(s.output_tokens), 0)         AS output_tokens,
+                         COALESCE(SUM(s.cache_read_tokens), 0)     AS cache_read_tokens,
+                         COALESCE(SUM(s.cache_creation_tokens), 0) AS cache_creation_tokens,
+                         COALESCE(SUM(s.reasoning_tokens), 0)      AS reasoning_tokens,
+                         COALESCE(SUM(s.input_tokens), 0)
+                           + COALESCE(SUM(s.output_tokens), 0)
+                           + COALESCE(SUM(s.reasoning_tokens), 0)  AS total_tokens
+                  FROM ({subquery}) s
+                  JOIN tasks t ON t.id = s.task_id
+                  WHERE t.status = ?
+                  GROUP BY s.task_id, s.agent
+                  ORDER BY s.task_id, s.agent"""
+        params.append(TaskStatus.FAILED.value)
         rows = self._conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
@@ -1920,7 +2030,9 @@ class Database:
             purpose=purpose,
         )
         where.append("thread_id IS NOT NULL")
-        sql = self._token_usage_rollup_select("thread_id", "thread_id")
+        sql = self._token_usage_rollup_select(
+            "thread_id", "thread_id", include_model_classification=True
+        )
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " GROUP BY thread_id ORDER BY thread_id"
@@ -1950,10 +2062,42 @@ class Database:
             purpose=purpose,
         )
         where.append("talk_id IS NOT NULL")
-        sql = self._token_usage_rollup_select("talk_id", "talk_id")
+        sql = self._token_usage_rollup_select(
+            "talk_id", "talk_id", include_model_classification=True
+        )
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " GROUP BY talk_id ORDER BY talk_id"
+        rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    @_synchronized
+    def aggregate_session_token_usage_by_purpose(
+        self,
+        since: str | None = None,
+        task_id: str | None = None,
+        agent: str | None = None,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        thread_id: str | None = None,
+        talk_id: str | None = None,
+        purpose: str | None = None,
+    ) -> list[dict]:
+        where, params = self._session_token_usage_filters(
+            since=since,
+            task_id=task_id,
+            agent=agent,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            thread_id=thread_id,
+            talk_id=talk_id,
+            purpose=purpose,
+        )
+        where.append("invocation_purpose IS NOT NULL")
+        sql = self._token_usage_rollup_select("invocation_purpose", "purpose")
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " GROUP BY invocation_purpose ORDER BY invocation_purpose"
         rows = self._conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 

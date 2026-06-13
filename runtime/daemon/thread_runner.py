@@ -466,10 +466,19 @@ async def run_invocation(
         )
         audit = AuditLogger(org_state.db)
 
+        # Layer-1 throttle audit surfacing (issue #85): the per-provider throttle
+        # in executors._run_command calls this on a slot wait or a 429 backoff.
+        # Additive action+payload via the existing insert_audit_log — no new
+        # columns, no row-shape change. task_id carries the THR- scope id, exactly
+        # as the other thread-scoped audit rows do.
+        def _on_throttle_event(action: str, payload: dict) -> None:
+            org_state.db.insert_audit_log(inv.thread_id, inv.agent_name, action, payload)
+
         def _invoke(run_prompt: str, resume: str | None):
             run_kwargs = dict(
                 workspace=Path(workspace), prompt=run_prompt,
                 session_id=None, timeout_seconds=timeout,
+                on_throttle_event=_on_throttle_event,
             )
             if resume:
                 run_kwargs["resume_session_id"] = resume

@@ -35,9 +35,28 @@ export interface TokenUsageRollup {
   cache_creation_tokens: number;
   reasoning_tokens: number;
   total_tokens: number;
+  // Model-classification primitives — emitted ONLY by the by-agent/by-thread/
+  // by-talk rollups (Leg A, include_model_classification=True). by-task/
+  // by-scope/by-purpose omit them, so all seven are optional. A presentation
+  // layer derives the Model label from these via the spec §2/§6 precedence;
+  // token totals never depend on them.
+  model_distinct?: number;
+  model_any?: string | null;
+  non_null_sessions?: number;
+  null_codex_sessions?: number;
+  null_claude_sessions?: number;
+  null_claude_min_created_at?: string | null;
+  null_claude_max_created_at?: string | null;
 }
 
-export type TokenUsageGroupBy = 'agent' | 'task' | 'scope' | 'thread' | 'talk';
+export type TokenUsageGroupBy =
+  | 'agent'
+  | 'task'
+  | 'failed_task'
+  | 'scope'
+  | 'thread'
+  | 'talk'
+  | 'purpose';
 
 export interface ListTokensParams {
   task_id?: string;

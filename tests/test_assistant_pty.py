@@ -10,6 +10,7 @@ import pytest
 from runtime.daemon.assistant_pty import (
     AssistantPtySession,
     AssistantSessionManager,
+    _build_session_launch_argv,
 )
 
 
@@ -64,6 +65,36 @@ def _wait_for_session_stopped(
             return
         time.sleep(0.01)
     raise AssertionError("assistant session leader is still running")
+
+
+def test_codex_assistant_launch_argv_injects_network_override(tmp_path: Path) -> None:
+    cmd = _build_session_launch_argv(
+        executable="/usr/local/bin/codex",
+        argv=["codex"],
+        slave_fd=7,
+        cwd=tmp_path,
+    )
+    # The interactive codex assistant runs in the workspace-write sandbox, which
+    # blocks localhost by default; the override is required so the assistant can
+    # call back into the daemon via `happyranch` (TASK-080 class of failure).
+    assert "-c" in cmd
+    c_index = cmd.index("-c")
+    assert cmd[c_index + 1] == "sandbox_workspace_write.network_access=true"
+    # Global-option position: immediately after the executable.
+    exe_index = cmd.index("/usr/local/bin/codex")
+    assert cmd[exe_index + 1] == "-c"
+
+
+def test_non_codex_assistant_launch_argv_omits_network_override(tmp_path: Path) -> None:
+    cmd = _build_session_launch_argv(
+        executable="/usr/local/bin/claude",
+        argv=["claude", "--flag"],
+        slave_fd=7,
+        cwd=tmp_path,
+    )
+    # claude/opencode don't use Codex sandboxing; no override is injected.
+    assert "sandbox_workspace_write.network_access=true" not in cmd
+    assert "-c" not in cmd
 
 
 @pytest.mark.asyncio

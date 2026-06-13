@@ -10,7 +10,7 @@ import tempfile
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, field_validator, model_validator
@@ -42,7 +42,7 @@ from runtime.infrastructure.learnings_store import (
 from runtime.models import TalkStatus
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
-from runtime.orchestrator.agent_def import AgentDef, AgentParseError
+from runtime.orchestrator.agent_def import AgentDef, AgentParseError, Executor
 from runtime.orchestrator.context_builder import ContextBuilder
 
 router = APIRouter(dependencies=[require_token()])
@@ -271,6 +271,28 @@ async def init_agents(slug: str, body: InitBody, org: OrgDep):
                 if not had_agent_config and agent_def is not None:
                     set_executor(workspace, agent_def.executor)
                 cfg = load_agent_config(workspace)
+                # Drift WARN (additive, non-mutating): for an EXISTING workspace,
+                # the org .md frontmatter (agent_def.executor) is the intended
+                # executor while agent.yaml (cfg["executor"]) is what the runtime
+                # actually uses (_resolve_executor_name reads agent.yaml). When
+                # they disagree, surface it — but do NOT auto-reconcile here.
+                # init runs broadly; a silent mass-switch would be surprising and
+                # destructive. The founder reconciles explicitly via set-executor.
+                if (
+                    had_agent_config
+                    and agent_def is not None
+                    and agent_def.executor != cfg.get("executor")
+                ):
+                    yield {"data": _json.dumps({
+                        "agent": agent_name,
+                        "phase": "executor_drift",
+                        "org_executor": agent_def.executor,
+                        "workspace_executor": cfg.get("executor"),
+                        "hint": (
+                            f"run: happyranch set-executor --org {slug} "
+                            f"{agent_name} --executor {agent_def.executor}"
+                        ),
+                    })}
                 provider = cfg.get("executor") or "claude"
                 repos = cfg.get("repos") or {}
                 for repo_name, url in repos.items():
@@ -660,6 +682,164 @@ async def founder_create_agent(
         actor="founder",
     )
     return {"name": body.name, "team": team_name, "role": body.role}
+
+
+# ---------------------------------------------------------------------------
+# Founder surface: switch an existing agent's executor end-to-end.
+# ---------------------------------------------------------------------------
+
+# Single source of truth for the supported executor set: the Executor Literal
+# in agent_def. Deriving it here keeps validation from drifting if the set
+# changes.
+_VALID_EXECUTORS: tuple[str, ...] = get_args(Executor)
+
+# Claude-only workspace files that go stale when an agent switches AWAY from
+# the Claude executor: the new adapter writes AGENTS.md/.agents/ and never
+# removes these, so they linger unused. (.claude holds settings.json + skills.)
+_CLAUDE_ONLY_WORKSPACE_FILES: tuple[str, ...] = ("CLAUDE.md", ".claude")
+
+
+class SetExecutorBody(BaseModel):
+    executor: str
+    clean: bool = False
+
+
+def _validate_executor(executor: str) -> None:
+    """Reject an unsupported executor with an actionable error.
+
+    Raises HTTPException(422) listing the valid values. Kept as a standalone
+    helper so the validation is unit-testable without an HTTP round trip.
+    """
+    if executor not in _VALID_EXECUTORS:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_executor",
+                "got": executor,
+                "valid": list(_VALID_EXECUTORS),
+            },
+        )
+
+
+@router.put("/agents/{agent_name}/executor")
+async def set_agent_executor(
+    slug: str, agent_name: str, body: SetExecutorBody, org: OrgDep,
+) -> dict:
+    """Founder action: switch an existing agent's executor end-to-end.
+
+    Reconciles all three surfaces the orchestrator reads:
+      1. org agent .md frontmatter (``executor:``) — atomic rebuild via
+         render_agent_text + tempfile + os.replace (same pattern as the
+         manage-agent update path).
+      2. workspace agent.yaml — via set_executor (what _resolve_executor_name
+         actually reads at dispatch time).
+      3. executor bootstrap — via ContextBuilder.ensure_workspace_ready with
+         ``provider=<NEW executor>`` so the correct adapter regenerates
+         (Claude → CLAUDE.md/.claude/; others → AGENTS.md/.agents/).
+
+    Stale-file handling (away-from-Claude only): switching off Claude leaves
+    CLAUDE.md and .claude/ behind. By default these are WARNED about, not
+    deleted; ``clean=True`` opts into deleting them. Never auto-deletes.
+    """
+    paths = OrgPaths(root=org.root)
+
+    _validate_executor(body.executor)
+
+    existing = prompt_loader.load_agent(paths, agent_name)
+    if existing is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "agent_not_found", "agent": agent_name},
+        )
+
+    workspace = paths.workspaces_dir / agent_name
+    has_workspace = workspace.exists()
+
+    before_org = existing.executor
+    before_ws = load_agent_config(workspace).get("executor") if has_workspace else None
+
+    # 1. org .md frontmatter — atomic overwrite via tempfile + os.replace.
+    updated = AgentDef(
+        name=existing.name,
+        team=existing.team,
+        role=existing.role,
+        executor=body.executor,  # type: ignore[arg-type]
+        allow_rules=existing.allow_rules,
+        repos=existing.repos,
+        enrolled_by=existing.enrolled_by,
+        enrolled_at_task=existing.enrolled_at_task,
+        enrolled_at=existing.enrolled_at,
+        system_prompt=existing.system_prompt,
+        description=existing.description,
+    )
+    from runtime.orchestrator.agent_def import render_agent_text
+    active_path = paths.agents_dir / f"{agent_name}.md"
+    fd, tmp = tempfile.mkstemp(
+        prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir),
+    )
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(render_agent_text(updated))
+        os.replace(tmp, active_path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
+    after_ws = before_ws
+    stale_files: list[str] = []
+    removed: list[str] = []
+    cleaned = False
+
+    if has_workspace:
+        # 2. workspace agent.yaml.
+        set_executor(workspace, body.executor)
+        after_ws = load_agent_config(workspace).get("executor")
+        # 3. regenerate the executor bootstrap with the NEW provider.
+        ctx = ContextBuilder(org.settings, paths, slug=org.slug)
+        await asyncio.to_thread(
+            ctx.ensure_workspace_ready,
+            workspace,
+            agent_name,
+            existing.system_prompt,
+            provider=body.executor,
+        )
+        # 4. stale Claude-only files when switching AWAY from Claude.
+        #    Existence-based so it is drift-safe and never warns when the
+        #    files were never written (e.g. codex → pi).
+        if body.executor != "claude":
+            stale_files = [
+                name for name in _CLAUDE_ONLY_WORKSPACE_FILES
+                if (workspace / name).exists()
+            ]
+            if stale_files and body.clean:
+                for name in stale_files:
+                    target = workspace / name
+                    if target.is_dir():
+                        shutil.rmtree(target)
+                    else:
+                        target.unlink()
+                    removed.append(name)
+                cleaned = True
+
+    AuditLogger(org.db).log_agent_managed(
+        scope_id="founder",
+        action="update",
+        name=agent_name,
+        source="founder",
+        actor="founder",
+    )
+
+    return {
+        "agent": agent_name,
+        "before": {"org_executor": before_org, "workspace_executor": before_ws},
+        "after": {"org_executor": body.executor, "workspace_executor": after_ws},
+        "stale_files": stale_files,
+        "cleaned": cleaned,
+        "removed": removed,
+    }
 
 
 @router.get("/agents/enrollments")

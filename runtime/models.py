@@ -14,6 +14,14 @@ class TaskStatus(StrEnum):
     BLOCKED = "blocked"
     COMPLETED = "completed"
     FAILED = "failed"
+    # Terminal. A blocked(escalated|delegated) task whose follow-up work moved
+    # to a human-authorized continuation (founder `revisit` / thread-dispatch)
+    # is closed here instead of re-running — distinct from COMPLETED so the
+    # audit trail shows it was superseded, not finished by an agent. Joins
+    # every terminal predicate (TERMINAL_STATES, _TERMINAL_TASK_STATUSES,
+    # _TERMINAL_STATUS_TO_EVENT). See protocol/05c-orchestrator.md and
+    # docs/agent-guides/features-and-invariants.md (escalation).
+    RESOLVED_SUPERSEDED = "resolved_superseded"
 
 
 class BlockKind(StrEnum):
@@ -152,6 +160,41 @@ class DreamRecord(BaseModel):
     new_learnings_count: int = 0
     kb_candidate_count: int = 0
     founder_thread_id: str | None = None
+    session_id: str | None = None
+    error: str | None = None
+    created_at: datetime = Field(default_factory=_now)
+
+
+class WorkHourMode(StrEnum):
+    WINDOWED = "windowed"
+    CONTINUOUS = "continuous"
+
+
+class WorkHourStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    TIMEOUT = "timeout"
+    SKIPPED = "skipped"
+
+
+class WorkHourRecord(BaseModel):
+    id: str
+    agent_name: str
+    local_date: str
+    slot: str
+    mode: WorkHourMode
+    scheduled_for: datetime
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    status: WorkHourStatus = WorkHourStatus.PENDING
+    routine_count: int = 0
+    dropped_count: int = 0
+    spawned_task_ids: list[str] = Field(default_factory=list)
+    spawned_task_count: int = 0
+    summary: str | None = None
+    transcript_path: str | None = None
     session_id: str | None = None
     error: str | None = None
     created_at: datetime = Field(default_factory=_now)

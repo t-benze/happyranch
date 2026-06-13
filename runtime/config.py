@@ -69,6 +69,31 @@ class Settings(BaseSettings):
     # caps concurrent agent sessions. Must be positive.
     queue_workers: int = Field(default=3, gt=0)
 
+    # Executor throttle (issue #85). A process-wide, per-provider gate inside
+    # ``executors._run_command`` that caps concurrent provider subprocesses,
+    # de-bursts launches, and absorbs transient 429s with backoff — shared
+    # across the task run_step pool and the thread-reply pool. See
+    # ``runtime/orchestrator/throttle.py`` and
+    # ``docs/adr/0001-per-provider-executor-throttle.md``.
+    #
+    # Per-provider concurrency ceiling (BoundedSemaphore size). The queue_workers
+    # and the range(4) thread pool stay as producers; this is the consumer-side
+    # cap on how many provider subprocesses run at once for one provider.
+    executor_ceiling_default: int = Field(default=8, gt=0)
+    # Per-provider ceiling overrides (config.yaml only), e.g. {"codex": 12}.
+    executor_ceiling_overrides: dict[str, int] = Field(default_factory=dict)
+    # Minimum interval between same-provider launches (seconds) — de-bursts
+    # simultaneous chain fan-out. 0 disables spacing. Cross-provider launches
+    # are never spaced against each other.
+    executor_launch_spacing_seconds: float = Field(default=1.5, ge=0)
+    # Reactive 429 backoff schedule (seconds per retry). On a detected rate
+    # limit the launch releases its slot, sleeps backoff[attempt], re-acquires,
+    # and retries; after the schedule is exhausted it falls through to the
+    # existing auto-revisit classifier. Empty list disables retries.
+    executor_rate_limit_backoff_seconds: list[int] = Field(
+        default_factory=lambda: [5, 15, 45]
+    )
+
     @classmethod
     def settings_customise_sources(
         cls,

@@ -25,6 +25,7 @@ from runtime.daemon.routes import (
     teams,
     threads,
     tokens,
+    work_hours,
 )
 from runtime.daemon.state import DaemonState
 from runtime.orchestrator._paths import OrgPaths
@@ -153,6 +154,20 @@ async def _lifespan(app: FastAPI):
     ]
     dream_scheduler_task = asyncio.create_task(dream_scheduler_loop(state))
 
+    from runtime.daemon.work_hours_scheduler import work_hours_scheduler_loop
+    from runtime.daemon.wake_queue import wake_worker_loop
+
+    # Startup recovery: a wake left `running` when the daemon died can never
+    # receive its spawn callback, so mark it failed (mirrors recover_running_dreams).
+    for org in state.orgs.values():
+        org.db.work_hours.recover_running()
+
+    wake_worker_tasks = [
+        asyncio.create_task(wake_worker_loop(state, state.settings))
+        for _ in range(1)
+    ]
+    work_hours_scheduler_task = asyncio.create_task(work_hours_scheduler_loop(state))
+
     try:
         yield
     finally:
@@ -160,6 +175,9 @@ async def _lifespan(app: FastAPI):
             t.cancel()
         dream_scheduler_task.cancel()
         for t in dream_worker_tasks:
+            t.cancel()
+        work_hours_scheduler_task.cancel()
+        for t in wake_worker_tasks:
             t.cancel()
         from runtime.daemon.jobs_runner import terminate_all_inflight
         await terminate_all_inflight(grace_seconds=5)
@@ -184,6 +202,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(talks.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(threads.router, prefix="/api/v1/orgs/{slug}", tags=["threads"])
     app.include_router(dreams.router, prefix="/api/v1/orgs/{slug}", tags=["dreams"])
+    app.include_router(work_hours.router, prefix="/api/v1/orgs/{slug}", tags=["work-hours"])
     app.include_router(jobs.router, prefix="/api/v1/orgs/{slug}", tags=["jobs"])
     app.include_router(jobs.dual_router, prefix="/api/v1/orgs/{slug}", tags=["jobs"])
     app.include_router(artifacts.router, prefix="/api/v1/orgs/{slug}", tags=["artifacts"])

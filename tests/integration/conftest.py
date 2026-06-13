@@ -205,6 +205,9 @@ def live_daemon(
     """Start the daemon via scripts/daemon.sh and stop it after the test."""
     monkeypatch.setenv("HAPPYRANCH_CLAUDE_CLI_PATH", str(fake_claude))
     monkeypatch.setenv("HAPPYRANCH_CODEX_CLI_PATH", str(fake_codex))
+    # Disable executor launch spacing (issue #85) so integration runs stay fast
+    # and deterministic — the 1.5s default would serialize same-provider launches.
+    monkeypatch.setenv("HAPPYRANCH_EXECUTOR_LAUNCH_SPACING_SECONDS", "0")
     from runtime.daemon import runtimes as runtimes_mod
 
     runtimes_mod.register(runtime_container)
@@ -240,6 +243,8 @@ def live_daemon_idle(
     """Start the daemon with no active runtime registered yet."""
     monkeypatch.setenv("HAPPYRANCH_CLAUDE_CLI_PATH", str(fake_claude))
     monkeypatch.setenv("HAPPYRANCH_CODEX_CLI_PATH", str(fake_codex))
+    # Disable executor launch spacing (issue #85) — see live_daemon.
+    monkeypatch.setenv("HAPPYRANCH_EXECUTOR_LAUNCH_SPACING_SECONDS", "0")
     script = Path(__file__).resolve().parent.parent.parent / "scripts" / "daemon.sh"
     subprocess.run([str(script), "start"], check=True)
     deadline = time.time() + 5

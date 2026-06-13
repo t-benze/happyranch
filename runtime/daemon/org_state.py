@@ -17,6 +17,7 @@ import lark_oapi as lark
 from runtime.config import Settings
 from runtime.daemon.dream_queue import DreamQueue
 from runtime.daemon.event_bus import EventBus
+from runtime.daemon.wake_queue import WakeQueue
 from runtime.daemon.sessions import SessionTracker
 from runtime.daemon.thread_queue import ThreadQueue
 from runtime.infrastructure.audit_logger import AuditLogger
@@ -64,12 +65,17 @@ class OrgState:
     teams_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     thread_queue: ThreadQueue = field(default_factory=ThreadQueue)
     dream_queue: DreamQueue = field(default_factory=DreamQueue)
+    wake_queue: WakeQueue = field(default_factory=WakeQueue)
     event_bus: EventBus = field(init=False)
     thread_store: ThreadStore = field(init=False)
 
     _TERMINAL_STATUS_TO_EVENT = {
         TaskStatus.COMPLETED: "task_complete",
         TaskStatus.FAILED: "task_failed",
+        # A superseded-resolution is a non-failure terminal, so it replays as a
+        # completion-class event; `_synthesize_terminal_event` carries the
+        # precise label in `outcome` ("resolved_superseded").
+        TaskStatus.RESOLVED_SUPERSEDED: "task_complete",
     }
 
     def __post_init__(self) -> None:

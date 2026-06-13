@@ -13,6 +13,7 @@ const STATUSES: FilterGroup['options'] = [
   { value: 'blocked', label: 'Blocked' },
   { value: 'completed', label: 'Completed' },
   { value: 'failed', label: 'Failed' },
+  { value: 'resolved_superseded', label: 'Resolved (superseded)' },
 ];
 
 export function TasksPage(): JSX.Element {

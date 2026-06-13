@@ -43,6 +43,43 @@ def test_list_tasks_returns_most_recent_first(db):
     assert tasks[0].id == "TASK-002"
 
 
+def test_list_tasks_filters_by_status(db):
+    db.insert_task(TaskRecord(id="TASK-001", brief="a", status=TaskStatus.PENDING))
+    db.insert_task(TaskRecord(id="TASK-002", brief="b", status=TaskStatus.BLOCKED))
+    db.insert_task(TaskRecord(id="TASK-003", brief="c", status=TaskStatus.COMPLETED))
+    blocked = db.list_tasks(status=TaskStatus.BLOCKED)
+    assert [t.id for t in blocked] == ["TASK-002"]
+    # Raw string value also accepted (CLI/query-param path).
+    assert [t.id for t in db.list_tasks(status="completed")] == ["TASK-003"]
+
+
+def test_list_tasks_filters_by_block_kind(db):
+    from runtime.models import BlockKind
+    db.insert_task(TaskRecord(
+        id="TASK-001", brief="a", status=TaskStatus.BLOCKED,
+        block_kind=BlockKind.ESCALATED,
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-002", brief="b", status=TaskStatus.BLOCKED,
+        block_kind=BlockKind.DELEGATED,
+    ))
+    escalated = db.list_tasks(status=TaskStatus.BLOCKED, block_kind=BlockKind.ESCALATED)
+    assert [t.id for t in escalated] == ["TASK-001"]
+    delegated = db.list_tasks(block_kind="delegated")
+    assert [t.id for t in delegated] == ["TASK-002"]
+
+
+def test_list_tasks_status_filter_composes_with_agent(db):
+    db.insert_task(TaskRecord(
+        id="TASK-001", brief="a", status=TaskStatus.BLOCKED, assigned_agent="dev_agent",
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-002", brief="b", status=TaskStatus.BLOCKED, assigned_agent="qa_engineer",
+    ))
+    rows = db.list_tasks(status=TaskStatus.BLOCKED, assigned_agent="dev_agent")
+    assert [t.id for t in rows] == ["TASK-001"]
+
+
 def test_update_task_status(db):
     task = TaskRecord(
         id="TASK-002",

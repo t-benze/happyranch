@@ -953,6 +953,10 @@ class DispatchBody(BaseModel):
     brief: str
     target_agent: str | None = None
     team: str | None = None
+    # THR-018 §3a: optionally name a blocked(escalated|delegated) predecessor
+    # that this continuation supersedes. Honored ONLY for a manager-authorized
+    # dispatch (maker-checker); a worker self-dispatch must NEVER auto-close it.
+    resolves: str | None = None
 
 
 @router.post("/threads/{thread_id}/dispatch")
@@ -1020,6 +1024,39 @@ async def dispatch_from_thread_endpoint(
     if agent_def is None or not workspace_exists:
         raise HTTPException(status_code=404, detail={"code": "unknown_agent", "agent": effective_target})
 
+    # THR-018 §3a forcing function: an optional `resolves` names a blocked
+    # predecessor that this thread-dispatched continuation supersedes. The
+    # maker-checker boundary: ONLY a founder/manager-authorized dispatch may
+    # auto-close a predecessor — a worker self-dispatch must NEVER. (The founder
+    # closes via `revisit`; managers close in-lineage via this thread path.)
+    # Validated before the task is created so an ineligible/unauthorized supersede
+    # rejects cleanly without orphaning a new root.
+    resolves = body.resolves.strip() if body.resolves else None
+    predecessor = None
+    pred_block_kind = None
+    if resolves:
+        if not is_manager:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "thread_supersede_not_authorized",
+                        "dispatcher": dispatcher, "resolves": resolves},
+            )
+        from runtime.daemon.routes.tasks import _eligible_supersede_block_kind
+        predecessor = org.db.get_task(resolves)
+        if predecessor is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "predecessor_not_found", "resolves": resolves},
+            )
+        pred_block_kind = _eligible_supersede_block_kind(org, predecessor)
+        if pred_block_kind is None:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "predecessor_not_supersedable",
+                        "resolves": resolves,
+                        "predecessor_status": predecessor.status.value},
+            )
+
     async with org.db_lock:
         cur_inv = org.db.get_pending_invocation(body.invocation_token)
         if cur_inv is None or cur_inv.dispatched_task_id is not None:
@@ -1043,12 +1080,42 @@ async def dispatch_from_thread_endpoint(
             },
         )
         org.db.record_dispatch_on_invocation(body.invocation_token, task_id=task_id)
-        AuditLogger(org.db).log_thread_dispatch(
+        audit = AuditLogger(org.db)
+        audit.log_thread_dispatch(
             thread_id, task_id=task_id, dispatcher=dispatcher,
             target_agent=effective_target, team=effective_team,
         )
+        # Reuse the proven revisit-path supersede logic (Gap-A no-reenqueue +
+        # successor citation). Parent-wake + followup run after the lock.
+        if resolves and predecessor is not None:
+            from runtime.daemon.routes.tasks import _supersede_predecessor_locked
+            _supersede_predecessor_locked(
+                org, audit,
+                predecessor_id=predecessor.id,
+                successor_root=task_id,
+                prior_block_kind=pred_block_kind,
+                actor="thread-dispatch",
+                note_suffix=f"thread {thread_id} dispatch by {dispatcher}",
+                thread_id=thread_id,
+            )
 
     enqueue_task(state, slug, task_id)
+
+    # Supersede tail (outside the lock, mirroring revisit_from_notification):
+    # the superseded predecessor reached a terminal, so a delegated parent must
+    # learn its branch is done, and a thread-originated predecessor must emit its
+    # task-followup. The predecessor itself is NEVER re-enqueued (Gap-A).
+    if resolves and predecessor is not None:
+        from runtime.models import TaskStatus
+        from runtime.orchestrator.run_step import (
+            _enqueue_parent_if_waiting,
+            _maybe_post_thread_followup,
+        )
+        _enqueue_parent_if_waiting(org.orchestrator, predecessor.id)
+        _maybe_post_thread_followup(
+            org.orchestrator, predecessor.id,
+            status=TaskStatus.RESOLVED_SUPERSEDED, auto_revisit_spawned=False,
+        )
 
     await _publish_thread_event(
         org, slug,
@@ -1062,6 +1129,7 @@ async def dispatch_from_thread_endpoint(
         "assigned_agent": effective_target,
         "dispatched_from_thread_id": thread_id,
         "system_message_seq": sys_seq,
+        "superseded_task_id": resolves if (resolves and predecessor is not None) else None,
     }
 
 

@@ -28,19 +28,21 @@ ORG_SLUG="${ORG_PARENT##*/}"
 
 # Plan stdout redirected to stderr so the NDJSON event stream we emit below
 # is the ONLY thing on stdout — _parse_codex_usage scans stdout line-by-line
-# for `{"type":"session_complete",...}`, and any extra non-NDJSON text from
+# for `{"type":"turn.completed",...}`, and any extra non-NDJSON text from
 # plans would either break the scan or pollute usage_raw_json.
 if [[ -n "${FAKE_CODEX_PLAN:-}" && -f "$FAKE_CODEX_PLAN" ]]; then
     bash "$FAKE_CODEX_PLAN" "$TASK_ID" "$SESSION_ID" "$ORG_SLUG" 1>&2
 fi
 
-# When the orchestrator runs Codex with `--json`, emit a fixture-shaped
-# session_complete NDJSON event so `_parse_codex_usage` writes a
-# session_token_usage row. Without this, every fake-Codex session would leave
+# When the orchestrator runs Codex with `--json`, emit a real-shaped
+# `turn.completed` NDJSON event so `_parse_codex_usage` writes a
+# session_token_usage row. This mirrors codex-cli >= 0.137: the terminal
+# event is `turn.completed` carrying a `usage` object, and no model field is
+# emitted on any event. Without this, every fake-Codex session would leave
 # the row table empty.
 if [[ "$JSON_OUTPUT" == 1 ]]; then
     cat <<'EOF'
-{"type":"session_complete","model":"gpt-5","token_usage":{"input_tokens":2000,"output_tokens":800,"cached_tokens":150,"reasoning_tokens":100}}
+{"type":"turn.completed","usage":{"input_tokens":2000,"cached_input_tokens":150,"output_tokens":800,"reasoning_output_tokens":100}}
 EOF
 fi
 

@@ -453,6 +453,40 @@ class AuditLogger:
             payload={"new_root": new_root},
         )
 
+    def log_escalation_superseded(
+        self,
+        predecessor_task_id: str,
+        *,
+        successor_root: str,
+        prior_block_kind: str,
+        actor: str,
+        founder_note: str | None = None,
+        thread_id: str | None = None,
+    ) -> None:
+        """Record that a blocked(escalated|delegated) task was auto-resolved to
+        RESOLVED_SUPERSEDED because a human-authorized continuation
+        (`successor_root`) superseded it.
+
+        The `successor_root` citation IS the maker-checker evidence: this
+        transition NEVER fires without a concrete successor task_id, which only
+        exists because a human (founder `revisit` / founder-or-manager
+        thread-dispatch) authorized the continuation. `actor` records which
+        surface triggered it; `thread_id` (set on the thread-dispatch path)
+        cites the dispatching thread ruling. THR-018 tier #3, §3a.
+        """
+        self._db.insert_audit_log(
+            task_id=predecessor_task_id,
+            agent="founder",
+            action="escalation_superseded",
+            payload={
+                "successor_root": successor_root,
+                "prior_block_kind": prior_block_kind,
+                "actor": actor,
+                "founder_note": founder_note,
+                "thread_id": thread_id,
+            },
+        )
+
     def log_task_dispatched(
         self,
         *,
@@ -1271,4 +1305,71 @@ class AuditLogger:
             task_id=dream_id, agent=agent,
             action="dream_founder_thread_created",
             payload={"founder_thread_id": founder_thread_id},
+        )
+
+    # --- Working Hours ---
+    #
+    # As with dreams, ``audit_log.task_id`` stores ``WORKHOUR-NNN`` for these
+    # rows — the established generic-scope-id overload, NOT a new overload. The
+    # spawned root tasks emit their own ordinary ``task_*`` rows; the two
+    # streams correlate via the id list on ``work_hour_spawned``.
+
+    def log_work_hour_scheduled(
+        self, work_hour_id: str, agent: str, *, local_date: str, slot: str, mode: str,
+        dropped: int = 0,
+    ) -> None:
+        # ``dropped`` records routines discarded past MAX_ROUTINES_PER_WAKE so
+        # the cap leaves an audit trail (no silent truncation).
+        self._db.insert_audit_log(
+            task_id=work_hour_id, agent=agent,
+            action="work_hour_scheduled",
+            payload={"local_date": local_date, "slot": slot, "mode": mode, "dropped": dropped},
+        )
+
+    def log_work_hour_started(self, work_hour_id: str, agent: str) -> None:
+        self._db.insert_audit_log(
+            task_id=work_hour_id, agent=agent,
+            action="work_hour_started",
+            payload={},
+        )
+
+    def log_work_hour_spawned(
+        self, work_hour_id: str, agent: str, *, task_ids: list[str],
+    ) -> None:
+        """A wake self-dispatched its routine root tasks. Payload carries the
+        spawned root task_id list (the forward correlation to the task surface;
+        the reverse linkage is ``work_hours.spawned_task_ids``)."""
+        self._db.insert_audit_log(
+            task_id=work_hour_id, agent=agent,
+            action="work_hour_spawned",
+            payload={"task_ids": list(task_ids), "spawned_task_count": len(task_ids)},
+        )
+
+    def log_work_hour_completed(
+        self, work_hour_id: str, agent: str, *, spawned_task_count: int, routine_count: int,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=work_hour_id, agent=agent,
+            action="work_hour_completed",
+            payload={
+                "spawned_task_count": spawned_task_count,
+                "routine_count": routine_count,
+            },
+        )
+
+    def log_work_hour_failed(self, work_hour_id: str, agent: str, *, reason: str) -> None:
+        self._db.insert_audit_log(
+            task_id=work_hour_id, agent=agent,
+            action="work_hour_failed",
+            payload={"reason": reason},
+        )
+
+    def log_work_hour_timeout(self, work_hour_id: str, agent: str, *, reason: str) -> None:
+        """Executor timeout for a wake. Distinct from work_hour_failed so the
+        timeout failure mode is queryable separately (spec "Audit And Token
+        Usage": work_hour_timeout). No tasks are spawned on timeout."""
+        self._db.insert_audit_log(
+            task_id=work_hour_id, agent=agent,
+            action="work_hour_timeout",
+            payload={"reason": reason},
         )

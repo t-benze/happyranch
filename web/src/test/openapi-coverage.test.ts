@@ -105,6 +105,10 @@ const INCLUDED_PATHS = new Set<string>([
   'GET /api/v1/orgs/{slug}/dreams/status',
   'GET /api/v1/orgs/{slug}/dreams',
   'GET /api/v1/orgs/{slug}/dreams/{dream_id}',
+  // work-hours — founder-facing list/show/status; spawn is agent callback
+  'GET /api/v1/orgs/{slug}/work-hours/status',
+  'GET /api/v1/orgs/{slug}/work-hours',
+  'GET /api/v1/orgs/{slug}/work-hours/{work_hour_id}',
   // dashboard — founder-facing summary rollup
   'GET /api/v1/orgs/{slug}/dashboard/summary',
   // agents — founder-facing (enrollment + read-only learnings)
@@ -142,6 +146,8 @@ const EXCLUDED_PATHS = new Map<string, string>([
   // agent self-service
   ['POST /api/v1/orgs/{slug}/agents/manage', 'agent enrollment via skill'],
   ['POST /api/v1/orgs/{slug}/agents/{agent_name}/repos', 'agent manage-repo callback'],
+  // founder set-executor — CLI-only (happyranch set-executor); not wired into the SPA
+  ['PUT /api/v1/orgs/{slug}/agents/{agent_name}/executor', 'founder CLI set-executor only; not in SPA'],
   // learnings writes (legacy + structured)
   ['POST /api/v1/orgs/{slug}/agents/{agent_name}/learnings', 'legacy agent learning append'],
   ['POST /api/v1/orgs/{slug}/agents/{agent_name}/learnings/entries/', 'agent-only write'],
@@ -167,6 +173,8 @@ const EXCLUDED_PATHS = new Map<string, string>([
   ['GET /api/v1/orgs/{slug}/artifacts/{name}', 'agent-facing v1; also founder artifacts UI download'],
   // dreams agent callback
   ['POST /api/v1/orgs/{slug}/dreams/{dream_id}/complete', 'agent callback'],
+  // work-hours wake spawn — agent callback (single-line --from-file), not browser-callable
+  ['POST /api/v1/orgs/{slug}/work-hours/{work_hour_id}/spawn', 'agent callback'],
   // KB view-tracking read surface — agent-CLI `happyranch kb stats` only; not
   // wired into the SPA. Read-only (never increments), so no surface-header
   // concern. See kb-view-tracking-caller-signal.

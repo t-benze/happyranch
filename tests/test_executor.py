@@ -464,3 +464,80 @@ def test_claude_executor_omits_resume_flag_by_default(mock_subprocess, tmp_path,
     executor = ClaudeExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings(), paths=runtime)
     executor.run(workspace=workspace, prompt="x", timeout_seconds=30)
     assert "--resume" not in mock_subprocess.Popen.call_args[0][0]
+
+
+# -- rate_limited normalization (issue #85) -------------------------------
+# _run_command sniffs every provider's stdout/stderr for the shared rate-limit
+# signature and sets ExecutorResult.rate_limited, so the classifier and the
+# throttle get one normalized field regardless of which executor ran.
+
+
+def test_is_rate_limit_signature_matches_known_phrases():
+    from runtime.orchestrator.executors import is_rate_limit_signature
+
+    assert is_rate_limit_signature("Claude: hit your limit · resets at 6:30pm")
+    assert is_rate_limit_signature("HTTP 429: rate limit exceeded")
+    assert is_rate_limit_signature("RATE LIMIT")  # case-insensitive
+    # "hit your limit" without "reset" is NOT a match (mirrors the classifier).
+    assert not is_rate_limit_signature("you hit your limit of free retries")
+    assert not is_rate_limit_signature("all good, wrote files")
+    assert not is_rate_limit_signature("")
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+def test_claude_executor_sets_rate_limited_from_stdout(mock_subprocess, tmp_path, runtime):
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+    # Claude prints the limit notice on stdout and exits 0.
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=0, stdout="hit your limit · resets at 6:30pm Pacific",
+    )
+    executor = ClaudeExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings(), paths=runtime)
+    result = executor.run(workspace=workspace, prompt="x", timeout_seconds=30)
+    assert result.rate_limited is True
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+def test_codex_executor_sets_rate_limited_from_stderr(mock_subprocess, tmp_path):
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=1, stdout="", stderr="error: rate limit reached, retry later",
+    )
+    executor = CodexExecutor(codex_cli_path="codex", sandbox_mode="workspace-write")
+    result = executor.run(workspace=workspace, prompt="x", timeout_seconds=30)
+    assert result.rate_limited is True
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+def test_opencode_executor_sets_rate_limited_from_stderr(mock_subprocess, tmp_path):
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=1, stdout="", stderr="429 rate limit",
+    )
+    executor = OpencodeExecutor(opencode_cli_path="opencode")
+    result = executor.run(workspace=workspace, prompt="x", timeout_seconds=30)
+    assert result.rate_limited is True
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+def test_pi_executor_sets_rate_limited_from_stdout(mock_subprocess, tmp_path):
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=0, stdout='{"type":"result"} rate limit',
+    )
+    executor = PiExecutor(pi_cli_path="pi")
+    result = executor.run(workspace=workspace, prompt="x", timeout_seconds=30)
+    assert result.rate_limited is True
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+def test_clean_run_is_not_rate_limited(mock_subprocess, tmp_path, runtime):
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+    mock_subprocess.Popen.return_value = _popen_mock(returncode=0, stdout="all good")
+    executor = ClaudeExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings(), paths=runtime)
+    result = executor.run(workspace=workspace, prompt="x", timeout_seconds=30)
+    assert result.rate_limited is False

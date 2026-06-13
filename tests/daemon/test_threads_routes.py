@@ -5,8 +5,11 @@ from fastapi.testclient import TestClient
 
 from runtime.infrastructure.artifact_store import ArtifactStore
 from runtime.models import (
+    BlockKind,
     TalkRecord,
     TalkStatus,
+    TaskRecord,
+    TaskStatus,
     ThreadAttachment,
     ThreadMessageKind,
     ThreadRecord,
@@ -448,6 +451,159 @@ def test_dispatch_twice_on_same_token_rejected(tmp_home, app, org_state, auth_he
     )
     assert again.status_code == 409
     assert again.json()["detail"]["code"] == "dispatch_already_used"
+
+
+# ---------------------------------------------------------------------------
+# THR-018 §3a — thread-dispatch supersede leg (maker-checker, both directions)
+# ---------------------------------------------------------------------------
+
+
+def _audit_payload(org_state, task_id: str, action: str) -> dict:
+    for e in org_state.db.get_audit_logs(task_id):
+        if e["action"] == action:
+            return e["payload"] or {}
+    return {}
+
+
+def test_manager_dispatch_supersedes_blocked_escalated_predecessor(
+    tmp_home, app, org_state, auth_headers,
+):
+    """A manager-authorized thread-dispatch naming a blocked(escalated)
+    predecessor auto-resolves it to RESOLVED_SUPERSEDED, citing the new root +
+    the thread ruling in the audit (the maker-checker evidence)."""
+    client = TestClient(app)
+    _seed_agent(org_state, "engineering_head", role="manager")
+    tid, token = _start_thread(client, org_state, auth_headers, recipient="engineering_head")
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-900", brief="orphan escalation", team="engineering",
+        assigned_agent="dev_agent",
+        status=TaskStatus.BLOCKED, block_kind=BlockKind.ESCALATED,
+    ))
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/dispatch",
+        json={"thread_id": tid, "invocation_token": token,
+              "dispatcher": "engineering_head",
+              "brief": "continue the escalated work", "resolves": "TASK-900"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["superseded_task_id"] == "TASK-900"
+
+    pred = org_state.db.get_task("TASK-900")
+    assert pred.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert pred.block_kind is None
+    assert pred.completed_at is not None
+    payload = _audit_payload(org_state, "TASK-900", "escalation_superseded")
+    assert payload["successor_root"] == data["task_id"]
+    assert payload["prior_block_kind"] == "escalated"
+    assert payload["thread_id"] == tid  # thread ruling cited
+
+
+def test_manager_dispatch_supersedes_blocked_delegated_when_children_terminal(
+    tmp_home, app, org_state, auth_headers,
+):
+    """Gap-B on the thread path: a blocked(delegated) predecessor with ALL
+    children terminal is supersedable without cascade."""
+    client = TestClient(app)
+    _seed_agent(org_state, "engineering_head", role="manager")
+    tid, token = _start_thread(client, org_state, auth_headers, recipient="engineering_head")
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-900", brief="delegated parent", team="engineering",
+        assigned_agent="engineering_head",
+        status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED,
+    ))
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-901", brief="c1", parent_task_id="TASK-900", status=TaskStatus.COMPLETED,
+    ))
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-902", brief="c2", parent_task_id="TASK-900", status=TaskStatus.FAILED,
+    ))
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/dispatch",
+        json={"thread_id": tid, "invocation_token": token,
+              "dispatcher": "engineering_head",
+              "brief": "carry the delegated branch", "resolves": "TASK-900"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    pred = org_state.db.get_task("TASK-900")
+    assert pred.status == TaskStatus.RESOLVED_SUPERSEDED
+    assert pred.block_kind is None
+    payload = _audit_payload(org_state, "TASK-900", "escalation_superseded")
+    assert payload["prior_block_kind"] == "delegated"
+
+
+def test_manager_dispatch_refuses_supersede_of_delegated_with_live_child(
+    tmp_home, app, org_state, auth_headers,
+):
+    """Gap-B gate: a delegated predecessor with a live child is NOT supersedable
+    (would abandon the live child). 409; predecessor + live child untouched."""
+    client = TestClient(app)
+    _seed_agent(org_state, "engineering_head", role="manager")
+    tid, token = _start_thread(client, org_state, auth_headers, recipient="engineering_head")
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-900", brief="delegated parent", team="engineering",
+        assigned_agent="engineering_head",
+        status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED,
+    ))
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-901", brief="done", parent_task_id="TASK-900", status=TaskStatus.COMPLETED,
+    ))
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-902", brief="live", parent_task_id="TASK-900",
+        status=TaskStatus.IN_PROGRESS,
+    ))
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/dispatch",
+        json={"thread_id": tid, "invocation_token": token,
+              "dispatcher": "engineering_head",
+              "brief": "x", "resolves": "TASK-900"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "predecessor_not_supersedable"
+    assert org_state.db.get_task("TASK-900").status == TaskStatus.BLOCKED
+    assert org_state.db.get_task("TASK-900").block_kind == BlockKind.DELEGATED
+    assert org_state.db.get_task("TASK-902").status == TaskStatus.IN_PROGRESS
+    assert "escalation_superseded" not in [
+        e["action"] for e in org_state.db.get_audit_logs("TASK-900")
+    ]
+
+
+def test_worker_self_dispatch_cannot_supersede_predecessor(
+    tmp_home, app, org_state, auth_headers,
+):
+    """Maker-checker NEGATIVE (mirrors the revisit-path negative test): a
+    worker-originated thread dispatch is NOT authorized to auto-close a
+    predecessor — 403, and the predecessor stays blocked. Only a founder
+    (`revisit`) or a team manager (this path) may supersede."""
+    client = TestClient(app)
+    tid, token = _start_thread(client, org_state, auth_headers, recipient="dev_agent")
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-900", brief="orphan escalation", team="engineering",
+        assigned_agent="dev_agent",
+        status=TaskStatus.BLOCKED, block_kind=BlockKind.ESCALATED,
+    ))
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/dispatch",
+        json={"thread_id": tid, "invocation_token": token,
+              "dispatcher": "dev_agent",
+              "brief": "sneaky close", "resolves": "TASK-900"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "thread_supersede_not_authorized"
+    # Predecessor untouched: never auto-closed by an unauthorized dispatch.
+    assert org_state.db.get_task("TASK-900").status == TaskStatus.BLOCKED
+    assert org_state.db.get_task("TASK-900").block_kind == BlockKind.ESCALATED
+    assert "escalation_superseded" not in [
+        e["action"] for e in org_state.db.get_audit_logs("TASK-900")
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -234,6 +234,28 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/agents/{agent_name}/executor": {
+      "PUT": {
+        "params": [
+          [
+            "agent_name",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/agents/{agent_name}/learnings": {
       "POST": {
         "params": [
@@ -1366,12 +1388,20 @@
             "query"
           ],
           [
+            "block_kind",
+            "query"
+          ],
+          [
             "limit",
             "query"
           ],
           [
             "slug",
             "path"
+          ],
+          [
+            "status",
+            "query"
           ]
         ],
         "responses": [
@@ -1980,6 +2010,98 @@
           [
             "thread_id",
             "query"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/work-hours": {
+      "GET": {
+        "params": [
+          [
+            "agent",
+            "query"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "limit",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/work-hours/status": {
+      "GET": {
+        "params": [
+          [
+            "agent",
+            "query"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/work-hours/{work_hour_id}": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "work_hour_id",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/work-hours/{work_hour_id}/spawn": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "work_hour_id",
+            "path"
           ]
         ],
         "responses": [

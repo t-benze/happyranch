@@ -9,9 +9,10 @@ session_end audit payload + happyranch tokens surfacing — actually runs end-to
 The Claude fixture: input=1000, output=500, cache_creation=300, cache_read=200,
 no reasoning. So total token_count (input + output + reasoning) = 1500.
 
-The Codex fixture: input=2000, output=800, cached=150 (mapped to
-cache_read_tokens; Codex doesn't separate cache_creation), reasoning=100,
-model="gpt-5".
+The Codex fixture (real `turn.completed` shape): input=2000, output=800,
+cached_input=150 (mapped to cache_read_tokens; Codex doesn't separate
+cache_creation), reasoning_output=100. Codex `exec --json` emits no model
+field on any event, so model stays NULL.
 """
 from __future__ import annotations
 
@@ -199,11 +200,11 @@ def test_codex_session_writes_token_usage_row(
 ):
     """A successful Codex session writes one session_token_usage row whose
     fields match `_parse_codex_usage`'s mapping of the fixture NDJSON
-    (input=2000, output=800, cached=150, reasoning=100, model="gpt-5").
+    (input=2000, output=800, cached_input=150, reasoning_output=100, no model).
 
     Without this mirror, a regression in `_parse_codex_usage` (e.g. the
-    `cached_tokens` → `cache_read_tokens` rename, or dropping the reasoning
-    field) would not be caught by the e2e suite."""
+    `cached_input_tokens` → `cache_read_tokens` mapping, or dropping the
+    reasoning field) would not be caught by the e2e suite."""
     port = live_daemon
     base = f"http://127.0.0.1:{port}/api/v1/orgs/test"
 
@@ -222,9 +223,10 @@ def test_codex_session_writes_token_usage_row(
     assert row["agent"] == "engineering_head"
     assert row["input_tokens"] == 2000
     assert row["output_tokens"] == 800
-    # Codex emits a single `cached_tokens` field, mapped onto cache_read; it
-    # does not separate cache-creation, so that column stays NULL.
+    # Codex emits a single `cached_input_tokens` field, mapped onto cache_read;
+    # it does not separate cache-creation, so that column stays NULL.
     assert row["cache_read_tokens"] == 150
     assert row["cache_creation_tokens"] is None
     assert row["reasoning_tokens"] == 100
-    assert row["model"] == "gpt-5"
+    # Codex `exec --json` emits no model field on any event → NULL.
+    assert row["model"] is None

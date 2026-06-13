@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 from runtime.infrastructure.database import Database
-from runtime.models import TokenUsage
+from runtime.models import TaskRecord, TaskStatus, TokenUsage
 
 
 def _usage(input_tokens=100, output_tokens=50, **kw):
@@ -246,7 +246,14 @@ def test_aggregate_by_thread_and_talk(db: Database):
     by_thread = db.aggregate_session_token_usage_by_thread()
     by_talk = db.aggregate_session_token_usage_by_talk()
 
-    assert by_thread == [{
+    # by_thread / by_talk carry the model-classification primitives. Both
+    # threads here are claude with NULL model, so the null_claude_*_created_at
+    # columns are real (non-deterministic) timestamps — pop and check presence,
+    # then exact-compare the rest.
+    [trow] = by_thread
+    assert trow.pop("null_claude_min_created_at") is not None
+    assert trow.pop("null_claude_max_created_at") is not None
+    assert trow == {
         "thread_id": "THR-001",
         "sessions": 2,
         "input_tokens": 30,
@@ -255,7 +262,14 @@ def test_aggregate_by_thread_and_talk(db: Database):
         "cache_creation_tokens": 0,
         "reasoning_tokens": 0,
         "total_tokens": 35,
-    }]
+        "model_distinct": 0,
+        "model_any": None,
+        "non_null_sessions": 0,
+        "null_codex_sessions": 0,
+        "null_claude_sessions": 2,
+    }
+    # The single talk row is codex/NULL-model: no null-claude rows, so the
+    # null_claude_*_created_at columns stay NULL (deterministic).
     assert by_talk == [{
         "talk_id": "TALK-001",
         "sessions": 1,
@@ -265,6 +279,13 @@ def test_aggregate_by_thread_and_talk(db: Database):
         "cache_creation_tokens": 0,
         "reasoning_tokens": 0,
         "total_tokens": 11,
+        "model_distinct": 0,
+        "model_any": None,
+        "non_null_sessions": 0,
+        "null_codex_sessions": 1,
+        "null_claude_sessions": 0,
+        "null_claude_min_created_at": None,
+        "null_claude_max_created_at": None,
     }]
 
 
@@ -372,3 +393,281 @@ def test_insert_token_usage_supports_dream_scope(db: Database):
     assert len(rows) == 1
     assert rows[0]["scope_type"] == "dream"
     assert rows[0]["scope_id"] == "DREAM-001"
+
+
+def test_aggregate_by_failed_task_groups_per_task_and_agent(db: Database):
+    # FAILED tasks contribute; non-failed tasks (completed/blocked) are excluded.
+    db.insert_task(TaskRecord(id="T-FAIL-1", brief="x", status=TaskStatus.FAILED))
+    db.insert_task(TaskRecord(id="T-FAIL-2", brief="x", status=TaskStatus.FAILED))
+    db.insert_task(TaskRecord(id="T-DONE", brief="x", status=TaskStatus.COMPLETED))
+    db.insert_task(TaskRecord(id="T-BLOCKED", brief="x", status=TaskStatus.BLOCKED))
+
+    # T-FAIL-1: two agents -> two rollup rows.
+    db.insert_session_token_usage(
+        task_id="T-FAIL-1", agent="dev", session_id="s1", executor="claude",
+        token_usage=_usage(input_tokens=10, output_tokens=5),
+    )
+    db.insert_session_token_usage(
+        task_id="T-FAIL-1", agent="dev", session_id="s2", executor="claude",
+        token_usage=_usage(input_tokens=20, output_tokens=10, reasoning_tokens=3),
+    )
+    db.insert_session_token_usage(
+        task_id="T-FAIL-1", agent="qa", session_id="s3", executor="codex",
+        token_usage=_usage(input_tokens=100, output_tokens=40),
+    )
+    # T-FAIL-2: single agent.
+    db.insert_session_token_usage(
+        task_id="T-FAIL-2", agent="dev", session_id="s4", executor="claude",
+        token_usage=_usage(input_tokens=7, output_tokens=3),
+    )
+    # Excluded: completed + blocked tasks must not appear.
+    db.insert_session_token_usage(
+        task_id="T-DONE", agent="dev", session_id="s5", executor="claude",
+        token_usage=_usage(input_tokens=999, output_tokens=999),
+    )
+    db.insert_session_token_usage(
+        task_id="T-BLOCKED", agent="dev", session_id="s6", executor="claude",
+        token_usage=_usage(input_tokens=888, output_tokens=888),
+    )
+
+    rollup = db.aggregate_session_token_usage_by_failed_task()
+    keyed = {(r["task_id"], r["agent"]): r for r in rollup}
+
+    # Only the two failed tasks appear; non-failed excluded entirely.
+    assert {r["task_id"] for r in rollup} == {"T-FAIL-1", "T-FAIL-2"}
+
+    dev1 = keyed[("T-FAIL-1", "dev")]
+    assert dev1["sessions"] == 2
+    assert dev1["input_tokens"] == 30
+    assert dev1["output_tokens"] == 15
+    assert dev1["reasoning_tokens"] == 3
+    # total = input + output + reasoning
+    assert dev1["total_tokens"] == 48
+
+    qa1 = keyed[("T-FAIL-1", "qa")]
+    assert qa1["sessions"] == 1
+    assert qa1["input_tokens"] == 100
+    assert qa1["output_tokens"] == 40
+
+    dev2 = keyed[("T-FAIL-2", "dev")]
+    assert dev2["sessions"] == 1
+    assert dev2["input_tokens"] == 7
+
+
+def test_aggregate_by_failed_task_empty_when_no_failed_tasks(db: Database):
+    db.insert_task(TaskRecord(id="T-DONE", brief="x", status=TaskStatus.COMPLETED))
+    db.insert_session_token_usage(
+        task_id="T-DONE", agent="dev", session_id="s1", executor="claude",
+        token_usage=_usage(input_tokens=10),
+    )
+    assert db.aggregate_session_token_usage_by_failed_task() == []
+
+
+def test_aggregate_by_failed_task_filters_compose(db: Database):
+    db.insert_task(TaskRecord(id="T-FAIL-1", brief="x", status=TaskStatus.FAILED))
+    db.insert_task(TaskRecord(id="T-FAIL-2", brief="x", status=TaskStatus.FAILED))
+    db.insert_session_token_usage(
+        task_id="T-FAIL-1", agent="dev", session_id="s1", executor="claude",
+        token_usage=_usage(input_tokens=10),
+    )
+    db.insert_session_token_usage(
+        task_id="T-FAIL-2", agent="dev", session_id="s2", executor="claude",
+        token_usage=_usage(input_tokens=20),
+    )
+    # agent filter AND-composes with the failed-status JOIN.
+    rollup = db.aggregate_session_token_usage_by_failed_task(task_id="T-FAIL-1")
+    assert len(rollup) == 1
+    assert rollup[0]["task_id"] == "T-FAIL-1"
+    assert rollup[0]["agent"] == "dev"
+    assert rollup[0]["input_tokens"] == 10
+
+
+def test_aggregate_by_purpose_groups_and_excludes_null(db: Database):
+    # Two sessions share purpose 'reply'; one 'bootstrap'; a NULL-purpose task
+    # row must be EXCLUDED from the rollup.
+    db.insert_session_token_usage(
+        task_id=None, agent="alice", session_id="p1", executor="claude",
+        token_usage=_usage(input_tokens=10, output_tokens=2),
+        scope_type="thread", scope_id="THR-1", thread_id="THR-1",
+        invocation_purpose="reply",
+    )
+    db.insert_session_token_usage(
+        task_id=None, agent="bob", session_id="p2", executor="claude",
+        token_usage=_usage(input_tokens=20, output_tokens=3),
+        scope_type="thread", scope_id="THR-1", thread_id="THR-1",
+        invocation_purpose="reply",
+    )
+    db.insert_session_token_usage(
+        task_id=None, agent="alice", session_id="p3", executor="claude",
+        token_usage=_usage(input_tokens=5, output_tokens=1),
+        scope_type="thread", scope_id="THR-2", thread_id="THR-2",
+        invocation_purpose="bootstrap",
+    )
+    # NULL invocation_purpose (a normal task row) must NOT appear.
+    db.insert_session_token_usage(
+        task_id="TASK-1", agent="alice", session_id="p4", executor="claude",
+        token_usage=_usage(input_tokens=999, output_tokens=999),
+    )
+
+    rollup = db.aggregate_session_token_usage_by_purpose()
+    keyed = {r["purpose"]: r for r in rollup}
+
+    assert set(keyed) == {"reply", "bootstrap"}  # NULL purpose excluded
+    assert keyed["reply"]["sessions"] == 2
+    assert keyed["reply"]["input_tokens"] == 30
+    assert keyed["reply"]["output_tokens"] == 5
+    assert keyed["reply"]["total_tokens"] == 35
+    assert keyed["bootstrap"]["sessions"] == 1
+    assert keyed["bootstrap"]["input_tokens"] == 5
+    # purpose carries NO model-classification columns (spec: purpose has no
+    # Model column).
+    assert "model_distinct" not in keyed["reply"]
+
+
+def test_aggregate_by_purpose_filters_compose(db: Database):
+    db.insert_session_token_usage(
+        task_id=None, agent="alice", session_id="p1", executor="claude",
+        token_usage=_usage(input_tokens=10),
+        scope_type="thread", scope_id="THR-1", thread_id="THR-1",
+        invocation_purpose="reply",
+    )
+    db.insert_session_token_usage(
+        task_id=None, agent="bob", session_id="p2", executor="claude",
+        token_usage=_usage(input_tokens=20),
+        scope_type="thread", scope_id="THR-2", thread_id="THR-2",
+        invocation_purpose="reply",
+    )
+    # thread_id filter AND-composes with the purpose grouping + NOT NULL.
+    rollup = db.aggregate_session_token_usage_by_purpose(thread_id="THR-1")
+    assert len(rollup) == 1
+    assert rollup[0]["purpose"] == "reply"
+    assert rollup[0]["input_tokens"] == 10
+
+
+def test_aggregate_model_classification_primitives(db: Database):
+    """The by-agent rollup carries the cutover-INDEPENDENT primitives a
+    renderer needs to apply the spec-§2 model-name precedence. One agent per
+    precedence case; we assert the PRIMITIVES, not the label (label = Leg B).
+    """
+    # Deterministic timestamps for the cutover-sensitive null-claude rows.
+    # The cutover (MODEL_FIX_CUTOVER_TS = 2026-06-12T15:38:50Z) is a Leg-B
+    # presentation constant; here PRE is before it and POST is after it.
+    PRE = "2026-06-12T10:00:00+00:00"
+    POST = "2026-06-12T20:00:00+00:00"
+
+    # case 1: single non-NULL model -> resolved id
+    db.insert_session_token_usage(
+        task_id="T1", agent="single", session_id="c1", executor="claude",
+        token_usage=_usage(model="claude-opus-4-8"),
+    )
+    # case 2: two distinct non-NULL models -> mixed
+    db.insert_session_token_usage(
+        task_id="T2", agent="two_distinct", session_id="c2a", executor="claude",
+        token_usage=_usage(model="claude-opus-4-8"),
+    )
+    db.insert_session_token_usage(
+        task_id="T2", agent="two_distinct", session_id="c2b", executor="claude",
+        token_usage=_usage(model="claude-sonnet-4-6"),
+    )
+    # case 3: non-NULL + NULL mix -> mixed
+    db.insert_session_token_usage(
+        task_id="T3", agent="nonnull_plus_null", session_id="c3a", executor="codex",
+        token_usage=_usage(model="gpt-5"),
+    )
+    db.insert_session_token_usage(
+        task_id="T3", agent="nonnull_plus_null", session_id="c3b", executor="claude",
+        token_usage=_usage(),  # model None
+    )
+    # case 4: all-NULL codex -> cli-unreported
+    db.insert_session_token_usage(
+        task_id="T4", agent="null_codex", session_id="c4", executor="codex",
+        token_usage=_usage(),
+    )
+    # case 5: all-NULL claude pre-cutover -> unknown (pre-fix)
+    db.insert_session_token_usage(
+        task_id="T5", agent="null_claude_pre", session_id="c5", executor="claude",
+        token_usage=_usage(),
+    )
+    # case 6: all-NULL claude post-cutover -> unknown (ANOMALY)
+    db.insert_session_token_usage(
+        task_id="T6", agent="null_claude_post", session_id="c6", executor="claude",
+        token_usage=_usage(),
+    )
+    # case 7: all-NULL spanning codex+claude -> mixed
+    db.insert_session_token_usage(
+        task_id="T7", agent="null_mixed_exec", session_id="c7codex", executor="codex",
+        token_usage=_usage(),
+    )
+    db.insert_session_token_usage(
+        task_id="T7", agent="null_mixed_exec", session_id="c7claude", executor="claude",
+        token_usage=_usage(),
+    )
+
+    # Pin created_at on the cutover-sensitive null-claude rows (the public
+    # insert always stamps now(); a direct UPDATE is the test-local seam).
+    db._conn.execute(
+        "UPDATE session_token_usage SET created_at = ? WHERE session_id = ?",
+        (PRE, "c5"),
+    )
+    db._conn.execute(
+        "UPDATE session_token_usage SET created_at = ? WHERE session_id = ?",
+        (POST, "c6"),
+    )
+    db._conn.commit()
+
+    rollup = {r["agent"]: r for r in db.aggregate_session_token_usage_by_agent()}
+
+    # case 1: distinct==1 -> renderer reads model_any as the id
+    s = rollup["single"]
+    assert s["model_distinct"] == 1
+    assert s["model_any"] == "claude-opus-4-8"
+    assert s["non_null_sessions"] == 1
+    assert s["null_codex_sessions"] == 0
+    assert s["null_claude_sessions"] == 0
+    assert s["null_claude_min_created_at"] is None
+    assert s["null_claude_max_created_at"] is None
+
+    # case 2: >1 distinct -> mixed
+    s = rollup["two_distinct"]
+    assert s["model_distinct"] == 2
+    assert s["non_null_sessions"] == 2
+    assert s["null_codex_sessions"] == 0
+    assert s["null_claude_sessions"] == 0
+
+    # case 3: non-null present AND null present -> mixed
+    s = rollup["nonnull_plus_null"]
+    assert s["model_distinct"] == 1
+    assert s["non_null_sessions"] == 1
+    assert s["null_claude_sessions"] == 1
+    assert s["null_codex_sessions"] == 0
+
+    # case 4: all-NULL codex-only -> cli-unreported
+    s = rollup["null_codex"]
+    assert s["model_distinct"] == 0
+    assert s["model_any"] is None
+    assert s["non_null_sessions"] == 0
+    assert s["null_codex_sessions"] == 1
+    assert s["null_claude_sessions"] == 0
+    assert s["null_claude_min_created_at"] is None
+    assert s["null_claude_max_created_at"] is None
+
+    # case 5: all-NULL claude-only, all created_at < cutover -> pre-fix
+    s = rollup["null_claude_pre"]
+    assert s["non_null_sessions"] == 0
+    assert s["null_codex_sessions"] == 0
+    assert s["null_claude_sessions"] == 1
+    assert s["null_claude_min_created_at"] == PRE
+    assert s["null_claude_max_created_at"] == PRE
+
+    # case 6: all-NULL claude-only, any created_at >= cutover -> ANOMALY
+    s = rollup["null_claude_post"]
+    assert s["non_null_sessions"] == 0
+    assert s["null_claude_sessions"] == 1
+    assert s["null_claude_min_created_at"] == POST
+    assert s["null_claude_max_created_at"] == POST
+
+    # case 7: all-NULL spanning codex+claude -> mixed
+    s = rollup["null_mixed_exec"]
+    assert s["non_null_sessions"] == 0
+    assert s["null_codex_sessions"] == 1
+    assert s["null_claude_sessions"] == 1
