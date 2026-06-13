@@ -273,7 +273,12 @@ def test_tokens_group_by_thread_and_talk_returns_rollups(
 
     assert thread_r.status_code == 200
     assert talk_r.status_code == 200
-    assert thread_r.json()["rollup"] == [{
+    # thread row: alice/claude (NULL model) + bob/codex (NULL model). The single
+    # null-claude session makes null_claude_*_created_at a real timestamp — pop.
+    [trow] = thread_r.json()["rollup"]
+    assert trow.pop("null_claude_min_created_at") is not None
+    assert trow.pop("null_claude_max_created_at") is not None
+    assert trow == {
         "thread_id": "THR-001",
         "sessions": 2,
         "input_tokens": 30,
@@ -282,8 +287,17 @@ def test_tokens_group_by_thread_and_talk_returns_rollups(
         "cache_creation_tokens": 0,
         "reasoning_tokens": 0,
         "total_tokens": 42,
-    }]
-    assert talk_r.json()["rollup"] == [{
+        "model_distinct": 0,
+        "model_any": None,
+        "non_null_sessions": 0,
+        "null_codex_sessions": 1,
+        "null_claude_sessions": 1,
+    }
+    # talk row: alice/claude (NULL model) -> one null-claude session, timestamp.
+    [krow] = talk_r.json()["rollup"]
+    assert krow.pop("null_claude_min_created_at") is not None
+    assert krow.pop("null_claude_max_created_at") is not None
+    assert krow == {
         "talk_id": "TALK-001",
         "sessions": 1,
         "input_tokens": 8,
@@ -292,7 +306,12 @@ def test_tokens_group_by_thread_and_talk_returns_rollups(
         "cache_creation_tokens": 0,
         "reasoning_tokens": 0,
         "total_tokens": 10,
-    }]
+        "model_distinct": 0,
+        "model_any": None,
+        "non_null_sessions": 0,
+        "null_codex_sessions": 0,
+        "null_claude_sessions": 1,
+    }
 
 
 def test_tokens_group_by_scope_returns_scope_rollup(
@@ -441,4 +460,70 @@ def test_tokens_group_by_failed_task_composes_with_agent_filter(
     assert len(rollup) == 1
     assert rollup[0]["task_id"] == "TASK-F1"
     assert rollup[0]["agent"] == "qa_engineer"
+    assert rollup[0]["input_tokens"] == 20
+
+
+def _seed_purpose(state) -> None:
+    """Two 'reply' thread sessions + one 'bootstrap' + a NULL-purpose task row."""
+    state.db.insert_session_token_usage(
+        task_id=None, agent="alice", session_id="p1", executor="claude",
+        token_usage=TokenUsage(input_tokens=10, output_tokens=2),
+        scope_type="thread", scope_id="THR-1", thread_id="THR-1",
+        invocation_purpose="reply",
+    )
+    state.db.insert_session_token_usage(
+        task_id=None, agent="bob", session_id="p2", executor="claude",
+        token_usage=TokenUsage(input_tokens=20, output_tokens=3),
+        scope_type="thread", scope_id="THR-2", thread_id="THR-2",
+        invocation_purpose="reply",
+    )
+    state.db.insert_session_token_usage(
+        task_id=None, agent="alice", session_id="p3", executor="claude",
+        token_usage=TokenUsage(input_tokens=5, output_tokens=1),
+        scope_type="thread", scope_id="THR-1", thread_id="THR-1",
+        invocation_purpose="bootstrap",
+    )
+    # NULL invocation_purpose (a normal task row) must be excluded.
+    state.db.insert_session_token_usage(
+        task_id="TASK-900", agent="alice", session_id="p4", executor="claude",
+        token_usage=TokenUsage(input_tokens=999, output_tokens=999),
+    )
+
+
+def test_tokens_group_by_purpose_returns_rollup(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    _seed_purpose(org_state)
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tokens",
+        params={"group_by": "purpose"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert "rollup" in body and "rows" not in body
+    keyed = {row["purpose"]: row for row in body["rollup"]}
+    # NULL purpose excluded; only the two named purposes appear.
+    assert set(keyed) == {"reply", "bootstrap"}
+    assert keyed["reply"]["sessions"] == 2
+    assert keyed["reply"]["input_tokens"] == 30
+    assert keyed["reply"]["total_tokens"] == 35
+    assert keyed["bootstrap"]["sessions"] == 1
+    assert keyed["bootstrap"]["input_tokens"] == 5
+
+
+def test_tokens_group_by_purpose_composes_with_agent_filter(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    _seed_purpose(org_state)
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tokens",
+        params={"group_by": "purpose", "agent": "bob"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    rollup = r.json()["rollup"]
+    # bob only has the one 'reply' session.
+    assert len(rollup) == 1
+    assert rollup[0]["purpose"] == "reply"
     assert rollup[0]["input_tokens"] == 20

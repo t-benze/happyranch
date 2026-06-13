@@ -1745,7 +1745,25 @@ class Database:
         return where, params
 
     @staticmethod
-    def _token_usage_rollup_select(group_expr: str, group_alias: str) -> str:
+    def _token_usage_rollup_select(
+        group_expr: str,
+        group_alias: str,
+        *,
+        include_model_classification: bool = False,
+    ) -> str:
+        # Cutover-INDEPENDENT primitives a renderer applies the model-name
+        # precedence over (the MODEL_FIX_CUTOVER_TS comparison itself is a
+        # presentation concern, never in SQL). total_tokens is unaffected.
+        model_cols = ""
+        if include_model_classification:
+            model_cols = """,
+                         COUNT(DISTINCT model) AS model_distinct,
+                         MAX(model) AS model_any,
+                         SUM(CASE WHEN model IS NOT NULL THEN 1 ELSE 0 END) AS non_null_sessions,
+                         SUM(CASE WHEN model IS NULL AND executor = 'codex' THEN 1 ELSE 0 END) AS null_codex_sessions,
+                         SUM(CASE WHEN model IS NULL AND executor = 'claude' THEN 1 ELSE 0 END) AS null_claude_sessions,
+                         MIN(CASE WHEN model IS NULL AND executor = 'claude' THEN created_at END) AS null_claude_min_created_at,
+                         MAX(CASE WHEN model IS NULL AND executor = 'claude' THEN created_at END) AS null_claude_max_created_at"""
         return f"""SELECT {group_expr} AS {group_alias},
                          COUNT(*) AS sessions,
                          COALESCE(SUM(input_tokens), 0)          AS input_tokens,
@@ -1755,7 +1773,7 @@ class Database:
                          COALESCE(SUM(reasoning_tokens), 0)      AS reasoning_tokens,
                          COALESCE(SUM(input_tokens), 0)
                            + COALESCE(SUM(output_tokens), 0)
-                           + COALESCE(SUM(reasoning_tokens), 0)  AS total_tokens
+                           + COALESCE(SUM(reasoning_tokens), 0)  AS total_tokens{model_cols}
                   FROM session_token_usage"""
 
     @_synchronized
@@ -1820,7 +1838,9 @@ class Database:
             talk_id=talk_id,
             purpose=purpose,
         )
-        sql = self._token_usage_rollup_select("agent", "agent")
+        sql = self._token_usage_rollup_select(
+            "agent", "agent", include_model_classification=True
+        )
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " GROUP BY agent ORDER BY agent"
@@ -1973,7 +1993,9 @@ class Database:
             purpose=purpose,
         )
         where.append("thread_id IS NOT NULL")
-        sql = self._token_usage_rollup_select("thread_id", "thread_id")
+        sql = self._token_usage_rollup_select(
+            "thread_id", "thread_id", include_model_classification=True
+        )
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " GROUP BY thread_id ORDER BY thread_id"
@@ -2003,10 +2025,42 @@ class Database:
             purpose=purpose,
         )
         where.append("talk_id IS NOT NULL")
-        sql = self._token_usage_rollup_select("talk_id", "talk_id")
+        sql = self._token_usage_rollup_select(
+            "talk_id", "talk_id", include_model_classification=True
+        )
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " GROUP BY talk_id ORDER BY talk_id"
+        rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    @_synchronized
+    def aggregate_session_token_usage_by_purpose(
+        self,
+        since: str | None = None,
+        task_id: str | None = None,
+        agent: str | None = None,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        thread_id: str | None = None,
+        talk_id: str | None = None,
+        purpose: str | None = None,
+    ) -> list[dict]:
+        where, params = self._session_token_usage_filters(
+            since=since,
+            task_id=task_id,
+            agent=agent,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            thread_id=thread_id,
+            talk_id=talk_id,
+            purpose=purpose,
+        )
+        where.append("invocation_purpose IS NOT NULL")
+        sql = self._token_usage_rollup_select("invocation_purpose", "purpose")
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " GROUP BY invocation_purpose ORDER BY invocation_purpose"
         rows = self._conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
