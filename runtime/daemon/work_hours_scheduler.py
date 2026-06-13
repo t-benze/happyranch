@@ -7,15 +7,26 @@ and FastAPI lifespan wiring are added in leg B and call the functions here.
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+from runtime.daemon.wake_queue import WakeJob
+from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.models import WorkHourRecord, WorkHourStatus
+from runtime.orchestrator import prompt_loader
+from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.org_config import (
     OrgConfigError,
     WorkHoursSchedule,
     WorkingHoursConfig,
+    load_org_config,
 )
+from runtime.orchestrator.routine_parser import RoutineParseResult, parse_routines
+
+logger = logging.getLogger(__name__)
 
 _WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 _DAY_MINUTES = 24 * 60
@@ -167,3 +178,125 @@ def decide_wake(
             record_skipped=True, reason="catch_up_disabled",
         )
     return WakeScheduleDecision(True, local_date, slot, scheduled_for)
+
+
+# --- Async scheduling loop (mirrors dream_scheduler) -------------------------
+
+
+def _available_agents(org) -> list[str]:
+    """Candidate agents: approved agent files with an existing workspace."""
+    paths = OrgPaths(root=org.root)
+    agents = []
+    for agent in prompt_loader.list_agents(paths):
+        if (org.root / "workspaces" / agent.name).exists():
+            agents.append(agent.name)
+    return agents
+
+
+def _agent_routines(org, agent_name: str) -> RoutineParseResult:
+    """Parse the agent's ``## Routine Tasks`` section. Absent agent file or
+    section yields ``present=False`` (``has_wake=False``)."""
+    agent_def = prompt_loader.load_agent(OrgPaths(root=org.root), agent_name)
+    if agent_def is None:
+        return RoutineParseResult(present=False, preamble="", routines=[], dropped=0)
+    return parse_routines(agent_def.system_prompt)
+
+
+def _agent_team(org, agent_name: str) -> str | None:
+    registry = getattr(org, "teams", None)
+    if registry is None:
+        return None
+    return registry.team_for_agent(agent_name) or registry.team_for_manager(agent_name)
+
+
+async def _enqueue(org, work_hour_id: str) -> None:
+    await org.wake_queue.put(WakeJob(org_slug=org.slug, work_hour_id=work_hour_id))
+
+
+def schedule_due_wakes(*, org, now: datetime, startup: bool = False) -> int:
+    """Schedule due working-hours wakes for an org.
+
+    For each selected agent: resolve its effective schedule, find the current
+    due slot, gate on a present-and-non-empty ``## Routine Tasks`` section
+    (absent/empty -> skip silently, no row), apply the uniqueness guard, and at
+    startup honor ``catch_up_on_startup`` (false -> record a ``skipped`` row so
+    the steady-state loop won't re-pick the slot today).
+    """
+    cfg = load_org_config(OrgPaths(root=org.root)).working_hours
+    if not cfg.enabled:
+        return 0
+    known_teams = set(org.teams.teams()) if getattr(org, "teams", None) else set()
+    selected = select_work_hours_agents(_available_agents(org), cfg, known_teams)
+    count = 0
+    for agent in selected:
+        schedule = cfg.resolve_for(agent, _agent_team(org, agent))
+        due = current_due_slot(schedule, now)
+        if due is None:
+            continue
+        # Routine-presence is the outermost precondition: an agent with no
+        # routines never accrues a work_hours row (not even a skipped one).
+        parsed = _agent_routines(org, agent)
+        if not parsed.has_wake:
+            continue
+        local_date, slot, scheduled_for = due
+        existing = org.db.work_hours.get_for_agent_date_slot(agent, local_date, slot)
+        decision = decide_wake(
+            now=now, schedule=schedule, existing_for_slot=existing, startup=startup,
+        )
+        if not decision.should_schedule:
+            if decision.record_skipped:
+                org.db.work_hours.insert(WorkHourRecord(
+                    id=org.db.work_hours.next_id(),
+                    agent_name=agent,
+                    local_date=local_date,
+                    slot=slot,
+                    mode=schedule.mode,
+                    scheduled_for=scheduled_for,
+                    status=WorkHourStatus.SKIPPED,
+                    routine_count=len(parsed.routines),
+                ))
+            continue
+
+        work_hour_id = org.db.work_hours.next_id()
+        org.db.work_hours.insert(WorkHourRecord(
+            id=work_hour_id,
+            agent_name=agent,
+            local_date=local_date,
+            slot=slot,
+            mode=schedule.mode,
+            scheduled_for=scheduled_for,
+            status=WorkHourStatus.PENDING,
+            routine_count=len(parsed.routines),
+        ))
+        AuditLogger(org.db).log_work_hour_scheduled(
+            work_hour_id, agent, local_date=local_date, slot=slot, mode=schedule.mode,
+        )
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_enqueue(org, work_hour_id))
+        except RuntimeError:
+            # No running loop (sync callers/tests): enqueue directly. The queue
+            # is unbounded so put_nowait never raises (LRN-005: never
+            # asyncio.run() from a no-loop context — it nukes the global loop).
+            org.wake_queue.put_nowait(WakeJob(org_slug=org.slug, work_hour_id=work_hour_id))
+        count += 1
+    return count
+
+
+async def work_hours_scheduler_loop(state, *, interval_seconds: int = 60) -> None:
+    # The first iteration runs after orgs are loaded and DB recovery has run; it
+    # IS the startup catch-up pass (gated per agent by catch_up_on_startup).
+    # Every later iteration is steady-state on-time scheduling.
+    startup = True
+    while True:
+        now = datetime.now(timezone.utc)
+        for org in list(state.orgs.values()):
+            try:
+                schedule_due_wakes(org=org, now=now, startup=startup)
+            except OrgConfigError:
+                logger.exception(
+                    "work-hours scheduling skipped for org %s: invalid working_hours config",
+                    org.slug,
+                )
+        startup = False
+        await asyncio.sleep(interval_seconds)
