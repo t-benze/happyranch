@@ -40,14 +40,14 @@
 - Only `happyranch` is in the baseline allow-rule for every agent. Wrapping asset ops in `happyranch assets ...` is the only design that works for all three executors without per-executor permission gymnastics.
 
 **Validation rules:**
-- Name: matches `^[A-Za-z0-9._-]+$`, length 1-200, does not start with `.`, does not contain `..` or `/`.
+- Name: may use '/' as a path separator for logical folders. Each segment must match `[A-Za-z0-9._-]+`; length 1-200 total. No leading/trailing '/', no empty '//' segments, no '..' segments, no leading '.', no backslashes, no absolute paths. A path-traversal guard rejects symlink escapes outside the org root before any read/write.
 - Size: max 10 MB per file (`MAX_ASSET_BYTES = 10 * 1024 * 1024`). Larger uploads → HTTP 413.
 - Overwrite: PUT is idempotent — overwrites if name exists. No version history v1.
 
 **Out of scope for v1 (explicitly):**
 - Delete (`rm`) — founder can filesystem-delete if needed; defer until there's a real need. _(Shipped in Scope B / THR-007 as a daemon `DELETE` route + web UI control — see the 2026-06-10 note at the top. Still no CLI `rm` verb.)_
-- Subdirectories / nested paths — flat namespace only. Agents can encode structure in the name (`cx-2026-05-27-report.pdf`).
-- Search / prefix filtering — `list` returns all; agents can grep client-side.
+- Subdirectories / nested paths — flat namespace only. Agents can encode structure in the name (`cx-2026-05-27-report.pdf`). _(Superseded by TASK-305: nested keys with '/' separator are now supported.)_
+- Search / prefix filtering — `list` returns all; agents can grep client-side. _(Superseded by TASK-305: `list` supports `?prefix=` filtering.)_
 - Web UI — `web/src/lib/api/assets.ts` not created; routes go in the OpenAPI `EXCLUDED_PATHS` set with reason "agent-facing v1, founder UI later".
 - Per-agent attribution beyond a string field on the audit row — no quotas, no enforcement.
 

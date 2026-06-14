@@ -298,3 +298,48 @@ def test_put_atomic_tmp_in_destination_parent(tmp_path: Path, monkeypatch) -> No
     # The tmp dir should be the parent of the destination.
     expected_parent = str(tmp_path / "artifacts" / "reports")
     assert captured_dirs[0] == expected_parent, f"expected {expected_parent}, got {captured_dirs[0]}"
+
+
+# ---------------------------------------------------------------------------
+# Collision handling (FINDING 2 — TASK-315)
+# ---------------------------------------------------------------------------
+
+
+def test_read_on_directory_key_raises_artifact_not_found(tmp_path: Path) -> None:
+    """read() on a key that is an existing directory -> ArtifactNotFound (404)."""
+    store = ArtifactStore(tmp_path / "artifacts")
+    # Create a nested artifact so the intermediate directory exists.
+    store.put("reports/a.txt", b"content")
+    # "reports" is now a directory, not an artifact.
+    with pytest.raises(ArtifactNotFound):
+        store.read("reports")
+
+
+def test_delete_on_directory_key_raises_artifact_not_found(tmp_path: Path) -> None:
+    """delete() on a directory-prefix key -> ArtifactNotFound (404).
+    Does NOT recursively delete; treats it as 'not an artifact'."""
+    store = ArtifactStore(tmp_path / "artifacts")
+    store.put("reports/a.txt", b"content")
+    # "reports" is a directory, not an artifact.
+    with pytest.raises(ArtifactNotFound):
+        store.delete("reports")
+    # Confirm the directory and file are still intact.
+    assert (tmp_path / "artifacts" / "reports" / "a.txt").exists()
+
+
+def test_put_nested_when_flat_file_exists_rejects(tmp_path: Path) -> None:
+    """put('reports/a.txt') when a FLAT file 'reports' already exists ->
+    InvalidArtifactName (the intermediate path component is a file, not a dir)."""
+    store = ArtifactStore(tmp_path / "artifacts")
+    store.put("reports", b"flat-reports")
+    with pytest.raises(InvalidArtifactName):
+        store.put("reports/a.txt", b"nested")
+
+
+def test_put_flat_when_directory_exists_rejects(tmp_path: Path) -> None:
+    """put('reports') when 'reports/' already exists as a directory ->
+    InvalidArtifactName (name collides with an existing directory)."""
+    store = ArtifactStore(tmp_path / "artifacts")
+    store.put("reports/a.txt", b"content")
+    with pytest.raises(InvalidArtifactName):
+        store.put("reports", b"collision")

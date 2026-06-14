@@ -142,7 +142,7 @@ scripts/happyranch kb reindex
 
 ## Shared Artifacts
 
-Org-wide blob store at `<runtime>/orgs/<slug>/artifacts/`. Flat directory (no nesting in v1) for persistent artifacts produced by agents — reports, exports, screenshots, PDFs. Files survive across tasks and are visible to every agent in the org.
+Org-wide blob store at `<runtime>/orgs/<slug>/artifacts/`. Supports nested keys with '/' path separators for logical folders. Persistent artifacts produced by agents — reports, exports, screenshots, PDFs. Files survive across tasks and are visible to every agent in the org.
 
 ```bash
 scripts/happyranch artifacts put <local-path> --agent <you> [--name <name>] [--org <slug>]

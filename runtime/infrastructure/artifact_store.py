@@ -80,7 +80,12 @@ class ArtifactStore:
             raise ArtifactTooLarge(f"artifact_too_large: {len(content)}B > {MAX_ARTIFACT_BYTES}B")
         target = self.path_for(name)
         # Create intermediate directories for nested keys.
-        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+        except FileExistsError as exc:
+            raise InvalidArtifactName(
+                f"name_collides_with_existing_artifact: {name!r}"
+            ) from exc
         # Atomic write: create tmp file in the DESTINATION's parent dir
         # so os.replace stays atomic on one filesystem.
         fd, tmp_path_str = tempfile.mkstemp(prefix=".tmp.", dir=str(target.parent))
@@ -89,6 +94,11 @@ class ArtifactStore:
             with os.fdopen(fd, "wb") as fh:
                 fh.write(content)
             os.replace(tmp_path, target)
+        except IsADirectoryError as exc:
+            tmp_path.unlink(missing_ok=True)
+            raise InvalidArtifactName(
+                f"name_collides_with_existing_artifact: {name!r}"
+            ) from exc
         except Exception:
             tmp_path.unlink(missing_ok=True)
             raise
@@ -103,12 +113,16 @@ class ArtifactStore:
         path = self.path_for(name)
         if not path.exists():
             raise ArtifactNotFound(name)
+        if path.is_dir():
+            raise ArtifactNotFound(name)
         return path.read_bytes()
 
     def delete(self, name: str) -> None:
         self.validate_name(name)
         path = self.path_for(name)
         if not path.exists():
+            raise ArtifactNotFound(name)
+        if path.is_dir():
             raise ArtifactNotFound(name)
         # Single-file unlink is atomic enough; no locking needed.
         path.unlink()

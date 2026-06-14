@@ -92,7 +92,7 @@ async def get_artifact(slug: str, name: str, org: OrgDep) -> FileResponse:
             status_code=400,
             detail={"code": "invalid_artifact_name", "name": name, "message": str(exc)},
         ) from exc
-    if not path.exists():
+    if not path.exists() or path.is_dir():
         raise HTTPException(
             status_code=404,
             detail={"code": "artifact_not_found", "name": name},

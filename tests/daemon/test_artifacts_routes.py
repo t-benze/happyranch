@@ -336,3 +336,67 @@ def test_get_nested_rejects_traversal(tmp_home, app, org_state, auth_headers) ->
     )
     assert r.status_code == 400
     assert r.json()["detail"]["code"] == "invalid_artifact_name"
+
+
+# ---------------------------------------------------------------------------
+# Collision handling (FINDING 2 — TASK-315)
+# ---------------------------------------------------------------------------
+
+
+def test_get_directory_key_returns_404(tmp_home, app, org_state, auth_headers) -> None:
+    """GET on a key that is an existing directory -> 404 (not an artifact)."""
+    client = TestClient(app)
+    # Put a nested artifact so 'reports' becomes a directory.
+    client.post(
+        "/api/v1/orgs/alpha/artifacts",
+        params={"name": "reports/a.txt", "agent": "x"},
+        files={"file": ("a.txt", b"a", "text/plain")},
+        headers=auth_headers,
+    )
+    r = client.get("/api/v1/orgs/alpha/artifacts/reports", headers=auth_headers)
+    assert r.status_code == 404
+    assert r.json()["detail"]["code"] == "artifact_not_found"
+
+
+def test_delete_directory_key_returns_404(tmp_home, app, org_state, auth_headers) -> None:
+    """DELETE on a directory-prefix key -> 404. Does NOT recursively delete."""
+    client = TestClient(app)
+    client.post(
+        "/api/v1/orgs/alpha/artifacts",
+        params={"name": "reports/a.txt", "agent": "x"},
+        files={"file": ("a.txt", b"a", "text/plain")},
+        headers=auth_headers,
+    )
+    r = client.delete(
+        "/api/v1/orgs/alpha/artifacts/reports",
+        params={"agent": "founder"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 404
+    assert r.json()["detail"]["code"] == "artifact_not_found"
+    # Confirm the nested file is still intact.
+    assert (org_state.root / "artifacts" / "reports" / "a.txt").exists()
+
+
+def test_put_nested_when_flat_file_collides_returns_4xx(
+    tmp_home, app, org_state, auth_headers
+) -> None:
+    """PUT 'reports/a.txt' when a flat file 'reports' exists ->
+    4xx (name collides with existing artifact)."""
+    client = TestClient(app)
+    # Put flat file 'reports' first.
+    client.post(
+        "/api/v1/orgs/alpha/artifacts",
+        params={"name": "reports", "agent": "x"},
+        files={"file": ("reports", b"flat", "text/plain")},
+        headers=auth_headers,
+    )
+    # Now try nested key under 'reports'.
+    r = client.post(
+        "/api/v1/orgs/alpha/artifacts",
+        params={"name": "reports/a.txt", "agent": "x"},
+        files={"file": ("a.txt", b"nested", "text/plain")},
+        headers=auth_headers,
+    )
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "invalid_artifact_name"
