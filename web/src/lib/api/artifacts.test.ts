@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { ApiError } from './client';
-import { deleteArtifact, listArtifacts, uploadArtifact } from './artifacts';
+import { deleteArtifact, downloadArtifact, listArtifacts, uploadArtifact } from './artifacts';
 
 const SLUG = 'alpha';
 
@@ -156,5 +156,108 @@ describe('artifacts api mirror', () => {
     await expect(deleteArtifact(SLUG, 'x.pdf')).resolves.toBeUndefined();
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/v1/auth/bootstrap');
+  });
+
+  test('downloadArtifact fetches with the bearer token and triggers a download', async () => {
+    seedToken();
+    const blobContent = new Blob(['file contents'], { type: 'application/pdf' });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(blobContent, {
+        status: 200,
+        headers: { 'Content-Type': 'application/pdf' },
+      }),
+    );
+
+    // jsdom doesn't ship createObjectURL / revokeObjectURL — stub them.
+    const objectUrl = 'blob:http://localhost/fake-url';
+    const createObjectUrlSpy = vi.fn().mockReturnValue(objectUrl);
+    const revokeObjectUrlSpy = vi.fn();
+    vi.stubGlobal('URL', {
+      ...URL,
+      createObjectURL: createObjectUrlSpy,
+      revokeObjectURL: revokeObjectUrlSpy,
+    });
+
+    // Spy on the anchor click so we can assert it fires.
+    const clickSpy = vi.fn();
+    const originalCreateElement = document.createElement.bind(document);
+    vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
+      if (tag === 'a') {
+        const el = originalCreateElement('a');
+        el.click = clickSpy;
+        // Stub setAttribute so the download attribute is recorded.
+        const originalSetAttr = el.setAttribute.bind(el);
+        el.setAttribute = vi.fn((name: string, value: string) => {
+          originalSetAttr(name, value);
+        }) as typeof el.setAttribute;
+        return el;
+      }
+      return originalCreateElement(tag) as HTMLElement;
+    }) as typeof document.createElement;
+
+    await downloadArtifact(SLUG, 'report.pdf');
+
+    // Assert the fetch carries the Authorization header.
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`/api/v1/orgs/${SLUG}/artifacts/report.pdf`);
+    expect(init.headers).toMatchObject({
+      Authorization: 'Bearer tok',
+    });
+
+    // Assert the download plumbing fired.
+    expect(createObjectUrlSpy).toHaveBeenCalledWith(expect.any(Blob));
+    expect(clickSpy).toHaveBeenCalled();
+    expect(revokeObjectUrlSpy).toHaveBeenCalledWith(objectUrl);
+  });
+
+  test('downloadArtifact drops a stale token and retries once on 401', async () => {
+    seedToken();
+    const blobContent = new Blob(['file contents']);
+    vi.stubGlobal('URL', {
+      ...URL,
+      createObjectURL: vi.fn().mockReturnValue('blob:fake'),
+      revokeObjectURL: vi.fn(),
+    });
+    const origCreateElement = document.createElement.bind(document);
+    vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
+      const el = origCreateElement(tag);
+      if (tag === 'a') el.click = vi.fn();
+      return el;
+    }) as typeof document.createElement;
+
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('', { status: 401 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ token: 'tok2' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(blobContent, {
+          status: 200,
+          headers: { 'Content-Type': 'application/pdf' },
+        }),
+      );
+
+    await downloadArtifact(SLUG, 'x.pdf');
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/v1/auth/bootstrap');
+  });
+
+  test('downloadArtifact throws ApiError on non-ok non-401 response', async () => {
+    seedToken();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ detail: { code: 'artifact_not_found', name: 'gone.pdf' } }),
+        { status: 404, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const err = await downloadArtifact(SLUG, 'gone.pdf').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).toMatchObject({ status: 404, code: 'artifact_not_found' });
   });
 });
