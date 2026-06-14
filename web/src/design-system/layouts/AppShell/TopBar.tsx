@@ -14,8 +14,9 @@ import {
   TooltipTrigger,
 } from '@/design-system/primitives/Tooltip';
 import { AddOrgDialog } from '@/features/orgs/AddOrgDialog';
+import { SettingsDialog, SettingsTriggerButton } from '@/features/settings/SettingsDialog';
 import { useAgentsRoutes } from '@/hooks/agents';
-import { useDensity } from '@/hooks/density';
+import { useDensity } from '@/hooks/density'; // kept for default 'comfortable' — full teardown is a follow-up
 import { useKbRoutes } from '@/hooks/kb';
 import { useOrgsList } from '@/hooks/orgs';
 import { useTalksRoutes } from '@/hooks/talks';
@@ -39,6 +40,7 @@ export function TopBar(): JSX.Element {
   const isPrototype = location.pathname.startsWith('/__prototypes');
   const orgsQuery = useOrgsList();
   const [addOrgOpen, setAddOrgOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const routes = useThreadRoutes();
   const tasksRoutes = useTasksRoutes();
   const talksRoutes = useTalksRoutes();
@@ -171,10 +173,11 @@ export function TopBar(): JSX.Element {
             <Plus size={16} aria-hidden="true" />
           </button>
         )}
-        <DensityToggle />
+        <SettingsTriggerButton onClick={() => setSettingsOpen(true)} />
         <ThemeToggle />
       </div>
       {!isPrototype && <AddOrgDialog open={addOrgOpen} onOpenChange={setAddOrgOpen} />}
+      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
     </header>
   );
 }
@@ -196,7 +199,9 @@ function ThemeToggle(): JSX.Element {
   );
 }
 
-function DensityToggle(): JSX.Element {
+// DensityToggle is removed from TopBar per TASK-351 Phase 1.
+// useDensity import/default remains in place; full density teardown is a separate follow-up.
+function _DensityToggle(): JSX.Element {
   const { density, setDensity } = useDensity();
   const isComfortable = density === 'comfortable';
   const label = isComfortable

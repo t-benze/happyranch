@@ -26,6 +26,7 @@ from runtime.daemon.routes import (
     threads,
     tokens,
 )
+from runtime.daemon.routes import settings as settings_routes
 from runtime.daemon.state import DaemonState
 from runtime.orchestrator._paths import OrgPaths
 
@@ -188,6 +189,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(jobs.dual_router, prefix="/api/v1/orgs/{slug}", tags=["jobs"])
     app.include_router(artifacts.router, prefix="/api/v1/orgs/{slug}", tags=["artifacts"])
     app.include_router(dashboard.router, prefix="/api/v1/orgs/{slug}", tags=["dashboard"])
+    app.include_router(settings_routes.router, prefix="/api/v1/orgs/{slug}", tags=["settings"])
     from runtime.daemon.routes import web_static
     web_static.register(app)
     return app
