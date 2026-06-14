@@ -13,7 +13,7 @@ Keep this file short. It is loaded at the start of every Claude Code session. De
 | Executor behavior, workspace bootstrap, allow rules | `docs/agent-guides/agent-executors-and-permissions.md` |
 | Orchestrator decisions, task state, agent files, teams, chains | `docs/agent-guides/orchestrator-contracts.md` |
 | Web app, OpenAPI pinning, CLI behavior, agent callbacks | `docs/agent-guides/web-and-cli.md` |
-| KB, learnings, artifacts, revisit, threads, jobs, Feishu | `docs/agent-guides/features-and-invariants.md` |
+| KB, learnings, artifacts, revisit, threads, jobs | `docs/agent-guides/features-and-invariants.md` |
 
 `README.md` is for end users. `CLAUDE.md` is for repo-wide agent instructions. `AGENTS.md` is a compatibility symlink to this file; keep repo-wide agent instructions here only. For current behavior, prefer `docs/agent-guides/`, `protocol/`, tests, OpenAPI snapshots, and implementation. `docs/superpowers/specs/` is append-only design history unless a spec is explicitly marked current in `docs/superpowers/specs/README.md`.
 
@@ -67,7 +67,7 @@ Every browser-callable daemon route maps to one TS function in `web/src/lib/api/
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **happyranch** (14108 symbols, 30767 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **TASK-302** (16831 symbols, 36166 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -90,10 +90,10 @@ This project is indexed by GitNexus as **happyranch** (14108 symbols, 30767 rela
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/happyranch/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/happyranch/clusters` | All functional areas |
-| `gitnexus://repo/happyranch/processes` | All execution flows |
-| `gitnexus://repo/happyranch/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/TASK-302/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/TASK-302/clusters` | All functional areas |
+| `gitnexus://repo/TASK-302/processes` | All execution flows |
+| `gitnexus://repo/TASK-302/process/{name}` | Step-by-step execution trace |
 
 ## CLI
 

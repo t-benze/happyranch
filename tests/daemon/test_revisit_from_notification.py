@@ -36,7 +36,7 @@ async def test_revisit_from_notification_spawns_new_root(org_with_failed_task):
         org, state,
         task_id="TASK-1",
         founder_note="add Service Class field",
-        actor="feishu-reply",
+        actor="cli",
     )
     assert result.new_root_id != "TASK-1"
     assert result.predecessor_root_id == "TASK-1"
@@ -52,7 +52,7 @@ async def test_revisit_from_notification_spawns_new_root(org_with_failed_task):
     revisit_of = [r for r in audit_rows if r["action"] == "revisit_of"]
     assert len(revisit_of) == 1
     payload = revisit_of[0]["payload"]
-    assert payload.get("actor") == "feishu-reply"
+    assert payload.get("actor") == "cli"
     assert payload.get("founder_note") == "add Service Class field"
 
 
@@ -65,7 +65,7 @@ async def test_revisit_from_notification_raises_when_ineligible(org_with_failed_
     db.update_task("TASK-1", status=TaskStatus.IN_PROGRESS)
     with pytest.raises(HTTPException) as exc:
         await revisit_from_notification(
-            org, state, task_id="TASK-1", founder_note="x", actor="feishu-reply",
+            org, state, task_id="TASK-1", founder_note="x", actor="cli",
         )
     assert exc.value.status_code == 409
     assert "cannot_revisit" in str(exc.value.detail)

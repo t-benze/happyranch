@@ -72,13 +72,6 @@ def _attach_thread_queue_wiring(state: DaemonState, loop) -> None:
         org.orchestrator.attach_thread_queue(org.thread_queue, loop)
 
 
-def _start_feishu_listeners(state: DaemonState, loop) -> None:
-    """For each org with full Feishu config, construct and start a listener."""
-    from runtime.daemon.feishu_listener import start_feishu_listeners_for_state
-
-    start_feishu_listeners_for_state(state, loop)
-
-
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     import asyncio
@@ -112,7 +105,6 @@ async def _lifespan(app: FastAPI):
 
     _main_loop = asyncio.get_running_loop()
     _attach_thread_queue_wiring(state, _main_loop)
-    _start_feishu_listeners(state, _main_loop)
     from runtime.daemon.jobs_runner import attach_jobs_resume_main_loop as _wire_jobs
     _wire_jobs(
         _main_loop,

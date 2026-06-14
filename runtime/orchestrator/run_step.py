@@ -170,10 +170,6 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         _enqueue_parent_if_waiting(
             orch, task_id, root_auto_revisit_spawned=spawned,
         )
-        _notify_failure_if_eligible(
-            orch, task_id, failure_kind=failure_kind,
-            failure_note=note, auto_revisit_spawned=spawned,
-        )
         _maybe_post_thread_followup(
             orch, task_id,
             status=TaskStatus.FAILED, auto_revisit_spawned=spawned,
@@ -238,10 +234,6 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         _enqueue_parent_if_waiting(
             orch, task_id, root_auto_revisit_spawned=spawned,
         )
-        _notify_failure_if_eligible(
-            orch, task_id, failure_kind=failure_kind,
-            failure_note=note, auto_revisit_spawned=spawned,
-        )
         _maybe_post_thread_followup(
             orch, task_id,
             status=TaskStatus.FAILED, auto_revisit_spawned=spawned,
@@ -263,11 +255,6 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
                     note = f"self-blocked but job {jid} not found"
                     _fail(orch, task_id, note=note)
                     _enqueue_parent_if_waiting(orch, task_id)
-                    _notify_failure_if_eligible(
-                        orch, task_id, failure_kind="self_blocked",
-                        failure_note=note, auto_revisit_spawned=False,
-                        last_summary=report.output_summary or "",
-                    )
                     _maybe_post_thread_followup(
                         orch, task_id,
                         status=TaskStatus.FAILED, auto_revisit_spawned=False,
@@ -297,11 +284,6 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         note = f"self-blocked: {report.output_summary}"
         _fail(orch, task_id, note=note)
         _enqueue_parent_if_waiting(orch, task_id)
-        _notify_failure_if_eligible(
-            orch, task_id, failure_kind="self_blocked",
-            failure_note=note, auto_revisit_spawned=False,
-            last_summary=report.output_summary or "",
-        )
         _maybe_post_thread_followup(
             orch, task_id,
             status=TaskStatus.FAILED, auto_revisit_spawned=False,
@@ -367,10 +349,6 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             note = f"invalid delegate: {err}"
             _fail(orch, task_id, note=note)
             _enqueue_parent_if_waiting(orch, task_id)
-            _notify_failure_if_eligible(
-                orch, task_id, failure_kind="invalid_delegate",
-                failure_note=note, auto_revisit_spawned=False,
-            )
             _maybe_post_thread_followup(
                 orch, task_id,
                 status=TaskStatus.FAILED, auto_revisit_spawned=False,
@@ -484,10 +462,6 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
     note = f"unknown action: {decision.action}"
     _fail(orch, task_id, note=note)
     _enqueue_parent_if_waiting(orch, task_id)
-    _notify_failure_if_eligible(
-        orch, task_id, failure_kind="unknown_action",
-        failure_note=note, auto_revisit_spawned=False,
-    )
     _maybe_post_thread_followup(
         orch, task_id,
         status=TaskStatus.FAILED, auto_revisit_spawned=False,
@@ -1109,47 +1083,6 @@ def _kill_jobs_for_terminating_task(orch: "Orchestrator", task_id: str) -> None:
         loop.create_task(_kill_and_backstop())
 
 
-def _notify_failure_if_eligible(
-    orch: "Orchestrator",
-    task_id: str,
-    *,
-    failure_kind: str,
-    failure_note: str,
-    auto_revisit_spawned: bool,
-    last_summary: str = "",
-) -> None:
-    """Fire notify_failed if all gates open:
-       1. feishu_notifications config exists AND notify_on_failure=true
-       2. task not founder-cancelled (cancelled_at IS NULL)
-       3. no auto-revisit spawned for this task
-
-    All exceptions are swallowed — never crash the _fail caller.
-    See docs/superpowers/specs/2026-05-12-feishu-interactive-actions-design.md §5.1.
-    """
-    if auto_revisit_spawned:
-        return
-    try:
-        org = load_org_config(orch._paths)
-        if org.feishu_notifications is None:
-            return
-        if not getattr(org.feishu_notifications, "notify_on_failure", False):
-            return
-        task = orch._db.get_task(task_id)
-        if task is None or task.cancelled_at is not None:
-            return
-        agent = task.assigned_agent or "(unknown)"
-        orch.notify_failed(
-            task_id=task_id,
-            agent=agent,
-            failure_kind=failure_kind,
-            failure_note=failure_note,
-            last_summary=last_summary,
-        )
-    except Exception:  # noqa: BLE001
-        # Gate must never crash _fail caller — _fail is on the critical path.
-        return
-
-
 def _log_verdict_if_delegated(
     orch: "Orchestrator", task_id: str, *, success: bool,
 ) -> None:
@@ -1278,11 +1211,9 @@ def _enqueue_parent_if_waiting(
         failure mode.
 
     ``root_auto_revisit_spawned`` is threaded through the cascade so every
-    ancestor's Feishu-failure gate knows the founder-dispatched root has
-    already been auto-revisited — the work IS being retried, so the
-    cascading "cascade_fail" notifications are pure noise and must be
-    suppressed. Callers that did not spawn an auto-revisit pass the
-    default ``False``. See spec
+    ancestor knows the founder-dispatched root has already been auto-revisited —
+    the work IS being retried. Callers that did not spawn an auto-revisit pass
+    the default ``False``. See spec
     2026-05-25-session-timeout-auto-route-design.md §6.
     """
     task = orch._db.get_task(task_id)
@@ -1326,11 +1257,6 @@ def _enqueue_parent_if_waiting(
         _enqueue_parent_if_waiting(
             orch, parent.id,
             root_auto_revisit_spawned=root_auto_revisit_spawned,
-        )
-        _notify_failure_if_eligible(
-            orch, parent.id, failure_kind="cascade_fail",
-            failure_note=note,
-            auto_revisit_spawned=root_auto_revisit_spawned,
         )
         _maybe_post_thread_followup(
             orch, parent.id,
@@ -1682,7 +1608,7 @@ def _append_followup_system_and_reinvoke(
     # Enqueue onto the org's thread queue. The queue is bound to the daemon's
     # main event loop, but run_step runs on a worker thread, so we cross the
     # loop boundary via run_coroutine_threadsafe — same pattern as
-    # `_start_feishu_listeners` uses for cross-thread async bridging.
+    # the daemon uses for cross-thread async bridging.
     import asyncio as _asyncio
     from runtime.daemon.thread_queue import ThreadJob as _ThreadJob
     thread_queue = getattr(orch, "_thread_queue", None)
@@ -1759,7 +1685,7 @@ def _maybe_post_thread_escalation(
     original = chain[-1] if chain else root
     thread_id = original.dispatched_from_thread_id
     if thread_id is None:
-        # Not a thread-dispatched chain; silent no-op (Feishu path untouched).
+        # Not a thread-dispatched chain; silent no-op.
         return
 
     # Thread-state guard.

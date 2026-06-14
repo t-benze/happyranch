@@ -489,12 +489,11 @@ def test_cascade_fail_suppressed_when_root_auto_revisit_spawned(runtime, db):
     assert notify_calls == []
 
 
-def test_cascade_fail_notifies_when_no_root_auto_revisit(runtime, db):
-    """Inverse: when no auto-revisit was spawned (e.g., the original
-    failure was a deliberate self-block, not an opaque error), cascade_fail
-    DOES fire its Feishu notification — gated only by the standard
-    feishu_notifications config. Here we configure notify_on_failure=true
-    to confirm the gate threads through correctly."""
+def test_cascade_fail_no_auto_revisit(runtime, db):
+    """When no auto-revisit was spawned (e.g., the original failure was a
+    deliberate self-block, not an opaque error), cascade_fail still
+    transitions the parent correctly. Notification is no longer wired
+    (Feishu removed)."""
     from runtime.orchestrator.orchestrator import Orchestrator
     from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
 
@@ -507,17 +506,6 @@ def test_cascade_fail_notifies_when_no_root_auto_revisit(runtime, db):
                               parent_task_id="T-ROOT",
                               status=TaskStatus.FAILED,
                               note="self-blocked: missing API key"))
-    # Enable notify_on_failure so the gate opens for non-revisit paths.
-    runtime.org_config_path.write_text(
-        "feishu_notifications:\n"
-        "  provider: feishu\n"
-        "  region: feishu\n"
-        "  enabled: true\n"
-        "  app_id: stub\n"
-        "  app_secret: stub\n"
-        "  chat_id: oc_x\n"
-        "  notify_on_failure: true\n"
-    )
 
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
                         slug="test", teams=TeamsRegistry.load(runtime.root))
@@ -531,6 +519,5 @@ def test_cascade_fail_notifies_when_no_root_auto_revisit(runtime, db):
     )
 
     assert db.get_task("T-ROOT").status == TaskStatus.FAILED
-    # Cascade_fail notification fires because no auto-revisit covers it.
-    assert len(notify_calls) == 1
-    assert notify_calls[0]["failure_kind"] == "cascade_fail"
+    # No notification fires — Feishu removed.
+    assert len(notify_calls) == 0

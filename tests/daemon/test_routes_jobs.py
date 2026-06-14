@@ -215,34 +215,6 @@ def test_reject_not_pending(client_with_runtime):
     assert r.json()["detail"]["code"] == "not_pending"
 
 
-def test_reject_consumes_open_feishu_notification(client_with_runtime):
-    """When the founder rejects via CLI/Web, any open Feishu notification
-    must be marked consumed (consumed_by=cli-fallback) so a later in-thread
-    APPROVE/REJECT reply doesn't trigger a stale handler_exception loop."""
-    from datetime import datetime, timedelta, timezone
-
-    client, org = client_with_runtime
-    job_id = _submit_pending(client, org)
-
-    # Simulate the Feishu push having minted a notification row.
-    org.db.mint_escalation_notification(
-        feishu_message_id="om_fake_push", org_slug="alpha", task_id=job_id,
-        chat_id="oc_xyz",
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=72),
-        kind="job_request",
-    )
-
-    r = client.post(
-        f"/api/v1/orgs/alpha/jobs/{job_id}/reject",
-        json={"reason": "no longer needed"},
-    )
-    assert r.status_code == 200, r.text
-
-    row = org.db.get_escalation_notification("om_fake_push")
-    assert row["consumed_at"] is not None
-    assert row["consumed_by"] == "cli-fallback"
-
-
 def test_list_jobs_default_filter_pending(client_with_runtime):
     client, org = client_with_runtime
     sr1 = _submit_pending(client, org)
@@ -349,58 +321,6 @@ def test_run_happy_path_completes(tmp_home, daemon_state):
             time.sleep(0.1)
     assert d["status"] == "completed", d
     assert d["exit_code"] == 0
-
-
-def test_run_consumes_open_feishu_notification(tmp_home, daemon_state):
-    """A founder-triggered run via CLI/Web must consume any open
-    script_request notification as cli-fallback. Mirrors the reject path."""
-    from datetime import datetime, timedelta, timezone
-    from fastapi.testclient import TestClient
-    from runtime.daemon.app import create_app
-    from runtime.daemon import paths as paths_mod
-
-    org = daemon_state.orgs["alpha"]
-    app = create_app(daemon_state)
-
-    with TestClient(app, raise_server_exceptions=True) as client:
-        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
-
-        task_id, sid = _make_active_session(org)
-        r = client.post(
-            "/api/v1/orgs/alpha/jobs/submit",
-            json={"task_id": task_id, "session_id": sid,
-                  "title": "echo", "rationale": "test",
-                  "script": "echo hello", "interpreter": "bash",
-                  "review_required": True},
-        )
-        job_id = r.json()["id"]
-
-        # Simulate the Feishu push having minted a notification row.
-        org.db.mint_escalation_notification(
-            feishu_message_id="om_fake_run_push", org_slug="alpha",
-            task_id=job_id, chat_id="oc_xyz",
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=72),
-            kind="job_request",
-        )
-
-        ws = org.root / "workspaces" / "engineering_head"
-        ws.mkdir(parents=True, exist_ok=True)
-        r = client.post(f"/api/v1/orgs/alpha/jobs/{job_id}/run", json={})
-        assert r.status_code == 202, r.text
-
-        # Poll until the runner finishes so the test doesn't race shutdown.
-        for _ in range(50):
-            d = client.get(f"/api/v1/orgs/alpha/jobs/{job_id}").json()
-            if d["status"] in ("completed", "failed"):
-                break
-            time.sleep(0.1)
-
-        # Query DB inside the TestClient context — once the context exits,
-        # lifespan teardown closes the per-org connections.
-        row = org.db.get_escalation_notification("om_fake_run_push")
-        assert row["consumed_at"] is not None
-        assert row["consumed_by"] == "cli-fallback"
-    assert "hello" in (d["stdout_head"] or "")
 
 
 def test_run_not_pending(client_with_runtime):
@@ -1242,13 +1162,12 @@ def test_list_filter_invalid_persistent_value_returns_422(client_with_runtime):
 
 
 # ---------------------------------------------------------------------------
-# Task 19: Feishu notification gating — only review_required=True triggers
-# notify_job_submitted. Auto-run path (default) must stay silent so the
-# founder isn't pinged for every routine agent command.
+# Notification gating — only review_required=True triggers
+# notify_job_submitted. Auto-run path (default) must stay silent.
 # ---------------------------------------------------------------------------
 
 
-def test_auto_run_job_does_not_send_feishu_notification(
+def test_auto_run_job_does_not_notify(
     tmp_home, daemon_state, monkeypatch,
 ):
     """review_required=False (default) → no notify_job_submitted call.
@@ -1296,19 +1215,15 @@ def test_auto_run_job_does_not_send_feishu_notification(
                 break
             time.sleep(0.1)
 
-    # No Feishu call was made on the auto-run path.
+    # No notify call was made on the auto-run path.
     assert calls == [], f"expected zero notify calls, got {calls!r}"
 
 
-def test_review_required_job_sends_feishu_notification(
+def test_review_required_job_notifies(
     client_with_runtime, monkeypatch,
 ):
-    """review_required=True → exactly one notify_job_submitted call.
-
-    Locks the kind="job_request" contract by exercising the real
-    EscalationNotifier so the kind argument it passes to its Feishu send is
-    visible to the test. The actual Feishu send is monkeypatched out.
-    """
+    """review_required=True → exactly one notify_job_submitted call with
+    kind="job_request"."""
     client, org = client_with_runtime
     task_id, sid = _make_active_session(org)
 
@@ -1485,7 +1400,7 @@ def test_submit_talk_path_audit_scope_is_talk_id(client_with_runtime):
 
 
 def test_submit_talk_path_notify_uses_talk_scope(client_with_runtime, monkeypatch):
-    """review_required talk-path submit pushes Feishu with task_id=TALK-NNN."""
+    """review_required talk-path submit uses talk_id as task_id scope."""
     client, org = client_with_runtime
     talk_id = _open_talk(client)
 
