@@ -506,6 +506,10 @@
             "header"
           ],
           [
+            "prefix",
+            "query"
+          ],
+          [
             "slug",
             "path"
           ]

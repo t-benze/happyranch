@@ -150,7 +150,7 @@ scripts/happyranch artifacts list [--org <slug>]
 scripts/happyranch artifacts get <name> --output <local-path> [--org <slug>]
 ```
 
-- Names match `[A-Za-z0-9._-]+`, max 200 chars; slash-bearing names rejected.
+- Names may use '/' as a path separator for logical folders. Each segment must match `[A-Za-z0-9._-]+`; max 200 chars total.
 - Size cap: 10 MB per file. Larger uploads return HTTP 413.
 - `put` is idempotent (overwrites by default). No version history.
 - `put` is audited (`action="artifact_put"`); `list` and `get` are not.

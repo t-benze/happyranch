@@ -5,6 +5,10 @@
 > design below is otherwise current; substitute `assets` → `artifacts`,
 > `AssetStore` → `ArtifactStore`, `asset_put` → `artifact_put` when reading.
 
+> **2026-06-14 note (TASK-305 — nested-key support):** Flat namespace only
+> was the v1 constraint below. Nested keys with '/' path separators are now
+> supported; the per-segment char set is still `[A-Za-z0-9._-]+`.
+
 > **2026-06-10 note (Scope B — THR-007, TASK-070):** Delete, listed as
 > out-of-scope for v1 below, has since shipped: `DELETE /artifacts/{name}`
 > (`ArtifactStore.delete` + `AuditLogger.log_artifact_delete`, action

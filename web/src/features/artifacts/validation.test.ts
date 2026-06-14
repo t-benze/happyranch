@@ -12,12 +12,43 @@ describe('validateArtifactUpload', () => {
     ).toMatch(/10 MB/);
   });
 
-  test('rejects names with characters outside [A-Za-z0-9._-]', () => {
+  test('rejects names with characters outside [A-Za-z0-9._-/]', () => {
     expect(
       validateArtifactUpload({ name: 'my report.pdf', sizeBytes: 10 }),
     ).toMatch(/letters, digits/);
+    // Trailing slash rejected.
     expect(
-      validateArtifactUpload({ name: 'bad/name.pdf', sizeBytes: 10 }),
+      validateArtifactUpload({ name: 'bad/trailing/', sizeBytes: 10 }),
+    ).toMatch(/letters, digits/);
+  });
+
+  test('accepts nested keys with forward slashes', () => {
+    expect(
+      validateArtifactUpload({
+        name: 'reports/2026/q2.pdf',
+        sizeBytes: MAX_ARTIFACT_BYTES,
+      }),
+    ).toBeNull();
+    expect(
+      validateArtifactUpload({
+        name: 'a/b/c.txt',
+        sizeBytes: 10,
+      }),
+    ).toBeNull();
+  });
+
+  test('rejects traversal vectors in nested names', () => {
+    expect(
+      validateArtifactUpload({ name: '/leading-slash', sizeBytes: 10 }),
+    ).toMatch(/letters, digits/);
+    expect(
+      validateArtifactUpload({ name: 'a//b', sizeBytes: 10 }),
+    ).toMatch(/letters, digits/);
+    expect(
+      validateArtifactUpload({ name: 'reports/../evil', sizeBytes: 10 }),
+    ).toMatch(/letters, digits/);
+    expect(
+      validateArtifactUpload({ name: '.hidden/x', sizeBytes: 10 }),
     ).toMatch(/letters, digits/);
   });
 

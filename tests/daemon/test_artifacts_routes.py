@@ -232,3 +232,107 @@ def test_delete_writes_audit_event(tmp_home, app, org_state, auth_headers) -> No
     assert row["action"] == "artifact_delete"
     assert row["agent"] == "founder"
     assert row["payload"] == {"name": "audit-me.txt"}
+
+
+# ---------------------------------------------------------------------------
+# Nested-key support (TASK-305)
+# ---------------------------------------------------------------------------
+
+
+def test_put_get_nested_key(tmp_home, app, org_state, auth_headers) -> None:
+    """PUT and GET work with nested keys via {name:path} route."""
+    client = TestClient(app)
+    name = "reports/2026/q2.pdf"
+    content = b"quarterly"
+    r = client.post(
+        "/api/v1/orgs/alpha/artifacts",
+        params={"name": name, "agent": "dev_agent"},
+        files={"file": ("q2.pdf", content, "application/pdf")},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == name
+
+    # GET with nested key via {name:path}
+    r2 = client.get(f"/api/v1/orgs/alpha/artifacts/{name}", headers=auth_headers)
+    assert r2.status_code == 200, r2.text
+    assert r2.content == content
+
+
+def test_list_with_prefix_filter(tmp_home, app, org_state, auth_headers) -> None:
+    """List with ?prefix= filters by key prefix."""
+    client = TestClient(app)
+    # Put flat and nested artifacts.
+    client.post(
+        "/api/v1/orgs/alpha/artifacts",
+        params={"name": "flat.txt", "agent": "x"},
+        files={"file": ("flat.txt", b"flat", "text/plain")},
+        headers=auth_headers,
+    )
+    client.post(
+        "/api/v1/orgs/alpha/artifacts",
+        params={"name": "reports/a.txt", "agent": "x"},
+        files={"file": ("a.txt", b"a", "text/plain")},
+        headers=auth_headers,
+    )
+    client.post(
+        "/api/v1/orgs/alpha/artifacts",
+        params={"name": "reports/b.txt", "agent": "x"},
+        files={"file": ("b.txt", b"b", "text/plain")},
+        headers=auth_headers,
+    )
+
+    # No prefix returns all.
+    r_all = client.get("/api/v1/orgs/alpha/artifacts", headers=auth_headers)
+    assert r_all.status_code == 200
+    all_names = [a["name"] for a in r_all.json()["artifacts"]]
+    assert "flat.txt" in all_names
+    assert "reports/a.txt" in all_names
+    assert "reports/b.txt" in all_names
+
+    # Prefix filter.
+    r_prefix = client.get(
+        "/api/v1/orgs/alpha/artifacts",
+        params={"prefix": "reports/"},
+        headers=auth_headers,
+    )
+    assert r_prefix.status_code == 200
+    prefixed = [a["name"] for a in r_prefix.json()["artifacts"]]
+    assert prefixed == ["reports/a.txt", "reports/b.txt"]
+
+
+def test_delete_nested_key(tmp_home, app, org_state, auth_headers) -> None:
+    """DELETE works with nested key via {name:path} route."""
+    client = TestClient(app)
+    name = "reports/gone.txt"
+    client.post(
+        "/api/v1/orgs/alpha/artifacts",
+        params={"name": name, "agent": "dev_agent"},
+        files={"file": ("gone.txt", b"bye", "text/plain")},
+        headers=auth_headers,
+    )
+    assert (org_state.root / "artifacts" / "reports" / "gone.txt").exists()
+
+    r = client.delete(
+        f"/api/v1/orgs/alpha/artifacts/{name}",
+        params={"agent": "founder"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json() == {"name": name, "deleted": True}
+    assert not (org_state.root / "artifacts" / "reports" / "gone.txt").exists()
+
+
+def test_get_nested_rejects_traversal(tmp_home, app, org_state, auth_headers) -> None:
+    """GET with traversal path returns 400, not a file outside artifacts.
+
+    Uses a//b (double-slash) which survives URL routing to test the
+    {name:path} capture + validate_name rejection.
+    """
+    client = TestClient(app)
+    r = client.get(
+        "/api/v1/orgs/alpha/artifacts/a//b",
+        headers=auth_headers,
+    )
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "invalid_artifact_name"
