@@ -129,6 +129,64 @@ export function artifactDownloadPath(slug: string, artifactName: string): string
   return `${API_PREFIX}/orgs/${slug}/artifacts/${encodeURIComponent(artifactName)}`;
 }
 
+async function downloadWithToken(
+  slug: string,
+  name: string,
+  token: string,
+): Promise<Response> {
+  return fetch(
+    `${API_PREFIX}/orgs/${slug}/artifacts/${encodeURIComponent(name)}`,
+    {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      credentials: 'same-origin',
+    },
+  );
+}
+
+/**
+ * Download an artifact by fetching it with the bearer token (so the daemon
+ * authenticates the request) and then triggering a programmatic browser
+ * download via an object URL.  Errors are surfaced as ApiError so the UI can
+ * show an inline message instead of the browser-native “Needs authorisation”
+ * text.
+ */
+export async function downloadArtifact(slug: string, name: string): Promise<void> {
+  let token = await getToken();
+  let res = await downloadWithToken(slug, name, token);
+  if (res.status === 401) {
+    clearToken();
+    token = await getToken();
+    res = await downloadWithToken(slug, name, token);
+  }
+
+  if (!res.ok) {
+    let body: unknown = null;
+    const text = await res.text();
+    if (text) {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = text;
+      }
+    }
+    throw parseArtifactError(res.status, body);
+  }
+
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement('a');
+    a.href = objectUrl;
+    a.download = name;
+    a.click();
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
 async function deleteWithToken(slug: string, name: string, token: string): Promise<Response> {
   const params = new URLSearchParams({ agent: ARTIFACT_WRITE_AGENT });
   return fetch(

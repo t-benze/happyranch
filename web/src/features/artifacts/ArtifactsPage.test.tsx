@@ -17,9 +17,10 @@ function stubBaseHandlers() {
 }
 
 describe('ArtifactsPage', () => {
-  test('lists artifacts with download links via GET /artifacts', async () => {
+  test('lists artifacts and downloads via token-bearing fetch', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubBaseHandlers();
+    let downloadHit = false;
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/artifacts`, () =>
         HttpResponse.json({
@@ -32,17 +33,44 @@ describe('ArtifactsPage', () => {
           ],
         }),
       ),
+      http.get(`/api/v1/orgs/${SLUG}/artifacts/dev_agent-2026-06-09-report.pdf`, ({ request }) => {
+        downloadHit = true;
+        expect(request.headers.get('Authorization')).toBe('Bearer tok');
+        return new HttpResponse('file contents', {
+          status: 200,
+          headers: { 'Content-Type': 'application/pdf' },
+        });
+      }),
     );
 
+    // jsdom doesn't ship createObjectURL / revokeObjectURL — stub them.
+    const objectUrl = 'blob:fake';
+    const createObjectUrlSpy = vi.fn().mockReturnValue(objectUrl);
+    const revokeObjectUrlSpy = vi.fn();
+    if (!URL.createObjectURL) {
+      URL.createObjectURL = createObjectUrlSpy;
+      URL.revokeObjectURL = revokeObjectUrlSpy;
+    } else {
+      vi.spyOn(URL, 'createObjectURL').mockReturnValue(objectUrl);
+      vi.spyOn(URL, 'revokeObjectURL').mockImplementation(revokeObjectUrlSpy);
+    }
+
+    const user = userEvent.setup();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/artifacts` });
 
-    const link = await screen.findByRole('link', { name: /Download/i });
-    expect(link).toHaveAttribute(
-      'href',
-      '/api/v1/orgs/alpha/artifacts/dev_agent-2026-06-09-report.pdf',
-    );
+    const downloadButton = await screen.findByRole('button', { name: /Download/i });
     expect(screen.getByText('dev_agent-2026-06-09-report.pdf')).toBeInTheDocument();
     expect(screen.getByText('5 MB')).toBeInTheDocument();
+
+    await user.click(downloadButton);
+
+    await waitFor(() => {
+      expect(downloadHit).toBe(true);
+    });
+    const blobArg = createObjectUrlSpy.mock.calls[0]?.[0] as Blob;
+    expect(blobArg.type).toBe('application/pdf');
+    expect(blobArg.size).toBeGreaterThan(0);
+    expect(revokeObjectUrlSpy).toHaveBeenCalledWith(objectUrl);
   });
 
   test('blocks upload with an invalid name client-side before POSTing', async () => {
