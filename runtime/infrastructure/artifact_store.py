@@ -1,7 +1,8 @@
-"""Org-shared artifact storage. Flat directory of opaque blobs.
+"""Org-shared artifact storage. Directory of opaque blobs with nested-key support.
 
 Persistent artifacts produced by agents (reports, exports, screenshots, PDFs)
 live here. Visible to every agent in the org via `happyranch artifacts {put,list,get}`.
+Keys may use '/' as a path separator for logical folders (e.g. 'reports/2026/q2.pdf').
 
 This module owns name validation, atomic writes, and read/list. It does NOT
 touch HTTP, audit, or agent identity — those are concerns of the route layer.
@@ -41,7 +42,7 @@ class ArtifactInfo:
 
 
 class ArtifactStore:
-    """File-backed flat blob store. Single directory; no nesting."""
+    """File-backed blob store with nested-key support."""
 
     def __init__(self, root: Path) -> None:
         self._root = root
@@ -54,22 +55,35 @@ class ArtifactStore:
     def validate_name(self, name: str) -> None:
         if not name or len(name) > _MAX_NAME_LEN:
             raise InvalidArtifactName(f"invalid_name: {name!r}")
-        if name.startswith(".") or ".." in name or "/" in name or "\\" in name:
+        # Reject traversal vectors at the name-string level.
+        if name.startswith("/") or name.endswith("/") or "//" in name or "\\" in name:
             raise InvalidArtifactName(f"invalid_name: {name!r}")
-        if not _NAME_RE.match(name):
-            raise InvalidArtifactName(f"invalid_name: {name!r}")
+        segments = name.split("/")
+        for seg in segments:
+            if not seg or seg == ".." or seg.startswith("."):
+                raise InvalidArtifactName(f"invalid_name: {name!r}")
+            if not _NAME_RE.match(seg):
+                raise InvalidArtifactName(f"invalid_name: {name!r}")
 
     def path_for(self, name: str) -> Path:
         self.validate_name(name)
-        return self._root / name
+        target = self._root / name
+        # Path-traversal guard: resolved absolute path must be under root.
+        resolved = target.resolve()
+        if not resolved.is_relative_to(self._root.resolve()):
+            raise InvalidArtifactName(f"path_traversal: {name!r}")
+        return target
 
     def put(self, name: str, content: bytes) -> ArtifactInfo:
         self.validate_name(name)
         if len(content) > MAX_ARTIFACT_BYTES:
             raise ArtifactTooLarge(f"artifact_too_large: {len(content)}B > {MAX_ARTIFACT_BYTES}B")
-        target = self._root / name
-        # Atomic write: write to .tmp.* sibling, then os.replace into place.
-        fd, tmp_path_str = tempfile.mkstemp(prefix=".tmp.", dir=str(self._root))
+        target = self.path_for(name)
+        # Create intermediate directories for nested keys.
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # Atomic write: create tmp file in the DESTINATION's parent dir
+        # so os.replace stays atomic on one filesystem.
+        fd, tmp_path_str = tempfile.mkstemp(prefix=".tmp.", dir=str(target.parent))
         tmp_path = Path(tmp_path_str)
         try:
             with os.fdopen(fd, "wb") as fh:
@@ -93,10 +107,11 @@ class ArtifactStore:
 
     def delete(self, name: str) -> None:
         self.validate_name(name)
-        if not self.path_for(name).exists():
+        path = self.path_for(name)
+        if not path.exists():
             raise ArtifactNotFound(name)
         # Single-file unlink is atomic enough; no locking needed.
-        (self._root / name).unlink()
+        path.unlink()
 
     def exists(self, name: str) -> bool:
         try:
@@ -104,18 +119,28 @@ class ArtifactStore:
         except InvalidArtifactName:
             return False
 
-    def list_artifacts(self) -> list[ArtifactInfo]:
+    def list_artifacts(self, prefix: str = "") -> list[ArtifactInfo]:
         out: list[ArtifactInfo] = []
-        for entry in sorted(self._root.iterdir()):
-            if entry.name.startswith(".") or not entry.is_file():
+        # Walk recursively (rglob) returning full relative POSIX keys.
+        for entry in sorted(self._root.rglob("*")):
+            if not entry.is_file():
+                continue
+            # Skip dotfiles and tmp files at any depth.
+            if any(part.startswith(".") for part in entry.parts[len(self._root.parts):]):
+                continue
+            # Compute the relative POSIX key from the store root.
+            rel = entry.relative_to(self._root)
+            name = rel.as_posix()
+            # Optional prefix filter.
+            if prefix and not name.startswith(prefix):
                 continue
             try:
-                self.validate_name(entry.name)
+                self.validate_name(name)
             except InvalidArtifactName:
                 continue
             stat = entry.stat()
             out.append(ArtifactInfo(
-                name=entry.name,
+                name=name,
                 size_bytes=stat.st_size,
                 modified_at=_iso(stat.st_mtime),
             ))

@@ -70,16 +70,20 @@ async def put_artifact(
 
 
 @router.get("/artifacts")
-async def list_artifacts(slug: str, org: OrgDep) -> dict:
+async def list_artifacts(
+    slug: str,
+    org: OrgDep,
+    prefix: str = Query(""),
+) -> dict:
     return {
         "artifacts": [
             {"name": a.name, "size_bytes": a.size_bytes, "modified_at": a.modified_at}
-            for a in _store(org).list_artifacts()
+            for a in _store(org).list_artifacts(prefix=prefix)
         ],
     }
 
 
-@router.get("/artifacts/{name}")
+@router.get("/artifacts/{name:path}")
 async def get_artifact(slug: str, name: str, org: OrgDep) -> FileResponse:
     try:
         path = _store(org).path_for(name)
@@ -96,7 +100,7 @@ async def get_artifact(slug: str, name: str, org: OrgDep) -> FileResponse:
     return FileResponse(path=str(path), filename=name)
 
 
-@router.delete("/artifacts/{name}")
+@router.delete("/artifacts/{name:path}")
 async def delete_artifact(
     slug: str,
     name: str,

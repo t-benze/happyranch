@@ -154,8 +154,9 @@ def _shared_artifacts_section() -> list[str]:
         "happyranch artifacts get <name> --output <local-path>",
         "```\n",
         "Naming convention: prefix with your agent name + ISO date for",
-        "traceability, e.g. `dev_agent-YYYY-MM-DD-perf-report.pdf`. Names must",
-        "match `[A-Za-z0-9._-]+`, max 200 chars. Per-file size cap: 10 MB.\n",
+        "traceability, e.g. `dev_agent-YYYY-MM-DD-perf-report.pdf`. Names may",
+        "use '/' as a path separator for logical folders. Each segment must",
+        "match `[A-Za-z0-9._-]+`; max 200 chars total. Per-file size cap: 10 MB.\n",
     ]
 
 
