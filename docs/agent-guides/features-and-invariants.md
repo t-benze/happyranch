@@ -31,7 +31,7 @@ For current behavior always prefer `protocol/`, `docs/agent-guides/`, tests, the
 ### Collaboration surfaces
 
 - **Threads.** Founder-visible broadcast conversations for coordination and cross-team handoff; every message mints a reply invocation for each participant, dispatch from a thread is self-only. Specs `docs/superpowers/specs/2026-05-13-threads-design.md` and successors (broadcast-only, agent-initiated, markdown composer, task-followup, escalation surfacing, working indicator, close-out removal/resume, file attachments); impl `runtime/infrastructure/thread_store.py`, `runtime/daemon/thread_runner.py`. See [Thread Broadcast Routing](#thread-broadcast-routing), [Thread Agent-Session Resume](#thread-agent-session-resume), and [Thread Task Followup](#thread-task-followup) below for traps.
-- **Thread escalation surfacing.** When a thread-dispatched task escalates to `blocked(escalated)`, the runtime injects a `task_escalated` system message into the originating thread and re-invokes the dispatching manager for a founder-facing followup — mirroring the terminal task-followup. The existing Feishu escalation notification is unchanged: Feishu is the push channel, the thread is the in-context record. Rendered in both web (ThreadsPage.tsx `task_escalated` case) and CLI (`thread forward`). Spec `docs/superpowers/specs/2026-06-06-thread-escalation-surfacing-design.md`; impl `runtime/orchestrator/run_step.py`, `runtime/daemon/thread_runner.py`.
+- **Thread escalation surfacing.** When a thread-dispatched task escalates to `blocked(escalated)`, the runtime injects a `task_escalated` system message into the originating thread and re-invokes the dispatching manager for a founder-facing followup — mirroring the terminal task-followup. Rendered in both web (ThreadsPage.tsx `task_escalated` case) and CLI (`thread forward`). Spec `docs/superpowers/specs/2026-06-06-thread-escalation-surfacing-design.md`; impl `runtime/orchestrator/run_step.py`, `runtime/daemon/thread_runner.py`.
 - **Talks.** Founder-activated one-on-one conversational sessions with a single agent; dispatch from a talk is self-only. Specs `docs/superpowers/specs/2026-04-21-talk-flow-design.md`, `docs/superpowers/specs/2026-04-26-talk-dispatch-design.md`; impl `runtime/infrastructure/talk_store.py`, `runtime/daemon/routes/talks.py`. See [Thread / Talk Dispatch Self-Only Rule](#thread--talk-dispatch-self-only-rule) below for traps.
 - **Knowledge base.** Per-org shared, durable cross-agent knowledge (rules, references, founder rulings); orgs do not share a KB. Contract `protocol/06-knowledge-base.md`; impl `runtime/infrastructure/kb_store.py`, `runtime/daemon/routes/kb.py`. See [Knowledge Base](#knowledge-base) below for traps.
 - **KB view tracking.** Agent-CLI KB entry read counting scoped to agent consults only (founder ruling THR-009). Distinguished from web reads via `X-HappyRanch-Surface: cli` request header (a source label, not auth). Read surface is CLI-only: `happyranch kb stats` renders a table ordered by view count; no web surface. Spec `docs/superpowers/specs/2026-06-10-kb-view-tracking-design.md`; impl `cli/commands/kb.py`, `runtime/daemon/routes/kb.py`, `runtime/infrastructure/database.py` (`kb_views` table).
@@ -42,8 +42,6 @@ For current behavior always prefer `protocol/`, `docs/agent-guides/`, tests, the
 - **Multi-org runtime.** A single daemon hosts multiple orgs in parallel under a schema-v2 container (`<runtime>/orgs/<slug>/...`); per-org routes live under `/api/v1/orgs/<slug>/...`. Specs `docs/superpowers/specs/2026-04-26-multi-org-runtime-design.md` (superseded), `docs/superpowers/specs/2026-04-28-parallel-multi-org-runtime-design.md`; current shape `docs/agent-guides/project-layout.md`; impl `runtime/daemon/org_state.py`, `runtime/daemon/runtimes.py`.
 - **Org content model.** Each org is loaded from `org/` — charter, `teams.yaml`, per-agent `agents/*.md`, and `config.yaml`. Guide `docs/agent-guides/project-layout.md`; impl `runtime/orchestrator/org_config.py`, `runtime/orchestrator/teams.py`, `runtime/orchestrator/agent_def.py`.
 - **Token-usage tracking.** Per-task, per-agent, and thread/talk-scoped token accounting. Specs `docs/superpowers/specs/2026-05-05-token-usage-tracking-design.md`, `docs/superpowers/specs/2026-06-08-thread-talk-token-usage-scope-design.md`; API `runtime/daemon/routes/tokens.py`; CLI `happyranch tokens`.
-- **Feishu notifications & interactive actions.** Per-org opt-in outbound escalation/failure notifications plus inbound interactive approvals (e.g. job review) over a Feishu websocket. Specs `docs/superpowers/specs/2026-05-08-feishu-notification-design.md`, `docs/superpowers/specs/2026-05-12-feishu-interactive-actions-design.md`; impl `runtime/infrastructure/feishu/`, `runtime/daemon/feishu_listener.py`. See [Feishu Notifications](#feishu-notifications) below for traps.
-
 ### Web & CLI
 
 - **Web UI.** React SPA dashboard for tasks, audit, KB, threads, talks, and org/agent management, served from `web/dist/`. Specs `docs/superpowers/specs/2026-05-14-web-ui-design.md`, `docs/superpowers/specs/2026-05-30-dashboard-overhaul-design.md`, and the per-surface `2026-05-19-web-*` specs; architecture `web/ARCHITECTURE.md`; guide `docs/agent-guides/web-and-cli.md`.
@@ -115,7 +113,7 @@ Traps:
 - `_AUTO_REVISIT_CAP_PER_KIND = 2`; it is per kind, not global.
 - `_maybe_spawn_auto_revisit` must run before `_enqueue_parent_if_waiting`.
 - `failure_kind` is top-level on `auto_revisit_of`, not under `error_context`.
-- Cascade still fails ancestors when `root_auto_revisit_spawned=True`; only the Feishu notification is suppressed.
+- Cascade still fails ancestors when `root_auto_revisit_spawned=True`.
 - Startup sweep dedups with `revisited_roots: set[str]`.
 
 ## Thread Broadcast Routing
@@ -203,15 +201,6 @@ Traps:
 - Predicate is all-terminal, not any-terminal.
 - `metadata` is a function parameter, not shared state.
 
-## Feishu Notifications
+## Feishu Notifications (REMOVED)
 
-Per-org opt-in via `feishu_notifications` in `<runtime>/orgs/<slug>/org/config.yaml`. Credentials are required when enabled and live in the same file; treat it as secret-bearing. Specs: `docs/superpowers/specs/2026-05-08-feishu-notification-design.md` and `docs/superpowers/specs/2026-05-12-feishu-interactive-actions-design.md`. Setup: `docs/setup/feishu-notifications.md`.
-
-Entry points:
-
-- Outbound: `Orchestrator.notify_escalated` and `notify_failed`.
-- Inbound: `FeishuEventListener`, one WS per org, bridged into the asyncio loop.
-
-Critical invariant: `_resolve_for_listener` in `runtime/daemon/app.py` must not swallow exceptions from in-process resolvers. On failure it records `outcome="rejected", reason="handler_exception"` and leaves the row unconsumed.
-
-Optional features: `notify_on_failure`, `allow_dispatch`, and Jobs approval/rejection. CLI fallbacks consume open rows with `consumed_by="cli-fallback"`, so a CLI-first resolution silently no-ops the later Feishu reply.
+Feishu was removed in TASK-302 (THR-022). The web UI and threads are the sole control path for dispatch / revisit / resolve-escalation. Legacy `feishu_notifications` config blocks are tolerated on load but ignored. Database correlation tables (`escalation_notifications`, `processed_event_ids`) remain dormant in place.

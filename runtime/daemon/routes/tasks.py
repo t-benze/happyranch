@@ -18,7 +18,6 @@ from runtime.daemon.org_state import OrgState
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.daemon.runner import enqueue_task
 from runtime.daemon.state import DaemonState
-from runtime.infrastructure.feishu.reply_parser import DispatchIntent  # re-export
 from runtime.models import BlockKind, TaskRecord, TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -482,7 +481,7 @@ async def resolve_escalation_in_process(
     rationale: str,
 ) -> str:
     """Same DB transition / audit / queue re-enqueue as the HTTP handler at
-    POST /tasks/{task_id}/resolve-escalation. Reused by the Feishu listener.
+    POST /tasks/{task_id}/resolve-escalation.
 
     Returns the new task status value (e.g. "pending" or "failed").
     Raises HTTPException for the same validation failures the route raises so
@@ -523,8 +522,8 @@ async def resolve_escalation_in_process(
         AuditLogger(org.db).log_escalation_resolved(
             task_id=task_id, decision=decision, rationale=rationale,
         )
-        # Best-effort: mark any open Feishu notification rows for this task
-        # consumed, so they don't dangle if the founder later replies in-thread.
+        # Best-effort: mark any open notification rows for this task
+        # consumed, so they don't dangle.
         for nrow in org.db.list_open_notifications_for_task(task_id):
             org.db.consume_escalation_notification(
                 nrow["feishu_message_id"], consumed_by="cli-fallback",
@@ -600,67 +599,6 @@ class RevisitBody(BaseModel):
 _REVISIT_ELIGIBLE_STATUSES = frozenset({
     TaskStatus.FAILED, TaskStatus.COMPLETED,
 })
-
-
-class DispatchError(Exception):
-    """Raised by dispatch_via_feishu for validation and dispatch failures.
-
-    reason is one of: empty_brief, unknown_team, dispatch_failed.
-    valid_teams is populated for unknown_team so callers can surface the list.
-    """
-
-    def __init__(self, reason: str, valid_teams: list[str] | None = None) -> None:
-        self.reason = reason
-        self.valid_teams = valid_teams or []
-        super().__init__(reason)
-
-
-async def dispatch_via_feishu(
-    org,
-    state,
-    *,
-    intent: DispatchIntent,
-    sender_id: str,
-    event_id: str,
-) -> tuple[str, str]:
-    """Create a task from a Feishu DISPATCH intent. Mirrors POST /tasks.
-
-    Returns (task_id, resolved_team).
-    Raises DispatchError(reason=...) with reason in:
-        empty_brief, unknown_team, dispatch_failed.
-    """
-    from runtime.infrastructure.audit_logger import AuditLogger
-
-    if not intent.brief or not intent.brief.strip():
-        raise DispatchError("empty_brief")
-
-    team = intent.team or "engineering"
-    registry = org.teams
-    valid = list(registry.teams()) if registry is not None else []
-    if registry is None or team not in valid:
-        raise DispatchError("unknown_team", valid_teams=valid)
-
-    try:
-        manager = registry.manager_for_team(team)
-        async with org.db_lock:
-            task_id = org.db.next_task_id()
-            org.db.insert_task(TaskRecord(
-                id=task_id,
-                brief=intent.brief.strip(),
-                team=team,
-                assigned_agent=manager.name,
-            ))
-            AuditLogger(org.db).log_dispatch_via_feishu_accepted(
-                task_id=task_id, team=team, sender_id=sender_id,
-                feishu_event_id=event_id,
-            )
-    except DispatchError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        raise DispatchError("dispatch_failed") from exc
-
-    enqueue_task(state, org.slug, task_id)
-    return task_id, team
 
 
 @dataclass(frozen=True)
@@ -775,8 +713,8 @@ def _supersede_predecessor_locked(
         founder_note=note_suffix,
         thread_id=thread_id,
     )
-    # An escalated/delegated predecessor may carry an open Feishu escalation
-    # notification; the continuation resolves it, so consume any open rows.
+    # An escalated/delegated predecessor may carry an open notification;
+    # the continuation resolves it, so consume any open rows.
     for nrow in org.db.list_open_notifications_for_task(predecessor_id):
         org.db.consume_escalation_notification(
             nrow["feishu_message_id"], consumed_by="superseded",
@@ -794,11 +732,10 @@ async def revisit_from_notification(
 ) -> RevisitResult:
     """Spawn a new root task linked to the predecessor.
 
-    Mirrors the POST /tasks/{id}/revisit HTTP handler. Reused by the
-    Feishu listener so HTTP and Feishu surfaces cannot drift.
+    Mirrors the POST /tasks/{id}/revisit HTTP handler.
 
     Args:
-        actor: "cli" (HTTP route) or "feishu-reply" (listener). Recorded
+        actor: "cli" (HTTP route) or another surface name. Recorded
             on the revisit_of audit row.
         session_timeout_seconds: Override; if None, inherit from predecessor.
 
@@ -905,11 +842,9 @@ async def revisit_from_notification(
                 actor=actor,
                 note_suffix=founder_note,
             )
-        # When the founder uses the CLI to revisit, any open Feishu failure
-        # notification row for this task is implicitly resolved — consume
-        # it with cli-fallback so a later in-thread REVISIT reply silently
-        # no-ops. Mirrors resolve_escalation_in_process's behavior.
-        # Feishu-reply path: listener consumes itself at step 8r (avoid race).
+        # When the founder revisits via CLI, any open failure notification row
+        # for this task is implicitly resolved — consume it with cli-fallback
+        # so it doesn't dangle. Mirrors resolve_escalation_in_process's behavior.
         if actor == "cli":
             for nrow in org.db.list_open_notifications_for_task(task_id):
                 if nrow.get("kind") == "failure":

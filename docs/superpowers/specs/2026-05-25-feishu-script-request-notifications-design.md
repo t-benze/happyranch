@@ -1,5 +1,7 @@
 # Feishu Notifications for Script Requests — Design Spec
 
+**Status: REMOVED in TASK-302 (THR-022).** Web UI + threads are sole control surface. DB tables dormant.
+
 **Date:** 2026-05-25
 **Status:** Draft, pending implementation plan.
 **Relates to:**

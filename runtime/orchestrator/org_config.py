@@ -19,22 +19,6 @@ class OrgConfigError(ValueError):
     """Raised when org/config.yaml is malformed or fails validation."""
 
 
-# region → SDK domain literal accepted by lark_oapi.Client.builder().domain(...)
-FEISHU_REGIONS = {"feishu", "lark"}
-
-
-@dataclass(frozen=True)
-class FeishuNotificationsConfig:
-    provider: str
-    region: str
-    chat_id: str
-    app_id: str
-    app_secret: str
-    reply_ttl_hours: int = 72
-    notify_on_failure: bool = False
-    allow_dispatch: bool = False
-
-
 @dataclass(frozen=True)
 class DreamingConfig:
     enabled: bool = False
@@ -153,7 +137,6 @@ class WorkingHoursConfig:
 @dataclass(frozen=True)
 class OrgConfig:
     session_timeout_seconds: int | None = None
-    feishu_notifications: FeishuNotificationsConfig | None = None
     dreaming: DreamingConfig = field(default_factory=DreamingConfig)
     working_hours: WorkingHoursConfig = field(default_factory=WorkingHoursConfig)
     threads_enabled: bool = True
@@ -438,76 +421,6 @@ def _parse_working_hours(block: object, path: str) -> WorkingHoursConfig:
     )
 
 
-def _parse_feishu_notifications(
-    block: dict, path: str,
-) -> FeishuNotificationsConfig | None:
-    if not block.get("enabled", False):
-        return None
-
-    provider = block.get("provider")
-    if provider != "feishu":
-        raise OrgConfigError(
-            f"{path}: feishu_notifications.provider must be 'feishu' in v1, "
-            f"got {provider!r}"
-        )
-
-    region = block.get("region")
-    if region not in FEISHU_REGIONS:
-        raise OrgConfigError(
-            f"{path}: feishu_notifications.region must be one of "
-            f"{sorted(FEISHU_REGIONS)}, got {region!r}"
-        )
-
-    chat_id = block.get("chat_id")
-    if not chat_id or not isinstance(chat_id, str):
-        raise OrgConfigError(
-            f"{path}: feishu_notifications.chat_id is required when enabled"
-        )
-
-    app_id = block.get("app_id")
-    if not app_id or not isinstance(app_id, str):
-        raise OrgConfigError(
-            f"{path}: feishu_notifications.app_id is required when enabled"
-        )
-
-    app_secret = block.get("app_secret")
-    if not app_secret or not isinstance(app_secret, str):
-        raise OrgConfigError(
-            f"{path}: feishu_notifications.app_secret is required when enabled"
-        )
-
-    ttl = _validate_positive_int(
-        block.get("reply_ttl_hours", 72),
-        "feishu_notifications.reply_ttl_hours",
-        min_v=1, max_v=720, path=path,
-    )
-
-    notify_on_failure = block.get("notify_on_failure", False)
-    if not isinstance(notify_on_failure, bool):
-        raise OrgConfigError(
-            f"{path}: feishu_notifications.notify_on_failure must be a boolean, "
-            f"got {type(notify_on_failure).__name__}"
-        )
-
-    allow_dispatch = block.get("allow_dispatch", False)
-    if not isinstance(allow_dispatch, bool):
-        raise OrgConfigError(
-            f"{path}: feishu_notifications.allow_dispatch must be a boolean, "
-            f"got {type(allow_dispatch).__name__}"
-        )
-
-    return FeishuNotificationsConfig(
-        provider=provider,
-        region=region,
-        chat_id=chat_id,
-        app_id=app_id,
-        app_secret=app_secret,
-        reply_ttl_hours=ttl,
-        notify_on_failure=notify_on_failure,
-        allow_dispatch=allow_dispatch,
-    )
-
-
 def _parse_threads(block: dict, path: str) -> dict:
     """Parse the threads: block and return kwargs for OrgConfig."""
     if not isinstance(block, dict):
@@ -551,12 +464,9 @@ def _build_org_config(data: dict, path: str) -> OrgConfig:
                 f"got {timeout!r}"
             )
 
-    feishu_block = data.get("feishu_notifications")
-    feishu_cfg: FeishuNotificationsConfig | None = None
-    if feishu_block is not None:
-        if not isinstance(feishu_block, dict):
-            raise OrgConfigError(f"{path}: feishu_notifications must be a mapping")
-        feishu_cfg = _parse_feishu_notifications(feishu_block, path)
+    # feishu_notifications is tolerated but ignored — Feishu was removed
+    # (TASK-302/THR-022). Legacy configs with this key load without error.
+    _feishu_block = data.get("feishu_notifications")
 
     dreaming_block = data.get("dreaming")
     dreaming_cfg = DreamingConfig()
@@ -575,7 +485,6 @@ def _build_org_config(data: dict, path: str) -> OrgConfig:
 
     return OrgConfig(
         session_timeout_seconds=timeout,
-        feishu_notifications=feishu_cfg,
         dreaming=dreaming_cfg,
         working_hours=working_hours_cfg,
         **threads_kwargs,

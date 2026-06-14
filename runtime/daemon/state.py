@@ -90,21 +90,14 @@ class DaemonState:
             org.orchestrator.attach_sessions(org.sessions)
             self.orgs[slug] = org
             self.broken_orgs.pop(slug, None)
-            # Start the Feishu listener if the new org has full config.
-            # When called from a lifespan/route context there's a running loop;
-            # outside of one (e.g. unit tests bypassing the FastAPI lifespan)
-            # we silently skip — those tests never inject a loop anyway.
+            # Wire the thread queue + main loop so run_step workers can
+            # cross the async boundary via run_coroutine_threadsafe when
+            # posting task-followup invocations.
             try:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
                 loop = None
             if loop is not None:
-                from runtime.daemon.feishu_listener import maybe_start_feishu_listener_for_org
-                maybe_start_feishu_listener_for_org(org, self, loop)
-                # Wire the thread queue + main loop so run_step workers can
-                # cross the async boundary via run_coroutine_threadsafe when
-                # posting task-followup invocations. Same loop-detection pattern
-                # as the Feishu listener wiring above.
                 org.orchestrator.attach_thread_queue(org.thread_queue, loop)
             return org
 

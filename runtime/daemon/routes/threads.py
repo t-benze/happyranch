@@ -37,7 +37,7 @@ router = APIRouter(dependencies=[require_token()])
 # Special routing literal for addressing the founder. NOT a real agent name —
 # it never appears in `thread_participants`, never receives a ThreadInvocation,
 # and is permitted only in `recipients` on agent-initiated composes.
-# Routes via the Feishu notifier and the inbox UI instead.
+# Routes via the inbox UI instead.
 FOUNDER_LITERAL = "@founder"
 MAX_THREAD_ATTACHMENTS = 5
 
