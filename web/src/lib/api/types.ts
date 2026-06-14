@@ -481,3 +481,58 @@ export interface DashboardSummaryResponse {
   org_age_days: number;
   server_now: string;
 }
+
+// ---------------------------------------------------------------------------
+// Settings (read-only System + Org)
+// ---------------------------------------------------------------------------
+
+export interface SystemSettingEntry {
+  value: string | number;
+  restart_required: boolean;
+}
+
+export interface SystemSettings {
+  claude_cli_path: SystemSettingEntry;
+  codex_cli_path: SystemSettingEntry;
+  opencode_cli_path: SystemSettingEntry;
+  pi_cli_path: SystemSettingEntry;
+  session_timeout_seconds: SystemSettingEntry;
+  max_orchestration_steps: SystemSettingEntry;
+  queue_workers: SystemSettingEntry;
+  protocol_dir: SystemSettingEntry;
+}
+
+export interface DreamingSchedule {
+  time: string;
+  timezone: string;
+}
+
+export interface DreamingAgents {
+  mode: string;
+  include: string[];
+  exclude: string[];
+}
+
+export interface DreamingSettings {
+  enabled: boolean;
+  schedule: DreamingSchedule;
+  catch_up_on_startup: boolean;
+  agents: DreamingAgents;
+}
+
+export interface ThreadsSettings {
+  enabled: boolean;
+  default_turn_cap: number;
+  invocation_timeout_seconds: number | null;
+}
+
+export interface OrgSettings {
+  session_timeout_seconds: number | null;
+  dreaming: DreamingSettings;
+  threads: ThreadsSettings;
+}
+
+export interface SettingsSnapshot {
+  system: SystemSettings;
+  org: OrgSettings;
+}

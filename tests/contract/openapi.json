@@ -1220,6 +1220,24 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/settings": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/talks": {
       "GET": {
         "params": [

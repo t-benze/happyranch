@@ -263,6 +263,21 @@ Data sources: orchestrator audit log (session/step/completion events), LLM usage
 
 ---
 
+### Settings Dialog
+
+A read-only Settings dialog (Phase 1) opened from the TopBar gear button
+(`web/src/features/settings/SettingsDialog.tsx`). Renders:
+
+- **System** — daemon-wide settings (CLI paths, session timeout,
+  orchestration limits, protocol dir) with restart-required badges.
+- **Org** — org-level settings (session timeout override, dreaming
+  config, threads config).
+
+Backed by `GET /api/v1/orgs/{slug}/settings` — an allow-list serializer
+that never exposes secrets (permission_mode, codex_sandbox_mode, feishu
+credentials, daemon bind/port). No editable fields in Phase 1; Phase 2
+(separate task) adds PUT /settings/org for org-level writes.
+
 ## 3. Dashboard API Endpoints
 
 The dashboard backend exposes a REST API that the frontend consumes. This same API could be used by other tools (scripts, CLI lookups, etc.):

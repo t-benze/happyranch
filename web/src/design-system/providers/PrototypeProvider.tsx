@@ -29,6 +29,7 @@ import { mockTalksApi, useMockTalksRoutes } from './_mock-talks';
 import { mockTasksApi, useMockTasksRoutes } from './_mock-tasks';
 import { mockTeamsApi } from './_mock-teams';
 import { mockThreadsApi } from './_mock-threads';
+import { mockSettingsApi } from './_mock-settings';
 
 function makePrototypeQueryClient(): QueryClient {
   return new QueryClient({
@@ -61,6 +62,7 @@ export function PrototypeProvider({ children }: { children: ReactNode }): JSX.El
           health: mockHealthApi,
           assistant: mockAssistantApi,
           jobs: mockJobsApi,
+          settings: mockSettingsApi,
           useThreadRoutes: useMockThreadRoutes,
           useTasksRoutes: useMockTasksRoutes,
           useKbRoutes: useMockKbRoutes,
