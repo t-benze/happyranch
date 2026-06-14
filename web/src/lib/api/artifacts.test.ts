@@ -205,7 +205,10 @@ describe('artifacts api mirror', () => {
     });
 
     // Assert the download plumbing fired.
-    expect(createObjectUrlSpy).toHaveBeenCalledWith(expect.any(Blob));
+    const blobArg = createObjectUrlSpy.mock.calls[0]?.[0] as Record<string,unknown> | undefined;
+    expect(blobArg).toBeTruthy();
+    expect(typeof blobArg!.arrayBuffer).toBe('function');
+    expect(blobArg!.type).toBe('application/pdf');
     expect(clickSpy).toHaveBeenCalled();
     expect(revokeObjectUrlSpy).toHaveBeenCalledWith(objectUrl);
   });
@@ -283,7 +286,10 @@ describe('artifacts api mirror', () => {
     await expect(downloadArtifact(SLUG, 'report.pdf')).rejects.toThrow(clickError);
 
     // The object URL must be revoked even though the click threw.
-    expect(createObjectUrlSpy).toHaveBeenCalledWith(expect.any(Blob));
+    const blobArg = createObjectUrlSpy.mock.calls[0]?.[0] as Record<string,unknown> | undefined;
+    expect(blobArg).toBeTruthy();
+    expect(typeof blobArg!.arrayBuffer).toBe('function');
+    expect(blobArg!.type).toBe('application/pdf');
     expect(revokeObjectUrlSpy).toHaveBeenCalledWith(objectUrl);
   });
 

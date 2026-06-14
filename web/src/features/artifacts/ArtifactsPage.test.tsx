@@ -67,7 +67,10 @@ describe('ArtifactsPage', () => {
     await waitFor(() => {
       expect(downloadHit).toBe(true);
     });
-    expect(createObjectUrlSpy).toHaveBeenCalledWith(expect.any(Blob));
+    const blobArg = createObjectUrlSpy.mock.calls[0]?.[0] as Record<string,unknown> | undefined;
+    expect(blobArg).toBeTruthy();
+    expect(typeof blobArg!.arrayBuffer).toBe('function');
+    expect(blobArg!.type).toBe('application/pdf');
     expect(revokeObjectUrlSpy).toHaveBeenCalledWith(objectUrl);
   });
 
