@@ -449,8 +449,9 @@ def test_revisit_roundtrip_creates_new_root_and_completes(
 ):
     """End-to-end: predecessor task escalates -> POST /revisit directly ->
     fake EH on the new root returns done -> new root reaches `completed`,
-    predecessor stays `blocked(escalated)`. CLI is bypassed because the
-    integration harness runs non-TTY (the CLI would refuse)."""
+    predecessor auto-resolves to `resolved_superseded` per THR-018 tier #3.
+    CLI is bypassed because the integration harness runs non-TTY (the CLI
+    would refuse)."""
     port = live_daemon
     base = f"http://127.0.0.1:{port}/api/v1/orgs/test"
 
@@ -497,8 +498,8 @@ def test_revisit_roundtrip_creates_new_root_and_completes(
     # Step 3: new root reaches `completed` (fake EH returns done on 2nd call).
     assert _wait_for_terminal_status(base, new_id, timeout=30.0) == "completed"
 
-    # Step 4: predecessor is frozen at blocked(escalated).
+    # Step 4: predecessor auto-resolved to resolved_superseded (THR-018 §3a).
     r_pre = httpx.get(f"{base}/tasks/{task_id}", headers=_auth_headers(), timeout=5.0)
     pre_task = r_pre.json()["task"]
-    assert pre_task["status"] == "blocked"
-    assert pre_task["block_kind"] == "escalated"
+    assert pre_task["status"] == "resolved_superseded"
+    assert pre_task["block_kind"] is None
