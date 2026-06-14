@@ -193,7 +193,7 @@ describe('artifacts api mirror', () => {
         return el;
       }
       return originalCreateElement(tag) as HTMLElement;
-    }) as typeof document.createElement;
+    }) as unknown as typeof document.createElement;
 
     await downloadArtifact(SLUG, 'report.pdf');
 
@@ -223,7 +223,7 @@ describe('artifacts api mirror', () => {
       const el = origCreateElement(tag);
       if (tag === 'a') el.click = vi.fn();
       return el;
-    }) as typeof document.createElement;
+    }) as unknown as typeof document.createElement;
 
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
@@ -278,7 +278,7 @@ describe('artifacts api mirror', () => {
         return el;
       }
       return originalCreateElement(tag) as HTMLElement;
-    }) as typeof document.createElement;
+    }) as unknown as typeof document.createElement;
 
     await expect(downloadArtifact(SLUG, 'report.pdf')).rejects.toThrow(clickError);
 
