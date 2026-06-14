@@ -30,6 +30,25 @@ const TOP_N = 8;
 const BAR_W = 96; // px — SVG viewport for the churn bar
 const BAR_H = 8;
 
+/**
+ * Plain-English explanations for each cryptic model label produced by
+ * classifyModel() (see ../topTokens.ts). This map is a pure presentation
+ * layer — the label strings themselves are never changed. Used for tooltip
+ * text so the founder understands what each label means at a glance.
+ */
+export const MODEL_LABEL_EXPLANATIONS: Record<string, string> = {
+  '(unknown — pre-fix)':
+    'Frozen history from before the model-population fix (pre-June 12, 2026).',
+  '(unknown — ANOMALY)':
+    'Post-cutover NULL-model session — worth investigating for parser drift.',
+  '(mixed)':
+    'Multiple models on this rollup, or NULL-model sessions mixed with observed models.',
+  '(cli-unreported)':
+    'Codex sessions that never emit a model field.',
+  '(unknown)':
+    'No sessions with model data (defensive fallback).',
+};
+
 export function TopTokenThreadsPanel(): JSX.Element {
   const [winIdx, setWinIdx] = useState(1); // default 7d
   const win = WINDOWS[winIdx];
@@ -83,7 +102,10 @@ export function TopTokenThreadsPanel(): JSX.Element {
               <span className="text-text-primary w-24 shrink-0 truncate" title={r.threadId}>
                 {r.threadId}
               </span>
-              <span className="text-text-muted w-28 shrink-0 truncate" title={r.modelLabel}>
+              <span
+                className="text-text-muted w-28 shrink-0 truncate"
+                title={MODEL_LABEL_EXPLANATIONS[r.modelLabel] ?? r.modelLabel}
+              >
                 {r.modelLabel}
               </span>
               <svg
@@ -109,7 +131,7 @@ export function TopTokenThreadsPanel(): JSX.Element {
                 title="cache reads — never counted toward churn"
               >
                 {r.cacheReadTokens.toLocaleString()}
-                <span className="ml-1">cache</span>
+                <span className="ml-1.5 text-text-disabled">cache</span>
               </span>
             </li>
           ))}
