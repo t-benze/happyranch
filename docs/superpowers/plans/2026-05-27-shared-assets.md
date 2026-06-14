@@ -1302,9 +1302,9 @@ Find the runtime layout block (under "Directory Layout"). After the `talks/` lin
 After the "Per-Agent Learnings" section, insert:
 
 ```markdown
-## Shared Assets (org-wide blob store)
+## Shared Assets (org-wide store — nested-key, see TASK-305)
 
-Per-org at `<runtime>/orgs/<slug>/assets/`. Flat directory of opaque files —
+Per-org at `<runtime>/orgs/<slug>/assets/`. Directory of opaque files, addressable by nested '/'-separated keys (see the TASK-305 note below) —
 persistent artifacts produced by any agent and visible to every other agent
 in the same org. Implementation: `src/infrastructure/asset_store.py` +
 `src/daemon/routes/assets.py`. CLI: `happyranch assets {put,list,get}`.

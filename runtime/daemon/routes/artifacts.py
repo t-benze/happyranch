@@ -1,4 +1,4 @@
-"""Org-shared artifacts routes. Flat blob store, atomic writes, audited puts.
+"""Org-shared artifacts routes. Nested-key store ('/'-separated logical folders), atomic writes, audited puts.
 
 Auth: same bearer token as every other org-scoped route. No per-agent
 authorization — any agent that can hit the daemon can put/list/get.
