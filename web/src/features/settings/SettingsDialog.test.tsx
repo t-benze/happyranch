@@ -1,6 +1,5 @@
 import { describe, expect, test, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
+import { render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { DataContext } from '@/design-system/providers/DataContext';
@@ -9,14 +8,14 @@ import type { SettingsSnapshot, SystemSettings, OrgSettings } from '@/lib/api/ty
 import type { QueryLike } from '@/design-system/providers/DataContext';
 
 const mockSystem: SystemSettings = {
-  claude_cli_path: '/usr/local/bin/claude',
-  codex_cli_path: '/usr/local/bin/codex',
-  opencode_cli_path: '/usr/local/bin/opencode',
-  pi_cli_path: '/usr/local/bin/pi',
-  session_timeout_seconds: 1800,
-  max_orchestration_steps: 50,
-  queue_workers: 3,
-  protocol_dir: 'protocol',
+  claude_cli_path: { value: '/usr/local/bin/claude', restart_required: true },
+  codex_cli_path: { value: '/usr/local/bin/codex', restart_required: true },
+  opencode_cli_path: { value: '/usr/local/bin/opencode', restart_required: true },
+  pi_cli_path: { value: '/usr/local/bin/pi', restart_required: true },
+  session_timeout_seconds: { value: 1800, restart_required: false },
+  max_orchestration_steps: { value: 50, restart_required: true },
+  queue_workers: { value: 3, restart_required: true },
+  protocol_dir: { value: 'protocol', restart_required: true },
 };
 
 const mockOrg: OrgSettings = {

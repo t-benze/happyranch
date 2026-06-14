@@ -7,6 +7,8 @@ Spec: artifacts/TASK-349/settings-gui-design-spec-v2.md
 """
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel
 
 from fastapi import APIRouter
@@ -24,43 +26,48 @@ router = APIRouter(dependencies=[require_token()])
 # ----------------------------------------------------------------
 
 
+class SystemSettingEntry(BaseModel):
+    """A single allow-listed system setting carrying its value and
+    whether a change requires a daemon restart."""
+    value: str | int
+    restart_required: bool
+
+
 class SystemSettingsView(BaseModel):
     """Read-only view of selected daemon-wide settings.
 
     ALLOW-LIST: only the fields listed below are ever serialized.
     Any unlisted Settings field (permission_mode, codex_sandbox_mode,
     daemon_bind_host, daemon_port, etc.) is excluded by construction.
+
+    Each entry is a ``SystemSettingEntry`` so the ``restart_required``
+    flag travels as part of the GET /settings contract (no client-side
+    hard-coded duplicate).
     """
 
-    claude_cli_path: str
-    codex_cli_path: str
-    opencode_cli_path: str
-    pi_cli_path: str
-    session_timeout_seconds: int
-    max_orchestration_steps: int
-    queue_workers: int
-    protocol_dir: str
-
-    @staticmethod
-    def _restart_required_field(field_name: str) -> bool:
-        """True when changing this field requires a daemon restart."""
-        return field_name != "session_timeout_seconds"
-
-    def restart_required(self, field_name: str) -> bool:
-        return self._restart_required_field(field_name)
+    claude_cli_path: SystemSettingEntry
+    codex_cli_path: SystemSettingEntry
+    opencode_cli_path: SystemSettingEntry
+    pi_cli_path: SystemSettingEntry
+    session_timeout_seconds: SystemSettingEntry
+    max_orchestration_steps: SystemSettingEntry
+    queue_workers: SystemSettingEntry
+    protocol_dir: SystemSettingEntry
 
     @classmethod
     def from_settings(cls, s) -> "SystemSettingsView":
         """Build from the module-global Settings."""
+        def entry(val: Any, restart: bool) -> SystemSettingEntry:
+            return SystemSettingEntry(value=val, restart_required=restart)
         return cls(
-            claude_cli_path=s.claude_cli_path,
-            codex_cli_path=s.codex_cli_path,
-            opencode_cli_path=s.opencode_cli_path,
-            pi_cli_path=s.pi_cli_path,
-            session_timeout_seconds=s.session_timeout_seconds,
-            max_orchestration_steps=s.max_orchestration_steps,
-            queue_workers=s.queue_workers,
-            protocol_dir=s.protocol_dir,
+            claude_cli_path=entry(s.claude_cli_path, True),
+            codex_cli_path=entry(s.codex_cli_path, True),
+            opencode_cli_path=entry(s.opencode_cli_path, True),
+            pi_cli_path=entry(s.pi_cli_path, True),
+            session_timeout_seconds=entry(s.session_timeout_seconds, False),
+            max_orchestration_steps=entry(s.max_orchestration_steps, True),
+            queue_workers=entry(s.queue_workers, True),
+            protocol_dir=entry(s.protocol_dir, True),
         )
 
 

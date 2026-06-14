@@ -4,6 +4,8 @@ Key invariants:
 - The response MUST NOT contain permission_mode, codex_sandbox_mode,
   daemon_bind_host, daemon_port, any feishu* key, or any daemon token.
 - The allow-list serializer is load-bearing for secret safety.
+- Each system entry carries its own ``value`` + ``restart_required`` as
+  part of the GET /settings contract (no client-side hard-coded duplicate).
 """
 from __future__ import annotations
 
@@ -33,6 +35,11 @@ def test_settings_returns_200_with_system_and_org(tmp_home, app, org_state, auth
         "queue_workers", "protocol_dir",
     ):
         assert key in sys_, f"missing system field: {key}"
+        entry = sys_[key]
+        assert isinstance(entry, dict), f"{key} must be a SystemSettingEntry dict"
+        assert "value" in entry, f"{key} missing value"
+        assert "restart_required" in entry, f"{key} missing restart_required"
+        assert isinstance(entry["restart_required"], bool), f"{key}.restart_required must be bool"
 
     org_ = body["org"]
     for key in ("session_timeout_seconds", "dreaming", "threads"):
@@ -42,6 +49,27 @@ def test_settings_returns_200_with_system_and_org(tmp_home, app, org_state, auth
     dreaming = org_["dreaming"]
     assert "schedule" in dreaming
     assert "agents" in dreaming
+
+
+def test_settings_system_entries_carry_correct_restart_flags(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Each system entry must have restart_required: true except session_timeout_seconds."""
+    client = TestClient(app)
+    r = client.get(
+        f"/api/v1/orgs/{org_state.slug}/settings",
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    sys_ = r.json()["system"]
+
+    restart_true = {
+        "claude_cli_path", "codex_cli_path", "opencode_cli_path",
+        "pi_cli_path", "max_orchestration_steps", "queue_workers", "protocol_dir",
+    }
+    for key in restart_true:
+        assert sys_[key]["restart_required"] is True, f"{key} restart_required must be True"
+    assert sys_["session_timeout_seconds"]["restart_required"] is False
 
 
 def test_settings_requires_auth(tmp_home, app, org_state) -> None:
@@ -190,18 +218,7 @@ def test_settings_reads_org_config_yaml(tmp_home, app, org_state, auth_headers, 
     assert body["org"]["threads"]["enabled"] is True
 
 
-def test_settings_restart_required_logic() -> None:
-    """SystemSettingsView.restart_required returns false only for session_timeout_seconds."""
-    from runtime.daemon.routes.settings import SystemSettingsView
 
-    assert SystemSettingsView._restart_required_field("session_timeout_seconds") is False
-    assert SystemSettingsView._restart_required_field("claude_cli_path") is True
-    assert SystemSettingsView._restart_required_field("codex_cli_path") is True
-    assert SystemSettingsView._restart_required_field("opencode_cli_path") is True
-    assert SystemSettingsView._restart_required_field("pi_cli_path") is True
-    assert SystemSettingsView._restart_required_field("max_orchestration_steps") is True
-    assert SystemSettingsView._restart_required_field("queue_workers") is True
-    assert SystemSettingsView._restart_required_field("protocol_dir") is True
 
 
 # ----------------------------------------------------------------

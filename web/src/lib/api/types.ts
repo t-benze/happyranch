@@ -486,15 +486,20 @@ export interface DashboardSummaryResponse {
 // Settings (read-only System + Org)
 // ---------------------------------------------------------------------------
 
+export interface SystemSettingEntry {
+  value: string | number;
+  restart_required: boolean;
+}
+
 export interface SystemSettings {
-  claude_cli_path: string;
-  codex_cli_path: string;
-  opencode_cli_path: string;
-  pi_cli_path: string;
-  session_timeout_seconds: number;
-  max_orchestration_steps: number;
-  queue_workers: number;
-  protocol_dir: string;
+  claude_cli_path: SystemSettingEntry;
+  codex_cli_path: SystemSettingEntry;
+  opencode_cli_path: SystemSettingEntry;
+  pi_cli_path: SystemSettingEntry;
+  session_timeout_seconds: SystemSettingEntry;
+  max_orchestration_steps: SystemSettingEntry;
+  queue_workers: SystemSettingEntry;
+  protocol_dir: SystemSettingEntry;
 }
 
 export interface DreamingSchedule {

@@ -9,7 +9,6 @@
  */
 import { Settings } from 'lucide-react';
 import { useSettings } from '@/hooks/settings';
-import { Button } from '@/design-system/primitives/Button';
 import {
   Dialog,
   DialogContent,
@@ -17,20 +16,6 @@ import {
   DialogTitle,
 } from '@/design-system/primitives/Dialog';
 import type { SystemSettings, OrgSettings } from '@/lib/api/types';
-
-const RESTART_REQUIRED_FIELDS = new Set([
-  'claude_cli_path',
-  'codex_cli_path',
-  'opencode_cli_path',
-  'pi_cli_path',
-  'max_orchestration_steps',
-  'queue_workers',
-  'protocol_dir',
-]);
-
-function restartRequired(fieldName: string): boolean {
-  return RESTART_REQUIRED_FIELDS.has(fieldName);
-}
 
 interface Props {
   open: boolean;
@@ -42,7 +27,7 @@ export function SettingsDialog({ open, onOpenChange }: Props): JSX.Element {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl max-h-[80vh] overflow-y-auto">
+      <DialogContent className="max-w-xl">
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
         </DialogHeader>
@@ -72,48 +57,32 @@ export function SettingsDialog({ open, onOpenChange }: Props): JSX.Element {
 // ----------------------------------------------------------------
 
 function SystemSection({ sys }: { sys: SystemSettings }): JSX.Element {
-  const rows: [string, string | number][] = [
-    ['Claude CLI path', sys.claude_cli_path],
-    ['Codex CLI path', sys.codex_cli_path],
-    ['OpenCode CLI path', sys.opencode_cli_path],
-    ['Pi CLI path', sys.pi_cli_path],
-    ['Session timeout (s)', sys.session_timeout_seconds],
-    ['Max orchestration steps', sys.max_orchestration_steps],
-    ['Queue workers', sys.queue_workers],
-    ['Protocol dir', sys.protocol_dir],
+  const rows: { label: string; entry: SystemSettings[keyof SystemSettings] }[] = [
+    { label: 'Claude CLI path', entry: sys.claude_cli_path },
+    { label: 'Codex CLI path', entry: sys.codex_cli_path },
+    { label: 'OpenCode CLI path', entry: sys.opencode_cli_path },
+    { label: 'Pi CLI path', entry: sys.pi_cli_path },
+    { label: 'Session timeout (s)', entry: sys.session_timeout_seconds },
+    { label: 'Max orchestration steps', entry: sys.max_orchestration_steps },
+    { label: 'Queue workers', entry: sys.queue_workers },
+    { label: 'Protocol dir', entry: sys.protocol_dir },
   ];
 
   return (
     <section>
       <h3 className="text-lg font-semibold mb-2">System</h3>
       <div className="border-border divide-border divide-y rounded-md border">
-        {rows.map(([label, value]) => (
+        {rows.map(({ label, entry }) => (
           <SettingsRow
             key={label}
             label={label}
-            value={String(value)}
-            badge={
-              restartRequired(labelToField(label)) ? 'Restart required' : undefined
-            }
+            value={String(entry.value)}
+            badge={entry.restart_required ? 'Restart required' : undefined}
           />
         ))}
       </div>
     </section>
   );
-}
-
-function labelToField(label: string): string {
-  switch (label) {
-    case 'Claude CLI path': return 'claude_cli_path';
-    case 'Codex CLI path': return 'codex_cli_path';
-    case 'OpenCode CLI path': return 'opencode_cli_path';
-    case 'Pi CLI path': return 'pi_cli_path';
-    case 'Session timeout (s)': return 'session_timeout_seconds';
-    case 'Max orchestration steps': return 'max_orchestration_steps';
-    case 'Queue workers': return 'queue_workers';
-    case 'Protocol dir': return 'protocol_dir';
-    default: return '';
-  }
 }
 
 // ----------------------------------------------------------------
