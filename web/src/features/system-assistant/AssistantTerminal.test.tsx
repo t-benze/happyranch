@@ -36,6 +36,20 @@ const h = vi.hoisted(() => ({
   // Per-test socket + opener, (re)built in beforeEach.
   socket: null as null | Record<string, unknown>,
   openSession: vi.fn(),
+  // ResizeObserver stub state (jsdom has no ResizeObserver).
+  roCallback: null as null | ResizeObserverCallback,
+  roDisconnect: vi.fn(),
+}));
+
+// jsdom does not ship ResizeObserver; stub it globally so the component can
+// construct one and we can capture & fire its callback in tests.
+vi.stubGlobal('ResizeObserver', vi.fn((callback: ResizeObserverCallback) => {
+  h.roCallback = callback;
+  return {
+    observe: vi.fn(),
+    unobserve: vi.fn(),
+    disconnect: h.roDisconnect,
+  };
 }));
 
 vi.mock('@xterm/xterm', () => ({
@@ -66,7 +80,14 @@ vi.mock('@xterm/xterm', () => ({
 
 vi.mock('@xterm/addon-fit', () => ({
   FitAddon: vi.fn().mockImplementation(() => {
-    const fit = { fit: vi.fn() };
+    const fit = {
+      fit: vi.fn(() => {
+        // A real fit() recomputes cols/rows and fires term.onResize.
+        // Simulate that so the test sees the full chain:
+        //   fit() → onResize → sendResize → ws.send.
+        h.resizeHandler?.();
+      }),
+    };
     h.fit = fit;
     return fit;
   }),
@@ -82,6 +103,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.resizeHandler = null;
   h.dataHandler = null;
+  h.roCallback = null;
   h.socket = {
     readyState: WebSocket.OPEN,
     send: vi.fn(),
@@ -142,5 +164,44 @@ describe('AssistantTerminal', () => {
     expect(h.dataDispose).toHaveBeenCalledTimes(1);
     expect(socket.close as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(1000);
     expect(term.dispose).toHaveBeenCalledTimes(1);
+    expect(h.roDisconnect).toHaveBeenCalledTimes(1);
+  });
+
+  test('ResizeObserver callback calls fitAddon.fit() and sends a resize frame', async () => {
+    await mountAndConnect();
+
+    // The ResizeObserver is constructed on mount; the callback must be captured.
+    expect(h.roCallback).not.toBeNull();
+
+    // Clear the initial fit/message calls so we isolate the ResizeObserver path.
+    const fitSpy = h.fit!.fit as ReturnType<typeof vi.fn>;
+    fitSpy.mockClear();
+    const socketSend = h.socket!.send as ReturnType<typeof vi.fn>;
+    socketSend.mockClear();
+
+    // jsdom getBoundingClientRect returns all zeros by default, so the
+    // component's width>0/height>0 guard would skip fit(). Stub it to
+    // return non-zero dimensions.
+    const rectStub = vi
+      .spyOn(Element.prototype, 'getBoundingClientRect')
+      .mockReturnValue({ width: 800, height: 400 } as DOMRect);
+
+    // Fire the ResizeObserver callback — simulating the container getting its
+    // final laid-out dimensions after a route transition.
+    act(() => {
+      h.roCallback!(
+        [],
+        {} as ResizeObserver,
+      );
+    });
+
+    rectStub.mockRestore();
+
+    // fitAddon.fit() must be called so the terminal recomputes cols/rows.
+    expect(fitSpy).toHaveBeenCalledTimes(1);
+
+    // After fit(), term.onResize fires → sendResize → ws.send with the control frame.
+    expect(socketSend).toHaveBeenCalledTimes(1);
+    expect(socketSend).toHaveBeenCalledWith(`${RESIZE_CONTROL_PREFIX} 24 80`);
   });
 });
