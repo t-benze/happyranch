@@ -192,6 +192,7 @@ describe('TopTokenThreadsPanel', () => {
     render(<TopTokenThreadsPanel />);
 
     const items = screen.getAllByRole('listitem');
+    expect(items).toHaveLength(labelsUnderTest.length);
     // Collect every rendered model-label span by scanning for the label text.
     for (const label of labelsUnderTest) {
       const span = screen.getByText(label, { selector: 'span' });
