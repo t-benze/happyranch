@@ -159,12 +159,15 @@ class OpcClient:
         r.raise_for_status()
         return r.json()
 
-    def list_artifacts(self, *, slug: str) -> dict:
+    def list_artifacts(self, *, slug: str, prefix: str = "") -> dict:
         """Return the org's artifact listing.
 
         Calls ``GET /api/v1/orgs/{slug}/artifacts``. Raises on non-2xx.
         """
-        r = self._client.get(f"/api/v1/orgs/{slug}/artifacts")
+        params: dict[str, str] = {}
+        if prefix:
+            params["prefix"] = prefix
+        r = self._client.get(f"/api/v1/orgs/{slug}/artifacts", params=params)
         r.raise_for_status()
         return r.json()
 

@@ -25,7 +25,7 @@ function describeUploadError(err: unknown): string {
   if (err instanceof ApiError) {
     if (err.code === 'artifact_too_large') return 'File exceeds the 10 MB limit.';
     if (err.code === 'invalid_artifact_name') {
-      return 'Name may contain only letters, digits, dot, underscore, and hyphen.';
+      return 'Name: each segment (between slashes) must match [A-Za-z0-9._-]+; forward slash only as separator (no leading/trailing/empty segments). Max 200 characters, 10 MB file cap.';
     }
     return `Upload failed (HTTP ${err.status}).`;
   }
@@ -153,7 +153,7 @@ export function ArtifactsPage(): JSX.Element {
               }}
             />
             <p className="text-fg-muted text-xs">
-              Letters, digits, dot, underscore, hyphen. Max 200 characters, 10 MB.
+              Each '/'-separated segment must match [A-Za-z0-9._-]+ (letters, digits, dot, underscore, hyphen). Forward slash only as separator; no leading/trailing/empty segments. Max 200 characters, 10 MB.
             </p>
           </div>
           {error && (

@@ -29,7 +29,7 @@ def cmd_artifacts_list(args: argparse.Namespace) -> None:
     org_slug = resolve_org_slug(
         args_org=args.org, available=_shared._fetch_available_orgs(client),
     )
-    body = client.list_artifacts(slug=org_slug)
+    body = client.list_artifacts(slug=org_slug, prefix=getattr(args, "prefix", None) or "")
     artifacts = body["artifacts"]
     if not artifacts:
         print("no artifacts")
@@ -62,6 +62,7 @@ def register(sub) -> None:
     p_artifacts_put.set_defaults(func=cmd_artifacts_put)
 
     p_artifacts_list = artifacts_sub.add_parser("list", help="List artifact names and sizes")
+    p_artifacts_list.add_argument("--prefix", default=None, help="Filter artifacts by key prefix (e.g. 'reports/')")
     p_artifacts_list.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
     p_artifacts_list.set_defaults(func=cmd_artifacts_list)
 
