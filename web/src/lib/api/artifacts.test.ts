@@ -247,6 +247,46 @@ describe('artifacts api mirror', () => {
     expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/v1/auth/bootstrap');
   });
 
+  test('downloadArtifact revokes the object URL even when the DOM click throws', async () => {
+    seedToken();
+    const blobContent = new Blob(['file contents'], { type: 'application/pdf' });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(blobContent, {
+        status: 200,
+        headers: { 'Content-Type': 'application/pdf' },
+      }),
+    );
+
+    const objectUrl = 'blob:http://localhost/leaky-url';
+    const createObjectUrlSpy = vi.fn().mockReturnValue(objectUrl);
+    const revokeObjectUrlSpy = vi.fn();
+    vi.stubGlobal('URL', {
+      ...URL,
+      createObjectURL: createObjectUrlSpy,
+      revokeObjectURL: revokeObjectUrlSpy,
+    });
+
+    // Simulate a click that throws (e.g., a CSP violation or detached DOM).
+    const clickError = new Error('simulated click failure');
+    const originalCreateElement = document.createElement.bind(document);
+    vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
+      if (tag === 'a') {
+        const el = originalCreateElement('a');
+        el.click = () => {
+          throw clickError;
+        };
+        return el;
+      }
+      return originalCreateElement(tag) as HTMLElement;
+    }) as typeof document.createElement;
+
+    await expect(downloadArtifact(SLUG, 'report.pdf')).rejects.toThrow(clickError);
+
+    // The object URL must be revoked even though the click threw.
+    expect(createObjectUrlSpy).toHaveBeenCalledWith(expect.any(Blob));
+    expect(revokeObjectUrlSpy).toHaveBeenCalledWith(objectUrl);
+  });
+
   test('downloadArtifact throws ApiError on non-ok non-401 response', async () => {
     seedToken();
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(

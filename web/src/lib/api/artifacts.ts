@@ -177,11 +177,14 @@ export async function downloadArtifact(slug: string, name: string): Promise<void
 
   const blob = await res.blob();
   const objectUrl = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = objectUrl;
-  a.download = name;
-  a.click();
-  URL.revokeObjectURL(objectUrl);
+  try {
+    const a = document.createElement('a');
+    a.href = objectUrl;
+    a.download = name;
+    a.click();
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
 }
 
 async function deleteWithToken(slug: string, name: string, token: string): Promise<Response> {
