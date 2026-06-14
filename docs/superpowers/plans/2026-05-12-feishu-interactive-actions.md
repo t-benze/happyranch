@@ -1,5 +1,7 @@
 # Feishu Interactive Actions Implementation Plan
 
+**Status: REMOVED in TASK-302 (THR-022).** Web UI + threads are sole control surface. DB tables dormant.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Extend the existing Feishu escalation flow with (a) push notifications for terminal `FAILED` tasks and a `REVISIT` reply verb that spawns a new root task, and (b) top-level `DISPATCH` messages that create new tasks from Feishu.
