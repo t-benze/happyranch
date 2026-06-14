@@ -59,6 +59,20 @@ export function AssistantTerminal(): JSX.Element {
     const onWindowResize = (): void => fitAddon.fit();
     window.addEventListener('resize', onWindowResize);
 
+    // ResizeObserver refits the terminal when the container's content box
+    // settles to its final layout dimensions. On a route-switch fresh mount,
+    // the initial fitAddon.fit() often computes cols/rows with the container
+    // at a transitional width; once layout stabilizes the observer re-fits so
+    // the replayed scrollback buffer paints at the correct cell grid.
+    const ro = new ResizeObserver(() => {
+      if (disposed) return;
+      const rect = container.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        fitAddon.fit();
+      }
+    });
+    ro.observe(container);
+
     openSession()
       .then((socket) => {
         if (disposed) {
@@ -85,6 +99,7 @@ export function AssistantTerminal(): JSX.Element {
     return () => {
       disposed = true;
       window.removeEventListener('resize', onWindowResize);
+      ro.disconnect();
       resizeSub.dispose();
       dataSub.dispose();
       if (ws) ws.close(1000);
