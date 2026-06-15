@@ -61,7 +61,7 @@ function parseTs(value: string): number {
 }
 
 /**
- * Render the Model label for a by-thread (or by-agent / by-talk) rollup row.
+ * Render the Model label for a by-thread (or by-agent) rollup row.
  *
  * Mirrors `classify_model` precedence (spec §2/§6). Token totals stay
  * authoritative regardless of the label.

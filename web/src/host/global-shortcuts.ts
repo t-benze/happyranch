@@ -12,7 +12,7 @@ export const GLOBAL_SHORTCUTS: ShortcutEntry[] = [
   { keys: ['g', 'i'], description: 'Jump to Threads' },
   { keys: ['g', 't'], description: 'Jump to Tasks' },
   { keys: ['g', 'k'], description: 'Jump to Knowledge Base' },
-  { keys: ['g', 'l'], description: 'Jump to Talks' },
+  { keys: ['g', 'l'], description: 'Jump to Threads' },
   { keys: ['g', 'a'], description: 'Jump to Audit' },
   { keys: ['g', 'g'], description: 'Jump to Agents' },
 ];

@@ -65,7 +65,7 @@ export function TopBar(): JSX.Element {
     if (activeSlug && !isPrototype) navigate(agentsRoutes.inboxForOrg(activeSlug));
   });
   const switchEnabled = !orgsQuery.isLoading && (orgsQuery.data?.orgs.length ?? 0) > 0;
-  // The Tasks/KB/Talks/Audit/Agents tabs live only on the production
+  // The Tasks/KB/Audit/Agents tabs live only on the production
   // routes — the prototype sandbox is threads-only. Disable them inside
   // `/__prototypes/*` so a click can't escape the sandbox.
   const placeholderTab = (path: string) => ({

@@ -528,9 +528,9 @@ def register(sub) -> None:
     p_threads_resume.add_argument("--thread-id", dest="thread_id", required=True)
     p_threads_resume.set_defaults(func=cmd_threads_resume)
 
-    p_threads_forward = threads_sub.add_parser("forward", help="Founder: forward a talk or thread into a new thread")
+    p_threads_forward = threads_sub.add_parser("forward", help="Founder: forward a thread into a new thread")
     p_threads_forward.add_argument("--org", default=None, help="Org slug")
-    p_threads_forward.add_argument("--source", required=True, help="THR-NNN or TALK-NNN")
+    p_threads_forward.add_argument("--source", required=True, help="THR-NNN")
     p_threads_forward.add_argument("--recipients", required=True, help="comma-separated agent names")
     p_threads_forward.add_argument("--note-file", dest="note_file", default=None)
     p_threads_forward.add_argument("--subject", default=None)

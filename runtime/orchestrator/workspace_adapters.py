@@ -252,7 +252,7 @@ _RESERVED_AGENT_BODY_HEADERS: frozenset[str] = frozenset({
     "Your Learnings",
     "Knowledge Base (shared across agents)",
     "Shared Artifacts (org-wide)",
-    "Thread and Talk Dispatch are Self-Only",
+    "Thread Dispatch is Self-Only",
     "Long-running and non-stop commands",
     "Task Completion Format",
     "Task Recall",

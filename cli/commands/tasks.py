@@ -395,7 +395,7 @@ def cmd_tokens(args: argparse.Namespace) -> None:
     by that scope (``--by-purpose`` decomposes by ``invocation_purpose``).
     ``--top N`` ranks a rollup by churn DESC and slices to N; ``--over-threshold
     N`` keeps only groups whose churn strictly exceeds N (applied before
-    ``--top``). The by-agent/by-thread/by-talk rollups gain a ``Model`` column
+    ``--top``). The by-agent/by-thread rollups gain a ``Model`` column
     classified from Leg A's primitives (``--by-purpose``/``--by-task`` have
     none). ``--json`` emits raw JSON for any view. ``total = (input or 0) +
     (output or 0) + (reasoning or 0)`` — cache reads are reported separately,
@@ -445,7 +445,7 @@ def cmd_tokens(args: argparse.Namespace) -> None:
             group_by, header_label, key, label_width = "thread", "Thread", "thread_id", 14
         else:
             group_by, header_label, key, label_width = "purpose", "Purpose", "purpose", 20
-        # Model classification only exists on the by-agent/by-thread/by-talk
+        # Model classification only exists on the by-agent/by-thread
         # rollups (Leg A emits the primitives there only); purpose/task have
         # no Model column (spec §3.2).
         show_model = group_by in ("agent", "thread")
