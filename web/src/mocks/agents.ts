@@ -11,6 +11,8 @@ export const MOCK_AGENTS: AgentSummary[] = [
     role: 'manager',
     executor: 'claude',
     description: 'Owns the engineering team.',
+    repos: { happyranch: 'https://github.com/org/happyranch' },
+    system_prompt: 'You are the engineering head.',
   },
   {
     name: 'content_writer',
@@ -18,6 +20,8 @@ export const MOCK_AGENTS: AgentSummary[] = [
     role: 'worker',
     executor: 'claude',
     description: 'Drafts posts and marketing copy.',
+    repos: {},
+    system_prompt: '',
   },
   {
     name: 'support_agent',
@@ -25,6 +29,8 @@ export const MOCK_AGENTS: AgentSummary[] = [
     role: 'worker',
     executor: 'codex',
     description: 'Handles first-line customer support.',
+    repos: {},
+    system_prompt: '',
   },
 ];
 

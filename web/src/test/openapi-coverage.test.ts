@@ -132,8 +132,12 @@ const INCLUDED_PATHS = new Set<string>([
   'POST /api/v1/assistant/repair',
   // artifacts — founder artifacts UI delete (mirror: deleteArtifact in lib/api/artifacts.ts)
   'DELETE /api/v1/orgs/{slug}/artifacts/{name}',
-  // settings — founder-facing read-only System + Org settings
+  // settings — founder-facing read-only System + Org settings (Phase 1)
   'GET /api/v1/orgs/{slug}/settings',
+  // settings — editable org settings (Phase 2)
+  'PUT /api/v1/orgs/{slug}/settings/org',
+  // settings — teams membership editing (Phase 2)
+  'PUT /api/v1/orgs/{slug}/settings/teams',
 ]);
 
 /**

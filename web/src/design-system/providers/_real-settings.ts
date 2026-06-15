@@ -1,13 +1,13 @@
 /**
  * Real (daemon-backed) implementation of `SettingsApi`.
  *
- * Single `useSettings` hook backed by GET /settings. staleTime 30s
- * keeps the settings panel warm during quick open/close cycles.
+ * Phase 1: read-only `useSettings` hook backed by GET /settings.
+ * Phase 2: editable `useUpdateOrgSettings` mutation backed by PUT /settings/org.
  */
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 import { settings as settingsApi } from '@/lib/api';
-import type { SettingsSnapshot } from '@/lib/api/types';
+import type { OrgSettingsPatch, SettingsSnapshot } from '@/lib/api/types';
 import type { SettingsApi, QueryLike } from './DataContext';
 
 function useRealOrgSlug(): string {
@@ -25,6 +25,19 @@ function useSettings(): QueryLike<SettingsSnapshot> {
   }) as QueryLike<SettingsSnapshot>;
 }
 
+function useUpdateOrgSettings() {
+  const slug = useRealOrgSlug();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: OrgSettingsPatch) =>
+      settingsApi.putOrgSettings(slug, patch),
+    onSuccess: (data: SettingsSnapshot) => {
+      qc.setQueryData(['settings', slug], data);
+    },
+  });
+}
+
 export const realSettingsApi: SettingsApi = {
   useSettings,
+  useUpdateOrgSettings,
 };

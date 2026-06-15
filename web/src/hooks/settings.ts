@@ -1,12 +1,16 @@
 /**
- * Public, provider-aware settings hook.
+ * Public, provider-aware settings hooks.
  *
- * One-liner that reads `useData().settings` and forwards.
- * Compositions import from this file — they never reach into
- * `design-system/providers/` directly.
+ * One-liner forwarders into `useData().settings` so compositions never
+ * reach into `design-system/providers/` directly.
  */
 import { useData } from '@/design-system/providers/DataContext';
 
 export const useSettings: ReturnType<
   typeof useData
 >['settings']['useSettings'] = () => useData().settings.useSettings();
+
+export const useUpdateOrgSettings: ReturnType<
+  typeof useData
+>['settings']['useUpdateOrgSettings'] = () =>
+  useData().settings.useUpdateOrgSettings();

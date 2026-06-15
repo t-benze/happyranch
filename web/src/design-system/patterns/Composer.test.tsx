@@ -131,8 +131,8 @@ function WithOrgSlug({ slug, children }: { slug: string; children: React.ReactNo
 import type { AgentSummary } from '@/lib/api/agents';
 
 const TEST_AGENTS: AgentSummary[] = [
-  { name: 'design_lead',  team: 'design', role: 'manager', executor: 'claude', description: null },
-  { name: 'design_dev_1', team: 'design', role: 'worker',  executor: 'claude', description: null },
+  { name: 'design_lead',  team: 'design', role: 'manager', executor: 'claude', description: null, repos: {}, system_prompt: '' },
+  { name: 'design_dev_1', team: 'design', role: 'worker',  executor: 'claude', description: null, repos: {}, system_prompt: '' },
 ];
 
 describe('Composer / mentions', () => {

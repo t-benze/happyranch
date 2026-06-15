@@ -4,8 +4,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { DataContext } from '@/design-system/providers/DataContext';
 import { SettingsDialog } from './SettingsDialog';
-import type { SettingsSnapshot, SystemSettings, OrgSettings } from '@/lib/api/types';
-import type { QueryLike } from '@/design-system/providers/DataContext';
+import type { SettingsSnapshot, SystemSettings, OrgSettings, OrgSettingsPatch } from '@/lib/api/types';
+import type { QueryLike, MutationLike } from '@/design-system/providers/DataContext';
 
 const mockSystem: SystemSettings = {
   claude_cli_path: { value: '/usr/local/bin/claude', restart_required: true },
@@ -45,6 +45,7 @@ const mockSnapshot: SettingsSnapshot = {
 function renderDialog(
   overrides?: Partial<SettingsSnapshot>,
   onClose = vi.fn(),
+  mutateAsync = vi.fn().mockResolvedValue(mockSnapshot),
 ) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const snapshot = overrides
@@ -58,6 +59,15 @@ function renderDialog(
     error: null,
   });
 
+  const useUpdateOrgSettings = (): MutationLike<OrgSettingsPatch, SettingsSnapshot> => ({
+    mutateAsync,
+    isPending: false,
+  });
+
+  const ctxValue = {
+    settings: { useSettings, useUpdateOrgSettings },
+  } as unknown as Parameters<typeof DataContext.Provider>[0]['value'];
+
   return render(
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={['/orgs/alpha/dashboard']}>
@@ -65,13 +75,7 @@ function renderDialog(
           <Route
             path="/orgs/:slug/dashboard"
             element={
-              <DataContext.Provider
-                value={
-                  {
-                    settings: { useSettings },
-                  } as unknown as Parameters<typeof DataContext.Provider>[0]['value']
-                }
-              >
+              <DataContext.Provider value={ctxValue}>
                 <SettingsDialog open onOpenChange={onClose} />
               </DataContext.Provider>
             }
@@ -96,17 +100,20 @@ describe('SettingsDialog', () => {
     expect(screen.getByText('System')).toBeInTheDocument();
     expect(screen.getByText(/Claude CLI path/)).toBeInTheDocument();
     expect(screen.getByText(/\/usr\/local\/bin\/claude/)).toBeInTheDocument();
-    // "Session timeout (s)" appears in both System and Org sections
-    expect(screen.getAllByText(/Session timeout \(s\)/).length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText('1800')).toBeInTheDocument();
 
-    // Org section
+    // Org section — editable form
     expect(screen.getByText('Org')).toBeInTheDocument();
-    expect(screen.getByText(/Dreaming/)).toBeInTheDocument();
-    expect(screen.getByText(/Threads/)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Dreaming' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Threads' })).toBeInTheDocument();
 
-    // Threads nested values
-    expect(screen.getByText('500')).toBeInTheDocument();
+    // Save button exists
+    expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument();
+
+    // Input fields exist for editable values (text + number inputs)
+    const textInputs = screen.getAllByRole('textbox');
+    const numberInputs = screen.getAllByRole('spinbutton');
+    expect(textInputs.length + numberInputs.length).toBeGreaterThanOrEqual(7);
   });
 
   test('shows restart-required badges for CLI paths and orchestration fields', async () => {
@@ -116,7 +123,6 @@ describe('SettingsDialog', () => {
     expect(badges.length).toBe(7); // 4 CLI paths + max_orchestration_steps + queue_workers + protocol_dir
 
     // Session timeout should NOT have a restart badge
-    // Use querySelectorAll to check each "Session timeout (s)" row individually
     const sessionRows = screen.getAllByText('Session timeout (s)');
     for (const row of sessionRows) {
       const parentRow = row.closest('div.flex.items-center');
@@ -135,6 +141,10 @@ describe('SettingsDialog', () => {
       isError: false,
       error: null,
     });
+    const useUpdateOrgSettings = (): MutationLike<OrgSettingsPatch, SettingsSnapshot> => ({
+      mutateAsync: vi.fn(),
+      isPending: false,
+    });
 
     render(
       <QueryClientProvider client={qc}>
@@ -145,9 +155,7 @@ describe('SettingsDialog', () => {
               element={
                 <DataContext.Provider
                   value={
-                    {
-                      settings: { useSettings },
-                    } as unknown as Parameters<typeof DataContext.Provider>[0]['value']
+                    { settings: { useSettings, useUpdateOrgSettings } } as unknown as Parameters<typeof DataContext.Provider>[0]['value']
                   }
                 >
                   <SettingsDialog open onOpenChange={onClose} />
@@ -172,6 +180,10 @@ describe('SettingsDialog', () => {
       isError: true,
       error: new Error('Connection refused'),
     });
+    const useUpdateOrgSettings = (): MutationLike<OrgSettingsPatch, SettingsSnapshot> => ({
+      mutateAsync: vi.fn(),
+      isPending: false,
+    });
 
     render(
       <QueryClientProvider client={qc}>
@@ -182,9 +194,7 @@ describe('SettingsDialog', () => {
               element={
                 <DataContext.Provider
                   value={
-                    {
-                      settings: { useSettings },
-                    } as unknown as Parameters<typeof DataContext.Provider>[0]['value']
+                    { settings: { useSettings, useUpdateOrgSettings } } as unknown as Parameters<typeof DataContext.Provider>[0]['value']
                   }
                 >
                   <SettingsDialog open onOpenChange={onClose} />
@@ -199,27 +209,24 @@ describe('SettingsDialog', () => {
     expect(screen.getByText(/Could not load settings/)).toBeInTheDocument();
   });
 
-  test('renders null values as em dash in Org section', () => {
-    const nullOrg: OrgSettings = {
-      session_timeout_seconds: null,
-      dreaming: {
-        enabled: false,
-        schedule: { time: '02:00', timezone: 'UTC' },
-        catch_up_on_startup: false,
-        agents: { mode: 'all', include: [], exclude: [] },
-      },
-      threads: {
-        enabled: true,
-        default_turn_cap: 500,
-        invocation_timeout_seconds: null,
-      },
-    };
+  test('shows editable form inputs with correct initial values', () => {
+    renderDialog();
 
-    renderDialog({ org: nullOrg });
+    // Session timeout input should show 3600
+    const timeoutInput = screen.getAllByDisplayValue('3600');
+    expect(timeoutInput.length).toBe(1);
 
-    // Find em dash for null values
-    const dashes = screen.getAllByText('—');
-    expect(dashes.length).toBeGreaterThanOrEqual(2); // session_timeout + invocation_timeout (and possibly include/exclude)
+    // Dreaming time input should show 02:00
+    const timeInput = screen.getByDisplayValue('02:00');
+    expect(timeInput).toBeInTheDocument();
+
+    // Threads cap input should show 500
+    const capInput = screen.getByDisplayValue('500');
+    expect(capInput).toBeInTheDocument();
+
+    // Excluded agents should show qa_engineer
+    const excludeInput = screen.getByDisplayValue('qa_engineer');
+    expect(excludeInput).toBeInTheDocument();
   });
 
   test('no feishu or agent references appear in the dialog', () => {
