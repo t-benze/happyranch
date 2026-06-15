@@ -346,11 +346,16 @@ export interface DashboardApi {
 }
 
 // ---------------------------------------------------------------------------
-// SettingsApi — read-only System + Org settings surface.
+// SettingsApi — read-only System + Org settings surface (Phase 1).
+// Phase 2 adds useUpdateOrgSettings (mutation) for editable Org fields.
 // ---------------------------------------------------------------------------
 
 export interface SettingsApi {
   useSettings: () => QueryLike<SettingsSnapshot>;
+  useUpdateOrgSettings: () => MutationLike<
+    import('@/lib/api/types').OrgSettingsPatch,
+    import('@/lib/api/types').SettingsSnapshot
+  >;
 }
 
 /**

@@ -1,7 +1,8 @@
 """GET /api/v1/orgs/{slug}/settings — read-only system + org settings.
+PUT /api/v1/orgs/{slug}/settings/org — partial-update editable org fields.
 
-Phase 1: read-only System + Org settings surface. Phase 2 (separate task)
-will add PUT /settings/org for editable org fields.
+Phase 1: read-only System + Org settings surface.
+Phase 2: editable Org settings (dreaming, threads, session_timeout_seconds).
 
 Spec: artifacts/TASK-349/settings-gui-design-spec-v2.md
 """
@@ -9,15 +10,24 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, field_validator
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from runtime.config import settings as global_settings
 from runtime.daemon.auth import require_token
 from runtime.daemon.routes._org_dep import OrgDep
+from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
-from runtime.orchestrator.org_config import load_org_config
+from runtime.orchestrator.org_config import (
+    OrgConfigError,
+    load_org_config,
+    save_org_config,
+)
+from runtime.orchestrator.org_validation import (
+    OrgConsistencyError,
+    validate_team_membership,
+)
 
 router = APIRouter(dependencies=[require_token()])
 
@@ -166,3 +176,458 @@ def get_settings(slug: str, org: OrgDep) -> SettingsResponse:
         system=SystemSettingsView.from_settings(global_settings),
         org=_org_config_to_view(cfg),
     )
+
+
+# ----------------------------------------------------------------
+# PATCH models — partial-update, extra='forbid'
+# ----------------------------------------------------------------
+
+
+class DreamingSchedulePatch(BaseModel):
+    """Optional dreaming schedule override. Every field is optional —
+    absent fields leave the current value untouched."""
+    model_config = ConfigDict(extra="forbid")
+
+    time: str | None = None
+    timezone: str | None = None
+
+    @field_validator("time")
+    @classmethod
+    def _time_must_be_hhmm(cls, v: str | None) -> str | None:
+        import re
+        if v is not None and not re.match(r"^[0-2][0-9]:[0-5][0-9]$", v):
+            raise ValueError("dreaming.schedule.time must be HH:MM")
+        if v is not None and int(v[:2]) > 23:
+            raise ValueError("dreaming.schedule.time hour must be 00–23")
+        return v
+
+    @field_validator("timezone")
+    @classmethod
+    def _timezone_must_be_valid(cls, v: str | None) -> str | None:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+        if v is not None:
+            try:
+                ZoneInfo(v)
+            except ZoneInfoNotFoundError:
+                raise ValueError(f"unknown timezone {v!r}")
+        return v
+
+
+class DreamingAgentsPatch(BaseModel):
+    """Optional dreaming agent scope override."""
+    model_config = ConfigDict(extra="forbid")
+
+    mode: str | None = None
+    include: list[str] | None = None
+    exclude: list[str] | None = None
+
+    @field_validator("mode")
+    @classmethod
+    def _mode_must_be_valid(cls, v: str | None) -> str | None:
+        if v is not None and v not in {"all", "whitelist"}:
+            raise ValueError(f"dreaming.agents.mode must be 'all' or 'whitelist', got {v!r}")
+        return v
+
+
+class DreamingPatch(BaseModel):
+    """Optional dreaming configuration override."""
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    schedule: DreamingSchedulePatch | None = None
+    catch_up_on_startup: bool | None = None
+    agents: DreamingAgentsPatch | None = None
+
+
+class ThreadsPatch(BaseModel):
+    """Optional threads configuration override."""
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    default_turn_cap: int | None = None
+    invocation_timeout_seconds: int | None = None
+
+    @field_validator("default_turn_cap")
+    @classmethod
+    def _cap_must_be_positive(cls, v: int | None) -> int | None:
+        if v is not None and v <= 0:
+            raise ValueError("threads.default_turn_cap must be positive")
+        return v
+
+    @field_validator("invocation_timeout_seconds")
+    @classmethod
+    def _timeout_must_be_positive_or_none(cls, v: int | None) -> int | None:
+        if v is not None and v <= 0:
+            raise ValueError("threads.invocation_timeout_seconds must be positive or null")
+        return v
+
+
+class OrgSettingsPatch(BaseModel):
+    """Partial update of non-sensitive OrgConfig fields.
+
+    EVERY field is optional — absent keys leave the current on-disk value
+    untouched. ``extra='forbid'`` rejects any unknown or sensitive key
+    (feishu_notifications, working_hours, permission_mode, etc.) with a
+    422 so the GUI client gets immediate feedback rather than a silent
+    no-op.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    session_timeout_seconds: int | None = None
+    dreaming: DreamingPatch | None = None
+    threads: ThreadsPatch | None = None
+
+    @field_validator("session_timeout_seconds")
+    @classmethod
+    def _timeout_must_be_positive(cls, v: int | None) -> int | None:
+        if v is not None and v <= 0:
+            raise ValueError("session_timeout_seconds must be a positive integer")
+        return v
+
+
+def _patch_to_raw_dict(patch: OrgSettingsPatch) -> dict:
+    """Convert the Pydantic patch model to a raw dict suitable for
+    ``save_org_config`` deep-merge.
+
+    Uses Pydantic v2 ``model_fields_set`` (and its nested-model equivalents)
+    to distinguish an EXPLICIT ``null`` sent by the client (which should
+    clear the override) from an OMITTED field (which leaves the current
+    value untouched).
+    """
+    result: dict = {}
+    fields = patch.model_fields_set or set()
+
+    # session_timeout_seconds: include if in fields_set (even if None)
+    if "session_timeout_seconds" in fields:
+        result["session_timeout_seconds"] = patch.session_timeout_seconds
+    elif patch.session_timeout_seconds is not None:
+        result["session_timeout_seconds"] = patch.session_timeout_seconds
+
+    if patch.dreaming is not None:
+        dreaming: dict = {}
+        d = patch.dreaming
+        d_fields = d.model_fields_set or set()
+        if d.enabled is not None or "enabled" in d_fields:
+            dreaming["enabled"] = d.enabled
+        # schedule: build from schedule patch + catch_up_on_startup
+        # (catch_up_on_startup lives inside schedule in YAML, but is a peer
+        # of schedule in the view/PATCH model for cleaner UI grouping.)
+        sched: dict = {}
+        if d.schedule is not None:
+            s_fields = d.schedule.model_fields_set or set()
+            if d.schedule.time is not None or "time" in s_fields:
+                sched["time"] = d.schedule.time
+            if d.schedule.timezone is not None or "timezone" in s_fields:
+                sched["timezone"] = d.schedule.timezone
+        if d.catch_up_on_startup is not None or "catch_up_on_startup" in d_fields:
+            sched["catch_up_on_startup"] = d.catch_up_on_startup
+        if sched:
+            dreaming["schedule"] = sched
+        if d.agents is not None:
+            agents: dict = {}
+            a_fields = d.agents.model_fields_set or set()
+            if d.agents.mode is not None or "mode" in a_fields:
+                agents["mode"] = d.agents.mode
+            if d.agents.include is not None or "include" in a_fields:
+                agents["include"] = d.agents.include
+            if d.agents.exclude is not None or "exclude" in a_fields:
+                agents["exclude"] = d.agents.exclude
+            if agents:
+                dreaming["agents"] = agents
+        if dreaming:
+            result["dreaming"] = dreaming
+
+    if patch.threads is not None:
+        threads: dict = {}
+        t = patch.threads
+        t_fields = t.model_fields_set or set()
+        if t.enabled is not None or "enabled" in t_fields:
+            threads["enabled"] = t.enabled
+        if t.default_turn_cap is not None or "default_turn_cap" in t_fields:
+            threads["default_turn_cap"] = t.default_turn_cap
+        if t.invocation_timeout_seconds is not None or "invocation_timeout_seconds" in t_fields:
+            threads["invocation_timeout_seconds"] = t.invocation_timeout_seconds
+        if threads:
+            result["threads"] = threads
+
+    return result
+
+
+def _resolve_agent_names(paths: OrgPaths) -> set[str]:
+    """Return the set of known agent names from workspaces + agent files."""
+    names: set[str] = set()
+    for agent_def in prompt_loader.list_agents(paths):
+        names.add(agent_def.name)
+    return names
+
+
+def _validate_agent_names(
+    include: list[str] | None, exclude: list[str] | None, known: set[str],
+) -> list[str]:
+    """Check that every name in include/exclude is a known agent.
+    Returns a list of human-readable error messages, empty if valid."""
+    errors: list[str] = []
+    for label, names in (("include", include), ("exclude", exclude)):
+        if names:
+            unknown = sorted(set(names) - known)
+            if unknown:
+                errors.append(
+                    f"dreaming.agents.{label} references unknown agent(s): "
+                    + ", ".join(unknown)
+                )
+    return errors
+
+
+@router.put("/settings/org", response_model=SettingsResponse)
+def put_org_settings(slug: str, org: OrgDep, patch: OrgSettingsPatch) -> SettingsResponse:
+    """Partial-update editable org settings.
+
+    Only allow-listed keys (dreaming, threads, session_timeout_seconds)
+    are written — ``feishu_notifications``, ``working_hours``, and any
+    other unknown key are carried through verbatim.
+
+    Returns the updated settings snapshot so the client can invalidate
+    and re-render in a single round-trip.
+    """
+    paths = OrgPaths(root=org.root)
+
+    # Pre-flight: validate agent names if dreaming agents are being patched
+    patch_raw = _patch_to_raw_dict(patch)
+    if "dreaming" in patch_raw:
+        dreaming_block = patch_raw["dreaming"]
+        if "agents" in dreaming_block:
+            agents_block = dreaming_block["agents"]
+            known = _resolve_agent_names(paths)
+            errors = _validate_agent_names(
+                agents_block.get("include"), agents_block.get("exclude"), known,
+            )
+            if errors:
+                detail = {"errors": errors}
+                raise HTTPException(status_code=422, detail=detail)
+
+    try:
+        save_org_config(paths, patch_raw)
+    except OrgConfigError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # Return updated snapshot
+    cfg = load_org_config(paths)
+    return SettingsResponse(
+        system=SystemSettingsView.from_settings(global_settings),
+        org=_org_config_to_view(cfg),
+    )
+
+
+# ----------------------------------------------------------------
+# Teams membership editing — Phase 2
+# ----------------------------------------------------------------
+
+
+class TeamsPatch(BaseModel):
+    """Worker-membership-only patch. Manager reassignment and team
+    create/delete stay on the founder-gated manage-agent path."""
+    model_config = ConfigDict(extra="forbid")
+
+    team: str
+    add_workers: list[str] = []
+    remove_workers: list[str] = []
+
+
+def _preflight_team_workers(
+    paths: OrgPaths,
+    teams: object,
+    team_name: str,
+    add_workers: list[str],
+    remove_workers: list[str],
+) -> list[str]:
+    """Pre-flight validate worker membership targets before mutation.
+
+    Checks:
+    1. Every target in add_workers and remove_workers is a known active agent.
+    2. No target in add_workers is the team's manager.
+
+    Returns a list of human-readable error messages (empty → valid).
+    """
+    agent_names: set[str] = set()
+    agent_roles: dict[str, str] = {}
+    for agent_def in prompt_loader.list_agents(paths):
+        agent_names.add(agent_def.name)
+        agent_roles[agent_def.name] = agent_def.role
+
+    errors: list[str] = []
+
+    for label, targets in (("add_workers", add_workers), ("remove_workers", remove_workers)):
+        for agent in targets:
+            if agent not in agent_names:
+                errors.append(f"{label}: unknown agent {agent!r}")
+            elif label == "add_workers" and agent_roles.get(agent) == "manager":
+                # Reject ANY agent whose role is 'manager' outright,
+                # independent of which team they manage. Managers manage
+                # teams; they are never workers.
+                errors.append(
+                    f"add_workers: {agent!r} is a manager and cannot be added as a worker"
+                )
+
+    return errors
+
+
+def _post_flight_worker_agent_drift(
+    paths: OrgPaths,
+    teams: object,
+) -> list[str]:
+    """Bidirectional consistency check between teams.yaml worker rows
+    and agent file team declarations.
+
+    (a) Every worker in teams.yaml has a matching agent file that declares
+        the same team.
+    (b) Every non-manager agent that declares a team is present in that
+        team's worker list.
+
+    This supplements ``validate_team_membership`` (which only checks agent
+    files → team names / manager matches). We do NOT modify
+    ``validate_team_membership`` — this is additive.
+    """
+    from runtime.orchestrator.teams import TeamsRegistry
+
+    if not isinstance(teams, TeamsRegistry):
+        return []
+
+    # Build mappings: agent_name → declared_team, agent_name → role
+    agent_team: dict[str, str] = {}
+    agent_role: dict[str, str] = {}
+    for agent_def in prompt_loader.list_agents(paths):
+        agent_team[agent_def.name] = agent_def.team
+        agent_role[agent_def.name] = agent_def.role
+
+    drift: list[str] = []
+
+    # Build worker sets per team
+    team_workers: dict[str, set[str]] = {}
+    for team_name in teams.teams():
+        tm = teams.manager_for_team(team_name)
+        team_workers[team_name] = set(tm.workers)
+
+    # (a) worker → agent file
+    for team_name, workers in team_workers.items():
+        for worker in workers:
+            declared_team = agent_team.get(worker)
+            if declared_team is None:
+                drift.append(
+                    f"worker {worker!r} in team {team_name!r} has no agent file"
+                )
+            elif declared_team != team_name:
+                drift.append(
+                    f"worker {worker!r} in team {team_name!r} declares team "
+                    f"{declared_team!r} in their agent file"
+                )
+
+    # (b) non-manager agent declaring a team → must be in that team's worker list
+    for agent_name, declared_team in agent_team.items():
+        role = agent_role.get(agent_name, "worker")
+        if role == "manager":
+            continue  # managers are validated by validate_team_membership
+        workers = team_workers.get(declared_team, set())
+        if agent_name not in workers:
+            drift.append(
+                f"agent {agent_name!r} declares team {declared_team!r} "
+                f"but is not in that team's worker list"
+            )
+
+    return drift
+
+
+@router.put("/settings/teams")
+async def put_teams(slug: str, org: OrgDep, patch: TeamsPatch) -> dict:
+    """Update worker membership for a single team.
+
+    Pre-flight validates every add/remove target against the active agent
+    list and rejects unknown agents or managers added as workers before
+    touching teams.yaml.
+
+    Then wraps ``TeamsRegistry.add_worker`` / ``remove_worker`` (which
+    auto-persist to teams.yaml), re-runs ``validate_team_membership``
+    to guarantee consistency. On drift → 409 and the change is rolled
+    back to the pre-request state.
+    """
+    paths = OrgPaths(root=org.root)
+    teams = org.teams
+
+    # Validate the team exists
+    if patch.team not in set(teams.teams()):
+        raise HTTPException(
+            status_code=404,
+            detail=f"team {patch.team!r} not found",
+        )
+
+    # Pre-flight: reject unknown agents / manager-as-worker before mutation
+    preflight_errors = _preflight_team_workers(
+        paths, teams, patch.team, patch.add_workers, patch.remove_workers,
+    )
+    if preflight_errors:
+        raise HTTPException(status_code=422, detail={"errors": preflight_errors})
+
+    # Remember original state for rollback
+    m = teams.manager_for_team(patch.team)
+    original_workers = m.workers
+
+    async with org.teams_lock:
+        for agent in patch.add_workers:
+            try:
+                teams.add_worker(patch.team, agent)
+            except KeyError:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"team {patch.team!r} not found",
+                )
+        for agent in patch.remove_workers:
+            try:
+                teams.remove_worker(patch.team, agent)
+            except KeyError:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"team {patch.team!r} not found",
+                )
+
+        # Re-validate consistency
+        try:
+            validate_team_membership(paths, teams)
+        except OrgConsistencyError as exc:
+            # Rollback: restore original workers
+            current = teams.manager_for_team(patch.team).workers
+            added = set(current) - set(original_workers)
+            removed = set(original_workers) - set(current)
+            for agent in added:
+                teams.remove_worker(patch.team, agent)
+            for agent in removed:
+                teams.add_worker(patch.team, agent)
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "teams_consistency_drift", "message": str(exc)},
+            ) from exc
+
+        # Supplementary check: worker rows vs agent file declarations
+        worker_drift = _post_flight_worker_agent_drift(paths, teams)
+        if worker_drift:
+            # Rollback: restore original workers
+            current = teams.manager_for_team(patch.team).workers
+            added = set(current) - set(original_workers)
+            removed = set(original_workers) - set(current)
+            for agent in added:
+                teams.remove_worker(patch.team, agent)
+            for agent in removed:
+                teams.add_worker(patch.team, agent)
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "teams_worker_agent_drift", "message": "; ".join(worker_drift)},
+            )
+
+    # Return updated teams list (mirrors GET /teams shape)
+    rows = []
+    for tname in teams.teams():
+        tm = teams.manager_for_team(tname)
+        rows.append({
+            "name": tname,
+            "manager": tm.name,
+            "workers": list(tm.workers),
+        })
+    return {"teams": rows}

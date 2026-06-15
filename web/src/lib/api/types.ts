@@ -263,6 +263,9 @@ export interface AgentSummary {
   role: 'manager' | 'worker' | null;
   executor: 'claude' | 'codex' | 'opencode' | 'pi' | null;
   description: string | null;
+  // Phase 2: additive read-only fields (D6)
+  repos: Record<string, string>;
+  system_prompt: string;
 }
 
 export interface AgentEnrollment {
@@ -513,4 +516,38 @@ export interface OrgSettings {
 export interface SettingsSnapshot {
   system: SystemSettings;
   org: OrgSettings;
+}
+
+// ---------------------------------------------------------------------------
+// Settings PATCH — Phase 2 editable org surface
+// ---------------------------------------------------------------------------
+
+export interface DreamingSchedulePatch {
+  time?: string;
+  timezone?: string;
+}
+
+export interface DreamingAgentsPatch {
+  mode?: string;
+  include?: string[];
+  exclude?: string[];
+}
+
+export interface DreamingPatch {
+  enabled?: boolean;
+  schedule?: DreamingSchedulePatch;
+  catch_up_on_startup?: boolean;
+  agents?: DreamingAgentsPatch;
+}
+
+export interface ThreadsPatch {
+  enabled?: boolean;
+  default_turn_cap?: number;
+  invocation_timeout_seconds?: number | null;
+}
+
+export interface OrgSettingsPatch {
+  session_timeout_seconds?: number | null;
+  dreaming?: DreamingPatch;
+  threads?: ThreadsPatch;
 }

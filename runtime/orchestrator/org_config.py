@@ -6,7 +6,9 @@ defaults exactly as before.
 """
 from __future__ import annotations
 
+import os
 import re
+import tempfile
 from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -505,5 +507,97 @@ def load_org_config(paths: OrgPaths) -> OrgConfig:
         raise OrgConfigError(f"{path}: top-level must be a mapping")
 
     return _build_org_config(data, str(path))
+
+
+# ------------------------------------------------------------------
+# ALLOW-LIST keys that the Settings GUI can mutate via PUT /settings/org.
+# Every other top-level key in org/config.yaml is carried through verbatim
+# (feishu_notifications, working_hours, unknown future keys, etc.).
+# ------------------------------------------------------------------
+
+_ORG_WRITABLE_KEYS = {"dreaming", "threads", "session_timeout_seconds"}
+
+
+def _deep_merge(base: dict, overrides: dict) -> dict:
+    """Recursively merge *overrides* into *base*.
+
+    Dictionaries are merged recursively — sibling keys in *base* survive
+    unless explicitly overridden. All other types (scalars, lists, None)
+    are replaced outright by the override value. A ``None`` override clears
+    the key so nullable fields (e.g. ``session_timeout_seconds``) can revert
+    to default.
+    """
+    result = dict(base)
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def save_org_config(paths: OrgPaths, patch: dict) -> None:
+    """Atomically deep-merge *patch* into org/config.yaml for allow-listed keys.
+
+    Algorithm:
+    1. Read the current raw dict from disk. If the file doesn't exist, start
+       with an empty dict (``load_org_config`` treats missing as defaults).
+    2. Deep-merge **only** the allow-listed keys (``dreaming``, ``threads``,
+       ``session_timeout_seconds``) from *patch* into the raw dict. Nested
+       dictionaries within those blocks are merged recursively so a partial
+       patch (e.g. ``{"dreaming": {"enabled": true}}``) does not drop sibling
+       leaves. Every other top-level key is carried through verbatim.
+    3. Validate the candidate dict via ``_build_org_config`` (the existing
+       authoritative validator). If it raises ``OrgConfigError``, the write
+       is aborted and the error is surfaced to the caller.
+    4. Atomic write: ``yaml.safe_dump`` to a temp file in the same directory,
+       then ``os.replace`` (atomic rename on POSIX).
+
+    This function is purely additive — it calls ``_build_org_config`` and
+    ``load_org_config`` read-only and never edits their bodies or signatures.
+    """
+    config_path = paths.org_config_path
+
+    # 1. Read current raw dict
+    if config_path.exists():
+        try:
+            raw = yaml.safe_load(config_path.read_text()) or {}
+        except yaml.YAMLError as exc:
+            raise OrgConfigError(f"malformed YAML in {config_path}: {exc}") from exc
+        if not isinstance(raw, dict):
+            raise OrgConfigError(f"{config_path}: top-level must be a mapping")
+    else:
+        raw = {}
+
+    # 2. Deep-merge only allow-listed keys
+    raw = dict(raw)  # shallow copy to avoid mutating the parsed object
+    for key in _ORG_WRITABLE_KEYS:
+        if key in patch:
+            if isinstance(patch[key], dict) and isinstance(raw.get(key), dict):
+                raw[key] = _deep_merge(raw[key], patch[key])
+            else:
+                raw[key] = patch[key]
+
+    # 3. Validate candidate via the authoritative validator
+    try:
+        _build_org_config(raw, str(config_path))
+    except OrgConfigError:
+        raise  # re-raise so the route can return 422
+
+    # 4. Atomic write
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        prefix=".org-config.", suffix=".yaml", dir=str(config_path.parent)
+    )
+    try:
+        with os.fdopen(fd, "w") as fh:
+            yaml.safe_dump(raw, fh, sort_keys=False)
+        os.replace(tmp, config_path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
 
 

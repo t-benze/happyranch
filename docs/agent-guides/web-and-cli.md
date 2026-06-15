@@ -11,11 +11,35 @@ Every browser-callable daemon route maps to one TypeScript function in `web/src/
 
 ### Settings dialog
 
-A read-only Settings dialog (Phase 1) is opened from the TopBar gear button. It shows daemon-wide System settings (CLI paths, session timeout, orchestration limits, restart-required badges) and Org-level settings (session timeout, dreaming, threads).
+The Settings dialog opens from the TopBar gear button. It shows:
 
-The backend route (`GET /api/v1/orgs/{slug}/settings`) uses an allow-list serializer — no secret fields (permission_mode, codex_sandbox_mode, feishu credentials, daemon bind/port) are ever serialized. Tests recursively assert this invariant (`tests/daemon/test_routes_settings.py`).
+- **System** (read-only) — daemon-wide settings (CLI paths, session timeout default, orchestration limits) with restart-required badges.
+- **Org** (editable, Phase 2) — org-level settings: session timeout override, dreaming schedule (enabled, schedule time/timezone, catch-up-on-startup, agent mode, include/exclude agent names), and threads config (enabled, default turn cap, invocation timeout).
+
+**Backend routes:**
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/v1/orgs/{slug}/settings` | Read-only System + Org snapshot |
+| `PUT` | `/api/v1/orgs/{slug}/settings/org` | Partial-update editable Org settings |
+| `PUT` | `/api/v1/orgs/{slug}/settings/teams` | Worker-membership editing for teams |
+
+The serializer is an allow-list: no secret fields (permission_mode, codex_sandbox_mode, feishu credentials, daemon bind/port, allow_rules) are ever serialized. `extra='forbid'` on the PUT body rejects unknown/sensitive keys with 422. `save_org_config` deep-merges only allow-listed keys and carries through all unmanaged blocks verbatim. Tests recursively assert key-safety invariants (`tests/daemon/test_routes_settings.py`).
+
+**Hot-reload:** Changes apply on next consumer read — dreaming scheduler picks up changes within ~1 min; threads/compose read on next request; session timeout applies to next session spawn. No daemon restart required.
 
 The frontend surface lives in `web/src/features/settings/SettingsDialog.tsx` with `lib/api/settings.ts`, `hooks/settings.ts`, and a `settings` domain in `DataContext`.
+
+### Agents page
+
+The Agents page (`web/src/features/agents/`) shows the active agent roster plus pending enrollments. Each agent detail drawer now includes (Phase 2):
+
+- **Repositories** — `repos` map from agent.yaml, shown as badge chips in the detail header.
+- **System prompt** — read-only, collapsible. Sourced from the `system_prompt` field on the existing `GET /agents` response (additive Phase 2 field).
+
+Teams membership editing (add/remove workers only — manager reassignment is founder-gated) is available via `PUT /settings/teams`, wrapping `TeamsRegistry` mutators with `validate_team_membership` consistency checks and 409 rollback on drift.
+
+**Backend:** The `GET /agents` response now includes `repos` and `system_prompt` fields (additive, `allow_rules` remains excluded).
 
 Build and dev commands:
 

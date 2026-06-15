@@ -5,8 +5,9 @@
  * can render without a real daemon. Prototype users see a read-only
  * preview — no backend calls, no org routing.
  */
+import { vi } from 'vitest';
 import type { SettingsApi, QueryLike } from './DataContext';
-import type { SettingsSnapshot } from '@/lib/api/types';
+import type { OrgSettingsPatch, SettingsSnapshot } from '@/lib/api/types';
 
 function ok<T>(data: T): QueryLike<T> {
   return { data, isLoading: false, isError: false, error: null };
@@ -41,4 +42,14 @@ const FIXTURE: SettingsSnapshot = {
 
 export const mockSettingsApi: SettingsApi = {
   useSettings: () => ok(FIXTURE),
+  useUpdateOrgSettings: () => ({
+    mutate: vi.fn(),
+    mutateAsync: vi.fn((_patch: OrgSettingsPatch) => Promise.resolve(FIXTURE)),
+    reset: vi.fn(),
+    isPending: false,
+    isSuccess: false,
+    isError: false,
+    error: null,
+    data: undefined,
+  }),
 };

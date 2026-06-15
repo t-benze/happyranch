@@ -265,18 +265,54 @@ Data sources: orchestrator audit log (session/step/completion events), LLM usage
 
 ### Settings Dialog
 
-A read-only Settings dialog (Phase 1) opened from the TopBar gear button
+The Settings dialog (Phase 2) opens from the TopBar gear button
 (`web/src/features/settings/SettingsDialog.tsx`). Renders:
 
 - **System** — daemon-wide settings (CLI paths, session timeout,
   orchestration limits, protocol dir) with restart-required badges.
+  Read-only.
 - **Org** — org-level settings (session timeout override, dreaming
-  config, threads config).
+  config, threads config). Editable via inline forms (Phase 2) — a
+  "Save" button persists changes; the allow-list serializer guarantees
+  no sensitive key is ever sent or accepted.
 
-Backed by `GET /api/v1/orgs/{slug}/settings` — an allow-list serializer
-that never exposes secrets (permission_mode, codex_sandbox_mode, feishu
-credentials, daemon bind/port). No editable fields in Phase 1; Phase 2
-(separate task) adds PUT /settings/org for org-level writes.
+Routes:
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/v1/orgs/{slug}/settings` | Read-only System + Org snapshot |
+| `PUT` | `/api/v1/orgs/{slug}/settings/org` | Partial-update editable Org settings (dreaming, threads, session_timeout_seconds) |
+| `PUT` | `/api/v1/orgs/{slug}/settings/teams` | Worker-membership editing (add/remove workers; manager reassignment stays founder-gated) |
+
+All routes use an allow-list serializer that never exposes secrets
+(permission_mode, codex_sandbox_mode, feishu credentials, daemon
+bind/port, allow_rules). `extra='forbid'` on PUT bodies rejects
+unknown/sensitive keys with 422. `save_org_config` deep-merges only
+allow-listed keys and carries through all unmanaged blocks verbatim.
+Tested: recursive no-sensitive-key assertions cover both settings and
+agents responses (`tests/daemon/test_routes_settings.py`).
+
+**Hot-reload:** changes apply on next consumer read — the dreaming
+scheduler picks up changes within ~1 min; threads compose reads on next
+request; session timeout applies to next session spawn. No daemon
+restart required.
+
+### Agents page
+
+The Agents page (`web/src/features/agents/`) shows the active agent
+roster plus pending enrollments. Each agent detail drawer now includes
+(Phase 2):
+
+- **Repositories** — `repos` map from agent.yaml, shown as badge chips
+  in the detail header.
+- **System prompt** — read-only, collapsible. Sourced from the
+  `system_prompt` field on the existing `GET /agents` response (additive
+  Phase 2 field; `allow_rules` remains excluded — sensitive).
+
+Teams membership editing (add/remove workers only — manager reassignment
+is founder-gated) is available via `PUT /settings/teams`, wrapping the
+`TeamsRegistry` mutators with `validate_team_membership` consistency
+checks and 409 rollback on drift.
 
 ## 3. Dashboard API Endpoints
 
@@ -296,7 +332,7 @@ The dashboard backend exposes a REST API that the frontend consumes. This same A
 
 ### Dashboard is read-only
 
-The dashboard is read-only. All founder actions (approvals, directives, goal-setting, rejections) happen through CLI commands (`happyranch resolve-escalation`, `happyranch kb add`, `happyranch revisit`) or thread conversations. "Pending Your Action" items link to the command you'd run; the dashboard never mutates state itself.
+The dashboard is read-only for orchestration state. All founder actions (approvals, directives, goal-setting, rejections) happen through CLI commands (`happyranch resolve-escalation`, `happyranch kb add`, `happyranch revisit`) or thread conversations. "Pending Your Action" items link to the command you'd run; the dashboard never mutates orchestration state itself. The sole exceptions are the Phase-2 editable configuration surfaces — Org settings (`PUT /settings/org`) and worker-team membership (`PUT /settings/teams`) — which write file-based org config (`config.yaml` / `teams.yaml`) directly; these never touch orchestration state, secrets, or the founder-gated permission/manager surfaces.
 
 ---
 

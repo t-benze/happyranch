@@ -206,6 +206,9 @@ def list_agents(slug: str, org: OrgDep) -> dict:
             "role": agent_def.role if agent_def else None,
             "executor": agent_def.executor if agent_def else None,
             "description": agent_def.description if agent_def else None,
+            # Phase 2: additive read-only fields (D6 spec)
+            "repos": dict(agent_def.repos) if agent_def else {},
+            "system_prompt": agent_def.system_prompt if agent_def else "",
         })
     return {"agents": rows}
 
