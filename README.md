@@ -110,7 +110,7 @@ Slug resolution for per-org commands: explicit `--org <slug>` flag > `HAPPYRANCH
         |       +-- _pending/<name>.md # awaiting founder approval
         |-- workspaces/<agent>/        # per-agent workspace
         |-- kb/                        # per-org knowledge base
-        
+
         |-- threads/                   # multi-agent workchannel transcripts
         |-- jobs/                      # JOB-NNN.{out,err,script}
         +-- artifacts/                 # org-shared blob store

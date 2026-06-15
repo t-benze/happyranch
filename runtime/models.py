@@ -231,7 +231,7 @@ class ThreadRecord(BaseModel):
     started_at: datetime = Field(default_factory=_now)
     archived_at: datetime | None = None
     forwarded_from_id: str | None = None
-    forwarded_from_kind: str | None = None  # 'thread' | 'talk'
+    forwarded_from_kind: str | None = None  # 'thread'
     turn_cap: int = 500
     turns_used: int = 0
     summary: str | None = None

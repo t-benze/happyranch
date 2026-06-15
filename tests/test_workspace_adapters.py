@@ -388,7 +388,7 @@ def test_claude_md_includes_thread_talk_dispatch_doctrine(tmp_path: Path) -> Non
     """Every agent's bootstrap doc must carry the self-only dispatch doctrine.
 
     The route enforces the rule mechanically (returns 403 with
-    thread_dispatch_must_be_self / talk_dispatch_must_be_self); this prompt
+    thread_dispatch_must_be_self); this prompt
     section is the *why* and the recommended pattern, surfaced before the
     agent encounters the rejection.
     """

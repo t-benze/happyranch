@@ -16,7 +16,6 @@ def _seed_org(org_root: Path) -> None:
     (org_root / "org" / "teams.yaml").write_text("teams: {}\n")
     (org_root / "workspaces").mkdir()
     (org_root / "kb").mkdir()
-    (org_root / "talks").mkdir()
 
 
 def test_enqueue_task_pushes_tuple(tmp_path: Path) -> None:

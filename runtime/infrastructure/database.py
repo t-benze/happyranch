@@ -2240,7 +2240,7 @@ class Database:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    # --- Talks ---
+    # --- Thread IDs ---
 
     @_synchronized
     def next_thread_id(self) -> str:

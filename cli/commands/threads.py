@@ -385,10 +385,7 @@ def cmd_threads_forward(args: argparse.Namespace) -> None:
     )
     note = Path(args.note_file).read_text(encoding="utf-8") if args.note_file else ""
     source = args.source
-    if source.startswith("TALK-"):
-        print("error: forwarding from talks is no longer supported (talk feature removed)")
-        sys.exit(1)
-    elif source.startswith("THR-"):
+    if source.startswith("THR-"):
         from cli.thread_forward import build_forward_body_from_thread
         from runtime.models import ThreadMessage, ThreadMessageKind
         thr_resp = client.get(f"/api/v1/orgs/{slug}/threads/{source}")
@@ -412,7 +409,7 @@ def cmd_threads_forward(args: argparse.Namespace) -> None:
         kind = "thread"
         default_subject = f"Fwd: {thr['subject']}"
     else:
-        print("error: --source must start with TALK- or THR-")
+        print("error: --source must start with THR-")
         sys.exit(2)
 
     body = quoted + note

@@ -517,8 +517,8 @@ class AuditLogger:
         """Record a successful manage-agent call.
 
         `scope_id` populates `audit_log.task_id` (the generic scope column
-        described at line 173): TASK-xxx for task-path calls, TALK-xxx for
-        talk-path calls. `source` is 'task' or 'talk' for quick filtering.
+        described at line 173): TASK-xxx for task-path calls.
+        `source` is 'task' for quick filtering.
         `actor` is the manager_name resolved by the team-manager auth helper.
         """
         self._db.insert_audit_log(
@@ -869,7 +869,7 @@ class AuditLogger:
 
         Unlike `log_agent_managed`, the actor is 'founder' — this is a one-off
         recovery op for agents bootstrapped outside the enroll→approve flow.
-        Scope is the agent name itself (no task/talk context).
+        Scope is the agent name itself (no task context).
         """
         self._db.insert_audit_log(
             task_id=f"AGENT-{name}",

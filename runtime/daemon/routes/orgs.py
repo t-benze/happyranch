@@ -50,7 +50,6 @@ def _seed_skeleton(org_root: Path, *, from_example: Path | None) -> None:
         (org_root / "org" / "teams.yaml").write_text("teams: {}\n")
     (org_root / "workspaces").mkdir(exist_ok=True)
     (org_root / "kb").mkdir(exist_ok=True)
-    (org_root / "talks").mkdir(exist_ok=True)
     OrgPaths(org_root).artifacts_dir.mkdir(exist_ok=True)
 
 

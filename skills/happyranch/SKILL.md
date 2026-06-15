@@ -353,7 +353,7 @@ scripts/happyranch init-agent                                   # bootstrap work
   - `revisit` — founder-initiated spawn of a new root task from a terminal predecessor (TTY-gated CLI; agent sessions cannot invoke it)
   - `cancel` — SIGTERMs live subprocesses and cascades cancellation down the subtree
   - `cancel --no-cascade` — extra dangerous; leaves live children parentless
-  - 
+  -
   - `threads compose` / `threads send` / `threads invite` / `threads extend` — visible to participants and triggers agent invocations
   - `threads archive` / `threads resume` / `threads forward` — visible thread state transitions / new-thread spawn
   - `jobs run` — TTY-gated; executes the job body inside the daemon process with the daemon's env

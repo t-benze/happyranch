@@ -21,7 +21,6 @@ def _seed_org(org_root: Path) -> None:
     (org_root / "org" / "agents").mkdir()
     (org_root / "workspaces").mkdir()
     (org_root / "kb").mkdir()
-    (org_root / "talks").mkdir()
 
 
 def test_from_runtime_loads_all_orgs(tmp_path: Path) -> None:

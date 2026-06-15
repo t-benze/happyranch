@@ -161,7 +161,7 @@ class ComposeBody(BaseModel):
     body_markdown: str = ""
     attachments: list[AttachmentRefBody] = Field(default_factory=list)
     forwarded_from_id: str | None = None
-    forwarded_from_kind: str | None = None  # 'thread' | 'talk'
+    forwarded_from_kind: str | None = None  # 'thread'
 
 
 class ComposeAsAgentBody(BaseModel):
@@ -325,7 +325,7 @@ async def compose_thread(
         if body.forwarded_from_kind == "thread":
             src = org.db.get_thread(body.forwarded_from_id)
         else:
-            # Forward from talk is no longer supported (talk feature removed).
+            # Non-thread forwarded_from_kind is no longer supported.
             src = None
         if src is None:
             raise HTTPException(
