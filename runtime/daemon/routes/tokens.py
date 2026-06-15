@@ -2,8 +2,7 @@
 
 Single read endpoint for the ``session_token_usage`` table. Task rows remain
 task-shaped for compatibility. Direct thread invocations use
-``scope_type=thread``; talk lifecycle routes do not run executors, so talk usage
-currently appears only through talk-dispatched task rows with ``talk_id``.
+``scope_type=thread``.
 """
 from __future__ import annotations
 
@@ -27,7 +26,6 @@ def list_tokens(
     scope_type: str | None = None,
     scope_id: str | None = None,
     thread_id: str | None = None,
-    talk_id: str | None = None,
     purpose: str | None = None,
 ) -> dict:
     """Return scoped per-session rows or an aggregated rollup.
@@ -35,15 +33,13 @@ def list_tokens(
     Filters AND-compose. ``since`` is an ISO-8601 timestamp matched against
     ``created_at``. ``limit`` only applies to the per-session listing.
     ``group_by`` accepts ``agent``, ``task``, ``failed_task``, ``scope``,
-    ``thread``, ``talk``, or ``purpose``. ``failed_task`` rolls up per-(task,
+    ``thread``, or ``purpose``. ``failed_task`` rolls up per-(task,
     agent) token burn for tasks in the terminal ``failed`` status only
     (read-only JOIN to the tasks table). ``purpose`` rolls up per
-    ``invocation_purpose`` (NULL purpose excluded). Talk lifecycle APIs are
-    executor-free; ``talk`` rollups show talk-attributed task rows today and
-    future direct talk executor rows.
+    ``invocation_purpose`` (NULL purpose excluded).
     """
     valid_groups = (
-        "agent", "task", "failed_task", "scope", "thread", "talk", "purpose",
+        "agent", "task", "failed_task", "scope", "thread", "purpose",
     )
     if group_by is not None and group_by not in valid_groups:
         raise HTTPException(
@@ -57,7 +53,6 @@ def list_tokens(
         scope_type=scope_type,
         scope_id=scope_id,
         thread_id=thread_id,
-        talk_id=talk_id,
         purpose=purpose,
     )
 
@@ -81,9 +76,6 @@ def list_tokens(
         return {"rollup": rollup}
     if group_by == "thread":
         rollup = org.db.aggregate_session_token_usage_by_thread(**filters)
-        return {"rollup": rollup}
-    if group_by == "talk":
-        rollup = org.db.aggregate_session_token_usage_by_talk(**filters)
         return {"rollup": rollup}
     if group_by == "purpose":
         rollup = org.db.aggregate_session_token_usage_by_purpose(**filters)

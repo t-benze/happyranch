@@ -30,7 +30,6 @@ from cli.commands import (
     kb,
     learning,
     runtime,
-    talk,
     tasks,
     threads,
 )
@@ -58,12 +57,10 @@ from cli.commands.assistant import (  # noqa: F401  (re-export for back-compat)
 )
 from cli.commands.tasks import (  # noqa: F401  (re-export for back-compat)
     _completion_payload_from_file,
-    _dispatch_payload_from_file,
     _stream_task_events,
     cmd_audit,
     cmd_cancel,
     cmd_details,
-    cmd_dispatch,
     cmd_progress,
     cmd_recall,
     cmd_report_completion,
@@ -119,15 +116,6 @@ from cli.commands.kb import (  # noqa: F401  (re-export for back-compat)
     cmd_kb_search,
     cmd_kb_update,
 )
-from cli.commands.talk import (  # noqa: F401  (re-export for back-compat)
-    cmd_talk_abandon,
-    cmd_talk_end,
-    cmd_talk_list,
-    cmd_talk_resume,
-    cmd_talk_show,
-    cmd_talk_start,
-    cmd_talk_status,
-)
 from cli.commands.threads import (  # noqa: F401  (re-export for back-compat)
     cmd_threads_archive,
     cmd_threads_compose,
@@ -166,7 +154,7 @@ def build_parser() -> argparse.ArgumentParser:
     artifacts.register(sub)
     assistant.register(sub)
     dreams.register(sub)
-    talk.register(sub)
+
     threads.register(sub)
 
     return parser

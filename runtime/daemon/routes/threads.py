@@ -20,7 +20,6 @@ from runtime.infrastructure.artifact_store import ArtifactStore, InvalidArtifact
 from runtime.infrastructure.thread_store import render_transcript_body
 from runtime.models import (
     ResponderStatusEntry,
-    TalkStatus,
     TaskRecord,
     ThreadAttachment,
     ThreadInvocationPurpose,
@@ -80,7 +79,6 @@ def _create_agent_thread_locked(
     turn_cap: int,
     attachments: list[ThreadAttachment] | None = None,
     composed_from_task_id: str | None = None,
-    composed_from_talk_id: str | None = None,
 ) -> tuple[str, int, list[str], list[str]]:
     """DB-write core of an agent-initiated compose. Caller MUST hold org.db_lock.
 
@@ -112,7 +110,6 @@ def _create_agent_thread_locked(
         id=thread_id, subject=subject, turn_cap=turn_cap,
         composed_by=composer,
         composed_from_task_id=composed_from_task_id,
-        composed_from_talk_id=composed_from_talk_id,
     ))
     # Composer + every recipient become participants. @founder is NOT a row
     # (spec §3.3); skip it. The composer is added once explicitly; the loop
@@ -137,7 +134,6 @@ def _create_agent_thread_locked(
         forwarded_from_id=None,
         composed_by=composer,
         composed_from_task_id=composed_from_task_id,
-        composed_from_talk_id=composed_from_talk_id,
     )
     AuditLogger(org.db).log_thread_message_sent(
         thread_id, seq=seq, speaker=composer, kind="message",
@@ -176,7 +172,6 @@ class ComposeAsAgentBody(BaseModel):
     attachments: list[AttachmentRefBody] = Field(default_factory=list)
     task_id: str | None = None
     session_id: str | None = None
-    talk_id: str | None = None
 
 
 def _validate_display_name(name: str) -> None:
@@ -321,7 +316,7 @@ async def compose_thread(
             status_code=422,
             detail={"code": "forwarded_fields_must_pair"},
         )
-    if body.forwarded_from_kind not in (None, "thread", "talk"):
+    if body.forwarded_from_kind not in (None, "thread"):
         raise HTTPException(
             status_code=422,
             detail={"code": "forwarded_kind_invalid"},
@@ -330,7 +325,8 @@ async def compose_thread(
         if body.forwarded_from_kind == "thread":
             src = org.db.get_thread(body.forwarded_from_id)
         else:
-            src = org.db.get_talk(body.forwarded_from_id)
+            # Forward from talk is no longer supported (talk feature removed).
+            src = None
         if src is None:
             raise HTTPException(
                 status_code=404,
@@ -432,62 +428,33 @@ async def compose_thread_as_agent(
             detail={"code": "unknown_composer", "agent": body.composer},
         )
 
-    # Exactly one binding (task XOR talk).
-    has_task = body.task_id is not None
-    has_talk = body.talk_id is not None
-    if not has_task and not has_talk:
-        raise HTTPException(status_code=422, detail={"code": "binding_required"})
-    if has_task and has_talk:
-        raise HTTPException(status_code=422, detail={"code": "binding_ambiguous"})
-    if has_task and not body.session_id:
-        raise HTTPException(status_code=422, detail={"code": "binding_required", "missing": "session_id"})
-
     # Task binding: task exists, composer owns it, task is active, session matches.
     # Status gate runs BEFORE session gate so a finished task surfaces
     # `task_not_active` rather than `session_mismatch` (a completed task has
     # no active session in normal operation; reporting "session mismatch"
     # would mislead the caller).
-    if has_task:
-        task = org.db.get_task(body.task_id)
-        if task is None:
-            raise HTTPException(status_code=404, detail={"code": "unknown_task", "task_id": body.task_id})
-        if task.assigned_agent != body.composer:
-            raise HTTPException(
-                status_code=403,
-                detail={"code": "composer_not_task_owner",
-                        "composer": body.composer, "assigned_agent": task.assigned_agent},
-            )
-        if task.status.value not in ("pending", "in_progress"):
-            raise HTTPException(
-                status_code=400,
-                detail={"code": "task_not_active", "status": task.status.value},
-            )
-        active_sid = org.sessions.get_active(body.task_id, body.composer)
-        if active_sid is None or active_sid != body.session_id:
-            raise HTTPException(
-                status_code=409,
-                detail={"code": "session_mismatch", "active": active_sid, "got": body.session_id},
-            )
-
-    # Talk binding: talk exists, owned by composer, OPEN.
-    # Ownership gate runs BEFORE status gate so a closed talk owned by
-    # someone else surfaces `composer_not_talk_owner` rather than leaking
-    # the talk's status to a non-owner.
-    if has_talk:
-        talk = org.db.get_talk(body.talk_id)
-        if talk is None:
-            raise HTTPException(status_code=404, detail={"code": "unknown_talk", "talk_id": body.talk_id})
-        if talk.agent_name != body.composer:
-            raise HTTPException(
-                status_code=403,
-                detail={"code": "composer_not_talk_owner",
-                        "composer": body.composer, "talk_agent": talk.agent_name},
-            )
-        if talk.status != TalkStatus.OPEN:
-            raise HTTPException(
-                status_code=400,
-                detail={"code": "talk_not_open", "status": talk.status.value},
-            )
+    if not body.task_id or not body.session_id:
+        raise HTTPException(status_code=422, detail={"code": "binding_required"})
+    task = org.db.get_task(body.task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail={"code": "unknown_task", "task_id": body.task_id})
+    if task.assigned_agent != body.composer:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "composer_not_task_owner",
+                    "composer": body.composer, "assigned_agent": task.assigned_agent},
+        )
+    if task.status.value not in ("pending", "in_progress"):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "task_not_active", "status": task.status.value},
+        )
+    active_sid = org.sessions.get_active(body.task_id, body.composer)
+    if active_sid is None or active_sid != body.session_id:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "session_mismatch", "active": active_sid, "got": body.session_id},
+        )
 
     # Dedupe recipients (preserve order).
     seen: set[str] = set()
@@ -520,8 +487,7 @@ async def compose_thread_as_agent(
     org_cfg = load_org_config(org_paths)
     turn_cap = org_cfg.threads_default_turn_cap
 
-    composed_from_task_id = body.task_id if has_task else None
-    composed_from_talk_id = body.talk_id if has_talk else None
+    composed_from_task_id = body.task_id
 
     async with org.db_lock:
         thread_id, seq, tokens_to_enqueue, addressed_agents = _create_agent_thread_locked(
@@ -533,7 +499,6 @@ async def compose_thread_as_agent(
             turn_cap=turn_cap,
             attachments=attachments,
             composed_from_task_id=composed_from_task_id,
-            composed_from_talk_id=composed_from_talk_id,
         )
 
     for tok in tokens_to_enqueue:
@@ -552,7 +517,6 @@ async def compose_thread_as_agent(
         "started_at": org.db.get_thread(thread_id).started_at.isoformat(),
         "composed_by": body.composer,
         "composed_from_task_id": composed_from_task_id,
-        "composed_from_talk_id": composed_from_talk_id,
         "pending_replies": addressed_agents,
     }
 
@@ -594,7 +558,7 @@ def _thread_row_to_dict(t: ThreadRecord) -> dict:
         "transcript_path": t.transcript_path,
         "composed_by": t.composed_by,
         "composed_from_task_id": t.composed_from_task_id,
-        "composed_from_talk_id": t.composed_from_talk_id,
+
     }
 
 

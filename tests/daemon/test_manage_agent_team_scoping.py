@@ -3,7 +3,6 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from runtime.daemon.org_state import OrgState
-from runtime.models import TalkRecord
 
 
 def _seed_open_talk(org_state: OrgState, agent_name: str) -> str:
@@ -11,10 +10,10 @@ def _seed_open_talk(org_state: OrgState, agent_name: str) -> str:
 
     The talks HTTP route (POST /talks/start) hasn't been migrated to per-org
     URLs yet (Task 14), so we insert directly via the per-org DB to keep these
-    agent-route tests independent of talks.py.
+    agent-route tests.
     """
     talk_id = org_state.db.next_talk_id()
-    org_state.db.insert_talk(TalkRecord(id=talk_id, agent_name=agent_name))
+    org_state.db.insert_talk((id=talk_id, agent_name=agent_name))
     return talk_id
 
 

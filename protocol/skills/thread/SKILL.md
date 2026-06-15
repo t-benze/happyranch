@@ -149,9 +149,9 @@ loop handles delegation natively.
   subject. Their manager receives a BOOTSTRAP turn and self-dispatches if
   they take the work on.
 
-If you see `thread_dispatch_must_be_self` (or `talk_dispatch_must_be_self`)
+If you see `thread_dispatch_must_be_self` (or `thread_dispatch_must_be_self`)
 in an error envelope: you tried to push work onto another agent from inside
-a thread or talk. Re-route via compose, or self-dispatch and own the phase.
+a thread. Re-route via compose, or self-dispatch and own the phase.
 
 ## Task-followup turn
 
@@ -215,7 +215,7 @@ Requirements:
 
    From a talk:
 
-   happyranch threads compose --org <slug> --talk-id <TALK> --from-file /tmp/thread-compose-<tag>.json
+   happyranch threads compose --org <slug> --from-file /tmp/thread-compose-<tag>.json
 
 3. Capture the returned `thread_id`. Mention it in your task completion
    summary (or talk transcript) so the founder can find it.

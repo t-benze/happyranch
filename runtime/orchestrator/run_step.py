@@ -195,7 +195,6 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             scope_type="task",
             scope_id=task_id,
             thread_id=task.dispatched_from_thread_id,
-            talk_id=task.dispatched_from_talk_id,
         )
 
     # Cancel-race Guard B: /cancel can land between try_claim_for_step and

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from runtime.models import TalkRecord, TalkStatus, TaskRecord, TaskStatus
+from runtime.models import, TaskRecord, TaskStatus
 
 
 def _seed_agent(org_state, name: str, *, team: str = "engineering") -> None:
@@ -235,8 +235,8 @@ def test_compose_as_agent_talk_path_rejects_unknown_talk(tmp_home, app, org_stat
 def test_compose_as_agent_talk_path_rejects_closed_talk(tmp_home, app, org_state, auth_headers):
     _seed_agent(org_state, "engineering_head")
     _seed_agent(org_state, "payment_agt")
-    org_state.db.insert_talk(TalkRecord(
-        id="TALK-9", agent_name="engineering_head", status=TalkStatus.CLOSED,
+    org_state.db.insert_talk((
+        id="TALK-9", agent_name="engineering_head", status=.CLOSED,
     ))
     client = TestClient(app)
     r = client.post(
@@ -255,8 +255,8 @@ def test_compose_as_agent_talk_path_rejects_closed_talk(tmp_home, app, org_state
 def test_compose_as_agent_talk_path_rejects_unowned_talk(tmp_home, app, org_state, auth_headers):
     _seed_agent(org_state, "engineering_head")
     _seed_agent(org_state, "payment_agt")
-    org_state.db.insert_talk(TalkRecord(
-        id="TALK-10", agent_name="payment_agt", status=TalkStatus.OPEN,
+    org_state.db.insert_talk((
+        id="TALK-10", agent_name="payment_agt", status=.OPEN,
     ))
     client = TestClient(app)
     r = client.post(

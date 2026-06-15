@@ -25,7 +25,6 @@ import { mockKbApi, useMockKbRoutes } from './_mock-kb';
 import { mockOrgsApi } from './_mock-orgs';
 import { useMockAgentsRoutes, useMockJobsRoutes, useMockThreadRoutes } from './_mock-routes';
 import { mockJobsApi } from './_mock-jobs';
-import { mockTalksApi, useMockTalksRoutes } from './_mock-talks';
 import { mockTasksApi, useMockTasksRoutes } from './_mock-tasks';
 import { mockTeamsApi } from './_mock-teams';
 import { mockThreadsApi } from './_mock-threads';
@@ -56,7 +55,6 @@ export function PrototypeProvider({ children }: { children: ReactNode }): JSX.El
           tasks: mockTasksApi,
           dashboard: mockDashboardApi,
           kb: mockKbApi,
-          talks: mockTalksApi,
           teams: mockTeamsApi,
           health: mockHealthApi,
           assistant: mockAssistantApi,
@@ -64,7 +62,6 @@ export function PrototypeProvider({ children }: { children: ReactNode }): JSX.El
           useThreadRoutes: useMockThreadRoutes,
           useTasksRoutes: useMockTasksRoutes,
           useKbRoutes: useMockKbRoutes,
-          useTalksRoutes: useMockTalksRoutes,
           useAgentsRoutes: useMockAgentsRoutes,
           useJobsRoutes: useMockJobsRoutes,
         }}

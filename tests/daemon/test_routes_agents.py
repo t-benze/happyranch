@@ -856,10 +856,9 @@ def test_manage_agent_body_rejects_partial_task_path() -> None:
 
 def _seed_eh_talk(org_state, talk_id: str = "TALK-700") -> str:
     """Helper: insert an open EH talk and return its id."""
-    from runtime.models import TalkRecord
+    from runtime.models import
 
-    org_state.db.insert_talk(
-        TalkRecord(id=talk_id, agent_name="engineering_head"),
+    org_state.db.insert_talk((id=talk_id, agent_name="engineering_head"),
     )
     return talk_id
 
@@ -945,10 +944,9 @@ def test_manage_agent_talk_path_terminate_removes_workspace(
 def test_manage_agent_talk_path_non_eh_talk_returns_403(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    from runtime.models import TalkRecord
+    from runtime.models import
 
-    org_state.db.insert_talk(
-        TalkRecord(id="TALK-703", agent_name="dev_agent"),
+    org_state.db.insert_talk((id="TALK-703", agent_name="dev_agent"),
     )
     r = TestClient(app).post(
         "/api/v1/orgs/alpha/agents/manage",
@@ -967,13 +965,12 @@ def test_manage_agent_talk_path_non_eh_talk_returns_403(
 def test_manage_agent_talk_path_closed_talk_returns_403(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    from runtime.models import TalkRecord, TalkStatus
+    from runtime.models import
 
-    org_state.db.insert_talk(
-        TalkRecord(
+    org_state.db.insert_talk((
             id="TALK-704",
             agent_name="engineering_head",
-            status=TalkStatus.CLOSED,
+            status=.CLOSED,
         ),
     )
     r = TestClient(app).post(

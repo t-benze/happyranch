@@ -401,7 +401,7 @@ def test_claude_md_includes_thread_talk_dispatch_doctrine(tmp_path: Path) -> Non
     workspace = tmp_path / "workspaces" / "dev_agent"
     adapter.write_claude_md(workspace, "dev_agent", "You are dev_agent.")
     content = (workspace / "CLAUDE.md").read_text()
-    assert "## Thread and Talk Dispatch are Self-Only" in content
+    assert "## Thread Dispatch is Self-Only" in content
     # Both rejection codes named — agents hitting a 403 can grep for either.
     assert "thread_dispatch_must_be_self" in content
     assert "talk_dispatch_must_be_self" in content
@@ -419,7 +419,7 @@ def test_codex_agents_md_includes_thread_talk_dispatch_doctrine(tmp_path: Path) 
     workspace = tmp_path / "workspaces" / "dev_agent"
     adapter.write_agents_md(workspace, "dev_agent", "You are dev_agent.")
     content = (workspace / "AGENTS.md").read_text()
-    assert "## Thread and Talk Dispatch are Self-Only" in content
+    assert "## Thread Dispatch is Self-Only" in content
     assert "thread_dispatch_must_be_self" in content
     assert "talk_dispatch_must_be_self" in content
 
@@ -434,7 +434,7 @@ def test_opencode_agents_md_includes_thread_talk_dispatch_doctrine(tmp_path: Pat
     workspace = tmp_path / "workspaces" / "dev_agent"
     adapter.write_agents_md(workspace, "dev_agent", "You are dev_agent.")
     content = (workspace / "AGENTS.md").read_text()
-    assert "## Thread and Talk Dispatch are Self-Only" in content
+    assert "## Thread Dispatch is Self-Only" in content
     assert "thread_dispatch_must_be_self" in content
     assert "talk_dispatch_must_be_self" in content
 

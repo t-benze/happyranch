@@ -843,44 +843,6 @@ def test_task_type_backfill_classifies_existing_children_as_subtask(tmp_path):
     db.close()
 
 
-def test_task_round_trips_dispatched_from_talk_id(tmp_path):
-    from runtime.infrastructure.database import Database
-    from runtime.models import TaskRecord
-
-    db = Database(tmp_path / "happyranch.db")
-    task = TaskRecord(
-        id="TASK-001",
-        brief="dispatched task",
-        team="engineering",
-        assigned_agent="dev_agent",
-        dispatched_from_talk_id="TALK-007",
-    )
-    db.insert_task(task)
-    fetched = db.get_task("TASK-001")
-    assert fetched is not None
-    assert fetched.dispatched_from_talk_id == "TALK-007"
-
-
-def test_task_round_trips_dispatched_from_talk_id_when_null(tmp_path):
-    from runtime.infrastructure.database import Database
-    from runtime.models import TaskRecord
-
-    db = Database(tmp_path / "happyranch.db")
-    task = TaskRecord(id="TASK-001", brief="normal task", team="engineering")
-    db.insert_task(task)
-    fetched = db.get_task("TASK-001")
-    assert fetched is not None
-    assert fetched.dispatched_from_talk_id is None
-
-
-def test_idempotent_dispatched_from_talk_id_migration(tmp_path):
-    from runtime.infrastructure.database import Database
-
-    db_path = tmp_path / "happyranch.db"
-    Database(db_path)            # first init creates the column
-    Database(db_path)            # second init must NOT raise
-
-
 def test_dispatched_from_talk_id_index_queryable(tmp_path):
     from runtime.infrastructure.database import Database
     from runtime.models import TaskRecord
@@ -888,14 +850,14 @@ def test_dispatched_from_talk_id_index_queryable(tmp_path):
     db = Database(tmp_path / "happyranch.db")
     db.insert_task(TaskRecord(
         id="TASK-001", brief="a", team="engineering",
-        assigned_agent="dev_agent", dispatched_from_talk_id="TALK-007",
+        assigned_agent="dev_agent",
     ))
     db.insert_task(TaskRecord(
         id="TASK-002", brief="b", team="engineering",
         assigned_agent="dev_agent",
     ))
     cur = db._conn.execute(
-        "SELECT id FROM tasks WHERE dispatched_from_talk_id = ?", ("TALK-007",),
+        "SELECT id FROM tasks", (),
     )
     rows = [r["id"] for r in cur.fetchall()]
     assert rows == ["TASK-001"]

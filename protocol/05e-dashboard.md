@@ -6,7 +6,7 @@ The self-hosted dashboard for org-wide visibility, plus the recommended build se
 
 ## 1. Dashboard Purpose
 
-The CLI (`happyranch ...`) and SSE task streams are for real-time interaction — submitting work, streaming events, founder↔agent talks, approving escalations. The dashboard is for when you want the big picture: how is the org performing, what happened recently, where are the trends going, and what's the full audit trail. It runs as a local web app on your Mac Mini, accessible from any device on your network.
+The CLI (`happyranch ...`) and SSE task streams are for real-time interaction — submitting work, streaming events, founder↔agent threads, approving escalations. The dashboard is for when you want the big picture: how is the org performing, what happened recently, where are the trends going, and what's the full audit trail. It runs as a local web app on your Mac Mini, accessible from any device on your network.
 
 ### Fully Self-Hosted
 All data stays on your Mac Mini — no third-party observability service. The orchestrator records execution data (agent decisions, task timelines, tool usage, LLM calls) directly to SQLite alongside the business-level metrics (escalation history, audit trail). One dashboard covers both engineering observability and business performance — no cloud dependency, no data leaving your infrastructure. Compliance posture (e.g., applicable data-protection regimes) is defined per runtime in the org charter, not in this blueprint.
@@ -281,7 +281,7 @@ The dashboard backend exposes a REST API that the frontend consumes. This same A
 
 ### Dashboard is read-only
 
-The dashboard is read-only. All founder actions (approvals, directives, goal-setting, rejections) happen through CLI commands (`happyranch resolve-escalation`, `happyranch kb add`, `happyranch revisit`) or `happyranch talk` conversations. "Pending Your Action" items link to the command you'd run; the dashboard never mutates state itself.
+The dashboard is read-only. All founder actions (approvals, directives, goal-setting, rejections) happen through CLI commands (`happyranch resolve-escalation`, `happyranch kb add`, `happyranch revisit`) or thread conversations. "Pending Your Action" items link to the command you'd run; the dashboard never mutates state itself.
 
 ---
 

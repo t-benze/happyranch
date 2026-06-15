@@ -161,23 +161,6 @@ def cmd_details(args: argparse.Namespace) -> None:
             display[-1] = f"{display[-1]} (this)"
             print(f"Chain:      {' ← '.join(display)}")
 
-    # Dispatched-from header: shown only when this task was created via
-    # POST /talks/{talk_id}/dispatch. Pulls dispatcher agent/role from the
-    # task_dispatched audit row written at dispatch time.
-    if task.get("dispatched_from_talk_id"):
-        dispatcher = "?"
-        role = "?"
-        for log in body.get("audit_log") or []:
-            if log.get("action") == "task_dispatched":
-                payload = log.get("payload") or {}
-                dispatcher = payload.get("dispatcher_agent", "?")
-                role = payload.get("dispatcher_role", "?")
-                break
-        print(
-            f"Dispatched from: {task['dispatched_from_talk_id']}  "
-            f"(dispatcher: {dispatcher} / {role})"
-        )
-
     print(f"Task:       {task['task_id']}")
     print(f"Team:       {task.get('team', '-')}")
     print(f"Status:     {task['status']}")
@@ -1035,14 +1018,6 @@ def register(sub) -> None:
     p_tokens_group.add_argument("--by-purpose", dest="by_purpose", action="store_true",
                                 help="Rollup: one row per invocation purpose")
     p_tokens.set_defaults(func=cmd_tokens)
-
-    p_dispatch = sub.add_parser("dispatch", help="Dispatch a new task from an open talk")
-    p_dispatch.add_argument("--org", required=True, help="Org slug (required for agent callbacks)")
-    p_dispatch.add_argument(
-        "--from-file", dest="from_file", required=True,
-        help="Path to JSON file with dispatch payload (talk_id, brief, optional target_agent/team)",
-    )
-    p_dispatch.set_defaults(func=cmd_dispatch)
 
     p_recall = sub.add_parser(
         "recall",

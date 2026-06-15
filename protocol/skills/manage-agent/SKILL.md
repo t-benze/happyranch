@@ -12,7 +12,7 @@ Manage the agent roster. You can **enroll** a new agent (requires founder approv
 The daemon accepts two ways to prove you are the Engineering Head:
 
 - **Task path** — supply `task_id` + `session_id` from your current task session. Use this while executing a task.
-- **Talk path** — supply `talk_id` from an open talk you are currently in. Use this during a founder talk when the need for an enrollment/update/termination surfaces in conversation.
+- **Talk path** — supply `` from an open talk you are currently in. Use this during a founder talk when the need for an enrollment/update/termination surfaces in conversation.
 
 The two paths are **mutually exclusive** — supply one pair or the other, never both. The daemon rejects payloads that mix them (`422`).
 
@@ -40,7 +40,7 @@ The two paths are **mutually exclusive** — supply one pair or the other, never
    {
      "action": "enroll",
      "name": "content_writer",
-     "talk_id": "<talk_id>",
+     "": "<>",
      "description": "Writes destination guides and travel articles",
      "system_prompt": "You are the Content Writer. Your responsibilities are...",
      "executor": "codex",
@@ -48,7 +48,7 @@ The two paths are **mutually exclusive** — supply one pair or the other, never
    }
    ```
 
-   **Update an existing agent (task path shown; talk path swaps task_id+session_id for talk_id):**
+   **Update an existing agent (task path shown;  swaps task_id+session_id for ):**
    ```json
    {
      "action": "update",
@@ -61,7 +61,7 @@ The two paths are **mutually exclusive** — supply one pair or the other, never
    }
    ```
 
-   **Terminate an agent (task path shown; talk path swaps task_id+session_id for talk_id):**
+   **Terminate an agent (task path shown;  swaps task_id+session_id for ):**
    ```json
    {
      "action": "terminate",
@@ -86,7 +86,7 @@ The two paths are **mutually exclusive** — supply one pair or the other, never
 Any **team manager** may use this skill to manage agents within their own team. The daemon validates the auth path you supplied:
 
 - Task path: the `(task_id, session_id)` pair must match an active session for a registered team manager.
-- Talk path: the `talk_id` must reference a talk whose `agent_name` is a registered team manager and whose `status` is `open`.
+- Talk path: the `` must reference a talk whose `agent_name` is a registered team manager and whose `status` is `open`.
 
 Other agents — and closed/abandoned talks — receive a `403 Forbidden` (or `404` if the talk id is unknown).
 
@@ -107,7 +107,7 @@ If you invoke this skill from within a talk, **record the call in the `transcrip
 [during talk] submitted enrollment request for agent `content_writer` (pending founder approval).
 ```
 
-The transcript is the only human-readable record of what happened in the conversation, and the daemon writes it at talk-end from whatever you provide. Skipping this step silently mutates the roster from the founder's point of view. The audit log (`happyranch audit --org {ORG_SLUG} <talk_id>`) captures the action too, but the transcript is what the founder reads back.
+The transcript is the only human-readable record of what happened in the conversation, and the daemon writes it at talk-end from whatever you provide. Skipping this step silently mutates the roster from the founder's point of view. The audit log (`happyranch audit --org {ORG_SLUG} <>`) captures the action too, but the transcript is what the founder reads back.
 
 ## What happens
 

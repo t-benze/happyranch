@@ -1017,75 +1017,6 @@ def test_cmd_manage_agent_from_file(tmp_path):
     assert kwargs["json"]["name"] == "content_writer"
 
 
-def test_cmd_manage_agent_from_file_talk_path(tmp_path):
-    import json
-
-    from cli.main import cmd_manage_agent
-
-    payload = {
-        "action": "enroll",
-        "name": "content_writer",
-        "talk_id": "TALK-002",
-        "description": "Writes guides",
-        "system_prompt": "You are the Content Writer...",
-    }
-    f = tmp_path / "enroll.json"
-    f.write_text(json.dumps(payload))
-
-    fake = MagicMock()
-    fake.post.return_value.status_code = 200
-    fake.post.return_value.json.return_value = {"ok": True, "status": "pending"}
-    args = MagicMock(
-        org="alpha",
-        from_file=str(f),
-        action=None, name=None, description=None,
-        system_prompt=None, repos=None,
-    )
-    with patch("cli.main.OpcClient.from_env", return_value=fake):
-        cmd_manage_agent(args)
-    _args_pos, kwargs = fake.post.call_args
-    assert kwargs["json"]["talk_id"] == "TALK-002"
-    assert "task_id" not in kwargs["json"]
-    assert "session_id" not in kwargs["json"]
-
-
-def test_manage_agent_payload_from_file_rejects_mixed_auth(tmp_path):
-    import json
-
-    from cli.main import _manage_agent_payload_from_file
-
-    f = tmp_path / "mixed.json"
-    f.write_text(json.dumps({
-        "action": "enroll",
-        "name": "content_writer",
-        "task_id": "TASK-001",
-        "session_id": "sess-1",
-        "talk_id": "TALK-002",
-    }))
-    with pytest.raises(ValueError, match="not both"):
-        _manage_agent_payload_from_file(str(f))
-
-
-def test_manage_agent_payload_from_file_rejects_no_auth(tmp_path):
-    import json
-
-    from cli.main import _manage_agent_payload_from_file
-
-    f = tmp_path / "noauth.json"
-    f.write_text(json.dumps({"action": "enroll", "name": "content_writer"}))
-    with pytest.raises(ValueError, match="task_id \\+ session_id"):
-        _manage_agent_payload_from_file(str(f))
-
-
-def test_manage_agent_parser_accepts_talk_id():
-    parser = build_parser()
-    args = parser.parse_args([
-        "manage-agent", "--org", "alpha", "enroll",
-        "--name", "content_writer",
-        "--talk-id", "TALK-002",
-    ])
-    assert args.talk_id == "TALK-002"
-    assert args.task_id is None
 
 
 def test_enrollments_parser():
@@ -1323,31 +1254,7 @@ def test_cmd_tasks_renders_team_column(capsys):
     assert "engineering" in out
 
 
-def test_talk_start_parses():
-    parser = build_parser()
-    args = parser.parse_args(["talk", "start", "--agent", "dev_agent"])
-    assert args.command == "talk"
-    assert args.talk_command == "start"
-    assert args.agent == "dev_agent"
 
-
-def test_talk_resume_parses():
-    parser = build_parser()
-    args = parser.parse_args(["talk", "resume", "--talk-id", "TALK-001"])
-    assert args.command == "talk"
-    assert args.talk_command == "resume"
-    assert args.talk_id == "TALK-001"
-
-
-def test_talk_abandon_parses():
-    parser = build_parser()
-    args = parser.parse_args([
-        "talk", "abandon", "--talk-id", "TALK-001", "--reason", "orphan",
-    ])
-    assert args.command == "talk"
-    assert args.talk_command == "abandon"
-    assert args.talk_id == "TALK-001"
-    assert args.reason == "orphan"
 
 
 def test_talk_abandon_parses_default_reason():
@@ -1398,16 +1305,6 @@ def test_cmd_talk_start_conflict_exits_with_message(capsys):
     # Friendly message should mention "already" or "open talk"
     assert "already" in out.lower() or "open talk" in out.lower()
 
-
-def test_talk_end_parses():
-    parser = build_parser()
-    args = parser.parse_args([
-        "talk", "end", "--talk-id", "TALK-001", "--from-file", "/tmp/x.json",
-    ])
-    assert args.command == "talk"
-    assert args.talk_command == "end"
-    assert args.talk_id == "TALK-001"
-    assert args.from_file == "/tmp/x.json"
 
 
 def test_cmd_talk_end_success(tmp_path, capsys):
@@ -1463,13 +1360,6 @@ def test_cmd_talk_end_missing_file(tmp_path, capsys):
     fake.post.assert_not_called()
 
 
-def test_talk_status_parses():
-    parser = build_parser()
-    args = parser.parse_args(["talk", "status", "--agent", "dev_agent"])
-    assert args.command == "talk"
-    assert args.talk_command == "status"
-    assert args.agent == "dev_agent"
-
 
 def test_talk_list_parses_defaults():
     parser = build_parser()
@@ -1485,14 +1375,6 @@ def test_talk_list_parses_with_limit():
     args = parser.parse_args(["talk", "list", "--limit", "5"])
     assert args.limit == 5
 
-
-def test_talk_show_parses():
-    parser = build_parser()
-    args = parser.parse_args(["talk", "show", "TALK-007"])
-    assert args.command == "talk"
-    assert args.talk_command == "show"
-    assert args.talk_id == "TALK-007"
-    assert args.json is False
 
 
 def test_talk_show_json_flag():

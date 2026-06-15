@@ -5,7 +5,7 @@ description: Use this skill only when the daemon starts a private scheduled drea
 
 # dream
 
-This is a private reflection invocation. It is not a task, talk, or thread.
+This is a private reflection invocation. It is not a task, thread, or thread.
 
 ## Procedure
 

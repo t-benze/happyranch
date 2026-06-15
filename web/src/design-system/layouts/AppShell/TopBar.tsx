@@ -18,7 +18,6 @@ import { useAgentsRoutes } from '@/hooks/agents';
 import { useDensity } from '@/hooks/density';
 import { useKbRoutes } from '@/hooks/kb';
 import { useOrgsList } from '@/hooks/orgs';
-import { useTalksRoutes } from '@/hooks/talks';
 import { useTasksRoutes } from '@/hooks/tasks';
 import { useTheme } from '@/hooks/theme';
 import { useThreadRoutes } from '@/hooks/threads';
@@ -41,7 +40,6 @@ export function TopBar(): JSX.Element {
   const [addOrgOpen, setAddOrgOpen] = useState(false);
   const routes = useThreadRoutes();
   const tasksRoutes = useTasksRoutes();
-  const talksRoutes = useTalksRoutes();
   const agentsRoutes = useAgentsRoutes();
   const threadsHref = activeSlug ? routes.inboxForOrg(activeSlug) : '#';
   const agentsHref = activeSlug && !isPrototype ? agentsRoutes.inboxForOrg(activeSlug) : '#';
@@ -59,7 +57,6 @@ export function TopBar(): JSX.Element {
     if (activeSlug && !isPrototype) navigate(kbRoutes.inboxForOrg(activeSlug));
   });
   useGlobalJump('l', () => {
-    if (activeSlug && !isPrototype) navigate(talksRoutes.inboxForOrg(activeSlug));
   });
   useGlobalJump('a', () => {
     if (activeSlug && !isPrototype) navigate(`/orgs/${activeSlug}/audit`);
@@ -123,7 +120,6 @@ export function TopBar(): JSX.Element {
         </NavTab>
         <NavTab {...placeholderTab('tasks')}>Tasks</NavTab>
         <NavTab {...placeholderTab('kb')}>KB</NavTab>
-        <NavTab {...placeholderTab('talks')}>Talks</NavTab>
         <NavTab {...placeholderTab('audit')}>Audit</NavTab>
         <NavTab to={agentsHref} enabled={agentsHref !== '#'}>
           Agents

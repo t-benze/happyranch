@@ -37,7 +37,6 @@ import {
   useRealThreadRoutes,
 } from './_real-routes';
 import { realJobsApi } from './_real-jobs';
-import { realTalksApi } from './_real-talks';
 import { realTasksApi } from './_real-tasks';
 import { realTeamsApi } from './_real-teams';
 import { realThreadsApi } from './_real-threads';
@@ -74,7 +73,6 @@ export function AppProvider({ children, client }: AppProviderProps): JSX.Element
           tasks: realTasksApi,
           dashboard: realDashboardApi,
           kb: realKbApi,
-          talks: realTalksApi,
           teams: realTeamsApi,
           health: realHealthApi,
           assistant: realAssistantApi,
@@ -82,7 +80,6 @@ export function AppProvider({ children, client }: AppProviderProps): JSX.Element
           useThreadRoutes: useRealThreadRoutes,
           useTasksRoutes: useRealTasksRoutes,
           useKbRoutes: useRealKbRoutes,
-          useTalksRoutes: useRealTalksRoutes,
           useAgentsRoutes: useRealAgentsRoutes,
           useJobsRoutes: useRealJobsRoutes,
         }}

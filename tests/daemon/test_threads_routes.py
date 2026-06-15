@@ -6,8 +6,6 @@ from fastapi.testclient import TestClient
 from runtime.infrastructure.artifact_store import ArtifactStore
 from runtime.models import (
     BlockKind,
-    TalkRecord,
-    TalkStatus,
     TaskRecord,
     TaskStatus,
     ThreadAttachment,
@@ -661,11 +659,10 @@ def test_compose_as_agent_accepts_attachments_with_composer_uploaded_by(
     _seed_agent(org_state, "engineering_head")
     _seed_agent(org_state, "dev_agent")
     _artifact_store(org_state).put("agent-report.pdf", b"pdf")
-    org_state.db.insert_talk(
-        TalkRecord(
+    org_state.db.insert_talk((
             id="TALK-001",
             agent_name="engineering_head",
-            status=TalkStatus.OPEN,
+            status=.OPEN,
         )
     )
 

@@ -421,7 +421,7 @@ _KNOWLEDGE_SOURCES = [
     ("protocol/05b-agent-runtime.md", "protocol/05b-agent-runtime.md"),
     ("protocol/05c-orchestrator.md", "protocol/05c-orchestrator.md"),
     ("protocol/06-knowledge-base.md", "protocol/06-knowledge-base.md"),
-    ("protocol/skills/talk/SKILL.md", "protocol/skills/talk/SKILL.md"),
+    ("protocol/skills/review/SKILL.md", "protocol/skills/review/SKILL.md"),
     ("protocol/skills/jobs/SKILL.md", "protocol/skills/jobs/SKILL.md"),
     ("skills/happyranch/SKILL.md", "skills/happyranch/SKILL.md"),
 ]

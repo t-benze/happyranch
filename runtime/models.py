@@ -53,7 +53,6 @@ class TaskRecord(BaseModel):
     brief: str
     parent_task_id: str | None = None
     revisit_of_task_id: str | None = None
-    dispatched_from_talk_id: str | None = None
     dispatched_from_thread_id: str | None = None
     block_kind: BlockKind | None = None
     blocked_on_job_ids: str | None = None
@@ -200,25 +199,6 @@ class TokenUsage(BaseModel):
         return (self.input_tokens or 0) + (self.output_tokens or 0) + (self.reasoning_tokens or 0)
 
 
-class TalkStatus(StrEnum):
-    OPEN = "open"
-    CLOSED = "closed"
-    ABANDONED = "abandoned"
-
-
-class TalkRecord(BaseModel):
-    id: str
-    agent_name: str
-    status: TalkStatus = TalkStatus.OPEN
-    started_at: datetime = Field(default_factory=_now)
-    ended_at: datetime | None = None
-    summary: str | None = None
-    topic_list: list[str] = Field(default_factory=list)
-    new_learnings_count: int = 0
-    new_kb_slugs: list[str] = Field(default_factory=list)
-    transcript_path: str | None = None
-
-
 class ThreadStatus(StrEnum):
     OPEN = "open"
     ARCHIVED = "archived"
@@ -258,7 +238,6 @@ class ThreadRecord(BaseModel):
     transcript_path: str | None = None
     composed_by: str = "founder"
     composed_from_task_id: str | None = None
-    composed_from_talk_id: str | None = None
 
 
 class ThreadParticipant(BaseModel):
@@ -329,16 +308,10 @@ class JobInterpreter(StrEnum):
 
 class JobRecord(BaseModel):
     id:               str
-    # Scope id of the submission context. For task-originated jobs this is a
-    # TASK-NNN id; for talk-originated jobs (``submitted_from_talk_id`` set)
-    # this is overloaded to hold the TALK-NNN id — same pattern as
-    # ``audit_log.task_id`` and ``artifact_put``'s ``f"artifact:{name}"``. Keeping
-    # one column avoids plumbing a ``scope_id`` everywhere it's already in use.
+    # Scope id of the submission context. Always a TASK-NNN id for task-originated
+    # jobs. Keeping one column avoids plumbing a ``scope_id`` everywhere it's
+    # already in use.
     task_id:          str
-    # Set when the job was submitted from a talk (talk-path auth). NULL on
-    # task-path submissions. Used to flag the path explicitly so dashboards
-    # and audit queries don't have to infer it from the ``task_id`` prefix.
-    submitted_from_talk_id: str | None = None
     agent_name:       str
     title:            str
     rationale:        str
