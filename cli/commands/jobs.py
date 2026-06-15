@@ -15,7 +15,6 @@ def _jobs_submit_payload_from_file(path: str) -> dict:
     Two mutually-exclusive auth paths (same shape as manage-agent / threads compose):
 
     - Task path: ``task_id`` + ``session_id`` from an active task session.
-    
 
     The daemon enforces this again on the wire via SubmitBody's validator —
     we mirror it here so the CLI fails fast with a useful message instead of
@@ -303,9 +302,8 @@ def cmd_jobs_tail(args: argparse.Namespace) -> None:
     """Print the tail of stdout/stderr for a job.
 
     Founder path: uses the bearer token already attached by ``OpcClient``.
-    Agent paths (dual-auth):
+    Agent path:
       - Task path: ``--task-id`` + ``--session-id``.
-      - Talk path: ``--talk-id`` from inside an open talk.
     """
     try:
         client = OpcClient.from_env()
@@ -330,7 +328,7 @@ def cmd_jobs_wait(args: argparse.Namespace) -> None:
     """Block until the job terminates or the timeout expires.
 
     Prints a one-line JSON object with ``status`` and ``timed_out``.
-    Same dual-auth shape as ``tail`` (task path or talk path).
+    Same auth shape as ``tail`` (task path).
     """
     import json as _json
     try:
@@ -354,9 +352,8 @@ def cmd_jobs_wait(args: argparse.Namespace) -> None:
 def cmd_jobs_stop(args: argparse.Namespace) -> None:
     """Stop a running job (SIGTERM via the daemon).
 
-    Founder path: bearer token. Agent paths (dual-auth):
+    Founder path: bearer token. Agent path:
       - Task path: ``--task-id`` + ``--session-id``.
-      - Talk path: ``--talk-id`` from inside an open talk.
     """
     try:
         client = OpcClient.from_env()

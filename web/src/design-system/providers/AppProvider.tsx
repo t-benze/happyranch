@@ -32,7 +32,6 @@ import {
   useRealAgentsRoutes,
   useRealJobsRoutes,
   useRealKbRoutes,
-  useRealTalksRoutes,
   useRealTasksRoutes,
   useRealThreadRoutes,
 } from './_real-routes';

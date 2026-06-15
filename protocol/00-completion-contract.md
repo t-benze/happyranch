@@ -170,4 +170,3 @@ Cross-agent reference material — SOPs, partner-API quirks, founder rulings —
 | `happyranch manage-agent --from-file ...` | (Team managers only) enroll/update/terminate an agent within your own team. |
 | `happyranch kb add --agent ... --from-file ...` | Contribute a knowledge-base entry. |
 | `happyranch kb update <slug> --agent ... --from-file ...` | Update an existing entry. |
-

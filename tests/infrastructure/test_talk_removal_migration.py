@@ -304,4 +304,3 @@ class TestTalkRemovalMigration:
         task_count = post_conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
         assert task_count == 1
         post_conn.close()
-

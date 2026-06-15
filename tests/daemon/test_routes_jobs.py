@@ -1336,6 +1336,3 @@ def test_review_required_job_sends_feishu_notification(
     # Exactly one notify call, tagged with kind="job_request".
     assert len(calls) == 1, f"expected exactly one notify call, got {calls!r}"
     assert calls[0]["kind"] == "job_request"
-
-
-
