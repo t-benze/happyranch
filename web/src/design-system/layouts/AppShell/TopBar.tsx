@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Moon, Plus, Rows3, Rows4, Sun } from 'lucide-react';
+import { Moon, Plus, Sun } from 'lucide-react';
 import { NavLink, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   Select,
@@ -14,8 +14,8 @@ import {
   TooltipTrigger,
 } from '@/design-system/primitives/Tooltip';
 import { AddOrgDialog } from '@/features/orgs/AddOrgDialog';
+import { SettingsDialog, SettingsTriggerButton } from '@/features/settings/SettingsDialog';
 import { useAgentsRoutes } from '@/hooks/agents';
-import { useDensity } from '@/hooks/density';
 import { useKbRoutes } from '@/hooks/kb';
 import { useOrgsList } from '@/hooks/orgs';
 import { useTasksRoutes } from '@/hooks/tasks';
@@ -38,6 +38,7 @@ export function TopBar(): JSX.Element {
   const isPrototype = location.pathname.startsWith('/__prototypes');
   const orgsQuery = useOrgsList();
   const [addOrgOpen, setAddOrgOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const routes = useThreadRoutes();
   const tasksRoutes = useTasksRoutes();
   const agentsRoutes = useAgentsRoutes();
@@ -167,10 +168,11 @@ export function TopBar(): JSX.Element {
             <Plus size={16} aria-hidden="true" />
           </button>
         )}
-        <DensityToggle />
+        <SettingsTriggerButton onClick={() => setSettingsOpen(true)} />
         <ThemeToggle />
       </div>
       {!isPrototype && <AddOrgDialog open={addOrgOpen} onOpenChange={setAddOrgOpen} />}
+      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
     </header>
   );
 }
@@ -188,29 +190,6 @@ function ThemeToggle(): JSX.Element {
       className="text-fg-muted hover:bg-bg-raised hover:text-fg focus-visible:ring-accent inline-flex h-7 w-7 items-center justify-center rounded transition-colors focus-visible:ring-2 focus-visible:outline-none"
     >
       {isDark ? <Sun size={16} aria-hidden="true" /> : <Moon size={16} aria-hidden="true" />}
-    </button>
-  );
-}
-
-function DensityToggle(): JSX.Element {
-  const { density, setDensity } = useDensity();
-  const isComfortable = density === 'comfortable';
-  const label = isComfortable
-    ? 'Switch to compact density'
-    : 'Switch to comfortable density';
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      onClick={() => setDensity(isComfortable ? 'compact' : 'comfortable')}
-      className="text-fg-muted hover:bg-bg-raised hover:text-fg focus-visible:ring-accent inline-flex h-7 w-7 items-center justify-center rounded transition-colors focus-visible:ring-2 focus-visible:outline-none"
-    >
-      {isComfortable ? (
-        <Rows4 size={16} aria-hidden="true" />
-      ) : (
-        <Rows3 size={16} aria-hidden="true" />
-      )}
     </button>
   );
 }

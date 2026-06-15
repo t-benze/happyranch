@@ -22,6 +22,7 @@ For current behavior always prefer `protocol/`, `docs/agent-guides/`, tests, the
 - **Agent executors & permissions.** Pluggable executors (Claude, Codex, opencode, Pi) with per-executor sandbox/allow-rule generation and workspace bootstrap. Spec `docs/superpowers/specs/2026-04-20-multi-executor-design.md`; contract `protocol/05b-agent-runtime.md`; guide `docs/agent-guides/agent-executors-and-permissions.md`; impl `runtime/orchestrator/executors.py`.
 - **Manage-agent (enrollment).** Enroll, update, or terminate an agent; enrollment is founder-gated. Spec `docs/superpowers/specs/2026-04-17-manage-agent-design.md`; skill `protocol/skills/manage-agent/SKILL.md`; route `runtime/daemon/routes/agents.py`.
 - **Manage-repo.** Add, remove, or update a repository in an agent's `agent.yaml`. Spec `docs/superpowers/specs/2026-04-17-manage-repo-design.md`; CLI `happyranch manage-repo`.
+- **Founder-facing executor-switch.** `happyranch set-executor` switches an existing agent's executor end-to-end across org frontmatter, workspace `agent.yaml`, and executor bootstrap. Switching away from a provider leaves stale config files behind (CLAUDE.md, .claude/) and WARNs by default; cleanup requires an explicit `--clean` flag. Also surfaces executor-drift on `init-agent` when frontmatter and workspace disagree. CLI-only — no web surface. Keep this distinct from the **system assistant self-registration** (`happyranch assistant register`), which is the assistant's own executor declaration. Commit cf4c9e0; impl `cli/commands/agents.py`, `runtime/daemon/routes/agents.py`.
 - **Per-agent learnings & memory.** Each agent keeps durable `LRN-NNN` learnings plus task recall. Specs `docs/superpowers/specs/2026-04-18-agent-memory-design.md` (superseded), `docs/superpowers/specs/2026-05-13-per-agent-learnings-structural-upgrade-design.md`; impl `runtime/infrastructure/learnings_store.py`. See [Per-Agent Learnings](#per-agent-learnings) below for traps.
 - **System assistant.** A founder-facing assistant surface backed by a PTY-exec session. Onboarding is by **self-registration**: `happyranch assistant init` prepares the workspace and writes registration instructions; the founder opens their own agentic CLI there and it calls back `happyranch assistant register --from-file <payload>` declaring `{executor, command, argv}`. The daemon (`POST /assistant/register`) validates **structurally only** — non-empty fields and `shutil.which(argv[0])` resolves (no allowlist, no absolute-path requirement) — then auto-configures with no separate approval; `selected_argv` is launched raw in the founder-attended attach PTY. `executor` is a free string (any CLI may register; no fixed enum). Specs `docs/superpowers/specs/2026-06-08-system-assistant-design.md` (runtime/attach surface), `docs/superpowers/specs/2026-06-10-assistant-self-registration-design.md` (registration onboarding, replaces executor probing); impl `runtime/daemon/routes/assistant.py`, `runtime/daemon/assistant_pty.py`, `runtime/system_assistant.py`; CLI `cli/commands/assistant.py`.
 - **Jobs.** Background subprocesses run by the daemon, with two policy flags (`review_required`, `persistent`) and founder-review gating. Spec `docs/superpowers/specs/2026-05-26-jobs-design.md` (current); skill `protocol/skills/jobs/SKILL.md`; impl `runtime/daemon/routes/jobs.py`, `runtime/daemon/jobs_runner.py`. (Jobs absorbed the earlier "agent script requests" feature, `docs/superpowers/specs/2026-05-23-agent-script-requests-design.md`, now superseded.) See [Jobs](#jobs) below for traps.
@@ -30,7 +31,9 @@ For current behavior always prefer `protocol/`, `docs/agent-guides/`, tests, the
 ### Collaboration surfaces
 
 - **Threads.** Founder-visible broadcast conversations for coordination and cross-team handoff; every message mints a reply invocation for each participant, dispatch from a thread is self-only. Specs `docs/superpowers/specs/2026-05-13-threads-design.md` and successors (broadcast-only, agent-initiated, markdown composer, task-followup, escalation surfacing, working indicator, close-out removal/resume, file attachments); impl `runtime/infrastructure/thread_store.py`, `runtime/daemon/thread_runner.py`. See [Thread Broadcast Routing](#thread-broadcast-routing), [Thread Agent-Session Resume](#thread-agent-session-resume), and [Thread Task Followup](#thread-task-followup) below for traps.
+- **Thread escalation surfacing.** When a thread-dispatched task escalates to `blocked(escalated)`, the runtime injects a `task_escalated` system message into the originating thread and re-invokes the dispatching manager for a founder-facing followup — mirroring the terminal task-followup. Rendered in both web (ThreadsPage.tsx `task_escalated` case) and CLI (`thread forward`). Spec `docs/superpowers/specs/2026-06-06-thread-escalation-surfacing-design.md`; impl `runtime/orchestrator/run_step.py`, `runtime/daemon/thread_runner.py`.
 - **Knowledge base.** Per-org shared, durable cross-agent knowledge (rules, references, founder rulings); orgs do not share a KB. Contract `protocol/06-knowledge-base.md`; impl `runtime/infrastructure/kb_store.py`, `runtime/daemon/routes/kb.py`. See [Knowledge Base](#knowledge-base) below for traps.
+- **KB view tracking.** Agent-CLI KB entry read counting scoped to agent consults only (founder ruling THR-009). Distinguished from web reads via `X-HappyRanch-Surface: cli` request header (a source label, not auth). Read surface is CLI-only: `happyranch kb stats` renders a table ordered by view count; no web surface. Spec `docs/superpowers/specs/2026-06-10-kb-view-tracking-design.md`; impl `cli/commands/kb.py`, `runtime/daemon/routes/kb.py`, `runtime/infrastructure/database.py` (`kb_views` table).
 - **Shared artifacts.** Per-org opaque file blobs produced by one agent and visible to all agents in the org. Impl `runtime/infrastructure/artifact_store.py`, `runtime/daemon/routes/artifacts.py`; CLI `happyranch artifacts {put,list,get}`. See [Shared Artifacts](#shared-artifacts) below for traps.
 
 ### Org & runtime
@@ -38,17 +41,17 @@ For current behavior always prefer `protocol/`, `docs/agent-guides/`, tests, the
 - **Multi-org runtime.** A single daemon hosts multiple orgs in parallel under a schema-v2 container (`<runtime>/orgs/<slug>/...`); per-org routes live under `/api/v1/orgs/<slug>/...`. Specs `docs/superpowers/specs/2026-04-26-multi-org-runtime-design.md` (superseded), `docs/superpowers/specs/2026-04-28-parallel-multi-org-runtime-design.md`; current shape `docs/agent-guides/project-layout.md`; impl `runtime/daemon/org_state.py`, `runtime/daemon/runtimes.py`.
 - **Org content model.** Each org is loaded from `org/` — charter, `teams.yaml`, per-agent `agents/*.md`, and `config.yaml`. Guide `docs/agent-guides/project-layout.md`; impl `runtime/orchestrator/org_config.py`, `runtime/orchestrator/teams.py`, `runtime/orchestrator/agent_def.py`.
 - **Token-usage tracking.** Per-task, per-agent, and thread-scoped token accounting. Specs `docs/superpowers/specs/2026-05-05-token-usage-tracking-design.md`, `docs/superpowers/specs/2026-06-08-thread-talk-token-usage-scope-design.md`; API `runtime/daemon/routes/tokens.py`; CLI `happyranch tokens`.
-- **Feishu notifications & interactive actions.** Per-org opt-in outbound escalation/failure notifications plus inbound interactive approvals (e.g. job review) over a Feishu websocket. Specs `docs/superpowers/specs/2026-05-08-feishu-notification-design.md`, `docs/superpowers/specs/2026-05-12-feishu-interactive-actions-design.md`; impl `runtime/infrastructure/feishu/`, `runtime/daemon/feishu_listener.py`. See [Feishu Notifications](#feishu-notifications) below for traps.
-
 ### Web & CLI
 
 - **Web UI.** React SPA dashboard for tasks, audit, KB, threads, and org/agent management, served from `web/dist/`. Specs `docs/superpowers/specs/2026-05-14-web-ui-design.md`, `docs/superpowers/specs/2026-05-30-dashboard-overhaul-design.md`, and the per-surface `2026-05-19-web-*` specs; architecture `web/ARCHITECTURE.md`; guide `docs/agent-guides/web-and-cli.md`.
 - **CLI.** `happyranch`, a thin HTTP client over the daemon API used by both the founder and agents for all side effects. Guide `docs/agent-guides/web-and-cli.md`; impl `cli/`.
 - **Audit log.** Append-only record of every state-changing action, keyed by task id (with scope prefixes for non-task actors). Impl `runtime/infrastructure/audit_logger.py`, `runtime/daemon/routes/audit.py`; CLI `happyranch audit`.
+- **Token-usage visibility (Phase 1 dashboard panel).** A `TopTokenThreadsPanel` on the org dashboard showing thread-scoped token spend ranked by total tokens, plus CLI drill-down (`happyranch tokens --by-thread`). This is a **dashboard panel**, NOT a dedicated page. The underlying token-accounting infrastructure (per-task, per-agent, thread-scoped) is documented under [Token-usage tracking](#org--runtime) below. Commit f1dd539; impl `web/src/features/dashboard/components/TopTokenThreadsPanel.tsx`, `cli/commands/tasks.py`.
 
 ### Background / reflection
 
 - **Nightly dreaming.** Private scheduled per-agent reflection runs, separate from tasks and threads, that may write learnings, propose KB candidates, and open a founder-only thread on meaningful output. Spec `docs/superpowers/specs/2026-06-09-nightly-dreaming-design.md`; impl `runtime/infrastructure/dream_store.py`, `runtime/daemon/dream_runner.py`, `runtime/daemon/dream_scheduler.py`, `runtime/daemon/dream_queue.py`, `runtime/daemon/routes/dreams.py`. See [Dreams](#dreams) below for traps.
+- **Per-agent work-hours / scheduled wakes.** Founder-configured per-agent work windows (windowed or continuous) that wake idle agents on schedule to self-dispatch routine tasks parsed from per-agent `org/agents/<name>.md`. Backed by a `work_hours` table mirroring the dreams data model. Backend + CLI only on main (d022671): founder-facing `happyranch work-hours status|list|show` plus the agent wake callback `spawn`. Funded as #92. **No web UI surface yet** — the web mirrors (list/show/status pages) are stranded on unmerged branch `task/TASK-098`. Spec `docs/superpowers/specs/2026-06-10-working-hours-design.md`; impl `runtime/daemon/work_hours_scheduler.py`, `runtime/daemon/wake_runner.py`, `runtime/daemon/wake_queue.py`, `runtime/daemon/routes/work_hours.py`, `runtime/infrastructure/work_hours_store.py`, `cli/commands/work_hours.py`.
 
 ## Knowledge Base
 
@@ -109,7 +112,7 @@ Traps:
 - `_AUTO_REVISIT_CAP_PER_KIND = 2`; it is per kind, not global.
 - `_maybe_spawn_auto_revisit` must run before `_enqueue_parent_if_waiting`.
 - `failure_kind` is top-level on `auto_revisit_of`, not under `error_context`.
-- Cascade still fails ancestors when `root_auto_revisit_spawned=True`; only the Feishu notification is suppressed.
+- Cascade still fails ancestors when `root_auto_revisit_spawned=True`.
 - Startup sweep dedups with `revisited_roots: set[str]`.
 
 ## Thread Broadcast Routing
@@ -197,15 +200,6 @@ Traps:
 - Predicate is all-terminal, not any-terminal.
 - `metadata` is a function parameter, not shared state.
 
-## Feishu Notifications
+## Feishu Notifications (REMOVED)
 
-Per-org opt-in via `feishu_notifications` in `<runtime>/orgs/<slug>/org/config.yaml`. Credentials are required when enabled and live in the same file; treat it as secret-bearing. Specs: `docs/superpowers/specs/2026-05-08-feishu-notification-design.md` and `docs/superpowers/specs/2026-05-12-feishu-interactive-actions-design.md`. Setup: `docs/setup/feishu-notifications.md`.
-
-Entry points:
-
-- Outbound: `Orchestrator.notify_escalated` and `notify_failed`.
-- Inbound: `FeishuEventListener`, one WS per org, bridged into the asyncio loop.
-
-Critical invariant: `_resolve_for_listener` in `runtime/daemon/app.py` must not swallow exceptions from in-process resolvers. On failure it records `outcome="rejected", reason="handler_exception"` and leaves the row unconsumed.
-
-Optional features: `notify_on_failure`, `allow_dispatch`, and Jobs approval/rejection. CLI fallbacks consume open rows with `consumed_by="cli-fallback"`, so a CLI-first resolution silently no-ops the later Feishu reply.
+Feishu was removed in TASK-302 (THR-022). The web UI and threads are the sole control path for dispatch / revisit / resolve-escalation. Legacy `feishu_notifications` config blocks are tolerated on load but ignored. Database correlation tables (`escalation_notifications`, `processed_event_ids`) remain dormant in place.

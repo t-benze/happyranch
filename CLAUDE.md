@@ -13,7 +13,7 @@ Keep this file short. It is loaded at the start of every Claude Code session. De
 | Executor behavior, workspace bootstrap, allow rules | `docs/agent-guides/agent-executors-and-permissions.md` |
 | Orchestrator decisions, task state, agent files, teams, chains | `docs/agent-guides/orchestrator-contracts.md` |
 | Web app, OpenAPI pinning, CLI behavior, agent callbacks | `docs/agent-guides/web-and-cli.md` |
-| KB, learnings, artifacts, revisit, threads, jobs, Feishu | `docs/agent-guides/features-and-invariants.md` |
+| KB, learnings, artifacts, revisit, threads, jobs | `docs/agent-guides/features-and-invariants.md` |
 
 `README.md` is for end users. `CLAUDE.md` is for repo-wide agent instructions. `AGENTS.md` is a compatibility symlink to this file; keep repo-wide agent instructions here only. For current behavior, prefer `docs/agent-guides/`, `protocol/`, tests, OpenAPI snapshots, and implementation. `docs/superpowers/specs/` is append-only design history unless a spec is explicitly marked current in `docs/superpowers/specs/README.md`.
 
@@ -30,9 +30,9 @@ Keep this file short. It is loaded at the start of every Claude Code session. De
 ## Commands
 
 ```bash
-uv run pytest tests/ -v                  # unit tests only (default)
-uv run pytest tests/ -v -m integration   # integration tests
-uv run pytest tests/ -v -m ""            # unit + integration
+uv run python -m pytest tests/ -v                  # unit tests only (default)
+uv run python -m pytest tests/ -v -m integration   # integration tests
+uv run python -m pytest tests/ -v -m ""            # unit + integration
 
 scripts/daemon.sh start
 scripts/daemon.sh status
@@ -60,14 +60,14 @@ Every browser-callable daemon route maps to one TS function in `web/src/lib/api/
 
 - Python snapshot: `tests/contract/test_openapi_snapshot.py`.
 - TS coverage: `web/src/test/openapi-coverage.test.ts`.
-- Regenerate intentional OpenAPI changes with `HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py`.
+- Regenerate intentional OpenAPI changes with `HAPPYRANCH_REGEN_OPENAPI=1 uv run python -m pytest tests/contract/test_openapi_snapshot.py`.
 
 ## GitNexus
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **happyranch** (14108 symbols, 30767 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **happyranch** (16831 symbols, 36166 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

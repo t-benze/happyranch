@@ -164,6 +164,41 @@ class DreamRecord(BaseModel):
     created_at: datetime = Field(default_factory=_now)
 
 
+class WorkHourMode(StrEnum):
+    WINDOWED = "windowed"
+    CONTINUOUS = "continuous"
+
+
+class WorkHourStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    TIMEOUT = "timeout"
+    SKIPPED = "skipped"
+
+
+class WorkHourRecord(BaseModel):
+    id: str
+    agent_name: str
+    local_date: str
+    slot: str
+    mode: WorkHourMode
+    scheduled_for: datetime
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    status: WorkHourStatus = WorkHourStatus.PENDING
+    routine_count: int = 0
+    dropped_count: int = 0
+    spawned_task_ids: list[str] = Field(default_factory=list)
+    spawned_task_count: int = 0
+    summary: str | None = None
+    transcript_path: str | None = None
+    session_id: str | None = None
+    error: str | None = None
+    created_at: datetime = Field(default_factory=_now)
+
+
 class DreamKbCandidate(BaseModel):
     id: int | None = None
     dream_id: str
@@ -337,7 +372,7 @@ class JobRecord(BaseModel):
     # the column default in the jobs table schema.
     max_output_bytes: int | None = 52428800
     # Founder-review gate. True → row inserted as `pending`, awaits explicit
-    # /run or Feishu APPROVE. False (default) → auto-run inline at /submit.
+    # /run. False (default) → auto-run inline at /submit.
     review_required:  bool = False
     # Long-running flag. True → no default runtime cap (unbounded unless an
     # explicit max_runtime_seconds is provided), killed only by /stop or the

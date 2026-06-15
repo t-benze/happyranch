@@ -54,7 +54,6 @@ def _sweep_on_startup(
         TERMINAL_STATES,
         _enqueue_parent_if_waiting,
         _maybe_spawn_auto_revisit,
-        _notify_failure_if_eligible,
     )
 
     audit = AuditLogger(db)
@@ -93,12 +92,6 @@ def _sweep_on_startup(
             _enqueue_parent_if_waiting(
                 orchestrator, task_id,
                 root_auto_revisit_spawned=spawned,
-            )
-            _notify_failure_if_eligible(
-                orchestrator, task_id,
-                failure_kind="daemon_restart",
-                failure_note="daemon restarted mid-task",
-                auto_revisit_spawned=spawned,
             )
         elif t.status == TaskStatus.PENDING:
             queue.enqueue(slug, task_id)

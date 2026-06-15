@@ -97,144 +97,6 @@ class AuditLogger:
             payload={"decision": decision, "rationale": rationale},
         )
 
-    def log_escalation_notify_sent(
-        self, task_id: str, feishu_message_id: str,
-    ) -> None:
-        self._db.insert_audit_log(
-            task_id=task_id,
-            agent="daemon",
-            action="escalation_notify_sent",
-            payload={"feishu_message_id": feishu_message_id},
-        )
-
-    def log_escalation_notify_failed(self, task_id: str, error: str) -> None:
-        self._db.insert_audit_log(
-            task_id=task_id,
-            agent="daemon",
-            action="escalation_notify_failed",
-            payload={"error": error},
-        )
-
-    def log_failure_notify_sent(
-        self, task_id: str, feishu_message_id: str,
-        failure_kind: str, expires_at: str,
-    ) -> None:
-        self._db.insert_audit_log(
-            task_id=task_id,
-            agent="daemon",
-            action="failure_notify_sent",
-            payload={
-                "feishu_message_id": feishu_message_id,
-                "failure_kind": failure_kind,
-                "expires_at": expires_at,
-            },
-        )
-
-    def log_failure_notify_failed(
-        self, task_id: str, failure_kind: str, error: str,
-    ) -> None:
-        self._db.insert_audit_log(
-            task_id=task_id,
-            agent="daemon",
-            action="failure_notify_failed",
-            payload={"failure_kind": failure_kind, "error": error},
-        )
-
-    def log_dispatch_send_confirmation_failed(
-        self, *, task_id: str, error: str,
-    ) -> None:
-        self._db.insert_audit_log(
-            task_id=task_id,
-            agent="daemon",
-            action="dispatch_send_confirmation_failed",
-            payload={"error": error},
-        )
-
-    def log_escalation_reply_processed(
-        self, task_id: str, decision: str, rationale: str,
-    ) -> None:
-        self._db.insert_audit_log(
-            task_id=task_id,
-            agent="founder",
-            action="escalation_reply_processed",
-            payload={"decision": decision, "rationale": rationale},
-        )
-
-    def log_escalation_reply_rejected(
-        self,
-        task_id: str,
-        reason: str,
-        *,
-        feishu_event_id: str | None = None,
-        text_preview: str | None = None,
-    ) -> None:
-        payload: dict = {"reason": reason}
-        if feishu_event_id is not None:
-            payload["feishu_event_id"] = feishu_event_id
-        if text_preview is not None:
-            payload["text_preview"] = text_preview[:200]
-        self._db.insert_audit_log(
-            task_id=task_id,
-            agent="daemon",
-            action="escalation_reply_rejected",
-            payload=payload,
-        )
-
-    def log_parse_hint_sent(
-        self,
-        task_id: str,
-        *,
-        hint_message_id: str,
-        feishu_event_id: str | None = None,
-    ) -> None:
-        payload: dict = {"hint_message_id": hint_message_id}
-        if feishu_event_id is not None:
-            payload["feishu_event_id"] = feishu_event_id
-        self._db.insert_audit_log(
-            task_id=task_id,
-            agent="daemon",
-            action="escalation_parse_hint_sent",
-            payload=payload,
-        )
-
-    def log_parse_hint_send_failed(
-        self,
-        task_id: str,
-        *,
-        error: str,
-        feishu_event_id: str | None = None,
-    ) -> None:
-        payload: dict = {"error": error}
-        if feishu_event_id is not None:
-            payload["feishu_event_id"] = feishu_event_id
-        self._db.insert_audit_log(
-            task_id=task_id,
-            agent="daemon",
-            action="escalation_parse_hint_send_failed",
-            payload=payload,
-        )
-
-    def log_failure_revisit_via_reply(
-        self,
-        *,
-        predecessor_task_id: str,
-        new_root: str,
-        founder_note: str | None,
-        feishu_message_id: str,
-        feishu_event_id: str,
-    ) -> None:
-        self._db.insert_audit_log(
-            task_id=new_root,
-            agent="founder",
-            action="failure_revisit_via_reply",
-            payload={
-                "predecessor_task_id": predecessor_task_id,
-                "founder_note": founder_note,
-                "feishu_message_id": feishu_message_id,
-                "feishu_event_id": feishu_event_id,
-            },
-        )
-
     def log_task_cancelled(
         self, task_id: str, rationale: str, cascade: bool, actor: str = "founder",
     ) -> None:
@@ -529,44 +391,6 @@ class AuditLogger:
                 "action": action,
                 "name": name,
                 "source": source,
-            },
-        )
-
-    def log_dispatch_via_feishu_accepted(
-        self,
-        *,
-        task_id: str,
-        team: str,
-        sender_id: str,
-        feishu_event_id: str,
-    ) -> None:
-        self._db.insert_audit_log(
-            task_id=task_id,
-            agent="founder",
-            action="dispatch_via_feishu_accepted",
-            payload={
-                "team": team,
-                "sender_id": sender_id,
-                "feishu_event_id": feishu_event_id,
-            },
-        )
-
-    def log_dispatch_via_feishu_rejected(
-        self,
-        *,
-        reason: str,
-        sender_id: str,
-        feishu_event_id: str,
-        task_id: str | None = None,
-    ) -> None:
-        self._db.insert_audit_log(
-            task_id=task_id if task_id is not None else "(none)",
-            agent="daemon",
-            action="dispatch_via_feishu_rejected",
-            payload={
-                "reason": reason,
-                "sender_id": sender_id,
-                "feishu_event_id": feishu_event_id,
             },
         )
 
@@ -1046,121 +870,6 @@ class AuditLogger:
             },
         )
 
-    # --- Feishu push correlation for script requests ---
-
-    def log_job_notify_sent(
-        self, *, task_id: str, job_id: str, feishu_message_id: str,
-    ) -> None:
-        self._db.insert_audit_log(
-            task_id=task_id,
-            agent="daemon",
-            action="job_notify_sent",
-            payload={
-                "script_request_id": job_id,
-                "feishu_message_id": feishu_message_id,
-            },
-        )
-
-    def log_job_notify_failed(
-        self, *, task_id: str, job_id: str, error: str,
-    ) -> None:
-        self._db.insert_audit_log(
-            task_id=task_id,
-            agent="daemon",
-            action="job_notify_failed",
-            payload={
-                "script_request_id": job_id,
-                "error": error,
-            },
-        )
-
-    def log_job_reply_processed(
-        self,
-        *,
-        job_id: str,
-        task_id: str,
-        decision: str,
-        rationale: str,
-        feishu_event_id: str | None = None,
-    ) -> None:
-        payload: dict = {
-            "script_request_id": job_id,
-            "decision": decision,
-            "rationale": rationale,
-        }
-        if feishu_event_id is not None:
-            payload["feishu_event_id"] = feishu_event_id
-        self._db.insert_audit_log(
-            task_id=task_id,
-            agent="founder",
-            action="job_reply_processed",
-            payload=payload,
-        )
-
-    def log_job_reply_rejected(
-        self,
-        *,
-        job_id: str,
-        task_id: str,
-        reason: str,
-        feishu_event_id: str | None = None,
-        text_preview: str | None = None,
-    ) -> None:
-        payload: dict = {
-            "script_request_id": job_id,
-            "reason": reason,
-        }
-        if feishu_event_id is not None:
-            payload["feishu_event_id"] = feishu_event_id
-        if text_preview is not None:
-            payload["text_preview"] = text_preview[:200]
-        self._db.insert_audit_log(
-            task_id=task_id,
-            agent="daemon",
-            action="job_reply_rejected",
-            payload=payload,
-        )
-
-    def log_job_run_result_notify_sent(
-        self,
-        *,
-        job_id: str,
-        task_id: str,
-        parent_message_id: str,
-        follow_up_message_id: str,
-        status: str,
-    ) -> None:
-        self._db.insert_audit_log(
-            task_id=task_id,
-            agent="daemon",
-            action="job_run_result_notify_sent",
-            payload={
-                "script_request_id": job_id,
-                "parent_message_id": parent_message_id,
-                "follow_up_message_id": follow_up_message_id,
-                "status": status,
-            },
-        )
-
-    def log_job_run_result_notify_failed(
-        self,
-        *,
-        job_id: str,
-        task_id: str,
-        error: str,
-        status: str,
-    ) -> None:
-        self._db.insert_audit_log(
-            task_id=task_id,
-            agent="daemon",
-            action="job_run_result_notify_failed",
-            payload={
-                "script_request_id": job_id,
-                "error": error,
-                "status": status,
-            },
-        )
-
     # --- Dream audit events ---
 
     def log_dream_scheduled(self, dream_id: str, agent: str, *, local_date: str) -> None:
@@ -1223,4 +932,71 @@ class AuditLogger:
             task_id=dream_id, agent=agent,
             action="dream_founder_thread_created",
             payload={"founder_thread_id": founder_thread_id},
+        )
+
+    # --- Working Hours ---
+    #
+    # As with dreams, ``audit_log.task_id`` stores ``WORKHOUR-NNN`` for these
+    # rows — the established generic-scope-id overload, NOT a new overload. The
+    # spawned root tasks emit their own ordinary ``task_*`` rows; the two
+    # streams correlate via the id list on ``work_hour_spawned``.
+
+    def log_work_hour_scheduled(
+        self, work_hour_id: str, agent: str, *, local_date: str, slot: str, mode: str,
+        dropped: int = 0,
+    ) -> None:
+        # ``dropped`` records routines discarded past MAX_ROUTINES_PER_WAKE so
+        # the cap leaves an audit trail (no silent truncation).
+        self._db.insert_audit_log(
+            task_id=work_hour_id, agent=agent,
+            action="work_hour_scheduled",
+            payload={"local_date": local_date, "slot": slot, "mode": mode, "dropped": dropped},
+        )
+
+    def log_work_hour_started(self, work_hour_id: str, agent: str) -> None:
+        self._db.insert_audit_log(
+            task_id=work_hour_id, agent=agent,
+            action="work_hour_started",
+            payload={},
+        )
+
+    def log_work_hour_spawned(
+        self, work_hour_id: str, agent: str, *, task_ids: list[str],
+    ) -> None:
+        """A wake self-dispatched its routine root tasks. Payload carries the
+        spawned root task_id list (the forward correlation to the task surface;
+        the reverse linkage is ``work_hours.spawned_task_ids``)."""
+        self._db.insert_audit_log(
+            task_id=work_hour_id, agent=agent,
+            action="work_hour_spawned",
+            payload={"task_ids": list(task_ids), "spawned_task_count": len(task_ids)},
+        )
+
+    def log_work_hour_completed(
+        self, work_hour_id: str, agent: str, *, spawned_task_count: int, routine_count: int,
+    ) -> None:
+        self._db.insert_audit_log(
+            task_id=work_hour_id, agent=agent,
+            action="work_hour_completed",
+            payload={
+                "spawned_task_count": spawned_task_count,
+                "routine_count": routine_count,
+            },
+        )
+
+    def log_work_hour_failed(self, work_hour_id: str, agent: str, *, reason: str) -> None:
+        self._db.insert_audit_log(
+            task_id=work_hour_id, agent=agent,
+            action="work_hour_failed",
+            payload={"reason": reason},
+        )
+
+    def log_work_hour_timeout(self, work_hour_id: str, agent: str, *, reason: str) -> None:
+        """Executor timeout for a wake. Distinct from work_hour_failed so the
+        timeout failure mode is queryable separately (spec "Audit And Token
+        Usage": work_hour_timeout). No tasks are spawned on timeout."""
+        self._db.insert_audit_log(
+            task_id=work_hour_id, agent=agent,
+            action="work_hour_timeout",
+            payload={"reason": reason},
         )

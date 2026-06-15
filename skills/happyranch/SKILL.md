@@ -142,7 +142,7 @@ scripts/happyranch kb reindex
 
 ## Shared Artifacts
 
-Org-wide blob store at `<runtime>/orgs/<slug>/artifacts/`. Flat directory (no nesting in v1) for persistent artifacts produced by agents — reports, exports, screenshots, PDFs. Files survive across tasks and are visible to every agent in the org.
+Org-wide blob store at `<runtime>/orgs/<slug>/artifacts/`. Supports nested keys with '/' path separators for logical folders. Persistent artifacts produced by agents — reports, exports, screenshots, PDFs. Files survive across tasks and are visible to every agent in the org.
 
 ```bash
 scripts/happyranch artifacts put <local-path> --agent <you> [--name <name>] [--org <slug>]
@@ -150,7 +150,7 @@ scripts/happyranch artifacts list [--org <slug>]
 scripts/happyranch artifacts get <name> --output <local-path> [--org <slug>]
 ```
 
-- Names match `[A-Za-z0-9._-]+`, max 200 chars; slash-bearing names rejected.
+- Names may use '/' as a path separator for logical folders. Each segment must match `[A-Za-z0-9._-]+`; max 200 chars total.
 - Size cap: 10 MB per file. Larger uploads return HTTP 413.
 - `put` is idempotent (overwrites by default). No version history.
 - `put` is audited (`action="artifact_put"`); `list` and `get` are not.

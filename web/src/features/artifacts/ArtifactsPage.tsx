@@ -25,7 +25,7 @@ function describeUploadError(err: unknown): string {
   if (err instanceof ApiError) {
     if (err.code === 'artifact_too_large') return 'File exceeds the 10 MB limit.';
     if (err.code === 'invalid_artifact_name') {
-      return 'Name may contain only letters, digits, dot, underscore, and hyphen.';
+      return 'Name: each segment (between slashes) must match [A-Za-z0-9._-]+; forward slash only as separator (no leading/trailing/empty segments). Max 200 characters, 10 MB file cap.';
     }
     return `Upload failed (HTTP ${err.status}).`;
   }
@@ -49,6 +49,7 @@ export function ArtifactsPage(): JSX.Element {
   const [name, setName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
   const listQuery = useQuery({
     queryKey: ['artifacts', slug],
@@ -153,7 +154,7 @@ export function ArtifactsPage(): JSX.Element {
               }}
             />
             <p className="text-fg-muted text-xs">
-              Letters, digits, dot, underscore, hyphen. Max 200 characters, 10 MB.
+              Each '/'-separated segment must match [A-Za-z0-9._-]+ (letters, digits, dot, underscore, hyphen). Forward slash only as separator; no leading/trailing/empty segments. Max 200 characters, 10 MB.
             </p>
           </div>
           {error && (
@@ -188,6 +189,11 @@ export function ArtifactsPage(): JSX.Element {
                   {deleteError}
                 </p>
               )}
+              {downloadError && !deleteError && (
+                <p role="alert" className="text-feedback-danger mb-2 text-sm">
+                  {downloadError}
+                </p>
+              )}
               <table className="w-full text-sm">
                 <thead>
                   <tr className="text-fg-muted border-border border-b text-left">
@@ -211,14 +217,22 @@ export function ArtifactsPage(): JSX.Element {
                       </td>
                       <td className="py-2">
                         <div className="flex items-center gap-4 whitespace-nowrap">
-                          <a
-                            href={artifactsApi.artifactDownloadPath(slug, a.name)}
-                            download={a.name}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDownloadError(null);
+                              artifactsApi.downloadArtifact(slug, a.name).catch((err: unknown) => {
+                                const msg = err instanceof ApiError
+                                  ? `Download failed (HTTP ${err.status}).`
+                                  : String(err);
+                                setDownloadError(msg);
+                              });
+                            }}
                             className="text-accent inline-flex items-center gap-1 hover:underline"
                           >
                             <Download size={14} aria-hidden="true" />
                             Download
-                          </a>
+                          </button>
                           <button
                             type="button"
                             onClick={() => requestDelete(a.name)}

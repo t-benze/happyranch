@@ -9,6 +9,14 @@ Every browser-callable daemon route maps to one TypeScript function in `web/src/
 - Python: `tests/contract/test_openapi_snapshot.py` pins OpenAPI to `tests/contract/openapi.json`. Regenerate intentional changes with `HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py`.
 - TypeScript: `web/src/test/openapi-coverage.test.ts` asserts every documented path is either included with a TS mirror or excluded with justification.
 
+### Settings dialog
+
+A read-only Settings dialog (Phase 1) is opened from the TopBar gear button. It shows daemon-wide System settings (CLI paths, session timeout, orchestration limits, restart-required badges) and Org-level settings (session timeout, dreaming, threads).
+
+The backend route (`GET /api/v1/orgs/{slug}/settings`) uses an allow-list serializer — no secret fields (permission_mode, codex_sandbox_mode, feishu credentials, daemon bind/port) are ever serialized. Tests recursively assert this invariant (`tests/daemon/test_routes_settings.py`).
+
+The frontend surface lives in `web/src/features/settings/SettingsDialog.tsx` with `lib/api/settings.ts`, `hooks/settings.ts`, and a `settings` domain in `DataContext`.
+
 Build and dev commands:
 
 ```bash

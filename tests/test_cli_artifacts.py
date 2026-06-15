@@ -148,7 +148,7 @@ def test_cmd_artifacts_list_invokes_client(capsys) -> None:
         args = argparse.Namespace(org="demo")
         cmd_artifacts_list(args)
 
-    fake.list_artifacts.assert_called_once_with(slug="demo")
+    fake.list_artifacts.assert_called_once_with(slug="demo", prefix="")
     out = capsys.readouterr().out
     assert "a.txt" in out
     assert "b.bin" in out

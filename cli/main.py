@@ -32,6 +32,7 @@ from cli.commands import (
     runtime,
     tasks,
     threads,
+    work_hours,
 )
 from cli.commands.dreams import (  # noqa: F401
     _complete_payload_from_file as _dream_complete_payload_from_file,
@@ -39,6 +40,12 @@ from cli.commands.dreams import (  # noqa: F401
     cmd_dreams_list,
     cmd_dreams_show,
     cmd_dreams_status,
+)
+from cli.commands.work_hours import (  # noqa: F401
+    cmd_work_hours_list,
+    cmd_work_hours_show,
+    cmd_work_hours_spawn,
+    cmd_work_hours_status,
 )
 from cli.commands.runtime import (  # noqa: F401  (re-export for back-compat)
     cmd_init,
@@ -154,7 +161,7 @@ def build_parser() -> argparse.ArgumentParser:
     artifacts.register(sub)
     assistant.register(sub)
     dreams.register(sub)
-
+    work_hours.register(sub)
     threads.register(sub)
 
     return parser

@@ -145,7 +145,7 @@ def _purpose_note(
                 f"she sees it in context (pull details via `happyranch details "
                 f"{task_id}`). Do not attempt to resolve the escalation "
                 f"yourself; do not dispatch a new task from this turn. Decline "
-                f"if the Feishu escalation already says everything and a thread "
+                f"if the escalation already says everything and a thread "
                 f"restatement adds nothing."
             )
         return (

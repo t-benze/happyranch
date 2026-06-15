@@ -49,23 +49,6 @@ async def test_revisit_with_cli_actor_consumes_failure_notification(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_revisit_with_feishu_actor_does_not_consume(tmp_path: Path):
-    """The listener consumes the row separately at step 8r. The helper
-    must NOT also try to consume — would race with the listener consume."""
-    from runtime.daemon.routes.tasks import revisit_from_notification
-    org, state, db = _build_org_state(tmp_path)
-
-    await revisit_from_notification(
-        org, state, task_id="TASK-9", founder_note="retry it",
-        actor="feishu-reply",
-    )
-
-    row = db.get_escalation_notification("om_root")
-    assert row["consumed_at"] is None  # listener will consume separately
-    assert row["consumed_by"] is None
-
-
-@pytest.mark.asyncio
 async def test_revisit_with_cli_actor_does_not_consume_escalation_kind(tmp_path: Path):
     """Only kind='failure' notifications should be consumed via the
     cli-fallback path. kind='escalation' rows are owned by

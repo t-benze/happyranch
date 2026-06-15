@@ -785,7 +785,10 @@ def _shared_artifacts_section() -> list[str]:
         "```\n",
         "Naming convention: prefix with your agent name + ISO date for",
         "traceability, e.g. `dev_agent-YYYY-MM-DD-perf-report.pdf`. Names must",
-        "match `[A-Za-z0-9._-]+`, max 200 chars. Per-file size cap: 10 MB.\n",
+        "match `[A-Za-z0-9._-]+`; max 200 chars total. Per-file size cap: 10 MB.\n",
+        "Names may use '/' as a path separator for logical folders;",
+        "traversal-guard rejects '..', leading/trailing '/', empty '//',",
+        "backslashes, absolute paths, and symlink escapes.\n",
     ]
 ```
 

@@ -22,6 +22,7 @@ import { createContext, useContext } from 'react';
 import type {
   HealthResponse,
   OrgsListResponse,
+  SettingsSnapshot,
   ThreadDetailResponse,
   ThreadMessage,
   ThreadRecord,
@@ -344,6 +345,14 @@ export interface DashboardApi {
   useDashboardSummary: () => QueryLike<DashboardSummaryResponse>;
 }
 
+// ---------------------------------------------------------------------------
+// SettingsApi — read-only System + Org settings surface.
+// ---------------------------------------------------------------------------
+
+export interface SettingsApi {
+  useSettings: () => QueryLike<SettingsSnapshot>;
+}
+
 /**
  * Per-feature URL builders. Compositions consume these via the
  * provider-aware `useThreadRoutes()` hook in `@/hooks/threads` instead of
@@ -378,6 +387,7 @@ export interface DataContextValue {
   assistant: AssistantApi;
   jobs: JobsApi;
   dashboard: DashboardApi;
+  settings: SettingsApi;
   /**
    * Provider-supplied React hook that returns the active feature's route
    * builders. A hook (not a plain object) so the implementation can read

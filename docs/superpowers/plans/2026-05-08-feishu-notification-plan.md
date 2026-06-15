@@ -1,5 +1,7 @@
 # Feishu Escalation Notification — Phase 1 + Phase 2 Implementation Plan
 
+**Status: REMOVED in TASK-302 (THR-022).** Web UI + threads are sole control surface. DB tables dormant.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** When a task transitions to `BLOCKED/ESCALATED`, the daemon sends a Feishu post message to a configured 1:1 chat. The founder replies in the thread with `APPROVE` or `REJECT` + rationale; a long-lived event listener parses the reply and calls the existing `resolve_escalation` route in-process — same effect as `opc resolve-escalation`.

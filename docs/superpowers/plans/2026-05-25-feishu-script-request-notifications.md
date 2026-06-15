@@ -1,5 +1,7 @@
 # Feishu Notifications for Script Requests — Implementation Plan
 
+**Status: REMOVED in TASK-302 (THR-022).** Web UI + threads are sole control surface. DB tables dormant.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Push a Feishu message when an agent submits a script request, support APPROVE/REJECT verbs in the founder's threaded reply, and post a follow-up with the run's terminal result.

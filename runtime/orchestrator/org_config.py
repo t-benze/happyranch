@@ -19,22 +19,6 @@ class OrgConfigError(ValueError):
     """Raised when org/config.yaml is malformed or fails validation."""
 
 
-# region → SDK domain literal accepted by lark_oapi.Client.builder().domain(...)
-FEISHU_REGIONS = {"feishu", "lark"}
-
-
-@dataclass(frozen=True)
-class FeishuNotificationsConfig:
-    provider: str
-    region: str
-    chat_id: str
-    app_id: str
-    app_secret: str
-    reply_ttl_hours: int = 72
-    notify_on_failure: bool = False
-    allow_dispatch: bool = False
-
-
 @dataclass(frozen=True)
 class DreamingConfig:
     enabled: bool = False
@@ -46,11 +30,115 @@ class DreamingConfig:
     exclude_agents: list[str] = field(default_factory=list)
 
 
+_WORK_HOURS_MODES = ("windowed", "continuous")
+_WORK_HOURS_DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+_INTERVAL_RE = re.compile(r"^(\d+)([hm])$")
+_HHMM_RE = re.compile(r"^[0-2][0-9]:[0-5][0-9]$")
+_DAY_SECONDS = 24 * 60 * 60
+
+
+@dataclass(frozen=True)
+class WorkHoursScheduleLayer:
+    """A partial working-hours schedule. Any leaf left ``None`` inherits from a
+    lower precedence tier during ``WorkingHoursConfig.resolve_for``."""
+    mode: str | None = None
+    window_start: str | None = None
+    window_end: str | None = None
+    timezone: str | None = None
+    interval: str | None = None
+    days: tuple[str, ...] | None = None
+    catch_up_on_startup: bool | None = None
+
+
+@dataclass(frozen=True)
+class WorkHoursSchedule:
+    """A fully resolved effective schedule for one agent (all required leaves
+    present for its ``mode``)."""
+    mode: str
+    interval: str
+    timezone: str
+    catch_up_on_startup: bool
+    window_start: str | None = None
+    window_end: str | None = None
+    days: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True)
+class WorkingHoursConfig:
+    enabled: bool = False
+    default: WorkHoursScheduleLayer = field(default_factory=WorkHoursScheduleLayer)
+    teams: dict[str, WorkHoursScheduleLayer] = field(default_factory=dict)
+    overrides: dict[str, WorkHoursScheduleLayer] = field(default_factory=dict)
+    agent_mode: str = "all"
+    include_agents: list[str] = field(default_factory=list)
+    exclude_agents: list[str] = field(default_factory=list)
+
+    def resolve_for(self, agent_name: str, team: str | None) -> WorkHoursSchedule:
+        """Overlay the three tiers (default -> teams.<team> -> overrides.<agent>)
+        leaf-by-leaf and validate the resolved effective schedule. Raises
+        OrgConfigError if the merged schedule is incomplete or incoherent for
+        its mode."""
+        leaves = (
+            "mode", "window_start", "window_end", "timezone",
+            "interval", "days", "catch_up_on_startup",
+        )
+        merged: dict[str, object | None] = {leaf: None for leaf in leaves}
+        layers = [self.default]
+        if team is not None and team in self.teams:
+            layers.append(self.teams[team])
+        if agent_name in self.overrides:
+            layers.append(self.overrides[agent_name])
+        for layer in layers:
+            for leaf in leaves:
+                value = getattr(layer, leaf)
+                if value is not None:
+                    merged[leaf] = value
+
+        where = f"working_hours (resolved for agent {agent_name!r})"
+        mode = merged["mode"]
+        if mode is None:
+            raise OrgConfigError(f"{where}: mode is required (after resolution)")
+        timezone = merged["timezone"]
+        if timezone is None:
+            raise OrgConfigError(f"{where}: a timezone is required (after resolution)")
+        interval = merged["interval"]
+        if interval is None:
+            raise OrgConfigError(f"{where}: interval is required (after resolution)")
+        catch_up = merged["catch_up_on_startup"]
+        catch_up = True if catch_up is None else bool(catch_up)
+
+        if mode == "continuous":
+            # window and days are ignored in continuous mode.
+            _check_interval_divides_day(interval, where)
+            return WorkHoursSchedule(
+                mode="continuous", interval=interval, timezone=timezone,
+                catch_up_on_startup=catch_up,
+            )
+
+        # windowed: window.{start,end} + days required after resolution.
+        window_start = merged["window_start"]
+        window_end = merged["window_end"]
+        days = merged["days"]
+        if window_start is None or window_end is None:
+            raise OrgConfigError(
+                f"{where}: windowed mode requires window.start and window.end "
+                f"(after resolution)"
+            )
+        if days is None:
+            raise OrgConfigError(f"{where}: windowed mode requires days (after resolution)")
+        _check_window_and_interval(window_start, window_end, interval, where)
+        return WorkHoursSchedule(
+            mode="windowed", interval=interval, timezone=timezone,
+            catch_up_on_startup=catch_up, window_start=window_start,
+            window_end=window_end, days=tuple(days),
+        )
+
+
 @dataclass(frozen=True)
 class OrgConfig:
     session_timeout_seconds: int | None = None
-    feishu_notifications: FeishuNotificationsConfig | None = None
     dreaming: DreamingConfig = field(default_factory=DreamingConfig)
+    working_hours: WorkingHoursConfig = field(default_factory=WorkingHoursConfig)
     threads_enabled: bool = True
     threads_default_turn_cap: int = 500
     threads_invocation_timeout_seconds: int | None = None
@@ -67,13 +155,15 @@ class OrgConfig:
         return _build_org_config(data, path)
 
 
-def _validate_agent_list(value: object, name: str, path: str) -> list[str]:
+def _validate_agent_list(
+    value: object, name: str, path: str, *, prefix: str = "dreaming.agents",
+) -> list[str]:
     if value is None:
         return []
     if not isinstance(value, list):
-        raise OrgConfigError(f"{path}: dreaming.agents.{name} must be a list")
+        raise OrgConfigError(f"{path}: {prefix}.{name} must be a list")
     if not all(isinstance(item, str) for item in value):
-        raise OrgConfigError(f"{path}: dreaming.agents.{name} entries must be strings")
+        raise OrgConfigError(f"{path}: {prefix}.{name} entries must be strings")
     return list(value)
 
 
@@ -139,73 +229,195 @@ def _parse_dreaming(block: dict, path: str) -> DreamingConfig:
     )
 
 
-def _parse_feishu_notifications(
-    block: dict, path: str,
-) -> FeishuNotificationsConfig | None:
-    if not block.get("enabled", False):
-        return None
+def _interval_to_seconds(value: str) -> int:
+    """Convert an already-format-validated ``Nh``/``Nm`` interval to seconds."""
+    m = _INTERVAL_RE.match(value)
+    assert m is not None  # callers validate format first
+    return int(m.group(1)) * (3600 if m.group(2) == "h" else 60)
 
-    provider = block.get("provider")
-    if provider != "feishu":
+
+def _hhmm_to_seconds(value: str) -> int:
+    return int(value[:2]) * 3600 + int(value[3:]) * 60
+
+
+def _validate_timezone(value: object, label: str, path: str) -> str:
+    if not isinstance(value, str):
+        raise OrgConfigError(f"{path}: {label} must be a string")
+    try:
+        ZoneInfo(value)
+    except ZoneInfoNotFoundError as exc:
+        raise OrgConfigError(f"{path}: unknown {label} {value!r}") from exc
+    return value
+
+
+def _validate_window_time(value: object, label: str, path: str) -> str:
+    if not isinstance(value, str) or not _HHMM_RE.match(value) or int(value[:2]) > 23:
+        raise OrgConfigError(f"{path}: {label} must be HH:MM (hour 00-23)")
+    return value
+
+
+def _validate_interval_format(value: object, label: str, path: str) -> str:
+    if not isinstance(value, str):
+        raise OrgConfigError(f"{path}: {label} must be a string like '2h' or '30m'")
+    m = _INTERVAL_RE.match(value)
+    if not m or int(m.group(1)) <= 0:
+        raise OrgConfigError(f"{path}: {label} must be Nh or Nm and positive, got {value!r}")
+    return value
+
+
+def _validate_days_list(value: object, label: str, path: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(isinstance(d, str) for d in value):
+        raise OrgConfigError(f"{path}: {label} must be a list of day names")
+    bad = [d for d in value if d not in _WORK_HOURS_DAYS]
+    if bad:
         raise OrgConfigError(
-            f"{path}: feishu_notifications.provider must be 'feishu' in v1, "
-            f"got {provider!r}"
+            f"{path}: {label} has invalid days {bad}; allowed: {list(_WORK_HOURS_DAYS)}"
+        )
+    return tuple(value)
+
+
+def _check_interval_divides_day(interval: str, where: str) -> None:
+    if _DAY_SECONDS % _interval_to_seconds(interval) != 0:
+        raise OrgConfigError(
+            f"{where}: continuous interval {interval!r} must evenly divide 24h"
         )
 
-    region = block.get("region")
-    if region not in FEISHU_REGIONS:
+
+def _check_window_and_interval(start: str, end: str, interval: str, where: str) -> None:
+    if start >= end:
+        raise OrgConfigError(f"{where}: window.start must be before window.end")
+    window_seconds = _hhmm_to_seconds(end) - _hhmm_to_seconds(start)
+    if _interval_to_seconds(interval) > window_seconds:
         raise OrgConfigError(
-            f"{path}: feishu_notifications.region must be one of "
-            f"{sorted(FEISHU_REGIONS)}, got {region!r}"
+            f"{where}: interval {interval!r} is longer than the window length"
         )
 
-    chat_id = block.get("chat_id")
-    if not chat_id or not isinstance(chat_id, str):
+
+def _validate_layer_coherence(layer: WorkHoursScheduleLayer, label: str, path: str) -> None:
+    """Single-layer cross-leaf checks at load time. Cross-tier effective-schedule
+    validation additionally runs in ``WorkingHoursConfig.resolve_for``."""
+    where = f"{path}: {label}"
+    if layer.window_start is not None and layer.window_end is not None:
+        if layer.window_start >= layer.window_end:
+            raise OrgConfigError(f"{where}.window.start must be before window.end")
+    if layer.mode == "continuous" and layer.interval is not None:
+        _check_interval_divides_day(layer.interval, where)
+    if (
+        layer.mode == "windowed"
+        and layer.interval is not None
+        and layer.window_start is not None
+        and layer.window_end is not None
+    ):
+        _check_window_and_interval(layer.window_start, layer.window_end, layer.interval, where)
+
+
+def _parse_schedule_layer(block: object, path: str, label: str) -> WorkHoursScheduleLayer:
+    if block is None:
+        block = {}
+    if not isinstance(block, dict):
+        raise OrgConfigError(f"{path}: {label} must be a mapping")
+
+    mode = block.get("mode")
+    if mode is not None and mode not in _WORK_HOURS_MODES:
         raise OrgConfigError(
-            f"{path}: feishu_notifications.chat_id is required when enabled"
+            f"{path}: {label}.mode must be one of {list(_WORK_HOURS_MODES)}, got {mode!r}"
         )
 
-    app_id = block.get("app_id")
-    if not app_id or not isinstance(app_id, str):
-        raise OrgConfigError(
-            f"{path}: feishu_notifications.app_id is required when enabled"
-        )
+    window = block.get("window")
+    window_start = window_end = window_tz = None
+    if window is not None:
+        if not isinstance(window, dict):
+            raise OrgConfigError(f"{path}: {label}.window must be a mapping")
+        if "start" in window:
+            window_start = _validate_window_time(window["start"], f"{label}.window.start", path)
+        if "end" in window:
+            window_end = _validate_window_time(window["end"], f"{label}.window.end", path)
+        if "timezone" in window:
+            window_tz = _validate_timezone(window["timezone"], f"{label}.window.timezone", path)
 
-    app_secret = block.get("app_secret")
-    if not app_secret or not isinstance(app_secret, str):
-        raise OrgConfigError(
-            f"{path}: feishu_notifications.app_secret is required when enabled"
-        )
+    # window.timezone wins; a bare ``timezone`` leaf is the continuous-mode form.
+    timezone = window_tz
+    if timezone is None and "timezone" in block:
+        timezone = _validate_timezone(block["timezone"], f"{label}.timezone", path)
 
-    ttl = _validate_positive_int(
-        block.get("reply_ttl_hours", 72),
-        "feishu_notifications.reply_ttl_hours",
-        min_v=1, max_v=720, path=path,
+    interval = block.get("interval")
+    if interval is not None:
+        interval = _validate_interval_format(interval, f"{label}.interval", path)
+
+    days = block.get("days")
+    if days is not None:
+        days = _validate_days_list(days, f"{label}.days", path)
+
+    catch_up = block.get("catch_up_on_startup")
+    if catch_up is not None and not isinstance(catch_up, bool):
+        raise OrgConfigError(f"{path}: {label}.catch_up_on_startup must be a boolean")
+
+    layer = WorkHoursScheduleLayer(
+        mode=mode,
+        window_start=window_start,
+        window_end=window_end,
+        timezone=timezone,
+        interval=interval,
+        days=days,
+        catch_up_on_startup=catch_up,
     )
+    _validate_layer_coherence(layer, label, path)
+    return layer
 
-    notify_on_failure = block.get("notify_on_failure", False)
-    if not isinstance(notify_on_failure, bool):
+
+def _parse_working_hours(block: object, path: str) -> WorkingHoursConfig:
+    if not isinstance(block, dict):
+        raise OrgConfigError(f"{path}: working_hours must be a mapping")
+
+    enabled = block.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise OrgConfigError(f"{path}: working_hours.enabled must be a boolean")
+
+    default = _parse_schedule_layer(block.get("default"), path, "working_hours.default")
+
+    agents = block.get("agents", {})
+    if agents is None:
+        agents = {}
+    if not isinstance(agents, dict):
+        raise OrgConfigError(f"{path}: working_hours.agents must be a mapping")
+    mode = agents.get("mode", "all")
+    if mode not in {"all", "whitelist"}:
         raise OrgConfigError(
-            f"{path}: feishu_notifications.notify_on_failure must be a boolean, "
-            f"got {type(notify_on_failure).__name__}"
+            f"{path}: working_hours.agents.mode must be one of ['all', 'whitelist']"
         )
 
-    allow_dispatch = block.get("allow_dispatch", False)
-    if not isinstance(allow_dispatch, bool):
-        raise OrgConfigError(
-            f"{path}: feishu_notifications.allow_dispatch must be a boolean, "
-            f"got {type(allow_dispatch).__name__}"
-        )
+    teams_block = block.get("teams", {})
+    if teams_block is None:
+        teams_block = {}
+    if not isinstance(teams_block, dict):
+        raise OrgConfigError(f"{path}: working_hours.teams must be a mapping")
+    teams = {
+        name: _parse_schedule_layer(value, path, f"working_hours.teams.{name}")
+        for name, value in teams_block.items()
+    }
 
-    return FeishuNotificationsConfig(
-        provider=provider,
-        region=region,
-        chat_id=chat_id,
-        app_id=app_id,
-        app_secret=app_secret,
-        reply_ttl_hours=ttl,
-        notify_on_failure=notify_on_failure,
-        allow_dispatch=allow_dispatch,
+    overrides_block = block.get("overrides", {})
+    if overrides_block is None:
+        overrides_block = {}
+    if not isinstance(overrides_block, dict):
+        raise OrgConfigError(f"{path}: working_hours.overrides must be a mapping")
+    overrides = {
+        name: _parse_schedule_layer(value, path, f"working_hours.overrides.{name}")
+        for name, value in overrides_block.items()
+    }
+
+    return WorkingHoursConfig(
+        enabled=enabled,
+        default=default,
+        teams=teams,
+        overrides=overrides,
+        agent_mode=mode,
+        include_agents=_validate_agent_list(
+            agents.get("include"), "include", path, prefix="working_hours.agents"
+        ),
+        exclude_agents=_validate_agent_list(
+            agents.get("exclude"), "exclude", path, prefix="working_hours.agents"
+        ),
     )
 
 
@@ -252,17 +464,19 @@ def _build_org_config(data: dict, path: str) -> OrgConfig:
                 f"got {timeout!r}"
             )
 
-    feishu_block = data.get("feishu_notifications")
-    feishu_cfg: FeishuNotificationsConfig | None = None
-    if feishu_block is not None:
-        if not isinstance(feishu_block, dict):
-            raise OrgConfigError(f"{path}: feishu_notifications must be a mapping")
-        feishu_cfg = _parse_feishu_notifications(feishu_block, path)
+    # feishu_notifications is tolerated but ignored — Feishu was removed
+    # (TASK-302/THR-022). Legacy configs with this key load without error.
+    _feishu_block = data.get("feishu_notifications")
 
     dreaming_block = data.get("dreaming")
     dreaming_cfg = DreamingConfig()
     if dreaming_block is not None:
         dreaming_cfg = _parse_dreaming(dreaming_block, path)
+
+    working_hours_block = data.get("working_hours")
+    working_hours_cfg = WorkingHoursConfig()
+    if working_hours_block is not None:
+        working_hours_cfg = _parse_working_hours(working_hours_block, path)
 
     threads_block = data.get("threads")
     threads_kwargs: dict = {}
@@ -271,8 +485,8 @@ def _build_org_config(data: dict, path: str) -> OrgConfig:
 
     return OrgConfig(
         session_timeout_seconds=timeout,
-        feishu_notifications=feishu_cfg,
         dreaming=dreaming_cfg,
+        working_hours=working_hours_cfg,
         **threads_kwargs,
     )
 

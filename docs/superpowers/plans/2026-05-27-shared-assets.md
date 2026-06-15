@@ -5,6 +5,10 @@
 > design below is otherwise current; substitute `assets` → `artifacts`,
 > `AssetStore` → `ArtifactStore`, `asset_put` → `artifact_put` when reading.
 
+> **2026-06-14 note (TASK-305 — nested-key support):** Flat namespace only
+> was the v1 constraint below. Nested keys with '/' path separators are now
+> supported; the per-segment char set is still `[A-Za-z0-9._-]+`.
+
 > **2026-06-10 note (Scope B — THR-007, TASK-070):** Delete, listed as
 > out-of-scope for v1 below, has since shipped: `DELETE /artifacts/{name}`
 > (`ArtifactStore.delete` + `AuditLogger.log_artifact_delete`, action
@@ -19,7 +23,7 @@
 **Goal:** Add an org-shared `assets/` directory where any agent can deposit persistent artifacts (reports, exports, screenshots, PDFs) that survive across tasks and are visible to every other agent in the same org.
 
 **Architecture:**
-- Org-scoped flat directory at `<runtime>/orgs/<slug>/assets/`. One folder per org; no nesting v1.
+- Org-scoped flat directory at `<runtime>/orgs/<slug>/assets/`. One folder per org; no nesting v1. _(Superseded by TASK-305: nested keys with '/' separator are now supported — the store root remains org-scoped but artifacts can live at nested logical paths.)_
 - Access exclusively via daemon HTTP routes + `happyranch assets {put,list,get}` CLI. Direct filesystem writes are blocked by Codex `workspace-write` sandbox and Opencode bash deny-by-default; the `happyranch` prefix is the only access path that works uniformly across Claude / Codex / Opencode executors.
 - Mirrors the KB pattern (file-backed, atomic writes, audited) but without metadata/frontmatter — assets are opaque blobs.
 - All three executor adapters get a new bootstrap section so every dispatched agent learns the folder's purpose and CLI on its next task.
@@ -36,14 +40,14 @@
 - Only `happyranch` is in the baseline allow-rule for every agent. Wrapping asset ops in `happyranch assets ...` is the only design that works for all three executors without per-executor permission gymnastics.
 
 **Validation rules:**
-- Name: matches `^[A-Za-z0-9._-]+$`, length 1-200, does not start with `.`, does not contain `..` or `/`.
+- Name: may use '/' as a path separator for logical folders. Each segment must match `[A-Za-z0-9._-]+`; length 1-200 total. No leading/trailing '/', no empty '//' segments, no '..' segments, no leading '.', no backslashes, no absolute paths. A path-traversal guard rejects symlink escapes outside the org root before any read/write.
 - Size: max 10 MB per file (`MAX_ASSET_BYTES = 10 * 1024 * 1024`). Larger uploads → HTTP 413.
 - Overwrite: PUT is idempotent — overwrites if name exists. No version history v1.
 
 **Out of scope for v1 (explicitly):**
 - Delete (`rm`) — founder can filesystem-delete if needed; defer until there's a real need. _(Shipped in Scope B / THR-007 as a daemon `DELETE` route + web UI control — see the 2026-06-10 note at the top. Still no CLI `rm` verb.)_
-- Subdirectories / nested paths — flat namespace only. Agents can encode structure in the name (`cx-2026-05-27-report.pdf`).
-- Search / prefix filtering — `list` returns all; agents can grep client-side.
+- Subdirectories / nested paths — flat namespace only. Agents can encode structure in the name (`cx-2026-05-27-report.pdf`). _(Superseded by TASK-305: nested keys with '/' separator are now supported.)_
+- Search / prefix filtering — `list` returns all; agents can grep client-side. _(Superseded by TASK-305: `list` supports `?prefix=` filtering.)_
 - Web UI — `web/src/lib/api/assets.ts` not created; routes go in the OpenAPI `EXCLUDED_PATHS` set with reason "agent-facing v1, founder UI later".
 - Per-agent attribution beyond a string field on the audit row — no quotas, no enforcement.
 
@@ -283,7 +287,7 @@ Expected: `ModuleNotFoundError: No module named 'src.infrastructure.asset_store'
 - [ ] **Step 3: Implement `src/infrastructure/asset_store.py`**
 
 ```python
-"""Org-shared asset storage. Flat directory of opaque blobs.
+"""Org-shared asset storage. Directory of opaque blobs (nested-key support added in TASK-305 — '/' separates logical folders).
 
 Persistent artifacts produced by agents (reports, exports, screenshots, PDFs)
 live here. Visible to every agent in the org via `happyranch assets {put,list,get}`.
@@ -302,6 +306,8 @@ from pathlib import Path
 
 
 MAX_ASSET_BYTES = 10 * 1024 * 1024  # 10 MB hard cap per file (v1).
+# NOTE (TASK-305): _NAME_RE is now per-segment — '/' is a legal separator.
+# The v1 flat-only regex shown here is retained as historical context only.
 _NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _MAX_NAME_LEN = 200
 
@@ -326,7 +332,7 @@ class AssetInfo:
 
 
 class AssetStore:
-    """File-backed flat blob store. Single directory; no nesting."""
+    """File-backed blob store. Nested-key support added in TASK-305 — '/' separates logical folders."""
 
     def __init__(self, root: Path) -> None:
         self._root = root
@@ -642,7 +648,7 @@ Expected: 404 on all routes (no router registered yet).
 - [ ] **Step 4: Implement `src/daemon/routes/assets.py`**
 
 ```python
-"""Org-shared assets routes. Flat blob store, atomic writes, audited puts.
+"""Org-shared assets routes. Blob store, atomic writes, audited puts (nested keys via '/' separator added in TASK-305).
 
 Auth: same bearer token as every other org-scoped route. No per-agent
 authorization — any agent that can hit the daemon can put/list/get.
@@ -1075,8 +1081,9 @@ def _shared_assets_section() -> list[str]:
         "happyranch assets get <name> --output <local-path>",
         "```\n",
         "Naming convention: prefix with your agent name + ISO date for",
-        "traceability, e.g. `dev_agent-2026-05-27-perf-report.pdf`. Names must",
-        "match `[A-Za-z0-9._-]+`, max 200 chars. Per-file size cap: 10 MB.\n",
+        "traceability, e.g. `dev_agent-2026-05-27-perf-report.pdf`. Names may",
+        "use '/' as a path separator for logical folders. Each segment must",
+        "match `[A-Za-z0-9._-]+`; max 200 chars total. Per-file size cap: 10 MB.\n",
     ]
 ```
 
@@ -1295,9 +1302,9 @@ Find the runtime layout block (under "Directory Layout"). After the `talks/` lin
 After the "Per-Agent Learnings" section, insert:
 
 ```markdown
-## Shared Assets (org-wide blob store)
+## Shared Assets (org-wide store — nested-key, see TASK-305)
 
-Per-org at `<runtime>/orgs/<slug>/assets/`. Flat directory of opaque files —
+Per-org at `<runtime>/orgs/<slug>/assets/`. Directory of opaque files, addressable by nested '/'-separated keys (see the TASK-305 note below) —
 persistent artifacts produced by any agent and visible to every other agent
 in the same org. Implementation: `src/infrastructure/asset_store.py` +
 `src/daemon/routes/assets.py`. CLI: `happyranch assets {put,list,get}`.
@@ -1308,9 +1315,11 @@ in the same org. Implementation: `src/infrastructure/asset_store.py` +
   Opencode (bash deny-by-default) both block direct writes outside the
   agent's workspace; only the `happyranch` baseline allow-rule works across
   all three executors. Don't add a "just `cat`/`cp` it" agent skill.
-- **Flat namespace; no nesting v1** — names match `[A-Za-z0-9._-]+`, max
-  200 chars, no leading `.`. Slash-bearing names rejected as
-  `invalid_asset_name`.
+- **Nested-key support (TASK-305)** — names may use `/` as a path separator
+  for logical folders. Each segment must match `[A-Za-z0-9._-]+`; max 200
+  chars total. No leading/trailing `/`, empty `//`, `..` segments, backslashes,
+  or absolute paths. Traversal guard rejects symlink escapes outside the org
+  root before any read/write.
 - **Size cap is 10 MB per file** (`MAX_ASSET_BYTES`). Larger uploads → HTTP
   413. v1 has no chunking / multipart resumption.
 - **PUT is idempotent (overwrites)** — no version history; agents are

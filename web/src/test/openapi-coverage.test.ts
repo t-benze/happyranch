@@ -97,6 +97,10 @@ const INCLUDED_PATHS = new Set<string>([
   'GET /api/v1/orgs/{slug}/dreams/status',
   'GET /api/v1/orgs/{slug}/dreams',
   'GET /api/v1/orgs/{slug}/dreams/{dream_id}',
+  // work-hours — founder-facing list/show/status; spawn is agent callback
+  'GET /api/v1/orgs/{slug}/work-hours/status',
+  'GET /api/v1/orgs/{slug}/work-hours',
+  'GET /api/v1/orgs/{slug}/work-hours/{work_hour_id}',
   // dashboard — founder-facing summary rollup
   'GET /api/v1/orgs/{slug}/dashboard/summary',
   // agents — founder-facing (enrollment + read-only learnings)
@@ -120,6 +124,8 @@ const INCLUDED_PATHS = new Set<string>([
   'POST /api/v1/assistant/repair',
   // artifacts — founder artifacts UI delete (mirror: deleteArtifact in lib/api/artifacts.ts)
   'DELETE /api/v1/orgs/{slug}/artifacts/{name}',
+  // settings — founder-facing read-only System + Org settings
+  'GET /api/v1/orgs/{slug}/settings',
 ]);
 
 /**
@@ -161,6 +167,8 @@ const EXCLUDED_PATHS = new Map<string, string>([
   ['GET /api/v1/orgs/{slug}/artifacts/{name}', 'agent-facing v1; also founder artifacts UI download'],
   // dreams agent callback
   ['POST /api/v1/orgs/{slug}/dreams/{dream_id}/complete', 'agent callback'],
+  // work-hours wake spawn — agent callback (single-line --from-file), not browser-callable
+  ['POST /api/v1/orgs/{slug}/work-hours/{work_hour_id}/spawn', 'agent callback'],
   // KB view-tracking read surface — agent-CLI `happyranch kb stats` only; not
   // wired into the SPA. Read-only (never increments), so no surface-header
   // concern. See kb-view-tracking-caller-signal.

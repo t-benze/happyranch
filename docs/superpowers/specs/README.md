@@ -50,8 +50,8 @@ New specs should include a short status block near the top:
 | `2026-04-26-talk-dispatch-design.md` | removed | Talk dispatch removed with the talk surface; thread self-dispatch remains. |
 | `2026-04-28-parallel-multi-org-runtime-design.md` | implemented | Uses old `opc` naming; current runtime guide is `docs/agent-guides/project-layout.md`. |
 | `2026-05-05-token-usage-tracking-design.md` | implemented | Current CLI/API: README and `runtime/daemon/routes/tokens.py`. |
-| `2026-05-08-feishu-notification-design.md` | implemented | Current Feishu guide: README and `docs/setup/feishu-notifications.md`. |
-| `2026-05-12-feishu-interactive-actions-design.md` | implemented | Current Feishu behavior: `docs/agent-guides/features-and-invariants.md`. |
+| `2026-05-08-feishu-notification-design.md` | removed | REMOVED in TASK-302 (THR-022). DB tables dormant; web UI + threads are sole control surface. |
+| `2026-05-12-feishu-interactive-actions-design.md` | removed | REMOVED in TASK-302 (THR-022). DB tables dormant; web UI + threads are sole control surface. |
 | `2026-05-13-per-agent-learnings-structural-upgrade-design.md` | implemented | Current learnings behavior: README and feature guide. |
 | `2026-05-13-threads-design.md` | superseded | Close-out/abandon flow replaced by `2026-06-01-thread-close-out-removal-and-resume-design.md`. |
 | `2026-05-14-web-ui-design.md` | implemented | Current web contract: `docs/agent-guides/web-and-cli.md`, `web/ARCHITECTURE.md`. |
@@ -65,7 +65,7 @@ New specs should include a short status block near the top:
 | `2026-05-19-web-talks-design.md` | removed | Talks UI/API removed with the talk surface (THR-023). |
 | `2026-05-20-agent-initiated-threads-design.md` | implemented | Current thread compose-as-agent route and thread skill. |
 | `2026-05-23-agent-script-requests-design.md` | superseded | Renamed and extended by jobs. Current contract: `2026-05-26-jobs-design.md` and jobs skill. |
-| `2026-05-25-feishu-script-request-notifications-design.md` | superseded | Script requests renamed to jobs; current Feishu jobs behavior is in implementation and feature guide. |
+| `2026-05-25-feishu-script-request-notifications-design.md` | removed | REMOVED in TASK-302 (THR-022). DB tables dormant; web UI + threads are sole control surface. |
 | `2026-05-25-session-timeout-auto-route-design.md` | implemented | Current auto-revisit notes: feature guide. |
 | `2026-05-26-cancel-race-design.md` | implemented | Current cancel behavior in task routes and run-step helpers. |
 | `2026-05-26-jobs-design.md` | current | Current jobs design companion; executable truth in `protocol/skills/jobs/SKILL.md` and `runtime/daemon/routes/jobs.py`. |
@@ -87,3 +87,4 @@ New specs should include a short status block near the top:
 | `2026-06-09-thread-file-attachments-design.md` | proposed | Artifact-backed thread attachment design; pending implementation. |
 | `2026-06-10-assistant-self-registration-design.md` | implemented | Replaces system-assistant executor probing with CLI self-registration (`assistant register`); implemented in `runtime/daemon/routes/assistant.py` (`/assistant/init`, `/assistant/register`), `runtime/system_assistant.py`, `cli/commands/assistant.py`. |
 | `2026-06-10-kb-view-tracking-design.md` | implemented | Agent-CLI KB view tracking; implemented in `runtime/daemon/routes/kb.py`, `runtime/infrastructure/database.py`, `cli/commands/kb.py`. Caller-signal mechanism in KB `kb-view-tracking-caller-signal`. |
+| `2026-06-10-working-hours-design.md` | implemented | Per-agent working-hours wake mechanism; implemented in `runtime/daemon/wake_runner.py`, `work_hours_scheduler.py`, `wake_queue.py`, `runtime/infrastructure/work_hours_store.py`, and `runtime/daemon/routes/work_hours.py`. |

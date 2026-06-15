@@ -2,7 +2,13 @@
 
 Single read endpoint for the ``session_token_usage`` table. Task rows remain
 task-shaped for compatibility. Direct thread invocations use
-``scope_type=thread``.
+``scope_type=thread``. Dream reflection runs use ``scope_type=dream``
+(``scope_id=DREAM-NNN``) and working-hours wakes use ``scope_type=work_hour``
+(``scope_id=WORKHOUR-NNN``); both are additive scope *values* on the existing
+``scope_type``/``scope_id`` columns — ``task_id`` is never overloaded — and
+group cleanly via ``group_by=scope`` with no schema change. The spawned routine
+root tasks record their own usage under the ordinary ``task`` scope, so
+wake-trigger cost and routine-work cost stay separable.
 """
 from __future__ import annotations
 

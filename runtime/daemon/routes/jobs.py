@@ -255,7 +255,7 @@ async def submit_job(slug: str, body: SubmitBody, org: OrgDep) -> dict:
         line_count=body.script.count("\n") + 1,
     )
 
-    # Founder-review path: leave pending, push to Feishu, return.
+    # Founder-review path: leave pending, return.
     if body.review_required:
         if getattr(org, "orchestrator", None) is not None:
             org.orchestrator.notify_job_submitted(
@@ -302,7 +302,7 @@ class RejectBody(BaseModel):
 async def reject_job_from_notification(
     org, *, job_id: str, reason: str,
 ) -> JobRecord:
-    """In-process reject path used by the Feishu listener.
+    """In-process reject path.
 
     Same validation + transition + audit as POST /jobs/{job_id}/reject,
     minus the request-body parsing. Raises HTTPException on failure with
@@ -349,29 +349,11 @@ async def reject_job_from_notification(
     return org.db.get_job(job_id)
 
 
-def _consume_open_feishu_notification(org, job_id: str) -> None:
-    """Mark any open kind=job_request Feishu notification as consumed by
-    'cli-fallback'.
-
-    Matches the pattern from `happyranch resolve-escalation` / `happyranch revisit`
-    (see `src/daemon/routes/tasks.py`): a CLI/Web action wins the race against
-    a later Feishu reply, which would otherwise hit `not_pending` in the
-    listener and leave the row stale until reply_ttl_hours expiry.
-    """
-    row = org.db.get_latest_notification_for_sr(job_id, kind="job_request")
-    if row is None or row["consumed_at"] is not None:
-        return
-    org.db.consume_escalation_notification(
-        row["feishu_message_id"], consumed_by="cli-fallback",
-    )
-
-
 @router.post("/jobs/{job_id}/reject")
 async def reject_job(slug: str, job_id: str, body: RejectBody, org: OrgDep) -> dict:
     updated = await reject_job_from_notification(
         org, job_id=job_id, reason=body.reason,
     )
-    _consume_open_feishu_notification(org, job_id)
     return updated.model_dump()
 
 
@@ -628,21 +610,6 @@ def _resolve_cwd(
     return workspace_root
 
 
-async def run_job_from_notification(
-    org, *, job_id: str,
-) -> dict:
-    """In-process run path used by the Feishu listener.
-
-    Uses the SR's stored defaults — no cwd_override, no timeout_override.
-    Returns the same 202-style dict the HTTP route returns. Raises
-    HTTPException on failure with the same status/detail shape.
-    """
-    return await _run_job_core(
-        org, job_id=job_id,
-        cwd_override=None, timeout_override=None,
-    )
-
-
 async def _run_job_core(
     org, *, job_id: str,
     cwd_override: str | None, timeout_override: int | None,
@@ -790,14 +757,6 @@ async def _run_job_core(
             )
             # Bridge: terminal status committed — resume any tasks blocked on this job.
             fire_resume_check_for_job(org, job_id)
-            parent = org.db.get_latest_notification_for_sr(job_id, kind="job_request")
-            if parent is not None and getattr(org, "orchestrator", None) is not None:
-                org.orchestrator.notify_job_run_result(
-                    job_id=job_id, task_id=record.task_id,
-                    parent_message_id=parent["feishu_message_id"],
-                    status="failed", exit_code=None, duration_ms=0,
-                    stdout_head=None, stderr_head=None, reason="spawn_failed",
-                )
             return
         except Exception as exc:
             finished = _now_iso()
@@ -815,14 +774,6 @@ async def _run_job_core(
             )
             # Bridge: terminal status committed — resume any tasks blocked on this job.
             fire_resume_check_for_job(org, job_id)
-            parent = org.db.get_latest_notification_for_sr(job_id, kind="job_request")
-            if parent is not None and getattr(org, "orchestrator", None) is not None:
-                org.orchestrator.notify_job_run_result(
-                    job_id=job_id, task_id=record.task_id,
-                    parent_message_id=parent["feishu_message_id"],
-                    status="failed", exit_code=None, duration_ms=0,
-                    stdout_head=None, stderr_head=str(exc), reason="internal_error",
-                )
             return
 
         finished = _now_iso()
@@ -861,19 +812,6 @@ async def _run_job_core(
                 reason=result.reason or "unknown",
             )
 
-        parent = org.db.get_latest_notification_for_sr(job_id, kind="job_request")
-        if parent is not None and getattr(org, "orchestrator", None) is not None:
-            org.orchestrator.notify_job_run_result(
-                job_id=job_id, task_id=record.task_id,
-                parent_message_id=parent["feishu_message_id"],
-                status=result.status,
-                exit_code=result.exit_code,
-                duration_ms=result.duration_ms,
-                stdout_head=result.stdout_head,
-                stderr_head=result.stderr_head,
-                reason=result.reason,
-            )
-
     from runtime.daemon.jobs_runner import register_runner_task
     register_runner_task(job_id, asyncio.create_task(_run_and_persist()))
 
@@ -897,7 +835,6 @@ async def run_job_route(
         cwd_override=body.cwd_override,
         timeout_override=body.timeout_seconds,
     )
-    _consume_open_feishu_notification(org, job_id)
     return result
 
 

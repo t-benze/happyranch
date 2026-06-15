@@ -1,4 +1,4 @@
-"""Org-shared artifacts routes. Flat blob store, atomic writes, audited puts.
+"""Org-shared artifacts routes. Nested-key store ('/'-separated logical folders), atomic writes, audited puts.
 
 Auth: same bearer token as every other org-scoped route. No per-agent
 authorization — any agent that can hit the daemon can put/list/get.
@@ -70,16 +70,20 @@ async def put_artifact(
 
 
 @router.get("/artifacts")
-async def list_artifacts(slug: str, org: OrgDep) -> dict:
+async def list_artifacts(
+    slug: str,
+    org: OrgDep,
+    prefix: str = Query(""),
+) -> dict:
     return {
         "artifacts": [
             {"name": a.name, "size_bytes": a.size_bytes, "modified_at": a.modified_at}
-            for a in _store(org).list_artifacts()
+            for a in _store(org).list_artifacts(prefix=prefix)
         ],
     }
 
 
-@router.get("/artifacts/{name}")
+@router.get("/artifacts/{name:path}")
 async def get_artifact(slug: str, name: str, org: OrgDep) -> FileResponse:
     try:
         path = _store(org).path_for(name)
@@ -88,7 +92,7 @@ async def get_artifact(slug: str, name: str, org: OrgDep) -> FileResponse:
             status_code=400,
             detail={"code": "invalid_artifact_name", "name": name, "message": str(exc)},
         ) from exc
-    if not path.exists():
+    if not path.exists() or path.is_dir():
         raise HTTPException(
             status_code=404,
             detail={"code": "artifact_not_found", "name": name},
@@ -96,7 +100,7 @@ async def get_artifact(slug: str, name: str, org: OrgDep) -> FileResponse:
     return FileResponse(path=str(path), filename=name)
 
 
-@router.delete("/artifacts/{name}")
+@router.delete("/artifacts/{name:path}")
 async def delete_artifact(
     slug: str,
     name: str,

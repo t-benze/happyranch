@@ -36,7 +36,7 @@ Read these before changing behavior:
 - React 18 + TypeScript strict + Tailwind v4 + TanStack Query v5 + React Router v6 in `web/`.
 - Pydantic v2 + pydantic-settings.
 - SQLite with WAL mode, per org under `<runtime>/orgs/<slug>/happyranch.db`.
-- Feishu integration through `lark-oapi>=1.6,<2`.
+
 - Agent executors: Claude Code, Codex, opencode, and Pi.
 
 ## Source Repo
@@ -51,8 +51,8 @@ Tracked source is split by product surface:
 |   `-- client/client.py
 |-- runtime/                     # Python runtime package shipped by pyproject
 |   |-- config.py, models.py, runtime.py
-|   |-- daemon/                  # FastAPI app, routes, queue, sessions, Feishu listener, jobs/thread runners
-|   |-- infrastructure/          # SQLite, audit, KB, learnings, threads, artifacts, Feishu client/notifier
+|   |-- daemon/                  # FastAPI app, routes, queue, sessions, jobs/thread runners
+|   |-- infrastructure/          # SQLite, audit, KB, learnings, threads, artifacts
 |   |-- orchestrator/            # task state machine, executors, prompts, teams, workspaces, chains
 |   `-- tools/                   # reserved runtime tooling package
 |-- web/                         # React SPA; build output goes to web/dist/
@@ -65,7 +65,7 @@ Tracked source is split by product surface:
 |-- docs/
 |   |-- agent-guides/            # on-demand agent/developer reference
 |   |-- product/                 # product notes
-|   |-- setup/                   # runbooks such as Feishu setup
+|   |-- setup/
 |   `-- superpowers/{plans,specs}/
 |-- examples/orgs/hk-macau-tourism/  # canonical sample org tree
 |-- scripts/                     # daemon/web helpers and one-off migrations

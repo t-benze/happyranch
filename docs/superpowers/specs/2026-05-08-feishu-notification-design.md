@@ -1,6 +1,6 @@
 # Feishu-Driven Escalation Notifications
 
-**Status:** Design approved, pending implementation
+**Status: REMOVED in TASK-302 (THR-022).** Web UI + threads are sole control surface. DB tables dormant.
 **Author:** Founder + Claude Opus
 **Date:** 2026-05-08
 **Supersedes:** —

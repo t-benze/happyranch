@@ -25,6 +25,7 @@ import { realAgentsApi } from './_real-agents';
 import { realAssistantApi } from './_real-assistant';
 import { realAuditApi } from './_real-audit';
 import { realDashboardApi } from './_real-dashboard';
+import { realSettingsApi } from './_real-settings';
 import { realHealthApi } from './_real-health';
 import { realKbApi } from './_real-kb';
 import { realOrgsApi } from './_real-orgs';
@@ -71,6 +72,7 @@ export function AppProvider({ children, client }: AppProviderProps): JSX.Element
           threads: realThreadsApi,
           tasks: realTasksApi,
           dashboard: realDashboardApi,
+          settings: realSettingsApi,
           kb: realKbApi,
           teams: realTeamsApi,
           health: realHealthApi,
