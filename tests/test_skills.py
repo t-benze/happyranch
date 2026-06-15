@@ -16,7 +16,7 @@ def _parse_frontmatter(text: str) -> dict:
     return yaml.safe_load(fm)
 
 
-@pytest.mark.parametrize("skill_name", ["start-task", "make-worktree", "manage-repo", "manage-agent", "talk", "dream"])
+@pytest.mark.parametrize("skill_name", ["start-task", "make-worktree", "manage-repo", "manage-agent", "review", "dream"])
 def test_skill_has_required_frontmatter(skill_name: str) -> None:
     skill_md = SKILLS_ROOT / skill_name / "SKILL.md"
     assert skill_md.exists(), f"missing {skill_md}"
@@ -84,41 +84,29 @@ def test_start_task_skill_documents_manager_decision_field() -> None:
     assert "escalate" in body
 
 
-def test_talk_skill_documents_start_procedure() -> None:
-    body = (SKILLS_ROOT / "talk" / "SKILL.md").read_text()
-    assert "happyranch talk start" in body
-    assert "happyranch talk status" in body
-    assert "happyranch talk resume" in body
-    assert "happyranch talk abandon" in body
-    assert "## Since last talk" in body
+def test_review_skill_documents_start_procedure() -> None:
+    body = (SKILLS_ROOT / "review" / "SKILL.md").read_text()
+    assert "thread reply" in body
     assert "## Notable tasks" in body
     assert "## New learnings" in body
     assert "## Open questions / frictions" in body
-    assert "## Suggested topics" in body
 
 
-def test_talk_skill_documents_end_procedure() -> None:
-    body = (SKILLS_ROOT / "talk" / "SKILL.md").read_text()
-    assert "happyranch talk end" in body
-    assert "--from-file" in body
-    assert "summary" in body
-    assert "topic_list" in body
-    assert "transcript_markdown" in body
-    assert "learnings" in body
-    assert "kb_slugs" in body
+def test_review_skill_documents_end_procedure() -> None:
+    body = (SKILLS_ROOT / "review" / "SKILL.md").read_text()
+    assert "happyranch learning add" in body
     assert "happyranch kb add" in body
+    assert "--from-file" in body
 
 
-def test_talk_skill_documents_single_line_rationale() -> None:
-    body = (SKILLS_ROOT / "talk" / "SKILL.md").read_text()
+def test_review_skill_documents_single_line_rationale() -> None:
+    body = (SKILLS_ROOT / "review" / "SKILL.md").read_text()
     assert "Bash(happyranch *)" in body
 
 
-def test_talk_skill_documents_self_only_dispatch() -> None:
-    body = (SKILLS_ROOT / "talk" / "SKILL.md").read_text()
-    assert "talk_dispatch_must_be_self" in body
-    assert "may only target" in body
-    assert "managers can dispatch to any agent in their team" not in body
+def test_review_skill_documents_no_dispatch() -> None:
+    body = (SKILLS_ROOT / "review" / "SKILL.md").read_text()
+    assert "no dispatch" in body.lower()
 
 
 def test_dream_skill_documents_callback_contract() -> None:
@@ -161,5 +149,8 @@ def test_skill_cli_commands_exist() -> None:
                 if tokens:
                     referenced.add(tokens[0].rstrip("`,."))
     referenced -= {"<subcommand>"}
+    # These are referenced only as negative examples ("Don't call X")
+    # in the review skill which replaces the removed talk surface.
+    referenced -= {"talk", "dispatch"}
     missing = referenced - known
     assert not missing, f"skills reference missing CLI commands: {missing}"

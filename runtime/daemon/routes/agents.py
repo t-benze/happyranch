@@ -39,7 +39,6 @@ from runtime.infrastructure.learnings_store import (
     LearningsStore,
     PromotedLocked,
 )
-from runtime.models import TalkStatus
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.agent_def import AgentDef, AgentParseError, Executor
@@ -104,7 +103,6 @@ class ManageAgentBody(BaseModel):
     name: str
     task_id: str | None = None
     session_id: str | None = None
-    talk_id: str | None = None
     description: str | None = None
     system_prompt: str | None = None
     repos: dict[str, str] | None = None
@@ -121,13 +119,10 @@ class ManageAgentBody(BaseModel):
     def _exactly_one_auth_path(self) -> ManageAgentBody:
         task_path = self.task_id is not None and self.session_id is not None
         partial_task = (self.task_id is not None) != (self.session_id is not None)
-        talk_path = self.talk_id is not None
         if partial_task:
             raise ValueError("task_id and session_id must be supplied together")
-        if task_path and talk_path:
-            raise ValueError("supply either (task_id + session_id) or talk_id, not both")
-        if not task_path and not talk_path:
-            raise ValueError("supply either (task_id + session_id) or talk_id")
+        if not task_path:
+            raise ValueError("supply task_id and session_id")
         return self
 
 
@@ -154,14 +149,8 @@ _VALID_AGENT_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 def _require_team_manager_auth(body: ManageAgentBody, org: OrgState) -> tuple[str, str]:
     """Validate the caller is a team manager and return (manager_name, manager_team).
 
-    Supports two auth paths:
-      - Talk path: talk_id must reference an open talk whose agent_name is a
-        registered team manager.
-      - Task path: iterate all team managers, find the one with a matching
-        active (task_id, session_id) session.
-
-    The pydantic validator on ManageAgentBody guarantees exactly one path is
-    set, so this function only checks the path that is present.
+    Iterates all team managers, finds the one with a matching active
+    (task_id, session_id) session.
 
     Returns (manager_name, manager_team) so callers can enforce team scoping.
     """
@@ -171,28 +160,7 @@ def _require_team_manager_auth(body: ManageAgentBody, org: OrgState) -> tuple[st
             detail="manage-agent requires teams registry (no active runtime)",
         )
 
-    if body.talk_id is not None:
-        talk = org.db.get_talk(body.talk_id)
-        if talk is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"talk {body.talk_id!r} not found",
-            )
-        if not org.teams.is_team_manager(talk.agent_name):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="manage-agent requires a team-manager talk",
-            )
-        if talk.status != TalkStatus.OPEN:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"talk {body.talk_id!r} is {talk.status.value}, not open",
-            )
-        manager_team = org.teams.team_for_manager(talk.agent_name)
-        assert manager_team is not None  # guaranteed by is_team_manager check above
-        return talk.agent_name, manager_team
-
-    # Task path: find the team manager whose active session matches
+    # Find the team manager whose active session matches
     for candidate in org.teams.all_agents():
         if not org.teams.is_team_manager(candidate):
             continue
@@ -385,9 +353,9 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
     # Any team manager may manage agents within their team.
     manager_name, manager_team = _require_team_manager_auth(body, org)
 
-    scope_id = body.talk_id if body.talk_id is not None else body.task_id
-    assert scope_id is not None  # guaranteed by ManageAgentBody._exactly_one_auth_path
-    source = "talk" if body.talk_id is not None else "task"
+    scope_id = body.task_id
+    assert scope_id is not None  # guaranteed by ManageAgentBody validation
+    source = "task"
     audit = AuditLogger(org.db)
 
     if not _VALID_AGENT_NAME.match(body.name):

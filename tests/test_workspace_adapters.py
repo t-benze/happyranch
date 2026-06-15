@@ -57,9 +57,9 @@ def test_codex_adapter_bootstrap_creates_agents_md_and_skills_tree(test_settings
     (skills_root / "start-task" / "SKILL.md").write_text(
         "---\nname: start-task\ndescription: Use this skill at the start of every task.\n---\n"
     )
-    (skills_root / "talk").mkdir(parents=True)
-    (skills_root / "talk" / "SKILL.md").write_text(
-        "---\nname: talk\ndescription: Use when the founder runs /talk start.\n---\n"
+    (skills_root / "review").mkdir(parents=True)
+    (skills_root / "review" / "SKILL.md").write_text(
+        "---\nname: review\ndescription: Mid-thread review capturing learnings and KB entries.\n---\n"
     )
 
     workspace = tmp_dir / "workspaces" / "dev_agent"
@@ -77,7 +77,7 @@ def test_codex_adapter_bootstrap_creates_agents_md_and_skills_tree(test_settings
     # Codex skills land under .agents/skills/, not .claude/skills/
     assert not (workspace / ".claude" / "skills" / "start-task").exists()
     assert (workspace / ".agents" / "skills" / "start-task" / "SKILL.md").exists()
-    assert (workspace / ".agents" / "skills" / "talk" / "SKILL.md").exists()
+    assert (workspace / ".agents" / "skills" / "review" / "SKILL.md").exists()
     # Fresh workspace: migrated layout (learnings/ dir, no flat learnings.md).
     assert (workspace / "learnings").is_dir()
     assert (workspace / "learnings" / "_index.md").exists()
@@ -388,7 +388,7 @@ def test_claude_md_includes_thread_talk_dispatch_doctrine(tmp_path: Path) -> Non
     """Every agent's bootstrap doc must carry the self-only dispatch doctrine.
 
     The route enforces the rule mechanically (returns 403 with
-    thread_dispatch_must_be_self / talk_dispatch_must_be_self); this prompt
+    thread_dispatch_must_be_self); this prompt
     section is the *why* and the recommended pattern, surfaced before the
     agent encounters the rejection.
     """
@@ -401,15 +401,14 @@ def test_claude_md_includes_thread_talk_dispatch_doctrine(tmp_path: Path) -> Non
     workspace = tmp_path / "workspaces" / "dev_agent"
     adapter.write_claude_md(workspace, "dev_agent", "You are dev_agent.")
     content = (workspace / "CLAUDE.md").read_text()
-    assert "## Thread and Talk Dispatch are Self-Only" in content
+    assert "## Thread Dispatch is Self-Only" in content
     # Both rejection codes named — agents hitting a 403 can grep for either.
     assert "thread_dispatch_must_be_self" in content
-    assert "talk_dispatch_must_be_self" in content
     # The recommended alternative path: compose for cross-agent work.
     assert "happyranch threads compose" in content
 
 
-def test_codex_agents_md_includes_thread_talk_dispatch_doctrine(tmp_path: Path) -> None:
+def test_codex_agents_md_includes_thread_dispatch_doctrine(tmp_path: Path) -> None:
     from runtime.config import Settings
     from runtime.orchestrator._paths import OrgPaths
     from runtime.orchestrator.workspace_adapters import CodexWorkspaceAdapter
@@ -419,12 +418,11 @@ def test_codex_agents_md_includes_thread_talk_dispatch_doctrine(tmp_path: Path) 
     workspace = tmp_path / "workspaces" / "dev_agent"
     adapter.write_agents_md(workspace, "dev_agent", "You are dev_agent.")
     content = (workspace / "AGENTS.md").read_text()
-    assert "## Thread and Talk Dispatch are Self-Only" in content
+    assert "## Thread Dispatch is Self-Only" in content
     assert "thread_dispatch_must_be_self" in content
-    assert "talk_dispatch_must_be_self" in content
 
 
-def test_opencode_agents_md_includes_thread_talk_dispatch_doctrine(tmp_path: Path) -> None:
+def test_opencode_agents_md_includes_thread_dispatch_doctrine(tmp_path: Path) -> None:
     from runtime.config import Settings
     from runtime.orchestrator._paths import OrgPaths
     from runtime.orchestrator.workspace_adapters import OpencodeWorkspaceAdapter
@@ -434,9 +432,8 @@ def test_opencode_agents_md_includes_thread_talk_dispatch_doctrine(tmp_path: Pat
     workspace = tmp_path / "workspaces" / "dev_agent"
     adapter.write_agents_md(workspace, "dev_agent", "You are dev_agent.")
     content = (workspace / "AGENTS.md").read_text()
-    assert "## Thread and Talk Dispatch are Self-Only" in content
+    assert "## Thread Dispatch is Self-Only" in content
     assert "thread_dispatch_must_be_self" in content
-    assert "talk_dispatch_must_be_self" in content
 
 
 def _assert_task_completion_format_section(content: str) -> None:

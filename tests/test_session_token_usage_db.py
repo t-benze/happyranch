@@ -67,7 +67,7 @@ def test_legacy_session_token_usage_table_migrates_before_scope_indexes(tmp_path
 
     assert rows[0]["scope_type"] == "task"
     assert rows[0]["scope_id"] == "TASK-1"
-    assert {"scope_type", "scope_id", "thread_id", "talk_id"} <= columns
+    assert {"scope_type", "scope_id", "thread_id"} <= columns
     assert "idx_session_token_usage_scope" in indexes
 
 
@@ -188,7 +188,6 @@ def test_insert_thread_scoped_session_token_usage(db: Database):
     assert rows[0]["scope_type"] == "thread"
     assert rows[0]["scope_id"] == "THR-001"
     assert rows[0]["thread_id"] == "THR-001"
-    assert rows[0]["talk_id"] is None
     assert rows[0]["invocation_purpose"] == "reply"
     assert rows[0]["total_tokens"] == 15
 
@@ -209,7 +208,7 @@ def test_existing_task_writes_default_to_task_scope(db: Database):
     assert rows[0]["scope_id"] == "TASK-1"
 
 
-def test_aggregate_by_thread_and_talk(db: Database):
+def test_aggregate_by_thread(db: Database):
     db.insert_session_token_usage(
         task_id=None,
         agent="alice",
@@ -232,22 +231,10 @@ def test_aggregate_by_thread_and_talk(db: Database):
         thread_id="THR-001",
         invocation_purpose="reply",
     )
-    db.insert_session_token_usage(
-        task_id="TASK-9",
-        agent="alice",
-        session_id="talk-task",
-        executor="codex",
-        token_usage=_usage(input_tokens=7, output_tokens=4),
-        scope_type="task",
-        scope_id="TASK-9",
-        talk_id="TALK-001",
-    )
 
     by_thread = db.aggregate_session_token_usage_by_thread()
-    by_talk = db.aggregate_session_token_usage_by_talk()
 
-    # by_thread / by_talk carry the model-classification primitives. Both
-    # threads here are claude with NULL model, so the null_claude_*_created_at
+    # Both threads here are claude with NULL model, so the null_claude_*
     # columns are real (non-deterministic) timestamps — pop and check presence,
     # then exact-compare the rest.
     [trow] = by_thread
@@ -268,25 +255,6 @@ def test_aggregate_by_thread_and_talk(db: Database):
         "null_codex_sessions": 0,
         "null_claude_sessions": 2,
     }
-    # The single talk row is codex/NULL-model: no null-claude rows, so the
-    # null_claude_*_created_at columns stay NULL (deterministic).
-    assert by_talk == [{
-        "talk_id": "TALK-001",
-        "sessions": 1,
-        "input_tokens": 7,
-        "output_tokens": 4,
-        "cache_read_tokens": 0,
-        "cache_creation_tokens": 0,
-        "reasoning_tokens": 0,
-        "total_tokens": 11,
-        "model_distinct": 0,
-        "model_any": None,
-        "non_null_sessions": 0,
-        "null_codex_sessions": 1,
-        "null_claude_sessions": 0,
-        "null_claude_min_created_at": None,
-        "null_claude_max_created_at": None,
-    }]
 
 
 def test_aggregate_by_agent_filters_by_since(db: Database):

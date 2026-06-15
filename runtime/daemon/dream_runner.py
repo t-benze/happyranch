@@ -35,7 +35,7 @@ def build_dream_prompt(
     return f"""# Private Nightly Dream
 
 You are {dream.agent_name}. This is private reflection for HappyRanch org `{org_slug}`.
-This is not a task, talk, or thread. Do not call report-completion.
+This is not a task or thread. Do not call report-completion.
 
 Dream id: {dream.id}
 Window start: {dream.window_start.isoformat() if dream.window_start else "last 24 hours"}

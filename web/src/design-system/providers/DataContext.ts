@@ -30,7 +30,6 @@ import type {
 import type { threads as threadsApi } from '@/lib/api';
 import type { tasks as tasksApi } from '@/lib/api';
 import type { kb as kbApi } from '@/lib/api';
-import type { talks as talksApi } from '@/lib/api';
 import type { audit as auditApi } from '@/lib/api';
 import type { agents as agentsApi } from '@/lib/api';
 import type { jobs as jobsApi } from '@/lib/api';
@@ -41,7 +40,6 @@ import type {
   JobListResponse,
   JobRecord,
   KBEntry,
-  TalkRecord,
   TaskEvent,
   TaskRecord,
   TaskRecallNode,
@@ -193,42 +191,6 @@ export interface KbApi {
 export interface KbRoutes {
   inbox: () => string;
   detail: (entrySlug: string) => string;
-  inboxForOrg: (slug: string) => string;
-}
-
-// ---------------------------------------------------------------------------
-// TalksApi — covers every hook TalksPage + its dialogs consume.
-// ---------------------------------------------------------------------------
-
-export type StartTalkArgs = Parameters<typeof talksApi.startTalk>[1];
-export type StartTalkResult = Awaited<ReturnType<typeof talksApi.startTalk>>;
-
-export type AbandonTalkArgs = Parameters<typeof talksApi.abandonTalk>[2];
-export type AbandonTalkResult = Awaited<ReturnType<typeof talksApi.abandonTalk>>;
-
-export type EndTalkArgs = Parameters<typeof talksApi.endTalk>[2];
-export type EndTalkResult = Awaited<ReturnType<typeof talksApi.endTalk>>;
-
-export type DispatchFromTalkArgs = Parameters<typeof talksApi.dispatchFromTalk>[2];
-export type DispatchFromTalkResult = Awaited<ReturnType<typeof talksApi.dispatchFromTalk>>;
-
-export interface TalksApi {
-  useTalksList: (
-    params?: { status?: string; agent?: string; limit?: number },
-  ) => QueryLike<{ talks: TalkRecord[] }>;
-  useTalk: (talkId: string | undefined) => QueryLike<TalkRecord>;
-
-  useStartTalk: () => MutationLike<StartTalkArgs, StartTalkResult>;
-  useAbandonTalk: (talkId: string) => MutationLike<AbandonTalkArgs, AbandonTalkResult>;
-  useEndTalk: (talkId: string) => MutationLike<EndTalkArgs, EndTalkResult>;
-  useDispatchFromTalk: (
-    talkId: string,
-  ) => MutationLike<DispatchFromTalkArgs, DispatchFromTalkResult>;
-}
-
-export interface TalksRoutes {
-  inbox: () => string;
-  detail: (talkId: string) => string;
   inboxForOrg: (slug: string) => string;
 }
 
@@ -425,7 +387,6 @@ export interface DataContextValue {
   threads: ThreadsApi;
   tasks: TasksApi;
   kb: KbApi;
-  talks: TalksApi;
   teams: TeamsApi;
   health: HealthApi;
   assistant: AssistantApi;
@@ -440,7 +401,6 @@ export interface DataContextValue {
   useThreadRoutes: () => ThreadRoutes;
   useTasksRoutes: () => TasksRoutes;
   useKbRoutes: () => KbRoutes;
-  useTalksRoutes: () => TalksRoutes;
   useAgentsRoutes: () => AgentsRoutes;
   useJobsRoutes: () => JobsRoutes;
 }

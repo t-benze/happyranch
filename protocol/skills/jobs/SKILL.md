@@ -39,21 +39,7 @@ You fill in a JSON payload with these fields:
 **Required:** auth binding + `title` + `script` + `interpreter`.
 **Auth binding (exactly one):**
 - **Task path** — `task_id` + `session_id` from your active task session (the shape above).
-- **Talk path** — `talk_id` alone, when you are invoked inside an open founder talk. Drop `task_id` and `session_id` entirely; the daemon resolves your agent identity from the talk.
-
-  ```json
-  {
-    "talk_id": "TALK-007",
-    "title": "Close PR #247",
-    "script": "gh pr close 247\n",
-    "interpreter": "bash",
-    "rationale": "Founder asked me to in this talk; needs gh creds.",
-    "review_required": true
-  }
-  ```
-
-**Allowed `interpreter`:** `bash`, `sh`, `zsh`, `python3`.
-**Optional:** `cwd_hint`, `rationale`, `max_runtime_seconds`, `max_output_bytes`.
+- **Optional:** `cwd_hint`, `rationale`, `max_runtime_seconds`, `max_output_bytes`.
 
 ### The two policy flags
 
@@ -128,12 +114,11 @@ Before reporting your task complete, stop any of your own jobs you no longer nee
 ## Error handling
 
 - `422 empty_<field>` — required field missing or whitespace-only. Check and resubmit.
-- `422` from validator — auth binding malformed (e.g., supplied both `task_id+session_id` AND `talk_id`, or supplied `task_id` without `session_id`).
+- `422` from validator — auth binding malformed (e.g., supplied both `task_id+session_id` AND `task_id`, or supplied `task_id` without `session_id`).
 - `400 unknown_interpreter` — `interpreter` not in the allowed set.
 - `400 rationale_required` — submitted `review_required=true` without a `rationale`.
 - `400 script_too_large` — script body exceeded 64 KB.
-- `400 talk_not_open` — talk-path submission against a closed/abandoned talk. End the talk path; don't retry.
-- `404 not_found` / `404 unknown_task` / `404 unknown_talk` — referenced id doesn't exist.
+- `404 not_found` / `404 unknown_task` — referenced id doesn't exist.
 - `409 session_mismatch` — daemon spawned a newer session for this `(task_id, agent)`. Exit immediately.
 
 Retry once after 1 second on any non-listed error.

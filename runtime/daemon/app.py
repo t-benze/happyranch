@@ -20,7 +20,6 @@ from runtime.daemon.routes import (
     kb,
     orgs,
     runtime,
-    talks,
     tasks,
     teams,
     threads,
@@ -192,7 +191,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(audit.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(tokens.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(kb.router, prefix="/api/v1/orgs/{slug}")
-    app.include_router(talks.router, prefix="/api/v1/orgs/{slug}")
+
     app.include_router(threads.router, prefix="/api/v1/orgs/{slug}", tags=["threads"])
     app.include_router(dreams.router, prefix="/api/v1/orgs/{slug}", tags=["dreams"])
     app.include_router(work_hours.router, prefix="/api/v1/orgs/{slug}", tags=["work-hours"])

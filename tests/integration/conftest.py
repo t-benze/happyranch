@@ -81,7 +81,6 @@ def runtime(runtime_container: Path) -> Path:
     (org_root / "org" / "agents").mkdir(parents=True, exist_ok=True)
     (org_root / "workspaces").mkdir(parents=True, exist_ok=True)
     (org_root / "kb").mkdir(parents=True, exist_ok=True)
-    (org_root / "talks").mkdir(parents=True, exist_ok=True)
     # Seed engineering + content teams so /tasks (which defaults to team=engineering)
     # and the content-team end-to-end flows have valid managers to dispatch to.
     (org_root / "org" / "teams.yaml").write_text(

@@ -20,7 +20,6 @@ def _seed_org(org_root: Path) -> None:
     (org_root / "org" / "agents").mkdir()
     (org_root / "workspaces").mkdir()
     (org_root / "kb").mkdir()
-    (org_root / "talks").mkdir()
 
 
 def test_org_state_load_opens_db_and_teams(tmp_path: Path) -> None:

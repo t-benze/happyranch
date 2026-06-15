@@ -1,12 +1,12 @@
 """Shared doctrine strings surfaced in route error envelopes.
 
-Centralized so threads and talks return identical hint text and stay in sync
+Centralized so thread routes return the canonical hint text and stay in sync
 when the wording evolves.
 """
 from __future__ import annotations
 
 SELF_DISPATCH_HINT = (
-    "Threads (and talks) only accept self-dispatch.\n\n"
+    "Threads only accept self-dispatch.\n\n"
     "For cross-agent work, either:\n"
     "  (a) self-dispatch a manager root and delegate internally via the\n"
     "      manager-decision loop (recommended for iterative phase work), or\n"

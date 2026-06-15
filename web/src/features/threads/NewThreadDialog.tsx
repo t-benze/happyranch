@@ -31,7 +31,7 @@ interface Prefill {
   recipients?: string[];
   body?: string;
   forwarded_from_id?: string;
-  forwarded_from_kind?: 'thread' | 'talk';
+  forwarded_from_kind?: 'thread';
 }
 
 interface Props {

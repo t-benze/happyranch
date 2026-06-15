@@ -46,7 +46,7 @@ export function PendingEnrollmentsTab(): JSX.Element {
     return (
       <EmptyState
         title="No pending enrollments"
-        body="Managers can enroll new agents via happyranch talk + manage-agent."
+        body="Managers can enroll new agents via happyranch manage-agent."
       />
     );
   }

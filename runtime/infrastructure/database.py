@@ -12,7 +12,6 @@ from runtime.models import (
     DreamKbCandidate,
     DreamRecord,
     DreamStatus,
-    TalkRecord,
     TaskRecord,
     TaskStatus,
     ThreadInvocation,
@@ -60,6 +59,33 @@ def _synchronized(method):
     return wrapper
 
 
+def _rebuild_indexes_for(
+    table: str,
+    conn: sqlite3.Connection,
+    statements: list[tuple[str, list]],
+    dropped_col: str | None = None,
+) -> None:
+    """Append CREATE INDEX statements for *table* after a table-rebuild.
+
+    Called during the old-SQLite fallback path of the talk-removal migration.
+    The rebuild drops all indexes on the original table; this helper re-creates
+    them by reading sqlite_master. When *dropped_col* is set, skip any index
+    whose SQL references it (the index is already dropped in step 1 of the
+    migration).
+    """
+    rows = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL",
+        (table,),
+    ).fetchall()
+    for (sql,) in rows:
+        # Keep CREATE UNIQUE INDEX / CREATE INDEX as-is.
+        if not sql.upper().startswith("CREATE "):
+            continue
+        if dropped_col and dropped_col in sql:
+            continue
+        statements.append((sql, []))
+
+
 class Database:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -73,6 +99,7 @@ class Database:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._migrate_jobs_table_if_needed()
+        self._migrate_drop_talk_surface_if_needed()
         self._create_tables()
         # Working-hours CRUD lives in its own module but shares THIS connection
         # and lock so the single-connection serialization invariant (see
@@ -194,6 +221,213 @@ class Database:
             self._conn.rollback()
             raise
 
+
+    def _migrate_drop_talk_surface_if_needed(self) -> None:
+        """Drop the talks table, four talk-reference columns, and five talk indexes.
+
+        Idempotent: inspects PRAGMA table_info and sqlite_master; if the talk
+        columns/table are already absent, returns immediately (no-op).
+
+        Wraps every statement in one explicit BEGIN/COMMIT with rollback on
+        exception. Uses the version-guarded DROP COLUMN / table-rebuild hybrid
+        from the spec (runtime already hard-requires SQLite >= 3.35, so the
+        fallback branch is belt-and-suspenders).
+
+        Must run BEFORE ``_create_tables`` so ``CREATE TABLE IF NOT EXISTS``
+        becomes a no-op on the already-dropped table/columns.
+
+        Migration ordering (single transaction):
+        1. Drop the 5 talk-related indexes.
+        2. Drop the 3 columns (tasks/jobs/threads) + table-rebuild fallback.
+        3. Reconcile session_token_usage.talk_id (DROP COLUMN or rebuild).
+        4. DROP TABLE IF EXISTS talks.
+        5. Leave audit_log untouched (talk_* rows preserved per decision #6).
+        """
+        # Idempotency guard: verify ALL FOUR targets are already gone
+        # (talks table + the 3 talk_id columns on tasks/jobs/threads).
+        # session_token_usage.talk_id is checked per-column below.
+        existing_tables = {
+            row[0]
+            for row in self._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if "talks" not in existing_tables:
+            all_gone = True
+            for table, col in (
+                ("tasks", "dispatched_from_talk_id"),
+                ("jobs", "submitted_from_talk_id"),
+                ("threads", "composed_from_talk_id"),
+                ("session_token_usage", "talk_id"),
+            ):
+                tbl_cols = {
+                    row["name"]
+                    for row in self._conn.execute(
+                        f"PRAGMA table_info({table})"
+                    ).fetchall()
+                }
+                if col in tbl_cols:
+                    all_gone = False
+                    break
+            if all_gone:
+                return
+
+        sqlite_version = sqlite3.sqlite_version_info
+        can_drop_column = sqlite_version >= (3, 35, 0)
+
+        statements: list[tuple[str, list]] = []
+
+        # 1. Drop talk-related indexes.
+        for idx in (
+            "idx_talks_agent_status",
+            "idx_talks_started",
+            "idx_tasks_dispatched_from_talk_id",
+            "idx_threads_composed_from_talk",
+            "idx_session_token_usage_talk",
+        ):
+            statements.append((f"DROP INDEX IF EXISTS {idx}", []))
+
+        # 2. Drop the three talk-reference columns.
+        for table, col in (
+            ("tasks", "dispatched_from_talk_id"),
+            ("jobs", "submitted_from_talk_id"),
+            ("threads", "composed_from_talk_id"),
+        ):
+            cols = {
+                row["name"]
+                for row in self._conn.execute(
+                    f"PRAGMA table_info({table})"
+                ).fetchall()
+            }
+            if col not in cols:
+                continue
+            if can_drop_column:
+                statements.append((f"ALTER TABLE {table} DROP COLUMN {col}", []))
+            else:
+                # Table-rebuild fallback: explicit CREATE TABLE (
+                # full DDL minus the talk column), INSERT SELECT explicit
+                # cols, DROP old, RENAME new, recreate indexes.
+                info_rows = self._conn.execute(
+                    f"PRAGMA table_info({table})"
+                ).fetchall()
+                keep_cols = [r["name"] for r in info_rows if r["name"] != col]
+                col_list = ", ".join(keep_cols)
+                # Build the new-column DDL from PRAGMA info.
+                col_defs = []
+                for r in info_rows:
+                    if r["name"] == col:
+                        continue
+                    cname = r["name"]
+                    ctype = r["type"]
+                    notnull = r["notnull"]
+                    dflt = r["dflt_value"]
+                    pk = r["pk"]
+                    parts = [cname, ctype]
+                    if notnull:
+                        parts.append("NOT NULL")
+                    if dflt is not None:
+                        parts.append(f"DEFAULT {dflt}")
+                    col_def = " ".join(parts)
+                    # PRIMARY KEY handled separately in the table DDL.
+                    col_defs.append(col_def)
+                # Collect PK columns.
+                pk_cols = [r["name"] for r in info_rows if r["pk"] and r["name"] != col]
+                pk_clause = ""
+                if pk_cols:
+                    pk_clause = f", PRIMARY KEY ({', '.join(pk_cols)})"
+                stmt_create = (
+                    f"CREATE TABLE {table}_new (\n  "
+                    + ",\n  ".join(col_defs)
+                    + f"{pk_clause}\n)"
+                )
+                stmt_insert = (
+                    f"INSERT INTO {table}_new ({col_list}) "
+                    f"SELECT {col_list} FROM {table}"
+                )
+                statements.append((stmt_create, []))
+                statements.append((stmt_insert, []))
+                statements.append((f"DROP TABLE {table}", []))
+                statements.append((f"ALTER TABLE {table}_new RENAME TO {table}", []))
+                # Recreate indexes lost by the rebuild, skipping talk-column indexes.
+                _rebuild_indexes_for(table, self._conn, statements, dropped_col=col)
+
+        # 3. session_token_usage.talk_id.
+        stu_cols = {
+            row["name"]
+            for row in self._conn.execute(
+                "PRAGMA table_info(session_token_usage)"
+            ).fetchall()
+        }
+        if "talk_id" in stu_cols:
+            if can_drop_column:
+                statements.append(
+                    ("ALTER TABLE session_token_usage DROP COLUMN talk_id", [])
+                )
+            else:
+                info_rows = self._conn.execute(
+                    "PRAGMA table_info(session_token_usage)"
+                ).fetchall()
+                keep_cols = [r["name"] for r in info_rows if r["name"] != "talk_id"]
+                col_list = ", ".join(keep_cols)
+                # Build the new-column DDL from PRAGMA info.
+                col_defs = []
+                for r in info_rows:
+                    if r["name"] == "talk_id":
+                        continue
+                    cname = r["name"]
+                    ctype = r["type"]
+                    notnull = r["notnull"]
+                    dflt = r["dflt_value"]
+                    pk = r["pk"]
+                    parts = [cname, ctype]
+                    if notnull:
+                        parts.append("NOT NULL")
+                    if dflt is not None:
+                        parts.append(f"DEFAULT {dflt}")
+                    col_def = " ".join(parts)
+                    col_defs.append(col_def)
+                # Collect PK columns.
+                pk_cols = [r["name"] for r in info_rows if r["pk"] and r["name"] != "talk_id"]
+                pk_clause = ""
+                if pk_cols:
+                    pk_clause = f", PRIMARY KEY ({', '.join(pk_cols)})"
+                stmt_create = (
+                    f"CREATE TABLE session_token_usage_new (\n  "
+                    + ",\n  ".join(col_defs)
+                    + f"{pk_clause}\n)"
+                )
+                stmt_insert = (
+                    f"INSERT INTO session_token_usage_new ({col_list}) "
+                    f"SELECT {col_list} FROM session_token_usage"
+                )
+                statements.append((stmt_create, []))
+                statements.append((stmt_insert, []))
+                statements.append(("DROP TABLE session_token_usage", []))
+                statements.append((
+                    "ALTER TABLE session_token_usage_new RENAME TO session_token_usage", []
+                ))
+                # Recreate indexes lost by the rebuild, skipping talk-column indexes.
+                _rebuild_indexes_for(
+                    "session_token_usage", self._conn, statements, dropped_col="talk_id"
+                )
+
+        # 4. Drop the talks table.
+        if "talks" in existing_tables:
+            statements.append(("DROP TABLE IF EXISTS talks", []))
+
+        # Execute as one transaction.
+        if not statements:
+            return
+        try:
+            self._conn.execute("BEGIN")
+            for stmt, params in statements:
+                self._conn.execute(stmt, params)
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+
+
     def _create_tables(self) -> None:
         self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS tasks (
@@ -238,22 +472,6 @@ class Database:
                 output_dir TEXT,
                 created_at TEXT NOT NULL
             );
-
-            CREATE TABLE IF NOT EXISTS talks (
-                id TEXT PRIMARY KEY,
-                agent_name TEXT NOT NULL,
-                started_at TEXT NOT NULL,
-                ended_at TEXT,
-                status TEXT NOT NULL DEFAULT 'open',
-                summary TEXT,
-                topic_list_json TEXT,
-                new_learnings_count INTEGER NOT NULL DEFAULT 0,
-                new_kb_slugs_json TEXT,
-                transcript_path TEXT
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_talks_agent_status ON talks(agent_name, status);
-            CREATE INDEX IF NOT EXISTS idx_talks_started ON talks(started_at);
 
             CREATE TABLE IF NOT EXISTS dreams (
                 id TEXT PRIMARY KEY,
@@ -343,7 +561,6 @@ class Database:
                 scope_type TEXT,
                 scope_id TEXT,
                 thread_id TEXT,
-                talk_id TEXT,
                 invocation_purpose TEXT,
                 created_at TEXT NOT NULL,
                 UNIQUE (task_id, agent, session_id)
@@ -486,8 +703,7 @@ class Database:
                 reviewed_at              TEXT,
                 reviewed_by              TEXT,
                 reject_reason            TEXT,
-                created_at               TEXT NOT NULL,
-                submitted_from_talk_id   TEXT
+                created_at               TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS jobs_task_id_idx ON jobs(task_id);
             CREATE INDEX IF NOT EXISTS jobs_status_idx  ON jobs(status);
@@ -532,11 +748,6 @@ class Database:
             # already-renamed). See docs/superpowers/plans/2026-06-01-rename-assets-to-artifacts.md.
             "ALTER TABLE tasks RENAME COLUMN final_artifact_dir TO final_output_dir",
             "ALTER TABLE task_results RENAME COLUMN artifact_dir TO output_dir",
-            # Talk-originated jobs (mirrors tasks.dispatched_from_talk_id).
-            # When set, the job was submitted via the talk-path; jobs.task_id
-            # then holds the TALK-NNN scope id (consistent with audit_log's
-            # task_id overloading) rather than a real TASK-NNN.
-            "ALTER TABLE jobs ADD COLUMN submitted_from_talk_id TEXT",
         ):
             try:
                 self._conn.execute(ddl)
@@ -584,11 +795,6 @@ class Database:
             # non-revisit tasks. walk_ancestors MUST NOT follow this column —
             # that's the attempt-isolation invariant from the v2 revisit spec.
             "ALTER TABLE tasks ADD COLUMN revisit_of_task_id TEXT",
-            # Talk-dispatch link: tasks dispatched from an open agent talk
-            # session record the originating TALK id here. NULL for tasks
-            # created via `happyranch run` or revisit. Most tasks have no talk
-            # provenance, so the index below is partial.
-            "ALTER TABLE tasks ADD COLUMN dispatched_from_talk_id TEXT",
             # Liveness heartbeat: queue worker stamps this while a subprocess
             # is alive so `happyranch details` can show progress on long-running
             # tasks. Distinct from updated_at (which advances on any write).
@@ -651,11 +857,6 @@ class Database:
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tasks_revisit_of ON tasks(revisit_of_task_id)"
         )
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_tasks_dispatched_from_talk_id "
-            "ON tasks(dispatched_from_talk_id) "
-            "WHERE dispatched_from_talk_id IS NOT NULL"
-        )
         try:
             self._conn.execute(
                 "ALTER TABLE tasks ADD COLUMN dispatched_from_thread_id TEXT"
@@ -680,7 +881,6 @@ class Database:
         for ddl in (
             "ALTER TABLE threads ADD COLUMN composed_by TEXT NOT NULL DEFAULT 'founder'",
             "ALTER TABLE threads ADD COLUMN composed_from_task_id TEXT",
-            "ALTER TABLE threads ADD COLUMN composed_from_talk_id TEXT",
         ):
             try:
                 self._conn.execute(ddl)
@@ -690,11 +890,6 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_threads_composed_from_task "
             "ON threads(composed_from_task_id) "
             "WHERE composed_from_task_id IS NOT NULL"
-        )
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_threads_composed_from_talk "
-            "ON threads(composed_from_talk_id) "
-            "WHERE composed_from_talk_id IS NOT NULL"
         )
         # kind column for escalation_notifications: 'escalation' (default) or
         # 'failure'. Additive; existing rows keep the default.
@@ -765,7 +960,6 @@ class Database:
                     scope_type TEXT,
                     scope_id TEXT,
                     thread_id TEXT,
-                    talk_id TEXT,
                     invocation_purpose TEXT,
                     created_at TEXT NOT NULL,
                     UNIQUE (task_id, agent, session_id)
@@ -795,7 +989,6 @@ class Database:
             "scope_type",
             "scope_id",
             "thread_id",
-            "talk_id",
             "invocation_purpose",
         ):
             if name not in columns:
@@ -829,10 +1022,6 @@ class Database:
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_session_token_usage_thread "
             "ON session_token_usage (thread_id) WHERE thread_id IS NOT NULL"
-        )
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_session_token_usage_talk "
-            "ON session_token_usage (talk_id) WHERE talk_id IS NOT NULL"
         )
         self._conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_session_token_usage_scope_unique "
@@ -890,7 +1079,6 @@ class Database:
             task.completed_at.isoformat() if task.completed_at else None,
             task.parent_task_id,
             task.revisit_of_task_id,
-            task.dispatched_from_talk_id,
             task.dispatched_from_thread_id,
             task.block_kind.value if task.block_kind else None,
             task.note,
@@ -901,10 +1089,10 @@ class Database:
         self._conn.execute(
             """INSERT INTO tasks (id, status, assigned_agent, team, brief,
                revision_count, created_at, updated_at, completed_at, parent_task_id,
-               revisit_of_task_id, dispatched_from_talk_id, dispatched_from_thread_id,
+               revisit_of_task_id, dispatched_from_thread_id,
                block_kind, note,
                orchestration_step_count, session_timeout_seconds, task_type)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             params,
         )
         self._conn.commit()
@@ -927,7 +1115,6 @@ class Database:
             completed_at=row["completed_at"],
             parent_task_id=row["parent_task_id"],
             revisit_of_task_id=row["revisit_of_task_id"],
-            dispatched_from_talk_id=row["dispatched_from_talk_id"],
             dispatched_from_thread_id=row["dispatched_from_thread_id"],
             block_kind=row["block_kind"],
             blocked_on_job_ids=row["blocked_on_job_ids"],
@@ -1001,7 +1188,6 @@ class Database:
                 completed_at=row["completed_at"],
                 parent_task_id=row["parent_task_id"],
                 revisit_of_task_id=row["revisit_of_task_id"],
-                dispatched_from_talk_id=row["dispatched_from_talk_id"],
                 dispatched_from_thread_id=row["dispatched_from_thread_id"],
                 block_kind=row["block_kind"],
                 blocked_on_job_ids=row["blocked_on_job_ids"],
@@ -1149,7 +1335,6 @@ class Database:
                 completed_at=row["completed_at"],
                 parent_task_id=row["parent_task_id"],
                 revisit_of_task_id=row["revisit_of_task_id"],
-                dispatched_from_talk_id=row["dispatched_from_talk_id"],
                 dispatched_from_thread_id=row["dispatched_from_thread_id"],
                 block_kind=row["block_kind"],
                 blocked_on_job_ids=row["blocked_on_job_ids"],
@@ -1716,7 +1901,6 @@ class Database:
         scope_type: str = "task",
         scope_id: str | None = None,
         thread_id: str | None = None,
-        talk_id: str | None = None,
         invocation_purpose: str | None = None,
     ) -> None:
         """Insert one token usage row. INSERT OR IGNORE: first write wins."""
@@ -1727,15 +1911,15 @@ class Database:
                (task_id, agent, session_id, executor, model,
                 input_tokens, output_tokens, cache_read_tokens,
                 cache_creation_tokens, reasoning_tokens,
-                usage_raw_json, scope_type, scope_id, thread_id, talk_id,
+                usage_raw_json, scope_type, scope_id, thread_id,
                 invocation_purpose, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task_id, agent, session_id, executor, token_usage.model,
                 token_usage.input_tokens, token_usage.output_tokens,
                 token_usage.cache_read_tokens, token_usage.cache_creation_tokens,
                 token_usage.reasoning_tokens, token_usage.usage_raw_json,
-                scope_type, scope_id, thread_id, talk_id, invocation_purpose,
+                scope_type, scope_id, thread_id, invocation_purpose,
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
@@ -1750,7 +1934,6 @@ class Database:
         scope_type: str | None = None,
         scope_id: str | None = None,
         thread_id: str | None = None,
-        talk_id: str | None = None,
         purpose: str | None = None,
     ) -> tuple[list[str], list[object]]:
         where: list[str] = []
@@ -1773,9 +1956,6 @@ class Database:
         if thread_id is not None:
             where.append("thread_id = ?")
             params.append(thread_id)
-        if talk_id is not None:
-            where.append("talk_id = ?")
-            params.append(talk_id)
         if purpose is not None:
             where.append("invocation_purpose = ?")
             params.append(purpose)
@@ -1823,7 +2003,6 @@ class Database:
         scope_type: str | None = None,
         scope_id: str | None = None,
         thread_id: str | None = None,
-        talk_id: str | None = None,
         purpose: str | None = None,
     ) -> list[dict]:
         """Return per-session rows, newest first."""
@@ -1834,7 +2013,6 @@ class Database:
             scope_type=scope_type,
             scope_id=scope_id,
             thread_id=thread_id,
-            talk_id=talk_id,
             purpose=purpose,
         )
         sql = """SELECT *,
@@ -1862,7 +2040,6 @@ class Database:
         scope_type: str | None = None,
         scope_id: str | None = None,
         thread_id: str | None = None,
-        talk_id: str | None = None,
         purpose: str | None = None,
     ) -> list[dict]:
         where, params = self._session_token_usage_filters(
@@ -1872,7 +2049,6 @@ class Database:
             scope_type=scope_type,
             scope_id=scope_id,
             thread_id=thread_id,
-            talk_id=talk_id,
             purpose=purpose,
         )
         sql = self._token_usage_rollup_select(
@@ -1893,7 +2069,6 @@ class Database:
         scope_type: str | None = None,
         scope_id: str | None = None,
         thread_id: str | None = None,
-        talk_id: str | None = None,
         purpose: str | None = None,
     ) -> list[dict]:
         where, params = self._session_token_usage_filters(
@@ -1903,7 +2078,6 @@ class Database:
             scope_type=scope_type,
             scope_id=scope_id,
             thread_id=thread_id,
-            talk_id=talk_id,
             purpose=purpose,
         )
         sql = self._token_usage_rollup_select("task_id", "task_id")
@@ -1922,7 +2096,6 @@ class Database:
         scope_type: str | None = None,
         scope_id: str | None = None,
         thread_id: str | None = None,
-        talk_id: str | None = None,
         purpose: str | None = None,
     ) -> list[dict]:
         """Per-(task, agent) token rollup for FAILED tasks only.
@@ -1940,7 +2113,6 @@ class Database:
             scope_type=scope_type,
             scope_id=scope_id,
             thread_id=thread_id,
-            talk_id=talk_id,
             purpose=purpose,
         )
         subquery = "SELECT * FROM session_token_usage"
@@ -1975,7 +2147,6 @@ class Database:
         scope_type: str | None = None,
         scope_id: str | None = None,
         thread_id: str | None = None,
-        talk_id: str | None = None,
         purpose: str | None = None,
     ) -> list[dict]:
         where, params = self._session_token_usage_filters(
@@ -1985,7 +2156,6 @@ class Database:
             scope_type=scope_type,
             scope_id=scope_id,
             thread_id=thread_id,
-            talk_id=talk_id,
             purpose=purpose,
         )
         sql = """SELECT COALESCE(scope_type, 'task') AS scope_type,
@@ -2016,7 +2186,6 @@ class Database:
         scope_type: str | None = None,
         scope_id: str | None = None,
         thread_id: str | None = None,
-        talk_id: str | None = None,
         purpose: str | None = None,
     ) -> list[dict]:
         where, params = self._session_token_usage_filters(
@@ -2026,7 +2195,6 @@ class Database:
             scope_type=scope_type,
             scope_id=scope_id,
             thread_id=thread_id,
-            talk_id=talk_id,
             purpose=purpose,
         )
         where.append("thread_id IS NOT NULL")
@@ -2040,38 +2208,6 @@ class Database:
         return [dict(r) for r in rows]
 
     @_synchronized
-    def aggregate_session_token_usage_by_talk(
-        self,
-        since: str | None = None,
-        task_id: str | None = None,
-        agent: str | None = None,
-        scope_type: str | None = None,
-        scope_id: str | None = None,
-        thread_id: str | None = None,
-        talk_id: str | None = None,
-        purpose: str | None = None,
-    ) -> list[dict]:
-        where, params = self._session_token_usage_filters(
-            since=since,
-            task_id=task_id,
-            agent=agent,
-            scope_type=scope_type,
-            scope_id=scope_id,
-            thread_id=thread_id,
-            talk_id=talk_id,
-            purpose=purpose,
-        )
-        where.append("talk_id IS NOT NULL")
-        sql = self._token_usage_rollup_select(
-            "talk_id", "talk_id", include_model_classification=True
-        )
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        sql += " GROUP BY talk_id ORDER BY talk_id"
-        rows = self._conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
-
-    @_synchronized
     def aggregate_session_token_usage_by_purpose(
         self,
         since: str | None = None,
@@ -2080,7 +2216,6 @@ class Database:
         scope_type: str | None = None,
         scope_id: str | None = None,
         thread_id: str | None = None,
-        talk_id: str | None = None,
         purpose: str | None = None,
     ) -> list[dict]:
         where, params = self._session_token_usage_filters(
@@ -2090,7 +2225,6 @@ class Database:
             scope_type=scope_type,
             scope_id=scope_id,
             thread_id=thread_id,
-            talk_id=talk_id,
             purpose=purpose,
         )
         where.append("invocation_purpose IS NOT NULL")
@@ -2137,22 +2271,7 @@ class Database:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    # --- Talks ---
-
-    @_synchronized
-    def next_talk_id(self) -> str:
-        """Return the next available TALK-NNN id.
-
-        Callers must hold DaemonState.db_lock across the next_talk_id() +
-        insert_talk() pair to avoid duplicate IDs under concurrent requests
-        (same requirement as next_task_id).
-        """
-        cursor = self._conn.execute(
-            "SELECT MAX(CAST(SUBSTR(id, 6) AS INTEGER)) AS m "
-            "FROM talks WHERE id GLOB 'TALK-[0-9]*'"
-        )
-        n = (cursor.fetchone()["m"] or 0) + 1
-        return f"TALK-{n:03d}"
+    # --- Thread IDs ---
 
     @_synchronized
     def next_thread_id(self) -> str:
@@ -2160,7 +2279,7 @@ class Database:
 
         Callers must hold DaemonState.db_lock across the next_thread_id() +
         insert_thread() pair to avoid duplicate IDs under concurrent requests
-        (same requirement as next_task_id / next_talk_id).
+        (same requirement as next_task_id).
         """
         cursor = self._conn.execute(
             "SELECT MAX(CAST(SUBSTR(id, 5) AS INTEGER)) AS m "
@@ -2175,7 +2294,7 @@ class Database:
 
         Callers must hold DaemonState.db_lock across the next_job_id()
         + insert_job() pair to avoid duplicate IDs under concurrent
-        requests (same requirement as next_task_id / next_talk_id / next_thread_id).
+        requests (same requirement as next_task_id / next_thread_id).
         """
         cursor = self._conn.execute(
             "SELECT MAX(CAST(SUBSTR(id, 5) AS INTEGER)) AS m "
@@ -2194,9 +2313,8 @@ class Database:
                 duration_ms, started_at, finished_at,
                 reviewed_at, reviewed_by, reject_reason,
                 cwd_resolved, max_runtime_seconds, max_output_bytes,
-                review_required, persistent, created_at,
-                submitted_from_talk_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                review_required, persistent, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 r.id, r.task_id, r.agent_name, r.title, r.rationale, r.script_text,
                 r.interpreter.value, r.cwd_hint, r.status.value, r.exit_code,
@@ -2205,7 +2323,6 @@ class Database:
                 r.reviewed_at, r.reviewed_by, r.reject_reason,
                 r.cwd_resolved, r.max_runtime_seconds, r.max_output_bytes,
                 int(r.review_required), int(r.persistent), r.created_at,
-                r.submitted_from_talk_id,
             ),
         )
         self._conn.commit()
@@ -2227,12 +2344,7 @@ class Database:
         # key access via SQLite's Row mapping interface.
         keys = row.keys() if hasattr(row, "keys") else ()
         reason = row["reason"] if "reason" in keys else None
-        # submitted_from_talk_id was added after the jobs table shipped — read
-        # defensively so a pre-migration row (or a test fixture that bypasses
-        # the migration) doesn't blow up.
-        submitted_from_talk_id = (
-            row["submitted_from_talk_id"] if "submitted_from_talk_id" in keys else None
-        )
+
         return JobRecord(
             id=row["id"],
             task_id=row["task_id"],
@@ -2261,7 +2373,6 @@ class Database:
             persistent=bool(row["persistent"]),
             reason=reason,
             created_at=row["created_at"],
-            submitted_from_talk_id=submitted_from_talk_id,
         )
 
     @_synchronized
@@ -2420,20 +2531,15 @@ class Database:
 
     @_synchronized
     def insert_thread(self, t: ThreadRecord) -> None:
-        # Spec §3.1: composed_from_task_id and composed_from_talk_id are
-        # mutually exclusive; daemon enforces at insert time.
-        if t.composed_from_task_id is not None and t.composed_from_talk_id is not None:
-            raise ValueError(
-                "composed_from_task_id and composed_from_talk_id are mutually exclusive"
-            )
+        # Spec §3.1: composed_from_task_id is the sole composer attribution.
         self._conn.execute(
             """INSERT INTO threads (
                 id, subject, started_at, archived_at, status,
                 forwarded_from_id, forwarded_from_kind,
                 turn_cap, turns_used, summary,
                 transcript_path,
-                composed_by, composed_from_task_id, composed_from_talk_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                composed_by, composed_from_task_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 t.id,
                 t.subject,
@@ -2448,7 +2554,6 @@ class Database:
                 t.transcript_path,
                 t.composed_by,
                 t.composed_from_task_id,
-                t.composed_from_talk_id,
             ),
         )
         self._conn.commit()
@@ -2469,7 +2574,6 @@ class Database:
             transcript_path=row["transcript_path"],
             composed_by=row["composed_by"] if "composed_by" in keys else "founder",
             composed_from_task_id=row["composed_from_task_id"] if "composed_from_task_id" in keys else None,
-            composed_from_talk_id=row["composed_from_talk_id"] if "composed_from_talk_id" in keys else None,
         )
 
     @_synchronized
@@ -3097,129 +3201,6 @@ class Database:
         return inv, new_cap
 
     @_synchronized
-    def insert_talk(self, talk: TalkRecord) -> None:
-        self._conn.execute(
-            """INSERT INTO talks (id, agent_name, started_at, ended_at, status,
-               summary, topic_list_json, new_learnings_count, new_kb_slugs_json,
-               transcript_path)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                talk.id,
-                talk.agent_name,
-                talk.started_at.isoformat(),
-                talk.ended_at.isoformat() if talk.ended_at else None,
-                talk.status.value if hasattr(talk.status, "value") else talk.status,
-                talk.summary,
-                # Empty lists serialize to NULL; read back as [].
-                json.dumps(talk.topic_list) if talk.topic_list else None,
-                talk.new_learnings_count,
-                json.dumps(talk.new_kb_slugs) if talk.new_kb_slugs else None,
-                talk.transcript_path,
-            ),
-        )
-        self._conn.commit()
-
-    @_synchronized
-    def get_talk(self, talk_id: str) -> TalkRecord | None:
-        cursor = self._conn.execute("SELECT * FROM talks WHERE id = ?", (talk_id,))
-        row = cursor.fetchone()
-        if row is None:
-            return None
-        return TalkRecord(
-            id=row["id"],
-            agent_name=row["agent_name"],
-            started_at=row["started_at"],
-            ended_at=row["ended_at"],
-            status=row["status"],
-            summary=row["summary"],
-            # Empty lists serialize to NULL; read back as [].
-            topic_list=json.loads(row["topic_list_json"]) if row["topic_list_json"] else [],
-            new_learnings_count=row["new_learnings_count"],
-            new_kb_slugs=json.loads(row["new_kb_slugs_json"]) if row["new_kb_slugs_json"] else [],
-            transcript_path=row["transcript_path"],
-        )
-
-    @_synchronized
-    def update_talk(self, talk_id: str, **fields: object) -> None:
-        """Update talk fields. Unknown keys are silently ignored (intentional — lets
-        callers forward dict payloads without crashing on extras). Auto-stamps
-        `ended_at` when status transitions to closed/abandoned and the caller did
-        not explicitly supply ended_at.
-
-        Callers must hold DaemonState.db_lock when combining with other writes.
-        """
-        allowed = {
-            "status", "summary", "topic_list", "new_learnings_count",
-            "new_kb_slugs", "transcript_path", "ended_at",
-        }
-        updates: dict[str, object] = {}
-        for k, v in fields.items():
-            if k not in allowed:
-                continue
-            if k == "status":
-                updates[k] = v.value if hasattr(v, "value") else v
-            elif k == "topic_list":
-                updates["topic_list_json"] = json.dumps(v) if v else None
-            elif k == "new_kb_slugs":
-                updates["new_kb_slugs_json"] = json.dumps(v) if v else None
-            else:
-                updates[k] = v
-        # Auto-stamp ended_at on terminal transitions if caller didn't specify.
-        if updates.get("status") in ("closed", "abandoned") and "ended_at" not in updates:
-            updates["ended_at"] = datetime.now(timezone.utc).isoformat()
-        if not updates:
-            return
-        set_clause = ", ".join(f"{k} = ?" for k in updates)
-        values = list(updates.values()) + [talk_id]
-        self._conn.execute(f"UPDATE talks SET {set_clause} WHERE id = ?", values)
-        self._conn.commit()
-
-    @_synchronized
-    def list_talks(
-        self,
-        agent: str | None = None,
-        status: str | None = None,
-        limit: int = 50,
-    ) -> list[TalkRecord]:
-        """List talks newest-first. Hard cap at 500 to protect the route layer."""
-        limit = min(max(limit, 1), 500)
-        clauses: list[str] = []
-        params: list[object] = []
-        if agent is not None:
-            clauses.append("agent_name = ?")
-            params.append(agent)
-        if status is not None:
-            clauses.append("status = ?")
-            params.append(status)
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        params.append(limit)
-        cursor = self._conn.execute(
-            f"SELECT * FROM talks {where} ORDER BY started_at DESC LIMIT ?",
-            tuple(params),
-        )
-        return [
-            TalkRecord(
-                id=r["id"],
-                agent_name=r["agent_name"],
-                started_at=r["started_at"],
-                ended_at=r["ended_at"],
-                status=r["status"],
-                summary=r["summary"],
-                topic_list=json.loads(r["topic_list_json"]) if r["topic_list_json"] else [],
-                new_learnings_count=r["new_learnings_count"],
-                new_kb_slugs=json.loads(r["new_kb_slugs_json"]) if r["new_kb_slugs_json"] else [],
-                transcript_path=r["transcript_path"],
-            )
-            for r in cursor.fetchall()
-        ]
-
-    def list_open_talks_for_agent(self, agent: str) -> list[TalkRecord]:
-        return self.list_talks(agent=agent, status="open", limit=500)
-
-    def last_closed_talk_for_agent(self, agent: str) -> TalkRecord | None:
-        rows = self.list_talks(agent=agent, status="closed", limit=1)
-        return rows[0] if rows else None
-
     # --- Dreams ---
 
     @_synchronized

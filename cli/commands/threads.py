@@ -89,8 +89,8 @@ def cmd_threads_compose(args: argparse.Namespace) -> None:
         args_org=args.org, available=_shared._fetch_available_orgs(client),
     )
     # Agent-initiated compose: requires --from-file with a JSON payload that
-    # includes `composer` + (the binding flags supplied on the CLI).
-    if getattr(args, "task_id", None) or getattr(args, "talk_id", None):
+    # includes `composer` + task binding flags supplied on the CLI.
+    if getattr(args, "task_id", None):
         if not args.from_file:
             print(
                 "error: --from-file is required for agent-initiated compose",
@@ -99,16 +99,9 @@ def cmd_threads_compose(args: argparse.Namespace) -> None:
             sys.exit(2)
         with open(args.from_file) as fh:
             payload = _json.load(fh)
-        if args.task_id:
-            payload["task_id"] = args.task_id
-            if args.session_id:
-                payload["session_id"] = args.session_id
-            # Strip the other binding to avoid binding_ambiguous if the file had it.
-            payload.pop("talk_id", None)
-        else:
-            payload["talk_id"] = args.talk_id
-            payload.pop("task_id", None)
-            payload.pop("session_id", None)
+        payload["task_id"] = args.task_id
+        if args.session_id:
+            payload["session_id"] = args.session_id
         payload = _merge_uploaded_attachments(
             client=client,
             slug=slug,
@@ -392,20 +385,7 @@ def cmd_threads_forward(args: argparse.Namespace) -> None:
     )
     note = Path(args.note_file).read_text(encoding="utf-8") if args.note_file else ""
     source = args.source
-    if source.startswith("TALK-"):
-        from cli.thread_forward import build_forward_body_from_talk
-        talk_resp = client.get(f"/api/v1/orgs/{slug}/talks/{source}")
-        if not _ok(talk_resp):
-            return
-        talk = talk_resp.json()
-        quoted = build_forward_body_from_talk(
-            source_id=source,
-            summary=talk.get("summary") or "",
-            agent_name=talk.get("agent_name") or "?",
-        )
-        kind = "talk"
-        default_subject = f"Fwd: {talk.get('agent_name')} talk"
-    elif source.startswith("THR-"):
+    if source.startswith("THR-"):
         from cli.thread_forward import build_forward_body_from_thread
         from runtime.models import ThreadMessage, ThreadMessageKind
         thr_resp = client.get(f"/api/v1/orgs/{slug}/threads/{source}")
@@ -429,7 +409,7 @@ def cmd_threads_forward(args: argparse.Namespace) -> None:
         kind = "thread"
         default_subject = f"Fwd: {thr['subject']}"
     else:
-        print("error: --source must start with TALK- or THR-")
+        print("error: --source must start with THR-")
         sys.exit(2)
 
     body = quoted + note
@@ -468,10 +448,6 @@ def register(sub) -> None:
     p_threads_compose.add_argument(
         "--session-id", default=None, dest="session_id",
         help="Active session id (required with --task-id)",
-    )
-    p_threads_compose.add_argument(
-        "--talk-id", default=None, dest="talk_id",
-        help="Open talk binding for agent-initiated compose",
     )
     # Legacy founder-direct flags (still supported, no --from-file needed):
     p_threads_compose.add_argument("--subject", default=None)
@@ -549,9 +525,9 @@ def register(sub) -> None:
     p_threads_resume.add_argument("--thread-id", dest="thread_id", required=True)
     p_threads_resume.set_defaults(func=cmd_threads_resume)
 
-    p_threads_forward = threads_sub.add_parser("forward", help="Founder: forward a talk or thread into a new thread")
+    p_threads_forward = threads_sub.add_parser("forward", help="Founder: forward a thread into a new thread")
     p_threads_forward.add_argument("--org", default=None, help="Org slug")
-    p_threads_forward.add_argument("--source", required=True, help="THR-NNN or TALK-NNN")
+    p_threads_forward.add_argument("--source", required=True, help="THR-NNN")
     p_threads_forward.add_argument("--recipients", required=True, help="comma-separated agent names")
     p_threads_forward.add_argument("--note-file", dest="note_file", default=None)
     p_threads_forward.add_argument("--subject", default=None)

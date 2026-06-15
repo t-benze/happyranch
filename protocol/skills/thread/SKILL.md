@@ -149,9 +149,9 @@ loop handles delegation natively.
   subject. Their manager receives a BOOTSTRAP turn and self-dispatches if
   they take the work on.
 
-If you see `thread_dispatch_must_be_self` (or `talk_dispatch_must_be_self`)
+If you see `thread_dispatch_must_be_self` (or `thread_dispatch_must_be_self`)
 in an error envelope: you tried to push work onto another agent from inside
-a thread or talk. Re-route via compose, or self-dispatch and own the phase.
+a thread. Re-route via compose, or self-dispatch and own the phase.
 
 ## Task-followup turn
 
@@ -183,20 +183,18 @@ new action is warranted, mention it in your reply and let the founder loop in.
 Callback shapes are unchanged: same `reply` / `decline` payload schema as a normal
 reply turn.
 
-## Compose a new thread (from inside a task or talk)
+## Compose a new thread (from inside a task session)
 
 Use this when:
 
 - You need written async input from another agent and aren't blocked enough
   to justify an escalation.
 - You want a durable record of a cross-team coordination decision.
-- You're inside a talk and want to loop in an agent who isn't present.
 
 Requirements:
 
 - You are currently in an active task session (you have a `task_id` +
-  `session_id` from `start-task`) OR an open talk (`talk_id` from `/talk
-  start`).
+  `session_id` from `start-task`).
 - You name the OTHER agents you want in the thread. The founder is not a
   participant — they follow the thread via the web UI.
 
@@ -209,16 +207,12 @@ Requirements:
     "recipients": ["agent_a", "agent_b"],
     "body_markdown": "<the message>"}
 
-2. From a task, single-line:
+2. Single-line:
 
    happyranch threads compose --org <slug> --task-id <TASK> --session-id <SID> --from-file /tmp/thread-compose-<tag>.json
 
-   From a talk:
-
-   happyranch threads compose --org <slug> --talk-id <TALK> --from-file /tmp/thread-compose-<tag>.json
-
 3. Capture the returned `thread_id`. Mention it in your task completion
-   summary (or talk transcript) so the founder can find it.
+   summary so the founder can find it.
 
 ### Authority
 

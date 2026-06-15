@@ -349,44 +349,9 @@ class AuditLogger:
             },
         )
 
-    def log_task_dispatched(
-        self,
-        *,
-        task_id: str,
-        talk_id: str,
-        dispatcher_agent: str,
-        dispatcher_role: str,
-        effective_target: str,
-        team: str,
-    ) -> None:
-        """Record on a NEW task that it was dispatched from a talk.
-
-        `task_id` is the new task's id (NOT the talk id) -- the task_id scope
-        is the new task; querying by talk_id uses the dispatched_from_talk_id
-        column on tasks instead. `dispatcher_role` is "worker" or "manager"
-        -- frozen at dispatch time so retroactive role changes don't rewrite
-        history.
-        """
-        self._db.insert_audit_log(
-            task_id=task_id,
-            agent=dispatcher_agent,
-            action="task_dispatched",
-            payload={
-                "talk_id": talk_id,
-                "dispatcher_agent": dispatcher_agent,
-                "dispatcher_role": dispatcher_role,
-                "effective_target": effective_target,
-                "team": team,
-            },
-        )
-
-    # NOTE: audit_log.task_id is NOT NULL. Talk events reuse that column as a
-    # generic "scope id" and store the talk id (TALK-NNN). Readers that filter
-    # by talk id pass it in place of task_id.
-
     def log_artifact_put(self, name: str, size_bytes: int, agent: str) -> None:
         self._db.insert_audit_log(
-            task_id=f"artifact:{name}",  # namespaced to avoid collision with TASK-/TALK-/SR- ids in get_audit_logs(task_id)
+            task_id=f"artifact:{name}",  # namespaced to avoid collision with TASK-/JOB- ids in get_audit_logs(task_id)
             agent=agent,
             action="artifact_put",
             payload={"name": name, "size_bytes": size_bytes},
@@ -394,57 +359,12 @@ class AuditLogger:
 
     def log_artifact_delete(self, name: str, agent: str) -> None:
         # Mirrors log_artifact_put's row shape: same artifact:<name> namespacing
-        # so deletes never collide with TASK-/TALK-/SR- ids in get_audit_logs(task_id).
+        # so deletes never collide with TASK-/JOB- ids in get_audit_logs(task_id).
         self._db.insert_audit_log(
             task_id=f"artifact:{name}",
             agent=agent,
             action="artifact_delete",
             payload={"name": name},
-        )
-
-    def log_talk_started(
-        self, talk_id: str, agent_name: str, resumed_from: str | None,
-    ) -> None:
-        self._db.insert_audit_log(
-            task_id=talk_id,
-            agent=agent_name,
-            action="talk_started",
-            payload={"resumed_from": resumed_from},
-        )
-
-    def log_talk_resumed(self, talk_id: str, agent_name: str) -> None:
-        self._db.insert_audit_log(
-            task_id=talk_id,
-            agent=agent_name,
-            action="talk_resumed",
-            payload={},
-        )
-
-    def log_talk_abandoned(
-        self, talk_id: str, agent_name: str, reason: str,
-    ) -> None:
-        self._db.insert_audit_log(
-            task_id=talk_id,
-            agent=agent_name,
-            action="talk_abandoned",
-            payload={"reason": reason},
-        )
-
-    def log_talk_ended(
-        self,
-        talk_id: str,
-        agent_name: str,
-        new_learnings_count: int,
-        new_kb_slugs: list[str],
-    ) -> None:
-        self._db.insert_audit_log(
-            task_id=talk_id,
-            agent=agent_name,
-            action="talk_ended",
-            payload={
-                "new_learnings_count": new_learnings_count,
-                "new_kb_slugs": new_kb_slugs,
-            },
         )
 
     def log_agent_managed(
@@ -459,8 +379,8 @@ class AuditLogger:
         """Record a successful manage-agent call.
 
         `scope_id` populates `audit_log.task_id` (the generic scope column
-        described at line 173): TASK-xxx for task-path calls, TALK-xxx for
-        talk-path calls. `source` is 'task' or 'talk' for quick filtering.
+        described at line 173): TASK-xxx for task-path calls.
+        `source` is 'task' for quick filtering.
         `actor` is the manager_name resolved by the team-manager auth helper.
         """
         self._db.insert_audit_log(
@@ -531,7 +451,6 @@ class AuditLogger:
         forwarded_from_id: str | None,
         composed_by: str = "founder",
         composed_from_task_id: str | None = None,
-        composed_from_talk_id: str | None = None,
     ) -> None:
         self._db.insert_audit_log(
             task_id=thread_id,
@@ -543,7 +462,6 @@ class AuditLogger:
                 "forwarded_from_id": forwarded_from_id,
                 "composed_by": composed_by,
                 "composed_from_task_id": composed_from_task_id,
-                "composed_from_talk_id": composed_from_talk_id,
             },
         )
 
@@ -775,7 +693,7 @@ class AuditLogger:
 
         Unlike `log_agent_managed`, the actor is 'founder' — this is a one-off
         recovery op for agents bootstrapped outside the enroll→approve flow.
-        Scope is the agent name itself (no task/talk context).
+        Scope is the agent name itself (no task context).
         """
         self._db.insert_audit_log(
             task_id=f"AGENT-{name}",

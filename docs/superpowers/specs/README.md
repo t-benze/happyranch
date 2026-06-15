@@ -43,11 +43,11 @@ New specs should include a short status block near the top:
 | `2026-04-19-task-status-redesign.md` | implemented | Current status vocabulary: `docs/agent-guides/orchestrator-contracts.md`. |
 | `2026-04-20-multi-executor-design.md` | implemented | Current executor guide: `docs/agent-guides/agent-executors-and-permissions.md`. |
 | `2026-04-21-opc-revisit-design.md` | implemented | Old name; current command is `happyranch revisit`. |
-| `2026-04-21-talk-flow-design.md` | implemented | Current talk surface: README, `protocol/skills/talk/SKILL.md`, `runtime/daemon/routes/talks.py`. |
+| `2026-04-21-talk-flow-design.md` | removed | Talk surface removed per THR-023 (2026-06-15); replaced by `protocol/skills/review/SKILL.md`. |
 | `2026-04-23-revisit-root-link-design.md` | implemented | Current revisit notes: `docs/agent-guides/features-and-invariants.md`. |
 | `2026-04-24-content-team-design.md` | historical | Org-specific planning background. |
 | `2026-04-26-multi-org-runtime-design.md` | superseded | Replaced by parallel multi-org runtime and HappyRanch rename work. |
-| `2026-04-26-talk-dispatch-design.md` | implemented | Current self-dispatch rule: `docs/agent-guides/features-and-invariants.md`. |
+| `2026-04-26-talk-dispatch-design.md` | removed | Talk dispatch removed with the talk surface; thread self-dispatch remains. |
 | `2026-04-28-parallel-multi-org-runtime-design.md` | implemented | Uses old `opc` naming; current runtime guide is `docs/agent-guides/project-layout.md`. |
 | `2026-05-05-token-usage-tracking-design.md` | implemented | Current CLI/API: README and `runtime/daemon/routes/tokens.py`. |
 | `2026-05-08-feishu-notification-design.md` | removed | REMOVED in TASK-302 (THR-022). DB tables dormant; web UI + threads are sole control surface. |
@@ -62,7 +62,7 @@ New specs should include a short status block near the top:
 | `2026-05-19-web-dashboard-design.md` | implemented | Current dashboard UI/API in `web/src/features/dashboard/` and dashboard routes. |
 | `2026-05-19-web-kb-surface-design.md` | implemented | Current KB UI/API in `web/src/features/kb/` and KB routes. |
 | `2026-05-19-web-polish-design.md` | historical | Visual/product polish history. |
-| `2026-05-19-web-talks-design.md` | implemented | Current talks UI/API in `web/src/features/talks/`. |
+| `2026-05-19-web-talks-design.md` | removed | Talks UI/API removed with the talk surface (THR-023). |
 | `2026-05-20-agent-initiated-threads-design.md` | implemented | Current thread compose-as-agent route and thread skill. |
 | `2026-05-23-agent-script-requests-design.md` | superseded | Renamed and extended by jobs. Current contract: `2026-05-26-jobs-design.md` and jobs skill. |
 | `2026-05-25-feishu-script-request-notifications-design.md` | removed | REMOVED in TASK-302 (THR-022). DB tables dormant; web UI + threads are sole control surface. |
@@ -70,7 +70,7 @@ New specs should include a short status block near the top:
 | `2026-05-26-cancel-race-design.md` | implemented | Current cancel behavior in task routes and run-step helpers. |
 | `2026-05-26-jobs-design.md` | current | Current jobs design companion; executable truth in `protocol/skills/jobs/SKILL.md` and `runtime/daemon/routes/jobs.py`. |
 | `2026-05-28-task-blocked-by-job-design.md` | implemented | Current behavior: feature guide and jobs skill. |
-| `2026-05-28-thread-talk-self-dispatch-only-design.md` | current | Current thread/talk dispatch rule; see protocol skills and routes. |
+| `2026-05-28-thread-talk-self-dispatch-only-design.md` | current | Current thread self-dispatch rule; talk dispatch removed. See protocol skills and routes. |
 | `2026-05-28-thread-task-followup-design.md` | implemented | Current follow-up behavior: feature guide and `runtime/orchestrator/run_step.py`. |
 | `2026-05-30-add-org-and-agent-from-web-ui-design.md` | implemented | Current web agents/orgs UI and routes. |
 | `2026-05-30-dashboard-overhaul-design.md` | implemented | Current dashboard UI/API. |
@@ -82,7 +82,7 @@ New specs should include a short status block near the top:
 | `2026-06-06-cancel-actor-attribution-design.md` | implemented | Current cancel audit behavior in task routes. |
 | `2026-06-06-thread-escalation-surfacing-design.md` | implemented | Current thread escalation/follow-up behavior in run-step/thread code. |
 | `2026-06-08-system-assistant-design.md` | current | Current system-assistant design companion; verify against implementation before editing. Executor-probing onboarding superseded by `2026-06-10-assistant-self-registration-design.md`. |
-| `2026-06-08-thread-talk-token-usage-scope-design.md` | implemented | Current token reporting contract: README, `runtime/daemon/routes/tokens.py`, and OpenAPI snapshot. |
+| `2026-06-08-thread-talk-token-usage-scope-design.md` | current | Current token reporting contract (thread scope; talk scope removed). See README, `runtime/daemon/routes/tokens.py`, and OpenAPI snapshot. |
 | `2026-06-09-nightly-dreaming-design.md` | implemented | Current private scheduled per-agent reflection mechanism; implemented in `runtime/daemon/dream_runner.py`, `dream_scheduler.py`, `dream_queue.py`, `runtime/infrastructure/dream_store.py`, and `runtime/daemon/routes/dreams.py`. |
 | `2026-06-09-thread-file-attachments-design.md` | proposed | Artifact-backed thread attachment design; pending implementation. |
 | `2026-06-10-assistant-self-registration-design.md` | implemented | Replaces system-assistant executor probing with CLI self-registration (`assistant register`); implemented in `runtime/daemon/routes/assistant.py` (`/assistant/init`, `/assistant/register`), `runtime/system_assistant.py`, `cli/commands/assistant.py`. |
