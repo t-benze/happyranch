@@ -58,6 +58,33 @@ def _synchronized(method):
     return wrapper
 
 
+def _rebuild_indexes_for(
+    table: str,
+    conn: sqlite3.Connection,
+    statements: list[tuple[str, list]],
+    dropped_col: str | None = None,
+) -> None:
+    """Append CREATE INDEX statements for *table* after a table-rebuild.
+
+    Called during the old-SQLite fallback path of the talk-removal migration.
+    The rebuild drops all indexes on the original table; this helper re-creates
+    them by reading sqlite_master. When *dropped_col* is set, skip any index
+    whose SQL references it (the index is already dropped in step 1 of the
+    migration).
+    """
+    rows = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL",
+        (table,),
+    ).fetchall()
+    for (sql,) in rows:
+        # Keep CREATE UNIQUE INDEX / CREATE INDEX as-is.
+        if not sql.upper().startswith("CREATE "):
+            continue
+        if dropped_col and dropped_col in sql:
+            continue
+        statements.append((sql, []))
+
+
 class Database:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -189,6 +216,7 @@ class Database:
             self._conn.rollback()
             raise
 
+
     def _migrate_drop_talk_surface_if_needed(self) -> None:
         """Drop the talks table, four talk-reference columns, and five talk indexes.
 
@@ -210,8 +238,9 @@ class Database:
         4. DROP TABLE IF EXISTS talks.
         5. Leave audit_log untouched (talk_* rows preserved per decision #6).
         """
-        # Idempotency guard: if the talks table is already gone AND
-        # dispatched_from_talk_id is absent from tasks, assume already migrated.
+        # Idempotency guard: verify ALL FOUR targets are already gone
+        # (talks table + the 3 talk_id columns on tasks/jobs/threads).
+        # session_token_usage.talk_id is checked per-column below.
         existing_tables = {
             row[0]
             for row in self._conn.execute(
@@ -219,13 +248,23 @@ class Database:
             ).fetchall()
         }
         if "talks" not in existing_tables:
-            task_cols = {
-                row["name"]
-                for row in self._conn.execute(
-                    "PRAGMA table_info(tasks)"
-                ).fetchall()
-            }
-            if "dispatched_from_talk_id" not in task_cols:
+            all_gone = True
+            for table, col in (
+                ("tasks", "dispatched_from_talk_id"),
+                ("jobs", "submitted_from_talk_id"),
+                ("threads", "composed_from_talk_id"),
+                ("session_token_usage", "talk_id"),
+            ):
+                tbl_cols = {
+                    row["name"]
+                    for row in self._conn.execute(
+                        f"PRAGMA table_info({table})"
+                    ).fetchall()
+                }
+                if col in tbl_cols:
+                    all_gone = False
+                    break
+            if all_gone:
                 return
 
         sqlite_version = sqlite3.sqlite_version_info
@@ -260,18 +299,52 @@ class Database:
             if can_drop_column:
                 statements.append((f"ALTER TABLE {table} DROP COLUMN {col}", []))
             else:
-                # Table-rebuild fallback.
+                # Table-rebuild fallback: explicit CREATE TABLE (
+                # full DDL minus the talk column), INSERT SELECT explicit
+                # cols, DROP old, RENAME new, recreate indexes.
                 info_rows = self._conn.execute(
                     f"PRAGMA table_info({table})"
                 ).fetchall()
                 keep_cols = [r["name"] for r in info_rows if r["name"] != col]
                 col_list = ", ".join(keep_cols)
-                statements.append((f"ALTER TABLE {table} RENAME TO {table}_old", []))
-                statements.append((
-                    f"CREATE TABLE {table} AS SELECT {col_list} FROM {table}_old",
-                    [],
-                ))
-                statements.append((f"DROP TABLE {table}_old", []))
+                # Build the new-column DDL from PRAGMA info.
+                col_defs = []
+                for r in info_rows:
+                    if r["name"] == col:
+                        continue
+                    cname = r["name"]
+                    ctype = r["type"]
+                    notnull = r["notnull"]
+                    dflt = r["dflt_value"]
+                    pk = r["pk"]
+                    parts = [cname, ctype]
+                    if notnull:
+                        parts.append("NOT NULL")
+                    if dflt is not None:
+                        parts.append(f"DEFAULT {dflt}")
+                    col_def = " ".join(parts)
+                    # PRIMARY KEY handled separately in the table DDL.
+                    col_defs.append(col_def)
+                # Collect PK columns.
+                pk_cols = [r["name"] for r in info_rows if r["pk"] and r["name"] != col]
+                pk_clause = ""
+                if pk_cols:
+                    pk_clause = f", PRIMARY KEY ({', '.join(pk_cols)})"
+                stmt_create = (
+                    f"CREATE TABLE {table}_new (\n  "
+                    + ",\n  ".join(col_defs)
+                    + f"{pk_clause}\n)"
+                )
+                stmt_insert = (
+                    f"INSERT INTO {table}_new ({col_list}) "
+                    f"SELECT {col_list} FROM {table}"
+                )
+                statements.append((stmt_create, []))
+                statements.append((stmt_insert, []))
+                statements.append((f"DROP TABLE {table}", []))
+                statements.append((f"ALTER TABLE {table}_new RENAME TO {table}", []))
+                # Recreate indexes lost by the rebuild, skipping talk-column indexes.
+                _rebuild_indexes_for(table, self._conn, statements, dropped_col=col)
 
         # 3. session_token_usage.talk_id.
         stu_cols = {
@@ -291,16 +364,46 @@ class Database:
                 ).fetchall()
                 keep_cols = [r["name"] for r in info_rows if r["name"] != "talk_id"]
                 col_list = ", ".join(keep_cols)
-                statements.append(
-                    ("ALTER TABLE session_token_usage RENAME TO session_token_usage_old", [])
+                # Build the new-column DDL from PRAGMA info.
+                col_defs = []
+                for r in info_rows:
+                    if r["name"] == "talk_id":
+                        continue
+                    cname = r["name"]
+                    ctype = r["type"]
+                    notnull = r["notnull"]
+                    dflt = r["dflt_value"]
+                    pk = r["pk"]
+                    parts = [cname, ctype]
+                    if notnull:
+                        parts.append("NOT NULL")
+                    if dflt is not None:
+                        parts.append(f"DEFAULT {dflt}")
+                    col_def = " ".join(parts)
+                    col_defs.append(col_def)
+                # Collect PK columns.
+                pk_cols = [r["name"] for r in info_rows if r["pk"] and r["name"] != "talk_id"]
+                pk_clause = ""
+                if pk_cols:
+                    pk_clause = f", PRIMARY KEY ({', '.join(pk_cols)})"
+                stmt_create = (
+                    f"CREATE TABLE session_token_usage_new (\n  "
+                    + ",\n  ".join(col_defs)
+                    + f"{pk_clause}\n)"
                 )
+                stmt_insert = (
+                    f"INSERT INTO session_token_usage_new ({col_list}) "
+                    f"SELECT {col_list} FROM session_token_usage"
+                )
+                statements.append((stmt_create, []))
+                statements.append((stmt_insert, []))
+                statements.append(("DROP TABLE session_token_usage", []))
                 statements.append((
-                    f"CREATE TABLE session_token_usage AS "
-                    f"SELECT {col_list} FROM session_token_usage_old",
-                    [],
+                    "ALTER TABLE session_token_usage_new RENAME TO session_token_usage", []
                 ))
-                statements.append(
-                    ("DROP TABLE session_token_usage_old", [])
+                # Recreate indexes lost by the rebuild, skipping talk-column indexes.
+                _rebuild_indexes_for(
+                    "session_token_usage", self._conn, statements, dropped_col="talk_id"
                 )
 
         # 4. Drop the talks table.
@@ -2405,7 +2508,7 @@ class Database:
                 turn_cap, turns_used, summary,
                 transcript_path,
                 composed_by, composed_from_task_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 t.id,
                 t.subject,

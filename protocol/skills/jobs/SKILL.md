@@ -118,8 +118,7 @@ Before reporting your task complete, stop any of your own jobs you no longer nee
 - `400 unknown_interpreter` — `interpreter` not in the allowed set.
 - `400 rationale_required` — submitted `review_required=true` without a `rationale`.
 - `400 script_too_large` — script body exceeded 64 KB.
-- `400 talk_not_open` — talk-path submission against a closed/abandoned talk. End the talk path; don't retry.
-- `404 not_found` / `404 unknown_task` / `404 unknown_talk` — referenced id doesn't exist.
+- `404 not_found` / `404 unknown_task` — referenced id doesn't exist.
 - `409 session_mismatch` — daemon spawned a newer session for this `(task_id, agent)`. Exit immediately.
 
 Retry once after 1 second on any non-listed error.

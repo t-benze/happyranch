@@ -170,5 +170,4 @@ Cross-agent reference material — SOPs, partner-API quirks, founder rulings —
 | `happyranch manage-agent --from-file ...` | (Team managers only) enroll/update/terminate an agent within your own team. |
 | `happyranch kb add --agent ... --from-file ...` | Contribute a knowledge-base entry. |
 | `happyranch kb update <slug> --agent ... --from-file ...` | Update an existing entry. |
-| `happyranch dispatch --from-file ...` | (Talk-mode) Spawn a new task from inside an open talk. Workers may dispatch only to themselves; team managers may dispatch to any agent in their own team. Cross-team dispatch is forbidden. |
-| `happyranch talk end --talk-id ... --from-file ...` | End an open talk; persists the transcript and extracts end-of-talk learnings. |
+

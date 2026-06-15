@@ -843,26 +843,6 @@ def test_task_type_backfill_classifies_existing_children_as_subtask(tmp_path):
     db.close()
 
 
-def test_dispatched_from_talk_id_index_queryable(tmp_path):
-    from runtime.infrastructure.database import Database
-    from runtime.models import TaskRecord
-
-    db = Database(tmp_path / "happyranch.db")
-    db.insert_task(TaskRecord(
-        id="TASK-001", brief="a", team="engineering",
-        assigned_agent="dev_agent",
-    ))
-    db.insert_task(TaskRecord(
-        id="TASK-002", brief="b", team="engineering",
-        assigned_agent="dev_agent",
-    ))
-    cur = db._conn.execute(
-        "SELECT id FROM tasks", (),
-    )
-    rows = [r["id"] for r in cur.fetchall()]
-    assert rows == ["TASK-001"]
-
-
 def test_escalation_notifications_table_exists(tmp_path):
     db = Database(tmp_path / "happyranch.db")
     cur = db._conn.execute(

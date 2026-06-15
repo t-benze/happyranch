@@ -64,7 +64,6 @@ class OpcClient:
         scope_type: str | None = None,
         scope_id: str | None = None,
         thread_id: str | None = None,
-        talk_id: str | None = None,
         purpose: str | None = None,
     ) -> list[dict]:
         """Return per-session token usage rows for an org.
@@ -82,7 +81,6 @@ class OpcClient:
                 "scope_type": scope_type,
                 "scope_id": scope_id,
                 "thread_id": thread_id,
-                "talk_id": talk_id,
                 "purpose": purpose,
             }.items()
             if v is not None
@@ -101,7 +99,6 @@ class OpcClient:
         scope_type: str | None = None,
         scope_id: str | None = None,
         thread_id: str | None = None,
-        talk_id: str | None = None,
         purpose: str | None = None,
     ) -> list[dict]:
         """Return a token-usage rollup grouped by a supported token scope.
@@ -109,10 +106,10 @@ class OpcClient:
         Calls ``GET /api/v1/orgs/{slug}/tokens?group_by=...``. Filters
         AND-compose; ``None`` values are omitted. Raises on non-2xx.
         """
-        if group_by not in ("agent", "task", "scope", "thread", "talk", "purpose"):
+        if group_by not in ("agent", "task", "scope", "thread", "purpose"):
             raise ValueError(
                 "group_by must be 'agent', 'task', 'scope', 'thread', "
-                f"'talk', or 'purpose', got: {group_by!r}"
+                f"or 'purpose', got: {group_by!r}"
             )
         params = {
             k: v
@@ -124,7 +121,6 @@ class OpcClient:
                 "scope_type": scope_type,
                 "scope_id": scope_id,
                 "thread_id": thread_id,
-                "talk_id": talk_id,
                 "purpose": purpose,
             }.items()
             if v is not None

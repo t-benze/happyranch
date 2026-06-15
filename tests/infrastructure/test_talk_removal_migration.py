@@ -265,3 +265,43 @@ class TestTalkRemovalMigration:
         ).fetchone()[0]
         assert task_audit == 1, "Non-talk audit row was lost"
         conn.close()
+
+    def test_migration_completes_partial_state(self, tmp_path: Path) -> None:
+        """Seed a DB where talks is already gone but tasks.dispatched_from_talk_id
+        still exists (simulating a partial/interrupted prior migration).  The
+        idempotency guard must detect the remaining column and finish the job.
+        """
+        db_path = tmp_path / "test.db"
+        _seed_pre_removal_db(db_path)
+
+        # Simulate a partial migration: drop talks table but leave tasks/jobs
+        # talk columns intact.
+        pre_conn = sqlite3.connect(str(db_path))
+        pre_conn.execute("DROP TABLE talks")
+        pre_conn.commit()
+        # Verify partial state: talks gone, dispatched_from_talk_id still there
+        tables = {r[0] for r in pre_conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "talks" not in tables
+        task_cols = {r[1] for r in pre_conn.execute("PRAGMA table_info(tasks)")}
+        assert "dispatched_from_talk_id" in task_cols
+        pre_conn.close()
+
+        # Run migration — it should detect the remaining column and finish.
+        Database(db_path)
+
+        # Post-condition: all talk columns gone
+        post_conn = sqlite3.connect(str(db_path))
+        for table, col in [
+            ("tasks", "dispatched_from_talk_id"),
+            ("jobs", "submitted_from_talk_id"),
+            ("threads", "composed_from_talk_id"),
+            ("session_token_usage", "talk_id"),
+        ]:
+            cols = {r[1] for r in post_conn.execute(f"PRAGMA table_info({table})")}
+            assert col not in cols, f"{col} still in {table} after partial-migration fixup"
+
+        # Data survived.
+        task_count = post_conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+        assert task_count == 1
+        post_conn.close()
+

@@ -773,24 +773,8 @@ def test_list_enrollments(
     assert names == ["b"]
 
 
-def test_manage_agent_body_accepts_talk_id_alone() -> None:
-    """talk_id alone (no task_id/session_id) validates."""
-    from runtime.daemon.routes.agents import ManageAgentBody
-
-    body = ManageAgentBody(
-        action="enroll",
-        name="content_writer",
-        talk_id="TALK-007",
-        description="desc",
-        system_prompt="prompt",
-    )
-    assert body.talk_id == "TALK-007"
-    assert body.task_id is None
-    assert body.session_id is None
-
-
 def test_manage_agent_body_accepts_task_and_session() -> None:
-    """(task_id + session_id) still validates."""
+    """(task_id + session_id) validates."""
     from runtime.daemon.routes.agents import ManageAgentBody
 
     body = ManageAgentBody(
@@ -802,29 +786,10 @@ def test_manage_agent_body_accepts_task_and_session() -> None:
         system_prompt="prompt",
     )
     assert body.task_id == "TASK-100"
-    assert body.talk_id is None
-
-
-def test_manage_agent_body_rejects_both_paths() -> None:
-    """Supplying both task/session and talk_id is a validation error."""
-    import pytest
-    from pydantic import ValidationError
-    from runtime.daemon.routes.agents import ManageAgentBody
-
-    with pytest.raises(ValidationError):
-        ManageAgentBody(
-            action="enroll",
-            name="content_writer",
-            task_id="TASK-100",
-            session_id="sess-eh",
-            talk_id="TALK-007",
-            description="desc",
-            system_prompt="prompt",
-        )
 
 
 def test_manage_agent_body_rejects_neither_path() -> None:
-    """Supplying neither is a validation error."""
+    """Supplying neither task_id+sess_id is a validation error."""
     import pytest
     from pydantic import ValidationError
     from runtime.daemon.routes.agents import ManageAgentBody
@@ -854,177 +819,6 @@ def test_manage_agent_body_rejects_partial_task_path() -> None:
         )
 
 
-def _seed_eh_talk(org_state, talk_id: str = "TALK-700") -> str:
-    """Helper: insert an open EH talk and return its id."""
-    from runtime.models import
-
-    org_state.db.insert_talk((id=talk_id, agent_name="engineering_head"),
-    )
-    return talk_id
-
-
-def test_manage_agent_talk_path_enroll_creates_pending(
-    tmp_home, app, org_state, auth_headers,
-) -> None:
-    talk_id = _seed_eh_talk(org_state)
-    r = TestClient(app).post(
-        "/api/v1/orgs/alpha/agents/manage",
-        json={
-            "action": "enroll",
-            "name": "content_writer",
-            "talk_id": talk_id,
-            "description": "Writes destination guides",
-            "system_prompt": "You are the Content Writer...",
-            "executor": "codex",
-        },
-        headers=auth_headers,
-    )
-    assert r.status_code == 200
-    assert r.json()["status"] == "pending"
-    from runtime.orchestrator import prompt_loader
-    agent = prompt_loader.load_pending_agent(_paths(org_state), "content_writer")
-    assert agent is not None
-    assert agent.executor == "codex"
-
-
-def test_manage_agent_talk_path_update_changes_prompt(
-    tmp_home, app, org_state, auth_headers,
-) -> None:
-    # Use dev_agent which belongs to engineering team (managed by engineering_head).
-    talk_id = _seed_eh_talk(org_state, "TALK-701")
-    _seed_active_agent(org_state, "dev_agent", system_prompt="old prompt\n")
-    workspace = org_state.root / "workspaces" / "dev_agent"
-    workspace.mkdir(parents=True)
-
-    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
-        mock_ctx = MockCB.return_value
-        mock_ctx.ensure_workspace_ready.return_value = None
-        r = TestClient(app).post(
-            "/api/v1/orgs/alpha/agents/manage",
-            json={
-                "action": "update",
-                "name": "dev_agent",
-                "talk_id": talk_id,
-                "system_prompt": "new prompt via talk",
-            },
-            headers=auth_headers,
-        )
-    assert r.status_code == 200
-    from runtime.orchestrator import prompt_loader
-    updated = prompt_loader.load_agent(_paths(org_state), "dev_agent")
-    assert updated is not None
-    assert "new prompt via talk" in updated.system_prompt
-
-
-def test_manage_agent_talk_path_terminate_removes_workspace(
-    tmp_home, app, org_state, auth_headers,
-) -> None:
-    # Use dev_agent which belongs to engineering team (managed by engineering_head).
-    talk_id = _seed_eh_talk(org_state, "TALK-702")
-    _seed_active_agent(org_state, "dev_agent")
-    workspace = org_state.root / "workspaces" / "dev_agent"
-    workspace.mkdir(parents=True)
-    (workspace / "CLAUDE.md").write_text("# test")
-
-    r = TestClient(app).post(
-        "/api/v1/orgs/alpha/agents/manage",
-        json={
-            "action": "terminate",
-            "name": "dev_agent",
-            "talk_id": talk_id,
-        },
-        headers=auth_headers,
-    )
-    assert r.status_code == 200
-    assert not workspace.exists()
-    from runtime.orchestrator import prompt_loader
-    assert prompt_loader.load_agent(_paths(org_state), "dev_agent") is None
-
-
-def test_manage_agent_talk_path_non_eh_talk_returns_403(
-    tmp_home, app, org_state, auth_headers,
-) -> None:
-    from runtime.models import
-
-    org_state.db.insert_talk((id="TALK-703", agent_name="dev_agent"),
-    )
-    r = TestClient(app).post(
-        "/api/v1/orgs/alpha/agents/manage",
-        json={
-            "action": "enroll",
-            "name": "content_writer",
-            "talk_id": "TALK-703",
-            "description": "desc",
-            "system_prompt": "prompt",
-        },
-        headers=auth_headers,
-    )
-    assert r.status_code == 403
-
-
-def test_manage_agent_talk_path_closed_talk_returns_403(
-    tmp_home, app, org_state, auth_headers,
-) -> None:
-    from runtime.models import
-
-    org_state.db.insert_talk((
-            id="TALK-704",
-            agent_name="engineering_head",
-            status=.CLOSED,
-        ),
-    )
-    r = TestClient(app).post(
-        "/api/v1/orgs/alpha/agents/manage",
-        json={
-            "action": "enroll",
-            "name": "content_writer",
-            "talk_id": "TALK-704",
-            "description": "desc",
-            "system_prompt": "prompt",
-        },
-        headers=auth_headers,
-    )
-    assert r.status_code == 403
-
-
-def test_manage_agent_talk_path_missing_talk_returns_404(
-    tmp_home, app, auth_headers,
-) -> None:
-    r = TestClient(app).post(
-        "/api/v1/orgs/alpha/agents/manage",
-        json={
-            "action": "enroll",
-            "name": "content_writer",
-            "talk_id": "TALK-DOES-NOT-EXIST",
-            "description": "desc",
-            "system_prompt": "prompt",
-        },
-        headers=auth_headers,
-    )
-    assert r.status_code == 404
-
-
-def test_manage_agent_both_auth_paths_returns_422(
-    tmp_home, app, org_state, auth_headers,
-) -> None:
-    _activate_eh_session(org_state)
-    _seed_eh_talk(org_state, "TALK-705")
-    r = TestClient(app).post(
-        "/api/v1/orgs/alpha/agents/manage",
-        json={
-            "action": "enroll",
-            "name": "content_writer",
-            "task_id": _EH_TASK,
-            "session_id": _EH_SESSION,
-            "talk_id": "TALK-705",
-            "description": "desc",
-            "system_prompt": "prompt",
-        },
-        headers=auth_headers,
-    )
-    assert r.status_code == 422
-
-
 def test_manage_agent_task_path_writes_audit_entry(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
@@ -1052,34 +846,6 @@ def test_manage_agent_task_path_writes_audit_entry(
     assert managed[0]["payload"]["action"] == "enroll"
     assert managed[0]["payload"]["name"] == "content_writer"
     assert managed[0]["payload"]["source"] == "task"
-
-
-def test_manage_agent_talk_path_writes_audit_entry_scoped_to_talk(
-    tmp_home, app, org_state, auth_headers,
-) -> None:
-    talk_id = _seed_eh_talk(org_state, "TALK-800")
-    r = TestClient(app).post(
-        "/api/v1/orgs/alpha/agents/manage",
-        json={
-            "action": "enroll",
-            "name": "content_writer",
-            "talk_id": talk_id,
-            "description": "desc",
-            "system_prompt": "prompt",
-        },
-        headers=auth_headers,
-    )
-    assert r.status_code == 200
-
-    managed = [
-        log for log in org_state.db.get_audit_logs(talk_id)
-        if log["action"] == "agent_managed"
-    ]
-    assert len(managed) == 1
-    assert managed[0]["agent"] == "engineering_head"
-    assert managed[0]["payload"]["action"] == "enroll"
-    assert managed[0]["payload"]["name"] == "content_writer"
-    assert managed[0]["payload"]["source"] == "talk"
 
 
 def test_manage_agent_failed_enrollment_does_not_log(

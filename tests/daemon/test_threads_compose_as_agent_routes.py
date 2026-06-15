@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from runtime.models import, TaskRecord, TaskStatus
+from runtime.models import TaskRecord, TaskStatus
 
 
 def _seed_agent(org_state, name: str, *, team: str = "engineering") -> None:
@@ -98,6 +98,7 @@ def test_compose_as_agent_rejects_missing_binding(tmp_home, app, org_state, auth
 
 
 def test_compose_as_agent_rejects_dual_binding(tmp_home, app, org_state, auth_headers):
+    """Sending task_id without session_id (or vice versa) → 422."""
     _seed_agent(org_state, "engineering_head")
     _seed_agent(org_state, "payment_agt")
     client = TestClient(app)
@@ -109,12 +110,11 @@ def test_compose_as_agent_rejects_dual_binding(tmp_home, app, org_state, auth_he
             "subject": "s",
             "recipients": ["payment_agt"],
             "body_markdown": "b",
-            "task_id": "TASK-1", "session_id": "abc",
-            "talk_id": "TALK-1",
+            "task_id": "TASK-1",
         },
     )
     assert r.status_code == 422
-    assert r.json()["detail"]["code"] == "binding_ambiguous"
+    assert r.json()["detail"]["code"] == "binding_required"
 
 
 def test_compose_as_agent_rejects_unknown_composer(tmp_home, app, org_state, auth_headers):
@@ -213,63 +213,6 @@ def test_compose_as_agent_task_path_rejects_session_mismatch(tmp_home, app, org_
     )
     assert r.status_code == 409
     assert r.json()["detail"]["code"] == "session_mismatch"
-
-
-def test_compose_as_agent_talk_path_rejects_unknown_talk(tmp_home, app, org_state, auth_headers):
-    _seed_agent(org_state, "engineering_head")
-    _seed_agent(org_state, "payment_agt")
-    client = TestClient(app)
-    r = client.post(
-        "/api/v1/orgs/alpha/threads/compose-as-agent",
-        headers=auth_headers,
-        json={
-            "composer": "engineering_head", "subject": "s",
-            "recipients": ["payment_agt"], "body_markdown": "b",
-            "talk_id": "TALK-9999",
-        },
-    )
-    assert r.status_code == 404
-    assert r.json()["detail"]["code"] == "unknown_talk"
-
-
-def test_compose_as_agent_talk_path_rejects_closed_talk(tmp_home, app, org_state, auth_headers):
-    _seed_agent(org_state, "engineering_head")
-    _seed_agent(org_state, "payment_agt")
-    org_state.db.insert_talk((
-        id="TALK-9", agent_name="engineering_head", status=.CLOSED,
-    ))
-    client = TestClient(app)
-    r = client.post(
-        "/api/v1/orgs/alpha/threads/compose-as-agent",
-        headers=auth_headers,
-        json={
-            "composer": "engineering_head", "subject": "s",
-            "recipients": ["payment_agt"], "body_markdown": "b",
-            "talk_id": "TALK-9",
-        },
-    )
-    assert r.status_code == 400
-    assert r.json()["detail"]["code"] == "talk_not_open"
-
-
-def test_compose_as_agent_talk_path_rejects_unowned_talk(tmp_home, app, org_state, auth_headers):
-    _seed_agent(org_state, "engineering_head")
-    _seed_agent(org_state, "payment_agt")
-    org_state.db.insert_talk((
-        id="TALK-10", agent_name="payment_agt", status=.OPEN,
-    ))
-    client = TestClient(app)
-    r = client.post(
-        "/api/v1/orgs/alpha/threads/compose-as-agent",
-        headers=auth_headers,
-        json={
-            "composer": "engineering_head", "subject": "s",
-            "recipients": ["payment_agt"], "body_markdown": "b",
-            "talk_id": "TALK-10",
-        },
-    )
-    assert r.status_code == 403
-    assert r.json()["detail"]["code"] == "composer_not_talk_owner"
 
 
 def test_compose_as_agent_task_path_rejects_completed_task(
@@ -409,7 +352,6 @@ def test_compose_as_agent_happy_path_returns_thread(
     assert body["thread_id"].startswith("THR-")
     assert body["composed_by"] == "engineering_head"
     assert body["composed_from_task_id"] == task_id
-    assert body["composed_from_talk_id"] is None
     assert body["pending_replies"] == ["payment_agt"]
 
 

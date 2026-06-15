@@ -54,21 +54,8 @@ def test_thread_record_defaults_to_founder(tmp_path: Path) -> None:
     assert got.composed_from_task_id is None
 
 
-def test_insert_thread_rejects_dual_binding(tmp_path: Path) -> None:
-    db = Database(tmp_path / "happyranch.db")
-    with pytest.raises(ValueError, match="mutually exclusive"):
-        db.insert_thread(
-            ThreadRecord(
-                id="THR-099",
-                subject="bad",
-                composed_by="engineering_head",
-                composed_from_task_id="TASK-1",
-            )
-        )
-
-
-def test_thread_record_roundtrip_with_talk_binding(tmp_path: Path) -> None:
-    """Talk-side roundtrip symmetric to test_thread_record_roundtrip_with_composer_fields."""
+def test_thread_record_roundtrip_no_task_binding(tmp_path: Path) -> None:
+    """Thread roundtrip with composed_by set but no composed_from_task_id."""
     db = Database(tmp_path / "happyranch.db")
     rec = ThreadRecord(
         id="THR-003",

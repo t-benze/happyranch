@@ -1413,7 +1413,6 @@ def test_run_step_token_usage_carries_task_origin_scope(
     assert len(rows) == 1
     assert rows[0]["scope_type"] == "task"
     assert rows[0]["scope_id"] == task_id
-    assert rows[0]["talk_id"] is None
     assert rows[0]["thread_id"] == (
         origin_id if field == "dispatched_from_thread_id" else None
     )

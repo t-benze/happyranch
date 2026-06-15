@@ -471,8 +471,6 @@ def _register_jobs_verbs(
     p_tail.add_argument("--lines", type=int, default=50)
     p_tail.add_argument("--task-id", dest="task_id", default=None)
     p_tail.add_argument("--session-id", dest="session_id", default=None)
-    p_tail.add_argument(
-    )
     p_tail.add_argument("--org")
     p_tail.set_defaults(func=wrap(cmd_jobs_tail))
 
@@ -485,8 +483,6 @@ def _register_jobs_verbs(
     )
     p_wait.add_argument("--task-id", dest="task_id", default=None)
     p_wait.add_argument("--session-id", dest="session_id", default=None)
-    p_wait.add_argument(
-    )
     p_wait.add_argument("--org")
     p_wait.set_defaults(func=wrap(cmd_jobs_wait))
 
@@ -496,8 +492,6 @@ def _register_jobs_verbs(
     p_stop.add_argument("job_id")
     p_stop.add_argument("--task-id", dest="task_id", default=None)
     p_stop.add_argument("--session-id", dest="session_id", default=None)
-    p_stop.add_argument(
-    )
     p_stop.add_argument("--org")
     p_stop.set_defaults(func=wrap(cmd_jobs_stop))
 

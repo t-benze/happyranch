@@ -104,6 +104,3 @@ def client(tmp_home, daemon_state: DaemonState):
     tc = TestClient(app)
     tc.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
     return tc
-
-
-def open_talk_for(client, agent_name: str, slug: str = "alpha") -> str:
