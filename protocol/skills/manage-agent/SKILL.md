@@ -89,5 +89,5 @@ Agent names must be lowercase with underscores only (e.g. `content_writer`, `seo
 ## Error handling
 
 - If `happyranch` returns non-zero, retry once after 1 second.
-- `409` (duplicate name on enroll, non-approved agent on update/terminate) and `404` (agent not found, talk not found) are not retryable.
+- `409` (duplicate name on enroll, non-approved agent on update/terminate) and `404` (agent not found) are not retryable.
 - `422` usually means the payload is missing required auth fields (task_id + session_id) — fix the JSON and retry.

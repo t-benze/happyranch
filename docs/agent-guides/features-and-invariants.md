@@ -30,7 +30,6 @@ For current behavior always prefer `protocol/`, `docs/agent-guides/`, tests, the
 ### Collaboration surfaces
 
 - **Threads.** Founder-visible broadcast conversations for coordination and cross-team handoff; every message mints a reply invocation for each participant, dispatch from a thread is self-only. Specs `docs/superpowers/specs/2026-05-13-threads-design.md` and successors (broadcast-only, agent-initiated, markdown composer, task-followup, escalation surfacing, working indicator, close-out removal/resume, file attachments); impl `runtime/infrastructure/thread_store.py`, `runtime/daemon/thread_runner.py`. See [Thread Broadcast Routing](#thread-broadcast-routing), [Thread Agent-Session Resume](#thread-agent-session-resume), and [Thread Task Followup](#thread-task-followup) below for traps.
-- **Talks.** Founder-activated one-on-one conversational sessions with a single agent; dispatch from a talk is self-only. Specs `docs/superpowers/specs/2026-04-21-talk-flow-design.md`, `docs/superpowers/specs/2026-04-26-talk-dispatch-design.md`; impl `runtime/infrastructure/talk_store.py`, `runtime/daemon/routes/talks.py`. See [Thread / Talk Dispatch Self-Only Rule](#thread--talk-dispatch-self-only-rule) below for traps.
 - **Knowledge base.** Per-org shared, durable cross-agent knowledge (rules, references, founder rulings); orgs do not share a KB. Contract `protocol/06-knowledge-base.md`; impl `runtime/infrastructure/kb_store.py`, `runtime/daemon/routes/kb.py`. See [Knowledge Base](#knowledge-base) below for traps.
 - **Shared artifacts.** Per-org opaque file blobs produced by one agent and visible to all agents in the org. Impl `runtime/infrastructure/artifact_store.py`, `runtime/daemon/routes/artifacts.py`; CLI `happyranch artifacts {put,list,get}`. See [Shared Artifacts](#shared-artifacts) below for traps.
 
@@ -160,9 +159,9 @@ Traps:
 - Startup catch-up runs at most today's missed dream; it does not replay every missed day.
 - Failed or timed-out dreams do not advance the next input window.
 
-## Thread / Talk Dispatch Self-Only Rule
+## Thread Dispatch Self-Only Rule
 
-`/threads/{id}/dispatch` and `/talks/{id}/dispatch` reject calls where `effective_target != dispatcher`. Spec: `docs/superpowers/specs/2026-05-28-thread-talk-self-dispatch-only-design.md`.
+`/threads/{id}/dispatch` rejects calls where `effective_target != dispatcher`. Spec: `docs/superpowers/specs/2026-05-28-thread-talk-self-dispatch-only-design.md`.
 
 Traps:
 
@@ -181,7 +180,7 @@ Routes under `/api/v1/orgs/{slug}/jobs/`: `POST /submit`, `GET /`, `GET /{id}`, 
 Traps:
 
 - Agent identity derives from auth context, never payload `agent`.
-- Submit auth paths are mutually exclusive: `(task_id + session_id)` XOR `talk_id`.
+- Submit auth path: `(task_id + session_id)`.
 - `review_required` and `persistent` are honor-system on submit.
 - Auto-resume on terminal supersedes founder revisit for blocked-on-job tasks.
 

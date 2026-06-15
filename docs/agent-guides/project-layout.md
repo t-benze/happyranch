@@ -9,7 +9,7 @@ A canonical sample org lives at `examples/orgs/hk-macau-tourism/`. Treat it as t
 - Layer 1: Founder, who sets org rules, handles escalations, and reviews the dashboard.
 - Layer 2: Manager agents, defined per org in `<runtime>/orgs/<slug>/org/agents/<name>.md` with `role: manager`.
 - Layer 3: Worker agents, same file shape with `role: worker`, assigned through `teams.yaml`.
-- Infrastructure: orchestrator, FastAPI daemon, `happyranch` CLI, audit logger, KB, talk store, revisit primitive, and escalation routing.
+- Infrastructure: orchestrator, FastAPI daemon, `happyranch` CLI, audit logger, KB, revisit primitive, and escalation routing.
 
 Agents operate autonomously within authority defined by their org. The system enforces manager cross-audits and maker-checker separation regardless of org. Org-specific authority lives in `escalation-rules.md` and agent system prompts.
 
