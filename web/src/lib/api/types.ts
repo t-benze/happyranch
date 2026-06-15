@@ -569,7 +569,7 @@ export interface ThreadsPatch {
 }
 
 export interface OrgSettingsPatch {
-  session_timeout_seconds?: number;
+  session_timeout_seconds?: number | null;
   dreaming?: DreamingPatch;
   threads?: ThreadsPatch;
 }

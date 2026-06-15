@@ -518,6 +518,24 @@ def load_org_config(paths: OrgPaths) -> OrgConfig:
 _ORG_WRITABLE_KEYS = {"dreaming", "threads", "session_timeout_seconds"}
 
 
+def _deep_merge(base: dict, overrides: dict) -> dict:
+    """Recursively merge *overrides* into *base*.
+
+    Dictionaries are merged recursively — sibling keys in *base* survive
+    unless explicitly overridden. All other types (scalars, lists, None)
+    are replaced outright by the override value. A ``None`` override clears
+    the key so nullable fields (e.g. ``session_timeout_seconds``) can revert
+    to default.
+    """
+    result = dict(base)
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
 def save_org_config(paths: OrgPaths, patch: dict) -> None:
     """Atomically deep-merge *patch* into org/config.yaml for allow-listed keys.
 
@@ -525,10 +543,10 @@ def save_org_config(paths: OrgPaths, patch: dict) -> None:
     1. Read the current raw dict from disk. If the file doesn't exist, start
        with an empty dict (``load_org_config`` treats missing as defaults).
     2. Deep-merge **only** the allow-listed keys (``dreaming``, ``threads``,
-       ``session_timeout_seconds``) from *patch* into the raw dict. Every
-       other top-level key (``feishu_notifications``, ``working_hours``,
-       unknown future blocks) is carried through verbatim — the GUI must
-       never drop a key it doesn't manage.
+       ``session_timeout_seconds``) from *patch* into the raw dict. Nested
+       dictionaries within those blocks are merged recursively so a partial
+       patch (e.g. ``{"dreaming": {"enabled": true}}``) does not drop sibling
+       leaves. Every other top-level key is carried through verbatim.
     3. Validate the candidate dict via ``_build_org_config`` (the existing
        authoritative validator). If it raises ``OrgConfigError``, the write
        is aborted and the error is surfaced to the caller.
@@ -555,7 +573,10 @@ def save_org_config(paths: OrgPaths, patch: dict) -> None:
     raw = dict(raw)  # shallow copy to avoid mutating the parsed object
     for key in _ORG_WRITABLE_KEYS:
         if key in patch:
-            raw[key] = patch[key]
+            if isinstance(patch[key], dict) and isinstance(raw.get(key), dict):
+                raw[key] = _deep_merge(raw[key], patch[key])
+            else:
+                raw[key] = patch[key]
 
     # 3. Validate candidate via the authoritative validator
     try:

@@ -1,5 +1,5 @@
 import { describe, expect, test, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { DataContext } from '@/design-system/providers/DataContext';
@@ -240,5 +240,50 @@ describe('SettingsDialog', () => {
     expect(screen.queryByRole('heading', { name: 'Agents' })).toBeNull();
     // Also check there's no feishu anywhere
     expect(html).not.toMatch(/feishu/i);
+  });
+
+  test('sends explicit null when session timeout field is cleared', async () => {
+    const mutateAsync = vi.fn().mockResolvedValue(mockSnapshot);
+    renderDialog(undefined, vi.fn(), mutateAsync);
+
+    // Find the session timeout input (has initial value "3600")
+    const timeoutInput = screen.getByDisplayValue('3600');
+
+    // Clear the field
+    fireEvent.change(timeoutInput, { target: { value: '' } });
+
+    // Click Save
+    const saveButton = screen.getByRole('button', { name: 'Save' });
+    fireEvent.click(saveButton);
+
+    // Assert mutation was called with session_timeout_seconds: null (not undefined)
+    await vi.waitFor(() => {
+      expect(mutateAsync).toHaveBeenCalledTimes(1);
+    });
+    const patch = mutateAsync.mock.calls[0][0] as OrgSettingsPatch;
+    expect(patch.session_timeout_seconds).toBeNull();
+  });
+
+  test('sends null for invocation_timeout_seconds when cleared', async () => {
+    const mutateAsync = vi.fn().mockResolvedValue(mockSnapshot);
+    renderDialog(undefined, vi.fn(), mutateAsync);
+
+    // The invocation timeout input has the label
+    const label = screen.getByText(/Invocation timeout/);
+    expect(label).toBeInTheDocument();
+
+    // Click Save without changing anything — threads.invocation_timeout_seconds
+    // is currently null in mockOrg, so the clear patch should send explicit null
+    const saveButton = screen.getByRole('button', { name: 'Save' });
+    fireEvent.click(saveButton);
+
+    await vi.waitFor(() => {
+      expect(mutateAsync).toHaveBeenCalledTimes(1);
+    });
+    const patch = mutateAsync.mock.calls[0][0] as OrgSettingsPatch;
+    // If invocation_timeout_seconds is null, it should be sent as null
+    // (not undefined which would be stripped). Since the input is empty,
+    // it translates to null which should be sent as null.
+    expect(patch.threads?.invocation_timeout_seconds).toBeNull();
   });
 });

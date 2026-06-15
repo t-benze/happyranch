@@ -287,38 +287,50 @@ class OrgSettingsPatch(BaseModel):
 
 def _patch_to_raw_dict(patch: OrgSettingsPatch) -> dict:
     """Convert the Pydantic patch model to a raw dict suitable for
-    ``save_org_config`` deep-merge, stripping ``None``-valued leaves
-    so that absent fields are not written."""
-    result: dict = {}
+    ``save_org_config`` deep-merge.
 
-    if patch.session_timeout_seconds is not None:
+    Uses Pydantic v2 ``model_fields_set`` (and its nested-model equivalents)
+    to distinguish an EXPLICIT ``null`` sent by the client (which should
+    clear the override) from an OMITTED field (which leaves the current
+    value untouched).
+    """
+    result: dict = {}
+    fields = patch.model_fields_set or set()
+
+    # session_timeout_seconds: include if in fields_set (even if None)
+    if "session_timeout_seconds" in fields:
+        result["session_timeout_seconds"] = patch.session_timeout_seconds
+    elif patch.session_timeout_seconds is not None:
         result["session_timeout_seconds"] = patch.session_timeout_seconds
 
     if patch.dreaming is not None:
         dreaming: dict = {}
         d = patch.dreaming
-        if d.enabled is not None:
+        d_fields = d.model_fields_set or set()
+        if d.enabled is not None or "enabled" in d_fields:
             dreaming["enabled"] = d.enabled
         # schedule: build from schedule patch + catch_up_on_startup
         # (catch_up_on_startup lives inside schedule in YAML, but is a peer
         # of schedule in the view/PATCH model for cleaner UI grouping.)
         sched: dict = {}
         if d.schedule is not None:
-            if d.schedule.time is not None:
+            s_fields = d.schedule.model_fields_set or set()
+            if d.schedule.time is not None or "time" in s_fields:
                 sched["time"] = d.schedule.time
-            if d.schedule.timezone is not None:
+            if d.schedule.timezone is not None or "timezone" in s_fields:
                 sched["timezone"] = d.schedule.timezone
-        if d.catch_up_on_startup is not None:
+        if d.catch_up_on_startup is not None or "catch_up_on_startup" in d_fields:
             sched["catch_up_on_startup"] = d.catch_up_on_startup
         if sched:
             dreaming["schedule"] = sched
         if d.agents is not None:
             agents: dict = {}
-            if d.agents.mode is not None:
+            a_fields = d.agents.model_fields_set or set()
+            if d.agents.mode is not None or "mode" in a_fields:
                 agents["mode"] = d.agents.mode
-            if d.agents.include is not None:
+            if d.agents.include is not None or "include" in a_fields:
                 agents["include"] = d.agents.include
-            if d.agents.exclude is not None:
+            if d.agents.exclude is not None or "exclude" in a_fields:
                 agents["exclude"] = d.agents.exclude
             if agents:
                 dreaming["agents"] = agents
@@ -328,11 +340,12 @@ def _patch_to_raw_dict(patch: OrgSettingsPatch) -> dict:
     if patch.threads is not None:
         threads: dict = {}
         t = patch.threads
-        if t.enabled is not None:
+        t_fields = t.model_fields_set or set()
+        if t.enabled is not None or "enabled" in t_fields:
             threads["enabled"] = t.enabled
-        if t.default_turn_cap is not None:
+        if t.default_turn_cap is not None or "default_turn_cap" in t_fields:
             threads["default_turn_cap"] = t.default_turn_cap
-        if t.invocation_timeout_seconds is not None:
+        if t.invocation_timeout_seconds is not None or "invocation_timeout_seconds" in t_fields:
             threads["invocation_timeout_seconds"] = t.invocation_timeout_seconds
         if threads:
             result["threads"] = threads
@@ -420,12 +433,126 @@ class TeamsPatch(BaseModel):
     remove_workers: list[str] = []
 
 
+def _preflight_team_workers(
+    paths: OrgPaths,
+    teams: object,
+    team_name: str,
+    add_workers: list[str],
+    remove_workers: list[str],
+) -> list[str]:
+    """Pre-flight validate worker membership targets before mutation.
+
+    Checks:
+    1. Every target in add_workers and remove_workers is a known active agent.
+    2. No target in add_workers is the team's manager.
+
+    Returns a list of human-readable error messages (empty → valid).
+    """
+    agent_names: set[str] = set()
+    agent_roles: dict[str, str] = {}
+    for agent_def in prompt_loader.list_agents(paths):
+        agent_names.add(agent_def.name)
+        agent_roles[agent_def.name] = agent_def.role
+
+    errors: list[str] = []
+
+    for label, targets in (("add_workers", add_workers), ("remove_workers", remove_workers)):
+        for agent in targets:
+            if agent not in agent_names:
+                errors.append(f"{label}: unknown agent {agent!r}")
+            elif label == "add_workers" and agent_roles.get(agent) == "manager":
+                # Reject adding the team's own manager as a worker.
+                # Check against teams.yaml to confirm it's THIS team's manager.
+                from runtime.orchestrator.teams import TeamsRegistry
+                if isinstance(teams, TeamsRegistry):
+                    try:
+                        mgr = teams.manager_for_team(team_name)
+                        if mgr.name == agent:
+                            errors.append(
+                                f"add_workers: {agent!r} is the manager of team "
+                                f"{team_name!r} and cannot be added as a worker"
+                            )
+                    except KeyError:
+                        pass  # team not found (already checked by caller)
+
+    return errors
+
+
+def _post_flight_worker_agent_drift(
+    paths: OrgPaths,
+    teams: object,
+) -> list[str]:
+    """Bidirectional consistency check between teams.yaml worker rows
+    and agent file team declarations.
+
+    (a) Every worker in teams.yaml has a matching agent file that declares
+        the same team.
+    (b) Every non-manager agent that declares a team is present in that
+        team's worker list.
+
+    This supplements ``validate_team_membership`` (which only checks agent
+    files → team names / manager matches). We do NOT modify
+    ``validate_team_membership`` — this is additive.
+    """
+    from runtime.orchestrator.teams import TeamsRegistry
+
+    if not isinstance(teams, TeamsRegistry):
+        return []
+
+    # Build mappings: agent_name → declared_team, agent_name → role
+    agent_team: dict[str, str] = {}
+    agent_role: dict[str, str] = {}
+    for agent_def in prompt_loader.list_agents(paths):
+        agent_team[agent_def.name] = agent_def.team
+        agent_role[agent_def.name] = agent_def.role
+
+    drift: list[str] = []
+
+    # Build worker sets per team
+    team_workers: dict[str, set[str]] = {}
+    for team_name in teams.teams():
+        tm = teams.manager_for_team(team_name)
+        team_workers[team_name] = set(tm.workers)
+
+    # (a) worker → agent file
+    for team_name, workers in team_workers.items():
+        for worker in workers:
+            declared_team = agent_team.get(worker)
+            if declared_team is None:
+                drift.append(
+                    f"worker {worker!r} in team {team_name!r} has no agent file"
+                )
+            elif declared_team != team_name:
+                drift.append(
+                    f"worker {worker!r} in team {team_name!r} declares team "
+                    f"{declared_team!r} in their agent file"
+                )
+
+    # (b) non-manager agent declaring a team → must be in that team's worker list
+    for agent_name, declared_team in agent_team.items():
+        role = agent_role.get(agent_name, "worker")
+        if role == "manager":
+            continue  # managers are validated by validate_team_membership
+        workers = team_workers.get(declared_team, set())
+        if agent_name not in workers:
+            drift.append(
+                f"agent {agent_name!r} declares team {declared_team!r} "
+                f"but is not in that team's worker list"
+            )
+
+    return drift
+
+
 @router.put("/settings/teams")
 async def put_teams(slug: str, org: OrgDep, patch: TeamsPatch) -> dict:
     """Update worker membership for a single team.
 
-    Wraps ``TeamsRegistry.add_worker`` / ``remove_worker`` (which
-    auto-persist to teams.yaml), then re-runs ``validate_team_membership``
+    Pre-flight validates every add/remove target against the active agent
+    list and rejects unknown agents or managers added as workers before
+    touching teams.yaml.
+
+    Then wraps ``TeamsRegistry.add_worker`` / ``remove_worker`` (which
+    auto-persist to teams.yaml), re-runs ``validate_team_membership``
     to guarantee consistency. On drift → 409 and the change is rolled
     back to the pre-request state.
     """
@@ -438,6 +565,13 @@ async def put_teams(slug: str, org: OrgDep, patch: TeamsPatch) -> dict:
             status_code=404,
             detail=f"team {patch.team!r} not found",
         )
+
+    # Pre-flight: reject unknown agents / manager-as-worker before mutation
+    preflight_errors = _preflight_team_workers(
+        paths, teams, patch.team, patch.add_workers, patch.remove_workers,
+    )
+    if preflight_errors:
+        raise HTTPException(status_code=422, detail={"errors": preflight_errors})
 
     # Remember original state for rollback
     m = teams.manager_for_team(patch.team)
@@ -477,6 +611,22 @@ async def put_teams(slug: str, org: OrgDep, patch: TeamsPatch) -> dict:
                 status_code=409,
                 detail={"code": "teams_consistency_drift", "message": str(exc)},
             ) from exc
+
+        # Supplementary check: worker rows vs agent file declarations
+        worker_drift = _post_flight_worker_agent_drift(paths, teams)
+        if worker_drift:
+            # Rollback: restore original workers
+            current = teams.manager_for_team(patch.team).workers
+            added = set(current) - set(original_workers)
+            removed = set(original_workers) - set(current)
+            for agent in added:
+                teams.remove_worker(patch.team, agent)
+            for agent in removed:
+                teams.add_worker(patch.team, agent)
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "teams_worker_agent_drift", "message": "; ".join(worker_drift)},
+            )
 
     # Return updated teams list (mirrors GET /teams shape)
     rows = []

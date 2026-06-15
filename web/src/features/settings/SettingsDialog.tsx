@@ -155,7 +155,7 @@ function EditableOrgSection({
 
     // session_timeout_seconds
     const parsedTimeout = timeout.trim() ? Number(timeout) : null;
-    patch.session_timeout_seconds = parsedTimeout ?? undefined;
+    patch.session_timeout_seconds = parsedTimeout;
 
     // dreaming
     patch.dreaming = {

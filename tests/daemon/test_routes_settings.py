@@ -491,20 +491,242 @@ def test_put_org_settings_rejects_bad_agent_mode(
 
 
 # ----------------------------------------------------------------
+# Finding 1 regression: deep-merge preserves sibling leaves
+# ----------------------------------------------------------------
+
+def test_put_org_settings_deep_merge_preserves_sibling_leaves(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """When patching ONE leaf of dreaming and ONE leaf of threads,
+    every unpatched sibling leaf survives in the persisted YAML and on reload."""
+    import yaml
+    from pathlib import Path
+
+    client = TestClient(app)
+    config_path = Path(org_state.root) / "org" / "config.yaml"
+
+    # Seed a fully-populated config
+    raw = yaml.safe_load(config_path.read_text()) if config_path.exists() else {}
+    raw["dreaming"] = {
+        "enabled": False,
+        "schedule": {"time": "06:00", "timezone": "Asia/Shanghai", "catch_up_on_startup": False},
+        "agents": {"mode": "whitelist", "include": ["dev_agent"], "exclude": ["qa_engineer"]},
+    }
+    raw["threads"] = {
+        "enabled": True,
+        "default_turn_cap": 100,
+        "invocation_timeout_seconds": 900,
+    }
+    raw["session_timeout_seconds"] = 3600
+    config_path.write_text(yaml.safe_dump(raw))
+
+    # Patch ONLY dreaming.enabled and threads.default_turn_cap
+    r = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/org",
+        headers=auth_headers,
+        json={
+            "dreaming": {"enabled": True},
+            "threads": {"default_turn_cap": 200},
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()["org"]
+
+    # Response: patched values should match
+    assert body["dreaming"]["enabled"] is True
+    assert body["threads"]["default_turn_cap"] == 200
+
+    # Response: unpatched sibling leaves must survive
+    assert body["dreaming"]["schedule"]["time"] == "06:00"
+    assert body["dreaming"]["schedule"]["timezone"] == "Asia/Shanghai"
+    assert body["dreaming"]["catch_up_on_startup"] is False
+    assert body["dreaming"]["agents"]["mode"] == "whitelist"
+    assert body["dreaming"]["agents"]["include"] == ["dev_agent"]
+    assert body["dreaming"]["agents"]["exclude"] == ["qa_engineer"]
+    assert body["threads"]["enabled"] is True
+    assert body["threads"]["invocation_timeout_seconds"] == 900
+    assert body["session_timeout_seconds"] == 3600
+
+    # Persisted YAML: unpatched sibling leaves must survive
+    raw2 = yaml.safe_load(config_path.read_text())
+    assert raw2["dreaming"]["enabled"] is True
+    assert raw2["dreaming"]["schedule"] == {"time": "06:00", "timezone": "Asia/Shanghai", "catch_up_on_startup": False}
+    assert raw2["dreaming"]["agents"] == {"mode": "whitelist", "include": ["dev_agent"], "exclude": ["qa_engineer"]}
+    assert raw2["threads"] == {"enabled": True, "default_turn_cap": 200, "invocation_timeout_seconds": 900}
+
+
+def test_put_org_settings_deep_merge_nested_partial_schedule(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Patching only one field inside dreaming.schedule leaves the other field intact."""
+    import yaml
+    from pathlib import Path
+
+    client = TestClient(app)
+    config_path = Path(org_state.root) / "org" / "config.yaml"
+
+    raw = yaml.safe_load(config_path.read_text()) if config_path.exists() else {}
+    raw["dreaming"] = {
+        "enabled": True,
+        "schedule": {"time": "02:00", "timezone": "UTC", "catch_up_on_startup": True},
+        "agents": {"mode": "all", "include": [], "exclude": []},
+    }
+    config_path.write_text(yaml.safe_dump(raw))
+
+    # Patch only dreaming.schedule.time
+    r = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/org",
+        headers=auth_headers,
+        json={"dreaming": {"schedule": {"time": "08:00"}}},
+    )
+    assert r.status_code == 200
+    body = r.json()["org"]
+
+    assert body["dreaming"]["schedule"]["time"] == "08:00"
+    # timezone and catch_up must survive
+    assert body["dreaming"]["schedule"]["timezone"] == "UTC"
+    assert body["dreaming"]["catch_up_on_startup"] is True
+
+    # Persisted YAML
+    raw2 = yaml.safe_load(config_path.read_text())
+    assert raw2["dreaming"]["schedule"] == {"time": "08:00", "timezone": "UTC", "catch_up_on_startup": True}
+
+
+# ----------------------------------------------------------------
+# Finding 2 regression: nullable fields can be cleared
+# ----------------------------------------------------------------
+
+def test_put_org_settings_clears_session_timeout_via_explicit_null(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Sending explicit null for session_timeout_seconds clears the override."""
+    client = TestClient(app)
+
+    # First set a timeout
+    r0 = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/org",
+        headers=auth_headers,
+        json={"session_timeout_seconds": 7200},
+    )
+    assert r0.status_code == 200
+    assert r0.json()["org"]["session_timeout_seconds"] == 7200
+
+    # Now clear it with explicit null
+    r = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/org",
+        headers=auth_headers,
+        json={"session_timeout_seconds": None},
+    )
+    assert r.status_code == 200
+    # After clearing, it should be None (reverting to system default)
+    assert r.json()["org"]["session_timeout_seconds"] is None
+
+    # Verify persisted
+    r2 = client.get(
+        f"/api/v1/orgs/{org_state.slug}/settings",
+        headers=auth_headers,
+    )
+    assert r2.json()["org"]["session_timeout_seconds"] is None
+
+
+def test_put_org_settings_clears_threads_invocation_timeout_via_explicit_null(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Sending explicit null for threads.invocation_timeout_seconds clears the override."""
+    client = TestClient(app)
+
+    r = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/org",
+        headers=auth_headers,
+        json={"threads": {"invocation_timeout_seconds": None}},
+    )
+    assert r.status_code == 200
+    assert r.json()["org"]["threads"]["invocation_timeout_seconds"] is None
+
+
+def test_put_org_settings_omitted_session_timeout_does_not_clear(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Omitting session_timeout_seconds entirely must NOT clear an existing override."""
+    client = TestClient(app)
+
+    # Set a timeout
+    r0 = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/org",
+        headers=auth_headers,
+        json={"session_timeout_seconds": 7200},
+    )
+    assert r0.status_code == 200
+
+    # Send a patch with dreaming only (session_timeout_seconds omitted)
+    r = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/org",
+        headers=auth_headers,
+        json={"dreaming": {"enabled": True}},
+    )
+    assert r.status_code == 200
+    # session_timeout_seconds should STILL be 7200
+    assert r.json()["org"]["session_timeout_seconds"] == 7200
+
+
+# ----------------------------------------------------------------
 # PUT /settings/teams — Phase 2 teams membership editing
 # ----------------------------------------------------------------
 
 import pytest
 
 
+def _seed_agent_file(paths, name: str, team: str, role: str = "worker") -> None:
+    """Write a minimal agent file into the org's agents directory."""
+    from textwrap import dedent
+    path = paths.agents_dir / f"{name}.md"
+    paths.agents_dir.mkdir(parents=True, exist_ok=True)
+    path.write_text(dedent(f"""\
+        ---
+        name: {name}
+        team: {team}
+        role: {role}
+        executor: claude
+        allow_rules: []
+        repos:
+          happyranch: https://github.com/t-benze/happyranch
+        enrolled_by: founder
+        enrolled_at_task: TASK-001
+        enrolled_at: 2026-01-01T00:00:00Z
+        system_prompt: test
+        ---
+        # {name}
+        Test agent.
+        """))
+
+
 @pytest.mark.anyio
 def test_put_teams_add_and_remove_workers(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """PUT /settings/teams can add and remove workers from a team."""
-    client = TestClient(app)
+    """PUT /settings/teams can add workers to a team.
 
-    # The alpha org has seeded teams: engineering (manager=engineering_head, workers=[product_manager])
+    Removal of a worker whose agent file still declares that team triggers
+    409 + rollback so the teams.yaml worker list is restored.
+    """
+    from pathlib import Path as _Path
+    import yaml as _yaml
+    from runtime.orchestrator._paths import OrgPaths
+
+    client = TestClient(app)
+    paths = OrgPaths(root=org_state.root)
+
+    # Seed agent files for all seeded workers + manager
+    _seed_agent_file(paths, "qa_engineer", "engineering")
+    _seed_agent_file(paths, "product_manager", "engineering")
+    _seed_agent_file(paths, "engineering_head", "engineering", role="manager")
+    _seed_agent_file(paths, "dev_agent", "engineering")
+    _seed_agent_file(paths, "payment_agent", "engineering")
+    _seed_agent_file(paths, "content_manager", "content", role="manager")
+    _seed_agent_file(paths, "content_writer", "content")
+    _seed_agent_file(paths, "content_qa", "content")
+    _seed_agent_file(paths, "seo_agent", "content")
+
     # Add a new worker to engineering
     r = client.put(
         f"/api/v1/orgs/{org_state.slug}/settings/teams",
@@ -517,16 +739,24 @@ def test_put_teams_add_and_remove_workers(
     assert "qa_engineer" in eng["workers"]
     assert "product_manager" in eng["workers"]
 
-    # Remove product_manager
+    # Remove product_manager (agent file still declares team=engineering)
+    # This should trigger 409 + rollback
     r2 = client.put(
         f"/api/v1/orgs/{org_state.slug}/settings/teams",
         headers=auth_headers,
         json={"team": "engineering", "remove_workers": ["product_manager"]},
     )
-    assert r2.status_code == 200
-    teams2 = r2.json()["teams"]
-    eng2 = next(t for t in teams2 if t["name"] == "engineering")
-    assert "product_manager" not in eng2["workers"]
+    assert r2.status_code == 409
+    detail = r2.json().get("detail", {})
+    assert "teams_consistency_drift" in str(detail.get("code", "")) or \
+           "teams_worker_agent_drift" in str(detail.get("code", ""))
+
+    # Teams.yaml worker set must be restored to its original value (rollback)
+    teams_path_g = _Path(org_state.root) / "org" / "teams.yaml"
+    loaded_g = _yaml.safe_load(teams_path_g.read_text())
+    workers_g = loaded_g["teams"]["engineering"]["workers"]
+    assert "product_manager" in workers_g
+    assert "qa_engineer" in workers_g
 
 
 @pytest.mark.anyio
@@ -573,6 +803,19 @@ def test_put_teams_noop_is_idempotent(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
     """Re-adding an existing worker is a no-op."""
+    from runtime.orchestrator._paths import OrgPaths
+    paths = OrgPaths(root=org_state.root)
+    # Seed agent files for ALL seeded workers
+    _seed_agent_file(paths, "engineering_head", "engineering", role="manager")
+    _seed_agent_file(paths, "product_manager", "engineering")
+    _seed_agent_file(paths, "dev_agent", "engineering")
+    _seed_agent_file(paths, "payment_agent", "engineering")
+    _seed_agent_file(paths, "qa_engineer", "engineering")
+    _seed_agent_file(paths, "content_manager", "content", role="manager")
+    _seed_agent_file(paths, "content_writer", "content")
+    _seed_agent_file(paths, "content_qa", "content")
+    _seed_agent_file(paths, "seo_agent", "content")
+
     client = TestClient(app)
     r = client.put(
         f"/api/v1/orgs/{org_state.slug}/settings/teams",
@@ -622,3 +865,136 @@ def test_agents_response_excludes_all_sensitive_fields(
 
     feishu_keys = [k for k in lower_keys if "feishu" in k]
     assert feishu_keys == [], f"Feishu-related keys found: {feishu_keys}"
+
+
+# ----------------------------------------------------------------
+# Finding 3 regression: teams pre-flight validation
+# ----------------------------------------------------------------
+
+@pytest.mark.anyio
+def test_put_teams_rejects_unknown_agent_in_add_workers(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Adding an agent that doesn't exist must return 422, NOT 200.
+    Pre-flight prevents mutation so teams.yaml stays untouched."""
+    from runtime.orchestrator._paths import OrgPaths
+    paths = OrgPaths(root=org_state.root)
+    # Seed ALL workers so post-flight doesn't interfere
+    _seed_agent_file(paths, "engineering_head", "engineering", role="manager")
+    _seed_agent_file(paths, "product_manager", "engineering")
+    _seed_agent_file(paths, "dev_agent", "engineering")
+    _seed_agent_file(paths, "payment_agent", "engineering")
+    _seed_agent_file(paths, "qa_engineer", "engineering")
+    _seed_agent_file(paths, "content_manager", "content", role="manager")
+    _seed_agent_file(paths, "content_writer", "content")
+    _seed_agent_file(paths, "content_qa", "content")
+    _seed_agent_file(paths, "seo_agent", "content")
+
+    client = TestClient(app)
+    r = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/teams",
+        headers=auth_headers,
+        json={"team": "engineering", "add_workers": ["nonexistent_agent"]},
+    )
+    assert r.status_code == 422
+
+    # teams.yaml must NOT have been mutated
+    import yaml
+    from pathlib import Path
+    teams_path = Path(org_state.root) / "org" / "teams.yaml"
+    loaded = yaml.safe_load(teams_path.read_text())
+    workers = loaded["teams"]["engineering"]["workers"]
+    assert "nonexistent_agent" not in workers
+
+
+@pytest.mark.anyio
+def test_put_teams_rejects_unknown_agent_in_remove_workers(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Removing an agent that doesn't exist in the active agent list must return 422."""
+    from runtime.orchestrator._paths import OrgPaths
+    paths = OrgPaths(root=org_state.root)
+    _seed_agent_file(paths, "engineering_head", "engineering", role="manager")
+    _seed_agent_file(paths, "product_manager", "engineering")
+    _seed_agent_file(paths, "dev_agent", "engineering")
+    _seed_agent_file(paths, "payment_agent", "engineering")
+    _seed_agent_file(paths, "qa_engineer", "engineering")
+    _seed_agent_file(paths, "content_manager", "content", role="manager")
+    _seed_agent_file(paths, "content_writer", "content")
+    _seed_agent_file(paths, "content_qa", "content")
+    _seed_agent_file(paths, "seo_agent", "content")
+
+    client = TestClient(app)
+    r = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/teams",
+        headers=auth_headers,
+        json={"team": "engineering", "remove_workers": ["nonexistent_agent"]},
+    )
+    assert r.status_code == 422
+
+
+@pytest.mark.anyio
+def test_put_teams_rejects_manager_added_as_worker(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Adding the team's own manager as a worker must return 422."""
+    from runtime.orchestrator._paths import OrgPaths
+    paths = OrgPaths(root=org_state.root)
+    _seed_agent_file(paths, "engineering_head", "engineering", role="manager")
+    _seed_agent_file(paths, "product_manager", "engineering")
+    _seed_agent_file(paths, "dev_agent", "engineering")
+    _seed_agent_file(paths, "payment_agent", "engineering")
+    _seed_agent_file(paths, "qa_engineer", "engineering")
+    _seed_agent_file(paths, "content_manager", "content", role="manager")
+    _seed_agent_file(paths, "content_writer", "content")
+    _seed_agent_file(paths, "content_qa", "content")
+    _seed_agent_file(paths, "seo_agent", "content")
+
+    client = TestClient(app)
+    r = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/teams",
+        headers=auth_headers,
+        json={"team": "engineering", "add_workers": ["engineering_head"]},
+    )
+    assert r.status_code == 422
+
+
+@pytest.mark.anyio
+def test_put_teams_rollback_removing_agent_still_declaring_team(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Removing a worker whose agent file still declares the team must 409
+    AND roll back the teams.yaml worker list to its original value."""
+    import yaml
+    from pathlib import Path
+    from runtime.orchestrator._paths import OrgPaths
+
+    paths = OrgPaths(root=org_state.root)
+    # Seed agent files for ALL workers in the seeded teams.yaml plus the manager
+    _seed_agent_file(paths, "engineering_head", "engineering", role="manager")
+    _seed_agent_file(paths, "product_manager", "engineering")
+    _seed_agent_file(paths, "dev_agent", "engineering")
+    _seed_agent_file(paths, "payment_agent", "engineering")
+    _seed_agent_file(paths, "qa_engineer", "engineering")
+    _seed_agent_file(paths, "content_manager", "content", role="manager")
+    _seed_agent_file(paths, "content_writer", "content")
+    _seed_agent_file(paths, "content_qa", "content")
+    _seed_agent_file(paths, "seo_agent", "content")
+
+    # Snapshot the pre-request worker list
+    teams_path = Path(org_state.root) / "org" / "teams.yaml"
+    before = yaml.safe_load(teams_path.read_text())
+    before_workers = list(before["teams"]["engineering"]["workers"])
+
+    client = TestClient(app)
+    r = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/teams",
+        headers=auth_headers,
+        json={"team": "engineering", "remove_workers": ["product_manager"]},
+    )
+    assert r.status_code == 409
+
+    # Verify the worker set is restored to its original value
+    # (add_worker appends so order may differ; we assert set equality)
+    after = yaml.safe_load(teams_path.read_text())
+    assert set(after["teams"]["engineering"]["workers"]) == set(before_workers)
