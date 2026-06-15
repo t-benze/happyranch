@@ -20,7 +20,7 @@ from runtime.infrastructure.artifact_store import (
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.orchestrator._paths import OrgPaths
 
-# Token-required for every endpoint — matches kb/tasks/talks/scripts routers.
+# Token-required for every endpoint — matches kb/tasks/scripts routers.
 router = APIRouter(dependencies=[require_token()])
 
 
@@ -55,7 +55,7 @@ async def put_artifact(
             detail={"code": "invalid_artifact_name", "name": effective_name, "message": str(exc)},
         ) from exc
 
-    # Construct AuditLogger on demand — matches the routes/talks.py pattern.
+    # Construct AuditLogger on demand — matches the routes/kb.py pattern.
     AuditLogger(org.db).log_artifact_put(
         name=info.name,
         size_bytes=info.size_bytes,

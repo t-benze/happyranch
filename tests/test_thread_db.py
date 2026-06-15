@@ -22,17 +22,6 @@ def test_dispatched_from_thread_id_round_trips(tmp_path):
     assert fetched.dispatched_from_thread_id == "THR-007"
 
 
-def test_dispatched_from_talk_id_round_trips(tmp_path):
-    """Regression guard for the sibling column. Should pass today and after Task 4."""
-    db = Database(tmp_path / "happyranch.db")
-    db.insert_task(TaskRecord(
-        id="TASK-002", brief="x", dispatched_from_talk_id="TALK-1",
-    ))
-    fetched = db.get_task("TASK-002")
-    assert fetched is not None
-    assert fetched.dispatched_from_talk_id == "TALK-1"
-
-
 from runtime.models import (
     ThreadAttachment, ThreadInvocation, ThreadInvocationPurpose, ThreadInvocationStatus,
     ThreadMessage, ThreadMessageKind, ThreadParticipant, ThreadRecord,

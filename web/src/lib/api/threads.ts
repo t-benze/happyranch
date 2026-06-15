@@ -18,7 +18,7 @@ export interface ComposeThreadBody {
   body_markdown: string;
   attachments?: ThreadAttachmentRef[];
   forwarded_from_id?: string;
-  forwarded_from_kind?: 'thread' | 'talk';
+  forwarded_from_kind?: 'thread';
 }
 
 export const composeThread = (

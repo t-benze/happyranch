@@ -7,8 +7,6 @@ from runtime.models import (
     TaskRecord,
     TaskStatus,
     TaskStep,
-    TalkRecord,
-    TalkStatus,
 )
 
 
@@ -179,23 +177,6 @@ def test_task_record_accepts_block_kind():
     assert t.block_kind == BlockKind.DELEGATED
     assert t.note == "Delegated to dev_agent"
     assert t.orchestration_step_count == 3
-
-
-def test_talk_status_values():
-    assert TalkStatus.OPEN.value == "open"
-    assert TalkStatus.CLOSED.value == "closed"
-    assert TalkStatus.ABANDONED.value == "abandoned"
-
-
-def test_talk_record_defaults():
-    rec = TalkRecord(id="TALK-001", agent_name="dev_agent")
-    assert rec.status == TalkStatus.OPEN
-    assert rec.ended_at is None
-    assert rec.summary is None
-    assert rec.topic_list == []
-    assert rec.new_learnings_count == 0
-    assert rec.new_kb_slugs == []
-    assert rec.transcript_path is None
 
 
 def test_script_request_status_values():

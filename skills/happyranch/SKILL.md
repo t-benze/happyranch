@@ -182,29 +182,6 @@ scripts/happyranch kb add --agent founder --from-file /tmp/kb-<slug>.md
 
 `--agent` on `kb add` / `kb update` is metadata (stamped as `authored_by`) — the daemon does not validate it against the team registry. By convention, founder-authored entries use `--agent founder` so future readers can tell the entry came from a human ruling rather than an agent. Bearer-token auth controls *whether* the call succeeds.
 
-## Talks
-
-1:1 founder↔agent conversation flow (TALK-NNN). Talks are the simplest interactive surface — use them for quick Q&A, brainstorming, or dispatching a task with full conversational context. End-of-talk residue lands in the agent's learnings (or legacy `learnings.md`) automatically. Use threads (below) instead when 2+ agents need to participate.
-
-```bash
-# Start a new talk with one agent (returns TALK-NNN + first agent response)
-scripts/happyranch talk start --agent engineering_head
-
-# Resume an existing talk
-scripts/happyranch talk resume --talk-id TALK-007
-
-# List / inspect
-scripts/happyranch talk status                     # open talks only
-scripts/happyranch talk status --agent payment_agent
-scripts/happyranch talk list [--agent <name>] [--limit 50]
-scripts/happyranch talk show TALK-007              # transcript
-scripts/happyranch talk show TALK-007 --json       # raw JSON
-
-# Abandon an open talk (founder; frozen with reason, no end-of-talk residue)
-scripts/happyranch talk abandon --talk-id TALK-007 --reason "superseded by TALK-008"
-```
-
-`happyranch talk end --talk-id TALK-NNN --from-file ...` is the **agent-side** end-of-talk callback — the founder does not run it directly. Dispatching a task from inside a talk also goes through the agent (`happyranch dispatch`).
 
 ## Threads
 
@@ -243,8 +220,8 @@ scripts/happyranch threads archive --thread-id THR-001 --from-file /tmp/thread-a
 # Reopen an archived thread
 scripts/happyranch threads resume --thread-id THR-001
 
-# Forward a finished talk or thread into a NEW thread (decision continuity)
-scripts/happyranch threads forward --source TALK-042 --recipients "engineering_head,product_manager" \
+# Forward a finished thread into a NEW thread (decision continuity)
+scripts/happyranch threads forward --source THR-042 --recipients "engineering_head,product_manager" \
     [--subject "Follow-up: pricing API contract"] [--note-file /tmp/note.md]
 scripts/happyranch threads forward --source THR-001 --recipients "qa_engineer"
 ```
@@ -314,10 +291,10 @@ Per-org content lives under `<runtime>/orgs/<slug>/`:
 
 - `org/{charter.md, escalation-rules.md, teams.yaml, config.yaml, agents/*.md}` — editable org definition
 - `workspaces/<agent>/` — one workspace per approved agent (CLAUDE.md or AGENTS.md, repos, learnings)
-- `kb/`, `talks/`, `threads/` — per-org content stores
+- `kb/`, `threads/` — per-org content stores
 - `happyranch.db` — per-org SQLite
 
-Migration commands are TTY-gated and refuse to run if active tasks or open talks exist.
+Migration commands are TTY-gated and refuse to run if active tasks exist.
 
 ## Common Workflows
 
@@ -363,7 +340,7 @@ scripts/happyranch init-agent                                   # bootstrap work
 
 ## Safety Rules
 
-- **Safe (no confirmation):** `run`, `tail`, `details`, `tasks`, `tokens`, `recall`, `audit`, `enrollments`, `init-agent`, `orgs`, `kb list`, `kb get`, `kb search`, `kb reindex`, `threads list`, `threads show`, `talk status`, `talk list`, `talk show`, `jobs list`, `jobs show`, `jobs output`, `jobs tail`, `jobs wait`
+- **Safe (no confirmation):** `run`, `tail`, `details`, `tasks`, `tokens`, `recall`, `audit`, `enrollments`, `init-agent`, `orgs`, `kb list`, `kb get`, `kb search`, `kb reindex`, `threads list`, `threads show`, `jobs list`, `jobs show`, `jobs output`, `jobs tail`, `jobs wait`
 - **Confirm with user first:**
   - `use` — changes which container the daemon serves (affects all subsequent commands)
   - `orgs unload` — detaches an org from the daemon (files remain, but live state is dropped)
@@ -376,14 +353,14 @@ scripts/happyranch init-agent                                   # bootstrap work
   - `revisit` — founder-initiated spawn of a new root task from a terminal predecessor (TTY-gated CLI; agent sessions cannot invoke it)
   - `cancel` — SIGTERMs live subprocesses and cascades cancellation down the subtree
   - `cancel --no-cascade` — extra dangerous; leaves live children parentless
-  - `talk start` / `talk resume` / `talk abandon` — opens or terminates a founder↔agent conversation (agent invocation triggered)
+  -
   - `threads compose` / `threads send` / `threads invite` / `threads extend` — visible to participants and triggers agent invocations
   - `threads archive` / `threads resume` / `threads forward` — visible thread state transitions / new-thread spawn
   - `jobs run` — TTY-gated; executes the job body inside the daemon process with the daemon's env
   - `jobs reject` / `jobs stop` — terminal or interrupting transition for a job
 - **Agent-callback subcommands — do NOT invoke by hand:**
-  - `report-completion`, `progress`, `learning {add,update,promote,reindex}`, `manage-agent`, `manage-repo`, `dispatch`, `talk end`, `threads {reply,decline,dispatch}`, `jobs submit`
-  - These run inside an agent session under the `Bash(happyranch:*)` allow rule. Invoking them manually falsifies audit data and review-verdict rows. Read-side verbs (learning `list|get|search`, `jobs list|show|output|tail|wait`, `talk list|show|status`) are safe for ad-hoc inspection.
+  - `report-completion`, `progress`, `learning {add,update,promote,reindex}`, `manage-agent`, `manage-repo`, `dispatch`, `threads {reply,decline,dispatch}`, `jobs submit`
+  - These run inside an agent session under the `Bash(happyranch:*)` allow rule. Invoking them manually falsifies audit data and review-verdict rows. Read-side verbs (learning `list|get|search`, `jobs list|show|output|tail|wait`, are safe for ad-hoc inspection.
 
 ## Troubleshooting
 

@@ -30,8 +30,6 @@ export type ReviewVerdict =
   | 'request_changes'
   | 'pending';
 
-export type TalkStatus = 'open' | 'closed' | 'abandoned';
-
 export type ThreadStatus = 'open' | 'archived';
 
 export type ThreadMessageKind = 'message' | 'decline' | 'system';
@@ -127,26 +125,6 @@ export interface TaskRecallNode {
 }
 
 // ---------------------------------------------------------------------------
-// Talks
-// ---------------------------------------------------------------------------
-
-export interface TalkRecord {
-  talk_id: string;
-  agent_name: string;
-  status: TalkStatus;
-  started_at: string;
-  ended_at: string | null;
-  summary: string | null;
-  topic_list: string[];
-  new_learnings_count: number;
-  new_kb_slugs: string[];
-  transcript_path: string | null;
-  /** Present on `GET /talks/{id}` for closed talks ≤256 KiB. */
-  transcript?: string;
-  [extra: string]: unknown;
-}
-
-// ---------------------------------------------------------------------------
 // Threads
 // ---------------------------------------------------------------------------
 
@@ -157,7 +135,7 @@ export interface ThreadRecord {
   started_at: string;
   archived_at: string | null;
   forwarded_from_id: string | null;
-  forwarded_from_kind: 'thread' | 'talk' | null;
+  forwarded_from_kind: 'thread' | null;
   turn_cap: number;
   turns_used: number;
   summary: string | null;

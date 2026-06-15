@@ -4,10 +4,9 @@ import { request } from './client';
 export interface TokenUsageEntry {
   session_id: string;
   task_id: string | null;
-  scope_type: 'task' | 'thread' | 'talk';
+  scope_type: 'task' | 'thread';
   scope_id: string | null;
   thread_id: string | null;
-  talk_id: string | null;
   invocation_purpose: string | null;
   agent: string;
   executor: string;
@@ -24,10 +23,9 @@ export interface TokenUsageEntry {
 export interface TokenUsageRollup {
   agent?: string;
   task_id?: string | null;
-  scope_type?: 'task' | 'thread' | 'talk';
+  scope_type?: 'task' | 'thread';
   scope_id?: string | null;
   thread_id?: string;
-  talk_id?: string;
   sessions: number;
   input_tokens: number;
   output_tokens: number;
@@ -36,7 +34,6 @@ export interface TokenUsageRollup {
   reasoning_tokens: number;
   total_tokens: number;
   // Model-classification primitives — emitted ONLY by the by-agent/by-thread/
-  // by-talk rollups (Leg A, include_model_classification=True). by-task/
   // by-scope/by-purpose omit them, so all seven are optional. A presentation
   // layer derives the Model label from these via the spec §2/§6 precedence;
   // token totals never depend on them.
@@ -55,7 +52,6 @@ export type TokenUsageGroupBy =
   | 'failed_task'
   | 'scope'
   | 'thread'
-  | 'talk'
   | 'purpose';
 
 export interface ListTokensParams {
@@ -64,10 +60,9 @@ export interface ListTokensParams {
   since?: string;
   limit?: number;
   group_by?: TokenUsageGroupBy;
-  scope_type?: 'task' | 'thread' | 'talk';
+  scope_type?: 'task' | 'thread';
   scope_id?: string;
   thread_id?: string;
-  talk_id?: string;
   purpose?: string;
 }
 

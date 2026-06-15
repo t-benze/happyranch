@@ -10,7 +10,6 @@ export * as kb from './kb';
 export * as orgs from './orgs';
 export * as runtime from './runtime';
 export * as jobs from './jobs';
-export * as talks from './talks';
 export * as tasks from './tasks';
 export * as teams from './teams';
 export * as threads from './threads';

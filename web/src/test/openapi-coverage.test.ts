@@ -71,14 +71,6 @@ const INCLUDED_PATHS = new Set<string>([
   'GET /api/v1/orgs/{slug}/kb/{entry_slug}',
   'POST /api/v1/orgs/{slug}/kb/{entry_slug}',
   'DELETE /api/v1/orgs/{slug}/kb/{entry_slug}',
-  // talks (1:1 founder↔agent)
-  'POST /api/v1/orgs/{slug}/talks',
-  'GET /api/v1/orgs/{slug}/talks',
-  'GET /api/v1/orgs/{slug}/talks/{talk_id}',
-  'POST /api/v1/orgs/{slug}/talks/{talk_id}/resume',
-  'POST /api/v1/orgs/{slug}/talks/{talk_id}/abandon',
-  'POST /api/v1/orgs/{slug}/talks/{talk_id}/end',
-  'POST /api/v1/orgs/{slug}/talks/{talk_id}/dispatch',
   // threads — founder-facing only
   'POST /api/v1/orgs/{slug}/threads',
   'GET /api/v1/orgs/{slug}/threads',

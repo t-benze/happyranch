@@ -62,7 +62,7 @@ def _require_task_active(task_id: str, task: TaskRecord | None) -> None:
 
 def _task_to_dict(t: TaskRecord) -> dict:
     # Wire convention: every other task-shaped response (submit POST, recall)
-    # exposes the primary key as `task_id`; talk/thread routes do the same via
+    # exposes the primary key as `task_id`; thread routes do the same via
     # their own helpers. Rename here so list + detail responses match.
     d = t.model_dump()
     d["task_id"] = d.pop("id")

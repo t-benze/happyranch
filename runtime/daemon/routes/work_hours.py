@@ -7,7 +7,7 @@ target: it is **single-use and slot-scoped** (accepts only a ``running``
 WORKHOUR-NNN), creates one root task per routine **targeted to the waking agent
 as executor on its own team** (Q2: pre-set ``assigned_agent`` honored by
 run_step), records the spawned ids on the work-hours row, and marks it
-``completed``. Like the dream/talk/thread callbacks it is not browser-callable,
+``completed``. Like the dream/thread callbacks it is not browser-callable,
 so it has no web mirror.
 """
 from __future__ import annotations

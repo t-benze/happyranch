@@ -70,11 +70,11 @@ Full founder-facing CLI docs: `skills/happyranch/SKILL.md`.
 a `--by-*` flag (mutually exclusive) switches to a rollup:
 
 ```bash
-happyranch tokens --by-agent | --by-task | --by-thread | --by-talk | --by-purpose
+happyranch tokens --by-agent | --by-task | --by-thread | --by-purpose
 ```
 
 `--by-purpose` groups by `invocation_purpose` (route `group_by=purpose`). Filters
-(`--since`, `--thread-id`, `--talk-id`, `--agent`, `--purpose`, `--scope-type`,
+(`--since`, `--thread-id`, `--agent`, `--purpose`, `--scope-type`,
 `--scope-id`, `--task-id`) AND-compose with any view.
 
 Rollup modifiers (presentation-side; require a `--by-*` flag):
@@ -86,7 +86,7 @@ Rollup modifiers (presentation-side; require a `--by-*` flag):
 (cache reads) rides in its own column and is **never** folded into `total`
 or used to sort/threshold — it overstates burn ~10–100×.
 
-The `--by-agent`/`--by-thread`/`--by-talk` rollups add a **Model** column
+The `--by-agent`/`--by-thread` rollups add a **Model** column
 (none on `--by-task`/`--by-purpose`). Its label is classified at render time —
 a single presentation constant `MODEL_FIX_CUTOVER_TS` draws the pre/post line,
 never SQL:

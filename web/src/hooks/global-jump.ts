@@ -4,7 +4,7 @@
  * One listener is installed at module load (the first time `useGlobalJump` is
  * mounted) and dispatches the second key to a shared handler map. The single
  * source of truth for "is the `g` prefix currently armed?" lives here too, so
- * page-level single-key handlers (`ThreadsPage`'s `i`, `TalksPage`'s `d`,
+ * page-level single-key handlers (`ThreadsPage`'s `i`, `TasksPage`'s `d`,
  * etc.) can skip themselves while a chord is in flight by calling
  * `isGPrefixArmed()`.
  *
@@ -90,7 +90,7 @@ export function useGlobalJump(letter: string, onJump: () => void): void {
 /**
  * True when the `g` prefix is currently armed (i.e., the founder has pressed
  * `g` within the chord buffer). Page-level single-key handlers should
- * consult this before firing actions like Threads's `i` (Invite) or Talks's
+ * consult this before firing actions like Threads's `i` (Invite) or Tasks's
  * `d` (Dispatch) — otherwise `g i` / `g d` both jump AND open the dialog.
  */
 export function isGPrefixArmed(): boolean {

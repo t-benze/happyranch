@@ -8,7 +8,7 @@ A canonical sample org shipped at `examples/orgs/hk-macau-tourism/` runs a one-p
 
 HappyRanch runs as a local **HTTP daemon** that dispatches tasks to AI agents running as coding-agent CLI sessions. The `happyranch` CLI is a thin client that talks to the daemon. Each agent has a persistent workspace and a defined role within its org. Executor selection is per-agent: agents may run on [Claude Code](https://docs.anthropic.com/en/docs/claude-code), Codex, opencode, or Pi.
 
-A single runtime container hosts **multiple orgs** under `<runtime>/orgs/<slug>/`, each with its own DB, workspaces, KB, and talks. One daemon serves them all concurrently.
+A single runtime container hosts **multiple orgs** under `<runtime>/orgs/<slug>/`, each with its own DB, workspaces, KB, and threads. One daemon serves them all concurrently.
 
 ### Manager-driven orchestration
 
@@ -110,7 +110,7 @@ Slug resolution for per-org commands: explicit `--org <slug>` flag > `HAPPYRANCH
         |       +-- _pending/<name>.md # awaiting founder approval
         |-- workspaces/<agent>/        # per-agent workspace
         |-- kb/                        # per-org knowledge base
-        |-- talks/                     # founder<->agent transcripts
+
         |-- threads/                   # multi-agent workchannel transcripts
         |-- jobs/                      # JOB-NNN.{out,err,script}
         +-- artifacts/                 # org-shared blob store
@@ -220,20 +220,6 @@ happyranch learning reindex  --org <slug> --agent <you>
 
 `add`/`update` take a YAML payload with `slug`, `title`, `topic`, `body`, and optional `tags`/`source_task`/`related_to`/`supersedes`. Promotion is one-way: the body becomes a 2-line pointer stub and the entry locks against further edits — use `supersedes:` on a new entry to evolve a rule that has already been promoted. Workspaces that predate this layout still use a flat `learnings.md` (legacy `happyranch learning --agent X --text "..."` form); the founder dispatches a one-shot migration task per agent when ready.
 
-### Talks
-
-Founder<->agent conversations:
-
-```bash
-happyranch talk start   --org <slug> --agent <name>
-happyranch talk resume  --org <slug> --talk-id TALK-001
-happyranch talk abandon --org <slug> --talk-id TALK-001 [--reason <why>]
-happyranch talk end     --org <slug> --talk-id TALK-001 --from-file /tmp/talk-end-TALK-001.json
-happyranch talk status  --org <slug> [--agent <name>]
-happyranch talk list    --org <slug> [--agent <name>] [--limit N]
-happyranch talk show    --org <slug> TALK-001
-```
-
 ### Threads
 
 Email-style multi-agent workchannels. Use threads when you need to involve
@@ -269,7 +255,7 @@ happyranch threads list --org <slug>
 happyranch threads show --org <slug> THR-001
 happyranch threads send --org <slug> --thread-id THR-001 --from-file /tmp/send.json
 happyranch threads invite --org <slug> --thread-id THR-001 --agent qa
-happyranch threads forward --org <slug> --source TALK-008 --recipients alice,bob
+happyranch threads forward --org <slug> --source THR-008 --recipients alice,bob
 happyranch threads archive --org <slug> --thread-id THR-001 --from-file /tmp/arch.json
 happyranch threads resume --org <slug> --thread-id THR-001
 happyranch threads extend --org <slug> --thread-id THR-001 --new-cap 1000

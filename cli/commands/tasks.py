@@ -161,23 +161,6 @@ def cmd_details(args: argparse.Namespace) -> None:
             display[-1] = f"{display[-1]} (this)"
             print(f"Chain:      {' ← '.join(display)}")
 
-    # Dispatched-from header: shown only when this task was created via
-    # POST /talks/{talk_id}/dispatch. Pulls dispatcher agent/role from the
-    # task_dispatched audit row written at dispatch time.
-    if task.get("dispatched_from_talk_id"):
-        dispatcher = "?"
-        role = "?"
-        for log in body.get("audit_log") or []:
-            if log.get("action") == "task_dispatched":
-                payload = log.get("payload") or {}
-                dispatcher = payload.get("dispatcher_agent", "?")
-                role = payload.get("dispatcher_role", "?")
-                break
-        print(
-            f"Dispatched from: {task['dispatched_from_talk_id']}  "
-            f"(dispatcher: {dispatcher} / {role})"
-        )
-
     print(f"Task:       {task['task_id']}")
     print(f"Team:       {task.get('team', '-')}")
     print(f"Status:     {task['status']}")
@@ -368,7 +351,7 @@ def _parse_cutover_ts(value: str):
 
 
 def classify_model(row: dict) -> str:
-    """Render the Model label for a by-agent/by-thread/by-talk rollup row.
+    """Render the Model label for a by-agent/by-thread rollup row.
 
     Consumes Leg A's 7 cutover-INDEPENDENT classification primitives and
     applies the spec-§2/§6 precedence. Pure presentation — token totals stay
@@ -412,7 +395,7 @@ def cmd_tokens(args: argparse.Namespace) -> None:
     by that scope (``--by-purpose`` decomposes by ``invocation_purpose``).
     ``--top N`` ranks a rollup by churn DESC and slices to N; ``--over-threshold
     N`` keeps only groups whose churn strictly exceeds N (applied before
-    ``--top``). The by-agent/by-thread/by-talk rollups gain a ``Model`` column
+    ``--top``). The by-agent/by-thread rollups gain a ``Model`` column
     classified from Leg A's primitives (``--by-purpose``/``--by-task`` have
     none). ``--json`` emits raw JSON for any view. ``total = (input or 0) +
     (output or 0) + (reasoning or 0)`` — cache reads are reported separately,
@@ -437,13 +420,12 @@ def cmd_tokens(args: argparse.Namespace) -> None:
         scope_type=args.scope_type,
         scope_id=args.scope_id,
         thread_id=args.thread_id,
-        talk_id=args.talk_id,
         purpose=args.purpose,
     )
 
     any_rollup = (
         args.by_agent or args.by_task or args.by_thread
-        or args.by_talk or args.by_purpose
+        or args.by_purpose
     )
     # --top / --over-threshold rank or filter rollup GROUPS; they are
     # meaningless on the per-row listing (spec §3.1/§3.3).
@@ -461,14 +443,12 @@ def cmd_tokens(args: argparse.Namespace) -> None:
             group_by, header_label, key, label_width = "task", "Task", "task_id", 14
         elif args.by_thread:
             group_by, header_label, key, label_width = "thread", "Thread", "thread_id", 14
-        elif args.by_talk:
-            group_by, header_label, key, label_width = "talk", "Talk", "talk_id", 14
         else:
             group_by, header_label, key, label_width = "purpose", "Purpose", "purpose", 20
-        # Model classification only exists on the by-agent/by-thread/by-talk
+        # Model classification only exists on the by-agent/by-thread
         # rollups (Leg A emits the primitives there only); purpose/task have
         # no Model column (spec §3.2).
-        show_model = group_by in ("agent", "thread", "talk")
+        show_model = group_by in ("agent", "thread")
 
         rollup = client.aggregate_tokens(
             slug=slug, group_by=group_by,
@@ -530,7 +510,7 @@ def cmd_tokens(args: argparse.Namespace) -> None:
         slug=slug,
         since=args.since, limit=args.limit if args.limit is not None else 20,
         task_id=args.task_id, agent=args.agent, scope_type=args.scope_type,
-        scope_id=args.scope_id, thread_id=args.thread_id, talk_id=args.talk_id,
+        scope_id=args.scope_id, thread_id=args.thread_id,
         purpose=args.purpose,
     )
     if args.json:
@@ -688,62 +668,6 @@ def cmd_progress(args: argparse.Namespace) -> None:
     if not _ok(r):
         return
 
-
-
-def _dispatch_payload_from_file(path: str) -> dict:
-    """Load a talk-dispatch payload from a JSON file.
-
-    Same single-line `happyranch` constraint as the other agent callbacks. Required
-    keys: ``talk_id`` (used in the URL path) and ``brief`` (the new task's
-    description). Optional: ``target_agent``, ``team``.
-    """
-    import json as _json
-    with open(path) as f:
-        data = _json.load(f)
-    talk_id = data.get("talk_id")
-    if not talk_id or not str(talk_id).strip():
-        raise ValueError("dispatch file missing or empty 'talk_id'")
-    brief = data.get("brief")
-    if not brief or not str(brief).strip():
-        raise ValueError("dispatch file missing or empty 'brief'")
-    return data
-
-
-
-def cmd_dispatch(args: argparse.Namespace) -> None:
-    """Agent callback: dispatch a new task from inside an open talk."""
-    if not args.org:
-        print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
-        sys.exit(1)
-    try:
-        client = OpcClient.from_env()
-    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
-        print(f"Error: {exc}")
-        sys.exit(1)
-
-    import json as _json
-    try:
-        data = _dispatch_payload_from_file(args.from_file)
-    except (OSError, _json.JSONDecodeError, ValueError) as exc:
-        print(f"Error reading dispatch file {args.from_file}: {exc}")
-        sys.exit(1)
-
-    talk_id = data["talk_id"]
-    body: dict = {"brief": data["brief"]}
-    if data.get("target_agent"):
-        body["target_agent"] = data["target_agent"]
-    if data.get("team"):
-        body["team"] = data["team"]
-
-    r = client.post(f"/api/v1/orgs/{args.org}/talks/{talk_id}/dispatch", json=body)
-    if not _ok(r):
-        return
-    result = r.json()
-    print(
-        f"ok: dispatched {result['task_id']} "
-        f"(team={result['team']} agent={result['assigned_agent']} "
-        f"from {result['dispatched_from_talk_id']})"
-    )
 
 
 
@@ -1005,14 +929,12 @@ def register(sub) -> None:
     p_tokens.add_argument("--since", default=None,
                           help="ISO-8601 date or timestamp; only rows at or after this time")
     p_tokens.add_argument("--scope-type", dest="scope_type", default=None,
-                          choices=["task", "thread", "talk"],
+                          choices=["task", "thread"],
                           help="Filter by usage scope type")
     p_tokens.add_argument("--scope-id", dest="scope_id", default=None,
                           help="Filter by scope id, e.g. TASK-007 or THR-001")
     p_tokens.add_argument("--thread-id", dest="thread_id", default=None,
                           help="Filter by direct or task-attributed thread id")
-    p_tokens.add_argument("--talk-id", dest="talk_id", default=None,
-                          help="Filter by direct or task-attributed talk id")
     p_tokens.add_argument("--purpose", default=None,
                           help="Filter by thread invocation purpose")
     p_tokens.add_argument("--limit", type=int, default=None,
@@ -1030,19 +952,9 @@ def register(sub) -> None:
                                 help="Rollup: one row per task")
     p_tokens_group.add_argument("--by-thread", dest="by_thread", action="store_true",
                                 help="Rollup: one row per thread")
-    p_tokens_group.add_argument("--by-talk", dest="by_talk", action="store_true",
-                                help="Rollup: one row per talk")
     p_tokens_group.add_argument("--by-purpose", dest="by_purpose", action="store_true",
                                 help="Rollup: one row per invocation purpose")
     p_tokens.set_defaults(func=cmd_tokens)
-
-    p_dispatch = sub.add_parser("dispatch", help="Dispatch a new task from an open talk")
-    p_dispatch.add_argument("--org", required=True, help="Org slug (required for agent callbacks)")
-    p_dispatch.add_argument(
-        "--from-file", dest="from_file", required=True,
-        help="Path to JSON file with dispatch payload (talk_id, brief, optional target_agent/team)",
-    )
-    p_dispatch.set_defaults(func=cmd_dispatch)
 
     p_recall = sub.add_parser(
         "recall",

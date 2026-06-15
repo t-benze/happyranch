@@ -818,10 +818,6 @@
             "path"
           ],
           [
-            "talk_id",
-            "query"
-          ],
-          [
             "task_id",
             "query"
           ]
@@ -948,10 +944,6 @@
             "path"
           ],
           [
-            "talk_id",
-            "query"
-          ],
-          [
             "task_id",
             "query"
           ]
@@ -990,10 +982,6 @@
             "query"
           ],
           [
-            "talk_id",
-            "query"
-          ],
-          [
             "task_id",
             "query"
           ]
@@ -1022,10 +1010,6 @@
           [
             "slug",
             "path"
-          ],
-          [
-            "talk_id",
-            "query"
           ],
           [
             "task_id",
@@ -1229,162 +1213,6 @@
           ],
           [
             "slug",
-            "path"
-          ]
-        ],
-        "responses": [
-          "200",
-          "422"
-        ]
-      }
-    },
-    "/api/v1/orgs/{slug}/talks": {
-      "GET": {
-        "params": [
-          [
-            "agent",
-            "query"
-          ],
-          [
-            "authorization",
-            "header"
-          ],
-          [
-            "limit",
-            "query"
-          ],
-          [
-            "slug",
-            "path"
-          ],
-          [
-            "status",
-            "query"
-          ]
-        ],
-        "responses": [
-          "200",
-          "422"
-        ]
-      },
-      "POST": {
-        "params": [
-          [
-            "authorization",
-            "header"
-          ],
-          [
-            "slug",
-            "path"
-          ]
-        ],
-        "responses": [
-          "200",
-          "422"
-        ]
-      }
-    },
-    "/api/v1/orgs/{slug}/talks/{talk_id}": {
-      "GET": {
-        "params": [
-          [
-            "authorization",
-            "header"
-          ],
-          [
-            "slug",
-            "path"
-          ],
-          [
-            "talk_id",
-            "path"
-          ]
-        ],
-        "responses": [
-          "200",
-          "422"
-        ]
-      }
-    },
-    "/api/v1/orgs/{slug}/talks/{talk_id}/abandon": {
-      "POST": {
-        "params": [
-          [
-            "authorization",
-            "header"
-          ],
-          [
-            "slug",
-            "path"
-          ],
-          [
-            "talk_id",
-            "path"
-          ]
-        ],
-        "responses": [
-          "200",
-          "422"
-        ]
-      }
-    },
-    "/api/v1/orgs/{slug}/talks/{talk_id}/dispatch": {
-      "POST": {
-        "params": [
-          [
-            "authorization",
-            "header"
-          ],
-          [
-            "slug",
-            "path"
-          ],
-          [
-            "talk_id",
-            "path"
-          ]
-        ],
-        "responses": [
-          "200",
-          "422"
-        ]
-      }
-    },
-    "/api/v1/orgs/{slug}/talks/{talk_id}/end": {
-      "POST": {
-        "params": [
-          [
-            "authorization",
-            "header"
-          ],
-          [
-            "slug",
-            "path"
-          ],
-          [
-            "talk_id",
-            "path"
-          ]
-        ],
-        "responses": [
-          "200",
-          "422"
-        ]
-      }
-    },
-    "/api/v1/orgs/{slug}/talks/{talk_id}/resume": {
-      "POST": {
-        "params": [
-          [
-            "authorization",
-            "header"
-          ],
-          [
-            "slug",
-            "path"
-          ],
-          [
-            "talk_id",
             "path"
           ]
         ],
@@ -2020,10 +1848,6 @@
           [
             "slug",
             "path"
-          ],
-          [
-            "talk_id",
-            "query"
           ],
           [
             "task_id",

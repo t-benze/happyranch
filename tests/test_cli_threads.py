@@ -287,7 +287,6 @@ def test_threads_compose_attach_uploads_with_founder_attribution(
     args = argparse.Namespace(
         org="alpha",
         task_id=None,
-        talk_id=None,
         session_id=None,
         from_file=None,
         subject="Review data",
@@ -347,7 +346,6 @@ def test_threads_compose_as_agent_attach_uses_composer_attribution(
     args = argparse.Namespace(
         org="alpha",
         task_id="TASK-001",
-        talk_id=None,
         session_id="sess-1",
         from_file=payload_path,
         subject=None,

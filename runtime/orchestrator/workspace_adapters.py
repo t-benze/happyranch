@@ -161,12 +161,12 @@ def _shared_artifacts_section() -> list[str]:
 
 
 def _thread_talk_dispatch_doctrine_section() -> list[str]:
-    """System-injected doctrine: dispatch from a thread or talk is self-only.
+    """System-injected doctrine: dispatch from a thread is self-only.
 
-    Surfaces the structural rule enforced at `/threads/{id}/dispatch` and
-    `/talks/{id}/dispatch` so every agent reads it at bootstrap rather than
-    discovering it via a 403 response. The rule itself is mechanical (route
-    rejects `effective_target != dispatcher` with `*_dispatch_must_be_self`);
+    Surfaces the structural rule enforced at `/threads/{id}/dispatch`
+    so every agent reads it at bootstrap rather than discovering it via a
+    403 response. The rule itself is mechanical (route rejects
+    `effective_target != dispatcher` with `thread_dispatch_must_be_self`);
     this section is the *why* and the recommended pattern. Spec:
     `docs/superpowers/specs/2026-05-28-thread-talk-self-dispatch-only-design.md`.
 
@@ -174,18 +174,17 @@ def _thread_talk_dispatch_doctrine_section() -> list[str]:
     session. If this grows past ~25 lines it has become docs, not a prompt.
     """
     return [
-        "## Thread and Talk Dispatch are Self-Only\n",
-        "When you are inside a **thread invocation** (reply / bootstrap) or a",
-        "**talk**, the runtime only lets you dispatch tasks to **yourself**. Any",
-        "attempt to target another agent returns 403 with",
-        "`thread_dispatch_must_be_self` or `talk_dispatch_must_be_self`.\n",
+        "## Thread Dispatch is Self-Only\n",
+        "When you are inside a **thread invocation** (reply / bootstrap), the",
+        "runtime only lets you dispatch tasks to **yourself**. Any attempt to",
+        "target another agent returns 403 with `thread_dispatch_must_be_self`.\n",
         "This is the doctrine the rule encodes:",
-        "- **Threads and talks** exist for founder-visible coordination and",
-        "  cross-team handoffs. They are messaging surfaces.",
+        "- **Threads** exist for founder-visible coordination and cross-team",
+        "  handoffs. They are messaging surfaces.",
         "- **Task trees** exist for iterative work. Managers drive sub-tasks",
         "  through the manager-decision loop; workers do bounded work and",
         "  report back. They are execution surfaces.\n",
-        "When you need to do task-shaped work from inside a thread or talk:",
+        "When you need to do task-shaped work from inside a thread:",
         "- **Self-dispatch a root task.** Omit `target_agent` (or set it to",
         "  your own name). If you are a manager and the work has multiple",
         "  steps, the manager-decision loop handles internal sub-task",
@@ -254,7 +253,7 @@ _RESERVED_AGENT_BODY_HEADERS: frozenset[str] = frozenset({
     "Your Learnings",
     "Knowledge Base (shared across agents)",
     "Shared Artifacts (org-wide)",
-    "Thread and Talk Dispatch are Self-Only",
+    "Thread Dispatch is Self-Only",
     "Long-running and non-stop commands",
     "Task Completion Format",
     "Task Recall",

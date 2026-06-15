@@ -1,6 +1,6 @@
 # Project Layout
 
-HappyRanch is an org-agnostic runtime for operating a multi-agent organization supervised by a single human founder. The repo provides the system kernel: orchestrator, daemon and CLI, audit, KB, talks, revisit, and escalation primitives. The organization it runs is loaded per runtime from `<runtime>/orgs/<slug>/org/`.
+HappyRanch is an org-agnostic runtime for operating a multi-agent organization supervised by a single human founder. The repo provides the system kernel: orchestrator, daemon and CLI, audit, KB, threads, revisit, and escalation primitives. The organization it runs is loaded per runtime from `<runtime>/orgs/<slug>/org/`.
 
 A canonical sample org lives at `examples/orgs/hk-macau-tourism/`. Treat it as the reference shape when bootstrapping a new org; nothing about that org's specific teams, agents, or constraints is baked into the system.
 
@@ -9,11 +9,11 @@ A canonical sample org lives at `examples/orgs/hk-macau-tourism/`. Treat it as t
 - Layer 1: Founder, who sets org rules, handles escalations, and reviews the dashboard.
 - Layer 2: Manager agents, defined per org in `<runtime>/orgs/<slug>/org/agents/<name>.md` with `role: manager`.
 - Layer 3: Worker agents, same file shape with `role: worker`, assigned through `teams.yaml`.
-- Infrastructure: orchestrator, FastAPI daemon, `happyranch` CLI, audit logger, KB, talk store, revisit primitive, and escalation routing.
+- Infrastructure: orchestrator, FastAPI daemon, `happyranch` CLI, audit logger, KB, revisit primitive, and escalation routing.
 
 Agents operate autonomously within authority defined by their org. The system enforces manager cross-audits and maker-checker separation regardless of org. Org-specific authority lives in `escalation-rules.md` and agent system prompts.
 
-A single runtime container hosts multiple orgs under `<runtime>/orgs/<slug>/`. Each org has its own org content, SQLite DB, workspaces, KB, talks, threads, jobs, and artifacts. One daemon serves all orgs concurrently.
+A single runtime container hosts multiple orgs under `<runtime>/orgs/<slug>/`. Each org has its own org content, SQLite DB, workspaces, KB, threads, jobs, and artifacts. One daemon serves all orgs concurrently.
 
 ## Design Documents
 
@@ -52,7 +52,7 @@ Tracked source is split by product surface:
 |-- runtime/                     # Python runtime package shipped by pyproject
 |   |-- config.py, models.py, runtime.py
 |   |-- daemon/                  # FastAPI app, routes, queue, sessions, jobs/thread runners
-|   |-- infrastructure/          # SQLite, audit, KB, learnings, talks, threads, artifacts
+|   |-- infrastructure/          # SQLite, audit, KB, learnings, threads, artifacts
 |   |-- orchestrator/            # task state machine, executors, prompts, teams, workspaces, chains
 |   `-- tools/                   # reserved runtime tooling package
 |-- web/                         # React SPA; build output goes to web/dist/
@@ -60,7 +60,7 @@ Tracked source is split by product surface:
 |   |-- public/                  # static brand assets
 |   `-- scripts/                 # web-local build/design-system helpers
 |-- protocol/                    # kernel docs 00/05*/06 and agent workspace skills
-|   `-- skills/                  # start-task, make-worktree, manage-repo, manage-agent, dispatch, jobs, talk, thread
+|   `-- skills/                  # start-task, make-worktree, manage-repo, manage-agent, dispatch, jobs, thread, review
 |-- skills/happyranch/           # founder-facing CLI skill and shell helper
 |-- docs/
 |   |-- agent-guides/            # on-demand agent/developer reference
@@ -91,7 +91,6 @@ Runtime container shape:
     |   `-- agents/                    # active `<name>.md` + `_pending/<name>.md`
     |-- workspaces/<agent>/            # agent.yaml, CLAUDE.md|AGENTS.md, .claude|.agents, repos, learnings, task_history.md
     |-- kb/                            # per-org KB
-    |-- talks/                         # TALK-NNN.md
     |-- threads/                       # THR-NNN.md
     |-- jobs/                          # JOB-NNN.{out,err,script}
     `-- artifacts/                     # org-shared blob store

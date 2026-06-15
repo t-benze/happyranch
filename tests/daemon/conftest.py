@@ -104,15 +104,3 @@ def client(tmp_home, daemon_state: DaemonState):
     tc = TestClient(app)
     tc.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
     return tc
-
-
-def open_talk_for(client, agent_name: str, slug: str = "alpha") -> str:
-    """POST /talks for *agent_name* under *slug* and return the talk_id.
-
-    Convenience helper for tests that need an open talk without caring about
-    the full talk lifecycle. Raises AssertionError on non-200 responses.
-    """
-    from fastapi.testclient import TestClient as _TC  # noqa: F401 (type-check only)
-    resp = client.post(f"/api/v1/orgs/{slug}/talks", json={"agent_name": agent_name})
-    assert resp.status_code == 200, f"open_talk_for({agent_name!r}) failed: {resp.text}"
-    return resp.json()["talk_id"]

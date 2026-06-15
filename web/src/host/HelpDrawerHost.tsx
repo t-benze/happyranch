@@ -17,7 +17,6 @@ import { AGENTS_SHORTCUTS } from '@/features/agents/agents-shortcuts';
 import { AUDIT_SHORTCUTS } from '@/features/audit/audit-shortcuts';
 import { DASHBOARD_SHORTCUTS } from '@/features/dashboard/dashboard-shortcuts';
 import { KB_SHORTCUTS } from '@/features/kb/kb-shortcuts';
-import { TALKS_SHORTCUTS } from '@/features/talks/talks-shortcuts';
 import { TASKS_SHORTCUTS } from '@/features/tasks/tasks-shortcuts';
 import { THREADS_SHORTCUTS } from '@/features/threads/threads-shortcuts';
 import {
@@ -33,7 +32,6 @@ const SECTIONS: ShortcutSection[] = [
   { label: 'KB', shortcuts: KB_SHORTCUTS },
   { label: 'Agents', shortcuts: AGENTS_SHORTCUTS },
   { label: 'Audit', shortcuts: AUDIT_SHORTCUTS },
-  { label: 'Talks', shortcuts: TALKS_SHORTCUTS },
 ];
 
 function isInEditable(target: EventTarget | null): boolean {
@@ -51,7 +49,6 @@ function defaultTabForRoute(pathname: string): string {
   if (pathname.includes('/kb')) return 'KB';
   if (pathname.includes('/agents')) return 'Agents';
   if (pathname.includes('/audit')) return 'Audit';
-  if (pathname.includes('/talks')) return 'Talks';
   return 'Global';
 }
 

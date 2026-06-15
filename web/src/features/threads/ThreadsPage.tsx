@@ -111,7 +111,7 @@ export function ThreadsPage(): JSX.Element {
   // Dialog state
   const [showNew, setShowNew] = useState(false);
   const [newPrefill, setNewPrefill] = useState<
-    | { subject?: string; recipients?: string[]; body?: string; forwarded_from_id?: string; forwarded_from_kind?: 'thread' | 'talk' }
+    | { subject?: string; recipients?: string[]; body?: string; forwarded_from_id?: string; forwarded_from_kind?: 'thread' }
     | undefined
   >(undefined);
   const [showInvite, setShowInvite] = useState(false);

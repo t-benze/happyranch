@@ -224,7 +224,7 @@ def test_tokens_group_by_task_returns_rollup(
     assert rollup["TASK-200"]["sessions"] == 1
 
 
-def test_tokens_group_by_thread_and_talk_returns_rollups(
+def test_tokens_group_by_thread_returns_rollups(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
     org_state.db.insert_session_token_usage(
@@ -249,30 +249,14 @@ def test_tokens_group_by_thread_and_talk_returns_rollups(
         thread_id="THR-001",
         invocation_purpose="task_followup",
     )
-    org_state.db.insert_session_token_usage(
-        task_id="TASK-300",
-        agent="alice",
-        session_id="talk-task",
-        executor="claude",
-        token_usage=TokenUsage(input_tokens=8, output_tokens=2),
-        scope_type="task",
-        scope_id="TASK-300",
-        talk_id="TALK-001",
-    )
 
     thread_r = TestClient(app).get(
         "/api/v1/orgs/alpha/tokens",
         params={"group_by": "thread"},
         headers=auth_headers,
     )
-    talk_r = TestClient(app).get(
-        "/api/v1/orgs/alpha/tokens",
-        params={"group_by": "talk"},
-        headers=auth_headers,
-    )
 
     assert thread_r.status_code == 200
-    assert talk_r.status_code == 200
     # thread row: alice/claude (NULL model) + bob/codex (NULL model). The single
     # null-claude session makes null_claude_*_created_at a real timestamp — pop.
     [trow] = thread_r.json()["rollup"]
@@ -291,25 +275,6 @@ def test_tokens_group_by_thread_and_talk_returns_rollups(
         "model_any": None,
         "non_null_sessions": 0,
         "null_codex_sessions": 1,
-        "null_claude_sessions": 1,
-    }
-    # talk row: alice/claude (NULL model) -> one null-claude session, timestamp.
-    [krow] = talk_r.json()["rollup"]
-    assert krow.pop("null_claude_min_created_at") is not None
-    assert krow.pop("null_claude_max_created_at") is not None
-    assert krow == {
-        "talk_id": "TALK-001",
-        "sessions": 1,
-        "input_tokens": 8,
-        "output_tokens": 2,
-        "cache_read_tokens": 0,
-        "cache_creation_tokens": 0,
-        "reasoning_tokens": 0,
-        "total_tokens": 10,
-        "model_distinct": 0,
-        "model_any": None,
-        "non_null_sessions": 0,
-        "null_codex_sessions": 0,
         "null_claude_sessions": 1,
     }
 
