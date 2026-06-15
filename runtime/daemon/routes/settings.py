@@ -461,19 +461,12 @@ def _preflight_team_workers(
             if agent not in agent_names:
                 errors.append(f"{label}: unknown agent {agent!r}")
             elif label == "add_workers" and agent_roles.get(agent) == "manager":
-                # Reject adding the team's own manager as a worker.
-                # Check against teams.yaml to confirm it's THIS team's manager.
-                from runtime.orchestrator.teams import TeamsRegistry
-                if isinstance(teams, TeamsRegistry):
-                    try:
-                        mgr = teams.manager_for_team(team_name)
-                        if mgr.name == agent:
-                            errors.append(
-                                f"add_workers: {agent!r} is the manager of team "
-                                f"{team_name!r} and cannot be added as a worker"
-                            )
-                    except KeyError:
-                        pass  # team not found (already checked by caller)
+                # Reject ANY agent whose role is 'manager' outright,
+                # independent of which team they manage. Managers manage
+                # teams; they are never workers.
+                errors.append(
+                    f"add_workers: {agent!r} is a manager and cannot be added as a worker"
+                )
 
     return errors
 

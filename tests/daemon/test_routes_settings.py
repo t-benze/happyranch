@@ -632,16 +632,58 @@ def test_put_org_settings_clears_session_timeout_via_explicit_null(
 def test_put_org_settings_clears_threads_invocation_timeout_via_explicit_null(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """Sending explicit null for threads.invocation_timeout_seconds clears the override."""
-    client = TestClient(app)
+    """Sending explicit null for threads.invocation_timeout_seconds clears the override.
 
+    Regression guard: the original test did NOT first seed a non-null value,
+    so the old None-stripping implementation would also return None and pass.
+    This test now first persists a non-null value, then clears it, and
+    verifies: (a) response body, (b) persisted config.yaml on disk,
+    (c) GET /settings reload, and (d) sibling threads leaf preservation.
+    """
+    import yaml
+    from pathlib import Path
+
+    client = TestClient(app)
+    config_path = Path(org_state.root) / "org" / "config.yaml"
+
+    # 1. First, set a non-null threads.invocation_timeout_seconds
+    r0 = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/org",
+        headers=auth_headers,
+        json={"threads": {"invocation_timeout_seconds": 900}},
+    )
+    assert r0.status_code == 200
+    assert r0.json()["org"]["threads"]["invocation_timeout_seconds"] == 900
+
+    # Confirm it persisted to config.yaml on disk
+    raw = yaml.safe_load(config_path.read_text())
+    assert raw["threads"].get("invocation_timeout_seconds") == 900
+
+    # 2. Now clear it with explicit null
     r = client.put(
         f"/api/v1/orgs/{org_state.slug}/settings/org",
         headers=auth_headers,
         json={"threads": {"invocation_timeout_seconds": None}},
     )
     assert r.status_code == 200
+    # (a) Response body shows None
     assert r.json()["org"]["threads"]["invocation_timeout_seconds"] is None
+
+    # (b) Persisted config.yaml on disk shows None
+    raw2 = yaml.safe_load(config_path.read_text())
+    assert raw2["threads"].get("invocation_timeout_seconds") is None
+
+    # (c) GET /settings reload shows None
+    r2 = client.get(
+        f"/api/v1/orgs/{org_state.slug}/settings",
+        headers=auth_headers,
+    )
+    assert r2.json()["org"]["threads"]["invocation_timeout_seconds"] is None
+
+    # (d) Sibling threads leaves are preserved unchanged
+    body = r.json()["org"]["threads"]
+    assert body.get("enabled") is not None  # survived the null clear
+    assert body.get("default_turn_cap") is not None  # survived the null clear
 
 
 def test_put_org_settings_omitted_session_timeout_does_not_clear(
@@ -957,6 +999,55 @@ def test_put_teams_rejects_manager_added_as_worker(
         json={"team": "engineering", "add_workers": ["engineering_head"]},
     )
     assert r.status_code == 422
+
+
+@pytest.mark.anyio
+def test_put_teams_rejects_different_team_manager_added_as_worker(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Adding a manager from a DIFFERENT team as a worker must return 422.
+
+    Regression: the original _preflight_team_workers only rejected the
+    CURRENT team's own manager. A manager from another team (e.g.
+    content_manager added to engineering) passed preflight and was only
+    caught by the post-flight 409 AFTER teams.yaml had already been
+    mutated — a crash window writing invalid membership.
+
+    This test asserts (a) HTTP 422 and (b) teams.yaml is unchanged.
+    """
+    import yaml
+    from pathlib import Path
+    from runtime.orchestrator._paths import OrgPaths
+
+    paths = OrgPaths(root=org_state.root)
+    _seed_agent_file(paths, "engineering_head", "engineering", role="manager")
+    _seed_agent_file(paths, "product_manager", "engineering")
+    _seed_agent_file(paths, "dev_agent", "engineering")
+    _seed_agent_file(paths, "payment_agent", "engineering")
+    _seed_agent_file(paths, "qa_engineer", "engineering")
+    _seed_agent_file(paths, "content_manager", "content", role="manager")
+    _seed_agent_file(paths, "content_writer", "content")
+    _seed_agent_file(paths, "content_qa", "content")
+    _seed_agent_file(paths, "seo_agent", "content")
+
+    # Snapshot pre-request worker list for engineering
+    teams_path = Path(org_state.root) / "org" / "teams.yaml"
+    before = yaml.safe_load(teams_path.read_text())
+    before_workers = list(before["teams"]["engineering"]["workers"])
+
+    client = TestClient(app)
+    r = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/teams",
+        headers=auth_headers,
+        json={"team": "engineering", "add_workers": ["content_manager"]},
+    )
+    # (a) Must reject with 422 — pre-flight catches this before mutation
+    assert r.status_code == 422
+
+    # (b) teams.yaml must be unchanged
+    after = yaml.safe_load(teams_path.read_text())
+    assert set(after["teams"]["engineering"]["workers"]) == set(before_workers)
+    assert "content_manager" not in after["teams"]["engineering"]["workers"]
 
 
 @pytest.mark.anyio
