@@ -31,8 +31,9 @@ flowchart TB
         IN_PROGRESS --> BLOCKED
         BLOCKED -->|"block_kind=blocked_on_job<br/>→ job complete → same task resumes"| IN_PROGRESS
         BLOCKED -->|"block_kind=delegated<br/>→ child task completes → same task resumes"| IN_PROGRESS
-        BLOCKED -->|"block_kind=escalated<br/>→ resolve-escalation (approve)<br/>→ same task re-dispatched"| IN_PROGRESS
-        BLOCKED -->|"block_kind=escalated or delegated<br/>→ founder revisit<br/>→ NEW task (revisit_of_task_id)<br/>predecessor → RESOLVED_SUPERSEDED"| RESOLVED_SUPERSEDED
+        BLOCKED -->|"block_kind=escalated<br/>→ resolve-escalation (approve)<br/>→ SAME task → PENDING<br/>(tasks.py:518-520)"| PENDING
+        BLOCKED -->|"block_kind=escalated or delegated<br/>→ founder revisit<br/>→ predecessor → RESOLVED_SUPERSEDED<br/>(tasks.py:827-844)"| RESOLVED_SUPERSEDED
+        BLOCKED -.->|"concurrently: NEW task<br/>born PENDING (revisit_of_task_id)<br/>(tasks.py:803-812)"| PENDING
         FAILED -->|"auto-revisit chain<br/>(new sibling task)"| IN_PROGRESS
 
         style RESOLVED_SUPERSEDED fill:#e8e8e8,stroke:#666,stroke-dasharray:3 3
@@ -76,12 +77,15 @@ A task is the fundamental unit of work. It represents a single brief dispatched 
 | **RESOLVED_SUPERSEDED** | A terminal state for blocked (`escalated` or `delegated`) tasks whose follow-up work was moved to a human-authorized continuation (founder `revisit` or a new thread-dispatched task). Distinct from COMPLETED so the audit trail shows the task was superseded rather than finished by an agent. This state joins every terminal predicate. |
 
 **Transitions:**
-- `PENDING → IN_PROGRESS`: Orchestrator claims the task for execution.
+- `PENDING → IN_PROGRESS`: Orchestrator claims the task for execution (`runtime/orchestrator/run_step.py:51, 114-124`).
 - `IN_PROGRESS → COMPLETED`: Agent reports successful completion.
 - `IN_PROGRESS → FAILED`: Agent reports failure, session times out, or task is cancelled.
 - `IN_PROGRESS → BLOCKED`: Agent self-blocks via `report-completion` with `status=blocked`.
-- `BLOCKED → IN_PROGRESS`: Three resume paths for the **same** task: (a) `blocked_on_job` — the job completes and the orchestrator unblocks the task back to IN_PROGRESS (line ~114 in `runtime/orchestrator/run_step.py`); (b) `delegated` — the child task reaches a terminal state, the parent resumes; (c) `escalated` — founder issues `resolve-escalation` with decision `approve`, which re-dispatches the **same** task back to IN_PROGRESS (`resolve_escalation` in `runtime/daemon/routes/tasks.py:551`).
-- `BLOCKED → RESOLVED_SUPERSEDED`: A human-authorized continuation that spawns a **NEW** task, distinct from resuming the same task. Two paths: (a) founder `revisit` (`revisit_from_notification` in `runtime/daemon/routes/tasks.py:724`) spawns a new root task with `revisit_of_task_id` and supersedes the blocked predecessor to RESOLVED_SUPERSEDED — the predecessor does NOT resume; (b) a manager `thread dispatch` with `resolves` also supersedes the predecessor via the same supersede helper. Both leave the original blocked task terminal.
+- `BLOCKED → IN_PROGRESS` (same task resumes directly): Two paths — (a) `blocked_on_job`: the job completes and the orchestrator unblocks the task directly to IN_PROGRESS (`run_step.py:114-124`); (b) `delegated`: the child task reaches a terminal state, the parent resumes directly to IN_PROGRESS.
+- `BLOCKED → PENDING → IN_PROGRESS` (same task re-dispatched via PENDING): `block_kind=escalated` → founder issues `resolve-escalation` with decision `approve`, which sets the **same** task to `TaskStatus.PENDING` and enqueues it (`resolve_escalation_in_process` in `runtime/daemon/routes/tasks.py:518-520`). The orchestrator claim then transitions PENDING → IN_PROGRESS (`run_step.py:51, 114-124`). The PENDING step is NOT a direct jump to IN_PROGRESS — it is a full re-entry through the orchestrator claim path.
+- `BLOCKED → RESOLVED_SUPERSEDED` (predecessor terminal; **NEW** task born): A human-authorized continuation that spawns a **NEW** root task, distinct from resuming the same task. Two triggers:
+  - **Founder revisit:** `revisit_from_notification` (`tasks.py:803-812`) inserts a **NEW** root task with `status=TaskStatus.PENDING` and `revisit_of_task_id=predecessor.id`, then supersedes the eligible blocked predecessor to RESOLVED_SUPERSEDED via `_supersede_predecessor_locked` (`tasks.py:827-844`). The predecessor is terminal/superseded — it does NOT itself resume. The new task begins its own lifecycle from PENDING.
+  - **Thread dispatch with `resolves`:** A manager dispatch carrying the `resolves` field also supersedes the predecessor via the same `_supersede_predecessor_locked` helper. Both leave the original blocked task terminal.
 - `FAILED → IN_PROGRESS`: The orchestrator's auto-revisit logic spawns a new sibling task carrying the same brief (gated on revisit-chain length limits and task-type).
 
 ### 2.2 Thread Lifecycle
