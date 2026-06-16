@@ -109,6 +109,37 @@ def test_thread_without_dream_id_reads_null(tmp_path: Path) -> None:
     assert got.composed_from_dream_id is None
 
 
+def test_row_to_thread_pre_migration_row_no_composed_from_dream_id_key(tmp_path: Path) -> None:
+    """Back-compat: _row_to_thread on a v0/v1 row projection lacking the
+    composed_from_dream_id column reads back None without KeyError.
+
+    Exercises the 'composed_from_dream_id in keys' guard at
+    runtime/infrastructure/database.py:_row_to_thread.
+    """
+    db = Database(tmp_path / "happyranch.db")
+    # Simulate a pre-migration row (no composed_by / composed_from_task_id /
+    # composed_from_dream_id columns in the SELECT).
+    row = {
+        "id": "THR-PRE",
+        "subject": "pre-migration thread",
+        "status": "open",
+        "started_at": "2025-01-01T00:00:00+00:00",
+        "archived_at": None,
+        "forwarded_from_id": None,
+        "forwarded_from_kind": None,
+        "turn_cap": 500,
+        "turns_used": 0,
+        "summary": None,
+        "transcript_path": None,
+        # composed_by, composed_from_task_id, composed_from_dream_id
+        # intentionally absent — as in a v0/v1 schema.
+    }
+    rec = db._row_to_thread(row)
+    assert rec.composed_by == "founder"
+    assert rec.composed_from_task_id is None
+    assert rec.composed_from_dream_id is None
+
+
 def test_thread_row_dict_exposes_dream_id(tmp_path: Path) -> None:
     db = Database(tmp_path / "happyranch.db")
     db.insert_thread(
