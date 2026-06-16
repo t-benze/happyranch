@@ -40,6 +40,17 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# Severity order for task status rollup: lower number = worse (must surface to root).
+_STATUS_SEVERITY: dict[str, int] = {
+    "failed": 0,
+    "blocked": 1,
+    "in_progress": 2,
+    "pending": 3,
+    "completed": 4,
+    "resolved_superseded": 5,
+}
+
+
 def _synchronized(method):
     """Serialize every public ``Database`` call through ``self._lock``.
 
@@ -1142,6 +1153,32 @@ class Database:
         )
 
     @_synchronized
+    def worst_child_status(self, parent_task_id: str) -> str | None:
+        """Return the worst status among all descendants (direct children +
+        grandchildren, recursively). Returns None when there are no children.
+
+        Durable over a moderate task tree (real lineages are 2-4 deep); the
+        status-to-severity map is an explicit constant kept in sync with the
+        TaskStatus enum at review time.
+        """
+        children = self.get_children(parent_task_id)
+        if not children:
+            return None
+        worst: str | None = None
+        for child_id in children:
+            child = self.get_task(child_id)
+            if child is None:
+                continue
+            grandchild_worst = self.worst_child_status(child_id)
+            candidates = [child.status.value]
+            if grandchild_worst is not None:
+                candidates.append(grandchild_worst)
+            for s in candidates:
+                if worst is None or _STATUS_SEVERITY.get(s, 99) < _STATUS_SEVERITY.get(worst, 99):
+                    worst = s
+        return worst
+
+    @_synchronized
     def list_tasks(
         self,
         limit: int = 20,
@@ -1149,6 +1186,7 @@ class Database:
         before_task_id: str | None = None,
         status: TaskStatus | str | None = None,
         block_kind: BlockKind | str | None = None,
+        roots_only: bool = False,
     ) -> list[TaskRecord]:
         # Cursor pagination: callers pass the last task_id of the previous page
         # as `before_task_id`; we resolve its created_at and emit the next page
@@ -1178,6 +1216,8 @@ class Database:
         if block_kind is not None:
             conditions.append("block_kind = ?")
             params.append(str(block_kind))
+        if roots_only:
+            conditions.append("parent_task_id IS NULL")
         if cursor_created_at is not None:
             conditions.append("(created_at, id) < (?, ?)")
             params.extend([cursor_created_at, before_task_id])
@@ -1188,7 +1228,8 @@ class Database:
             "ORDER BY created_at DESC, id DESC LIMIT ?",
             tuple(params),
         )
-        return [
+        rows = cursor.fetchall()
+        tasks = [
             TaskRecord(
                 id=row["id"],
                 status=row["status"],
@@ -1212,8 +1253,13 @@ class Database:
                 session_timeout_seconds=row["session_timeout_seconds"],
                 task_type=row["task_type"],
             )
-            for row in cursor.fetchall()
+            for row in rows
         ]
+        # Attach worst_child_status to roots when requested (non-schema extra attr).
+        if roots_only:
+            for t in tasks:
+                object.__setattr__(t, "worst_child_status", self.worst_child_status(t.id))
+        return tasks
 
     @_synchronized
     def get_children(self, parent_task_id: str) -> list[str]:

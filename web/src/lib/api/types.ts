@@ -60,6 +60,7 @@ export interface TaskRecord {
   closed_at: string | null;
   cancelled_at: string | null;
   session_timeout_seconds: number | null;
+  worst_child_status?: TaskStatus | null;
   [extra: string]: unknown;
 }
 

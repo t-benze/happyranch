@@ -27,7 +27,7 @@ function useRealOrgSlug(): string {
   return slug ?? '';
 }
 
-function useTasksList(params?: { status?: string; limit?: number }) {
+function useTasksList(params?: { status?: string; limit?: number; roots_only?: boolean }) {
   const slug = useRealOrgSlug();
   return useQuery({
     queryKey: ['tasks', slug, params],
@@ -38,7 +38,7 @@ function useTasksList(params?: { status?: string; limit?: number }) {
 }
 
 function useTasksInfiniteList(
-  params?: { status?: string },
+  params?: { status?: string; roots_only?: boolean },
 ): InfiniteQueryLike<TasksListPage> {
   const slug = useRealOrgSlug();
   // Cap the per-page payload — 50 keeps SSR + initial paint cheap while still
@@ -51,6 +51,7 @@ function useTasksInfiniteList(
     queryFn: ({ pageParam }) =>
       tasksApi.listTasks(slug, {
         ...(params?.status ? { status: params.status } : {}),
+        ...(params?.roots_only ? { roots_only: true } : {}),
         limit: PAGE_SIZE,
         ...(pageParam ? { before: pageParam as string } : {}),
       }),

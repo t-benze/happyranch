@@ -14,12 +14,194 @@ import { useTask, useTaskRecall, useTasksRoutes } from '@/hooks/tasks';
 import { useJobsList } from '@/hooks/jobs';
 // eslint-disable-next-line no-restricted-imports -- no @/hooks accessor exposes getTask (useTask deliberately drops active_chain); routed direct per THR-011 founder ruling (option 3), pending a future hook
 import { getTask } from '@/lib/api/tasks';
-import type { ActiveChainResponse } from '@/lib/api/types';
+import type { ActiveChainResponse, TaskDetailResponse } from '@/lib/api/types';
 import { TaskRecallTree } from './TaskRecallTree';
 import { TaskEventsLog } from './TaskEventsLog';
 import { CancelTaskDialog } from './CancelTaskDialog';
 import { RevisitTaskDialog } from './RevisitTaskDialog';
 import { ResolveEscalationDialog } from './ResolveEscalationDialog';
+
+// ── helpers ──
+
+const BRIEF_COLLAPSE_THRESHOLD = 600;
+
+const TERMINAL_STATUSES: ReadonlySet<string> = new Set([
+  'failed',
+  'completed',
+  'cancelled',
+  'resolved_superseded',
+]);
+
+function relativeAge(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  const min = Math.round(ms / 60000);
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min}m`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `${hr}h`;
+  const d = Math.round(hr / 24);
+  return `${d}d`;
+}
+
+// ── chain timeline ──
+
+interface ChainNode {
+  task_id: string;
+  status: string;
+  isCurrent: boolean;
+  blockedOnJobs?: Array<{ job_id: string; status: string }> | null;
+}
+
+function RevisitChainTimeline({
+  revisitChain,
+  directRevisits,
+}: {
+  revisitChain: string[];
+  directRevisits: string[];
+}): JSX.Element | null {
+  if (revisitChain.length <= 1 && directRevisits.length === 0) return null;
+
+  // Build nodes: the revisit_chain goes from this task → predecessor → ... → original.
+  // We render the chain left-to-right: original → ... → current.
+  const nodes: ChainNode[] = revisitChain.map((id, i) => ({
+    task_id: id,
+    status: i === 0 ? 'current' : 'done',
+    isCurrent: i === 0,
+  }));
+  // Add direct revisits (successor tasks)
+  const successorNodes: ChainNode[] = directRevisits.map((id) => ({
+    task_id: id,
+    status: 'future',
+    isCurrent: false,
+  }));
+
+  if (nodes.length <= 1 && successorNodes.length === 0) return null;
+
+  const routes = useTasksRoutes();
+
+  return (
+    <section className="mt-6">
+      <h3 className="text-fg-muted mb-3 text-xs font-medium tracking-wider uppercase">
+        Revisit chain
+      </h3>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {/* predecessors (oldest first) */}
+        {nodes.length > 1 &&
+          nodes
+            .slice()
+            .reverse()
+            .slice(0, -1)
+            .map((node) => (
+              <span key={node.task_id} className="inline-flex items-center gap-1">
+                <Link
+                  to={routes.detail(node.task_id)}
+                  className="text-fg-muted hover:text-fg text-xs font-mono hover:underline"
+                >
+                  {node.task_id}
+                </Link>
+                <span className="text-fg-subtle text-xs">→</span>
+              </span>
+            ))}
+        {/* current */}
+        {nodes.length > 0 && (
+          <span className="inline-flex items-center gap-1">
+            <span className="ring-accent text-fg rounded-sm bg-accent-muted px-1.5 py-0.5 text-xs font-mono font-semibold ring-2">
+              {nodes[0].task_id}
+            </span>
+          </span>
+        )}
+        {/* successors */}
+        {successorNodes.map((node) => (
+          <span key={node.task_id} className="inline-flex items-center gap-1">
+            <span className="text-fg-subtle text-xs">→</span>
+            <Link
+              to={routes.detail(node.task_id)}
+              className="text-fg-muted hover:text-fg text-xs font-mono hover:underline"
+            >
+              {node.task_id}
+            </Link>
+          </span>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+// ── property rail ──
+
+function PropertyRail({
+  task,
+  detailEnvelope,
+}: {
+  task: Record<string, unknown>;
+  detailEnvelope: TaskDetailResponse | null;
+}): JSX.Element {
+  const slug = useParams<{ slug: string }>().slug;
+  const props: Array<{ label: string; value: React.ReactNode }> = [];
+
+  if (task.team) {
+    props.push({ label: 'Team', value: String(task.team) });
+  }
+  if (task.assigned_agent) {
+    props.push({ label: 'Assignee', value: String(task.assigned_agent) });
+  }
+  if (task.dispatched_from_thread_id) {
+    const tid = String(task.dispatched_from_thread_id);
+    props.push({
+      label: 'Thread',
+      value: slug ? (
+        <Link to={`/orgs/${slug}/threads/${tid}`} className="text-accent hover:underline font-mono text-xs">
+          {tid}
+        </Link>
+      ) : (
+        <span className="font-mono text-xs">{tid}</span>
+      ),
+    });
+  }
+  if (task.created_at) {
+    props.push({ label: 'Created', value: relativeAge(String(task.created_at)) });
+  }
+  if (task.parent_task_id) {
+    props.push({ label: 'Parent', value: <IdBadge kind="task" id={String(task.parent_task_id)} /> });
+  }
+  // blocked-on jobs from detail envelope
+  if (detailEnvelope?.blocked_on_jobs) {
+    const blockedOn = detailEnvelope.blocked_on_jobs as Array<{ job_id: string; status: string }>;
+    if (blockedOn.length > 0) {
+      props.push({
+        label: 'Blocked on',
+        value: (
+          <span className="inline-flex flex-wrap gap-1">
+            {blockedOn.map((j) => (
+              <span key={j.job_id} className="text-status-blocked font-mono text-xs">
+                {j.job_id}
+                <span className="text-fg-subtle ml-0.5">({j.status})</span>
+              </span>
+            ))}
+          </span>
+        ),
+      });
+    }
+  }
+
+  if (props.length === 0) return <></>;
+
+  return (
+    <section className="mt-6">
+      <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+        Properties
+      </h3>
+      <dl className="space-y-1 text-sm">
+        {props.map(({ label, value }) => (
+          <div key={label} className="flex gap-2">
+            <dt className="text-fg-muted w-20 shrink-0">{label}</dt>
+            <dd className="text-fg">{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  );
+}
 
 function WorkflowChainStrip({ chain }: { chain: ActiveChainResponse }): JSX.Element {
   const totalLegs = 1 + chain.legs.length;
@@ -60,14 +242,7 @@ function WorkflowChainStrip({ chain }: { chain: ActiveChainResponse }): JSX.Elem
   );
 }
 
-const BRIEF_COLLAPSE_THRESHOLD = 600;
-
-const TERMINAL_STATUSES: ReadonlySet<string> = new Set([
-  'failed',
-  'completed',
-  'cancelled',
-  'resolved_superseded',
-]);
+// ── main component ──
 
 export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
   const navigate = useNavigate();
@@ -76,14 +251,13 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
   const task = useTask(taskId);
   const recall = useTaskRecall(taskId);
   const jobsQuery = useJobsList({ task_id: taskId, status: 'all', limit: 100 });
-  // Re-uses the same queryKey as useTask so TanStack Query deduplicates the
-  // fetch; this select picks the active_chain envelope field that useTask drops.
-  const activeChainQuery = useQuery({
-    queryKey: ['task', slug, taskId],
+  // Full detail envelope for chain, blocked-on, and active_chain fields
+  const detailQuery = useQuery({
+    queryKey: ['task-detail', slug, taskId],
     queryFn: () => getTask(slug as string, taskId),
-    select: (r) => r.active_chain ?? null,
     enabled: !!slug && !!taskId,
   });
+  const detail = detailQuery.data;
   const [dialog, setDialog] = useState<null | 'cancel' | 'revisit' | 'resolve'>(null);
   const [briefExpanded, setBriefExpanded] = useState(false);
 
@@ -99,6 +273,9 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
     briefShouldCollapse && !briefExpanded
       ? brief.slice(0, BRIEF_COLLAPSE_THRESHOLD).replace(/\s+\S*$/, '') + '…'
       : brief;
+
+  const revisitChain: string[] = detail?.revisit_chain ?? [];
+  const directRevisits: string[] = (detail?.direct_revisits as string[]) ?? [];
 
   return (
     <>
@@ -125,6 +302,13 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
                 <span className="font-semibold">Failure reason:</span>{' '}
                 <span className="font-mono">{failureNote}</span>
               </div>
+            )}
+            {/* Revisit chain timeline */}
+            {(revisitChain.length > 1 || directRevisits.length > 0) && (
+              <RevisitChainTimeline
+                revisitChain={revisitChain}
+                directRevisits={directRevisits}
+              />
             )}
             <div className="mt-3 flex gap-2">
               {isEscalated && (
@@ -170,9 +354,19 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
                 )}
               </>
             )}
-            {activeChainQuery.data && (
-              <WorkflowChainStrip chain={activeChainQuery.data} />
+
+            {/* Property rail */}
+            {task.data && (
+              <PropertyRail
+                task={task.data as Record<string, unknown>}
+                detailEnvelope={detail ?? null}
+              />
             )}
+
+            {detail?.active_chain && (
+              <WorkflowChainStrip chain={detail.active_chain} />
+            )}
+
             <h3 className="text-fg-muted mt-6 mb-2 text-xs font-medium tracking-wider uppercase">
               Recall tree
             </h3>
@@ -181,6 +375,7 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
             ) : (
               <p className="text-fg-muted text-xs">Loading recall…</p>
             )}
+
             <h3 className="text-fg-muted mt-6 mb-2 text-xs font-medium tracking-wider uppercase">
               Live events
             </h3>

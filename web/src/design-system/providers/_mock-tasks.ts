@@ -81,8 +81,8 @@ function staticInfinite(page: TasksListPage): InfiniteQueryLike<TasksListPage> {
 }
 
 export const mockTasksApi: TasksApi = {
-  useTasksList: () => ok({ tasks: FIXTURES }),
-  useTasksInfiniteList: () =>
+  useTasksList: (_params?: { status?: string; limit?: number; roots_only?: boolean }) => ok({ tasks: FIXTURES }),
+  useTasksInfiniteList: (_params?: { status?: string; roots_only?: boolean }) =>
     staticInfinite({ tasks: FIXTURES, next_cursor: null }),
   useTask: (taskId) =>
     ok(FIXTURES.find((t) => t.task_id === taskId) ?? FIXTURES[0]),

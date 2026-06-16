@@ -66,6 +66,11 @@ def _task_to_dict(t: TaskRecord) -> dict:
     # their own helpers. Rename here so list + detail responses match.
     d = t.model_dump()
     d["task_id"] = d.pop("id")
+    # Worst child status is an extra (non-schema) attribute set by
+    # Database.list_tasks(roots_only=True) — surface it when present.
+    wcs = getattr(t, "worst_child_status", None)
+    if wcs is not None:
+        d["worst_child_status"] = wcs
     return d
 
 
@@ -148,6 +153,7 @@ def list_tasks(
     before: str | None = None,
     status: str | None = None,
     block_kind: str | None = None,
+    roots_only: bool = False,
 ) -> dict:
     # Cursor pagination: `before` is the task_id of the last item on the
     # previous page. `next_cursor` is the last id of this page when the page
@@ -156,9 +162,12 @@ def list_tasks(
     # database returns [] and we surface that as the end of the list.
     # `status` / `block_kind` are read-only equality filters for backlog
     # queries (e.g. `tasks --status blocked --block-kind escalated`).
+    # `roots_only` returns only root tasks (parent_task_id IS NULL) and
+    # attaches a `worst_child_status` field reflecting the most severe
+    # status among all descendants.
     tasks = org.db.list_tasks(
         limit=limit, assigned_agent=assigned_agent, before_task_id=before,
-        status=status, block_kind=block_kind,
+        status=status, block_kind=block_kind, roots_only=roots_only,
     )
     next_cursor = tasks[-1].id if len(tasks) == limit else None
     return {

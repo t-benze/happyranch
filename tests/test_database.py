@@ -1346,3 +1346,77 @@ def test_task_type_round_trips(tmp_path):
     assert db.get_task("TASK-001").task_type == "task"
     assert db.get_task("TASK-002").task_type == "subtask"
     db.close()
+
+
+# ── roots-only + severity-max rollup ──
+
+def test_list_tasks_roots_only_filters_out_subtasks(db):
+    db.insert_task(TaskRecord(id="TASK-001", brief="root", task_type="task"))
+    db.insert_task(TaskRecord(id="TASK-002", brief="child", task_type="subtask", parent_task_id="TASK-001"))
+    db.insert_task(TaskRecord(id="TASK-003", brief="root2", task_type="task"))
+    roots = db.list_tasks(roots_only=True)
+    assert [t.id for t in roots] == ["TASK-003", "TASK-001"]  # newest first
+
+
+def test_list_tasks_roots_only_all_roots_when_no_subtasks(db):
+    db.insert_task(TaskRecord(id="TASK-001", brief="a"))
+    db.insert_task(TaskRecord(id="TASK-002", brief="b"))
+    roots = db.list_tasks(roots_only=True)
+    assert len(roots) == 2
+
+
+def test_list_tasks_roots_only_composes_with_status_filter(db):
+    db.insert_task(TaskRecord(id="TASK-001", brief="root", task_type="task", status=TaskStatus.BLOCKED))
+    db.insert_task(TaskRecord(id="TASK-002", brief="child", task_type="subtask", parent_task_id="TASK-001", status=TaskStatus.IN_PROGRESS))
+    db.insert_task(TaskRecord(id="TASK-003", brief="root2", task_type="task", status=TaskStatus.COMPLETED))
+    roots = db.list_tasks(roots_only=True, status=TaskStatus.BLOCKED)
+    assert [t.id for t in roots] == ["TASK-001"]
+
+
+def test_worst_child_status_no_children(db):
+    db.insert_task(TaskRecord(id="TASK-001", brief="root"))
+    worst = db.worst_child_status("TASK-001")
+    assert worst is None
+
+
+def test_worst_child_status_picks_most_severe_direct_child(db):
+    db.insert_task(TaskRecord(id="TASK-001", brief="root", status=TaskStatus.IN_PROGRESS))
+    db.insert_task(TaskRecord(id="TASK-002", brief="sub", status=TaskStatus.FAILED, parent_task_id="TASK-001"))
+    db.insert_task(TaskRecord(id="TASK-003", brief="sub2", status=TaskStatus.COMPLETED, parent_task_id="TASK-001"))
+    worst = db.worst_child_status("TASK-001")
+    assert worst == "failed"  # failed > completed
+
+
+def test_worst_child_status_recurses_into_grandchildren(db):
+    db.insert_task(TaskRecord(id="TASK-001", brief="root", status=TaskStatus.IN_PROGRESS))
+    db.insert_task(TaskRecord(id="TASK-002", brief="sub", status=TaskStatus.COMPLETED, parent_task_id="TASK-001"))
+    db.insert_task(TaskRecord(id="TASK-003", brief="grandchild", status=TaskStatus.BLOCKED, parent_task_id="TASK-002"))
+    worst = db.worst_child_status("TASK-001")
+    # grandchild(TASK-003) is blocked > completed(TASK-002)
+    assert worst == "blocked"
+
+
+def test_worst_child_status_pending_vs_in_progress(db):
+    db.insert_task(TaskRecord(id="TASK-001", brief="root"))
+    db.insert_task(TaskRecord(id="TASK-002", brief="sub", status=TaskStatus.PENDING, parent_task_id="TASK-001"))
+    db.insert_task(TaskRecord(id="TASK-003", brief="sub2", status=TaskStatus.IN_PROGRESS, parent_task_id="TASK-001"))
+    worst = db.worst_child_status("TASK-001")
+    # in_progress is more severe than pending
+    assert worst == "in_progress"
+
+
+def test_worst_child_status_resolved_superseded_is_least_severe(db):
+    db.insert_task(TaskRecord(id="TASK-001", brief="root"))
+    db.insert_task(TaskRecord(id="TASK-002", brief="sub", status=TaskStatus.RESOLVED_SUPERSEDED, parent_task_id="TASK-001"))
+    worst = db.worst_child_status("TASK-001")
+    assert worst == "resolved_superseded"
+
+
+def test_list_tasks_roots_only_includes_worst_child_status(db):
+    db.insert_task(TaskRecord(id="TASK-001", brief="root", task_type="task", status=TaskStatus.IN_PROGRESS))
+    db.insert_task(TaskRecord(id="TASK-002", brief="sub", task_type="subtask", parent_task_id="TASK-001", status=TaskStatus.FAILED))
+    roots = db.list_tasks(roots_only=True)
+    assert len(roots) == 1
+    # TaskRecord doesn't carry worst_child_status natively; it's added as an attr
+    worst = getattr(roots[0], 'worst_child_status', None)
+    assert worst == "failed"

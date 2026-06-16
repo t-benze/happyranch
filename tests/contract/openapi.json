@@ -1282,6 +1282,10 @@
             "query"
           ],
           [
+            "roots_only",
+            "query"
+          ],
+          [
             "slug",
             "path"
           ],

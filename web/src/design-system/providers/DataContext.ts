@@ -138,6 +138,7 @@ export interface TasksApi {
   useTasksList: (params?: {
     status?: string;
     limit?: number;
+    roots_only?: boolean;
   }) => QueryLike<{ tasks: TaskRecord[] }>;
   /** Cursor-paginated variant used by the inbox page's infinite scroll.
    *  Each page is the raw server payload (`tasks` + `next_cursor`); the
@@ -145,6 +146,7 @@ export interface TasksApi {
    *  scroll-observer sentinel. */
   useTasksInfiniteList: (params?: {
     status?: string;
+    roots_only?: boolean;
   }) => InfiniteQueryLike<TasksListPage>;
   useTask: (taskId: string | undefined) => QueryLike<TaskRecord>;
   useTaskRecall: (taskId: string | undefined) => QueryLike<TaskRecallNode>;

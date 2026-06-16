@@ -4,7 +4,7 @@ import { describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
-import type { ActiveChainResponse, JobRecord } from '@/lib/api/types';
+import type { ActiveChainResponse, JobRecord, TaskDetailResponse } from '@/lib/api/types';
 
 const SLUG = 'hk-macau-tourism';
 
@@ -21,8 +21,9 @@ const TASK = {
   task_id: 'TASK-0091',
   team: 'content',
   brief: 'Draft Hong Kong visa guide v2',
-  status: 'in_progress',
+  status: 'in_progress' as const,
   block_kind: null,
+  assigned_agent: null,
   parent_task_id: null,
   revisit_of_task_id: null,
   created_at: '2026-05-18T10:00:00Z',
@@ -76,7 +77,7 @@ describe('TasksPage — read path', () => {
     );
   });
 
-  test('renders filter sidebar groups', async () => {
+  test('renders group-by sidebar', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
@@ -85,14 +86,38 @@ describe('TasksPage — read path', () => {
     );
     mountAt(`/orgs/${SLUG}/tasks`);
     await waitFor(() => {
-      expect(screen.getByText(/Status/i)).toBeInTheDocument();
-      expect(screen.getByText(/Team/i)).toBeInTheDocument();
+      expect(screen.getByText('Group by')).toBeInTheDocument();
+      // Find the group-by button (not the sidebar nav link)
+      expect(screen.getByRole('button', { name: 'Status' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Agent' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Thread' })).toBeInTheDocument();
+    });
+  });
+
+  test('renders severity‑max rollup for blocked child', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
+        HttpResponse.json({
+          tasks: [{
+            ...TASK,
+            status: 'in_progress',
+            worst_child_status: 'blocked',
+          }],
+        }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/tasks`);
+    // The root shows "blocked" as the effective status badge
+    await waitFor(() => {
+      const badges = screen.getAllByText('blocked');
+      expect(badges.length).toBeGreaterThan(0);
     });
   });
 });
 
 describe('TaskDetailPane — jobs cross-link', () => {
-  function stubHandlers(jobs: JobRecord[]) {
+  function stubHandlers(jobs: JobRecord[], taskDetailExtra: Partial<TaskDetailResponse> = {}) {
     server.use(
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
@@ -101,7 +126,17 @@ describe('TaskDetailPane — jobs cross-link', () => {
         HttpResponse.json({ tasks: [TASK] }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}`, () =>
-        HttpResponse.json(TASK),
+        HttpResponse.json({
+          task: TASK,
+          results: [],
+          audit_log: [],
+          revisit_chain: [],
+          direct_revisits: [],
+          predecessor_prior_status: null,
+          blocked_on_jobs: null,
+          active_chain: null,
+          ...taskDetailExtra,
+        }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/recall`, () =>
         HttpResponse.json({
@@ -141,11 +176,41 @@ describe('TaskDetailPane — jobs cross-link', () => {
     renderWithProviders(<AppRoutes />, {
       route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
     });
-    // Wait for the drawer to fully load — "Live events" section always renders.
     await waitFor(() =>
       expect(screen.getByText(/Live events/i)).toBeInTheDocument(),
     );
     expect(screen.queryByText(/Jobs from this task/i)).not.toBeInTheDocument();
+  });
+
+  test('shows property rail with blocked-on jobs', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubHandlers([], {
+      blocked_on_jobs: [{ job_id: 'JOB-0042', status: 'running' }],
+    });
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+    });
+    await waitFor(() =>
+      expect(screen.getByText(/Properties/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/Blocked on/i)).toBeInTheDocument();
+    expect(screen.getByText('JOB-0042')).toBeInTheDocument();
+  });
+
+  test('shows revisit chain timeline', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubHandlers([], {
+      revisit_chain: [TASK.task_id, 'TASK-0088'],
+      direct_revisits: ['TASK-0095'],
+    });
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+    });
+    await waitFor(() =>
+      expect(screen.getByText(/Revisit chain/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByText('TASK-0088')).toBeInTheDocument();
+    expect(screen.getByText('TASK-0095')).toBeInTheDocument();
   });
 });
 
@@ -160,7 +225,7 @@ describe('TaskDetailPane — workflow chain strip', () => {
     step_audit_id: 14,
   };
 
-  const TASK_DETAIL_ENVELOPE = {
+  const TASK_DETAIL_ENVELOPE: TaskDetailResponse = {
     task: TASK,
     results: [],
     audit_log: [],
@@ -168,6 +233,7 @@ describe('TaskDetailPane — workflow chain strip', () => {
     direct_revisits: [],
     predecessor_prior_status: null,
     blocked_on_jobs: null,
+    active_chain: null,
   };
 
   function stubHandlers(active_chain: ActiveChainResponse | null) {
@@ -215,7 +281,6 @@ describe('TaskDetailPane — workflow chain strip', () => {
     renderWithProviders(<AppRoutes />, {
       route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
     });
-    // Wait for the drawer to fully load — "Live events" section always renders.
     await waitFor(() =>
       expect(screen.getByText(/Live events/i)).toBeInTheDocument(),
     );

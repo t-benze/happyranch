@@ -21,6 +21,7 @@ export const listTasks = (
     status?: string;
     assigned_agent?: string;
     before?: string;
+    roots_only?: boolean;
   },
 ): Promise<{ tasks: TaskListItem[]; next_cursor?: string | null }> =>
   request(`/orgs/${slug}/tasks`, { params });
