@@ -79,6 +79,7 @@ def _create_agent_thread_locked(
     turn_cap: int,
     attachments: list[ThreadAttachment] | None = None,
     composed_from_task_id: str | None = None,
+    composed_from_dream_id: str | None = None,
 ) -> tuple[str, int, list[str], list[str]]:
     """DB-write core of an agent-initiated compose. Caller MUST hold org.db_lock.
 
@@ -110,6 +111,7 @@ def _create_agent_thread_locked(
         id=thread_id, subject=subject, turn_cap=turn_cap,
         composed_by=composer,
         composed_from_task_id=composed_from_task_id,
+        composed_from_dream_id=composed_from_dream_id,
     ))
     # Composer + every recipient become participants. @founder is NOT a row
     # (spec §3.3); skip it. The composer is added once explicitly; the loop
@@ -134,6 +136,7 @@ def _create_agent_thread_locked(
         forwarded_from_id=None,
         composed_by=composer,
         composed_from_task_id=composed_from_task_id,
+        composed_from_dream_id=composed_from_dream_id,
     )
     AuditLogger(org.db).log_thread_message_sent(
         thread_id, seq=seq, speaker=composer, kind="message",
@@ -558,7 +561,7 @@ def _thread_row_to_dict(t: ThreadRecord) -> dict:
         "transcript_path": t.transcript_path,
         "composed_by": t.composed_by,
         "composed_from_task_id": t.composed_from_task_id,
-
+        "composed_from_dream_id": t.composed_from_dream_id,
     }
 
 

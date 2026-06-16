@@ -22,6 +22,7 @@ def test_threads_table_has_composer_columns(tmp_path: Path) -> None:
     cols = _columns(db, "threads")
     assert "composed_by" in cols
     assert "composed_from_task_id" in cols
+    assert "composed_from_dream_id" in cols
 
 
 def test_composer_columns_index_present(tmp_path: Path) -> None:
@@ -29,6 +30,7 @@ def test_composer_columns_index_present(tmp_path: Path) -> None:
     cursor = db._conn.execute("PRAGMA index_list(threads)")
     index_names = {row["name"] for row in cursor.fetchall()}
     assert "idx_threads_composed_from_task" in index_names
+    assert "idx_threads_composed_from_dream" in index_names
 
 
 def test_thread_record_roundtrip_with_composer_fields(tmp_path: Path) -> None:
@@ -81,6 +83,53 @@ def test_thread_row_dict_exposes_composer_fields(tmp_path: Path) -> None:
     d = _thread_row_to_dict(rec)
     assert d["composed_by"] == "engineering_head"
     assert d["composed_from_task_id"] is None
+
+
+def test_thread_roundtrip_with_dream_id(tmp_path: Path) -> None:
+    """Thread composed by a dream persists composed_from_dream_id."""
+    db = Database(tmp_path / "happyranch.db")
+    rec = ThreadRecord(
+        id="THR-030",
+        subject="dream reflection thread",
+        composed_by="dev_agent",
+        composed_from_dream_id="DREAM-001",
+    )
+    db.insert_thread(rec)
+    got = db.get_thread("THR-030")
+    assert got is not None
+    assert got.composed_from_dream_id == "DREAM-001"
+
+
+def test_thread_without_dream_id_reads_null(tmp_path: Path) -> None:
+    """Back-compat: old threads without the column read back NULL."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-031", subject="coordination thread"))
+    got = db.get_thread("THR-031")
+    assert got is not None
+    assert got.composed_from_dream_id is None
+
+
+def test_thread_row_dict_exposes_dream_id(tmp_path: Path) -> None:
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(
+        ThreadRecord(
+            id="THR-032", subject="dream thread",
+            composed_by="dev_agent",
+            composed_from_dream_id="DREAM-002",
+        )
+    )
+    rec = db.get_thread("THR-032")
+    d = _thread_row_to_dict(rec)
+    assert d["composed_from_dream_id"] == "DREAM-002"
+
+
+def test_thread_row_dict_null_dream_id(tmp_path: Path) -> None:
+    """Coordination threads expose composed_from_dream_id as None."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-033", subject="task coordination"))
+    rec = db.get_thread("THR-033")
+    d = _thread_row_to_dict(rec)
+    assert d["composed_from_dream_id"] is None
 
 
 def test_log_thread_started_payload_includes_composer(tmp_path: Path) -> None:
