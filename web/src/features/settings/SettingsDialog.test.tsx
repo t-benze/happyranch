@@ -125,14 +125,18 @@ function renderDialog(
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={['/orgs/alpha/dashboard']}>
         <Routes>
+          {/* Pathless shell route — mirrors AppShell where TopBar + SettingsDialog
+              actually live. A relative <Link to="assistant"> resolves to /assistant
+              here, NOT /orgs/:slug/assistant, which is the bug this test guards. */}
           <Route
-            path="/orgs/:slug/dashboard"
             element={
               <DataContext.Provider value={ctxValue}>
                 <SettingsDialog open onOpenChange={onClose} />
               </DataContext.Provider>
             }
-          />
+          >
+            <Route path="/orgs/:slug/dashboard" element={<div />} />
+          </Route>
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -409,13 +413,17 @@ describe('SettingsDialog', () => {
     ).toBeInTheDocument();
   });
 
-  test('shows uninitialized state with Initialize button', async () => {
+  test('shows uninitialized state with Initialize button and absolute register link', async () => {
     renderDialog(undefined, vi.fn(), vi.fn().mockResolvedValue(mockSnapshot), {
       status: { state: 'uninitialized', selected_executor: null, workspace_path: null },
     });
 
     expect(screen.getByText('Uninitialized')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Initialize workspace/i })).toBeInTheDocument();
+    // Register executor link must use the org-scoped absolute path
+    const registerLink = screen.getByRole('link', { name: /register executor/i });
+    expect(registerLink).toBeInTheDocument();
+    expect(registerLink.getAttribute('href')).toBe('/orgs/alpha/assistant');
   });
 
   test('shows stale_or_broken state with detail and Repair button', async () => {
@@ -479,11 +487,13 @@ describe('SettingsDialog', () => {
     });
   });
 
-  test('configured state shows link to assistant terminal page', async () => {
+  test('configured state shows absolute link to assistant terminal page', async () => {
     renderDialog();
 
     const link = screen.getByRole('link', { name: /open terminal/i });
     expect(link).toBeInTheDocument();
-    expect(link.getAttribute('href')).toContain('/assistant');
+    // Must resolve to the org-scoped absolute path, NOT the relative
+    // /assistant that a pathless-shell parent route would produce.
+    expect(link.getAttribute('href')).toBe('/orgs/alpha/assistant');
   });
 });

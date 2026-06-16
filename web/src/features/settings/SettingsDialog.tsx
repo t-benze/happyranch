@@ -11,7 +11,7 @@
  */
 import { Settings } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { useSettings, useUpdateOrgSettings } from '@/hooks/settings';
 import {
   useAssistantStatus,
@@ -359,6 +359,8 @@ const STATE_BADGE: Record<AssistantState, string> = {
 };
 
 function AssistantSection(): JSX.Element {
+  const { slug } = useParams<{ slug: string }>();
+  const assistantHref = slug ? `/orgs/${slug}/assistant` : '#';
   const statusQuery = useAssistantStatus();
   const initMutation = useInitAssistant();
   const repairMutation = useRepairAssistant();
@@ -415,7 +417,7 @@ function AssistantSection(): JSX.Element {
                   {initMutation.isPending ? 'Initializing…' : 'Initialize workspace'}
                 </button>
                 <Link
-                  to="assistant"
+                  to={assistantHref}
                   className="text-accent text-sm hover:underline"
                 >
                   Register executor →
@@ -434,7 +436,7 @@ function AssistantSection(): JSX.Element {
             )}
             {status.state === 'configured' && (
               <Link
-                to="assistant"
+                to={assistantHref}
                 className="text-accent text-sm hover:underline"
                 aria-label="Open terminal"
               >
