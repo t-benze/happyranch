@@ -42,3 +42,7 @@ You are measured on:
 - Performance budget adherence (target: <3s load time maintained)
 - Security audit findings (target: 0 critical/high findings)
 
+## Routine Tasks
+
+- **Advance GOAL "ferry-booking E2E suite green":** read current state from the goal's durable record (the recurring root task / thread holding last wake's failing-spec list and red count); if the verification surface (`npm run test:e2e -- booking/ferry`) is NOT green, dispatch the next iteration to fix the next failing spec; if it IS green, STOP and report — do NOT spawn another iteration. Preserve: mobile-first + <3s-on-3G budget; touch only the booking module + ferry partner adapter; each iteration record the spec fixed and the remaining red count to the durable record; stop and escalate if a partner-API contract change blocks progress across two consecutive iterations.
+
