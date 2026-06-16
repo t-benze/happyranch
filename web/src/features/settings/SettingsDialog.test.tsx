@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { DataContext } from '@/design-system/providers/DataContext';
 import { SettingsDialog } from './SettingsDialog';
-import type { SettingsSnapshot, SystemSettings, OrgSettings, OrgSettingsPatch } from '@/lib/api/types';
+import type { SettingsSnapshot, SystemSettings, OrgSettings, OrgSettingsPatch, AssistantStatus, AssistantRegisterBody } from '@/lib/api/types';
 import type { QueryLike, MutationLike } from '@/design-system/providers/DataContext';
 
 const mockSystem: SystemSettings = {
@@ -46,6 +46,12 @@ function renderDialog(
   overrides?: Partial<SettingsSnapshot>,
   onClose = vi.fn(),
   mutateAsync = vi.fn().mockResolvedValue(mockSnapshot),
+  assistantOverrides?: {
+    status?: Partial<AssistantStatus>;
+    initMutateAsync?: ReturnType<typeof vi.fn>;
+    repairMutateAsync?: ReturnType<typeof vi.fn>;
+    registerMutateAsync?: ReturnType<typeof vi.fn>;
+  },
 ) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const snapshot = overrides
@@ -64,22 +70,73 @@ function renderDialog(
     isPending: false,
   });
 
+  // -- assistant mocks
+  const assistantStatus: AssistantStatus = {
+    state: 'configured',
+    selected_executor: 'claude',
+    workspace_path: '/rt/system/assistant/workspace',
+    detail: null,
+    ...assistantOverrides?.status,
+  };
+
+  const useAssistantStatus = (): QueryLike<AssistantStatus> => ({
+    data: assistantStatus,
+    isLoading: false,
+    isError: false,
+    error: null,
+  });
+
+  const initMutateAsync =
+    assistantOverrides?.initMutateAsync ??
+    vi.fn().mockResolvedValue(assistantStatus);
+  const useInitAssistant = (): MutationLike<{ reconfigure: boolean }, AssistantStatus> => ({
+    mutateAsync: initMutateAsync,
+    isPending: false,
+  });
+
+  const repairMutateAsync =
+    assistantOverrides?.repairMutateAsync ??
+    vi.fn().mockResolvedValue(assistantStatus);
+  const useRepairAssistant = (): MutationLike<void, AssistantStatus> => ({
+    mutateAsync: repairMutateAsync,
+    isPending: false,
+  });
+
+  const registerMutateAsync =
+    assistantOverrides?.registerMutateAsync ??
+    vi.fn().mockResolvedValue(assistantStatus);
+  const useRegisterAssistant = (): MutationLike<AssistantRegisterBody, AssistantStatus> => ({
+    mutateAsync: registerMutateAsync,
+    isPending: false,
+  });
+
   const ctxValue = {
     settings: { useSettings, useUpdateOrgSettings },
+    assistant: {
+      useAssistantStatus,
+      useInitAssistant,
+      useRepairAssistant,
+      useRegisterAssistant,
+      openSession: vi.fn().mockRejectedValue(new Error('no socket in dialog')),
+    },
   } as unknown as Parameters<typeof DataContext.Provider>[0]['value'];
 
   return render(
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={['/orgs/alpha/dashboard']}>
         <Routes>
+          {/* Pathless shell route — mirrors AppShell where TopBar + SettingsDialog
+              actually live. A relative <Link to="assistant"> resolves to /assistant
+              here, NOT /orgs/:slug/assistant, which is the bug this test guards. */}
           <Route
-            path="/orgs/:slug/dashboard"
             element={
               <DataContext.Provider value={ctxValue}>
                 <SettingsDialog open onOpenChange={onClose} />
               </DataContext.Provider>
             }
-          />
+          >
+            <Route path="/orgs/:slug/dashboard" element={<div />} />
+          </Route>
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -145,6 +202,24 @@ describe('SettingsDialog', () => {
       mutateAsync: vi.fn(),
       isPending: false,
     });
+    const useAssistantStatus = (): QueryLike<AssistantStatus> => ({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+      error: null,
+    });
+    const useInitAssistant = (): MutationLike<{ reconfigure: boolean }, AssistantStatus> => ({
+      mutateAsync: vi.fn(),
+      isPending: false,
+    });
+    const useRepairAssistant = (): MutationLike<void, AssistantStatus> => ({
+      mutateAsync: vi.fn(),
+      isPending: false,
+    });
+    const useRegisterAssistant = (): MutationLike<AssistantRegisterBody, AssistantStatus> => ({
+      mutateAsync: vi.fn(),
+      isPending: false,
+    });
 
     render(
       <QueryClientProvider client={qc}>
@@ -155,7 +230,16 @@ describe('SettingsDialog', () => {
               element={
                 <DataContext.Provider
                   value={
-                    { settings: { useSettings, useUpdateOrgSettings } } as unknown as Parameters<typeof DataContext.Provider>[0]['value']
+                    {
+                      settings: { useSettings, useUpdateOrgSettings },
+                      assistant: {
+                        useAssistantStatus,
+                        useInitAssistant,
+                        useRepairAssistant,
+                        useRegisterAssistant,
+                        openSession: vi.fn(),
+                      },
+                    } as unknown as Parameters<typeof DataContext.Provider>[0]['value']
                   }
                 >
                   <SettingsDialog open onOpenChange={onClose} />
@@ -184,6 +268,24 @@ describe('SettingsDialog', () => {
       mutateAsync: vi.fn(),
       isPending: false,
     });
+    const useAssistantStatus = (): QueryLike<AssistantStatus> => ({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    const useInitAssistant = (): MutationLike<{ reconfigure: boolean }, AssistantStatus> => ({
+      mutateAsync: vi.fn(),
+      isPending: false,
+    });
+    const useRepairAssistant = (): MutationLike<void, AssistantStatus> => ({
+      mutateAsync: vi.fn(),
+      isPending: false,
+    });
+    const useRegisterAssistant = (): MutationLike<AssistantRegisterBody, AssistantStatus> => ({
+      mutateAsync: vi.fn(),
+      isPending: false,
+    });
 
     render(
       <QueryClientProvider client={qc}>
@@ -194,7 +296,16 @@ describe('SettingsDialog', () => {
               element={
                 <DataContext.Provider
                   value={
-                    { settings: { useSettings, useUpdateOrgSettings } } as unknown as Parameters<typeof DataContext.Provider>[0]['value']
+                    {
+                      settings: { useSettings, useUpdateOrgSettings },
+                      assistant: {
+                        useAssistantStatus,
+                        useInitAssistant,
+                        useRepairAssistant,
+                        useRegisterAssistant,
+                        openSession: vi.fn(),
+                      },
+                    } as unknown as Parameters<typeof DataContext.Provider>[0]['value']
                   }
                 >
                   <SettingsDialog open onOpenChange={onClose} />
@@ -285,5 +396,104 @@ describe('SettingsDialog', () => {
     // (not undefined which would be stripped). Since the input is empty,
     // it translates to null which should be sent as null.
     expect(patch.threads?.invocation_timeout_seconds).toBeNull();
+  });
+
+  // ----------------------------------------------------------------
+  // System Assistant section
+  // ----------------------------------------------------------------
+
+  test('renders System Assistant section with configured state', async () => {
+    renderDialog();
+
+    expect(screen.getByText('System Assistant')).toBeInTheDocument();
+    expect(screen.getByText('Configured')).toBeInTheDocument();
+    expect(screen.getByText('claude')).toBeInTheDocument();
+    expect(
+      screen.getByText(/\/rt\/system\/assistant\/workspace/),
+    ).toBeInTheDocument();
+  });
+
+  test('shows uninitialized state with Initialize button and absolute register link', async () => {
+    renderDialog(undefined, vi.fn(), vi.fn().mockResolvedValue(mockSnapshot), {
+      status: { state: 'uninitialized', selected_executor: null, workspace_path: null },
+    });
+
+    expect(screen.getByText('Uninitialized')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Initialize workspace/i })).toBeInTheDocument();
+    // Register executor link must use the org-scoped absolute path
+    const registerLink = screen.getByRole('link', { name: /register executor/i });
+    expect(registerLink).toBeInTheDocument();
+    expect(registerLink.getAttribute('href')).toBe('/orgs/alpha/assistant');
+  });
+
+  test('shows stale_or_broken state with detail and Repair button', async () => {
+    renderDialog(undefined, vi.fn(), vi.fn().mockResolvedValue(mockSnapshot), {
+      status: {
+        state: 'stale_or_broken',
+        selected_executor: 'codex',
+        workspace_path: '/rt/system/assistant/workspace',
+        detail: 'workspace missing AGENTS.md',
+      },
+    });
+
+    expect(screen.getByText('Stale or broken')).toBeInTheDocument();
+    expect(screen.getByText('workspace missing AGENTS.md')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Repair$/i })).toBeInTheDocument();
+  });
+
+  test('Initialize button calls init mutation', async () => {
+    const initMutateAsync = vi.fn().mockResolvedValue({
+      state: 'uninitialized' as const,
+      selected_executor: null,
+      workspace_path: '/rt/system/assistant/workspace',
+      detail: null,
+    });
+    renderDialog(undefined, vi.fn(), vi.fn().mockResolvedValue(mockSnapshot), {
+      status: { state: 'uninitialized', selected_executor: null, workspace_path: null },
+      initMutateAsync,
+    });
+
+    const initBtn = screen.getByRole('button', { name: /Initialize workspace/i });
+    fireEvent.click(initBtn);
+
+    await vi.waitFor(() => {
+      expect(initMutateAsync).toHaveBeenCalledTimes(1);
+    });
+    expect(initMutateAsync).toHaveBeenCalledWith({ reconfigure: false });
+  });
+
+  test('Repair button calls repair mutation', async () => {
+    const repairMutateAsync = vi.fn().mockResolvedValue({
+      state: 'configured' as const,
+      selected_executor: 'codex',
+      workspace_path: '/rt/system/assistant/workspace',
+      detail: null,
+    });
+    renderDialog(undefined, vi.fn(), vi.fn().mockResolvedValue(mockSnapshot), {
+      status: {
+        state: 'stale_or_broken',
+        selected_executor: 'codex',
+        workspace_path: '/rt/system/assistant/workspace',
+        detail: 'workspace missing AGENTS.md',
+      },
+      repairMutateAsync,
+    });
+
+    const repairBtn = screen.getByRole('button', { name: /^Repair$/i });
+    fireEvent.click(repairBtn);
+
+    await vi.waitFor(() => {
+      expect(repairMutateAsync).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  test('configured state shows absolute link to assistant terminal page', async () => {
+    renderDialog();
+
+    const link = screen.getByRole('link', { name: /open terminal/i });
+    expect(link).toBeInTheDocument();
+    // Must resolve to the org-scoped absolute path, NOT the relative
+    // /assistant that a pathless-shell parent route would produce.
+    expect(link.getAttribute('href')).toBe('/orgs/alpha/assistant');
   });
 });

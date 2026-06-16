@@ -158,11 +158,11 @@ instructions, roughly:
 - Edit `web/src/test/openapi-coverage.test.ts` allowlist: remove the
   `POST /api/v1/assistant/probes` entry and rename
   `POST /api/v1/assistant/configure` → `POST /api/v1/assistant/register`. (These
-  routes are CLI-only; no TS API client function is required.)
+  routes are CLI-only; no TS API client function is required.) (Updated — THR-024 reading #1: a TS API client web/src/lib/api/assistant.ts and a web Settings surface now exist.)
 
 ## Out Of Scope
 
-- Web-based attach/registration (the routes stay CLI-only).
+- ~~Web-based attach/registration~~ (Superseded by THR-024 reading #1 — web attach via the terminal page and web config via the Settings dialog now ship.)
 - Re-launch liveness verification (structural validation only, by decision 3).
 - Multiple registered assistants / executor switching beyond `--reconfigure`.
 
