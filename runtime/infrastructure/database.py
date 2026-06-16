@@ -891,6 +891,19 @@ class Database:
             "ON threads(composed_from_task_id) "
             "WHERE composed_from_task_id IS NOT NULL"
         )
+        # Dream-originated threads: dream attribution marker (design-overhaul A4).
+        # Additive nullable; existing rows stay NULL.
+        try:
+            self._conn.execute(
+                "ALTER TABLE threads ADD COLUMN composed_from_dream_id TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_threads_composed_from_dream "
+            "ON threads(composed_from_dream_id) "
+            "WHERE composed_from_dream_id IS NOT NULL"
+        )
         # kind column for escalation_notifications: 'escalation' (default) or
         # 'failure'. Additive; existing rows keep the default.
         try:
@@ -2538,8 +2551,8 @@ class Database:
                 forwarded_from_id, forwarded_from_kind,
                 turn_cap, turns_used, summary,
                 transcript_path,
-                composed_by, composed_from_task_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                composed_by, composed_from_task_id, composed_from_dream_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 t.id,
                 t.subject,
@@ -2554,6 +2567,7 @@ class Database:
                 t.transcript_path,
                 t.composed_by,
                 t.composed_from_task_id,
+                t.composed_from_dream_id,
             ),
         )
         self._conn.commit()
@@ -2574,6 +2588,7 @@ class Database:
             transcript_path=row["transcript_path"],
             composed_by=row["composed_by"] if "composed_by" in keys else "founder",
             composed_from_task_id=row["composed_from_task_id"] if "composed_from_task_id" in keys else None,
+            composed_from_dream_id=row["composed_from_dream_id"] if "composed_from_dream_id" in keys else None,
         )
 
     @_synchronized

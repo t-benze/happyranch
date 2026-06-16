@@ -102,6 +102,9 @@ def test_complete_dream_creates_founder_thread(tmp_home, app, org_state, auth_he
     dream_actions = [r["action"] for r in org_state.db.get_audit_logs("DREAM-001")]
     assert "dream_founder_thread_created" in dream_actions
 
+    # A4: dream-composed threads carry composed_from_dream_id marker.
+    assert thread.composed_from_dream_id == "DREAM-001"
+
 
 def test_complete_dream_no_thread_when_not_needed(tmp_home, app, org_state, auth_headers):
     from fastapi.testclient import TestClient

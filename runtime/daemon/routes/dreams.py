@@ -152,6 +152,7 @@ async def complete_dream(slug: str, dream_id: str, body: DreamCompleteBody, org:
                 body_text=founder_thread_preview,
                 recipients=[FOUNDER_LITERAL],
                 turn_cap=turn_cap,
+                composed_from_dream_id=dream_id,
             )
 
         learnings_dir = org.root / "workspaces" / dream.agent_name / "learnings"

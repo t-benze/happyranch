@@ -451,18 +451,21 @@ class AuditLogger:
         forwarded_from_id: str | None,
         composed_by: str = "founder",
         composed_from_task_id: str | None = None,
+        composed_from_dream_id: str | None = None,
     ) -> None:
+        payload: dict[str, object] = {
+            "subject": subject,
+            "initial_recipients": initial_recipients,
+            "forwarded_from_id": forwarded_from_id,
+            "composed_by": composed_by,
+            "composed_from_task_id": composed_from_task_id,
+            "composed_from_dream_id": composed_from_dream_id,
+        }
         self._db.insert_audit_log(
             task_id=thread_id,
             agent=composed_by,
             action="thread_started",
-            payload={
-                "subject": subject,
-                "initial_recipients": initial_recipients,
-                "forwarded_from_id": forwarded_from_id,
-                "composed_by": composed_by,
-                "composed_from_task_id": composed_from_task_id,
-            },
+            payload=payload,
         )
 
     def log_thread_message_sent(
