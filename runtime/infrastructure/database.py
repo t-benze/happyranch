@@ -1259,6 +1259,23 @@ class Database:
         if roots_only:
             for t in tasks:
                 object.__setattr__(t, "worst_child_status", self.worst_child_status(t.id))
+        # Batch-derive direct_revisits for all returned task IDs so the list
+        # response carries bidirectional supersede links without N+1 queries.
+        if tasks:
+            task_ids = [t.id for t in tasks]
+            placeholders = ",".join(["?"] * len(task_ids))
+            cursor = self._conn.execute(
+                f"SELECT id, revisit_of_task_id FROM tasks "
+                f"WHERE revisit_of_task_id IN ({placeholders}) "
+                f"ORDER BY created_at",
+                tuple(task_ids),
+            )
+            revisits_map: dict[str, list[str]] = {tid: [] for tid in task_ids}
+            for row in cursor.fetchall():
+                predecessor = row["revisit_of_task_id"]
+                revisits_map[predecessor].append(row["id"])
+            for t in tasks:
+                object.__setattr__(t, "direct_revisits", revisits_map[t.id])
         return tasks
 
     @_synchronized

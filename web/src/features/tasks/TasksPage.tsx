@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { IdBadge } from '@/design-system/patterns/IdBadge';
@@ -48,7 +48,7 @@ function groupKeyLabel(key: GroupKey, value: string): string {
 
 function SupersedeBadge({ task }: { task: TaskRecord }): JSX.Element | null {
   const routes = useTasksRoutes();
-  const revisits = (task as Record<string, unknown>).direct_revisits as string[] | undefined;
+  const revisits = task.direct_revisits;
   const hasBackPointer = !!task.revisit_of_task_id;
   if (!revisits?.length && !hasBackPointer) return null;
   return (
@@ -57,6 +57,7 @@ function SupersedeBadge({ task }: { task: TaskRecord }): JSX.Element | null {
         <Link
           to={routes.detail(task.revisit_of_task_id)}
           className="text-accent hover:underline"
+          onClick={(e) => e.stopPropagation()}
         >
           ↳ {task.revisit_of_task_id}
         </Link>
@@ -66,6 +67,7 @@ function SupersedeBadge({ task }: { task: TaskRecord }): JSX.Element | null {
           key={rid}
           to={routes.detail(rid)}
           className="text-accent hover:underline"
+          onClick={(e) => e.stopPropagation()}
         >
           → {rid}
         </Link>
@@ -95,6 +97,7 @@ function effectiveStatus(task: TaskRecord): TaskStatus {
 
 export function TasksPage(): JSX.Element {
   const { task_id: openTaskId } = useParams<{ task_id: string }>();
+  const navigate = useNavigate();
   const routes = useTasksRoutes();
 
   const [groupBy, setGroupBy] = useState<GroupKey>('status');
@@ -224,11 +227,20 @@ export function TasksPage(): JSX.Element {
                           'hover:bg-surface-raised',
                         )}
                       >
-                        <Link
-                          to={routes.detail(task.task_id)}
-                          className="flex items-center gap-2 px-4 py-2 text-sm"
+                        {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-static-element-interactions */}
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          className="flex cursor-pointer items-center gap-2 px-4 py-2 text-sm"
+                          onClick={() => navigate(routes.detail(task.task_id))}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              navigate(routes.detail(task.task_id));
+                            }
+                          }}
                         >
-                          <IdBadge kind="task" id={task.task_id} />
+                          <IdBadge kind="task" id={task.task_id} to={routes.detail(task.task_id)} />
                           <StatusBadge
                             status={effectiveStatus(task)}
                             blockKind={task.block_kind as BlockKind | null}
@@ -245,7 +257,7 @@ export function TasksPage(): JSX.Element {
                           <span className="text-fg-subtle text-xs font-mono shrink-0">
                             {relativeAge(task.updated_at)}
                           </span>
-                        </Link>
+                        </div>
                       </li>
                     ))}
                   </ul>

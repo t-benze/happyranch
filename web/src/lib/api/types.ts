@@ -61,6 +61,8 @@ export interface TaskRecord {
   cancelled_at: string | null;
   session_timeout_seconds: number | null;
   worst_child_status?: TaskStatus | null;
+  /** Batch-derived by list endpoint; detail endpoint attaches separately. */
+  direct_revisits?: string[];
   [extra: string]: unknown;
 }
 

@@ -142,6 +142,39 @@ def test_list_tasks_cursor_missing_id_returns_empty(
     assert r.json() == {"tasks": [], "next_cursor": None}
 
 
+def test_list_tasks_includes_direct_revisits(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """GET /tasks must carry direct_revisits on each row — batch-derived,
+    no N+1 queries. Bidirectional supersede links on the list surface are
+    backed by a serialised field."""
+    from runtime.models import TaskRecord
+    db = org_state.db
+    # TASK-001 has no revisits.
+    db.insert_task(TaskRecord(id="TASK-001", brief="no revisits"))
+    # Two tasks revisit TASK-001.
+    db.insert_task(TaskRecord(
+        id="TASK-002", brief="revisit 1", revisit_of_task_id="TASK-001",
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-003", brief="revisit 2", revisit_of_task_id="TASK-001",
+    ))
+    # TASK-004 revisits TASK-003.
+    db.insert_task(TaskRecord(
+        id="TASK-004", brief="revisit of revisit", revisit_of_task_id="TASK-003",
+    ))
+
+    r = TestClient(app).get("/api/v1/orgs/alpha/tasks", headers=auth_headers)
+    assert r.status_code == 200
+    body = r.json()
+    tasks = {t["task_id"]: t for t in body["tasks"]}
+
+    assert tasks["TASK-001"]["direct_revisits"] == ["TASK-002", "TASK-003"]
+    assert tasks["TASK-002"]["direct_revisits"] == []
+    assert tasks["TASK-003"]["direct_revisits"] == ["TASK-004"]
+    assert tasks["TASK-004"]["direct_revisits"] == []
+
+
 def test_get_task_detail_404_when_missing(tmp_home, app, auth_headers) -> None:
     r = TestClient(app).get("/api/v1/orgs/alpha/tasks/TASK-999", headers=auth_headers)
     assert r.status_code == 404

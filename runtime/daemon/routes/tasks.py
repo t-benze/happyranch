@@ -71,6 +71,11 @@ def _task_to_dict(t: TaskRecord) -> dict:
     wcs = getattr(t, "worst_child_status", None)
     if wcs is not None:
         d["worst_child_status"] = wcs
+    # Direct revisits are batch-derived by Database.list_tasks() for list
+    # responses; the detail endpoint attaches them separately.
+    drs = getattr(t, "direct_revisits", None)
+    if drs is not None:
+        d["direct_revisits"] = drs
     return d
 
 
