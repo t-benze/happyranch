@@ -29,9 +29,10 @@ flowchart TB
         IN_PROGRESS --> COMPLETED
         IN_PROGRESS --> FAILED
         IN_PROGRESS --> BLOCKED
-        BLOCKED -->|"block_kind=blocked_on_job<br/>→ job complete → unblock → IN_PROGRESS"| IN_PROGRESS
-        BLOCKED -->|"block_kind=escalated<br/>→ founder revisit → IN_PROGRESS"| IN_PROGRESS
-        BLOCKED -->|"block_kind=delegated or escalated<br/>→ human-authorized continuation"| RESOLVED_SUPERSEDED
+        BLOCKED -->|"block_kind=blocked_on_job<br/>→ job complete → same task resumes"| IN_PROGRESS
+        BLOCKED -->|"block_kind=delegated<br/>→ child task completes → same task resumes"| IN_PROGRESS
+        BLOCKED -->|"block_kind=escalated<br/>→ resolve-escalation (approve)<br/>→ same task re-dispatched"| IN_PROGRESS
+        BLOCKED -->|"block_kind=escalated or delegated<br/>→ founder revisit<br/>→ NEW task (revisit_of_task_id)<br/>predecessor → RESOLVED_SUPERSEDED"| RESOLVED_SUPERSEDED
         FAILED -->|"auto-revisit chain<br/>(new sibling task)"| IN_PROGRESS
 
         style RESOLVED_SUPERSEDED fill:#e8e8e8,stroke:#666,stroke-dasharray:3 3
@@ -43,18 +44,19 @@ flowchart TB
         ARCHIVED["ARCHIVED"]
 
         OPEN -->|"post minted → invocation<br/>(BOOTSTRAP | REPLY | TASK_FOLLOWUP)"| OPEN
-        OPEN -->|"all invocations consumed/declined<br/>+ no pending obligations"| ARCHIVED
+        OPEN -->|"founder/API archive<br/>(reaps pending invocations)"| ARCHIVED
+        ARCHIVED -->|"founder resume<br/>(ThreadStatus → OPEN)"| OPEN
     end
 
     %% Bridge 1: thread dispatch (self-only)
-    TASK -.->|"Bridge 1: threads dispatch<br/>dispatched_from_thread_id<br/>self-only (thread_dispatch_must_be_self)"| THREAD
+    THREAD -.->|"Bridge 1: threads dispatch<br/>dispatched_from_thread_id<br/>self-only (thread_dispatch_must_be_self)"| TASK
     %% Bridge 2: task-terminal → thread followup
     TASK -.->|"Bridge 2: task-terminal → followup<br/>gated on dispatched_from_thread_id<br/>TASK_FOLLOWUP invocation"| THREAD
     %% Bridge 3: compose-as-agent
     TASK -.->|"Bridge 3: compose-as-agent<br/>active session only<br/>opens NEW thread (composed_from_task_id)"| THREAD
 ```
 
-**Mermaid validation:** Rendered as valid PNG via `mmdc -i test.mmd -o test.png` (2026-06-17). Output dimensions 903×1519, no parse errors.
+**Mermaid validation:** Rendered as valid PNG via `mmdc -i test.mmd -o test.png` (2026-06-17). Output dimensions MUST be re-measured after this revision. See completion report.
 
 ---
 
@@ -78,8 +80,8 @@ A task is the fundamental unit of work. It represents a single brief dispatched 
 - `IN_PROGRESS → COMPLETED`: Agent reports successful completion.
 - `IN_PROGRESS → FAILED`: Agent reports failure, session times out, or task is cancelled.
 - `IN_PROGRESS → BLOCKED`: Agent self-blocks via `report-completion` with `status=blocked`.
-- `BLOCKED → IN_PROGRESS`: Two resume paths: (a) `blocked_on_job` — the job completes and the orchestrator unblocks the task; (b) `escalated` — founder issues `revisit` to re-run the task with clarifying guidance.
-- `BLOCKED → RESOLVED_SUPERSEDED`: A human-authorized continuation (founder `revisit` with a new task, or a manager `thread dispatch` with `resolves`) supersedes the blocked task.
+- `BLOCKED → IN_PROGRESS`: Three resume paths for the **same** task: (a) `blocked_on_job` — the job completes and the orchestrator unblocks the task back to IN_PROGRESS (line ~114 in `runtime/orchestrator/run_step.py`); (b) `delegated` — the child task reaches a terminal state, the parent resumes; (c) `escalated` — founder issues `resolve-escalation` with decision `approve`, which re-dispatches the **same** task back to IN_PROGRESS (`resolve_escalation` in `runtime/daemon/routes/tasks.py:551`).
+- `BLOCKED → RESOLVED_SUPERSEDED`: A human-authorized continuation that spawns a **NEW** task, distinct from resuming the same task. Two paths: (a) founder `revisit` (`revisit_from_notification` in `runtime/daemon/routes/tasks.py:724`) spawns a new root task with `revisit_of_task_id` and supersedes the blocked predecessor to RESOLVED_SUPERSEDED — the predecessor does NOT resume; (b) a manager `thread dispatch` with `resolves` also supersedes the predecessor via the same supersede helper. Both leave the original blocked task terminal.
 - `FAILED → IN_PROGRESS`: The orchestrator's auto-revisit logic spawns a new sibling task carrying the same brief (gated on revisit-chain length limits and task-type).
 
 ### 2.2 Thread Lifecycle
@@ -104,7 +106,8 @@ A thread is a persistent, multi-agent conversation channel. Its lifecycle has tw
   - `TIMEOUT` — the invocation expired without being consumed.
   - `FAILED` — the agent's session crashed or errored out.
 
-- `OPEN → ARCHIVED`: All invocations are in a terminal state (consumed, declined, timed out, or failed) and there are no pending obligations. Arichivation is the close-out — no reopen path exists.
+- `OPEN → ARCHIVED`: An explicit founder or API action via `archive_thread_endpoint` (`runtime/daemon/routes/threads.py:1322`). It reaps any remaining pending REPLY/BOOTSTRAP invocations (declining them with reason "archive_started"), sets `ThreadStatus.ARCHIVED`, writes a final transcript, and appends a SYSTEM `archived` message. Archiving is NOT automatic on invocation exhaustion.
+- `ARCHIVED → OPEN`: Reopening is supported. `resume_thread_endpoint` (`runtime/daemon/routes/threads.py:1390`) sets `ThreadStatus.OPEN` on an archived thread, appends a SYSTEM `resumed` message, and logs an audit entry. The thread is active again and new invocations can be minted.
 
 ---
 
