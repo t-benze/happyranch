@@ -5,7 +5,7 @@ import { AppRoutes } from './routes';
 import { renderWithProviders } from './test/render';
 import { server } from './test/server';
 
-test('root with orgs renders the TopBar org dropdown after navigate', async () => {
+test('root with orgs renders the Sidebar org dropdown after navigate', async () => {
   sessionStorage.setItem('happyranch.token', 'tok');
   server.use(
     http.get('/api/v1/orgs', () =>

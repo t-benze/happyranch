@@ -7,7 +7,7 @@ import {
   useParams,
 } from 'react-router-dom';
 import { ErrorBoundary } from '@/design-system/layouts/AppShell/ErrorBoundary';
-import { TopBar } from '@/design-system/layouts/AppShell/TopBar';
+import { Sidebar } from '@/design-system/layouts/AppShell/Sidebar';
 import { useOrgsList } from '@/hooks/orgs';
 import { OrgProvider } from '@/lib/orgSlug';
 import { AgentsPage } from '@/features/agents/AgentsPage';
@@ -23,6 +23,7 @@ import { DashboardPage } from '@/features/dashboard/DashboardPage';
 import { KbPage } from '@/features/kb/KbPage';
 import { TasksPage } from '@/features/tasks/TasksPage';
 import { SystemAssistantPage } from '@/features/system-assistant/SystemAssistantPage';
+import { PlaceholderPage } from '@/features/placeholder/PlaceholderPage';
 import { ThreadsPage } from '@/features/threads/ThreadsPage';
 import { PROTOTYPES_DISABLED, prototypeRoutes } from '@/prototypes';
 import { DESIGN_ROUTE_DISABLED, designRoutes } from '@/design-system/__design__';
@@ -40,7 +41,7 @@ function RootRedirect(): JSX.Element {
       </div>
     );
   }
-  return <Navigate to={`/orgs/${first}/threads`} replace />;
+  return <Navigate to={`/orgs/${first}/dashboard`} replace />;
 }
 
 function OrgLayout(): JSX.Element {
@@ -54,8 +55,8 @@ function OrgLayout(): JSX.Element {
 function AppShell(): JSX.Element {
   const location = useLocation();
   return (
-    <div className="flex h-full flex-col">
-      <TopBar />
+    <div className="flex h-full flex-row">
+      <Sidebar />
       <main className="flex-1 overflow-hidden">
         <ErrorBoundary resetKey={location.pathname}>
           <Outlet />
@@ -79,7 +80,7 @@ export function AppRoutes(): JSX.Element {
       <Route element={<AppShell />}>
         <Route index element={<RootRedirect />} />
         <Route path="/orgs/:slug" element={<OrgLayout />}>
-          <Route index element={<NavigateToThreads />} />
+          <Route index element={<NavigateToHome />} />
           <Route path="dashboard" element={<DashboardPage />} />
           <Route path="threads" element={<ThreadsPage />} />
           <Route path="threads/:thread_id" element={<ThreadsPage />} />
@@ -98,6 +99,9 @@ export function AppRoutes(): JSX.Element {
           <Route path="agents/:agent_name" element={<AgentsPage />} />
           <Route path="jobs" element={<JobsPage />} />
           <Route path="jobs/:job_id" element={<JobsPage />} />
+          <Route path="spend" element={<PlaceholderPage />} />
+          <Route path="dreams" element={<PlaceholderPage />} />
+          <Route path="schedule" element={<PlaceholderPage />} />
           <Route path="artifacts" element={<ArtifactsPage />} />
           <Route path="assistant" element={<SystemAssistantPage />} />
         </Route>
@@ -107,9 +111,9 @@ export function AppRoutes(): JSX.Element {
   );
 }
 
-function NavigateToThreads(): JSX.Element {
+function NavigateToHome(): JSX.Element {
   const { slug } = useParams<{ slug: string }>();
-  return <Navigate to={`/orgs/${slug}/threads`} replace />;
+  return <Navigate to={`/orgs/${slug}/dashboard`} replace />;
 }
 
 function NotFound(): JSX.Element {
