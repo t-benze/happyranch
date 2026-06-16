@@ -1,7 +1,9 @@
 /**
- * Settings dialog — System (read-only) + Org (editable in Phase 2).
+ * Settings dialog — System (read-only) + Org (editable in Phase 2)
+ * + System Assistant (status + init/repair).
  *
- * Opened from a button in the TopBar. Renders two sections:
+ * Opened from a button in the TopBar. Renders three sections:
+ * - System Assistant: assistant status badge, init/repair actions, link to terminal
  * - System: daemon-wide settings with restart-required badges (read-only)
  * - Org: org-level settings with editable forms (Phase 2)
  *
@@ -9,7 +11,13 @@
  */
 import { Settings } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
+import { Link } from 'react-router-dom';
 import { useSettings, useUpdateOrgSettings } from '@/hooks/settings';
+import {
+  useAssistantStatus,
+  useInitAssistant,
+  useRepairAssistant,
+} from '@/hooks/assistant';
 import {
   Dialog,
   DialogContent,
@@ -27,6 +35,7 @@ import type {
   SystemSettings,
   OrgSettings,
   OrgSettingsPatch,
+  AssistantState,
 } from '@/lib/api/types';
 
 interface Props {
@@ -45,16 +54,17 @@ export function SettingsDialog({ open, onOpenChange }: Props): JSX.Element {
         </DialogHeader>
 
         {q.isLoading && (
-          <p className="text-fg-muted text-sm py-4">Loading settings…</p>
+          <p className="text-fg-muted py-4 text-sm">Loading settings…</p>
         )}
         {q.isError && (
-          <p className="text-tier-red text-sm py-4">
+          <p className="text-tier-red py-4 text-sm">
             Could not load settings.
             {q.error?.message && <> {q.error.message}</>}
           </p>
         )}
+        <AssistantSection />
         {q.data && (
-          <div className="space-y-6 mt-2">
+          <div className="mt-2 space-y-6">
             <SystemSection sys={q.data.system} />
             <EditableOrgSection org={q.data.org} />
           </div>
@@ -82,7 +92,7 @@ function SystemSection({ sys }: { sys: SystemSettings }): JSX.Element {
 
   return (
     <section>
-      <h3 className="text-lg font-semibold mb-2">System</h3>
+      <h3 className="mb-2 text-lg font-semibold">System</h3>
       <div className="border-border divide-border divide-y rounded-md border">
         {rows.map(({ label, entry }) => (
           <SettingsRow
@@ -203,7 +213,7 @@ function EditableOrgSection({
 
   return (
     <section>
-      <h3 className="text-lg font-semibold mb-2">Org</h3>
+      <h3 className="mb-2 text-lg font-semibold">Org</h3>
       <form onSubmit={handleSubmit} className="space-y-4">
         {/* session timeout */}
         <div className="border-border divide-border divide-y rounded-md border">
@@ -333,6 +343,112 @@ function EditableOrgSection({
 }
 
 // ----------------------------------------------------------------
+// System Assistant section
+// ----------------------------------------------------------------
+
+const STATE_LABEL: Record<AssistantState, string> = {
+  uninitialized: 'Uninitialized',
+  configured: 'Configured',
+  stale_or_broken: 'Stale or broken',
+};
+
+const STATE_BADGE: Record<AssistantState, string> = {
+  uninitialized: 'bg-bg-raised text-fg-muted',
+  configured: 'bg-feedback-success/15 text-feedback-success',
+  stale_or_broken: 'bg-feedback-danger/15 text-feedback-danger',
+};
+
+function AssistantSection(): JSX.Element {
+  const statusQuery = useAssistantStatus();
+  const initMutation = useInitAssistant();
+  const repairMutation = useRepairAssistant();
+  const status = statusQuery.data;
+
+  return (
+    <section>
+      <h3 className="mb-2 text-lg font-semibold">System Assistant</h3>
+      {statusQuery.isLoading ? (
+        <p className="text-fg-muted text-sm">Loading…</p>
+      ) : statusQuery.isError || !status ? (
+        <p className="text-tier-red text-sm">Could not load assistant status.</p>
+      ) : (
+        <div className="border-border bg-bg-subtle space-y-3 rounded-md border p-4">
+          {/* Status badge + executor/workspace */}
+          <div className="flex items-center gap-2">
+            <span className="text-fg-muted text-sm">State</span>
+            <span
+              className={`rounded px-2 py-0.5 text-xs font-medium ${STATE_BADGE[status.state]}`}
+            >
+              {STATE_LABEL[status.state]}
+            </span>
+          </div>
+          <dl className="flex flex-col gap-1 text-sm">
+            <div className="flex gap-4">
+              <dt className="text-fg-muted w-24 shrink-0">Executor</dt>
+              <dd className="text-fg break-all">
+                {status.selected_executor ?? '—'}
+              </dd>
+            </div>
+            <div className="flex gap-4">
+              <dt className="text-fg-muted w-24 shrink-0">Workspace</dt>
+              <dd className="text-fg break-all">
+                {status.workspace_path ?? '—'}
+              </dd>
+            </div>
+          </dl>
+
+          {/* Detail / error text */}
+          {status.state === 'stale_or_broken' && status.detail && (
+            <p className="text-feedback-danger text-sm">{status.detail}</p>
+          )}
+
+          {/* Actions */}
+          <div className="flex flex-wrap items-center gap-3">
+            {status.state === 'uninitialized' && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => initMutation.mutateAsync({ reconfigure: false })}
+                  disabled={initMutation.isPending}
+                  className="bg-accent text-accent-fg hover:bg-accent-hover rounded px-4 py-1.5 text-sm font-medium transition-colors disabled:opacity-50"
+                >
+                  {initMutation.isPending ? 'Initializing…' : 'Initialize workspace'}
+                </button>
+                <Link
+                  to="assistant"
+                  className="text-accent text-sm hover:underline"
+                >
+                  Register executor →
+                </Link>
+              </>
+            )}
+            {status.state === 'stale_or_broken' && (
+              <button
+                type="button"
+                onClick={() => repairMutation.mutateAsync()}
+                disabled={repairMutation.isPending}
+                className="bg-accent text-accent-fg hover:bg-accent-hover rounded px-4 py-1.5 text-sm font-medium transition-colors disabled:opacity-50"
+              >
+                {repairMutation.isPending ? 'Repairing…' : 'Repair'}
+              </button>
+            )}
+            {status.state === 'configured' && (
+              <Link
+                to="assistant"
+                className="text-accent text-sm hover:underline"
+                aria-label="Open terminal"
+              >
+                Open terminal →
+              </Link>
+            )}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ----------------------------------------------------------------
 // Shared components
 // ----------------------------------------------------------------
 
@@ -355,7 +471,7 @@ function SettingsRow({
           {value}
         </span>
         {badge && (
-          <span className="bg-bg-raised text-accent text-xs rounded px-1.5 py-0.5 font-medium">
+          <span className="bg-bg-raised text-accent rounded px-1.5 py-0.5 text-xs font-medium">
             {badge}
           </span>
         )}
