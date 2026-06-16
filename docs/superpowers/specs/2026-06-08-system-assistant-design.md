@@ -315,4 +315,4 @@ Integration tests should use fake PTY-capable CLIs, similar to existing fake exe
 
 - Exact interactive argv per executor must be verified during implementation.
 - Whether `happyranch init <runtime>` should always run the assistant setup flow or ask first can be decided in implementation. `happyranch assistant init` is the required idempotent path either way.
-- Web UI/xterm.js is intentionally deferred, but the daemon API should avoid CLI-only assumptions.
+- Web UI/xterm.js attach surface shipped (THR-024 reading #1) — the web attach (SystemAssistantPage / AssistantTerminal, xterm.js) and Settings config now exist; the daemon API should avoid CLI-only assumptions.
