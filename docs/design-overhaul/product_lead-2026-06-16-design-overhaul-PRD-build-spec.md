@@ -208,6 +208,19 @@ criteria** with P1 as the dominant lens. Ordered by the Direction A sidebar.
 - **Purpose.** The org-wide work board (a **list**, not a kanban) + a per-task
   decision/lineage surface.
 - **v1 scope.**
+  - **List axis = roots-only by default (parent→subtask execution tree).** The list
+    shows **one row per root task**; execution subtasks (`task_type='subtask'` /
+    `parent_task_id`) are **not** their own rows. A **severity-max rollup** on the
+    root row reflects the **worst status among its descendants** — a blocked/failed
+    subtask lights up its root, so nothing hides. **Subtasks are always shown in the
+    task DETAIL view** (the chain/lineage timeline). **No in-list "show subtasks"
+    toggle in v1** (founder ruling THR-010 msg 100; product_lead scope msg 101/104 —
+    an opt-in in-list full-visibility toggle stays a deferred optional, added only if
+    the founder later asks). **ADDITIVE, parent/subtask axis only** — the
+    revisit/supersede chain lineage (`revisit_of_task_id` / `walk_revisit_chain()`)
+    is **UNCHANGED** by this. **RENDER-ONLY/DERIVE:** `parent_task_id` + `task_type`
+    already exist; the rollup is a derive over existing child statuses; **no schema
+    change**.
   - **List:** dense 44px one-line rows; group-by `Status / Agent / Thread`; status
     groups including **Resolved (superseded)** (dimmed, retained). **Bidirectional
     lineage inline** — `↳ supersedes TASK-381` (forward) and `→ TASK-407`
@@ -229,6 +242,12 @@ criteria** with P1 as the dominant lens. Ordered by the Direction A sidebar.
     **[verifiable]**
   - AC4: A blocked task always shows *what it is blocked on* (real `blocked_on`
     data). **[verifiable]**
+  - AC5: The list shows **roots only** — no execution subtask (`task_type='subtask'`
+    / `parent_task_id`) appears as its own row; subtasks are reachable in the task
+    **detail** chain timeline. **[verifiable]**
+  - AC6: A root with a blocked/failed descendant surfaces that **worst** child
+    status on its own row (severity-max rollup) — urgency never hides behind the
+    roots-only filter. **[verifiable]**
 
 ---
 
