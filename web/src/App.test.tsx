@@ -22,8 +22,8 @@ test('root with orgs renders the Sidebar org dropdown after navigate', async () 
   renderWithProviders(<AppRoutes />, { route: '/orgs/alpha/threads' });
   await waitFor(() => {
     expect(screen.getByLabelText(/Active org/i)).toBeInTheDocument();
-    // Inbox header always renders on the threads page.
-    expect(screen.getByRole('heading', { name: /Inbox/i })).toBeInTheDocument();
+    // Threads page header always renders.
+    expect(screen.getByRole('heading', { name: /Threads/i })).toBeInTheDocument();
   });
 });
 

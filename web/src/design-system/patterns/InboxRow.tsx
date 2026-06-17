@@ -12,6 +12,7 @@
  * Renders AgentChip for `lastSpeaker`, IdBadge for the thread id,
  * StatusBadge for status. The needs-you dot is a leading 6px accent.
  */
+import type { ReactNode } from 'react';
 import { AgentChip } from './AgentChip';
 import { IdBadge } from './IdBadge';
 import { StatusBadge } from './StatusBadge';
@@ -20,7 +21,7 @@ interface InboxRowProps {
   threadId: string;
   subject: string;
   lastSpeaker?: { name: string; role: 'manager' | 'worker' | 'founder' };
-  meta?: string;
+  meta?: ReactNode;
   status: 'open' | 'archived';
   needsYou: boolean;
   active: boolean;

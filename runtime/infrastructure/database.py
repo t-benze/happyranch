@@ -2774,6 +2774,7 @@ class Database:
             composed_by=row["composed_by"] if "composed_by" in keys else "founder",
             composed_from_task_id=row["composed_from_task_id"] if "composed_from_task_id" in keys else None,
             composed_from_dream_id=row["composed_from_dream_id"] if "composed_from_dream_id" in keys else None,
+            last_speaker=row["last_speaker"] if "last_speaker" in keys else None,
         )
 
     @_synchronized
@@ -2786,16 +2787,20 @@ class Database:
 
     @_synchronized
     def list_threads(self, *, status: str | None = None, limit: int = 50) -> list[ThreadRecord]:
+        query = (
+            "SELECT t.*, "
+            "(SELECT tm.speaker FROM thread_messages tm "
+            " WHERE tm.thread_id = t.id ORDER BY tm.seq DESC LIMIT 1) AS last_speaker "
+            "FROM threads t "
+        )
+        params: tuple
         if status:
-            cursor = self._conn.execute(
-                "SELECT * FROM threads WHERE status = ? ORDER BY started_at DESC LIMIT ?",
-                (status, limit),
-            )
+            query += "WHERE t.status = ? ORDER BY t.started_at DESC LIMIT ?"
+            params = (status, limit)
         else:
-            cursor = self._conn.execute(
-                "SELECT * FROM threads ORDER BY started_at DESC LIMIT ?",
-                (limit,),
-            )
+            query += "ORDER BY t.started_at DESC LIMIT ?"
+            params = (limit,)
+        cursor = self._conn.execute(query, params)
         return [self._row_to_thread(r) for r in cursor.fetchall()]
 
     @_synchronized

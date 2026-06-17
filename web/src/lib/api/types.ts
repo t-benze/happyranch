@@ -140,6 +140,8 @@ export interface ThreadRecord {
   turns_used: number;
   summary: string | null;
   transcript_path: string | null;
+  composed_from_dream_id: string | null;
+  last_speaker: string | null;
 }
 
 export interface ThreadDetailResponse extends ThreadRecord {
