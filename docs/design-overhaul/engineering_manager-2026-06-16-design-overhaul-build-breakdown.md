@@ -1,5 +1,20 @@
 # BUILD BREAKDOWN — HappyRanch Design Overhaul (Direction A "Pasture")
 
+> **🟢 CANONICAL SPEC UPDATE (2026-06-17, TASK-461).** The authoritative build
+> spec is now **`product_lead-2026-06-17-design-overhaul-PRD-final.md`** (in this
+> directory) — the finalised, design-reconciled PRD with **per-surface interaction
+> specs** and the **§B feasibility register resolved + folded in**. It **supersedes**
+> the earlier `…-PRD-build-spec.md` and `…-PRD-draft.md` drafts here (retained for
+> audit trail only). **§B dispositions:** B.1 (Tasks severity rollup) / B.4 (Spend
+> window) / B.5 (gated chip → existing approval gate) are **DAEMON-BACKED**
+> (render-only/derive, no new store); **B.2 (KB "Edit first" edit-then-accept route)
+> and B.3 (thread read-state) are DEFERRED for v1** per founder ruling (THR-010 msg
+> 149 — **no new stores for v1 beyond A4**; now §6 D10/D11). v1 ships B.2 as
+> Accept/Dismiss + accept-then-edit-the-live-entry (existing KB edit paths); B.3 omits
+> persistent unread styling. **§A = zero open deltas; roots-only Tasks + NO in-list
+> toggle (§4.3) preserved.** When P2/P3 surface work is sequenced, build against the
+> 2026-06-17 final PRD's interaction specs, not the 2026-06-16 drafts.
+
 > **STATUS: Engineering build plan for the v1 overhaul.** Decomposes the
 > **authoritative** `product_lead-2026-06-16-design-overhaul-PRD-build-spec.md`
 > (TASK-415, LOCKED) into phased, worker-sized items. This is the **visible
