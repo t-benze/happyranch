@@ -105,7 +105,7 @@ function RevisitChainTimeline({
             <div key={node.taskId} className="relative flex items-start gap-3 pb-4">
               {/* Vertical line */}
               {!isLast && (
-                <div className="border-border-subtle absolute left-[9px] top-6 h-full w-px border-l" />
+                <div className="border-border-subtle absolute left-2 top-6 h-full w-px border-l" />
               )}
               {/* Node marker */}
               <span
