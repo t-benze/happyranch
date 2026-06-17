@@ -492,3 +492,69 @@ def test_tokens_group_by_purpose_composes_with_agent_filter(
     assert len(rollup) == 1
     assert rollup[0]["purpose"] == "reply"
     assert rollup[0]["input_tokens"] == 20
+
+
+def test_tokens_group_by_model_returns_rollup(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """`group_by=model` returns a rollup keyed by the stored model column.
+    A NULL model row is honest — never blank, never a guessed correction."""
+    from runtime.models import TokenUsage
+    org_state.db.insert_session_token_usage(
+        task_id="TASK-001",
+        agent="dev_agent",
+        session_id="s1",
+        executor="claude",
+        token_usage=TokenUsage(input_tokens=10, output_tokens=5, model="sonnet"),
+    )
+    org_state.db.insert_session_token_usage(
+        task_id="TASK-002",
+        agent="dev_agent",
+        session_id="s2",
+        executor="claude",
+        token_usage=TokenUsage(input_tokens=20, output_tokens=10, model="sonnet"),
+    )
+    org_state.db.insert_session_token_usage(
+        task_id="TASK-003",
+        agent="qa_engineer",
+        session_id="s3",
+        executor="codex",
+        token_usage=TokenUsage(input_tokens=100, output_tokens=50),
+    )
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tokens",
+        params={"group_by": "model"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert "rollup" in body and "rows" not in body
+    by_model = {row["model"]: row for row in body["rollup"]}
+    assert by_model["sonnet"]["sessions"] == 2
+    assert by_model["sonnet"]["input_tokens"] == 30
+    assert by_model["sonnet"]["output_tokens"] == 15
+    assert by_model["sonnet"]["total_tokens"] == 45
+    # NULL model row is honest
+    assert by_model[None]["sessions"] == 1
+    assert by_model[None]["input_tokens"] == 100
+    assert by_model[None]["total_tokens"] == 150
+
+
+def test_tokens_group_by_model_composes_with_since(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Window filter AND-composes with model grouping."""
+    from datetime import datetime, timedelta, timezone
+    from runtime.models import TokenUsage
+    org_state.db.insert_session_token_usage(
+        task_id="TASK-001", agent="dev", session_id="s1", executor="claude",
+        token_usage=TokenUsage(input_tokens=10, output_tokens=5, model="sonnet"),
+    )
+    future = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tokens",
+        params={"group_by": "model", "since": future},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert r.json()["rollup"] == []

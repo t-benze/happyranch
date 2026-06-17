@@ -22,6 +22,7 @@ import { TracesTab } from '@/features/audit/TracesTab';
 import { DashboardPage } from '@/features/dashboard/DashboardPage';
 import { KbPage } from '@/features/kb/KbPage';
 import { TasksPage } from '@/features/tasks/TasksPage';
+import { SpendPage } from '@/features/spend/SpendPage';
 import { SystemAssistantPage } from '@/features/system-assistant/SystemAssistantPage';
 import { PlaceholderPage } from '@/features/placeholder/PlaceholderPage';
 import { ThreadsPage } from '@/features/threads/ThreadsPage';
@@ -99,7 +100,7 @@ export function AppRoutes(): JSX.Element {
           <Route path="agents/:agent_name" element={<AgentsPage />} />
           <Route path="jobs" element={<JobsPage />} />
           <Route path="jobs/:job_id" element={<JobsPage />} />
-          <Route path="spend" element={<PlaceholderPage />} />
+          <Route path="spend" element={<SpendPage />} />
           <Route path="dreams" element={<PlaceholderPage />} />
           <Route path="schedule" element={<PlaceholderPage />} />
           <Route path="artifacts" element={<ArtifactsPage />} />

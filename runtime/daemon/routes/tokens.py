@@ -45,7 +45,7 @@ def list_tokens(
     ``invocation_purpose`` (NULL purpose excluded).
     """
     valid_groups = (
-        "agent", "task", "failed_task", "scope", "thread", "purpose",
+        "agent", "task", "failed_task", "scope", "thread", "purpose", "model",
     )
     if group_by is not None and group_by not in valid_groups:
         raise HTTPException(
@@ -85,6 +85,9 @@ def list_tokens(
         return {"rollup": rollup}
     if group_by == "purpose":
         rollup = org.db.aggregate_session_token_usage_by_purpose(**filters)
+        return {"rollup": rollup}
+    if group_by == "model":
+        rollup = org.db.aggregate_session_token_usage_by_model(**filters)
         return {"rollup": rollup}
 
     rows = org.db.list_session_token_usage(

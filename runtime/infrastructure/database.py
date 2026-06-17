@@ -2401,6 +2401,38 @@ class Database:
         rows = self._conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
+    @_synchronized
+    def aggregate_session_token_usage_by_model(
+        self,
+        since: str | None = None,
+        task_id: str | None = None,
+        agent: str | None = None,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        thread_id: str | None = None,
+        purpose: str | None = None,
+    ) -> list[dict]:
+        """Roll up session_token_usage grouped by model.
+
+        NULL models are honest (not blank, not a guessed correction).
+        The ``since`` window AND-composes with every other filter.
+        """
+        where, params = self._session_token_usage_filters(
+            since=since,
+            task_id=task_id,
+            agent=agent,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            thread_id=thread_id,
+            purpose=purpose,
+        )
+        sql = self._token_usage_rollup_select("model", "model")
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " GROUP BY model ORDER BY COALESCE(model, '')"
+        rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
     # --- KB views ---
 
     @_synchronized

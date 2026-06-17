@@ -639,3 +639,74 @@ def test_aggregate_model_classification_primitives(db: Database):
     assert s["non_null_sessions"] == 0
     assert s["null_codex_sessions"] == 1
     assert s["null_claude_sessions"] == 1
+
+
+def test_aggregate_by_model_groups_by_model_column(db: Database):
+    """`aggregate_session_token_usage_by_model()` groups by the stored
+    `model` column. NULL models render as a NULL-model row (honest — never
+    blank / never a guessed correction)."""
+    db.insert_session_token_usage(
+        task_id="T1", agent="dev", session_id="s1", executor="claude",
+        token_usage=_usage(input_tokens=10, output_tokens=5, model="sonnet"),
+    )
+    db.insert_session_token_usage(
+        task_id="T2", agent="dev", session_id="s2", executor="claude",
+        token_usage=_usage(input_tokens=20, output_tokens=10, model="sonnet"),
+    )
+    db.insert_session_token_usage(
+        task_id="T3", agent="qa", session_id="s3", executor="codex",
+        token_usage=_usage(input_tokens=100, output_tokens=50),
+    )
+    db.insert_session_token_usage(
+        task_id="T4", agent="dev", session_id="s4", executor="claude",
+        token_usage=_usage(input_tokens=40, output_tokens=20, model="opus"),
+    )
+    rollup = db.aggregate_session_token_usage_by_model()
+    by_model = {r["model"]: r for r in rollup}
+    # sonnet: 2 sessions, 30 input, 15 output
+    assert by_model["sonnet"]["sessions"] == 2
+    assert by_model["sonnet"]["input_tokens"] == 30
+    assert by_model["sonnet"]["output_tokens"] == 15
+    assert by_model["sonnet"]["total_tokens"] == 45
+    # opus: 1 session
+    assert by_model["opus"]["sessions"] == 1
+    assert by_model["opus"]["total_tokens"] == 60
+    # NULL model row: 1 session (codex, no model field ever)
+    assert by_model[None]["sessions"] == 1
+    assert by_model[None]["input_tokens"] == 100
+    assert by_model[None]["total_tokens"] == 150
+
+
+def test_aggregate_by_model_composes_with_since(db: Database):
+    """Window filter AND-composes with model aggregation."""
+    db.insert_session_token_usage(
+        task_id="T1", agent="dev", session_id="s1", executor="claude",
+        token_usage=_usage(input_tokens=10, output_tokens=5, model="sonnet"),
+    )
+    db.insert_session_token_usage(
+        task_id="T2", agent="qa", session_id="s2", executor="codex",
+        token_usage=_usage(input_tokens=100, output_tokens=50),
+    )
+    # Filter to a future `since` — all rows created right now are before it
+    from datetime import datetime, timedelta, timezone
+    future = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+    rollup = db.aggregate_session_token_usage_by_model(since=future)
+    assert rollup == []
+
+
+def test_aggregate_by_model_with_agent_filter(db: Database):
+    """Agent filter AND-composes with model aggregation."""
+    db.insert_session_token_usage(
+        task_id="T1", agent="dev", session_id="s1", executor="claude",
+        token_usage=_usage(input_tokens=10, output_tokens=5, model="sonnet"),
+    )
+    db.insert_session_token_usage(
+        task_id="T2", agent="qa", session_id="s2", executor="claude",
+        token_usage=_usage(input_tokens=20, output_tokens=10, model="sonnet"),
+    )
+    # Only dev_agent's sonnet session
+    rollup = db.aggregate_session_token_usage_by_model(agent="dev")
+    assert len(rollup) == 1
+    assert rollup[0]["model"] == "sonnet"
+    assert rollup[0]["sessions"] == 1
+    assert rollup[0]["input_tokens"] == 10
