@@ -146,6 +146,12 @@ export interface TasksApi {
   useTasksInfiniteList: (params?: {
     status?: string;
   }) => InfiniteQueryLike<TasksListPage>;
+  /** Roots-only list with per-root severity_rollup (design-overhaul §4.3). */
+  useTasksRoots: (params?: {
+    status?: string;
+    limit?: number;
+    assigned_agent?: string;
+  }) => QueryLike<{ tasks: TaskRecord[] }>;
   useTask: (taskId: string | undefined) => QueryLike<TaskRecord>;
   useTaskRecall: (taskId: string | undefined) => QueryLike<TaskRecallNode>;
 

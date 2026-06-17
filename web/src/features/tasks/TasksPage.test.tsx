@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
@@ -30,6 +30,24 @@ const TASK = {
   closed_at: null,
   cancelled_at: null,
   session_timeout_seconds: null,
+  severity_rollup: 'in_progress',
+};
+
+const TASK_BLOCKED = {
+  task_id: 'TASK-0090',
+  team: 'ops',
+  brief: 'Vet partner hotel candidates',
+  status: 'blocked',
+  block_kind: 'escalated',
+  assigned_agent: 'qa_engineer',
+  parent_task_id: null,
+  revisit_of_task_id: null,
+  created_at: '2026-05-18T09:00:00Z',
+  updated_at: '2026-05-18T09:30:00Z',
+  closed_at: null,
+  cancelled_at: null,
+  session_timeout_seconds: null,
+  severity_rollup: 'blocked',
 };
 
 const JOB: JobRecord = {
@@ -63,30 +81,73 @@ const JOB: JobRecord = {
 };
 
 describe('TasksPage — read path', () => {
-  test('renders the inbox with fixture tasks', async () => {
+  test('renders roots-only list with severity rollup', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
-      http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
-        HttpResponse.json({ tasks: [TASK] }),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [TASK, TASK_BLOCKED] }),
       ),
     );
     mountAt(`/orgs/${SLUG}/tasks`);
-    await waitFor(() =>
-      expect(screen.getByText(/Draft Hong Kong visa guide/)).toBeInTheDocument(),
-    );
+    await waitFor(() => {
+      expect(screen.getByText(/Draft Hong Kong visa guide/)).toBeInTheDocument();
+      expect(screen.getByText(/Vet partner hotel/)).toBeInTheDocument();
+    });
   });
 
-  test('renders filter sidebar groups', async () => {
+  test('renders group-by segmented control', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
-      http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
         HttpResponse.json({ tasks: [TASK] }),
       ),
     );
     mountAt(`/orgs/${SLUG}/tasks`);
     await waitFor(() => {
-      expect(screen.getByText(/Status/i)).toBeInTheDocument();
-      expect(screen.getByText(/Team/i)).toBeInTheDocument();
+      expect(screen.getByText('Status')).toBeInTheDocument();
+      expect(screen.getByText('Agent')).toBeInTheDocument();
+      expect(screen.getByText('Thread')).toBeInTheDocument();
+    });
+  });
+
+  test('shows severity rollup pill on root row', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [TASK_BLOCKED] }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/tasks`);
+    await waitFor(() => {
+      expect(screen.getByText('Blocked')).toBeInTheDocument();
+    });
+  });
+
+  test('shows Empty state when no tasks', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [] }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/tasks`);
+    await waitFor(() => {
+      expect(screen.getByText(/No tasks yet/i)).toBeInTheDocument();
+    });
+  });
+
+  test('renders loading skeletons', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // Use a handler that never resolves to trigger loading state
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        new Promise(() => { /* hang forever */ }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/tasks`);
+    // Skeleton rows should have aria-busy
+    await waitFor(() => {
+      expect(screen.getByRole('generic', { busy: true })).toBeInTheDocument();
     });
   });
 });
@@ -97,11 +158,19 @@ describe('TaskDetailPane — jobs cross-link', () => {
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
       ),
-      http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
         HttpResponse.json({ tasks: [TASK] }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}`, () =>
-        HttpResponse.json(TASK),
+        HttpResponse.json({
+          task: TASK,
+          results: [],
+          audit_log: [],
+          revisit_chain: [TASK.task_id],
+          direct_revisits: [],
+          predecessor_prior_status: null,
+          blocked_on_jobs: null,
+        }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/recall`, () =>
         HttpResponse.json({
@@ -164,7 +233,7 @@ describe('TaskDetailPane — workflow chain strip', () => {
     task: TASK,
     results: [],
     audit_log: [],
-    revisit_chain: [],
+    revisit_chain: [TASK.task_id],
     direct_revisits: [],
     predecessor_prior_status: null,
     blocked_on_jobs: null,
@@ -175,7 +244,7 @@ describe('TaskDetailPane — workflow chain strip', () => {
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
       ),
-      http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
         HttpResponse.json({ tasks: [TASK] }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}`, () =>
@@ -220,5 +289,245 @@ describe('TaskDetailPane — workflow chain strip', () => {
       expect(screen.getByText(/Live events/i)).toBeInTheDocument(),
     );
     expect(screen.queryByText(/Workflow chain/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('TasksPage — direct_revisits lineage inline', () => {
+  const TASK_WITH_REVISITS = {
+    task_id: 'TASK-0100',
+    team: 'engineering',
+    brief: 'Parent task with revisits',
+    status: 'completed',
+    block_kind: null,
+    parent_task_id: null,
+    revisit_of_task_id: 'TASK-0095',
+    assigned_agent: 'dev_agent',
+    created_at: '2026-05-18T10:00:00Z',
+    updated_at: '2026-05-18T10:06:12Z',
+    closed_at: null,
+    cancelled_at: null,
+    session_timeout_seconds: null,
+    severity_rollup: 'completed',
+    direct_revisits: ['TASK-0110', 'TASK-0111'],
+  };
+
+  test('renders forward lineage from direct_revisits field', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [TASK_WITH_REVISITS] }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/tasks`);
+    await waitFor(() => {
+      expect(screen.getByText(/Parent task with revisits/)).toBeInTheDocument();
+    });
+    // Should show the supersedes (←) lineage
+    expect(screen.getByText(/TASK-0095/)).toBeInTheDocument();
+    // Should show the forward revisits (→) with the first revisit ID
+    expect(screen.getByText(/TASK-0110/)).toBeInTheDocument();
+    // Should show the count indicator for multiple revisits (+1)
+    expect(screen.getByText(/\+1/)).toBeInTheDocument();
+  });
+
+  test('shows no lineage when neither revisit fields are present', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [TASK] }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/tasks`);
+    await waitFor(() => {
+      expect(screen.getByText(/Draft Hong Kong visa guide/)).toBeInTheDocument();
+    });
+    // TASK has no revisit_of_task_id and no direct_revisits, so no lineage inline
+    const options = screen.getAllByRole('option');
+    expect(options.length).toBe(1);
+    // Should not contain any TASK- references in the lineage position
+    const briefCell = options[0].querySelector('span:nth-child(2)');
+    expect(briefCell?.textContent).toContain('Draft Hong Kong visa guide');
+  });
+});
+
+describe('TasksPage — keyboard nav agrees with render order', () => {
+  test('under Agent grouping, ArrowDown highlights the same task that Enter opens', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // Z-agent is inserted before A-agent (non-alphabetical insertion order)
+    const Z_AGENT = {
+      task_id: 'TASK-ZZZ', team: 'engineering', brief: 'Zebra task',
+      status: 'pending', block_kind: null, parent_task_id: null,
+      revisit_of_task_id: null, assigned_agent: 'Z-agent',
+      created_at: '2026-05-18T10:00:00Z',
+      updated_at: '2026-05-18T10:06:12Z', closed_at: null,
+      cancelled_at: null, session_timeout_seconds: null,
+      severity_rollup: 'pending',
+    };
+    const A_AGENT = {
+      task_id: 'TASK-AAA', team: 'engineering', brief: 'Alpha task',
+      status: 'in_progress', block_kind: null, parent_task_id: null,
+      revisit_of_task_id: null, assigned_agent: 'A-agent',
+      created_at: '2026-05-18T10:00:00Z',
+      updated_at: '2026-05-18T10:06:12Z', closed_at: null,
+      cancelled_at: null, session_timeout_seconds: null,
+      severity_rollup: 'in_progress',
+    };
+
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [Z_AGENT, A_AGENT] }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/tasks`);
+
+    // Wait for initial render with Status grouping
+    await waitFor(() => {
+      expect(screen.getByText(/Zebra task/)).toBeInTheDocument();
+      expect(screen.getByText(/Alpha task/)).toBeInTheDocument();
+    });
+
+    // Switch to Agent grouping
+    fireEvent.click(screen.getByText('Agent'));
+
+    // After re-grouping, verify both tasks are still visible
+    await waitFor(() => {
+      expect(screen.getByText(/Zebra task/)).toBeInTheDocument();
+    });
+
+    // Get all option rows in render order
+    const rows = screen.getAllByRole('option');
+    expect(rows.length).toBe(2);
+
+    // After the fix, rows must be in alphabetical order (A-agent before Z-agent)
+    // If the bug is present, Z-agent (first in insertion order) renders first.
+    // When rows are alphabetical, Keyboard ArrowDown to 0 highlights the first
+    // rendered row, which is the same task that flatItems[0] tracks.
+    expect(rows[0].getAttribute('data-task-id')).toBe(A_AGENT.task_id);
+    expect(rows[1].getAttribute('data-task-id')).toBe(Z_AGENT.task_id);
+
+    // ArrowDown to select first item
+    const container = document.querySelector('[tabindex]');
+    fireEvent.keyDown(container!, { key: 'ArrowDown' });
+    expect(rows[0].getAttribute('aria-selected')).toBe('true');
+
+    // ArrowDown again — second item highlighted
+    fireEvent.keyDown(container!, { key: 'ArrowDown' });
+    expect(rows[1].getAttribute('aria-selected')).toBe('true');
+
+    // ArrowUp — back to first item
+    fireEvent.keyDown(container!, { key: 'ArrowUp' });
+    expect(rows[0].getAttribute('aria-selected')).toBe('true');
+  });
+
+  test('under Thread grouping, ArrowDown highlights the same task that Enter opens', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const Z_THREAD = {
+      task_id: 'TASK-ZTH', team: 'engineering', brief: 'Zoo task',
+      status: 'pending', block_kind: null, parent_task_id: null,
+      revisit_of_task_id: null, dispatched_from_thread_id: 'THREAD-Z',
+      created_at: '2026-05-18T10:00:00Z',
+      updated_at: '2026-05-18T10:06:12Z', closed_at: null,
+      cancelled_at: null, session_timeout_seconds: null,
+      severity_rollup: 'pending',
+    };
+    const A_THREAD = {
+      task_id: 'TASK-ATH', team: 'engineering', brief: 'Ant task',
+      status: 'in_progress', block_kind: null, parent_task_id: null,
+      revisit_of_task_id: null, dispatched_from_thread_id: 'THREAD-A',
+      created_at: '2026-05-18T10:00:00Z',
+      updated_at: '2026-05-18T10:06:12Z', closed_at: null,
+      cancelled_at: null, session_timeout_seconds: null,
+      severity_rollup: 'in_progress',
+    };
+
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [Z_THREAD, A_THREAD] }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/tasks`);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Zoo task/)).toBeInTheDocument();
+      expect(screen.getByText(/Ant task/)).toBeInTheDocument();
+    });
+
+    // Switch to Thread grouping
+    fireEvent.click(screen.getByText('Thread'));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Zoo task/)).toBeInTheDocument();
+    });
+
+    const rows = screen.getAllByRole('option');
+    expect(rows.length).toBe(2);
+
+    // After fix: alphabetical order — Thread A before Thread Z
+    expect(rows[0].getAttribute('data-task-id')).toBe(A_THREAD.task_id);
+    expect(rows[1].getAttribute('data-task-id')).toBe(Z_THREAD.task_id);
+
+    const container = document.querySelector('[tabindex]');
+    fireEvent.keyDown(container!, { key: 'ArrowDown' });
+    expect(rows[0].getAttribute('aria-selected')).toBe('true');
+  });
+});
+
+describe('TaskDetailPane — revisit chain timeline', () => {
+  test('renders lineage chain when revisit_chain has multiple entries', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [TASK] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}`, () =>
+        HttpResponse.json({
+          task: TASK,
+          results: [],
+          audit_log: [],
+          revisit_chain: [TASK.task_id, 'TASK-0080', 'TASK-0075'],
+          direct_revisits: [],
+          predecessor_prior_status: null,
+          blocked_on_jobs: null,
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/recall`, () =>
+        HttpResponse.json({
+          task_id: TASK.task_id,
+          assigned_agent: null,
+          brief: TASK.brief,
+          status: TASK.status,
+          output_summary: null,
+          children: [],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
+        HttpResponse.json({ jobs: [] }),
+      ),
+    );
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+    });
+    // Should show Lineage section with chain nodes
+    expect(await screen.findByText(/Lineage/i)).toBeInTheDocument();
+    expect(screen.getByText('TASK-0075')).toBeInTheDocument();
+    expect(screen.getByText('TASK-0080')).toBeInTheDocument();
+    // TASK-0091 appears in both the drawer header (IdBadge) and the lineage chain
+    const nodes = screen.getAllByText('TASK-0091');
+    expect(nodes.length).toBeGreaterThanOrEqual(2);
   });
 });

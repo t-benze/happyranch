@@ -80,10 +80,62 @@ function staticInfinite(page: TasksListPage): InfiniteQueryLike<TasksListPage> {
   };
 }
 
+const ROOT_FIXTURES: TaskRecord[] = [
+  {
+    task_id: 'TASK-0092',
+    team: 'engineering',
+    brief: 'Fix broken auth flow on login page',
+    status: 'completed',
+    block_kind: null,
+    assigned_agent: 'dev_agent',
+    parent_task_id: null,
+    revisit_of_task_id: null,
+    created_at: '2026-05-19T10:00:00Z',
+    updated_at: '2026-05-19T10:06:12Z',
+    closed_at: null,
+    cancelled_at: null,
+    session_timeout_seconds: null,
+    severity_rollup: 'blocked',
+  },
+  {
+    task_id: 'TASK-0090',
+    team: 'ops',
+    brief: 'Vet partner hotel candidates',
+    status: 'blocked',
+    block_kind: 'escalated',
+    assigned_agent: 'qa_engineer',
+    parent_task_id: null,
+    revisit_of_task_id: null,
+    created_at: '2026-05-18T09:00:00Z',
+    updated_at: '2026-05-18T09:30:00Z',
+    closed_at: null,
+    cancelled_at: null,
+    session_timeout_seconds: null,
+    severity_rollup: 'blocked',
+  },
+  {
+    task_id: 'TASK-0088',
+    team: 'content',
+    brief: 'Write Thailand guide\u00a0\u2192 supersedes TASK-0091',
+    status: 'resolved_superseded',
+    block_kind: null,
+    assigned_agent: 'content_writer',
+    parent_task_id: null,
+    revisit_of_task_id: null,
+    created_at: '2026-05-17T08:00:00Z',
+    updated_at: '2026-05-18T08:00:00Z',
+    closed_at: null,
+    cancelled_at: null,
+    session_timeout_seconds: null,
+    severity_rollup: 'resolved_superseded',
+  },
+] as TaskRecord[];
+
 export const mockTasksApi: TasksApi = {
   useTasksList: () => ok({ tasks: FIXTURES }),
   useTasksInfiniteList: () =>
     staticInfinite({ tasks: FIXTURES, next_cursor: null }),
+  useTasksRoots: () => ok({ tasks: ROOT_FIXTURES }),
   useTask: (taskId) =>
     ok(FIXTURES.find((t) => t.task_id === taskId) ?? FIXTURES[0]),
   useTaskRecall: () => ok(RECALL_TREE),
