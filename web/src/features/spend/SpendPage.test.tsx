@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock the spend hooks so the page renders deterministically
@@ -162,7 +162,9 @@ describe('SpendPage', () => {
           cache_creation_tokens: 0,
           reasoning_tokens: 500,
           total_tokens: 7500,
-          model_any: 'sonnet',
+          model_any: 'claude-sonnet-4-5[1m]',
+          non_null_sessions: 5,
+          model_distinct: 1,
         },
       ]),
     );
@@ -172,6 +174,177 @@ describe('SpendPage', () => {
 
     expect(screen.getByText('Top threads by churn')).toBeDefined();
     expect(screen.getByText('THR-001')).toBeDefined();
-    expect(screen.getByText('sonnet')).toBeDefined();
+    // classifyModel renders the observed model id verbatim when uniform
+    expect(screen.getByText('claude-sonnet-4-5[1m]')).toBeDefined();
+  });
+
+  // ---- classifyModel label cases in Top Threads ----
+
+  it('renders (mixed) label when >1 distinct model on a thread', () => {
+    mockAgentQ.mockReturnValue(loaded([]));
+    mockThreadQ.mockReturnValue(
+      loaded([
+        {
+          thread_id: 'THR-002',
+          sessions: 4,
+          input_tokens: 1000,
+          output_tokens: 500,
+          cache_read_tokens: 0,
+          cache_creation_tokens: 0,
+          reasoning_tokens: 100,
+          total_tokens: 1600,
+          non_null_sessions: 4,
+          model_distinct: 2,
+          model_any: 'claude-opus-4-8[1m]',
+        },
+      ]),
+    );
+    mockModelQ.mockReturnValue(loaded([]));
+
+    render(<SpendPage />);
+
+    expect(screen.getByText('(mixed)')).toBeDefined();
+  });
+
+  it('renders (cli-unreported) label for codex NULL-model rows', () => {
+    mockAgentQ.mockReturnValue(loaded([]));
+    mockThreadQ.mockReturnValue(
+      loaded([
+        {
+          thread_id: 'THR-003',
+          sessions: 3,
+          input_tokens: 500,
+          output_tokens: 200,
+          cache_read_tokens: 0,
+          cache_creation_tokens: 0,
+          reasoning_tokens: 0,
+          total_tokens: 700,
+          non_null_sessions: 0,
+          null_codex_sessions: 3,
+        },
+      ]),
+    );
+    mockModelQ.mockReturnValue(loaded([]));
+
+    render(<SpendPage />);
+
+    expect(screen.getByText('(cli-unreported)')).toBeDefined();
+  });
+
+  it('renders (unknown — pre-fix) label for pre-cutover claude NULL-model rows', () => {
+    mockAgentQ.mockReturnValue(loaded([]));
+    mockThreadQ.mockReturnValue(
+      loaded([
+        {
+          thread_id: 'THR-004',
+          sessions: 2,
+          input_tokens: 300,
+          output_tokens: 100,
+          cache_read_tokens: 0,
+          cache_creation_tokens: 0,
+          reasoning_tokens: 0,
+          total_tokens: 400,
+          non_null_sessions: 0,
+          null_claude_sessions: 2,
+          null_claude_max_created_at: '2026-06-10T09:00:00+00:00',
+        },
+      ]),
+    );
+    mockModelQ.mockReturnValue(loaded([]));
+
+    render(<SpendPage />);
+
+    expect(screen.getByText('(unknown — pre-fix)')).toBeDefined();
+  });
+
+  it('renders (unknown — ANOMALY) label for post-cutover claude NULL-model rows', () => {
+    mockAgentQ.mockReturnValue(loaded([]));
+    mockThreadQ.mockReturnValue(
+      loaded([
+        {
+          thread_id: 'THR-005',
+          sessions: 1,
+          input_tokens: 200,
+          output_tokens: 50,
+          cache_read_tokens: 0,
+          cache_creation_tokens: 0,
+          reasoning_tokens: 0,
+          total_tokens: 250,
+          non_null_sessions: 0,
+          null_claude_sessions: 1,
+          null_claude_max_created_at: '2026-06-13T00:00:00+00:00',
+        },
+      ]),
+    );
+    mockModelQ.mockReturnValue(loaded([]));
+
+    render(<SpendPage />);
+
+    expect(screen.getByText('(unknown — ANOMALY)')).toBeDefined();
+  });
+
+  // ---- Keyboard navigation (ArrowLeft/ArrowRight roving-focus) ----
+
+  it('supports ArrowRight roving-focus on the window toggle group', () => {
+    mockAgentQ.mockReturnValue(loaded([]));
+    mockThreadQ.mockReturnValue(loaded([]));
+    mockModelQ.mockReturnValue(loaded([]));
+
+    render(<SpendPage />);
+
+    const btns = screen.getAllByRole('button', { name: /24h|7d|30d/ });
+    expect(btns.length).toBe(3);
+
+    // Focus first button
+    btns[0]!.focus();
+    expect(document.activeElement).toBe(btns[0]);
+
+    // ArrowRight -> move to second button
+    fireEvent.keyDown(btns[0]!, { key: 'ArrowRight' });
+    expect(document.activeElement).toBe(btns[1]);
+
+    // ArrowRight -> move to third button
+    fireEvent.keyDown(btns[1]!, { key: 'ArrowRight' });
+    expect(document.activeElement).toBe(btns[2]);
+  });
+
+  it('supports ArrowLeft roving-focus on the window toggle group', () => {
+    mockAgentQ.mockReturnValue(loaded([]));
+    mockThreadQ.mockReturnValue(loaded([]));
+    mockModelQ.mockReturnValue(loaded([]));
+
+    render(<SpendPage />);
+
+    const btns = screen.getAllByRole('button', { name: /24h|7d|30d/ });
+
+    // Focus last button
+    btns[2]!.focus();
+    expect(document.activeElement).toBe(btns[2]);
+
+    // ArrowLeft -> move to second button
+    fireEvent.keyDown(btns[2]!, { key: 'ArrowLeft' });
+    expect(document.activeElement).toBe(btns[1]);
+
+    // ArrowLeft -> move to first button
+    fireEvent.keyDown(btns[1]!, { key: 'ArrowLeft' });
+    expect(document.activeElement).toBe(btns[0]);
+  });
+
+  it('supports ArrowRight/ArrowLeft roving-focus on the breakdown segmented control', () => {
+    mockAgentQ.mockReturnValue(loaded([]));
+    mockThreadQ.mockReturnValue(loaded([]));
+    mockModelQ.mockReturnValue(loaded([]));
+
+    render(<SpendPage />);
+
+    const btns = screen.getAllByRole('button', { name: /^(Agent|Thread|Model)$/ });
+    expect(btns.length).toBe(3);
+
+    btns[0]!.focus();
+    fireEvent.keyDown(btns[0]!, { key: 'ArrowRight' });
+    expect(document.activeElement).toBe(btns[1]);
+
+    fireEvent.keyDown(btns[1]!, { key: 'ArrowLeft' });
+    expect(document.activeElement).toBe(btns[0]);
   });
 });

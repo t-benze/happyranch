@@ -11,9 +11,14 @@
  * States: Loading (skeletons), Empty ("No token spend in this window"),
  * Error (retry), Populated (hero + breakdown + top-threads).
  */
-import { useMemo, useState, useCallback } from 'react';
+import { useMemo, useState, useCallback, useRef } from 'react';
 import { useSpendByAgent, useSpendByThread, useSpendByModel } from '@/hooks/spend';
 import { cn } from '@/lib/utils';
+// classifyModel is the single canonical model-label renderer; Spend and
+// Dashboard must never disagree. Moving it out of @/features/dashboard
+// would be a cosmetic refactor that adds no safety value.
+// eslint-disable-next-line no-restricted-imports
+import { classifyModel } from '@/features/dashboard/topTokens';
 import type { TokenUsageRollup } from '@/hooks/spend';
 
 /* ------------------------------------------------------------------ */
@@ -102,6 +107,7 @@ function HeroCard({
       <div className="border-border-subtle bg-surface-sunken rounded-lg border p-6">
         <p className="text-text-muted text-xs font-medium tracking-wider uppercase">Token churn · {windowLabel}</p>
         <p className="text-fg mt-2 text-3xl font-light tabular-nums">0</p>
+        {/* brief-specified deferred-dollar placeholder: dollar metering is deferred (tokens-only Q1) */}
         <p className="text-text-muted mt-1 text-sm">$0.00 · not metered</p>
         <p className="text-text-muted mt-1 text-sm">No token spend in this window</p>
       </div>
@@ -115,6 +121,7 @@ function HeroCard({
     <div className="border-border-subtle bg-surface-sunken rounded-lg border p-6">
       <p className="text-text-muted text-xs font-medium tracking-wider uppercase">Token churn · {windowLabel}</p>
       <p className="text-fg mt-2 text-3xl font-light tabular-nums">{fmtNum(churn)}</p>
+      {/* brief-specified deferred-dollar placeholder: dollar metering is deferred (tokens-only Q1) */}
       <p className="text-text-muted mt-1 text-sm">$0.00 · not metered</p>
       <div className="border-border-subtle mt-3 flex gap-4 border-t pt-3">
         <div>
@@ -312,13 +319,14 @@ interface TopThreadRow {
   cacheReadTokens: number;
 }
 
-/** Rank threads by totalTokens DESC, slice to top N. Inlined from
- *  @/features/dashboard/topTokens to stay within the spend feature. */
+/** Rank threads by totalTokens DESC, slice to top N. Uses the shared
+ *  classifyModel helper from @/features/dashboard/topTokens so Spend and the
+ *  dashboard never disagree about a row's model label. */
 function rankTopThreads(rollup: TokenUsageRollup[], topN: number): TopThreadRow[] {
   return rollup
     .map((r): TopThreadRow => ({
       threadId: r.thread_id ?? '(no thread)',
-      modelLabel: r.model_any ?? '(unknown)',
+      modelLabel: classifyModel(r),
       sessions: r.sessions,
       totalTokens: r.total_tokens,
       cacheReadTokens: r.cache_read_tokens,
@@ -414,6 +422,93 @@ function TopThreadsTable({
 }
 
 /* ------------------------------------------------------------------ */
+/*  Keyboard-aware segmented controls (ArrowLeft/ArrowRight roving)    */
+/* ------------------------------------------------------------------ */
+
+function useRovingFocus<TElement extends HTMLElement>(itemCount: number) {
+  const refs = useRef<(TElement | null)[]>([]);
+  const handleKeyDown = useCallback(
+    (idx: number) => (e: React.KeyboardEvent<TElement>) => {
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        const next = (idx + 1) % itemCount;
+        refs.current[next]?.focus();
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        const prev = (idx - 1 + itemCount) % itemCount;
+        refs.current[prev]?.focus();
+      }
+    },
+    [itemCount],
+  );
+  return { refs, handleKeyDown };
+}
+
+function WindowToggle({
+  winIdx,
+  onChangeWindow,
+}: {
+  winIdx: number;
+  onChangeWindow: (i: number) => void;
+}): JSX.Element {
+  const { refs, handleKeyDown } = useRovingFocus<HTMLButtonElement>(WINDOWS.length);
+  return (
+    <div className="flex gap-1 font-mono text-xs" role="group" aria-label="Spend window">
+      {WINDOWS.map((w, i) => (
+        <button
+          key={w.label}
+          type="button"
+          ref={(el) => { refs.current[i] = el; }}
+          onClick={() => onChangeWindow(i)}
+          onKeyDown={handleKeyDown(i)}
+          aria-pressed={i === winIdx}
+          className={cn(
+            'rounded px-2 py-1',
+            i === winIdx
+              ? 'bg-bg-raised text-text-primary font-medium'
+              : 'text-text-muted hover:text-text-primary',
+          )}
+        >
+          {w.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function BreakdownToggle({
+  segment,
+  setSegment,
+}: {
+  segment: BreakdownSegment;
+  setSegment: (s: BreakdownSegment) => void;
+}): JSX.Element {
+  const { refs, handleKeyDown } = useRovingFocus<HTMLButtonElement>(SEGMENTS.length);
+  return (
+    <div className="flex gap-1 font-mono text-xs" role="group" aria-label="Breakdown by">
+      {SEGMENTS.map((s, i) => (
+        <button
+          key={s.key}
+          type="button"
+          ref={(el) => { refs.current[i] = el; }}
+          onClick={() => setSegment(s.key)}
+          onKeyDown={handleKeyDown(i)}
+          aria-pressed={segment === s.key}
+          className={cn(
+            'rounded px-2 py-1',
+            segment === s.key
+              ? 'bg-bg-raised text-text-primary font-medium'
+              : 'text-text-muted hover:text-text-primary',
+          )}
+        >
+          {s.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Main page                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -464,24 +559,7 @@ export function SpendPage(): JSX.Element {
             <h1 className="text-h2 text-text-primary">Spend</h1>
             <p className="text-text-muted text-sm">Token usage and cache savings</p>
           </div>
-          <div className="flex gap-1 font-mono text-xs" role="group" aria-label="Spend window">
-            {WINDOWS.map((w, i) => (
-              <button
-                key={w.label}
-                type="button"
-                onClick={() => onChangeWindow(i)}
-                aria-pressed={i === winIdx}
-                className={cn(
-                  'rounded px-2 py-1',
-                  i === winIdx
-                    ? 'bg-bg-raised text-text-primary font-medium'
-                    : 'text-text-muted hover:text-text-primary',
-                )}
-              >
-                {w.label}
-              </button>
-            ))}
-          </div>
+          <WindowToggle winIdx={winIdx} onChangeWindow={onChangeWindow} />
         </header>
 
         {/* Error banner */}
@@ -509,24 +587,7 @@ export function SpendPage(): JSX.Element {
         <div className="mb-6">
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-text-muted text-xs font-medium tracking-wider uppercase">Where it went</h2>
-            <div className="flex gap-1 font-mono text-xs" role="group" aria-label="Breakdown by">
-              {SEGMENTS.map((s) => (
-                <button
-                  key={s.key}
-                  type="button"
-                  onClick={() => setSegment(s.key)}
-                  aria-pressed={segment === s.key}
-                  className={cn(
-                    'rounded px-2 py-1',
-                    segment === s.key
-                      ? 'bg-bg-raised text-text-primary font-medium'
-                      : 'text-text-muted hover:text-text-primary',
-                  )}
-                >
-                  {s.label}
-                </button>
-              ))}
-            </div>
+            <BreakdownToggle segment={segment} setSegment={setSegment} />
           </div>
           <BreakdownTable
             segment={segment}
@@ -547,11 +608,6 @@ export function SpendPage(): JSX.Element {
           />
         </div>
 
-        {/* Export (placeholder) */}
-        <div className="border-border-subtle bg-surface-sunken rounded-lg border p-4 text-center">
-          <p className="text-text-muted text-sm">Export spend data</p>
-          <p className="text-text-disabled mt-1 text-xs">Coming soon</p>
-        </div>
       </div>
     </div>
   );
