@@ -1980,3 +1980,64 @@ def test_list_roots_handles_cursor_pagination(
     ).json()
     assert [t["task_id"] for t in page2["tasks"]] == ["ROOT-P1"]
     assert page2["next_cursor"] is None
+
+
+def test_list_roots_includes_direct_revisits(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Each root task dict carries a direct_revisits field listing tasks
+    that revisit this root (backed by revisit_of_task_id)."""
+    from datetime import datetime, timezone
+    from runtime.models import TaskRecord
+
+    now = datetime.now(timezone.utc)
+    org_state.db.insert_task(TaskRecord(
+        id="ROOT-Z", brief="root", team="engineering",
+        assigned_agent="dev_agent",
+        created_at=now, updated_at=now,
+    ))
+    # Insert a revisit that points back at ROOT-Z
+    org_state.db.insert_task(TaskRecord(
+        id="REVISIT-Z", brief="revisit", team="engineering",
+        assigned_agent="dev_agent", revisit_of_task_id="ROOT-Z",
+        created_at=now, updated_at=now,
+    ))
+    # Insert a SECOND revisit — both should appear
+    org_state.db.insert_task(TaskRecord(
+        id="REVISIT-Z2", brief="revisit2", team="engineering",
+        assigned_agent="dev_agent", revisit_of_task_id="ROOT-Z",
+        created_at=now, updated_at=now,
+    ))
+
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tasks/roots", headers=auth_headers,
+    )
+    assert r.status_code == 200
+    task = r.json()["tasks"][0]
+    assert task["task_id"] == "ROOT-Z"
+    assert "direct_revisits" in task
+    assert isinstance(task["direct_revisits"], list)
+    assert set(task["direct_revisits"]) == {"REVISIT-Z", "REVISIT-Z2"}
+
+
+def test_list_roots_direct_revisits_empty_when_no_revisits(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """A root with no revisits gets an empty direct_revisits list."""
+    from datetime import datetime, timezone
+    from runtime.models import TaskRecord
+
+    now = datetime.now(timezone.utc)
+    org_state.db.insert_task(TaskRecord(
+        id="ROOT-NO-REV", brief="root without revisits", team="engineering",
+        assigned_agent="dev_agent",
+        created_at=now, updated_at=now,
+    ))
+
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tasks/roots", headers=auth_headers,
+    )
+    assert r.status_code == 200
+    task = r.json()["tasks"][0]
+    assert "direct_revisits" in task
+    assert task["direct_revisits"] == []

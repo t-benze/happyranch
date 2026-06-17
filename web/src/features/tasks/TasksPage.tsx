@@ -160,6 +160,24 @@ const STATUS_GROUP_LABELS: Record<string, string> = {
   resolved_superseded: 'Resolved (superseded)',
 };
 
+// ---------------------------------------------------------------------------
+// Shared group-key ordering — used by BOTH GroupedList (render) and flatItems
+// (keyboard handler) so ArrowDown-highlight and Enter-open always agree.
+// ---------------------------------------------------------------------------
+
+function getOrderedGroupKeys(groups: Record<string, TaskRecord[]>): string[] {
+  const statusKeys: string[] = [];
+  for (const key of STATUS_GROUP_ORDER) {
+    if (groups[key] && groups[key].length > 0) {
+      statusKeys.push(key);
+    }
+  }
+  const nonStatusKeys = Object.keys(groups)
+    .filter((k) => !STATUS_GROUP_ORDER.includes(k))
+    .sort((a, b) => a.localeCompare(b));
+  return [...statusKeys, ...nonStatusKeys];
+}
+
 function GroupedList({
   groups,
   selectedIdx,
@@ -172,16 +190,8 @@ function GroupedList({
   onOpen: (taskId: string) => void;
 }): JSX.Element {
   const flat: { task: TaskRecord; groupKey: string }[] = [];
-  for (const key of STATUS_GROUP_ORDER) {
-    if (!groups[key] || groups[key].length === 0) continue;
+  for (const key of getOrderedGroupKeys(groups)) {
     for (const t of groups[key]) {
-      flat.push({ task: t, groupKey: key });
-    }
-  }
-  // also add any non-status groups
-  for (const [key, tasks] of Object.entries(groups)) {
-    if (STATUS_GROUP_ORDER.includes(key)) continue;
-    for (const t of tasks) {
       flat.push({ task: t, groupKey: key });
     }
   }
@@ -303,18 +313,10 @@ export function TasksPage(): JSX.Element {
   const allRoots = useMemo(() => data?.tasks ?? [], [data]);
   const groups = useMemo(() => groupTasks(allRoots, groupBy), [allRoots, groupBy]);
 
-  // Flatten groups for keyboard nav
+  // Flatten groups for keyboard nav (uses same ordering as GroupedList).
   const flatItems = useMemo(() => {
     const result: TaskRecord[] = [];
-    const groupKeys = Object.keys(groups).sort((a, b) => {
-      const ai = STATUS_GROUP_ORDER.indexOf(a);
-      const bi = STATUS_GROUP_ORDER.indexOf(b);
-      if (ai >= 0 && bi >= 0) return ai - bi;
-      if (ai >= 0) return -1;
-      if (bi >= 0) return 1;
-      return a.localeCompare(b);
-    });
-    for (const key of groupKeys) {
+    for (const key of getOrderedGroupKeys(groups)) {
       for (const t of groups[key]) {
         result.push(t);
       }

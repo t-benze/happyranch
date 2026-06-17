@@ -188,10 +188,14 @@ def list_roots(
         status=status, block_kind=block_kind,
     )
     next_cursor = tasks[-1].id if len(tasks) == limit else None
+    # Batch-fetch direct revisits for all returned roots (avoid N+1).
+    root_ids = [t.id for t in tasks]
+    revisits_map = org.db.batch_get_direct_revisits(root_ids)
     result_tasks: list[dict] = []
     for t in tasks:
         d = _task_to_dict(t)
         d["severity_rollup"] = getattr(t, '_severity_rollup', t.status.value)
+        d["direct_revisits"] = revisits_map.get(t.id, [])
         result_tasks.append(d)
     return {
         "tasks": result_tasks,

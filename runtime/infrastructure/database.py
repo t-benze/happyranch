@@ -1365,6 +1365,30 @@ class Database:
         return [row["id"] for row in cursor.fetchall()]
 
     @_synchronized
+    def batch_get_direct_revisits(
+        self, task_ids: list[str],
+    ) -> dict[str, list[str]]:
+        """Return direct revisits for multiple task_ids in a single query.
+
+        Avoids the N+1 pattern when a list route needs direct_revisits for
+        every returned item. Uses idx_tasks_revisit_of.
+        """
+        if not task_ids:
+            return {}
+        placeholders = ','.join(['?'] * len(task_ids))
+        cursor = self._conn.execute(
+            f"SELECT revisit_of_task_id, id FROM tasks"
+            f" WHERE revisit_of_task_id IN ({placeholders})"
+            f" ORDER BY created_at",
+            tuple(task_ids),
+        )
+        result: dict[str, list[str]] = {tid: [] for tid in task_ids}
+        for row in cursor.fetchall():
+            root_id = row["revisit_of_task_id"]
+            result.setdefault(root_id, []).append(row["id"])
+        return result
+
+    @_synchronized
     def walk_ancestors(self, task_id: str, max_hops: int = 20) -> list[TaskRecord]:
         """Return [task, parent, ..., root] by following parent_task_id.
 
