@@ -109,9 +109,9 @@ function lastSpeakerChip(speaker: string | null | undefined): { name: string; ro
 
 function InboxSkeleton(): JSX.Element {
   return (
-    <div className="animate-pulse p-2 space-y-2">
+    <div className="animate-pulse space-y-2 p-2">
       {[1, 2, 3, 4, 5].map((i) => (
-        <div key={i} className="rounded-md px-3 py-2 space-y-2">
+        <div key={i} className="space-y-2 rounded-md px-3 py-2">
           <div className="flex items-center justify-between gap-2">
             <div className="bg-bg-raised h-4 w-48 rounded" />
             <div className="bg-bg-raised h-4 w-12 rounded-full" />
@@ -119,7 +119,7 @@ function InboxSkeleton(): JSX.Element {
           <div className="flex items-center gap-2">
             <div className="bg-bg-raised h-3 w-16 rounded" />
             <div className="bg-bg-raised h-3 w-20 rounded" />
-            <div className="bg-bg-raised h-3 w-12 rounded ml-auto" />
+            <div className="bg-bg-raised ml-auto h-3 w-12 rounded" />
           </div>
         </div>
       ))}
@@ -325,7 +325,7 @@ export function ThreadsPage(): JSX.Element {
 
           {/* Error with retry — §2.5.5 */}
           {threadsQuery.isError && (
-            <div className="p-4 text-center space-y-3">
+            <div className="space-y-3 p-4 text-center">
               <p className="text-feedback-danger text-sm">{S.errorTitle}</p>
               <p className="text-text-muted text-xs">{S.errorBody}</p>
               <Button
@@ -333,7 +333,7 @@ export function ThreadsPage(): JSX.Element {
                 variant="outline"
                 onClick={() =>
                   queryClient.invalidateQueries({
-                    queryKey: ['threads-list', slug, status],
+                    queryKey: ['threads', slug],
                   })
                 }
               >
@@ -372,7 +372,7 @@ export function ThreadsPage(): JSX.Element {
                     meta={
                       <span className="flex items-center gap-1.5">
                         {t.composed_from_dream_id && (
-                          <CrescentMoonBadge className="w-3 h-3" />
+                          <CrescentMoonBadge className="h-3 w-3" />
                         )}
                         <span>{S.turnBudget(t.turns_used, t.turn_cap)}</span>
                       </span>
@@ -413,6 +413,7 @@ export function ThreadsPage(): JSX.Element {
             />
           }
           slug={slug}
+          threadId={threadId}
         />
       ) : (
         <EmptyState
@@ -465,6 +466,7 @@ export function ThreadsPage(): JSX.Element {
 interface DetailColumnProps {
   loading: boolean;
   errored: boolean;
+  threadId: string | undefined;
   thread:
     | {
         thread_id: string;
@@ -490,6 +492,7 @@ interface DetailColumnProps {
 function DetailColumn({
   loading,
   errored,
+  threadId,
   thread,
   messages,
   messagesLoading,
@@ -505,11 +508,11 @@ function DetailColumn({
   if (loading) {
     return (
       <section className="flex h-full flex-col">
-        <div className="animate-pulse border-b border-border-subtle px-4 py-3 space-y-2">
+        <div className="border-border-subtle animate-pulse space-y-2 border-b px-4 py-3">
           <div className="bg-bg-raised h-5 w-64 rounded" />
           <div className="bg-bg-raised h-3 w-48 rounded" />
         </div>
-        <div className="flex-1 flex items-center justify-center">
+        <div className="flex flex-1 items-center justify-center">
           <p className="text-text-muted text-body">{S.loadingMessages}</p>
         </div>
       </section>
@@ -519,16 +522,19 @@ function DetailColumn({
   // Error with retry — §2.5.5
   if (errored || !thread) {
     return (
-      <section className="flex h-full flex-col items-center justify-center p-4 space-y-3">
+      <section className="flex h-full flex-col items-center justify-center space-y-3 p-4">
         <p className="text-feedback-danger text-body">{S.detailError}</p>
         <Button
           size="sm"
           variant="outline"
-          onClick={() =>
+          onClick={() => {
             queryClient.invalidateQueries({
-              queryKey: ['thread-detail', slug, thread?.['thread_id']],
-            })
-          }
+              queryKey: ['thread', slug, threadId],
+            });
+            queryClient.invalidateQueries({
+              queryKey: ['thread-messages', slug, threadId],
+            });
+          }}
         >
           {S.retry}
         </Button>
@@ -685,12 +691,12 @@ interface SystemCardProps {
 function SystemCard({ seq, timestamp, systemPayload, slug }: SystemCardProps): JSX.Element {
   const description = describeSystem(systemPayload, slug);
   return (
-    <div className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-surface-sunken border border-border-subtle">
+    <div className="bg-surface-sunken border-border-subtle flex items-center gap-2 rounded-md border px-2 py-1.5">
       <span className="text-caption text-text-muted font-mono">{seq}</span>
-      <span className="text-caption px-1.5 py-0.5 rounded-full bg-bg-raised text-text-muted font-medium uppercase">
+      <span className="text-caption bg-bg-raised text-text-muted rounded-full px-1.5 py-0.5 font-medium uppercase">
         {S.systemEventLabel}
       </span>
-      <span className="text-xs text-text-secondary flex-1">{description}</span>
+      <span className="text-text-secondary flex-1 text-xs">{description}</span>
       <time
         dateTime={timestamp}
         className="text-caption text-text-disabled shrink-0"

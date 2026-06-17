@@ -1,7 +1,8 @@
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
-import { describe, expect, test } from 'vitest';
+import { QueryClient } from '@tanstack/react-query';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
@@ -485,5 +486,113 @@ describe('ThreadsPage — system message rendering (design-overhaul)', () => {
     await waitFor(() => {
       expect(screen.getByText(/TASK-555/)).toBeInTheDocument();
     });
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  Retry button query-key invalidation (regression guard for TASK-506) */
+/* ------------------------------------------------------------------ */
+
+describe('ThreadsPage — retry invalidates correct query keys', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test('list retry invalidates ["threads", slug] (not ["threads-list", ...])', async () => {
+    const spy = vi.spyOn(QueryClient.prototype, 'invalidateQueries');
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
+        HttpResponse.json({ error: 'boom' }, { status: 500 }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/threads`);
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Retry/i })).toBeInTheDocument();
+    });
+
+    // Clear any initial invalidations (SSE init, etc.)
+    spy.mockClear();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /Retry/i }));
+
+    // Must invalidate ["threads", slug] — the real provider's key prefix
+    const calls = spy.mock.calls.filter(
+      (call) =>
+        call[0] &&
+        typeof call[0] === 'object' &&
+        'queryKey' in call[0],
+    );
+    expect(calls.length).toBeGreaterThanOrEqual(1);
+    const hasCorrectKey = calls.some(
+      (call) =>
+        JSON.stringify((call[0] as { queryKey: unknown }).queryKey) ===
+        JSON.stringify(['threads', SLUG]),
+    );
+    expect(hasCorrectKey).toBe(true);
+
+    // Must NOT invalidate the old wrong key
+    const hasWrongKey = calls.some(
+      (call) =>
+        JSON.stringify((call[0] as { queryKey: unknown }).queryKey) ===
+        JSON.stringify(['threads-list', SLUG, 'open']),
+    );
+    expect(hasWrongKey).toBe(false);
+  });
+
+  test('detail retry invalidates ["thread", slug, threadId] and ["thread-messages", slug, threadId]', async () => {
+    const spy = vi.spyOn(QueryClient.prototype, 'invalidateQueries');
+    const threadId = 'THR-001';
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
+        HttpResponse.json({ threads: [mkThread(threadId, 'Subject')] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/${threadId}`, () =>
+        HttpResponse.json({ error: 'not found' }, { status: 404 }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/${threadId}/messages`, () =>
+        HttpResponse.json({ error: 'not found' }, { status: 404 }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/${threadId}/tail`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/threads/${threadId}`);
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Retry/i })).toBeInTheDocument();
+    });
+
+    // Clear any initial invalidations
+    spy.mockClear();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /Retry/i }));
+
+    const calls = spy.mock.calls.filter(
+      (call) =>
+        call[0] &&
+        typeof call[0] === 'object' &&
+        'queryKey' in call[0],
+    );
+    expect(calls.length).toBeGreaterThanOrEqual(2);
+
+    const keys = calls.map((call) => (call[0] as { queryKey: unknown }).queryKey);
+    const keysJson = keys.map((k) => JSON.stringify(k));
+
+    expect(keysJson).toContain(JSON.stringify(['thread', SLUG, threadId]));
+    expect(keysJson).toContain(JSON.stringify(['thread-messages', SLUG, threadId]));
+
+    // Must NOT invalidate the old wrong key with undefined threadId
+    expect(keysJson).not.toContain(
+      JSON.stringify(['thread-detail', SLUG, undefined]),
+    );
   });
 });
