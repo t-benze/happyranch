@@ -23,7 +23,7 @@ import {
 } from '@/hooks/dreams';
 import { cn } from '@/lib/utils';
 import { DREAM_STRINGS } from './strings';
-import type { DreamKbCandidate } from '@/lib/api/dreams';
+import type { DreamKbCandidate } from '@/hooks/dreams';
 
 /* ------------------------------------------------------------------ */
 /*  Crescent moon icon (reused)                                        */

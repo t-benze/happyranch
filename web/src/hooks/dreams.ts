@@ -5,6 +5,8 @@
  */
 import { useData } from '@/design-system/providers/DataContext';
 
+export type { DreamRecord, DreamKbCandidate } from '@/lib/api/dreams';
+
 export const useDreamsRoutes = () => useData().useDreamsRoutes();
 
 export const useDreamsList: ReturnType<typeof useData>['dreams']['useDreamsList'] = (

@@ -17,7 +17,7 @@ import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { cn } from '@/lib/utils';
 import { DreamDetailPane } from './DreamDetailPane';
 import { DREAM_STRINGS } from './strings';
-import type { DreamRecord } from '@/lib/api/dreams';
+import type { DreamRecord } from '@/hooks/dreams';
 
 /* ------------------------------------------------------------------ */
 /*  Dream marker — crescent moon SVG badge                             */
