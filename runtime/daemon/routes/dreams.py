@@ -255,7 +255,7 @@ async def accept_candidate(slug: str, candidate_id: int, org: OrgDep) -> dict:
 
     if candidate.status == "promoted":
         return _candidate_to_dict(candidate)
-    if candidate.status not in ("pending", "rejected"):
+    if candidate.status != "pending":
         raise HTTPException(
             status_code=400,
             detail={"code": "candidate_already_decided", "status": candidate.status},

@@ -269,10 +269,11 @@ POST /api/v1/orgs/{slug}/dreams/candidates/{candidate_id}/dismiss
 
 - **Accept** creates a live KB entry via the existing KB write path (slug
   validation, slug-exists guard) and sets the candidate `status` to
-  `promoted` with `promoted_kb_slug` set.
-- **Dismiss** sets the candidate `status` to `rejected`.
-- Both return the updated candidate. Accept of an already-promoted candidate
-  and dismiss of an already-rejected candidate are idempotent (200).
+  `promoted` with `promoted_kb_slug` set. Only `pending` candidates can be
+  accepted; `rejected`, `superseded`, and other non-`pending`/non-`promoted`
+  states return 400. Already-`promoted` candidates are idempotent (200).
+- **Dismiss** sets the candidate `status` to `rejected`. Dismiss of an
+  already-`rejected` candidate is idempotent (200).
 - Edit-before-accept remains deferred; accept-then-edit reuses the existing
   KB edit route.
 

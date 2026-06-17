@@ -315,6 +315,91 @@ def test_accept_candidate_slug_exists_collision(tmp_home, app, org_state, auth_h
     assert resp.json()["detail"]["code"] == "slug_exists"
 
 
+def test_accept_after_dismiss_returns_400(tmp_home, app, org_state, auth_headers):
+    """Accept of a dismissed ('rejected') candidate must return 400 and NOT create a KB entry."""
+    from fastapi.testclient import TestClient
+    from runtime.infrastructure.kb_store import KBStore
+    client = TestClient(app)
+
+    org_state.db.insert_dream(DreamRecord(
+        id="DREAM-001", agent_name="dev_agent", local_date="2026-06-09",
+        scheduled_for=_dt(2), window_end=_dt(2),
+    ))
+    org_state.db.insert_dream_kb_candidate(DreamKbCandidate(
+        dream_id="DREAM-001", agent_name="dev_agent",
+        slug="candidate-rej", title="Rejected Candidate", topic="ci",
+        rationale="Not needed.", body_markdown="Body.\n",
+    ))
+    rows = org_state.db.list_dream_kb_candidates(dream_id="DREAM-001")
+    candidate_id = rows[0].id
+
+    # Dismiss it first
+    org_state.db.update_dream_kb_candidate(candidate_id, status="rejected")
+
+    # Now try to accept the already-dismissed candidate
+    resp = client.post(
+        f"/api/v1/orgs/alpha/dreams/candidates/{candidate_id}/accept",
+        json={}, headers=auth_headers,
+    )
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["detail"]["code"] == "candidate_already_decided"
+    assert body["detail"]["status"] == "rejected"
+
+    # Verify NO KB entry was created
+    from runtime.infrastructure.kb_store import NotFound
+    store = KBStore(org_state.root / "kb")
+    try:
+        store.read_entry("candidate-rej")
+        assert False, "KB entry should NOT have been created for a dismissed candidate"
+    except NotFound:
+        pass  # Expected — no entry created
+
+    # Candidate should still be rejected
+    updated = org_state.db.list_dream_kb_candidates(candidate_id=candidate_id)[0]
+    assert updated.status == "rejected"
+
+
+def test_accept_superseded_returns_400(tmp_home, app, org_state, auth_headers):
+    """Accept of a superseded candidate must return 400."""
+    from fastapi.testclient import TestClient
+    from runtime.infrastructure.kb_store import KBStore
+    client = TestClient(app)
+
+    org_state.db.insert_dream(DreamRecord(
+        id="DREAM-001", agent_name="dev_agent", local_date="2026-06-09",
+        scheduled_for=_dt(2), window_end=_dt(2),
+    ))
+    org_state.db.insert_dream_kb_candidate(DreamKbCandidate(
+        dream_id="DREAM-001", agent_name="dev_agent",
+        slug="candidate-sup", title="Superseded Candidate", topic="ci",
+        rationale="Old.", body_markdown="Body.\n",
+    ))
+    rows = org_state.db.list_dream_kb_candidates(dream_id="DREAM-001")
+    candidate_id = rows[0].id
+
+    # Set it to superseded
+    org_state.db.update_dream_kb_candidate(candidate_id, status="superseded")
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/dreams/candidates/{candidate_id}/accept",
+        json={}, headers=auth_headers,
+    )
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["detail"]["code"] == "candidate_already_decided"
+    assert body["detail"]["status"] == "superseded"
+
+    # Verify NO KB entry was created
+    from runtime.infrastructure.kb_store import NotFound
+    store = KBStore(org_state.root / "kb")
+    try:
+        store.read_entry("candidate-sup")
+        assert False, "KB entry should NOT have been created for a superseded candidate"
+    except NotFound:
+        pass  # Expected — no entry created
+
+
 def test_candidate_not_found(tmp_home, app, org_state, auth_headers):
     from fastapi.testclient import TestClient
     client = TestClient(app)
