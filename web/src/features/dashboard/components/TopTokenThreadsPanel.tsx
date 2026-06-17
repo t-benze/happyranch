@@ -131,7 +131,7 @@ export function TopTokenThreadsPanel(): JSX.Element {
                 title="cache reads — never counted toward churn"
               >
                 {r.cacheReadTokens.toLocaleString()}
-                <span className="ml-1.5 text-text-disabled">cache</span>
+                <span className="text-text-disabled ml-1.5">cache</span>
               </span>
             </li>
           ))}

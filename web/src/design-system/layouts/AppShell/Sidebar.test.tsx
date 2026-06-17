@@ -250,12 +250,19 @@ describe('IA-10: Nav grouping (Primary / Operate)', () => {
 });
 
 describe('PlaceholderPage (Operate surfaces)', () => {
-  test('renders placeholder for Spend', async () => {
+  test('renders Spend surface', async () => {
     seedSidebarShell();
+    // Seed token endpoints so SpendPage doesn't error
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tokens`, ({ request }) => {
+        const url = new URL(request.url);
+        const groupBy = url.searchParams.get('group_by');
+        return HttpResponse.json({ rollup: groupBy === 'model' ? [] : [] });
+      }),
+    );
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/spend` });
     await waitFor(() => {
-      expect(screen.getByText('Spend')).toBeInTheDocument();
-      expect(screen.getByText(/Coming in the design overhaul/i)).toBeInTheDocument();
+      expect(screen.getByText(/Token usage and cache savings/i)).toBeInTheDocument();
     });
   });
 
