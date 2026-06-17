@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from runtime.models import DreamRecord, DreamStatus
+from runtime.models import DreamKbCandidate, DreamRecord, DreamStatus
 
 
 def _dt(hour: int) -> datetime:
@@ -153,3 +153,175 @@ def test_list_and_show_dreams(tmp_home, app, org_state, auth_headers):
     show_resp = client.get("/api/v1/orgs/alpha/dreams/DREAM-001", headers=auth_headers)
     assert show_resp.status_code == 200
     assert show_resp.json()["dream_id"] == "DREAM-001"
+
+
+# --- Candidate accept / dismiss -------------------------------------------------
+
+def test_accept_candidate_creates_kb_and_promotes(tmp_home, app, org_state, auth_headers):
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+
+    org_state.db.insert_dream(DreamRecord(
+        id="DREAM-001", agent_name="dev_agent", local_date="2026-06-09",
+        scheduled_for=_dt(2), window_end=_dt(2),
+    ))
+    org_state.db.insert_dream_kb_candidate(DreamKbCandidate(
+        dream_id="DREAM-001", agent_name="dev_agent",
+        slug="candidate-one", title="Candidate One", topic="workflow",
+        rationale="Observed.", body_markdown="Candidate body.\n",
+    ))
+    rows = org_state.db.list_dream_kb_candidates(dream_id="DREAM-001")
+    candidate_id = rows[0].id
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/dreams/candidates/{candidate_id}/accept",
+        json={}, headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "promoted"
+    assert body["promoted_kb_slug"] == "candidate-one"
+
+    # Verify KB entry was created
+    from runtime.infrastructure.kb_store import KBStore
+    store = KBStore(org_state.root / "kb")
+    entry = store.read_entry("candidate-one")
+    assert entry.title == "Candidate One"
+    assert entry.topic == "workflow"
+    assert entry.body == "Candidate body.\n"
+    assert entry.source_task == "DREAM-001"
+
+
+def test_dismiss_candidate_rejects(tmp_home, app, org_state, auth_headers):
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+
+    org_state.db.insert_dream(DreamRecord(
+        id="DREAM-001", agent_name="dev_agent", local_date="2026-06-09",
+        scheduled_for=_dt(2), window_end=_dt(2),
+    ))
+    org_state.db.insert_dream_kb_candidate(DreamKbCandidate(
+        dream_id="DREAM-001", agent_name="dev_agent",
+        slug="candidate-two", title="Candidate Two", topic="ci",
+        rationale="Not needed.", body_markdown="Body.\n",
+    ))
+    rows = org_state.db.list_dream_kb_candidates(dream_id="DREAM-001")
+    candidate_id = rows[0].id
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/dreams/candidates/{candidate_id}/dismiss",
+        json={}, headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "rejected"
+    assert body.get("promoted_kb_slug") is None
+
+
+def test_accept_already_promoted_idempotent(tmp_home, app, org_state, auth_headers):
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+
+    org_state.db.insert_dream(DreamRecord(
+        id="DREAM-001", agent_name="dev_agent", local_date="2026-06-09",
+        scheduled_for=_dt(2), window_end=_dt(2),
+    ))
+    org_state.db.insert_dream_kb_candidate(DreamKbCandidate(
+        dream_id="DREAM-001", agent_name="dev_agent",
+        slug="candidate-one", title="Candidate One", topic="workflow",
+        rationale="Observed.", body_markdown="Candidate body.\n",
+    ))
+    rows = org_state.db.list_dream_kb_candidates(dream_id="DREAM-001")
+    candidate_id = rows[0].id
+
+    # First accept
+    resp1 = client.post(
+        f"/api/v1/orgs/alpha/dreams/candidates/{candidate_id}/accept",
+        json={}, headers=auth_headers,
+    )
+    assert resp1.status_code == 200
+
+    # Second accept — idempotent: returns 200 with same state
+    resp2 = client.post(
+        f"/api/v1/orgs/alpha/dreams/candidates/{candidate_id}/accept",
+        json={}, headers=auth_headers,
+    )
+    assert resp2.status_code == 200
+    assert resp2.json()["status"] == "promoted"
+
+
+def test_dismiss_already_rejected_idempotent(tmp_home, app, org_state, auth_headers):
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+
+    org_state.db.insert_dream(DreamRecord(
+        id="DREAM-001", agent_name="dev_agent", local_date="2026-06-09",
+        scheduled_for=_dt(2), window_end=_dt(2),
+    ))
+    org_state.db.insert_dream_kb_candidate(DreamKbCandidate(
+        dream_id="DREAM-001", agent_name="dev_agent",
+        slug="candidate-two", title="Candidate Two", topic="ci",
+        rationale="Not needed.", body_markdown="Body.\n",
+    ))
+    rows = org_state.db.list_dream_kb_candidates(dream_id="DREAM-001")
+    candidate_id = rows[0].id
+
+    # First dismiss
+    resp1 = client.post(
+        f"/api/v1/orgs/alpha/dreams/candidates/{candidate_id}/dismiss",
+        json={}, headers=auth_headers,
+    )
+    assert resp1.status_code == 200
+
+    # Second dismiss — idempotent
+    resp2 = client.post(
+        f"/api/v1/orgs/alpha/dreams/candidates/{candidate_id}/dismiss",
+        json={}, headers=auth_headers,
+    )
+    assert resp2.status_code == 200
+    assert resp2.json()["status"] == "rejected"
+
+
+def test_accept_candidate_slug_exists_collision(tmp_home, app, org_state, auth_headers):
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+
+    # Pre-create a KB entry with the same slug
+    from runtime.infrastructure.kb_store import KBEntry, KBStore
+    store = KBStore(org_state.root / "kb")
+    store.write_entry(KBEntry(
+        slug="candidate-one", title="Already Exists", type="reference",
+        topic="workflow", body="Existing body.\n",
+    ), agent="dev_agent")
+    store.regenerate_index()
+
+    org_state.db.insert_dream(DreamRecord(
+        id="DREAM-001", agent_name="dev_agent", local_date="2026-06-09",
+        scheduled_for=_dt(2), window_end=_dt(2),
+    ))
+    org_state.db.insert_dream_kb_candidate(DreamKbCandidate(
+        dream_id="DREAM-001", agent_name="dev_agent",
+        slug="candidate-one", title="Candidate One", topic="workflow",
+        rationale="Observed.", body_markdown="Candidate body.\n",
+    ))
+    rows = org_state.db.list_dream_kb_candidates(dream_id="DREAM-001")
+    candidate_id = rows[0].id
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/dreams/candidates/{candidate_id}/accept",
+        json={}, headers=auth_headers,
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "slug_exists"
+
+
+def test_candidate_not_found(tmp_home, app, org_state, auth_headers):
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+
+    resp = client.post(
+        "/api/v1/orgs/alpha/dreams/candidates/999/accept",
+        json={}, headers=auth_headers,
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "candidate_not_found"

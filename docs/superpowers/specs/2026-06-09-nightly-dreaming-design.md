@@ -258,6 +258,24 @@ happyranch dreams candidates reject --org <slug> <candidate-id> --reason <why>
 
 Promotion can be a follow-up feature. V1 only needs to persist and show candidates clearly.
 
+### Candidate accept / dismiss daemon route (design-overhaul Phase 2)
+
+As of design-overhaul, candidate status mutation is exposed as daemon HTTP routes:
+
+```
+POST /api/v1/orgs/{slug}/dreams/candidates/{candidate_id}/accept
+POST /api/v1/orgs/{slug}/dreams/candidates/{candidate_id}/dismiss
+```
+
+- **Accept** creates a live KB entry via the existing KB write path (slug
+  validation, slug-exists guard) and sets the candidate `status` to
+  `promoted` with `promoted_kb_slug` set.
+- **Dismiss** sets the candidate `status` to `rejected`.
+- Both return the updated candidate. Accept of an already-promoted candidate
+  and dismiss of an already-rejected candidate are idempotent (200).
+- Edit-before-accept remains deferred; accept-then-edit reuses the existing
+  KB edit route.
+
 Dashboard integration is not required in v1, but audit rows should make future dashboard cards straightforward.
 
 ## Audit And Token Usage
