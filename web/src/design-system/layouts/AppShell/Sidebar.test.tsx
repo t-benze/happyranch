@@ -60,6 +60,9 @@ function seedSidebarShell(): void {
     http.get('/api/v1/health', () =>
       HttpResponse.json({ status: 'ok', active_runtime: '/Users/x/happyranch' }),
     ),
+    http.get('/api/v1/orgs/:slug/dreams', () =>
+      HttpResponse.json({ dreams: [] }),
+    ),
   );
 }
 
@@ -266,12 +269,13 @@ describe('PlaceholderPage (Operate surfaces)', () => {
     });
   });
 
-  test('renders placeholder for Dreams', async () => {
+  test('renders Dreams surface', async () => {
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dreams` });
     await waitFor(() => {
-      expect(screen.getByText('Dreams')).toBeInTheDocument();
-      expect(screen.getByText(/Coming in the design overhaul/i)).toBeInTheDocument();
+      const dreamsElements = screen.getAllByText('Dreams');
+      expect(dreamsElements.length).toBeGreaterThanOrEqual(2); // sidebar nav + page header
+      expect(screen.getByText(/Nightly agent reflections and knowledge proposals/i)).toBeInTheDocument();
     });
   });
 
