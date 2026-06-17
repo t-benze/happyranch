@@ -41,6 +41,7 @@ export const mockKbApi: KbApi = {
     ok(
       MOCK_KB_ENTRIES.find((e) => e.slug === entrySlug) ?? MOCK_KB_ENTRIES[0],
     ) as QueryLike<KBEntry>,
+  useKBStats: () => ok({ entries: [] }),
   useAddKBEntry: () => noopMutation<AddKBEntryArgs, AddKBEntryResult>(),
 };
 

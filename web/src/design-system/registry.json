@@ -135,17 +135,6 @@
       "example": "<ErrorBoundary><RouteContent /></ErrorBoundary>"
     },
     {
-      "name": "Sidebar",
-      "layer": "layout",
-      "import": "@/design-system/layouts/AppShell/Sidebar",
-      "variants": {},
-      "consumes": [
-        "components.sidebar",
-        "layout.grid.app_shell"
-      ],
-      "example": "<Sidebar />"
-    },
-    {
       "name": "FilterSidebar",
       "layer": "pattern",
       "import": "@/design-system/patterns/FilterSidebar",
@@ -316,6 +305,17 @@
       "example": "<Select value='a'><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value='a'>A</SelectItem></SelectContent></Select>"
     },
     {
+      "name": "Sidebar",
+      "layer": "layout",
+      "import": "@/design-system/layouts/AppShell/Sidebar",
+      "variants": {},
+      "consumes": [
+        "components.sidebar",
+        "layout.grid.app_shell"
+      ],
+      "example": "<Sidebar />"
+    },
+    {
       "name": "Sparkline",
       "layer": "pattern",
       "import": "@/design-system/patterns/Sparkline",
@@ -345,7 +345,8 @@
           "in_progress",
           "blocked",
           "completed",
-          "failed"
+          "failed",
+          "resolved_superseded"
         ]
       },
       "consumes": [

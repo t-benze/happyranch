@@ -1,15 +1,15 @@
 export const KB_STRINGS = {
-  pageTitle: 'Knowledge base',
+  pageTitle: 'Knowledge',
+  pageSubtitle: 'Org knowledge library — browsable by folder',
   searchPlaceholder: 'Search entries…',
   composeButton: 'Compose…',
-  emptyListTitle: 'No entries',
-  emptyListBody: 'No KB entries match the current filters.',
+  emptyListTitle: 'No entries yet',
+  emptyListBody: 'No KB entries match the current filters. Compose one or wait for a dream to propose.',
   emptySearchTitle: 'No matches',
   emptySearchBody: 'No entries match that search.',
   drawerLoading: 'Loading entry…',
   filterAll: 'All',
-  filterTypes: 'Types',
-  filterTags: 'Tags',
+  filterFolders: 'Folders',
   authoredBy: (agent: string) => `Authored by ${agent}`,
   sourceTaskLabel: 'Source task:',
   relatedEntriesLabel: 'Related entries:',
@@ -17,6 +17,21 @@ export const KB_STRINGS = {
   composeDialogSubmit: 'Add entry',
   composeDialogSubmitting: 'Adding…',
   composeDialogCancel: 'Cancel',
+  /** Candidate review gate */
+  candidatePendingLabel: (agentName: string) =>
+    `from dream · proposed by ${agentName} · pending review`,
+  candidateAcceptedLabel: (agentName: string) =>
+    `from dream · proposed by ${agentName} · promoted to KB`,
+  candidateRejectedLabel: (agentName: string) =>
+    `from dream · proposed by ${agentName} · dismissed`,
+  acceptButton: 'Accept',
+  dismissButton: 'Dismiss',
+  pendingCandidatesTag: (n: number) =>
+    `${n} candidate${n === 1 ? '' : 's'} pending`,
+  errorLoadingCandidates: "Couldn't load candidates",
+  /** Usage label — PRD §4.5 K1: viewed Nx (CLI) only */
+  viewedLabel: (n: number) => `viewed ${n}× (CLI)`,
+  retry: 'Retry',
 };
 
 /**
