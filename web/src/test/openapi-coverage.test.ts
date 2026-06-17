@@ -54,6 +54,7 @@ const INCLUDED_PATHS = new Set<string>([
   // tasks
   'POST /api/v1/orgs/{slug}/tasks',
   'GET /api/v1/orgs/{slug}/tasks',
+  'GET /api/v1/orgs/{slug}/tasks/roots',
   'GET /api/v1/orgs/{slug}/tasks/{task_id}',
   'GET /api/v1/orgs/{slug}/tasks/{task_id}/recall',
   'GET /api/v1/orgs/{slug}/tasks/{task_id}/events',
