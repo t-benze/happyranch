@@ -40,8 +40,11 @@ function CrescentMoonBadge({ className }: { className?: string }): JSX.Element {
 
 export interface KbCandidateCardProps {
   candidate: DreamKbCandidate;
-  /** Called after successful accept/dismiss so the parent can refetch. */
-  onResolved?: () => void;
+  /** Called after successful accept/dismiss with the resolved status. */
+  onResolved?: (result: {
+    status: string;
+    promotedKbSlug: string | null;
+  }) => void;
 }
 
 /* ------------------------------------------------------------------ */
@@ -72,8 +75,11 @@ export function KbCandidateCard({
   const handleAccept = async () => {
     setMutationError(null);
     try {
-      await acceptMutation.mutateAsync(candidate.id);
-      onResolved?.();
+      const result = await acceptMutation.mutateAsync(candidate.id);
+      onResolved?.({
+        status: result.status,
+        promotedKbSlug: result.promoted_kb_slug,
+      });
     } catch {
       setMutationError('Accept failed — retry');
     }
@@ -82,8 +88,11 @@ export function KbCandidateCard({
   const handleDismiss = async () => {
     setMutationError(null);
     try {
-      await dismissMutation.mutateAsync(candidate.id);
-      onResolved?.();
+      const result = await dismissMutation.mutateAsync(candidate.id);
+      onResolved?.({
+        status: result.status,
+        promotedKbSlug: result.promoted_kb_slug,
+      });
     } catch {
       setMutationError('Dismiss failed — retry');
     }

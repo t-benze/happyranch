@@ -46,12 +46,17 @@ export interface KbEntryDetailPaneProps {
   candidate?: DreamKbCandidate;
   /** Called when the drawer closes. */
   onClose: () => void;
+  /** Called after a candidate is accepted or dismissed with the result. */
+  onCandidateResolved?: (
+    result: { status: string; promotedKbSlug: string | null },
+  ) => void;
 }
 
 export function KbEntryDetailPane({
   entrySlug,
   candidate,
   onClose,
+  onCandidateResolved,
 }: KbEntryDetailPaneProps): JSX.Element {
   const queryClient = useQueryClient();
   const kbRoutes = useKbRoutes();
@@ -62,12 +67,16 @@ export function KbEntryDetailPane({
   const entry = entryQuery.data;
 
   const isCandidate = !!candidate;
-  const handleCandidateResolved = () => {
+  const handleCandidateResolved = (result: {
+    status: string;
+    promotedKbSlug: string | null;
+  }) => {
     // Invalidate both KB and dreams queries so surfaces stay consistent
     queryClient.invalidateQueries({ queryKey: ['kb-list'] });
     queryClient.invalidateQueries({ queryKey: ['kb-search'] });
     queryClient.invalidateQueries({ queryKey: ['dreams-list'] });
     queryClient.invalidateQueries({ queryKey: ['dream'] });
+    onCandidateResolved?.(result);
   };
 
   const handleClose = () => {

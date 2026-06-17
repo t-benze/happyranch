@@ -40,6 +40,15 @@ function useKBEntry(entrySlug: string | undefined) {
   });
 }
 
+function useKBStats() {
+  const slug = useRealOrgSlug();
+  return useQuery({
+    queryKey: ['kb-stats', slug],
+    queryFn: () => kbApi.getKBStats(slug),
+    enabled: !!slug,
+  });
+}
+
 function useAddKBEntry(): MutationLike<AddKBEntryArgs, AddKBEntryResult> {
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
@@ -56,5 +65,6 @@ export const realKbApi: KbApi = {
   useKBList: useKBList as KbApi['useKBList'],
   useKBSearch: useKBSearch as KbApi['useKBSearch'],
   useKBEntry: useKBEntry as KbApi['useKBEntry'],
+  useKBStats,
   useAddKBEntry,
 };

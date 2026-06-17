@@ -10,12 +10,16 @@
  * gate with Accept/Dismiss. Accept promotes the candidate to a live
  * entry (shared STEP-1 route, consistent across surfaces).
  *
+ * Usage label: "viewed Nx (CLI)" from kb_views data (PRD §4.5 K1).
+ *
+ * Search: debounced 200ms search via /kb/search.
+ *
  * States: Loading skeleton, Empty ("No entries yet"), Error (retry).
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { useKbRoutes, useKBList } from '@/hooks/kb';
+import { useKbRoutes, useKBList, useKBSearch, useKBStats } from '@/hooks/kb';
 import { useDensity } from '@/hooks/density';
 import { useDreamsList, useDream } from '@/hooks/dreams';
 import { FilterSidebar, type FilterGroup } from '@/design-system/patterns/FilterSidebar';
@@ -140,15 +144,57 @@ export function KbPage(): JSX.Element {
   const navigate = useNavigate();
   const [folder, setFolder] = useState<string | null>(null);
   const [searchInput, setSearchInput] = useState('');
+  const [debouncedQ, setDebouncedQ] = useState('');
   const [detailCandidate, setDetailCandidate] = useState<DreamKbCandidate | null>(null);
   const [composeOpen, setComposeOpen] = useState(false);
   const { density } = useDensity();
   const queryClient = useQueryClient();
   const routes = useKbRoutes();
 
+  // 200ms debounce — coalesces rapid keystrokes into a single /kb/search request.
+  useEffect(() => {
+    const id = setTimeout(() => setDebouncedQ(searchInput.trim()), 200);
+    return () => clearTimeout(id);
+  }, [searchInput]);
+
+  const isSearching = debouncedQ.length > 0;
+
   // Fetch live KB entries, filtered by type (folder)
   const listQuery = useKBList(folder ? { type: folder } : undefined);
-  const liveEntries = listQuery.data?.entries ?? [];
+  const searchQuery = useKBSearch(debouncedQ);
+  const statsQuery = useKBStats();
+
+  // Build a slug→view_count map from the stats endpoint.
+  // When stats are still loading, statsQuery.data is undefined → map stays empty.
+  // Once loaded, entries without a recorded view are absent from the map and
+  // get `viewCount=0` (so the label always renders once stats are available).
+  const statsLoaded = !!statsQuery.data;
+  const viewCountBySlug = useMemo(() => {
+    const map = new Map<string, number>();
+    if (statsQuery.data?.entries) {
+      for (const s of statsQuery.data.entries) {
+        map.set(s.slug, s.view_count);
+      }
+    }
+    return map;
+  }, [statsQuery.data?.entries]);
+
+  const rawEntries = useMemo(
+    () =>
+      isSearching
+        ? (searchQuery.data?.entries ?? [])
+        : (listQuery.data?.entries ?? []),
+    [isSearching, searchQuery.data?.entries, listQuery.data?.entries],
+  );
+
+  // When searching, /kb/search returns matches across ALL types — apply
+  // the selected folder/type client-side so the active pill stays honored.
+  const liveEntries = useMemo(() => {
+    if (isSearching && folder) {
+      return rawEntries.filter((e) => e.type === folder);
+    }
+    return rawEntries;
+  }, [rawEntries, folder, isSearching]);
 
   // Fetch dreams to find those with candidates
   const dreamsQuery = useDreamsList({ limit: 50 });
@@ -169,9 +215,9 @@ export function KbPage(): JSX.Element {
   // FilterSidebar renders its own "All" button — don't duplicate.
   const folders = useMemo(() => {
     const set = new Set<string>();
-    liveEntries.forEach((e) => set.add(e.type));
+    rawEntries.forEach((e) => set.add(e.type));
     return Array.from(set).sort();
-  }, [liveEntries]);
+  }, [rawEntries]);
 
   const filterGroups: FilterGroup[] = [
     {
@@ -196,9 +242,30 @@ export function KbPage(): JSX.Element {
     );
   };
 
+  // Called after a candidate is resolved (Accept or Dismiss).
+  // On promoted → navigate to the promoted KB slug as a live entry.
+  // On rejected → clear the candidate detail drawer.
+  const handleCandidateResolved = (result: {
+    status: string;
+    promotedKbSlug: string | null;
+  }) => {
+    // Invalidate queries so the feed + pending-count update
+    queryClient.invalidateQueries({ queryKey: ['kb-list'] });
+    queryClient.invalidateQueries({ queryKey: ['kb-search'] });
+    queryClient.invalidateQueries({ queryKey: ['dreams-list'] });
+    queryClient.invalidateQueries({ queryKey: ['dream'] });
+
+    if (result.status === 'promoted' && result.promotedKbSlug) {
+      setDetailCandidate(null);
+      navigate(routes.detail(result.promotedKbSlug));
+    } else {
+      setDetailCandidate(null);
+    }
+  };
+
   const detailOpen = !!openSlug || !!detailCandidate;
 
-  const hasEntries = liveEntries.length > 0 || dreamsWithCandidates.length > 0;
+  const isListEmpty = liveEntries.length === 0 && dreamsWithCandidates.length === 0;
 
   return (
     <div className="flex h-full">
@@ -249,7 +316,7 @@ export function KbPage(): JSX.Element {
         {/* Content */}
         {loading ? (
           <LoadingSkeleton />
-        ) : listQuery.isError ? (
+        ) : (isSearching ? searchQuery.isError : listQuery.isError) ? (
           <div className="p-4 text-center space-y-3">
             <p className="text-feedback-danger text-sm">
               Could not load Knowledge
@@ -259,21 +326,29 @@ export function KbPage(): JSX.Element {
               variant="outline"
               onClick={() => {
                 queryClient.invalidateQueries({ queryKey: ['kb-list'] });
+                queryClient.invalidateQueries({ queryKey: ['kb-search'] });
                 queryClient.invalidateQueries({ queryKey: ['dreams-list'] });
               }}
             >
               {KB_STRINGS.retry}
             </Button>
           </div>
-        ) : !hasEntries ? (
-          <EmptyState
-            title={KB_STRINGS.emptyListTitle}
-            body={KB_STRINGS.emptyListBody}
-          />
+        ) : isListEmpty ? (
+          isSearching ? (
+            <EmptyState
+              title={KB_STRINGS.emptySearchTitle}
+              body={KB_STRINGS.emptySearchBody}
+            />
+          ) : (
+            <EmptyState
+              title={KB_STRINGS.emptyListTitle}
+              body={KB_STRINGS.emptyListBody}
+            />
+          )
         ) : (
           <ul className="divide-y divide-border-subtle">
             {/* Dream candidates (loaded per-dream via DreamCandidateRow) */}
-            {dreamsWithCandidates.map((d) => (
+            {!isSearching && dreamsWithCandidates.map((d) => (
               <DreamCandidateRow
                 key={d.dream_id}
                 dreamId={d.dream_id}
@@ -290,6 +365,11 @@ export function KbPage(): JSX.Element {
                   to={routes.detail(entry.slug)}
                   active={openSlug === entry.slug}
                   density={density}
+                  viewCount={
+                    statsLoaded
+                      ? (viewCountBySlug.get(entry.slug) ?? 0)
+                      : undefined
+                  }
                 />
               </li>
             ))}
@@ -308,6 +388,7 @@ export function KbPage(): JSX.Element {
               navigate(routes.inbox());
             }
           }}
+          onCandidateResolved={handleCandidateResolved}
         />
       )}
       {composeOpen && (

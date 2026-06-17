@@ -49,3 +49,14 @@ export const deleteKBEntry = (
 
 export const reindexKB = (slug: string): Promise<{ ok: true }> =>
   request(`/orgs/${slug}/kb/reindex`, { method: 'POST' });
+
+export interface KBViewStat {
+  slug: string;
+  view_count: number;
+  last_viewed_at: string;
+}
+
+export const getKBStats = (
+  slug: string,
+): Promise<{ entries: KBViewStat[] }> =>
+  request(`/orgs/${slug}/kb/stats`);

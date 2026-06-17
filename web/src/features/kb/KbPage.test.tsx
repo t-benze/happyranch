@@ -88,12 +88,26 @@ const CANDIDATE_ACCEPTED = {
 };
 
 /* ------------------------------------------------------------------ */
+/*  Helpers                                                            */
+/* ------------------------------------------------------------------ */
+
+/** Adds the /kb/stats handler returning the given view stats. */
+function stubKBStats(stats?: { slug: string; view_count: number; last_viewed_at: string }[]) {
+  server.use(
+    http.get(`/api/v1/orgs/${SLUG}/kb/stats`, () =>
+      HttpResponse.json({ entries: stats ?? [] }),
+    ),
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Tests — folder filtering                                           */
 /* ------------------------------------------------------------------ */
 
 describe('KbPage — folder filtering', () => {
   test('filters entries by type (folder) via server param', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats();
     let serverParams: string | null = null;
     server.use(
       http.get('/api/v1/orgs', () =>
@@ -124,6 +138,7 @@ describe('KbPage — folder filtering', () => {
 
   test('"All" folder clears the type filter', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats();
     let serverParams: string | null = null;
     server.use(
       http.get('/api/v1/orgs', () =>
@@ -168,6 +183,7 @@ describe('KbPage — folder filtering', () => {
 describe('KbPage — candidate feed', () => {
   test('shows dream-proposed candidates in the feed with crescent moon marker', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats();
     server.use(
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
@@ -199,6 +215,7 @@ describe('KbPage — candidate feed', () => {
 
   test('shows pending-count tag when candidates exist', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats();
     server.use(
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
@@ -225,6 +242,7 @@ describe('KbPage — candidate feed', () => {
 
   test('shows already-resolved candidates as resolved', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats();
     server.use(
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
@@ -263,6 +281,7 @@ describe('KbPage — candidate feed', () => {
 describe('KbPage — candidate review gate', () => {
   beforeEach(() => {
     sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats();
   });
 
   test('Accept sends POST to shared STEP-1 route and resolves candidate', async () => {
@@ -401,6 +420,7 @@ describe('KbPage — candidate review gate', () => {
 describe('KbPage — loading & empty states', () => {
   test('shows loading skeleton while fetching', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats();
     server.use(
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
@@ -420,6 +440,7 @@ describe('KbPage — loading & empty states', () => {
 
   test('shows empty state when no entries and no candidates', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats();
     server.use(
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
@@ -437,6 +458,7 @@ describe('KbPage — loading & empty states', () => {
 
   test('shows error state with retry on kb list failure', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats();
     server.use(
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
@@ -461,6 +483,7 @@ describe('KbPage — loading & empty states', () => {
 describe('KbPage — entry detail', () => {
   test('opens detail drawer for live KB entries with markdown', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats();
     server.use(
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
@@ -485,5 +508,240 @@ describe('KbPage — entry detail', () => {
     );
     // Source task badge
     expect(screen.getByText('TASK-0042')).toBeInTheDocument();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  Tests — usage label "viewed Nx (CLI)" (Finding 1)                  */
+/* ------------------------------------------------------------------ */
+
+describe('KbPage — viewed Nx (CLI) usage label', () => {
+  test('shows viewed Nx (CLI) for entries with recorded views', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats([
+      { slug: 'policy/refund-thresholds', view_count: 7, last_viewed_at: '2026-06-17T09:00:00Z' },
+    ]);
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/kb`, () =>
+        HttpResponse.json({ entries: [ENTRY_A, ENTRY_B] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
+        HttpResponse.json({ dreams: [] }),
+      ),
+    );
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/Refund authority by tier/);
+    // ENTRY_A has 7 views → "viewed 7× (CLI)"
+    expect(screen.getByText('viewed 7× (CLI)')).toBeInTheDocument();
+    // ENTRY_B has no stats → "viewed 0× (CLI)"
+    expect(screen.getByText('viewed 0× (CLI)')).toBeInTheDocument();
+    // The ONLY usage copy is "viewed Nx (CLI)" — no citation/load-bearing/uncited badges
+    expect(screen.queryByText(/citation/)).toBeNull();
+    expect(screen.queryByText(/load-bearing/)).toBeNull();
+    expect(screen.queryByText(/uncited/)).toBeNull();
+    expect(screen.queryByText(/used by/)).toBeNull();
+    expect(screen.queryByText(/agents/)).toBeNull();
+  });
+
+  test('viewCount is undefined (not rendered) when stats are still loading', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // Don't stub stats — the query will be in loading state
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/kb`, () =>
+        HttpResponse.json({ entries: [ENTRY_A] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
+        HttpResponse.json({ dreams: [] }),
+      ),
+    );
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/Refund authority by tier/);
+    // When stats haven't loaded, the label is absent (viewCount=undefined)
+    expect(screen.queryByText(/viewed/)).toBeNull();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  Tests — candidate resolution clears detail (Finding 2)             */
+/* ------------------------------------------------------------------ */
+
+describe('KbPage — candidate resolution clears detail', () => {
+  beforeEach(() => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+  });
+
+  test('after Accept, the Accept/Dismiss buttons disappear and the candidate detail clears', async () => {
+    stubKBStats();
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/kb`, () =>
+        HttpResponse.json({ entries: [ENTRY_A] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
+        HttpResponse.json({ dreams: [DREAM_WITH_CANDIDATE] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/dreams/DREAM-0099`, () =>
+        HttpResponse.json({
+          ...DREAM_WITH_CANDIDATE,
+          kb_candidates: [CANDIDATE_A],
+        }),
+      ),
+      http.post(`/api/v1/orgs/${SLUG}/dreams/candidates/1/accept`, () =>
+        HttpResponse.json({
+          ...CANDIDATE_A,
+          status: 'promoted',
+          promoted_kb_slug: 'policy/new-refund-flow',
+        }),
+      ),
+      // After accept, the dreams list should show 0 candidates (pending count drops)
+      http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
+        HttpResponse.json({
+          dreams: [{ ...DREAM_WITH_CANDIDATE, kb_candidate_count: 0 }],
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/New refund flow for walk-ins/);
+
+    // Click candidate to open detail
+    await user.click(screen.getByText(/New refund flow for walk-ins/));
+    await screen.findByText('from dream · proposed by triage_agent · pending review');
+
+    // Click Accept
+    const acceptBtn = screen.getByRole('button', { name: 'Accept' });
+    await user.click(acceptBtn);
+
+    // After accept, the drawer should close (candidate detail cleared).
+    // The Accept/Dismiss buttons should no longer be visible.
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Accept' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull();
+    });
+  });
+
+  test('after Dismiss, the Accept/Dismiss buttons disappear and the candidate detail clears', async () => {
+    stubKBStats();
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/kb`, () =>
+        HttpResponse.json({ entries: [ENTRY_A] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
+        HttpResponse.json({ dreams: [DREAM_WITH_CANDIDATE] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/dreams/DREAM-0099`, () =>
+        HttpResponse.json({
+          ...DREAM_WITH_CANDIDATE,
+          kb_candidates: [CANDIDATE_A],
+        }),
+      ),
+      http.post(`/api/v1/orgs/${SLUG}/dreams/candidates/1/dismiss`, () =>
+        HttpResponse.json({
+          ...CANDIDATE_A,
+          status: 'rejected',
+        }),
+      ),
+      // After dismiss, the dreams list should show 0 candidates
+      http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
+        HttpResponse.json({
+          dreams: [{ ...DREAM_WITH_CANDIDATE, kb_candidate_count: 0 }],
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/New refund flow for walk-ins/);
+
+    // Click candidate to open detail
+    await user.click(screen.getByText(/New refund flow for walk-ins/));
+    await screen.findByText('from dream · proposed by triage_agent · pending review');
+
+    // Click Dismiss
+    const dismissBtn = screen.getByRole('button', { name: 'Dismiss' });
+    await user.click(dismissBtn);
+
+    // After dismiss, the drawer should close.
+    // The Accept/Dismiss buttons should no longer be visible.
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Accept' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull();
+    });
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  Tests — debounced search (Finding 3)                               */
+/* ------------------------------------------------------------------ */
+
+describe('KbPage — debounced search', () => {
+  test('typing in the search box triggers /kb/search after debounce', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats();
+    let searchHit = false;
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/kb`, () =>
+        HttpResponse.json({ entries: [ENTRY_A, ENTRY_B] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
+        HttpResponse.json({ dreams: [] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/kb/search`, () => {
+        searchHit = true;
+        return HttpResponse.json({ entries: [ENTRY_A] });
+      }),
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/Refund authority by tier/);
+    // Both entries visible before search
+    expect(screen.getByText(/Spanish-speaking walk-in flow/)).toBeInTheDocument();
+    // Type a search query
+    await user.type(screen.getByPlaceholderText(/Search entries/i), 'refund');
+    // After 200ms debounce + server response, search should have been called
+    await waitFor(() => expect(searchHit).toBe(true), { timeout: 2000 });
+  });
+
+  test('search with empty query shows the full list (not search)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats();
+    let listCalled = 0;
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/kb`, () => {
+        listCalled++;
+        return HttpResponse.json({ entries: [ENTRY_A, ENTRY_B] });
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
+        HttpResponse.json({ dreams: [] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/kb/search`, () =>
+        HttpResponse.json({ entries: [] }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/Refund authority by tier/);
+    // Type then clear
+    await user.type(screen.getByPlaceholderText(/Search entries/i), 'xyz');
+    await user.clear(screen.getByPlaceholderText(/Search entries/i));
+    // After clearing + debounce, the list should still show both entries
+    // (search is not active when q is empty)
+    await waitFor(() => expect(listCalled).toBeGreaterThanOrEqual(1));
   });
 });

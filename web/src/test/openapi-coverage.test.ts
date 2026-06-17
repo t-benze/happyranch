@@ -128,6 +128,8 @@ const INCLUDED_PATHS = new Set<string>([
   'POST /api/v1/assistant/repair',
   // artifacts — founder artifacts UI delete (mirror: deleteArtifact in lib/api/artifacts.ts)
   'DELETE /api/v1/orgs/{slug}/artifacts/{name}',
+  // kb view stats — now wired into the SPA for the "viewed Nx (CLI)" label (PRD §4.5 K1)
+  'GET /api/v1/orgs/{slug}/kb/stats',
   // settings — founder-facing read-only System + Org settings (Phase 1)
   'GET /api/v1/orgs/{slug}/settings',
   // settings — editable org settings (Phase 2)
@@ -177,10 +179,7 @@ const EXCLUDED_PATHS = new Map<string, string>([
   ['POST /api/v1/orgs/{slug}/dreams/{dream_id}/complete', 'agent callback'],
   // work-hours wake spawn — agent callback (single-line --from-file), not browser-callable
   ['POST /api/v1/orgs/{slug}/work-hours/{work_hour_id}/spawn', 'agent callback'],
-  // KB view-tracking read surface — agent-CLI `happyranch kb stats` only; not
-  // wired into the SPA. Read-only (never increments), so no surface-header
-  // concern. See kb-view-tracking-caller-signal.
-  ['GET /api/v1/orgs/{slug}/kb/stats', 'agent-CLI read surface; not in SPA'],
+
 ]);
 
 describe('openapi coverage', () => {

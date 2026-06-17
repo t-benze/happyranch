@@ -29,6 +29,9 @@ afterAll(() => {
       http.get(`/api/v1/orgs/${SLUG}/kb`, () =>
         HttpResponse.json({ entries: [] }),
       ),
+      http.get(`/api/v1/orgs/${SLUG}/kb/stats`, () =>
+        HttpResponse.json({ entries: [] }),
+      ),
       http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
         HttpResponse.json({ dreams: [] }),
       ),
@@ -89,6 +92,9 @@ describe('KB compose write path (flag off)', () => {
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/kb`, () =>
+        HttpResponse.json({ entries: [] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/kb/stats`, () =>
         HttpResponse.json({ entries: [] }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>

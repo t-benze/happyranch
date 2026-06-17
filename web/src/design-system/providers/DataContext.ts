@@ -191,6 +191,7 @@ export interface KbApi {
     params?: { limit?: number },
   ) => QueryLike<{ entries: KBEntry[] }>;
   useKBEntry: (entrySlug: string | undefined) => QueryLike<KBEntry>;
+  useKBStats: () => QueryLike<{ entries: import('@/lib/api/kb').KBViewStat[] }>;
   /** Mutation is wired only under the real provider; mocks no-op. */
   useAddKBEntry: () => MutationLike<AddKBEntryArgs, AddKBEntryResult>;
 }
