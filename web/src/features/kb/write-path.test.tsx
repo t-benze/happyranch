@@ -29,6 +29,9 @@ afterAll(() => {
       http.get(`/api/v1/orgs/${SLUG}/kb`, () =>
         HttpResponse.json({ entries: [] }),
       ),
+      http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
+        HttpResponse.json({ dreams: [] }),
+      ),
       http.post(`/api/v1/orgs/${SLUG}/kb`, async ({ request }) => {
         postedBody = (await request.json()) as Record<string, unknown>;
         return HttpResponse.json({
@@ -88,9 +91,12 @@ describe('KB compose write path (flag off)', () => {
       http.get(`/api/v1/orgs/${SLUG}/kb`, () =>
         HttpResponse.json({ entries: [] }),
       ),
+      http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
+        HttpResponse.json({ dreams: [] }),
+      ),
     );
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
-    await screen.findByRole('heading', { name: /Knowledge base/ });
+    await screen.findByRole('heading', { name: /Knowledge/ });
     expect(screen.queryByRole('button', { name: /Compose…/ })).toBeNull();
   });
 });

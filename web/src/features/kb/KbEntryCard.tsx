@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import type { KBEntry } from '@/lib/api/types';
+import { KB_STRINGS } from './strings';
 
 type Density = 'comfortable' | 'compact';
 
@@ -20,6 +21,8 @@ export interface KbEntryCardProps {
   to: string;
   active?: boolean;
   density?: Density;
+  /** Optional view-count from kb_views for the "viewed Nx (CLI)" label. */
+  viewCount?: number;
 }
 
 export function KbEntryCard({
@@ -27,6 +30,7 @@ export function KbEntryCard({
   to,
   active,
   density = 'comfortable',
+  viewCount,
 }: KbEntryCardProps): JSX.Element {
   const pad = density === 'compact' ? 'p-2' : 'p-3';
   return (
@@ -40,13 +44,18 @@ export function KbEntryCard({
       )}
     >
       <div className="text-fg-muted font-mono text-xs">{entry.slug}</div>
-      <div className="text-fg mt-0.5 flex items-baseline gap-2">
+      <div className="text-fg mt-0.5 flex items-baseline gap-2 flex-wrap">
         <span className="font-medium">{entry.title}</span>
         <span className="text-fg-muted text-xs">· {entry.type}</span>
         <span className="text-fg-muted text-xs">· {relativeAge(entry.updated_at)}</span>
       </div>
       {density === 'comfortable' && entry.tags.length > 0 && (
         <div className="text-fg-muted mt-1 text-xs">{entry.tags.join(' · ')}</div>
+      )}
+      {viewCount !== undefined && (
+        <div className="text-fg-muted mt-1 text-xs">
+          {KB_STRINGS.viewedLabel(viewCount)}
+        </div>
       )}
     </Link>
   );
