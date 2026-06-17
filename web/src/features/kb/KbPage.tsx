@@ -16,7 +16,7 @@
  *
  * States: Loading skeleton, Empty ("No entries yet"), Error (retry).
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useKbRoutes, useKBList, useKBSearch, useKBStats } from '@/hooks/kb';
@@ -83,21 +83,29 @@ function DreamCandidateRow({
   dreamId,
   onSelect,
   detailCandidate,
+  onPendingCountChange,
 }: {
   dreamId: string;
   onSelect: (c: DreamKbCandidate) => void;
   detailCandidate: DreamKbCandidate | null;
+  onPendingCountChange?: (dreamId: string, count: number) => void;
 }): JSX.Element | null {
   const dreamQ = useDream(dreamId);
 
-  if (dreamQ.isLoading) return null;
-  if (!dreamQ.data?.kb_candidates) return null;
+  // Derive pending candidates from fetched statuses (not kb_candidate_count total).
+  const pending = useMemo(() => {
+    if (!dreamQ.data?.kb_candidates) return [];
+    return dreamQ.data.kb_candidates.filter((c) => c.status === 'pending');
+  }, [dreamQ.data?.kb_candidates]);
 
-  const pending = dreamQ.data.kb_candidates.filter(
-    (c) => c.status === 'pending',
-  );
+  // Report pending count for this dream back to the parent so the header tag
+  // tracks live statuses, not the stored kb_candidate_count total.
+  useEffect(() => {
+    onPendingCountChange?.(dreamId, pending.length);
+    return () => onPendingCountChange?.(dreamId, 0);
+  }, [dreamId, pending.length, onPendingCountChange]);
 
-  if (pending.length === 0) return null;
+  if (dreamQ.isLoading || pending.length === 0) return null;
 
   return (
     <>
@@ -203,13 +211,23 @@ export function KbPage(): JSX.Element {
     return dreamsQuery.data.dreams.filter((d) => d.kb_candidate_count > 0);
   }, [dreamsQuery.data?.dreams]);
 
-  // Candidate count from dreams list data (server-reported, not a UI guess)
-  const pendingCount = useMemo(() => {
-    return dreamsWithCandidates.reduce(
-      (sum, d) => sum + d.kb_candidate_count,
-      0,
-    );
-  }, [dreamsWithCandidates]);
+  // Pending candidate count derived from the SAME per-dream candidate
+  // statuses the feed already fetches (status === 'pending'), NOT from the
+  // stored kb_candidate_count total which never decrements after Accept/Dismiss.
+  const pendingCountsRef = useRef<Map<string, number>>(new Map());
+  const [candidatePendingCount, setCandidatePendingCount] = useState(0);
+
+  const handlePendingCountChange = useCallback(
+    (dreamId: string, count: number) => {
+      pendingCountsRef.current.set(dreamId, count);
+      const total = Array.from(pendingCountsRef.current.values()).reduce(
+        (sum, c) => sum + c,
+        0,
+      );
+      setCandidatePendingCount(total);
+    },
+    [],
+  );
 
   // Build folder filter options from KB entry types.
   // FilterSidebar renders its own "All" button — don't duplicate.
@@ -265,7 +283,12 @@ export function KbPage(): JSX.Element {
 
   const detailOpen = !!openSlug || !!detailCandidate;
 
-  const isListEmpty = liveEntries.length === 0 && dreamsWithCandidates.length === 0;
+  // When searching, candidate rows are hidden — judge emptiness from visible
+  // search results only, otherwise the "No matches" empty state never appears
+  // when a pending candidate exists.
+  const isListEmpty = isSearching
+    ? liveEntries.length === 0
+    : liveEntries.length === 0 && dreamsWithCandidates.length === 0;
 
   return (
     <div className="flex h-full">
@@ -305,9 +328,9 @@ export function KbPage(): JSX.Element {
                 {KB_STRINGS.composeButton}
               </Button>
             )}
-            {pendingCount > 0 && (
+            {candidatePendingCount > 0 && (
               <span className="text-xs font-medium text-accent bg-accent/10 px-2 py-1 rounded-full">
-                {KB_STRINGS.pendingCandidatesTag(pendingCount)}
+                {KB_STRINGS.pendingCandidatesTag(candidatePendingCount)}
               </span>
             )}
           </div>
@@ -354,6 +377,7 @@ export function KbPage(): JSX.Element {
                 dreamId={d.dream_id}
                 onSelect={handleCandidateSelect}
                 detailCandidate={detailCandidate}
+                onPendingCountChange={handlePendingCountChange}
               />
             ))}
 

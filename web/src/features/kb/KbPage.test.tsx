@@ -87,6 +87,20 @@ const CANDIDATE_ACCEPTED = {
   promoted_kb_slug: 'policy/already-accepted',
 };
 
+/** Live KB entry created after accept. */
+const PROMOTED_ENTRY = {
+  slug: 'policy/new-refund-flow',
+  title: 'New refund flow for walk-ins',
+  type: 'policy',
+  topic: 'policy',
+  tags: ['policy'],
+  body: '# New refund flow for walk-ins\n\n## Proposed\n\nAdd a new step for multi-language refund verification.',
+  updated_at: '2026-06-17T09:00:00Z',
+  authored_by: 'triage_agent',
+  source_task: 'TASK-0099',
+  related_entries: [],
+};
+
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
@@ -213,7 +227,7 @@ describe('KbPage — candidate feed', () => {
     expect(screen.getByText('pending review')).toBeInTheDocument();
   });
 
-  test('shows pending-count tag when candidates exist', async () => {
+  test('shows pending-count tag from actual pending statuses, not kb_candidate_count total', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubKBStats();
     server.use(
@@ -229,15 +243,18 @@ describe('KbPage — candidate feed', () => {
       http.get(`/api/v1/orgs/${SLUG}/dreams/DREAM-0099`, () =>
         HttpResponse.json({
           ...DREAM_WITH_CANDIDATE,
+          // 2 total candidates, but only CANDIDATE_A is pending
           kb_candidates: [CANDIDATE_A, CANDIDATE_ACCEPTED],
         }),
       ),
     );
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
     await screen.findByText(/Refund authority by tier/);
-    // The pending count tag shows the total kb_candidate_count from dreams list (1)
-    // The actual pending candidates in the detail may be different
+    // The pending count tag should count only pending-status candidates,
+    // NOT the stored kb_candidate_count total (which would be 2).
     await screen.findByText(/1 candidate pending/);
+    // CANDIDATE_ACCEPTED (promoted) should not inflate the count — verify no "2 candidates"
+    expect(screen.queryByText(/2 candidates pending/)).toBeNull();
   });
 
   test('shows already-resolved candidates as resolved', async () => {
@@ -576,8 +593,9 @@ describe('KbPage — candidate resolution clears detail', () => {
     sessionStorage.setItem('happyranch.token', 'tok');
   });
 
-  test('after Accept, the Accept/Dismiss buttons disappear and the candidate detail clears', async () => {
+  test('after Accept, the drawer shows the promoted live entry, pending count drops, and Accept/Dismiss buttons disappear', async () => {
     stubKBStats();
+    let acceptSubmitted = false;
     server.use(
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
@@ -588,29 +606,37 @@ describe('KbPage — candidate resolution clears detail', () => {
       http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
         HttpResponse.json({ dreams: [DREAM_WITH_CANDIDATE] }),
       ),
-      http.get(`/api/v1/orgs/${SLUG}/dreams/DREAM-0099`, () =>
-        HttpResponse.json({
+      // Single handler: returns pending initially, promoted after accept submitted
+      http.get(`/api/v1/orgs/${SLUG}/dreams/DREAM-0099`, () => {
+        if (acceptSubmitted) {
+          return HttpResponse.json({
+            ...DREAM_WITH_CANDIDATE,
+            kb_candidates: [{ ...CANDIDATE_A, status: 'promoted', promoted_kb_slug: 'policy/new-refund-flow' }],
+          });
+        }
+        return HttpResponse.json({
           ...DREAM_WITH_CANDIDATE,
           kb_candidates: [CANDIDATE_A],
-        }),
-      ),
-      http.post(`/api/v1/orgs/${SLUG}/dreams/candidates/1/accept`, () =>
-        HttpResponse.json({
+        });
+      }),
+      http.post(`/api/v1/orgs/${SLUG}/dreams/candidates/1/accept`, () => {
+        acceptSubmitted = true;
+        return HttpResponse.json({
           ...CANDIDATE_A,
           status: 'promoted',
           promoted_kb_slug: 'policy/new-refund-flow',
-        }),
-      ),
-      // After accept, the dreams list should show 0 candidates (pending count drops)
-      http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
-        HttpResponse.json({
-          dreams: [{ ...DREAM_WITH_CANDIDATE, kb_candidate_count: 0 }],
-        }),
+        });
+      }),
+      // The promoted KB entry should render in the drawer
+      http.get(`/api/v1/orgs/${SLUG}/kb/policy/new-refund-flow`, () =>
+        HttpResponse.json(PROMOTED_ENTRY),
       ),
     );
     const user = userEvent.setup();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
     await screen.findByText(/New refund flow for walk-ins/);
+    // Before resolve: pending count tag visible
+    expect(screen.getByText(/1 candidate pending/)).toBeInTheDocument();
 
     // Click candidate to open detail
     await user.click(screen.getByText(/New refund flow for walk-ins/));
@@ -620,16 +646,28 @@ describe('KbPage — candidate resolution clears detail', () => {
     const acceptBtn = screen.getByRole('button', { name: 'Accept' });
     await user.click(acceptBtn);
 
-    // After accept, the drawer should close (candidate detail cleared).
-    // The Accept/Dismiss buttons should no longer be visible.
+    // After Accept:
+    // (a) Accept/Dismiss buttons disappear
     await waitFor(() => {
       expect(screen.queryByRole('button', { name: 'Accept' })).toBeNull();
       expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull();
     });
+    // (b) The promoted live entry's body appears in the drawer — the markdown
+    // body text is unique (not duplicated in the feed candidate row).
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Add a new step for multi-language refund verification/),
+      ).toBeInTheDocument();
+    });
+    // (c) The pending-count tag drops (no more pending candidates)
+    await waitFor(() => {
+      expect(screen.queryByText(/candidate pending/)).toBeNull();
+    });
   });
 
-  test('after Dismiss, the Accept/Dismiss buttons disappear and the candidate detail clears', async () => {
+  test('after Dismiss, the Accept/Dismiss buttons disappear, candidate detail clears, and pending count drops', async () => {
     stubKBStats();
+    let dismissSubmitted = false;
     server.use(
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
@@ -640,28 +678,32 @@ describe('KbPage — candidate resolution clears detail', () => {
       http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
         HttpResponse.json({ dreams: [DREAM_WITH_CANDIDATE] }),
       ),
-      http.get(`/api/v1/orgs/${SLUG}/dreams/DREAM-0099`, () =>
-        HttpResponse.json({
+      // Single handler: returns pending initially, rejected after dismiss submitted
+      http.get(`/api/v1/orgs/${SLUG}/dreams/DREAM-0099`, () => {
+        if (dismissSubmitted) {
+          return HttpResponse.json({
+            ...DREAM_WITH_CANDIDATE,
+            kb_candidates: [{ ...CANDIDATE_A, status: 'rejected' }],
+          });
+        }
+        return HttpResponse.json({
           ...DREAM_WITH_CANDIDATE,
           kb_candidates: [CANDIDATE_A],
-        }),
-      ),
-      http.post(`/api/v1/orgs/${SLUG}/dreams/candidates/1/dismiss`, () =>
-        HttpResponse.json({
+        });
+      }),
+      http.post(`/api/v1/orgs/${SLUG}/dreams/candidates/1/dismiss`, () => {
+        dismissSubmitted = true;
+        return HttpResponse.json({
           ...CANDIDATE_A,
           status: 'rejected',
-        }),
-      ),
-      // After dismiss, the dreams list should show 0 candidates
-      http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
-        HttpResponse.json({
-          dreams: [{ ...DREAM_WITH_CANDIDATE, kb_candidate_count: 0 }],
-        }),
-      ),
+        });
+      }),
     );
     const user = userEvent.setup();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
     await screen.findByText(/New refund flow for walk-ins/);
+    // Before resolve: pending count tag visible
+    expect(screen.getByText(/1 candidate pending/)).toBeInTheDocument();
 
     // Click candidate to open detail
     await user.click(screen.getByText(/New refund flow for walk-ins/));
@@ -671,11 +713,15 @@ describe('KbPage — candidate resolution clears detail', () => {
     const dismissBtn = screen.getByRole('button', { name: 'Dismiss' });
     await user.click(dismissBtn);
 
-    // After dismiss, the drawer should close.
-    // The Accept/Dismiss buttons should no longer be visible.
+    // After Dismiss:
+    // (a) Accept/Dismiss buttons disappear
     await waitFor(() => {
       expect(screen.queryByRole('button', { name: 'Accept' })).toBeNull();
       expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull();
+    });
+    // (b) Pending count tag drops
+    await waitFor(() => {
+      expect(screen.queryByText(/candidate pending/)).toBeNull();
     });
   });
 });
@@ -743,5 +789,45 @@ describe('KbPage — debounced search', () => {
     // After clearing + debounce, the list should still show both entries
     // (search is not active when q is empty)
     await waitFor(() => expect(listCalled).toBeGreaterThanOrEqual(1));
+  });
+
+  test('search with zero results renders "No matches" even when a pending candidate exists', async () => {
+    // Finding 3: when isSearching, emptiness must be decided from VISIBLE search
+    // results only — not from dreamsWithCandidates which are hidden during search.
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats();
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/kb`, () =>
+        HttpResponse.json({ entries: [ENTRY_A] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
+        HttpResponse.json({ dreams: [DREAM_WITH_CANDIDATE] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/dreams/DREAM-0099`, () =>
+        HttpResponse.json({
+          ...DREAM_WITH_CANDIDATE,
+          kb_candidates: [CANDIDATE_A],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/kb/search`, () =>
+        HttpResponse.json({ entries: [] }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
+    await screen.findByText(/Refund authority by tier/);
+    // Pending candidate exists (visible in feed before search)
+    await screen.findByText(/New refund flow for walk-ins/);
+
+    // Start searching
+    await user.type(screen.getByPlaceholderText(/Search entries/i), 'zzz_nonexistent');
+
+    // Should render the "No matches" empty state, NOT a blank feed
+    await screen.findByText('No matches', {}, { timeout: 3000 });
+    // Verify the empty body text is also present
+    expect(screen.getByText('No entries match that search.')).toBeInTheDocument();
   });
 });
