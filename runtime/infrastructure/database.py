@@ -3556,7 +3556,11 @@ class Database:
 
     @_synchronized
     def list_dream_kb_candidates(
-        self, *, dream_id: str | None = None, agent: str | None = None,
+        self,
+        *,
+        dream_id: str | None = None,
+        agent: str | None = None,
+        candidate_id: int | None = None,
     ) -> list[DreamKbCandidate]:
         clauses = []
         params: list[object] = []
@@ -3566,12 +3570,41 @@ class Database:
         if agent is not None:
             clauses.append("agent_name = ?")
             params.append(agent)
+        if candidate_id is not None:
+            clauses.append("id = ?")
+            params.append(candidate_id)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = self._conn.execute(
             f"SELECT * FROM dream_kb_candidates {where} ORDER BY created_at DESC",
             params,
         ).fetchall()
         return [self._dream_candidate_row_to_model(row) for row in rows]
+
+    @_synchronized
+    def update_dream_kb_candidate(
+        self,
+        candidate_id: int,
+        *,
+        status: str,
+        promoted_kb_slug: str | None = None,
+    ) -> None:
+        allowed = {"pending", "promoted", "rejected", "superseded"}
+        if status not in allowed:
+            raise ValueError(f"invalid status: {status!r}, expected one of {sorted(allowed)}")
+        now = _now().isoformat()
+        params: list[object] = [status, now]
+        slug_assign = ""
+        if promoted_kb_slug is not None:
+            slug_assign = ", promoted_kb_slug = ?"
+            params.append(promoted_kb_slug)
+        params.append(candidate_id)
+        cursor = self._conn.execute(
+            f"UPDATE dream_kb_candidates SET status = ?, updated_at = ?{slug_assign} WHERE id = ?",
+            params,
+        )
+        if cursor.rowcount == 0:
+            raise ValueError(f"dream_kb_candidate {candidate_id} not found")
+        self._conn.commit()
 
     # --- Escalation Notifications ---
 

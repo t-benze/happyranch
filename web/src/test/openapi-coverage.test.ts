@@ -94,10 +94,13 @@ const INCLUDED_PATHS = new Set<string>([
   'GET /api/v1/orgs/{slug}/jobs/{job_id}/tail',
   'POST /api/v1/orgs/{slug}/jobs/{job_id}/wait',
   'POST /api/v1/orgs/{slug}/jobs/{job_id}/stop',
-  // dreams — founder-facing list/show/status; completion is agent callback
+  // dreams — founder-facing list/show/status; completion is agent callback;
+  // accept/dismiss are browser-callable for the candidate review gate
   'GET /api/v1/orgs/{slug}/dreams/status',
   'GET /api/v1/orgs/{slug}/dreams',
   'GET /api/v1/orgs/{slug}/dreams/{dream_id}',
+  'POST /api/v1/orgs/{slug}/dreams/candidates/{candidate_id}/accept',
+  'POST /api/v1/orgs/{slug}/dreams/candidates/{candidate_id}/dismiss',
   // work-hours — founder-facing list/show/status; spawn is agent callback
   'GET /api/v1/orgs/{slug}/work-hours/status',
   'GET /api/v1/orgs/{slug}/work-hours',

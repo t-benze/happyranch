@@ -52,3 +52,38 @@ export async function listDreams(
 export async function getDream(org: string, dreamId: string): Promise<DreamDetailResponse> {
   return request<DreamDetailResponse>(`/orgs/${org}/dreams/${dreamId}`)
 }
+
+export interface DreamKbCandidate {
+  id: number
+  dream_id: string
+  agent_name: string
+  slug: string
+  title: string
+  topic: string
+  rationale: string
+  body_markdown: string
+  status: string
+  promoted_kb_slug: string | null
+  created_at: string
+  updated_at: string
+}
+
+export async function acceptDreamKbCandidate(
+  org: string,
+  candidateId: number,
+): Promise<DreamKbCandidate> {
+  return request<DreamKbCandidate>(
+    `/orgs/${org}/dreams/candidates/${candidateId}/accept`,
+    { method: 'POST' },
+  )
+}
+
+export async function dismissDreamKbCandidate(
+  org: string,
+  candidateId: number,
+): Promise<DreamKbCandidate> {
+  return request<DreamKbCandidate>(
+    `/orgs/${org}/dreams/candidates/${candidateId}/dismiss`,
+    { method: 'POST' },
+  )
+}
