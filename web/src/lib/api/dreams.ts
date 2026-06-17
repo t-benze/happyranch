@@ -28,7 +28,7 @@ export interface DreamListResponse {
 
 export interface DreamDetailResponse extends DreamRecord {
   transcript?: string
-  kb_candidates?: unknown[]
+  kb_candidates?: DreamKbCandidate[]
 }
 
 export async function getDreamStatus(

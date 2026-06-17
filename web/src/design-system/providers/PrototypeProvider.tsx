@@ -22,6 +22,7 @@ import { mockAuditApi } from './_mock-audit';
 import { mockDashboardApi } from './_mock-dashboard';
 import { mockHealthApi } from './_mock-health';
 import { mockKbApi, useMockKbRoutes } from './_mock-kb';
+import { mockDreamsApi, useMockDreamsRoutes } from './_mock-dreams';
 import { mockOrgsApi } from './_mock-orgs';
 import { useMockAgentsRoutes, useMockJobsRoutes, useMockThreadRoutes } from './_mock-routes';
 import { mockJobsApi } from './_mock-jobs';
@@ -56,6 +57,7 @@ export function PrototypeProvider({ children }: { children: ReactNode }): JSX.El
           tasks: mockTasksApi,
           dashboard: mockDashboardApi,
           kb: mockKbApi,
+          dreams: mockDreamsApi,
           teams: mockTeamsApi,
           health: mockHealthApi,
           assistant: mockAssistantApi,
@@ -66,6 +68,7 @@ export function PrototypeProvider({ children }: { children: ReactNode }): JSX.El
           useKbRoutes: useMockKbRoutes,
           useAgentsRoutes: useMockAgentsRoutes,
           useJobsRoutes: useMockJobsRoutes,
+          useDreamsRoutes: useMockDreamsRoutes,
         }}
       >
         <TooltipProvider delayDuration={300}>

@@ -24,6 +24,7 @@ import { KbPage } from '@/features/kb/KbPage';
 import { TasksPage } from '@/features/tasks/TasksPage';
 import { SpendPage } from '@/features/spend/SpendPage';
 import { SystemAssistantPage } from '@/features/system-assistant/SystemAssistantPage';
+import { DreamsPage } from '@/features/dreams/DreamsPage';
 import { PlaceholderPage } from '@/features/placeholder/PlaceholderPage';
 import { ThreadsPage } from '@/features/threads/ThreadsPage';
 import { PROTOTYPES_DISABLED, prototypeRoutes } from '@/prototypes';
@@ -101,7 +102,7 @@ export function AppRoutes(): JSX.Element {
           <Route path="jobs" element={<JobsPage />} />
           <Route path="jobs/:job_id" element={<JobsPage />} />
           <Route path="spend" element={<SpendPage />} />
-          <Route path="dreams" element={<PlaceholderPage />} />
+          <Route path="dreams" element={<DreamsPage />} />
           <Route path="schedule" element={<PlaceholderPage />} />
           <Route path="artifacts" element={<ArtifactsPage />} />
           <Route path="assistant" element={<SystemAssistantPage />} />

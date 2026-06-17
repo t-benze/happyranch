@@ -33,6 +33,7 @@ import type { kb as kbApi } from '@/lib/api';
 import type { audit as auditApi } from '@/lib/api';
 import type { agents as agentsApi } from '@/lib/api';
 import type { jobs as jobsApi } from '@/lib/api';
+import type { DreamRecord, DreamKbCandidate } from '@/lib/api/dreams';
 import type {
   AssistantRegisterBody,
   AssistantStatus,
@@ -201,8 +202,27 @@ export interface KbRoutes {
 }
 
 // ---------------------------------------------------------------------------
-// Context shape — one bag per feature domain. Future PRs add `kb`…
+// DreamsApi — covers every hook the Dreams page + its detail drawer consume.
 // ---------------------------------------------------------------------------
+
+export interface DreamsApi {
+  useDreamsList: (params?: {
+    agent?: string;
+    limit?: number;
+  }) => QueryLike<{ dreams: DreamRecord[] }>;
+  useDream: (dreamId: string | undefined) => QueryLike<DreamRecord & {
+    transcript?: string;
+    kb_candidates?: DreamKbCandidate[];
+  }>;
+  useAcceptCandidate: () => MutationLike<number, DreamKbCandidate>;
+  useDismissCandidate: () => MutationLike<number, DreamKbCandidate>;
+}
+
+export interface DreamsRoutes {
+  inbox: () => string;
+  detail: (dreamId: string) => string;
+  inboxForOrg: (slug: string) => string;
+}
 
 // ---------------------------------------------------------------------------
 // OrgsApi — minimal read-only surface so the TopBar org dropdown works
@@ -399,6 +419,7 @@ export interface DataContextValue {
   jobs: JobsApi;
   dashboard: DashboardApi;
   settings: SettingsApi;
+  dreams: DreamsApi;
   /**
    * Provider-supplied React hook that returns the active feature's route
    * builders. A hook (not a plain object) so the implementation can read
@@ -409,6 +430,7 @@ export interface DataContextValue {
   useKbRoutes: () => KbRoutes;
   useAgentsRoutes: () => AgentsRoutes;
   useJobsRoutes: () => JobsRoutes;
+  useDreamsRoutes: () => DreamsRoutes;
 }
 
 export const DataContext = createContext<DataContextValue | null>(null);
