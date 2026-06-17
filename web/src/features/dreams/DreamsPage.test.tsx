@@ -1,5 +1,6 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock the dreams hooks so the page renders deterministically
@@ -16,9 +17,14 @@ vi.mock('@/hooks/dreams', () => ({
 }));
 
 function renderPage(ui: React.ReactElement) {
-  return render(
-    <MemoryRouter initialEntries={['/orgs/test-org/dreams']}>{ui}</MemoryRouter>,
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  vi.spyOn(qc, 'invalidateQueries');
+  const rendered = render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={['/orgs/test-org/dreams']}>{ui}</MemoryRouter>
+    </QueryClientProvider>,
   );
+  return { ...rendered, qc };
 }
 
 // Mock useParams so DreamsPage reads the slug from context
@@ -366,5 +372,70 @@ describe('DreamsPage', () => {
     expect(quote).toBeDefined();
     // Should have italic class
     expect(quote.classList.contains('italic')).toBe(true);
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  FINDING 2 — Dreams list error retry                              */
+  /* ---------------------------------------------------------------- */
+
+  it('renders Retry button on Dreams list error and invokes query invalidation', () => {
+    mockDreamsList.mockReturnValue(errored());
+    const { qc } = renderPage(<DreamsPage />);
+
+    // Error text should be visible
+    expect(screen.getByText("Couldn't load dreams")).toBeDefined();
+
+    // Retry button should render
+    const retryButton = screen.getByRole('button', { name: 'Retry' });
+    expect(retryButton).toBeDefined();
+
+    // Clicking Retry should invalidate the dreams-list query
+    fireEvent.click(retryButton);
+    expect(qc.invalidateQueries).toHaveBeenCalledWith(
+      expect.objectContaining({ queryKey: ['dreams-list', 'test-org'] }),
+    );
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  FINDING 3 — Detail skeleton loading + error retry                */
+  /* ---------------------------------------------------------------- */
+
+  it('renders skeleton in detail drawer when dream detail is loading', () => {
+    mockDreamsList.mockReturnValue(loaded({ dreams: [DREAM_WITH_CANDIDATES] }));
+    mockDream.mockReturnValue(loading());
+
+    renderPage(<DreamsPage />);
+
+    // Click to open detail drawer
+    const card = screen.getByText('DREAM-0011').closest('button')!;
+    fireEvent.click(card);
+
+    // Detail drawer should show skeleton (animate-pulse)
+    const skeletons = document.querySelectorAll('.animate-pulse');
+    expect(skeletons.length).toBeGreaterThan(0);
+  });
+
+  it('renders Retry button on dream detail error and invokes query invalidation', () => {
+    mockDreamsList.mockReturnValue(loaded({ dreams: [DREAM_WITH_CANDIDATES] }));
+    mockDream.mockReturnValue(errored());
+
+    const { qc } = renderPage(<DreamsPage />);
+
+    // Click to open detail drawer
+    const card = screen.getByText('DREAM-0011').closest('button')!;
+    fireEvent.click(card);
+
+    // Error text should be visible in drawer
+    expect(screen.getByText("Couldn't load dreams")).toBeDefined();
+
+    // Retry button should render
+    const retryButton = screen.getByRole('button', { name: 'Retry' });
+    expect(retryButton).toBeDefined();
+
+    // Clicking Retry should invalidate the dream detail query
+    fireEvent.click(retryButton);
+    expect(qc.invalidateQueries).toHaveBeenCalledWith(
+      expect.objectContaining({ queryKey: ['dream', 'test-org', 'DREAM-0011'] }),
+    );
   });
 });

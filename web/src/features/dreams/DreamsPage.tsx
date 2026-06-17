@@ -10,7 +10,9 @@
  */
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { useDreamsList } from '@/hooks/dreams';
+import { Button } from '@/design-system/primitives/Button';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { cn } from '@/lib/utils';
 import { DreamDetailPane } from './DreamDetailPane';
@@ -193,6 +195,7 @@ function LoadingSkeleton(): JSX.Element {
 
 export function DreamsPage(): JSX.Element {
   const { slug: orgSlug } = useParams<{ slug: string }>();
+  const queryClient = useQueryClient();
   const dreamsQ = useDreamsList();
   const [selectedDreamId, setSelectedDreamId] = useState<string | null>(null);
 
@@ -210,8 +213,19 @@ export function DreamsPage(): JSX.Element {
         {dreamsQ.isLoading ? (
           <LoadingSkeleton />
         ) : dreamsQ.isError ? (
-          <div className="p-4 text-center">
+          <div className="p-4 text-center space-y-3">
             <p className="text-feedback-danger text-sm">{DREAM_STRINGS.errorTitle}</p>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                queryClient.invalidateQueries({
+                  queryKey: ['dreams-list', orgSlug],
+                })
+              }
+            >
+              {DREAM_STRINGS.retry}
+            </Button>
           </div>
         ) : dreams.length === 0 ? (
           <EmptyState

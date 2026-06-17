@@ -9,6 +9,7 @@
  */
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   Drawer,
   DrawerContent,
@@ -173,7 +174,8 @@ export function DreamDetailPane({
   dreamId: string;
   onClose: () => void;
 }): JSX.Element {
-  const { slug } = useParams<{ slug: string }>();
+  const { slug: orgSlug } = useParams<{ slug: string }>();
+  const queryClient = useQueryClient();
   const dreamQ = useDream(dreamId);
   const acceptMutation = useAcceptCandidate();
   const dismissMutation = useDismissCandidate();
@@ -238,10 +240,37 @@ export function DreamDetailPane({
         {/* Body */}
         <section className="flex-1 overflow-y-auto p-4">
           {dreamQ.isLoading ? (
-            <p className="text-text-muted text-sm">{DREAM_STRINGS.drawerLoading}</p>
+            <div className="animate-pulse space-y-4 p-2">
+              {/* Skeleton header row */}
+              <div className="flex items-center gap-2">
+                <div className="bg-bg-raised h-3 w-3 rounded-full" />
+                <div className="bg-bg-raised h-3 w-24 rounded" />
+              </div>
+              <div className="bg-bg-raised h-4 w-3/4 rounded" />
+              {/* Skeleton stat row */}
+              <div className="flex items-center gap-3">
+                <div className="bg-bg-raised h-2.5 w-16 rounded" />
+                <div className="bg-bg-raised h-2.5 w-16 rounded" />
+                <div className="bg-bg-raised h-2.5 w-24 rounded" />
+              </div>
+              {/* Skeleton content cards */}
+              <div className="bg-bg-raised rounded-lg h-24" />
+              <div className="bg-bg-raised rounded-lg h-20" />
+            </div>
           ) : dreamQ.isError ? (
-            <div className="text-center">
+            <div className="text-center space-y-3 p-4">
               <p className="text-feedback-danger text-sm">{DREAM_STRINGS.errorTitle}</p>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  queryClient.invalidateQueries({
+                    queryKey: ['dream', orgSlug, dreamId],
+                  })
+                }
+              >
+                {DREAM_STRINGS.retry}
+              </Button>
             </div>
           ) : dream ? (
             <div className="space-y-4">
@@ -314,7 +343,7 @@ export function DreamDetailPane({
               {/* Reflection thread link */}
               {dream.founder_thread_id ? (
                 <Link
-                  to={slug ? `/orgs/${slug}/threads/${dream.founder_thread_id}` : '#'}
+                  to={orgSlug ? `/orgs/${orgSlug}/threads/${dream.founder_thread_id}` : '#'}
                   className="text-accent text-sm hover:underline inline-block"
                 >
                   {DREAM_STRINGS.openReflectionThread} &rarr;
