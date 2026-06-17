@@ -25,6 +25,17 @@ export const listTasks = (
 ): Promise<{ tasks: TaskListItem[]; next_cursor?: string | null }> =>
   request(`/orgs/${slug}/tasks`, { params });
 
+export const listTaskRoots = (
+  slug: string,
+  params?: {
+    limit?: number;
+    status?: string;
+    assigned_agent?: string;
+    before?: string;
+  },
+): Promise<{ tasks: TaskListItem[]; next_cursor?: string | null }> =>
+  request(`/orgs/${slug}/tasks/roots`, { params });
+
 export const getTask = (slug: string, taskId: string): Promise<TaskDetailResponse> =>
   request(`/orgs/${slug}/tasks/${taskId}`);
 

@@ -30,6 +30,24 @@ const TASK = {
   closed_at: null,
   cancelled_at: null,
   session_timeout_seconds: null,
+  severity_rollup: 'in_progress',
+};
+
+const TASK_BLOCKED = {
+  task_id: 'TASK-0090',
+  team: 'ops',
+  brief: 'Vet partner hotel candidates',
+  status: 'blocked',
+  block_kind: 'escalated',
+  assigned_agent: 'qa_engineer',
+  parent_task_id: null,
+  revisit_of_task_id: null,
+  created_at: '2026-05-18T09:00:00Z',
+  updated_at: '2026-05-18T09:30:00Z',
+  closed_at: null,
+  cancelled_at: null,
+  session_timeout_seconds: null,
+  severity_rollup: 'blocked',
 };
 
 const JOB: JobRecord = {
@@ -63,30 +81,73 @@ const JOB: JobRecord = {
 };
 
 describe('TasksPage — read path', () => {
-  test('renders the inbox with fixture tasks', async () => {
+  test('renders roots-only list with severity rollup', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
-      http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
-        HttpResponse.json({ tasks: [TASK] }),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [TASK, TASK_BLOCKED] }),
       ),
     );
     mountAt(`/orgs/${SLUG}/tasks`);
-    await waitFor(() =>
-      expect(screen.getByText(/Draft Hong Kong visa guide/)).toBeInTheDocument(),
-    );
+    await waitFor(() => {
+      expect(screen.getByText(/Draft Hong Kong visa guide/)).toBeInTheDocument();
+      expect(screen.getByText(/Vet partner hotel/)).toBeInTheDocument();
+    });
   });
 
-  test('renders filter sidebar groups', async () => {
+  test('renders group-by segmented control', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
-      http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
         HttpResponse.json({ tasks: [TASK] }),
       ),
     );
     mountAt(`/orgs/${SLUG}/tasks`);
     await waitFor(() => {
-      expect(screen.getByText(/Status/i)).toBeInTheDocument();
-      expect(screen.getByText(/Team/i)).toBeInTheDocument();
+      expect(screen.getByText('Status')).toBeInTheDocument();
+      expect(screen.getByText('Agent')).toBeInTheDocument();
+      expect(screen.getByText('Thread')).toBeInTheDocument();
+    });
+  });
+
+  test('shows severity rollup pill on root row', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [TASK_BLOCKED] }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/tasks`);
+    await waitFor(() => {
+      expect(screen.getByText('Blocked')).toBeInTheDocument();
+    });
+  });
+
+  test('shows Empty state when no tasks', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [] }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/tasks`);
+    await waitFor(() => {
+      expect(screen.getByText(/No tasks yet/i)).toBeInTheDocument();
+    });
+  });
+
+  test('renders loading skeletons', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // Use a handler that never resolves to trigger loading state
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        new Promise(() => { /* hang forever */ }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/tasks`);
+    // Skeleton rows should have aria-busy
+    await waitFor(() => {
+      expect(screen.getByRole('generic', { busy: true })).toBeInTheDocument();
     });
   });
 });
@@ -97,11 +158,19 @@ describe('TaskDetailPane — jobs cross-link', () => {
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
       ),
-      http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
         HttpResponse.json({ tasks: [TASK] }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}`, () =>
-        HttpResponse.json(TASK),
+        HttpResponse.json({
+          task: TASK,
+          results: [],
+          audit_log: [],
+          revisit_chain: [TASK.task_id],
+          direct_revisits: [],
+          predecessor_prior_status: null,
+          blocked_on_jobs: null,
+        }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/recall`, () =>
         HttpResponse.json({
@@ -164,7 +233,7 @@ describe('TaskDetailPane — workflow chain strip', () => {
     task: TASK,
     results: [],
     audit_log: [],
-    revisit_chain: [],
+    revisit_chain: [TASK.task_id],
     direct_revisits: [],
     predecessor_prior_status: null,
     blocked_on_jobs: null,
@@ -175,7 +244,7 @@ describe('TaskDetailPane — workflow chain strip', () => {
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
       ),
-      http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
         HttpResponse.json({ tasks: [TASK] }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}`, () =>
@@ -220,5 +289,53 @@ describe('TaskDetailPane — workflow chain strip', () => {
       expect(screen.getByText(/Live events/i)).toBeInTheDocument(),
     );
     expect(screen.queryByText(/Workflow chain/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('TaskDetailPane — revisit chain timeline', () => {
+  test('renders lineage chain when revisit_chain has multiple entries', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [TASK] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}`, () =>
+        HttpResponse.json({
+          task: TASK,
+          results: [],
+          audit_log: [],
+          revisit_chain: [TASK.task_id, 'TASK-0080', 'TASK-0075'],
+          direct_revisits: [],
+          predecessor_prior_status: null,
+          blocked_on_jobs: null,
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/recall`, () =>
+        HttpResponse.json({
+          task_id: TASK.task_id,
+          assigned_agent: null,
+          brief: TASK.brief,
+          status: TASK.status,
+          output_summary: null,
+          children: [],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
+        HttpResponse.json({ jobs: [] }),
+      ),
+    );
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+    });
+    // Should show Lineage section with chain nodes
+    expect(await screen.findByText(/Lineage/i)).toBeInTheDocument();
+    expect(screen.getByText('TASK-0075')).toBeInTheDocument();
+    expect(screen.getByText('TASK-0080')).toBeInTheDocument();
+    // TASK-0091 appears in both the drawer header (IdBadge) and the lineage chain
+    const nodes = screen.getAllByText('TASK-0091');
+    expect(nodes.length).toBeGreaterThanOrEqual(2);
   });
 });

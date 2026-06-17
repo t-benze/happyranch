@@ -1312,6 +1312,44 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/tasks/roots": {
+      "GET": {
+        "params": [
+          [
+            "assigned_agent",
+            "query"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "before",
+            "query"
+          ],
+          [
+            "block_kind",
+            "query"
+          ],
+          [
+            "limit",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "status",
+            "query"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/tasks/{task_id}": {
       "GET": {
         "params": [

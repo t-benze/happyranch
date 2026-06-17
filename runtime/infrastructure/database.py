@@ -1224,6 +1224,135 @@ class Database:
         )
         return [row["id"] for row in cursor.fetchall()]
 
+    # Severity ranking for subtree rollup: lower = worse.
+    # blocked is the attention-grabbing worst; resolved_superseded is the calmest.
+    _SEVERITY_RANK: dict[str, int] = {
+        "blocked": 0,
+        "failed": 1,
+        "in_progress": 2,
+        "pending": 3,
+        "completed": 4,
+        "resolved_superseded": 5,
+    }
+
+    @_synchronized
+    def get_subtree_statuses(self, root_task_id: str) -> list[str]:
+        """Return the status values of all descendant tasks in the
+        parent_task_id subtree (direct children, grandchildren, etc.).
+
+        Walks the tree recursively via get_children(). Excludes the root
+        task itself; only descendants are collected. An empty list means the
+        root has no children (rollup = the root's own status).
+
+        This is a DERIVE — no schema change; uses existing parent_task_id
+        and get_children().
+        """
+        statuses: list[str] = []
+        stack = list(self.get_children(root_task_id))
+        while stack:
+            child_id = stack.pop()
+            child = self.get_task(child_id)
+            if child is not None:
+                statuses.append(child.status.value)
+                stack.extend(self.get_children(child_id))
+        return statuses
+
+    def _worst_subtree_status(self, root_status: str, child_statuses: list[str]) -> str:
+        """Return the worst status among a root's own status and its
+        descendants' statuses.
+
+        The rollup of a singleton subtree is the root's own status (P1: no
+        guessed severity). Uses _SEVERITY_RANK — lowest rank wins.
+        """
+        worst = root_status
+        worst_rank = self._SEVERITY_RANK.get(worst, 99)
+        for s in child_statuses:
+            rank = self._SEVERITY_RANK.get(s, 99)
+            if rank < worst_rank:
+                worst = s
+                worst_rank = rank
+        return worst
+
+    @_synchronized
+    def list_roots(
+        self,
+        limit: int = 20,
+        assigned_agent: str | None = None,
+        before_task_id: str | None = None,
+        status: TaskStatus | str | None = None,
+        block_kind: BlockKind | str | None = None,
+    ) -> list[TaskRecord]:
+        """Return root tasks (parent_task_id IS NULL) with cursor pagination,
+        same filter parameters as list_tasks(), plus a per-root _severity_rollup.
+
+        The _severity_rollup attribute (str) is the worst status among the
+        root's own status and its entire parent_task_id subtree. A root
+        without children shows its own status. Set as a dynamic attribute on
+        the TaskRecord (not a model field — DERIVE, no schema).
+        """
+        cursor_created_at: str | None = None
+        if before_task_id is not None:
+            row = self._conn.execute(
+                "SELECT created_at FROM tasks WHERE id = ?", (before_task_id,),
+            ).fetchone()
+            if row is None:
+                return []
+            cursor_created_at = row["created_at"]
+
+        conditions = ["parent_task_id IS NULL"]
+        params: list = []
+        if assigned_agent is not None:
+            conditions.append("assigned_agent = ?")
+            params.append(assigned_agent)
+        if status is not None:
+            conditions.append("status = ?")
+            params.append(str(status))
+        if block_kind is not None:
+            conditions.append("block_kind = ?")
+            params.append(str(block_kind))
+        if cursor_created_at is not None:
+            conditions.append("(created_at, id) < (?, ?)")
+            params.extend([cursor_created_at, before_task_id])
+        where = f"WHERE {' AND '.join(conditions)} "
+        params.append(limit)
+        cursor = self._conn.execute(
+            f"SELECT * FROM tasks {where}"
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            tuple(params),
+        )
+        results: list[TaskRecord] = []
+        for row in cursor.fetchall():
+            task = TaskRecord(
+                id=row["id"],
+                status=row["status"],
+                assigned_agent=row["assigned_agent"],
+                team=row["team"],
+                brief=row["brief"],
+                revision_count=row["revision_count"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+                completed_at=row["completed_at"],
+                parent_task_id=row["parent_task_id"],
+                revisit_of_task_id=row["revisit_of_task_id"],
+                dispatched_from_thread_id=row["dispatched_from_thread_id"],
+                block_kind=row["block_kind"],
+                blocked_on_job_ids=row["blocked_on_job_ids"],
+                note=row["note"],
+                orchestration_step_count=row["orchestration_step_count"] or 0,
+                final_output_dir=row["final_output_dir"],
+                cancelled_at=row["cancelled_at"],
+                last_heartbeat=row["last_heartbeat"],
+                session_timeout_seconds=row["session_timeout_seconds"],
+                task_type=row["task_type"],
+            )
+            child_statuses = self.get_subtree_statuses(task.id)
+            object.__setattr__(
+                task, '_severity_rollup',
+                self._worst_subtree_status(task.status.value, child_statuses),
+            )
+            results.append(task)
+        return results
+
     @_synchronized
     def get_direct_revisits(self, task_id: str) -> list[str]:
         """Return IDs of tasks whose revisit_of_task_id points at this task,

@@ -167,6 +167,38 @@ def list_tasks(
     }
 
 
+@router.get("/tasks/roots")
+def list_roots(
+    org: OrgDep,
+    limit: int = 20,
+    assigned_agent: str | None = None,
+    before: str | None = None,
+    status: str | None = None,
+    block_kind: str | None = None,
+) -> dict:
+    """Return root tasks only (parent_task_id IS NULL) with a per-root
+    severity rollup reflecting the worst status of each root's subtree.
+
+    The rollup is a DERIVE over existing child statuses — no schema change.
+    Each task dict includes a ``severity_rollup`` field (the worst status
+    among the root and its entire parent_task_id subtree).
+    """
+    tasks = org.db.list_roots(
+        limit=limit, assigned_agent=assigned_agent, before_task_id=before,
+        status=status, block_kind=block_kind,
+    )
+    next_cursor = tasks[-1].id if len(tasks) == limit else None
+    result_tasks: list[dict] = []
+    for t in tasks:
+        d = _task_to_dict(t)
+        d["severity_rollup"] = getattr(t, '_severity_rollup', t.status.value)
+        result_tasks.append(d)
+    return {
+        "tasks": result_tasks,
+        "next_cursor": next_cursor,
+    }
+
+
 @router.get("/tasks/{task_id}")
 def get_task(task_id: str, org: OrgDep) -> dict:
     task = org.db.get_task(task_id)
