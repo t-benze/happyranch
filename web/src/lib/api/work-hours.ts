@@ -1,32 +1,7 @@
 import { request } from './client'
+import type { WorkHourRecord, WorkHourListResponse, WorkHourStatusResponse } from './types'
 
-export interface WorkHourRecord {
-  work_hour_id: string
-  agent_name: string
-  local_date: string
-  slot: string
-  mode: string
-  scheduled_for: string
-  started_at: string | null
-  ended_at: string | null
-  status: string
-  routine_count: number
-  spawned_task_ids: string[]
-  spawned_task_count: number
-  summary: string | null
-  transcript_path: string | null
-  session_id: string | null
-  error: string | null
-  created_at: string
-}
-
-export interface WorkHourStatusResponse {
-  recent: WorkHourRecord[]
-}
-
-export interface WorkHourListResponse {
-  work_hours: WorkHourRecord[]
-}
+export type { WorkHourRecord, WorkHourListResponse, WorkHourStatusResponse }
 
 export async function getWorkHoursStatus(
   org: string,

@@ -34,6 +34,7 @@ import type { audit as auditApi } from '@/lib/api';
 import type { agents as agentsApi } from '@/lib/api';
 import type { jobs as jobsApi } from '@/lib/api';
 import type { DreamRecord, DreamKbCandidate } from '@/lib/api/dreams';
+import type { workHours as workHoursApi } from '@/lib/api';
 import type {
   AssistantRegisterBody,
   AssistantStatus,
@@ -399,6 +400,17 @@ export interface SettingsApi {
   >;
 }
 
+// ---------------------------------------------------------------------------
+// WorkHoursApi — read-only work-hours list for the Schedule feature page.
+// ---------------------------------------------------------------------------
+
+export interface WorkHoursApi {
+  useWorkHoursList: (params?: {
+    agent?: string;
+    limit?: number;
+  }) => QueryLike<Awaited<ReturnType<typeof workHoursApi.listWorkHours>>>;
+}
+
 /**
  * Per-feature URL builders. Compositions consume these via the
  * provider-aware `useThreadRoutes()` hook in `@/hooks/threads` instead of
@@ -435,6 +447,7 @@ export interface DataContextValue {
   dashboard: DashboardApi;
   settings: SettingsApi;
   dreams: DreamsApi;
+  workHours: WorkHoursApi;
   /**
    * Provider-supplied React hook that returns the active feature's route
    * builders. A hook (not a plain object) so the implementation can read
