@@ -15,10 +15,7 @@ import { ArtifactsPage } from '@/features/artifacts/ArtifactsPage';
 import { JobsPage } from '@/features/jobs/JobsPage';
 import { CommandPaletteHost } from '@/host/CommandPaletteHost';
 import { HelpDrawerHost } from '@/host/HelpDrawerHost';
-import { ActivityTab } from '@/features/audit/ActivityTab';
 import { AuditPage } from '@/features/audit/AuditPage';
-import { EscalationsTab } from '@/features/audit/EscalationsTab';
-import { TracesTab } from '@/features/audit/TracesTab';
 import { DashboardPage } from '@/features/dashboard/DashboardPage';
 import { KbPage } from '@/features/kb/KbPage';
 import { TasksPage } from '@/features/tasks/TasksPage';
@@ -92,12 +89,7 @@ export function AppRoutes(): JSX.Element {
           <Route path="kb" element={<KbPage />} />
           <Route path="kb/*" element={<KbPage />} />
 
-          <Route path="audit" element={<AuditPage />}>
-            <Route index element={<ActivityTab />} />
-            <Route path="escalations" element={<EscalationsTab />} />
-            <Route path="traces" element={<TracesTab />} />
-            <Route path="traces/:task_id" element={<TracesTab />} />
-          </Route>
+          <Route path="audit" element={<AuditPage />} />
           <Route path="agents" element={<AgentsPage />} />
           <Route path="agents/:agent_name" element={<AgentsPage />} />
           <Route path="jobs" element={<JobsPage />} />

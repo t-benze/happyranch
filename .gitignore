@@ -43,3 +43,4 @@ logs/
 .superpowers
 .gitnexus
 .claude
+web/node_modules

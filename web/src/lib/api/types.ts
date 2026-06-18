@@ -110,6 +110,10 @@ export interface AuditEntry {
   action: string;
   payload: Record<string, unknown>;
   timestamp: string;
+  /** DERIVE enrichment (include_thread_origin=true): the dream that composed
+   *  the thread referenced by task_id, when task_id is thread-scoped (THR-*).
+   *  Absent for non-thread or non-dream-originated entries. */
+  _thread_dream_id?: string | null;
 }
 
 /** Recall payload. With `?tree=true`, `children` is recursive; without it,
