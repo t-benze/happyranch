@@ -274,6 +274,12 @@ export type RejectAgentResult = Awaited<ReturnType<typeof agentsApi.rejectAgent>
 export type CreateAgentArgs = Parameters<typeof agentsApi.createAgent>[1];
 export type CreateAgentResult = Awaited<ReturnType<typeof agentsApi.createAgent>>;
 
+export type SetAgentExecutorArgs = Parameters<typeof agentsApi.setAgentExecutor>[2];
+export type SetAgentExecutorResult = Awaited<ReturnType<typeof agentsApi.setAgentExecutor>>;
+
+export type ManageAgentRepoArgs = Parameters<typeof agentsApi.manageAgentRepo>[2];
+export type ManageAgentRepoResult = Awaited<ReturnType<typeof agentsApi.manageAgentRepo>>;
+
 export interface AgentsApi {
   useAgentsList: () => QueryLike<{ agents: import('@/lib/api/agents').AgentSummary[] }>;
   /** Pending enrollments — `status` filter narrows the file scan. */
@@ -294,6 +300,14 @@ export interface AgentsApi {
   useRejectAgent: () => MutationLike<
     { agentName: string; body?: { reason?: string } },
     RejectAgentResult
+  >;
+  useSetAgentExecutor: () => MutationLike<
+    { agentName: string; body: SetAgentExecutorArgs },
+    SetAgentExecutorResult
+  >;
+  useManageAgentRepo: () => MutationLike<
+    { agentName: string; body: ManageAgentRepoArgs },
+    ManageAgentRepoResult
   >;
 }
 

@@ -69,4 +69,24 @@ export const mockAgentsApi: AgentsApi = {
     useMutation({
       mutationFn: async ({ agentName }: { agentName: string }) => ({ name: agentName }),
     }),
+
+  useSetAgentExecutor: () =>
+    useMutation({
+      mutationFn: async ({
+        body,
+      }: {
+        agentName: string;
+        body: import('./DataContext').SetAgentExecutorArgs;
+      }) => ({
+        agent: '',
+        before: { org_executor: null, workspace_executor: null },
+        after: { org_executor: body.executor, workspace_executor: body.executor },
+        stale_files: [],
+      }),
+    }),
+
+  useManageAgentRepo: () =>
+    useMutation({
+      mutationFn: async () => ({ ok: true as const }),
+    }),
 };

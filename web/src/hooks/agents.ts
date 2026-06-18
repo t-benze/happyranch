@@ -29,4 +29,10 @@ export const useRejectAgent: ReturnType<typeof useData>['agents']['useRejectAgen
 export const useCreateAgent: ReturnType<typeof useData>['agents']['useCreateAgent'] = () =>
   useData().agents.useCreateAgent();
 
+export const useSetAgentExecutor: ReturnType<typeof useData>['agents']['useSetAgentExecutor'] = () =>
+  useData().agents.useSetAgentExecutor();
+
+export const useManageAgentRepo: ReturnType<typeof useData>['agents']['useManageAgentRepo'] = () =>
+  useData().agents.useManageAgentRepo();
+
 export const useAgentsRoutes = () => useData().useAgentsRoutes();
