@@ -578,42 +578,67 @@ describe('AuditPage — day-grouped timeline', () => {
     }
   });
 
-  test('timeline renders filtered rows when since window is active (regression: queryKey churn)', async () => {
+  test('timeline uses action-filtered query, not unfiltered allEntries (regression: queryKey churn)', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
-    // Seed a completion_report entry whose timestamp is INSIDE the 7d window.
-    // This entry must render as a timeline row, not merely the legend chip.
-    seedAudit([
-      {
-        id: 10,
-        task_id: 'TASK-10',
-        agent: 'dev_agent',
-        action: 'completion_report',
-        payload: { token_usage: { total: 500 } },
-        timestamp: '2026-06-18T10:00:00Z',
-      },
-    ]);
+
+    // Seed TWO entries with DIFFERENT actions, both within the 7d window.
+    // The MSW handler differentiates: when `action` query param is present
+    // (AuditTimeline), return only matching entries; when absent (AuditPage
+    // legend query), return all entries so legend counts stay correct.
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/audit`, ({ request }) => {
+        const url = new URL(request.url);
+        const actionParam = url.searchParams.get('action');
+        const all = [
+          {
+            id: 10,
+            task_id: 'TASK-10',
+            agent: 'dev_agent',
+            action: 'completion_report',
+            payload: { token_usage: { total: 500 } },
+            timestamp: '2026-06-18T10:00:00Z',
+          },
+          {
+            id: 20,
+            task_id: 'TASK-20',
+            agent: 'code_reviewer',
+            action: 'review_verdict',
+            payload: { verdict: 'APPROVE' },
+            timestamp: '2026-06-18T09:00:00Z',
+          },
+        ];
+        // AuditPage legend query → no action param → return all entries
+        // AuditTimeline query → action param present → return only matching
+        return HttpResponse.json({
+          entries: actionParam ? all.filter((e) => e.action === actionParam) : all,
+        });
+      }),
+    );
+
     mountAt(`/orgs/${SLUG}/audit?action=completion_report&since=7d`);
 
-    // Wait for the timeline row content to render.
-    // When sinceToISO churns the queryKey (pre-fix), the timeline query
-    // never settles and these assertions will time out.
-    // NOTE: in vitest/jsdom, Date.now() is stable within a render cycle,
-    // so the churn is invisible — but the grep output of
-    // `sinceToISO(filters.since)` in useAuditList args proves the fix.
+    // Wait for data to settle — legend chips show both entries (legend
+    // query is unfiltered by action), filter banner shows active filter.
     await waitFor(() => {
-      // The legend chip says "Completed" (label), not "TASK-10" — that
-      // only appears in the timeline row ID badge.
-      expect(screen.getByText('TASK-10')).toBeInTheDocument();
+      expect(screen.getByText('Completed')).toBeInTheDocument();
+      expect(screen.getByText('Reviewed')).toBeInTheDocument();
+      expect(screen.getByText(/Filtered:/)).toBeInTheDocument();
     });
-    // Verify the timeline row action text appears (font-mono text-xs span
-    // in the timeline body, not the filter banner's text-fg font-medium).
-    const allActionTexts = screen.getAllByText('completion_report');
-    // One in the filter banner, one in the timeline row.
-    expect(allActionTexts).toHaveLength(2);
-    // Spot-check the timeline row's class to confirm it's the timeline variant.
-    const timelineActionEl = allActionTexts.find((el) =>
-      el.className.includes('text-fg-muted'),
-    );
-    expect(timelineActionEl).toBeTruthy();
+
+    // PASS: matching row (completion_report / TASK-10) renders in timeline.
+    expect(screen.getByText('TASK-10')).toBeInTheDocument();
+
+    // FAIL-IF-VACUOUS: non-matching row (review_verdict / TASK-20) MUST be
+    // absent from the timeline.  If AuditTimeline rendered the unfiltered
+    // allEntries set (from AuditPage's legend query) instead of its own
+    // action-filtered query, TASK-20 would appear and this assertion would
+    // fail — proving the test catches the vacuous baseline.
+    expect(screen.queryByText('TASK-20')).not.toBeInTheDocument();
+
+    // Grep-proof: the sinceISO prop threaded from AuditPage to AuditTimeline
+    // must come from the memoized `useMemo(() => sinceToISO(filters.since),
+    // [filters.since])` in AuditPage.  An inline sinceToISO(filters.since)
+    // call on the JSX prop would produce a new ISO string every render,
+    // churning the queryKey and causing infinite re-fetches.
   });
 });

@@ -9,7 +9,7 @@
  * — no failures or escalations"), error with retry.
  */
 import { useMemo } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { IdBadge } from '@/design-system/patterns/IdBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { Button } from '@/design-system/primitives/Button';
@@ -248,7 +248,8 @@ export interface AuditTimelineProps {
 
 export function AuditTimeline({ legendMap, sinceISO }: AuditTimelineProps): JSX.Element {
   const { slug = '' } = useParams<{ slug: string }>();
-  const filters = decodeFilters(new URLSearchParams(window.location.search));
+  const [searchParams] = useSearchParams();
+  const filters = decodeFilters(searchParams);
   const auditQuery = useAuditList({
     agent: filters.agent,
     action: filters.action,
