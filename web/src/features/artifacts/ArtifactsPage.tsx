@@ -1,13 +1,20 @@
 /**
- * Artifacts page — founder-facing browse + download + upload + delete for the
- * org-shared artifact store (`happyranch artifacts ...` on the CLI; delete is
- * web-only — there is no CLI delete verb).
+ * Artifacts page — flat 3-column card grid (§4.6 PRD final).
  *
- * The daemon exposes POST (upload), GET (list), GET /{name} (download), and
- * DELETE /{name} (delete); there is intentionally NO update route (POST is an
- * idempotent create-or-overwrite). Uploads are validated client-side against
- * the same size/name constraints the daemon enforces so the founder sees an
- * inline error instead of a 400/413. Deletes require an explicit confirm.
+ * The daemon artifact route returns only `name`, `size_bytes`, and
+ * `modified_at` — no agent, task_id, thread, kind/type, or dream_id fields.
+ * Per the honesty lens (P1), cards show ONLY stored fields:
+ *   - name (artifact file name)
+ *   - size (formatted: "5 MB", etc.)
+ *   - modified_at (formatted timestamp)
+ *   - download action (wired to existing `GET /artifacts/{name}` route)
+ *   - delete action (wired to existing `DELETE /artifacts/{name}` route)
+ *
+ * No kind pill, status tag, provenance, IdBadge, PR/CI panel, or dream
+ * marker — none of those fields exist on the stored artifact record.
+ * Upload remains available (existing feature, kept per reshape directive).
+ *
+ * States: loading skeleton, calm empty ("No artifacts yet"), error with retry.
  */
 import { useId, useRef, useState } from 'react';
 import { Download, Trash2, Upload } from 'lucide-react';
@@ -18,8 +25,13 @@ import { formatAttachmentSize } from '@/lib/threadAttachments';
 import { Button } from '@/design-system/primitives/Button';
 import { Input } from '@/design-system/primitives/Input';
 import { Label } from '@/design-system/primitives/Label';
+import { PageHeader } from '@/design-system/patterns/PageHeader';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { validateArtifactUpload } from './validation';
+
+/* ------------------------------------------------------------------ */
+/*  Error helpers                                                      */
+/* ------------------------------------------------------------------ */
 
 function describeUploadError(err: unknown): string {
   if (err instanceof ApiError) {
@@ -40,6 +52,108 @@ function describeDeleteError(err: unknown): string {
   return String(err);
 }
 
+function formatModifiedAt(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/*  Skeleton                                                           */
+/* ------------------------------------------------------------------ */
+
+function ArtifactsSkeleton(): JSX.Element {
+  return (
+    <div
+      className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"
+      aria-label="Loading artifacts"
+    >
+      {[1, 2, 3, 4, 5, 6].map((i) => (
+        <div
+          key={i}
+          className="border-border-subtle bg-surface-canvas rounded-lg border p-4"
+        >
+          <div className="bg-surface-sunken mb-2 h-4 w-3/4 animate-pulse rounded" />
+          <div className="bg-surface-sunken mb-3 h-3 w-1/3 animate-pulse rounded" />
+          <div className="bg-surface-sunken h-3 w-1/2 animate-pulse rounded" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Artifact card                                                      */
+/* ------------------------------------------------------------------ */
+
+interface ArtifactCardProps {
+  name: string;
+  sizeBytes: number;
+  modifiedAt: string;
+  onDownload: (name: string) => void;
+  onDelete: (name: string) => void;
+  isDeleting: boolean;
+}
+
+function ArtifactCard({
+  name,
+  sizeBytes,
+  modifiedAt,
+  onDownload,
+  onDelete,
+  isDeleting,
+}: ArtifactCardProps): JSX.Element {
+  const size = formatAttachmentSize(sizeBytes) ?? '—';
+
+  return (
+    <div className="border-border-subtle bg-surface-canvas hover:bg-surface-raised flex flex-col rounded-lg border p-4 transition-colors">
+      {/* File name */}
+      <h3
+        className="text-fg mb-1 text-sm font-medium break-all"
+        title={name}
+      >
+        {name}
+      </h3>
+
+      {/* Size + modified */}
+      <div className="text-fg-muted mb-3 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs">
+        <span>{size}</span>
+        <span>{formatModifiedAt(modifiedAt)}</span>
+      </div>
+
+      {/* Actions */}
+      <div className="mt-auto flex items-center gap-3">
+        <button
+          type="button"
+          onClick={() => onDownload(name)}
+          className="text-accent inline-flex items-center gap-1 text-xs hover:underline"
+        >
+          <Download size={14} aria-hidden="true" />
+          Download
+        </button>
+        <button
+          type="button"
+          onClick={() => onDelete(name)}
+          disabled={isDeleting}
+          aria-label={`Delete ${name}`}
+          className="text-feedback-danger inline-flex items-center gap-1 text-xs hover:underline disabled:opacity-50"
+        >
+          <Trash2 size={14} aria-hidden="true" />
+          {isDeleting ? 'Deleting…' : 'Delete'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Main component                                                     */
+/* ------------------------------------------------------------------ */
+
 export function ArtifactsPage(): JSX.Element {
   const slug = useOrgSlug();
   const qc = useQueryClient();
@@ -50,6 +164,7 @@ export function ArtifactsPage(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [showUpload, setShowUpload] = useState(false);
 
   const listQuery = useQuery({
     queryKey: ['artifacts', slug],
@@ -68,6 +183,7 @@ export function ArtifactsPage(): JSX.Element {
       setFile(null);
       setName('');
       setError(null);
+      setShowUpload(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
     },
     onError: (err: unknown) => setError(describeUploadError(err)),
@@ -84,7 +200,6 @@ export function ArtifactsPage(): JSX.Element {
 
   const requestDelete = (artifactName: string) => {
     setDeleteError(null);
-    // Never delete on a single unconfirmed click.
     if (!window.confirm(`Delete "${artifactName}"? This cannot be undone.`)) return;
     del.mutate(artifactName);
   };
@@ -95,8 +210,6 @@ export function ArtifactsPage(): JSX.Element {
       setError('Select a file to upload.');
       return;
     }
-    // When no explicit name is given the daemon falls back to the file name,
-    // so validate whichever name will actually be sent.
     const effectiveName = name.trim() || file.name;
     const validationError = validateArtifactUpload({
       name: effectiveName,
@@ -114,144 +227,152 @@ export function ArtifactsPage(): JSX.Element {
   const artifacts = listQuery.data?.artifacts ?? [];
 
   return (
-    <div className="bg-surface-canvas h-full overflow-y-auto p-4">
-      <div className="mx-auto flex max-w-3xl flex-col gap-6">
-        <header>
-          <h1 className="text-fg text-lg font-semibold">Shared artifacts</h1>
-          <p className="text-fg-muted text-sm">
-            Org-wide artifacts. Browse, download, upload a new file, or delete an
-            existing one. Rename is not supported.
-          </p>
-        </header>
+    <div className="bg-surface-canvas flex h-full flex-col">
+      {/* Header */}
+      <header className="border-border-subtle border-b p-4">
+        <div className="flex items-start justify-between gap-3">
+          <PageHeader
+            title="Artifacts"
+            meta="Org-wide artifacts. Browse, download, upload, or delete."
+          />
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => setShowUpload((v) => !v)}
+          >
+            <Upload aria-hidden="true" size={14} />
+            {showUpload ? 'Cancel' : 'Upload'}
+          </Button>
+        </div>
 
-        <section
-          aria-label="Upload artifact"
-          className="border-border bg-bg-subtle flex flex-col gap-3 rounded-md border p-4"
-        >
-          <h2 className="text-fg text-sm font-semibold">Upload artifact</h2>
-          <div className="flex flex-col gap-1">
-            <Label htmlFor={fileId}>File</Label>
-            <Input
-              id={fileId}
-              ref={fileInputRef}
-              type="file"
-              onChange={(e) => {
-                setFile(e.target.files?.[0] ?? null);
-                setError(null);
-              }}
-            />
-          </div>
-          <div className="flex flex-col gap-1">
-            <Label htmlFor={nameId}>Name (optional — defaults to the file name)</Label>
-            <Input
-              id={nameId}
-              type="text"
-              value={name}
-              placeholder="dev_agent-2026-06-10-report.pdf"
-              onChange={(e) => {
-                setName(e.target.value);
-                setError(null);
-              }}
-            />
-            <p className="text-fg-muted text-xs">
-              Each '/'-separated segment must match [A-Za-z0-9._-]+ (letters, digits, dot, underscore, hyphen). Forward slash only as separator; no leading/trailing/empty segments. Max 200 characters, 10 MB.
+        {/* Upload form (collapsible) */}
+        {showUpload && (
+          <section
+            aria-label="Upload artifact"
+            className="border-border bg-surface-sunken mt-4 flex flex-col gap-3 rounded-md border p-4"
+          >
+            <h3 className="text-fg text-sm font-semibold">Upload artifact</h3>
+            <div className="flex flex-col gap-1">
+              <Label htmlFor={fileId}>File</Label>
+              <Input
+                id={fileId}
+                ref={fileInputRef}
+                type="file"
+                onChange={(e) => {
+                  setFile(e.target.files?.[0] ?? null);
+                  setError(null);
+                }}
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label htmlFor={nameId}>Name (optional — defaults to the file name)</Label>
+              <Input
+                id={nameId}
+                type="text"
+                value={name}
+                placeholder="dev_agent-2026-06-10-report.pdf"
+                onChange={(e) => {
+                  setName(e.target.value);
+                  setError(null);
+                }}
+              />
+              <p className="text-fg-muted text-xs">
+                Each '/'-separated segment must match [A-Za-z0-9._-]+ (letters, digits, dot, underscore, hyphen). Forward slash only as separator; no leading/trailing/empty segments. Max 200 characters, 10 MB.
+              </p>
+            </div>
+            {error && (
+              <p role="alert" className="text-feedback-danger text-sm">
+                {error}
+              </p>
+            )}
+            <div>
+              <Button onClick={submit} disabled={upload.isPending}>
+                <Upload aria-hidden="true" size={14} />
+                {upload.isPending ? 'Uploading…' : 'Upload'}
+              </Button>
+            </div>
+          </section>
+        )}
+      </header>
+
+      {/* Main content */}
+      <div className="flex-1 overflow-y-auto p-4">
+        {/* Loading */}
+        {listQuery.isLoading && <ArtifactsSkeleton />}
+
+        {/* Error */}
+        {listQuery.isError && (
+          <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
+            <p className="text-tier-red text-sm">
+              Could not load artifacts.
+              {listQuery.error?.message && <> {listQuery.error.message}</>}
             </p>
-          </div>
-          {error && (
-            <p role="alert" className="text-feedback-danger text-sm">
-              {error}
-            </p>
-          )}
-          <div>
-            <Button onClick={submit} disabled={upload.isPending}>
-              <Upload aria-hidden="true" />
-              {upload.isPending ? 'Uploading…' : 'Upload'}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                qc.invalidateQueries({ queryKey: ['artifacts', slug] })
+              }
+            >
+              Retry
             </Button>
           </div>
-        </section>
+        )}
 
-        <section aria-label="Artifacts list">
-          {listQuery.isLoading ? (
-            <p className="text-fg-muted">Loading…</p>
-          ) : listQuery.isError ? (
-            <p role="alert" className="text-feedback-danger text-sm">
-              Could not load artifacts.
-            </p>
-          ) : artifacts.length === 0 ? (
+        {/* Empty */}
+        {!listQuery.isLoading && !listQuery.isError && artifacts.length === 0 && (
+          <div className="flex h-full items-center justify-center">
             <EmptyState
-              title="No artifacts"
+              title="No artifacts yet"
               body="Upload a file above to share it across the org."
             />
-          ) : (
-            <>
-              {deleteError && (
-                <p role="alert" className="text-feedback-danger mb-2 text-sm">
-                  {deleteError}
-                </p>
-              )}
-              {downloadError && !deleteError && (
-                <p role="alert" className="text-feedback-danger mb-2 text-sm">
-                  {downloadError}
-                </p>
-              )}
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-fg-muted border-border border-b text-left">
-                    <th className="py-2 pr-4 font-medium">Name</th>
-                    <th className="py-2 pr-4 font-medium">Size</th>
-                    <th className="py-2 pr-4 font-medium">Modified</th>
-                    <th className="py-2 font-medium">
-                      <span className="sr-only">Actions</span>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {artifacts.map((a) => (
-                    <tr key={a.name} className="border-border/50 border-b">
-                      <td className="text-fg py-2 pr-4 break-all">{a.name}</td>
-                      <td className="text-fg-muted py-2 pr-4 whitespace-nowrap">
-                        {formatAttachmentSize(a.size_bytes) ?? '—'}
-                      </td>
-                      <td className="text-fg-muted py-2 pr-4 whitespace-nowrap">
-                        {a.modified_at}
-                      </td>
-                      <td className="py-2">
-                        <div className="flex items-center gap-4 whitespace-nowrap">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setDownloadError(null);
-                              artifactsApi.downloadArtifact(slug, a.name).catch((err: unknown) => {
-                                const msg = err instanceof ApiError
-                                  ? `Download failed (HTTP ${err.status}).`
-                                  : String(err);
-                                setDownloadError(msg);
-                              });
-                            }}
-                            className="text-accent inline-flex items-center gap-1 hover:underline"
-                          >
-                            <Download size={14} aria-hidden="true" />
-                            Download
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => requestDelete(a.name)}
-                            disabled={del.isPending && del.variables === a.name}
-                            aria-label={`Delete ${a.name}`}
-                            className="text-feedback-danger inline-flex items-center gap-1 hover:underline disabled:opacity-50"
-                          >
-                            <Trash2 size={14} aria-hidden="true" />
-                            {del.isPending && del.variables === a.name ? 'Deleting…' : 'Delete'}
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </>
-          )}
-        </section>
+          </div>
+        )}
+
+        {/* Card grid */}
+        {!listQuery.isLoading && !listQuery.isError && artifacts.length > 0 && (
+          <>
+            {/* Banner for delete/download errors */}
+            {deleteError && (
+              <p role="alert" className="text-feedback-danger mb-4 text-sm">
+                {deleteError}
+              </p>
+            )}
+            {downloadError && !deleteError && (
+              <p role="alert" className="text-feedback-danger mb-4 text-sm">
+                {downloadError}
+              </p>
+            )}
+
+            <div
+              aria-label="Artifacts list"
+              className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"
+            >
+              {artifacts.map((a) => (
+                <ArtifactCard
+                  key={a.name}
+                  name={a.name}
+                  sizeBytes={a.size_bytes}
+                  modifiedAt={a.modified_at}
+                  onDownload={(artifactName) => {
+                    setDownloadError(null);
+                    artifactsApi
+                      .downloadArtifact(slug, artifactName)
+                      .catch((err: unknown) => {
+                        const msg =
+                          err instanceof ApiError
+                            ? `Download failed (HTTP ${err.status}).`
+                            : String(err);
+                        setDownloadError(msg);
+                      });
+                  }}
+                  onDelete={requestDelete}
+                  isDeleting={del.isPending && del.variables === a.name}
+                />
+              ))}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
