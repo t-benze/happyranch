@@ -42,9 +42,14 @@ export function AuditPage(): JSX.Element {
   // The timeline query is also unfiltered by action; the legend toggle
   // drives a client-side filter. This avoids a second round-trip per legend
   // click and makes the count totals stable.
+  // Memoize the since ISO string so it's stable across renders — prevents
+  // queryKey churn when sinceToISO produces a slightly different timestamp
+  // on each render (different milliseconds from new Date()).
+  const sinceISO = useMemo(() => sinceToISO(filters.since), [filters.since]);
+
   const fullQuery = useAuditList({
     agent: filters.agent,
-    since: sinceToISO(filters.since),
+    since: sinceISO,
     task_id: filters.task_id,
     limit: 500,
   });
