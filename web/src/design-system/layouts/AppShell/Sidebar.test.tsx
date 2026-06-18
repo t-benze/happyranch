@@ -252,7 +252,7 @@ describe('IA-10: Nav grouping (Primary / Operate)', () => {
   });
 });
 
-describe('PlaceholderPage (Operate surfaces)', () => {
+describe('Operate surfaces', () => {
   test('renders Spend surface', async () => {
     seedSidebarShell();
     // Seed token endpoints so SpendPage doesn't error
@@ -279,12 +279,20 @@ describe('PlaceholderPage (Operate surfaces)', () => {
     });
   });
 
-  test('renders placeholder for Schedule', async () => {
+  test('renders Schedule surface', async () => {
     seedSidebarShell();
+    // Seed work-hours endpoint with empty list
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/work-hours`, () =>
+        HttpResponse.json({ work_hours: [] }),
+      ),
+    );
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/schedule` });
     await waitFor(() => {
-      expect(screen.getByText('Schedule')).toBeInTheDocument();
-      expect(screen.getByText(/Coming in the design overhaul/i)).toBeInTheDocument();
+      // 'Schedule' appears in both sidebar nav and page header
+      const scheduleElements = screen.getAllByText('Schedule');
+      expect(scheduleElements.length).toBeGreaterThanOrEqual(2);
+      expect(screen.getByText(/No scheduled wakes/i)).toBeInTheDocument();
     });
   });
 });

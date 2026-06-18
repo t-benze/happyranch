@@ -42,6 +42,7 @@ import { realJobsApi } from './_real-jobs';
 import { realTasksApi } from './_real-tasks';
 import { realTeamsApi } from './_real-teams';
 import { realThreadsApi } from './_real-threads';
+import { realWorkHoursApi } from './_real-work-hours';
 
 export function makeQueryClient(): QueryClient {
   return new QueryClient({
@@ -81,6 +82,7 @@ export function AppProvider({ children, client }: AppProviderProps): JSX.Element
           health: realHealthApi,
           assistant: realAssistantApi,
           jobs: realJobsApi,
+          workHours: realWorkHoursApi,
           useThreadRoutes: useRealThreadRoutes,
           useTasksRoutes: useRealTasksRoutes,
           useKbRoutes: useRealKbRoutes,
