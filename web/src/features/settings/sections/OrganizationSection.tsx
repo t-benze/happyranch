@@ -70,20 +70,18 @@ function buildFieldState(org: OrgSettings): FieldState {
   };
 }
 
-function fieldsEqual(a: FieldState, b: FieldState): boolean {
-  return (
-    a.timeout === b.timeout &&
-    a.dreamEnabled === b.dreamEnabled &&
-    a.dreamTime === b.dreamTime &&
-    a.dreamTz === b.dreamTz &&
-    a.dreamCatchUp === b.dreamCatchUp &&
-    a.dreamMode === b.dreamMode &&
-    a.dreamInclude === b.dreamInclude &&
-    a.dreamExclude === b.dreamExclude &&
-    a.threadsEnabled === b.threadsEnabled &&
-    a.threadsCap === b.threadsCap &&
-    a.threadsTimeout === b.threadsTimeout
-  );
+/**
+ * Filter a comma-separated agent-name string to only tokens present in the
+ * given roster. Non-roster tokens are silently dropped. Used at the save
+ * boundary so that actively-typed (uncommitted) non-roster names never reach
+ * the server, regardless of whether the user typed a trailing comma.
+ */
+function rosterTokens(raw: string, roster: Set<string>): string {
+  if (!raw) return raw;
+  return raw
+    .split(/\s*,\s*/)
+    .filter((t) => t === '' || roster.has(t))
+    .join(', ');
 }
 
 interface Props {
@@ -113,7 +111,30 @@ export function OrganizationSection({ org }: Props): JSX.Element {
     }
   }, [org]);
 
-  const dirty = !fieldsEqual(fields, lastSaved);
+  const rosterNames = useMemo(
+    () => new Set(agentsList.map((a) => a.name)),
+    [agentsList],
+  );
+
+  const dirty = useMemo(() => {
+    const filteredInclude = rosterTokens(fields.dreamInclude, rosterNames);
+    const filteredExclude = rosterTokens(fields.dreamExclude, rosterNames);
+    const savedInclude = rosterTokens(lastSaved.dreamInclude, rosterNames);
+    const savedExclude = rosterTokens(lastSaved.dreamExclude, rosterNames);
+    return (
+      fields.timeout !== lastSaved.timeout ||
+      fields.dreamEnabled !== lastSaved.dreamEnabled ||
+      fields.dreamTime !== lastSaved.dreamTime ||
+      fields.dreamTz !== lastSaved.dreamTz ||
+      fields.dreamCatchUp !== lastSaved.dreamCatchUp ||
+      fields.dreamMode !== lastSaved.dreamMode ||
+      filteredInclude !== savedInclude ||
+      filteredExclude !== savedExclude ||
+      fields.threadsEnabled !== lastSaved.threadsEnabled ||
+      fields.threadsCap !== lastSaved.threadsCap ||
+      fields.threadsTimeout !== lastSaved.threadsTimeout
+    );
+  }, [fields, lastSaved, rosterNames]);
 
   const update = useCallback(
     <K extends keyof FieldState>(key: K, value: FieldState[K]) => {
@@ -138,8 +159,12 @@ export function OrganizationSection({ org }: Props): JSX.Element {
       catch_up_on_startup: fields.dreamCatchUp,
       agents: {
         mode: fields.dreamMode,
-        include: fields.dreamInclude ? fields.dreamInclude.split(/\s*,\s*/).filter(Boolean) : [],
-        exclude: fields.dreamExclude ? fields.dreamExclude.split(/\s*,\s*/).filter(Boolean) : [],
+        include: fields.dreamInclude
+          ? rosterTokens(fields.dreamInclude, rosterNames).split(/\s*,\s*/).filter(Boolean)
+          : [],
+        exclude: fields.dreamExclude
+          ? rosterTokens(fields.dreamExclude, rosterNames).split(/\s*,\s*/).filter(Boolean)
+          : [],
       },
     };
 
@@ -151,7 +176,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
       invocation_timeout_seconds: parsedThreadTimeout,
     };
     return patch;
-  }, [fields]);
+  }, [fields, rosterNames]);
 
   const handleSave = useCallback(async () => {
     setSaveState({ phase: 'saving' });

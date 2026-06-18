@@ -436,6 +436,138 @@ describe('SettingsPage — Organization section', () => {
     expect(body.dreaming.agents.include).toContain('dev_agent');
     expect(body.dreaming.agents.include).not.toContain('non_existent');
   });
+
+  test('iAC3: non-roster token with NO trailing comma does not dirty the form', async () => {
+    let savedBody: unknown = null;
+    server.use(
+      http.put(`/api/v1/orgs/${SLUG}/settings/org`, async ({ request }) => {
+        savedBody = await request.json();
+        return HttpResponse.json(SETTINGS_PAYLOAD);
+      }),
+    );
+
+    mountAt(`/orgs/${SLUG}/settings/organization`);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-content')).toBeInTheDocument(),
+    );
+    const content = screen.getByTestId('settings-content');
+
+    await waitFor(() =>
+      expect(within(content).getByText('Included agents')).toBeInTheDocument(),
+    );
+
+    const inputs = screen.getAllByPlaceholderText('add agents…');
+    const includeInput = inputs[0];
+    const user = userEvent.setup();
+    await user.click(includeInput);
+
+    // Type a non-roster name with NO trailing comma (actively-typed token)
+    await user.type(includeInput, 'non_existent');
+
+    // The input may still show the text (RecipientsInput preserves the
+    // actively-typed last token for autocomplete), but the form MUST stay clean
+    expect(within(content).queryByText('Save changes')).not.toBeInTheDocument();
+    expect(within(content).queryByText('Discard')).not.toBeInTheDocument();
+
+    // Simulate save attempt via keyboard shortcut (Cmd+S / Ctrl+S fires
+    // handleSave, which calls buildPatch). Since the form is clean, no save
+    // should actually be dispatched. Verify by changing a legitimate field
+    // first, saving, then checking the body.
+    // Instead, change a valid field to make the form dirty, then save and
+    // confirm the non-roster token is NOT in the saved body.
+
+    // Clear the non-roster input and add a valid roster agent
+    await user.clear(includeInput);
+    await user.type(includeInput, 'dev');
+    await waitFor(() =>
+      expect(screen.getByRole('listbox')).toBeInTheDocument(),
+    );
+    await user.click(screen.getByText('dev_agent'));
+
+    await waitFor(() =>
+      expect(includeInput).toHaveValue('dev_agent, '),
+    );
+
+    // Now the form should be dirty (valid change)
+    await waitFor(() =>
+      expect(within(content).getByText('Save changes')).toBeInTheDocument(),
+    );
+
+    await user.click(within(content).getByText('Save changes'));
+
+    await waitFor(() =>
+      expect(within(content).getByText('Saved. Changes will take effect within ~1 minute.', { exact: false })).toBeInTheDocument(),
+    );
+
+    expect(savedBody).toBeDefined();
+    const body = savedBody as { dreaming: { agents: { include: string[] } } };
+    expect(body.dreaming.agents.include).toContain('dev_agent');
+    expect(body.dreaming.agents.include).not.toContain('non_existent');
+  });
+
+  test('iAC3: valid roster token followed by non-roster trailing token — non-roster is stripped at save', async () => {
+    let savedBody: unknown = null;
+    server.use(
+      http.put(`/api/v1/orgs/${SLUG}/settings/org`, async ({ request }) => {
+        savedBody = await request.json();
+        return HttpResponse.json(SETTINGS_PAYLOAD);
+      }),
+    );
+
+    mountAt(`/orgs/${SLUG}/settings/organization`);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-content')).toBeInTheDocument(),
+    );
+    const content = screen.getByTestId('settings-content');
+
+    await waitFor(() =>
+      expect(within(content).getByText('Included agents')).toBeInTheDocument(),
+    );
+
+    const inputs = screen.getAllByPlaceholderText('add agents…');
+    const includeInput = inputs[0];
+    const user = userEvent.setup();
+    await user.click(includeInput);
+
+    // Add a valid roster agent via autocomplete
+    await user.type(includeInput, 'dev');
+    await waitFor(() =>
+      expect(screen.getByRole('listbox')).toBeInTheDocument(),
+    );
+    await user.click(screen.getByText('dev_agent'));
+
+    await waitFor(() =>
+      expect(includeInput).toHaveValue('dev_agent, '),
+    );
+
+    // Now type a non-roster name after the comma — this is the trailing
+    // (actively-typed) token so RecipientsInput preserves it.
+    await user.type(includeInput, 'non_existent');
+
+    // The input should show both tokens
+    await waitFor(() =>
+      expect(includeInput).toHaveValue('dev_agent, non_existent'),
+    );
+
+    // Form should be dirty (valid change: dev_agent added)
+    await waitFor(() =>
+      expect(within(content).getByText('Save changes')).toBeInTheDocument(),
+    );
+
+    await user.click(within(content).getByText('Save changes'));
+
+    await waitFor(() =>
+      expect(within(content).getByText('Saved. Changes will take effect within ~1 minute.', { exact: false })).toBeInTheDocument(),
+    );
+
+    expect(savedBody).toBeDefined();
+    const body = savedBody as { dreaming: { agents: { include: string[] } } };
+    // Only the roster-valid token should be in the patch
+    expect(body.dreaming.agents.include).toEqual(['dev_agent']);
+    expect(body.dreaming.agents.include).not.toContain('non_existent');
+  });
 });
 
 describe('SettingsPage — Agents section', () => {
