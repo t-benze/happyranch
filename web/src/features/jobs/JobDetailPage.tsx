@@ -241,8 +241,16 @@ function TwoStepConfirm({
   );
 }
 
-/** Gated chip: review_required job routes to existing approve/reject. */
-function GatedChip({ onOpen }: { onOpen: () => void }): JSX.Element {
+/** Gated chip: review_required job routes to existing approve/reject.
+ *  Same uniform two-step confirm + dialog pair as non-gated path:
+ *  Approve → run two-step confirm → RunJobDialog; Reject → RejectJobDialog. */
+function GatedChip({
+  onApprove,
+  onReject,
+}: {
+  onApprove: () => void;
+  onReject: () => void;
+}): JSX.Element {
   return (
     <div className="border-border-subtle bg-tier-yellow-tint mt-4 rounded-lg border p-4">
       <div className="flex items-center gap-3">
@@ -253,9 +261,14 @@ function GatedChip({ onOpen }: { onOpen: () => void }): JSX.Element {
             and approve or reject.
           </p>
         </div>
-        <Button size="sm" onClick={onOpen}>
-          Approve / Reject
-        </Button>
+        <div className="flex shrink-0 gap-2">
+          <Button size="sm" onClick={onApprove}>
+            Approve
+          </Button>
+          <Button size="sm" variant="secondary" onClick={onReject}>
+            Reject
+          </Button>
+        </div>
       </div>
     </div>
   );
@@ -272,7 +285,7 @@ export function JobDetailPage(): JSX.Element {
   const run = useRunJob();
   const stop = useStopJob();
   const [openDialog, setOpenDialog] = useState<OpenDialog>(null);
-  const [showTwoStep, setShowTwoStep] = useState<'approve' | 'run' | null>(null);
+  const [showTwoStep, setShowTwoStep] = useState<'run' | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const job = query.data;
@@ -405,9 +418,12 @@ export function JobDetailPage(): JSX.Element {
       </div>
 
       {/* ── Actions ── */}
-      {/* Gated (review_required) pending job → chip routing to existing approve/reject */}
-      {job.status === 'pending' && job.review_required && (
-        <GatedChip onOpen={() => setShowTwoStep('approve')} />
+      {/* Gated (review_required) pending job → chip with Approve + Reject */}
+      {job.status === 'pending' && job.review_required && showTwoStep === null && (
+        <GatedChip
+          onApprove={() => setShowTwoStep('run')}
+          onReject={() => setOpenDialog('reject')}
+        />
       )}
 
       {/* Pending, non-gated → uniform two-step confirm */}
@@ -420,17 +436,7 @@ export function JobDetailPage(): JSX.Element {
         </div>
       )}
 
-      {/* Two-step confirm for gated jobs (approve path) */}
-      {job.status === 'pending' && job.review_required && showTwoStep === 'approve' && (
-        <TwoStepConfirm
-          action="approve"
-          onConfirm={() => setShowTwoStep('run')}
-          onCancel={() => setShowTwoStep(null)}
-          isPending={false}
-        />
-      )}
-
-      {/* Two-step confirm for run */}
+      {/* Two-step confirm for run (used by both gated and non-gated paths) */}
       {job.status === 'pending' && showTwoStep === 'run' && (
         <TwoStepConfirm
           action="run"

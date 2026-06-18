@@ -125,10 +125,25 @@ describe('JobDetailPage — read path', () => {
     await waitFor(() => {
       expect(screen.getByText(/Needs your approval/)).toBeInTheDocument();
     });
-    expect(screen.getByRole('button', { name: 'Approve / Reject' })).toBeInTheDocument();
+    // Gated chip now shows separate Approve + Reject buttons
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument();
   });
 
-  test('gated chip click opens two-step confirm (uniform, no danger tiers)', async () => {
+  test('gated chip shows BOTH Approve and Reject buttons', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubJobDetail(JOB);
+    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Needs your approval/)).toBeInTheDocument();
+    });
+    // Gated chip must show BOTH buttons
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument();
+  });
+
+  test('gated chip Approve routes through the uniform two-step run confirm', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubJobDetail(JOB);
     // Mock the run endpoint so RunJobDialog can initialize
@@ -142,27 +157,13 @@ describe('JobDetailPage — read path', () => {
     mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Approve / Reject' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
     });
 
-    await user.click(screen.getByRole('button', { name: 'Approve / Reject' }));
+    // Click Approve → enters the SAME run two-step confirm
+    await user.click(screen.getByRole('button', { name: 'Approve' }));
 
-    // Step 1: approval prompt
-    await waitFor(() => {
-      expect(screen.getByText(/Approve this job/)).toBeInTheDocument();
-    });
-
-    // Click Approve… → step 2
-    await user.click(screen.getByRole('button', { name: 'Approve…' }));
-
-    await waitFor(() => {
-      expect(screen.getByText(/Confirm: are you sure/)).toBeInTheDocument();
-    });
-
-    // Confirm approve → moves to run-phase two-step confirm
-    await user.click(screen.getByRole('button', { name: 'Confirm approve' }));
-
-    // Now in the run-phase two-step confirm
+    // Step 1: run prompt (same as non-gated Run path)
     await waitFor(() => {
       expect(screen.getByText(/Run this script/)).toBeInTheDocument();
     });
@@ -180,6 +181,24 @@ describe('JobDetailPage — read path', () => {
     await waitFor(() => {
       expect(screen.getByRole('dialog')).toBeInTheDocument();
     });
+  });
+
+  test('gated chip Reject opens RejectJobDialog', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubJobDetail(JOB);
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Reject' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Reject JOB-0001/)).toBeInTheDocument();
   });
 
   test('shows "if approved" cascade with blocked tasks', async () => {

@@ -1182,9 +1182,16 @@ class Database:
             conditions.append("block_kind = ?")
             params.append(str(block_kind))
         if blocked_on_job_id is not None:
-            # JSON array suffix-anchored LIKE: JOB-1 won't match JOB-12.
-            conditions.append("blocked_on_job_ids LIKE ?")
-            params.append(f'%"{blocked_on_job_id}"%')
+            # Mirror jobs_runner.py canonic pred: status + block_kind + LIKE.
+            # Without the status/block_kind guard a task that was once
+            # blocked on JOB-X but is now done/running leaks into the
+            # "if approved" cascade.
+            conditions.append("status = ? AND block_kind = ? AND blocked_on_job_ids LIKE ?")
+            params.extend([
+                TaskStatus.BLOCKED.value,
+                BlockKind.BLOCKED_ON_JOB.value,
+                f'%"{blocked_on_job_id}"%',
+            ])
         if cursor_created_at is not None:
             conditions.append("(created_at, id) < (?, ?)")
             params.extend([cursor_created_at, before_task_id])
