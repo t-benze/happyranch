@@ -173,7 +173,7 @@ export function AuditPage(): JSX.Element {
 
       {/* Timeline */}
       <div className="flex-1 overflow-hidden">
-        <AuditTimeline legendMap={legendColorMap} />
+        <AuditTimeline legendMap={legendColorMap} sinceISO={sinceISO} />
       </div>
     </div>
   );

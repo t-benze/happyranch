@@ -18,7 +18,6 @@ import { useAuditList } from '@/hooks/audit';
 import type { AuditEntry } from '@/lib/api/types';
 import {
   decodeFilters,
-  sinceToISO,
   isAllClear,
 } from './audit-filters';
 import { useQueryClient } from '@tanstack/react-query';
@@ -242,15 +241,18 @@ function TimelineSkeleton(): JSX.Element {
 export interface AuditTimelineProps {
   /** Legend entries (from buildLegend) drive the color-dot per row. */
   legendMap: Map<string, string>;
+  /** Stable ISO string for the `since` time-window (memoized by caller
+   *  to prevent queryKey churn from sinceToISO's new Date() per render). */
+  sinceISO?: string | null;
 }
 
-export function AuditTimeline({ legendMap }: AuditTimelineProps): JSX.Element {
+export function AuditTimeline({ legendMap, sinceISO }: AuditTimelineProps): JSX.Element {
   const { slug = '' } = useParams<{ slug: string }>();
   const filters = decodeFilters(new URLSearchParams(window.location.search));
   const auditQuery = useAuditList({
     agent: filters.agent,
     action: filters.action,
-    since: sinceToISO(filters.since),
+    since: sinceISO,
     task_id: filters.task_id,
     limit: 500,
   });

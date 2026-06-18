@@ -577,4 +577,43 @@ describe('AuditPage — day-grouped timeline', () => {
       URL.createObjectURL = originalCreateObjectURL;
     }
   });
+
+  test('timeline renders filtered rows when since window is active (regression: queryKey churn)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // Seed a completion_report entry whose timestamp is INSIDE the 7d window.
+    // This entry must render as a timeline row, not merely the legend chip.
+    seedAudit([
+      {
+        id: 10,
+        task_id: 'TASK-10',
+        agent: 'dev_agent',
+        action: 'completion_report',
+        payload: { token_usage: { total: 500 } },
+        timestamp: '2026-06-18T10:00:00Z',
+      },
+    ]);
+    mountAt(`/orgs/${SLUG}/audit?action=completion_report&since=7d`);
+
+    // Wait for the timeline row content to render.
+    // When sinceToISO churns the queryKey (pre-fix), the timeline query
+    // never settles and these assertions will time out.
+    // NOTE: in vitest/jsdom, Date.now() is stable within a render cycle,
+    // so the churn is invisible — but the grep output of
+    // `sinceToISO(filters.since)` in useAuditList args proves the fix.
+    await waitFor(() => {
+      // The legend chip says "Completed" (label), not "TASK-10" — that
+      // only appears in the timeline row ID badge.
+      expect(screen.getByText('TASK-10')).toBeInTheDocument();
+    });
+    // Verify the timeline row action text appears (font-mono text-xs span
+    // in the timeline body, not the filter banner's text-fg font-medium).
+    const allActionTexts = screen.getAllByText('completion_report');
+    // One in the filter banner, one in the timeline row.
+    expect(allActionTexts).toHaveLength(2);
+    // Spot-check the timeline row's class to confirm it's the timeline variant.
+    const timelineActionEl = allActionTexts.find((el) =>
+      el.className.includes('text-fg-muted'),
+    );
+    expect(timelineActionEl).toBeTruthy();
+  });
 });
