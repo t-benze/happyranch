@@ -267,6 +267,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
             value={fields.dreamInclude}
             onChange={(next) => update('dreamInclude', next)}
             agents={agentsList}
+            restrictToOptions
             placeholder="add agents…"
             className="bg-bg-raised border-border text-fg w-56 rounded border px-2 py-0.5 text-sm"
           />
@@ -276,6 +277,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
             value={fields.dreamExclude}
             onChange={(next) => update('dreamExclude', next)}
             agents={agentsList}
+            restrictToOptions
             placeholder="add agents…"
             className="bg-bg-raised border-border text-fg w-56 rounded border px-2 py-0.5 text-sm"
           />

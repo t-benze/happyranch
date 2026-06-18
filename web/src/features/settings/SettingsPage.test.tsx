@@ -378,6 +378,64 @@ describe('SettingsPage — Organization section', () => {
       expect(includeInput).toHaveValue('dev_agent, '),
     );
   });
+
+  test('iAC3: non-roster agent name cannot be committed or saved', async () => {
+    let savedBody: unknown = null;
+    server.use(
+      http.put(`/api/v1/orgs/${SLUG}/settings/org`, async ({ request }) => {
+        savedBody = await request.json();
+        return HttpResponse.json(SETTINGS_PAYLOAD);
+      }),
+    );
+
+    mountAt(`/orgs/${SLUG}/settings/organization`);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-content')).toBeInTheDocument(),
+    );
+    const content = screen.getByTestId('settings-content');
+
+    await waitFor(() =>
+      expect(within(content).getByText('Included agents')).toBeInTheDocument(),
+    );
+
+    const inputs = screen.getAllByPlaceholderText('add agents…');
+    const includeInput = inputs[0];
+    const user = userEvent.setup();
+    await user.click(includeInput);
+
+    // Type a non-roster name followed by comma (attempting to commit it as a token)
+    await user.type(includeInput, 'non_existent,');
+
+    // The non-roster token must NOT appear — it is rejected
+    expect(includeInput).toHaveValue('');
+
+    // Form must NOT be dirty since no valid change was made
+    expect(within(content).queryByText('Save changes')).not.toBeInTheDocument();
+
+    // Now add a valid roster agent via autocomplete
+    await user.type(includeInput, 'dev');
+    await waitFor(() =>
+      expect(screen.getByRole('listbox')).toBeInTheDocument(),
+    );
+    await user.click(screen.getByText('dev_agent'));
+
+    await waitFor(() =>
+      expect(includeInput).toHaveValue('dev_agent, '),
+    );
+
+    // Save and verify the patch does NOT include the non-roster name
+    await user.click(within(content).getByText('Save changes'));
+
+    await waitFor(() =>
+      expect(within(content).getByText('Saved. Changes will take effect within ~1 minute.', { exact: false })).toBeInTheDocument(),
+    );
+
+    expect(savedBody).toBeDefined();
+    const body = savedBody as { dreaming: { agents: { include: string[] } } };
+    expect(body.dreaming.agents.include).toContain('dev_agent');
+    expect(body.dreaming.agents.include).not.toContain('non_existent');
+  });
 });
 
 describe('SettingsPage — Agents section', () => {

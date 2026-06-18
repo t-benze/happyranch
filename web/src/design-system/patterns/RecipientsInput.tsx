@@ -6,6 +6,11 @@
  *
  * Pure prop-driven. Value is the raw comma-separated string the caller
  * tokenises at submit time.
+ *
+ * When `restrictToOptions` is true, only agent names present in the
+ * `agents` prop may be committed as tokens. Non-roster tokens are stripped
+ * from committed positions on every keystroke. The current (unterminated)
+ * token is always preserved so autocomplete suggestions remain available.
  */
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { MentionAutocomplete } from '@/design-system/patterns/MentionAutocomplete';
@@ -18,6 +23,8 @@ interface Props {
   agents: AgentSummary[];
   placeholder?: string;
   className?: string;
+  /** When true, strips non-roster tokens from committed positions. */
+  restrictToOptions?: boolean;
 }
 
 /** Slice of `value` from the last comma before `caret` to `caret`, trimmed. */
@@ -29,6 +36,29 @@ function tokenAtCaret(value: string, caret: number): { start: number; query: str
   return { start, query: raw.trimStart() };
 }
 
+/**
+ * Strip tokens that are not in the roster from committed positions
+ * (every token except the last, which is the one the user is actively
+ * typing). Empty tokens are preserved as separators.
+ */
+function filterNonRoster(value: string, rosterNames: Set<string>): string {
+  const tokens = value.split(',');
+  if (tokens.length <= 1) return value;
+  const result: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    if (i === tokens.length - 1) {
+      result.push(tokens[i]);
+    } else {
+      const trimmed = tokens[i].trim();
+      if (trimmed === '' || rosterNames.has(trimmed)) {
+        result.push(tokens[i]);
+      }
+      // else: non-roster committed token — omit
+    }
+  }
+  return result.join(',');
+}
+
 export function RecipientsInput({
   id,
   value,
@@ -36,12 +66,18 @@ export function RecipientsInput({
   agents,
   placeholder,
   className,
+  restrictToOptions,
 }: Props): JSX.Element {
   const inputRef = useRef<HTMLInputElement>(null);
   const [popup, setPopup] = useState<
     | { query: string; tokenStart: number; anchor: { x: number; y: number; width: number; height: number } }
     | null
   >(null);
+
+  const rosterNames = useMemo(
+    () => new Set(agents.map((a) => a.name)),
+    [agents],
+  );
 
   const matches = useMemo(() => {
     if (!popup) return [];
@@ -106,7 +142,10 @@ export function RecipientsInput({
         type="text"
         value={value}
         onChange={(e) => {
-          onChange(e.target.value);
+          const next = restrictToOptions
+            ? filterNonRoster(e.target.value, rosterNames)
+            : e.target.value;
+          onChange(next);
           // Defer to next tick so the controlled value has updated before we
           // read selectionStart — React 18 batches the state flush.
           queueMicrotask(refresh);
