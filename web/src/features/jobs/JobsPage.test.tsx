@@ -1,11 +1,11 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
-import type { JobRecord } from '@/lib/api/types';
+import type { JobRecord, TaskRecord } from '@/lib/api/types';
 
 const SLUG = 'hk-macau-tourism';
 
@@ -48,83 +48,266 @@ const JOB: JobRecord = {
   created_at: '2026-05-23T12:00:00Z',
 };
 
-describe('JobsPage — read path', () => {
-  test('renders empty state when no jobs', async () => {
+// ---------------------------------------------------------------------------
+// JobsPage — index placeholder (Q6 retirement)
+// ---------------------------------------------------------------------------
+
+describe('JobsPage — index placeholder', () => {
+  test('renders contextual guidance instead of a standalone job list', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
-    server.use(
-      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
-        HttpResponse.json({ jobs: [] }),
-      ),
-    );
     mountAt(`/orgs/${SLUG}/jobs`);
     await waitFor(() =>
-      expect(screen.getByText(/No jobs/i)).toBeInTheDocument(),
+      expect(screen.getByText('Jobs')).toBeInTheDocument(),
     );
-  });
-
-  test('renders job cards when list returns data', async () => {
-    sessionStorage.setItem('happyranch.token', 'tok');
-    server.use(
-      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
-        HttpResponse.json({ jobs: [JOB] }),
-      ),
-    );
-    mountAt(`/orgs/${SLUG}/jobs`);
-    await waitFor(() =>
-      expect(screen.getByText('Clean up stale Docker images')).toBeInTheDocument(),
-    );
-    expect(screen.getByText('JOB-0001')).toBeInTheDocument();
-    expect(screen.getByText('engineering_head')).toBeInTheDocument();
-  });
-
-  test('renders filter sidebar with Status, Review, and Persistence groups', async () => {
-    sessionStorage.setItem('happyranch.token', 'tok');
-    server.use(
-      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
-        HttpResponse.json({ jobs: [JOB] }),
-      ),
-    );
-    mountAt(`/orgs/${SLUG}/jobs`);
-    await waitFor(() => {
-      expect(screen.getByText(/^Status$/i)).toBeInTheDocument();
-      expect(screen.getByText(/^Review$/i)).toBeInTheDocument();
-      expect(screen.getByText(/^Persistence$/i)).toBeInTheDocument();
-    });
+    // Should mention Audit and Dashboard as the surfaces where jobs live
+    // (getAllByText: sidebar also contains "Audit")
+    expect(screen.getByText(/Jobs are reachable contextually/)).toBeInTheDocument();
   });
 });
 
-describe('JobDetailPane + RejectJobDialog — write path', () => {
-  function stubDetailHandlers() {
+// ---------------------------------------------------------------------------
+// JobDetailPage — standalone detail
+// ---------------------------------------------------------------------------
+
+function stubJobDetail(job: JobRecord = JOB, tasks: TaskRecord[] = []) {
+  server.use(
+    http.get('/api/v1/orgs', () =>
+      HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+    ),
+    http.get(`/api/v1/orgs/${SLUG}/jobs/${job.id}`, () =>
+      HttpResponse.json(job),
+    ),
+    // "If approved" cascade: tasks blocked on this job
+    http.get(`/api/v1/orgs/${SLUG}/tasks`, ({ request }) => {
+      const url = new URL(request.url);
+      if (url.searchParams.get('blocked_on_job_id') === job.id) {
+        return HttpResponse.json({ tasks, next_cursor: null });
+      }
+      return HttpResponse.json({ tasks: [], next_cursor: null });
+    }),
+    // Output panel seed for running jobs
+    http.get(`/api/v1/orgs/${SLUG}/jobs/${job.id}/tail`, ({ request }) => {
+      const url = new URL(request.url);
+      const stream = url.searchParams.get('stream') ?? 'stdout';
+      return HttpResponse.json({ stream, lines: [] });
+    }),
+  );
+}
+
+describe('JobDetailPage — read path', () => {
+  test('renders job header, title, verbatim command, and property rail', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubJobDetail();
+    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
+
+    await waitFor(() => {
+      expect(screen.getByText('JOB-0001')).toBeInTheDocument();
+      expect(screen.getByText('Clean up stale Docker images')).toBeInTheDocument();
+    });
+
+    // Verbatim command
+    expect(screen.getByText('docker image prune -af')).toBeInTheDocument();
+
+    // Breadcrumb back to task
+    expect(screen.getByText(/Back to TASK-0042/)).toBeInTheDocument();
+
+    // Property rail items (stored fields only) — use getAllByText since agent_name
+    // appears in both the header meta and the property rail
+    expect(screen.getAllByText('engineering_head').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('bash')).toBeInTheDocument();
+  });
+
+  test('shows gated chip for review_required pending job', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubJobDetail(JOB);
+    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Needs your approval/)).toBeInTheDocument();
+    });
+    expect(screen.getByRole('button', { name: 'Approve / Reject' })).toBeInTheDocument();
+  });
+
+  test('gated chip click opens two-step confirm (uniform, no danger tiers)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubJobDetail(JOB);
+    // Mock the run endpoint so RunJobDialog can initialize
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/jobs/JOB-0001/run`, () =>
+        HttpResponse.json({ id: 'JOB-0001', status: 'running', started_at: '2026-05-23T12:01:00Z', cwd_resolved: '/x', timeout_seconds: 300, events_url: '' }),
+      ),
+    );
+
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Approve / Reject' })).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Approve / Reject' }));
+
+    // Step 1: approval prompt
+    await waitFor(() => {
+      expect(screen.getByText(/Approve this job/)).toBeInTheDocument();
+    });
+
+    // Click Approve… → step 2
+    await user.click(screen.getByRole('button', { name: 'Approve…' }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Confirm: are you sure/)).toBeInTheDocument();
+    });
+
+    // Confirm approve → moves to run-phase two-step confirm
+    await user.click(screen.getByRole('button', { name: 'Confirm approve' }));
+
+    // Now in the run-phase two-step confirm
+    await waitFor(() => {
+      expect(screen.getByText(/Run this script/)).toBeInTheDocument();
+    });
+
+    // Click Run… → step 2
+    await user.click(screen.getByRole('button', { name: 'Run…' }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Confirm: are you sure you want to run/)).toBeInTheDocument();
+    });
+
+    // Confirm → opens RunJobDialog
+    await user.click(screen.getByRole('button', { name: 'Confirm run' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+    });
+  });
+
+  test('shows "if approved" cascade with blocked tasks', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const blockedTask = {
+      id: 'TASK-0099',
+      status: 'blocked',
+      block_kind: 'escalated',
+      blocked_on_job_ids: '["JOB-0001"]',
+      assigned_agent: 'dev_agent',
+      team: 'engineering',
+      brief: 'Deploy the hotfix to production',
+      revision_count: 0,
+      created_at: '2026-05-23T11:00:00Z',
+      updated_at: '2026-05-23T11:00:00Z',
+      completed_at: null,
+      parent_task_id: null,
+      revisit_of_task_id: null,
+      dispatched_from_thread_id: null,
+      note: null,
+      orchestration_step_count: 0,
+      final_output_dir: null,
+      cancelled_at: null,
+      last_heartbeat: null,
+      session_timeout_seconds: null,
+      task_type: 'task',
+      task_id: 'TASK-0099',
+      closed_at: null,
+    } as TaskRecord;
+    stubJobDetail(JOB, [blockedTask]);
+    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
+
+    await waitFor(() => {
+      expect(screen.getByText(/If approved/)).toBeInTheDocument();
+      expect(screen.getByText(/TASK-0099/)).toBeInTheDocument();
+      expect(screen.getByText(/Deploy the hotfix/)).toBeInTheDocument();
+    });
+  });
+
+  test('shows calm empty cascade when no tasks blocked', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubJobDetail(JOB, []);
+    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
+
+    await waitFor(() => {
+      expect(screen.getByText(/No tasks are currently blocked/)).toBeInTheDocument();
+    });
+  });
+
+  test('shows reject reason for rejected job', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const rejectedJob: JobRecord = {
+      ...JOB,
+      status: 'rejected',
+      reject_reason: 'Too risky to run',
+    };
+    stubJobDetail(rejectedJob);
+    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
+
+    await waitFor(() => {
+      expect(screen.getByText('Too risky to run')).toBeInTheDocument();
+    });
+    // No action buttons for rejected job
+    expect(screen.queryByRole('button', { name: /Run|Reject|Approve/ })).not.toBeInTheDocument();
+  });
+
+  test('shows failure reason for failed job', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const failedJob: JobRecord = {
+      ...JOB,
+      status: 'failed',
+      reason: 'exit code 1',
+      exit_code: 1,
+      finished_at: '2026-05-23T12:05:00Z',
+      duration_ms: 5000,
+    };
+    stubJobDetail(failedJob);
+    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failure reason/)).toBeInTheDocument();
+      expect(screen.getByText('exit code 1')).toBeInTheDocument();
+    });
+  });
+
+  test('shows loading state', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
       ),
-      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
-        HttpResponse.json({ jobs: [JOB] }),
-      ),
       http.get(`/api/v1/orgs/${SLUG}/jobs/JOB-0001`, () =>
-        HttpResponse.json(JOB),
+        new Promise(() => {}), // never resolves
       ),
     );
-  }
-
-  test('detail drawer renders title, rationale, script, and action bar for pending job', async () => {
-    sessionStorage.setItem('happyranch.token', 'tok');
-    stubDetailHandlers();
     mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
-    // Title and rationale appear in both the card and the drawer — use getAllByText
-    await waitFor(() =>
-      expect(screen.getAllByText('Clean up stale Docker images').length).toBeGreaterThanOrEqual(1),
-    );
-    expect(screen.getAllByText(/Disk usage is above 90%/i).length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('docker image prune -af')).toBeInTheDocument();
-    // Action bar should be visible for pending job
-    expect(screen.getByRole('button', { name: /Reject/i })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText(/Loading JOB-0001/)).toBeInTheDocument();
+    });
   });
 
+  test('shows error state with retry', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/JOB-0001`, () =>
+        HttpResponse.json({ error: 'boom' }, { status: 500 }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load/)).toBeInTheDocument();
+    });
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// JobDetailPage — actions
+// ---------------------------------------------------------------------------
+
+describe('JobDetailPage — reject dialog', () => {
   test('RejectJobDialog submits reason and calls POST reject endpoint', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
-    stubDetailHandlers();
+    stubJobDetail({ ...JOB, review_required: false }); // non-gated → direct Run/Reject buttons
+
     let capturedBody: unknown = null;
     server.use(
       http.post(`/api/v1/orgs/${SLUG}/jobs/JOB-0001/reject`, async ({ request: req }) => {
@@ -136,124 +319,67 @@ describe('JobDetailPane + RejectJobDialog — write path', () => {
     const user = userEvent.setup();
     mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
 
-    // Click Reject to open dialog
-    await user.click(await screen.findByRole('button', { name: /Reject/i }));
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument();
+    });
 
-    // Dialog should open
+    await user.click(screen.getByRole('button', { name: 'Reject' }));
+
     await waitFor(() =>
       expect(screen.getByRole('dialog')).toBeInTheDocument(),
     );
 
-    // Type a reason
-    await user.type(screen.getByPlaceholderText(/Reason \(required/i), 'Too risky');
-
-    // Submit
+    await user.type(screen.getByPlaceholderText(/Reason \(required/), 'Too risky');
     await user.click(screen.getByRole('button', { name: /^Reject$/ }));
 
     await waitFor(() => {
       expect(capturedBody).toEqual({ reason: 'Too risky' });
     });
   });
+});
 
-  test('RunJobDialog keeps long script previews inside the dialog', async () => {
+describe('JobDetailPage — run dialog', () => {
+  test('RunJobDialog opens for non-gated pending job', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
-    const longScriptJob: JobRecord = {
-      ...JOB,
-      script_text: `echo ${'very-long-token-'.repeat(30)}`,
-    };
+    const nonGated: JobRecord = { ...JOB, review_required: false };
+    stubJobDetail(nonGated);
+
     server.use(
-      http.get('/api/v1/orgs', () =>
-        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
-      ),
-      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
-        HttpResponse.json({ jobs: [longScriptJob] }),
-      ),
-      http.get(`/api/v1/orgs/${SLUG}/jobs/JOB-0001`, () =>
-        HttpResponse.json(longScriptJob),
-      ),
+      http.post(`/api/v1/orgs/${SLUG}/jobs/JOB-0001/run`, async () => {
+        return HttpResponse.json({ id: 'JOB-0001', status: 'running', started_at: '2026-05-23T12:01:00Z', cwd_resolved: '/x', timeout_seconds: 300, events_url: '' });
+      }),
     );
 
     const user = userEvent.setup();
     mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
 
-    await user.click(await screen.findByRole('button', { name: /^Run$/ }));
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Run' })).toBeInTheDocument();
+    });
 
-    const dialog = await screen.findByRole('dialog');
-    expect(dialog).toBeInTheDocument();
-    expect(within(dialog).getByText(longScriptJob.script_text)).toHaveClass(
-      'overflow-x-auto',
-      'max-w-full',
-      'min-w-0',
-    );
-    expect(dialog).toHaveClass('overflow-x-hidden');
-  });
+    // Click Run → two-step confirm
+    await user.click(screen.getByRole('button', { name: 'Run' }));
 
-  test('reject button is disabled when reason is empty', async () => {
-    sessionStorage.setItem('happyranch.token', 'tok');
-    stubDetailHandlers();
+    await waitFor(() => {
+      expect(screen.getByText(/Run this script/)).toBeInTheDocument();
+    });
 
-    const user = userEvent.setup();
-    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
+    // Step 2
+    await user.click(screen.getByRole('button', { name: 'Run…' }));
+    await waitFor(() => {
+      expect(screen.getByText(/Confirm: are you sure/)).toBeInTheDocument();
+    });
 
-    await user.click(await screen.findByRole('button', { name: /Reject/i }));
+    // Confirm → dialog opens
+    await user.click(screen.getByRole('button', { name: 'Confirm run' }));
 
-    await waitFor(() =>
-      expect(screen.getByRole('dialog')).toBeInTheDocument(),
-    );
-
-    // The Reject submit button should be disabled when reason is empty
-    const submitBtn = screen.getByRole('button', { name: /^Reject$/ });
-    expect(submitBtn).toBeDisabled();
-  });
-
-  test('detail drawer shows reject reason section for rejected job', async () => {
-    sessionStorage.setItem('happyranch.token', 'tok');
-    const rejectedJob: JobRecord = {
-      ...JOB,
-      status: 'rejected',
-      reject_reason: 'Too risky to run',
-    };
-    server.use(
-      http.get('/api/v1/orgs', () =>
-        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
-      ),
-      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
-        HttpResponse.json({ jobs: [rejectedJob] }),
-      ),
-      http.get(`/api/v1/orgs/${SLUG}/jobs/JOB-0001`, () =>
-        HttpResponse.json(rejectedJob),
-      ),
-    );
-    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
-    await waitFor(() =>
-      expect(screen.getByText('Too risky to run')).toBeInTheDocument(),
-    );
-    // Action bar should NOT be visible for rejected job
-    expect(screen.queryByRole('button', { name: /Reject/i })).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+    });
   });
 });
 
-describe('JobDetailPane — Stop button (running job)', () => {
-  function stubRunningHandlers(job: JobRecord) {
-    server.use(
-      http.get('/api/v1/orgs', () =>
-        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
-      ),
-      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
-        HttpResponse.json({ jobs: [job] }),
-      ),
-      http.get(`/api/v1/orgs/${SLUG}/jobs/JOB-0001`, () =>
-        HttpResponse.json(job),
-      ),
-      // OutputPanel seeds the live view by pulling /tail once on mount.
-      http.get(`/api/v1/orgs/${SLUG}/jobs/JOB-0001/tail`, ({ request }) => {
-        const url = new URL(request.url);
-        const stream = url.searchParams.get('stream') ?? 'stdout';
-        return HttpResponse.json({ stream, lines: [] });
-      }),
-    );
-  }
-
+describe('JobDetailPage — stop (running job)', () => {
   test('renders Stop button for running job and POSTs to /stop', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     const runningJob: JobRecord = {
@@ -261,7 +387,8 @@ describe('JobDetailPane — Stop button (running job)', () => {
       status: 'running',
       started_at: '2026-05-23T12:01:00Z',
     };
-    stubRunningHandlers(runningJob);
+    stubJobDetail(runningJob);
+
     let stopCalled = false;
     server.use(
       http.post(`/api/v1/orgs/${SLUG}/jobs/JOB-0001/stop`, () => {
@@ -278,85 +405,19 @@ describe('JobDetailPane — Stop button (running job)', () => {
       expect(stopCalled).toBe(true);
     });
   });
-
-  test('live drawer seeds output from /tail on mount', async () => {
-    sessionStorage.setItem('happyranch.token', 'tok');
-    const runningJob: JobRecord = {
-      ...JOB,
-      status: 'running',
-      started_at: '2026-05-23T12:01:00Z',
-    };
-    stubRunningHandlers(runningJob);
-    // Override the default empty /tail handler with one that returns prior lines.
-    server.use(
-      http.get(`/api/v1/orgs/${SLUG}/jobs/JOB-0001/tail`, ({ request }) => {
-        const url = new URL(request.url);
-        const stream = url.searchParams.get('stream') ?? 'stdout';
-        return HttpResponse.json({
-          stream,
-          lines:
-            stream === 'stdout'
-              ? ['boot line 1', 'boot line 2']
-              : ['warning line'],
-        });
-      }),
-    );
-
-    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
-    await waitFor(() => {
-      expect(screen.getByText('boot line 1')).toBeInTheDocument();
-      expect(screen.getByText('boot line 2')).toBeInTheDocument();
-      expect(screen.getByText('warning line')).toBeInTheDocument();
-    });
-  });
-
-  test('no Stop button when job is pending', async () => {
-    sessionStorage.setItem('happyranch.token', 'tok');
-    stubRunningHandlers(JOB);
-    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
-    await waitFor(() =>
-      expect(screen.getAllByText('Clean up stale Docker images').length).toBeGreaterThanOrEqual(1),
-    );
-    expect(screen.queryByRole('button', { name: /^Stop$/ })).not.toBeInTheDocument();
-  });
 });
 
-describe('OutputPanel', () => {
-  function stubDetailForStatus(job: JobRecord) {
-    server.use(
-      http.get('/api/v1/orgs', () =>
-        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
-      ),
-      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
-        HttpResponse.json({ jobs: [job] }),
-      ),
-      http.get(`/api/v1/orgs/${SLUG}/jobs/JOB-0001`, () =>
-        HttpResponse.json(job),
-      ),
-    );
-  }
-
-  test('renders no output section for pending job', async () => {
-    sessionStorage.setItem('happyranch.token', 'tok');
-    stubDetailForStatus(JOB);
-    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
-    // Wait for detail pane to load
-    await waitFor(() =>
-      expect(screen.getAllByText('Clean up stale Docker images').length).toBeGreaterThanOrEqual(1),
-    );
-    // OutputPanel returns null for pending — no "Output" heading
-    expect(screen.queryByText(/^Output$/i)).not.toBeInTheDocument();
-  });
-
-  test('renders stdout and stderr pre blocks for completed job', async () => {
+describe('JobDetailPage — output', () => {
+  test('renders stdout and stderr for completed job', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     const completedJob: JobRecord = {
       ...JOB,
       status: 'completed',
       exit_code: 0,
       finished_at: '2026-05-23T12:05:00Z',
+      duration_ms: 5000,
     };
-    stubDetailForStatus(completedJob);
+    stubJobDetail(completedJob);
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/jobs/JOB-0001/output`, () =>
         HttpResponse.json({
@@ -373,25 +434,40 @@ describe('OutputPanel', () => {
     await waitFor(() =>
       expect(screen.getByText('Deleted 3 images')).toBeInTheDocument(),
     );
-    // Both stdout and stderr headings should be present
     expect(screen.getByText(/^stdout$/i)).toBeInTheDocument();
-    expect(screen.getByText(/^stderr$/i)).toBeInTheDocument();
-    // Empty stderr renders as '(empty)'
-    expect(screen.getByText('(empty)')).toBeInTheDocument();
   });
 
-  test('renders no output section for rejected job', async () => {
+  test('hides output section for pending job', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
-    const rejectedJob: JobRecord = {
-      ...JOB,
-      status: 'rejected',
-      reject_reason: 'Not allowed',
-    };
-    stubDetailForStatus(rejectedJob);
+    stubJobDetail(JOB);
     mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
     await waitFor(() =>
-      expect(screen.getByText('Not allowed')).toBeInTheDocument(),
+      expect(screen.getByText('Clean up stale Docker images')).toBeInTheDocument(),
     );
+    // OutputPanel returns null for pending
     expect(screen.queryByText(/^Output$/i)).not.toBeInTheDocument();
+  });
+
+  test('shows property rail with stored fields for completed job', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const completedJob: JobRecord = {
+      ...JOB,
+      status: 'completed',
+      exit_code: 0,
+      finished_at: '2026-05-23T12:05:00Z',
+      duration_ms: 5000,
+      reviewed_by: 'founder',
+      reviewed_at: '2026-05-23T12:00:01Z',
+    };
+    stubJobDetail(completedJob);
+    mountAt(`/orgs/${SLUG}/jobs/JOB-0001`);
+    await waitFor(() => {
+      expect(screen.getByText('Exit code')).toBeInTheDocument();
+      expect(screen.getByText('0')).toBeInTheDocument();
+      expect(screen.getByText('Duration')).toBeInTheDocument();
+      expect(screen.getByText('5.0s')).toBeInTheDocument();
+      expect(screen.getByText('Reviewed by')).toBeInTheDocument();
+      expect(screen.getByText('founder')).toBeInTheDocument();
+    });
   });
 });

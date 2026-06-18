@@ -307,8 +307,8 @@ describe('/jobs is still reachable (not retired in Phase 1b)', () => {
     );
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/jobs` });
     await waitFor(() => {
-      // JobsPage renders "No jobs" empty state when there are no jobs
-      expect(screen.getByText('No jobs')).toBeInTheDocument();
+      // JobsPage renders contextual guidance (PRD §4.13 — no standalone index)
+      expect(screen.getByText(/Jobs are reachable contextually/)).toBeInTheDocument();
     });
   });
 });

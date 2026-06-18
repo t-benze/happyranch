@@ -1149,11 +1149,14 @@ class Database:
         before_task_id: str | None = None,
         status: TaskStatus | str | None = None,
         block_kind: BlockKind | str | None = None,
+        blocked_on_job_id: str | None = None,
     ) -> list[TaskRecord]:
         # Cursor pagination: callers pass the last task_id of the previous page
         # as `before_task_id`; we resolve its created_at and emit the next page
         # using (created_at, id) DESC for a stable tiebreak. `status` and
         # `block_kind` are optional equality filters (read-only backlog queries).
+        # `blocked_on_job_id` is a DERIVE filter for the Jobs "if-approved"
+        # cascade — finds tasks blocked on a specific job id.
         cursor_created_at: str | None = None
         if before_task_id is not None:
             row = self._conn.execute(
@@ -1178,6 +1181,10 @@ class Database:
         if block_kind is not None:
             conditions.append("block_kind = ?")
             params.append(str(block_kind))
+        if blocked_on_job_id is not None:
+            # JSON array suffix-anchored LIKE: JOB-1 won't match JOB-12.
+            conditions.append("blocked_on_job_ids LIKE ?")
+            params.append(f'%"{blocked_on_job_id}"%')
         if cursor_created_at is not None:
             conditions.append("(created_at, id) < (?, ?)")
             params.extend([cursor_created_at, before_task_id])

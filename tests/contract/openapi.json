@@ -1326,6 +1326,10 @@
             "query"
           ],
           [
+            "blocked_on_job_id",
+            "query"
+          ],
+          [
             "limit",
             "query"
           ],

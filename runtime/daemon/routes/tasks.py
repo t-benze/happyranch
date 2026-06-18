@@ -148,6 +148,7 @@ def list_tasks(
     before: str | None = None,
     status: str | None = None,
     block_kind: str | None = None,
+    blocked_on_job_id: str | None = None,
 ) -> dict:
     # Cursor pagination: `before` is the task_id of the last item on the
     # previous page. `next_cursor` is the last id of this page when the page
@@ -156,9 +157,12 @@ def list_tasks(
     # database returns [] and we surface that as the end of the list.
     # `status` / `block_kind` are read-only equality filters for backlog
     # queries (e.g. `tasks --status blocked --block-kind escalated`).
+    # `blocked_on_job_id` is a DERIVE filter for the Jobs "if-approved"
+    # cascade — finds tasks blocked on a specific job id.
     tasks = org.db.list_tasks(
         limit=limit, assigned_agent=assigned_agent, before_task_id=before,
         status=status, block_kind=block_kind,
+        blocked_on_job_id=blocked_on_job_id,
     )
     next_cursor = tasks[-1].id if len(tasks) == limit else None
     return {
