@@ -562,6 +562,7 @@ def _thread_row_to_dict(t: ThreadRecord) -> dict:
         "composed_by": t.composed_by,
         "composed_from_task_id": t.composed_from_task_id,
         "composed_from_dream_id": t.composed_from_dream_id,
+        "last_speaker": t.last_speaker,
     }
 
 

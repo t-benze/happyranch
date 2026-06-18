@@ -274,6 +274,7 @@ class ThreadRecord(BaseModel):
     composed_by: str = "founder"
     composed_from_task_id: str | None = None
     composed_from_dream_id: str | None = None
+    last_speaker: str | None = None
 
 
 class ThreadParticipant(BaseModel):

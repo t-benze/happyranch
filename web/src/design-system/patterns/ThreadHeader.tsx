@@ -18,6 +18,8 @@ interface ThreadHeaderProps {
   turnsUsed: number;
   turnCap: number;
   archiveSummary?: string | null;
+  /** When true, renders a crescent-moon badge (dream-originated marker, A4). */
+  dreamOriginated?: boolean;
   actions?: ReactNode;
 }
 
@@ -29,6 +31,7 @@ export function ThreadHeader({
   turnsUsed,
   turnCap,
   archiveSummary,
+  dreamOriginated,
   actions,
 }: ThreadHeaderProps): JSX.Element {
   return (
@@ -36,6 +39,19 @@ export function ThreadHeader({
       <PageHeader
         title={
           <span className="inline-flex items-center gap-2">
+            {dreamOriginated && (
+              <svg
+                className="text-accent inline-block shrink-0"
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                aria-label="Dream-originated thread"
+                role="img"
+              >
+                <path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a6.4 6.4 0 0 1-4.54 1.86c-3.53 0-6.4-2.87-6.4-6.4 0-1.62.6-3.1 1.6-4.24A9 9 0 0 0 12 3Z" />
+              </svg>
+            )}
             <span className="truncate">{subject}</span>
             <StatusBadge status={status} />
           </span>
