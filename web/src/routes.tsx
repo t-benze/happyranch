@@ -13,6 +13,7 @@ import { OrgProvider } from '@/lib/orgSlug';
 import { AgentsPage } from '@/features/agents/AgentsPage';
 import { ArtifactsPage } from '@/features/artifacts/ArtifactsPage';
 import { JobsPage } from '@/features/jobs/JobsPage';
+import { JobDetailPage } from '@/features/jobs/JobDetailPage';
 import { CommandPaletteHost } from '@/host/CommandPaletteHost';
 import { HelpDrawerHost } from '@/host/HelpDrawerHost';
 import { AuditPage } from '@/features/audit/AuditPage';
@@ -93,7 +94,7 @@ export function AppRoutes(): JSX.Element {
           <Route path="agents" element={<AgentsPage />} />
           <Route path="agents/:agent_name" element={<AgentsPage />} />
           <Route path="jobs" element={<JobsPage />} />
-          <Route path="jobs/:job_id" element={<JobsPage />} />
+          <Route path="jobs/:job_id" element={<JobDetailPage />} />
           <Route path="spend" element={<SpendPage />} />
           <Route path="dreams" element={<DreamsPage />} />
           <Route path="schedule" element={<SchedulePage />} />

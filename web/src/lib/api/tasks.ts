@@ -21,6 +21,7 @@ export const listTasks = (
     status?: string;
     assigned_agent?: string;
     before?: string;
+    blocked_on_job_id?: string;
   },
 ): Promise<{ tasks: TaskListItem[]; next_cursor?: string | null }> =>
   request(`/orgs/${slug}/tasks`, { params });
@@ -32,6 +33,7 @@ export const listTaskRoots = (
     status?: string;
     assigned_agent?: string;
     before?: string;
+    blocked_on_job_id?: string;
   },
 ): Promise<{ tasks: TaskListItem[]; next_cursor?: string | null }> =>
   request(`/orgs/${slug}/tasks/roots`, { params });
