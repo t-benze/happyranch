@@ -270,4 +270,228 @@ describe('AuditPage — day-grouped timeline', () => {
       expect(taskLink.closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-42`);
     });
   });
+
+  test('sorts entries reverse-chronological within same day', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // Entries on same day, entered in ASC order (oldest first)
+    seedAudit([
+      {
+        id: 1,
+        task_id: 'TASK-1',
+        agent: 'dev_agent',
+        action: 'completion_report',
+        payload: {},
+        timestamp: '2026-06-18T08:00:00Z',
+      },
+      {
+        id: 2,
+        task_id: 'TASK-2',
+        agent: 'dev_agent',
+        action: 'completion_report',
+        payload: {},
+        timestamp: '2026-06-18T10:00:00Z',
+      },
+      {
+        id: 3,
+        task_id: 'TASK-3',
+        agent: 'dev_agent',
+        action: 'completion_report',
+        payload: {},
+        timestamp: '2026-06-18T09:00:00Z',
+      },
+    ]);
+    mountAt(`/orgs/${SLUG}/audit`);
+
+    // Within "2026-06-18" day, the rows should render newest-first.
+    // TASK-2 (10:00) must appear before TASK-3 (09:00) which must
+    // appear before TASK-1 (08:00).
+    await waitFor(() => {
+      const taskLinks = screen.getAllByText(/^TASK-[123]$/);
+      expect(taskLinks).toHaveLength(3);
+      expect(taskLinks[0].textContent).toBe('TASK-2');
+      expect(taskLinks[1].textContent).toBe('TASK-3');
+      expect(taskLinks[2].textContent).toBe('TASK-1');
+    });
+  });
+
+  test('renders executor only from payload.executor, not agent_session_id', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    seedAudit([
+      {
+        id: 1,
+        task_id: 'THR-001',
+        agent: 'dev_agent',
+        action: 'agent_session_reused',
+        payload: {
+          executor: 'claude-sonnet-4',
+          agent_session_id: 'abc12345-6789-4def-9012-3456789abcde',
+        },
+        timestamp: '2026-06-18T10:00:00Z',
+      },
+    ]);
+    mountAt(`/orgs/${SLUG}/audit`);
+
+    await waitFor(() => {
+      // Must show the real executor name
+      expect(screen.getByText('claude-sonnet-4')).toBeInTheDocument();
+      // Must NOT render agent_session_id as executor (not even truncated)
+      expect(screen.queryByText(/abc12345/)).not.toBeInTheDocument();
+      // Must NOT render "via" label
+      expect(screen.queryByText(/via /)).not.toBeInTheDocument();
+    });
+  });
+
+  test('omits executor when payload.executor is absent', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    seedAudit([
+      {
+        id: 1,
+        task_id: 'TASK-1',
+        agent: 'dev_agent',
+        action: 'session_end',
+        payload: {
+          token_usage: { total: 500 },
+          agent_session_id: 'abc12345-6789-4def-9012-3456789abcde',
+        },
+        timestamp: '2026-06-18T10:00:00Z',
+      },
+    ]);
+    mountAt(`/orgs/${SLUG}/audit`);
+
+    await waitFor(() => {
+      // Token cost should render
+      expect(screen.getByText('500 tok')).toBeInTheDocument();
+      // agent_session_id must NOT appear as executor text
+      expect(screen.queryByText(/abc12345/)).not.toBeInTheDocument();
+    });
+  });
+
+  test('renders job badge from payload.script_request_id for job_ actions', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    seedAudit([
+      {
+        id: 1,
+        task_id: 'TASK-100',
+        agent: 'founder',
+        action: 'job_run_completed',
+        payload: {
+          script_request_id: 'JOB-042',
+          exit_code: 0,
+          duration_ms: 1234,
+        },
+        timestamp: '2026-06-18T10:00:00Z',
+      },
+    ]);
+    mountAt(`/orgs/${SLUG}/audit`);
+
+    await waitFor(() => {
+      // The JOB badge should link to the jobs page with the real job id
+      const jobLink = screen.getByText('JOB-042');
+      expect(jobLink.closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/jobs/JOB-042`);
+      // The parent task should also be linked separately
+      const taskLink = screen.getByText('TASK-100');
+      expect(taskLink.closest('a')).toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-100`);
+    });
+  });
+
+  test('omits job badge when script_request_id is absent from job_ action', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    seedAudit([
+      {
+        id: 1,
+        task_id: 'TASK-100',
+        agent: 'founder',
+        action: 'job_run_completed',
+        payload: {
+          exit_code: 0,
+        },
+        timestamp: '2026-06-18T10:00:00Z',
+      },
+    ]);
+    mountAt(`/orgs/${SLUG}/audit`);
+
+    await waitFor(() => {
+      // Parent task should still link
+      expect(screen.getByText('TASK-100')).toBeInTheDocument();
+      // No JOB- badge should appear (no script_request_id)
+      expect(screen.queryByText(/^JOB-/)).not.toBeInTheDocument();
+    });
+  });
+
+  test('export button triggers CSV download with filtered entries', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const user = userEvent.setup();
+    seedAudit([
+      {
+        id: 1,
+        task_id: 'TASK-1',
+        agent: 'dev_agent',
+        action: 'completion_report',
+        payload: { token_usage: { total: 1500 }, executor: 'claude-sonnet-4' },
+        timestamp: '2026-06-18T10:00:00Z',
+      },
+      {
+        id: 2,
+        task_id: 'TASK-2',
+        agent: 'code_reviewer',
+        action: 'review_verdict',
+        payload: { verdict: 'APPROVE' },
+        timestamp: '2026-06-18T09:00:00Z',
+      },
+    ]);
+    mountAt(`/orgs/${SLUG}/audit`);
+
+    // Wait for page to load
+    await waitFor(() => {
+      expect(screen.getByText('Export')).toBeInTheDocument();
+    });
+
+    // Spy on URL.createObjectURL + document.createElement('a').click()
+    let capturedBlob: Blob | null = null;
+    const originalCreateObjectURL = URL.createObjectURL;
+    URL.createObjectURL = (blob: Blob) => {
+      capturedBlob = blob;
+      return 'blob:test';
+    };
+    let downloadName = '';
+    const originalCreateElement = document.createElement.bind(document);
+    document.createElement = ((tagName: string) => {
+      const el = originalCreateElement(tagName);
+      if (tagName === 'a') {
+        const origClick = el.click.bind(el);
+        el.click = () => {
+          downloadName = (el as HTMLAnchorElement).download;
+          origClick();
+        };
+      }
+      return el;
+    }) as typeof document.createElement;
+
+    try {
+      const exportBtn = screen.getByText('Export');
+      await user.click(exportBtn);
+
+      expect(capturedBlob).not.toBeNull();
+      // Read blob via FileReader (jsdom Blob lacks .text())
+      const csv = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsText(capturedBlob!);
+      });
+      // Verify CSV headers
+      expect(csv).toContain('timestamp,task_id,agent,action,executor,tokens,dream_id,job_id');
+      // Verify both entries are in the CSV
+      expect(csv).toContain('TASK-1');
+      expect(csv).toContain('completion_report');
+      expect(csv).toContain('claude-sonnet-4');
+      expect(csv).toContain('1500');
+      expect(csv).toContain('TASK-2');
+      expect(csv).toContain('review_verdict');
+      expect(downloadName).toMatch(/^audit-\d{4}-\d{2}-\d{2}\.csv$/);
+    } finally {
+      URL.createObjectURL = originalCreateObjectURL;
+      document.createElement = originalCreateElement;
+    }
+  });
 });

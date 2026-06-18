@@ -66,7 +66,9 @@ function formatDateHeader(dateStr: string): string {
   return dateStr;
 }
 
-/** Group entries by calendar day (date string), sort days most-recent first. */
+/** Group entries by calendar day (date string), sort days most-recent first.
+ *  Within each day, entries are sorted reverse-chronological (newest first)
+ *  by timestamp, falling back to id DESC on tie. */
 function groupByDay(entries: AuditEntry[]): { date: string; entries: AuditEntry[] }[] {
   const map = new Map<string, AuditEntry[]>();
   for (const e of entries) {
@@ -77,7 +79,16 @@ function groupByDay(entries: AuditEntry[]): { date: string; entries: AuditEntry[
   }
   return [...map.entries()]
     .sort((a, b) => (a[0] < b[0] ? 1 : -1))
-    .map(([date, entries]) => ({ date, entries }));
+    .map(([date, entries]) => ({
+      date,
+      entries: entries.sort((a, b) => {
+        const tsA = a.timestamp;
+        const tsB = b.timestamp;
+        if (tsA > tsB) return -1;
+        if (tsA < tsB) return 1;
+        return b.id - a.id;
+      }),
+    }));
 }
 
 function tokensFromPayload(p: Record<string, unknown>): number | undefined {
@@ -91,12 +102,11 @@ function tokensFromPayload(p: Record<string, unknown>): number | undefined {
 }
 
 function executorFromPayload(p: Record<string, unknown>): string | undefined {
-  const ex = p['executor'] ?? p['agent_session_id'];
-  if (typeof ex === 'string') {
-    // session IDs are UUIDs — show first 8 chars as shorthand
-    if (ex.length > 8 && ex.includes('-')) return ex.slice(0, 8);
-    return ex;
-  }
+  // executor is ONLY from payload.executor — agent_session_id is a session
+  // identifier, not the executor/provider.  Fabricating executor attribution
+  // from it violates the provenance honesty lens.
+  const ex = p['executor'];
+  if (typeof ex === 'string') return ex;
   return undefined;
 }
 
@@ -121,13 +131,13 @@ function TimelineRow({ entry, legendColor, slug }: TimelineRowProps): JSX.Elemen
   const executor = executorFromPayload(entry.payload);
   const hasDream = !!entry._thread_dream_id;
 
-  // Determine target detail path from task_id scope prefix
+  // Determine target detail path from task_id scope prefix (task/thread only;
+  // job badges are rendered separately from payload.script_request_id).
   const scopeLink = useMemo(() => {
     if (!entry.task_id) return null;
     const tid = entry.task_id;
     if (tid.startsWith('TASK-')) return { to: `/orgs/${slug}/tasks/${tid}`, kind: 'task' as const };
     if (tid.startsWith('THR-')) return { to: `/orgs/${slug}/threads/${tid}`, kind: 'thread' as const };
-    if (tid.startsWith('JOB-')) return { to: `/orgs/${slug}/jobs/${tid}`, kind: 'job' as const };
     return null;
   }, [entry.task_id, slug]);
 
@@ -154,8 +164,8 @@ function TimelineRow({ entry, legendColor, slug }: TimelineRowProps): JSX.Elemen
 
       {/* Executor */}
       {executor && (
-        <span className="text-fg-muted shrink-0 text-xs" title={`Executor session: ${executor}`}>
-          via {executor}
+        <span className="text-fg-muted shrink-0 text-xs" title={executor}>
+          {executor}
         </span>
       )}
 
@@ -172,14 +182,28 @@ function TimelineRow({ entry, legendColor, slug }: TimelineRowProps): JSX.Elemen
       {/* Spacer */}
       <span className="flex-1" />
 
-      {/* Object ID badge (click-through) */}
-      {scopeLink && (scopeLink.kind === 'job' ? (
-        <Link to={scopeLink.to} className="text-fg-muted font-mono text-xs hover:underline">
-          {entry.task_id}
-        </Link>
-      ) : (
+      {/* Job ID badge (click-through) — for job_* actions, the real
+          job id lives in payload.script_request_id, while task_id is the
+          parent task that owns the job.  Both are linked separately. */}
+      {entry.action.startsWith('job_') && (() => {
+        const jobId = entry.payload.script_request_id as string | undefined;
+        if (jobId) {
+          return (
+            <Link
+              to={`/orgs/${slug}/jobs/${jobId}`}
+              className="text-id-job font-mono text-xs hover:underline"
+            >
+              {jobId}
+            </Link>
+          );
+        }
+        return null;
+      })()}
+
+      {/* Object ID badge (click-through) — task/thread link */}
+      {scopeLink && (
         <IdBadge kind={scopeLink.kind} id={entry.task_id!} to={scopeLink.to} />
-      ))}
+      )}
     </div>
   );
 }

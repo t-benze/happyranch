@@ -26,6 +26,7 @@ import {
   type AuditFilters,
   type LegendEntry,
 } from './audit-filters';
+import type { AuditEntry } from '@/lib/api/types';
 
 const SINCE_OPTIONS: { value: AuditFilters['since']; label: string }[] = [
   { value: '24h', label: '24h' },
@@ -79,6 +80,26 @@ export function AuditPage(): JSX.Element {
     setSearchParams(encodeFilters({ ...filters, action: null }), { replace: true });
   }, [filters, setSearchParams]);
 
+  // Client-side filtered entries (legend + time-window, already in memory)
+  const filteredEntries = useMemo(() => {
+    if (!filters.action) return allEntries;
+    return allEntries.filter((e) => e.action === filters.action);
+  }, [allEntries, filters.action]);
+
+  // Export the currently-visible (filtered) audit entries as CSV
+  const handleExport = useCallback(() => {
+    if (filteredEntries.length === 0) return;
+    const csv = auditEntriesToCSV(filteredEntries);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `audit-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    // jsdom may not implement revokeObjectURL
+    try { URL.revokeObjectURL(url); } catch { /* noop */ }
+  }, [filteredEntries]);
+
   return (
     <div className="bg-surface-canvas flex h-full flex-col">
       {/* --- Top bar --- */}
@@ -88,7 +109,7 @@ export function AuditPage(): JSX.Element {
             title="Audit"
             meta="Immutable, append-only forensic record — what happened, who, when."
           />
-          <Button disabled variant="secondary" size="sm">
+          <Button variant="secondary" size="sm" onClick={handleExport}>
             Export
           </Button>
         </div>
@@ -162,6 +183,44 @@ const DOT_COLOR: Record<string, string> = {
   amber: 'bg-feedback-warning',
   red: 'bg-tier-red',
 };
+
+/** Convert audit entries to CSV string. Respects the currently active
+ *  legend filter + time-window (caller provides filtered entries). */
+export function auditEntriesToCSV(entries: AuditEntry[]): string {
+  const headers = ['timestamp', 'task_id', 'agent', 'action', 'executor', 'tokens', 'dream_id', 'job_id'];
+  const rows = entries.map((e) => {
+    const executor = e.payload.executor as string | undefined ?? '';
+    const tokens = (() => {
+      const tu = e.payload.token_usage;
+      if (tu && typeof tu === 'object' && 'total' in tu) {
+        const t = (tu as Record<string, unknown>).total;
+        if (typeof t === 'number') return String(t);
+      }
+      const tc = e.payload.token_count;
+      return tc != null ? String(tc) : '';
+    })();
+    const dreamId = e._thread_dream_id ?? '';
+    const jobId = e.payload.script_request_id as string | undefined ?? '';
+    return [
+      e.timestamp,
+      e.task_id ?? '',
+      e.agent ?? '',
+      e.action,
+      executor,
+      tokens,
+      dreamId,
+      jobId,
+    ].map(escapeCSV).join(',');
+  });
+  return [headers.join(','), ...rows].join('\n');
+}
+
+function escapeCSV(field: string): string {
+  if (field.includes(',') || field.includes('"') || field.includes('\n')) {
+    return `"${field.replace(/"/g, '""')}"`;
+  }
+  return field;
+}
 
 function LegendFilter({
   legend,
