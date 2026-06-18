@@ -1,165 +1,277 @@
 /**
- * Audit feature shell. Renders FilterSidebar + SubTabBar; the active
- * tab is mounted via React Router's <Outlet />.
+ * AuditPage — unified day-grouped timeline surface (§4.12 PRD final).
  *
- * Filter state lives in the URL search params via `audit-filters.ts`.
+ * - Time window chips (24h / 7d / All time) control the query window.
+ * - Event-type legend with counts doubles as filter: clicking a legend
+ *   entry filters the timeline to that event type.
+ * - Export button (placeholder until DERIVE route built).
+ * - Timeline: day-grouped, most-recent first, with crescent-moon marker
+ *   for dream-originated threads (A4).
+ *
+ * States: loading skeleton, empty ("No audit entries"), all-clear calm
+ * ("All clear — no failures or escalations"), error with retry.
  */
-import { useMemo } from 'react';
-import { Outlet, useLocation, useParams, useSearchParams } from 'react-router-dom';
-import { FilterSidebar, type FilterGroup } from '@/design-system/patterns/FilterSidebar';
-import { SubTabBar } from '@/design-system/primitives/SubTabBar';
+import { useMemo, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { PageHeader } from '@/design-system/patterns/PageHeader';
+import { Button } from '@/design-system/primitives/Button';
+import { cn } from '@/lib/utils';
+import { useAuditList } from '@/hooks/audit';
+import { AuditTimeline } from './AuditTimeline';
 import {
   decodeFilters,
   encodeFilters,
+  buildLegend,
+  sinceToISO,
   type AuditFilters,
+  type LegendEntry,
 } from './audit-filters';
+import type { AuditEntry } from '@/lib/api/types';
 
-const SINCE_OPTIONS: FilterGroup['options'] = [
-  { value: '24h', label: 'Today' },
-  { value: '7d', label: 'This week' },
+const SINCE_OPTIONS: { value: AuditFilters['since']; label: string }[] = [
+  { value: '24h', label: '24h' },
+  { value: '7d', label: '7d' },
   { value: 'all', label: 'All time' },
 ];
 
-// Founder-facing audit action vocabulary. Not exhaustive — the Activity tab
-// will render every action the daemon returns; this list controls the
-// quick-pick chips on the sidebar.
-const ACTIONS = [
-  'completion_report',
-  'review_verdict',
-  'escalation',
-  'escalation_resolved',
-  'session_start',
-  'session_end',
-  'task_cancelled',
-];
-
-function useActiveTab(slug: string | undefined): {
-  active: string;
-  base: string;
-} {
-  const location = useLocation();
-  const base = `/orgs/${slug ?? ''}/audit`;
-  if (location.pathname.startsWith(`${base}/escalations`)) {
-    return { active: 'escalations', base };
-  }
-  if (location.pathname.startsWith(`${base}/traces`)) {
-    return { active: 'traces', base };
-  }
-  return { active: 'activity', base };
-}
-
 export function AuditPage(): JSX.Element {
-  const { slug } = useParams<{ slug: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const filters = useMemo(() => decodeFilters(searchParams), [searchParams]);
-  const { active, base } = useActiveTab(slug);
 
-  const groups: FilterGroup[] = [];
-  // Agent filter is set via deep-links today; v1 leaves the chip group empty
-  // (the sidebar still renders the "All" reset and the active-filter banner
-  // above the tab bar makes the chosen agent obvious).
-  if (active === 'activity') {
-    groups.push({
-      key: 'action',
-      label: 'Type',
-      options: ACTIONS.map((a) => ({ value: a, label: a })),
-    });
-  }
-  groups.push({
-    key: 'since',
-    label: 'Date',
-    options: SINCE_OPTIONS,
+  // We need the FULL (unfiltered-by-action) set to build the legend counts.
+  // The timeline query is also unfiltered by action; the legend toggle
+  // drives a client-side filter. This avoids a second round-trip per legend
+  // click and makes the count totals stable.
+  // Memoize the since ISO string so it's stable across renders — prevents
+  // queryKey churn when sinceToISO produces a slightly different timestamp
+  // on each render (different milliseconds from new Date()).
+  const sinceISO = useMemo(() => sinceToISO(filters.since), [filters.since]);
+
+  const fullQuery = useAuditList({
+    agent: filters.agent,
+    since: sinceISO,
+    task_id: filters.task_id,
+    limit: 500,
   });
+  const allEntries = fullQuery.data?.entries ?? [];
 
-  const sidebarValue: Record<string, string | null> = {
-    action: filters.action,
-    since: filters.since,
-  };
+  const legend = useMemo(() => buildLegend(allEntries), [allEntries]);
 
-  const onSidebarChange = (next: Record<string, string | null>) => {
-    const merged: AuditFilters = {
-      ...filters,
-      action: next.action ?? null,
-      since: (next.since as AuditFilters['since']) ?? null,
-    };
-    setSearchParams(encodeFilters(merged), { replace: true });
-  };
+  // Build color map for legend dots → TimelineRow
+  const legendColorMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const le of legend) m.set(le.action, le.color);
+    return m;
+  }, [legend]);
 
-  const search = encodeFilters(filters);
-  const suffix = search ? `?${search}` : '';
+  // Set the window
+  const setSince = useCallback(
+    (since: AuditFilters['since']) => {
+      setSearchParams(encodeFilters({ ...filters, since, action: null }), { replace: true });
+    },
+    [filters, setSearchParams],
+  );
 
-  // Traces' canonical URL carries the selected task as a path segment, not a
-  // query param. When the founder is on Activity with a `?task_id=` deep link
-  // and clicks the Traces tab, promote that param into the path so the URL
-  // (and the back button) match the picker-click form.
-  const tracesTo = (() => {
-    if (!filters.task_id) return base + '/traces' + suffix;
-    const withoutTaskId = encodeFilters({ ...filters, task_id: null });
-    const tail = withoutTaskId ? `?${withoutTaskId}` : '';
-    return `${base}/traces/${filters.task_id}${tail}`;
-  })();
+  // Toggle a legend filter
+  const toggleAction = useCallback(
+    (action: string) => {
+      const next = filters.action === action ? null : action;
+      setSearchParams(encodeFilters({ ...filters, action: next }), { replace: true });
+    },
+    [filters, setSearchParams],
+  );
+
+  const clearAction = useCallback(() => {
+    setSearchParams(encodeFilters({ ...filters, action: null }), { replace: true });
+  }, [filters, setSearchParams]);
+
+  // Client-side filtered entries (legend + time-window, already in memory)
+  const filteredEntries = useMemo(() => {
+    if (!filters.action) return allEntries;
+    return allEntries.filter((e) => e.action === filters.action);
+  }, [allEntries, filters.action]);
+
+  // Export the currently-visible (filtered) audit entries as CSV
+  const handleExport = useCallback(() => {
+    if (filteredEntries.length === 0) return;
+    const csv = auditEntriesToCSV(filteredEntries);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `audit-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    // jsdom may not implement revokeObjectURL
+    try { URL.revokeObjectURL(url); } catch { /* noop */ }
+  }, [filteredEntries]);
 
   return (
-    <div className="flex h-full">
-      <FilterSidebar groups={groups} value={sidebarValue} onChange={onSidebarChange} />
-      <div className="flex flex-1 flex-col">
-        {filters.agent || filters.task_id ? (
-          <ActiveFilterBanner
-            filters={filters}
-            onClear={(key) => {
-              const next: AuditFilters = { ...filters, [key]: null };
-              setSearchParams(encodeFilters(next), { replace: true });
-            }}
+    <div className="bg-surface-canvas flex h-full flex-col">
+      {/* --- Top bar --- */}
+      <header className="border-border-subtle border-b p-4">
+        <div className="flex items-start justify-between gap-3">
+          <PageHeader
+            title="Audit"
+            meta="Immutable, append-only forensic record — what happened, who, when."
           />
-        ) : null}
-        <SubTabBar
-          tabs={[
-            { value: 'activity', label: 'Activity', to: base + suffix },
-            { value: 'escalations', label: 'Escalations', to: base + '/escalations' + suffix },
-            { value: 'traces', label: 'Traces', to: tracesTo },
-          ]}
-          active={active}
-        />
-        <main className="bg-surface-canvas flex-1 overflow-y-auto p-4">
-          <Outlet />
-        </main>
+          <Button variant="secondary" size="sm" onClick={handleExport}>
+            Export
+          </Button>
+        </div>
+
+        {/* Time window chips */}
+        <div className="mt-3 flex items-center gap-2" role="radiogroup" aria-label="Time window">
+          {SINCE_OPTIONS.map((opt) => {
+            const active = (filters.since ?? 'all') === (opt.value ?? 'all');
+            return (
+              <button
+                key={opt.label}
+                role="radio"
+                aria-checked={active}
+                type="button"
+                onClick={() => setSince(opt.value)}
+                className={cn(
+                  'rounded-full px-3 py-1 text-xs font-medium transition-colors',
+                  active
+                    ? 'bg-accent-default text-accent-contrast'
+                    : 'bg-surface-sunken text-fg-muted hover:bg-surface-raised hover:text-fg',
+                )}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Legend-as-filter */}
+        {legend.length > 0 && (
+          <div className="mt-3 flex flex-wrap items-center gap-2" role="group" aria-label="Event type filter">
+            <LegendFilter
+              legend={legend}
+              activeAction={filters.action}
+              onToggle={toggleAction}
+              onClear={clearAction}
+            />
+          </div>
+        )}
+      </header>
+
+      {/* Active filter banner */}
+      {filters.action && (
+        <div className="bg-surface-sunken border-border-subtle flex items-center gap-2 border-b px-4 py-1.5 text-xs">
+          <span className="text-fg-muted">Filtered:</span>
+          <span className="text-fg font-medium">{filters.action}</span>
+          <button
+            type="button"
+            onClick={clearAction}
+            className="text-accent hover:underline"
+          >
+            Clear filter
+          </button>
+        </div>
+      )}
+
+      {/* Timeline */}
+      <div className="flex-1 overflow-hidden">
+        <AuditTimeline legendMap={legendColorMap} sinceISO={sinceISO} />
       </div>
     </div>
   );
 }
 
-function ActiveFilterBanner({
-  filters,
-  onClear,
-}: {
-  filters: AuditFilters;
-  onClear: (key: 'agent' | 'task_id') => void;
-}): JSX.Element {
-  return (
-    <div className="bg-surface-sunken border-border-subtle flex flex-wrap items-center gap-2 border-b px-3 py-2 text-xs">
-      <span className="text-fg-muted">Filters:</span>
-      {filters.agent && (
-        <FilterChip label={`agent: ${filters.agent}`} onClear={() => onClear('agent')} />
-      )}
-      {filters.task_id && (
-        <FilterChip label={`task: ${filters.task_id}`} onClear={() => onClear('task_id')} />
-      )}
-    </div>
-  );
+/* ------------------------------------------------------------------ */
+/*  Legend filter row                                                  */
+/* ------------------------------------------------------------------ */
+
+const DOT_COLOR: Record<string, string> = {
+  green: 'bg-feedback-success',
+  amber: 'bg-feedback-warning',
+  red: 'bg-tier-red',
+};
+
+/** Convert audit entries to CSV string. Respects the currently active
+ *  legend filter + time-window (caller provides filtered entries). */
+export function auditEntriesToCSV(entries: AuditEntry[]): string {
+  const headers = ['timestamp', 'task_id', 'agent', 'action', 'executor', 'tokens', 'dream_id', 'job_id'];
+  const rows = entries.map((e) => {
+    const executor = e.payload.executor as string | undefined ?? '';
+    const tokens = (() => {
+      const tu = e.payload.token_usage;
+      if (tu && typeof tu === 'object' && 'total' in tu) {
+        const t = (tu as Record<string, unknown>).total;
+        if (typeof t === 'number') return String(t);
+      }
+      const tc = e.payload.token_count;
+      return tc != null ? String(tc) : '';
+    })();
+    const dreamId = e._thread_dream_id ?? '';
+    const jobId = e.payload.script_request_id as string | undefined ?? '';
+    return [
+      e.timestamp,
+      e.task_id ?? '',
+      e.agent ?? '',
+      e.action,
+      executor,
+      tokens,
+      dreamId,
+      jobId,
+    ].map(escapeCSV).join(',');
+  });
+  return [headers.join(','), ...rows].join('\n');
 }
 
-function FilterChip({ label, onClear }: { label: string; onClear: () => void }): JSX.Element {
+function escapeCSV(field: string): string {
+  if (field.includes(',') || field.includes('"') || field.includes('\n')) {
+    return `"${field.replace(/"/g, '""')}"`;
+  }
+  return field;
+}
+
+function LegendFilter({
+  legend,
+  activeAction,
+  onToggle,
+  onClear,
+}: {
+  legend: LegendEntry[];
+  activeAction: string | null;
+  onToggle: (action: string) => void;
+  onClear: () => void;
+}): JSX.Element {
   return (
-    <span className="bg-accent-muted text-fg inline-flex items-center gap-1 rounded px-2 py-0.5">
-      {label}
-      <button
-        type="button"
-        aria-label={`Clear ${label}`}
-        className="text-fg-muted hover:text-fg"
-        onClick={onClear}
-      >
-        ✕
-      </button>
-    </span>
+    <>
+      {activeAction && (
+        <button
+          type="button"
+          onClick={onClear}
+          className="text-fg-muted hover:text-fg rounded-full px-2 py-0.5 text-xs"
+        >
+          All
+        </button>
+      )}
+      {legend.map((le) => {
+        const active = activeAction === le.action;
+        return (
+          <button
+            key={le.action}
+            type="button"
+            onClick={() => onToggle(le.action)}
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs transition-colors',
+              active
+                ? 'bg-accent-muted ring-accent-default ring-1'
+                : 'bg-surface-sunken hover:bg-surface-raised',
+            )}
+          >
+            <span
+              aria-hidden="true"
+              className={cn('inline-block h-2 w-2 rounded-full', DOT_COLOR[le.color] ?? 'bg-fg-muted')}
+            />
+            <span className="text-fg">{le.label}</span>
+            <span className="text-fg-muted">{le.count}</span>
+          </button>
+        );
+      })}
+    </>
   );
 }
