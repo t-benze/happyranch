@@ -81,6 +81,8 @@ Implementation: `runtime/infrastructure/artifact_store.py` and `runtime/daemon/r
 
 Route surface: `POST /artifacts` (upload), `GET /artifacts` (list), `GET /artifacts/{name}` (download), `DELETE /artifacts/{name}` (delete). There is no update route — `POST` is an idempotent create-or-overwrite. Delete is exposed in the founder web artifacts UI only; there is **no** `happyranch artifacts delete` CLI verb.
 
+Web UI (design-overhaul): **Flat 3-column card grid** (`web/src/features/artifacts/ArtifactsPage.tsx`). Each card shows only stored fields (`name`, `size_bytes` as a formatted size, `modified_at` as a formatted timestamp) plus Download and Delete actions. The artifact record carries **no** agent, task_id, thread, kind/type, dream_id, or PR/CI fields — so the surface renders **no** provenance badges, kind pills, status tags, PR/CI panels, or dream markers. Upload is available via a collapsible form in the page header. States: loading skeleton, calm empty ("No artifacts yet"), error with retry (`invalidateQueries` on `['artifacts', slug]`).
+
 Traps:
 
 - Agent access is CLI-only by design; sandboxed executors block direct writes outside the workspace.

@@ -16,9 +16,50 @@ function stubBaseHandlers() {
   );
 }
 
+function seedToken() {
+  sessionStorage.setItem('happyranch.token', 'tok');
+}
+
 describe('ArtifactsPage', () => {
-  test('lists artifacts and downloads via token-bearing fetch', async () => {
-    sessionStorage.setItem('happyranch.token', 'tok');
+  /* ------------------------------------------------------------------ */
+  /*  Layout                                                            */
+  /* ------------------------------------------------------------------ */
+
+  test('renders artifacts in a card grid, not a table', async () => {
+    seedToken();
+    stubBaseHandlers();
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/artifacts`, () =>
+        HttpResponse.json({
+          artifacts: [
+            { name: 'report.pdf', size_bytes: 5 * 1024 * 1024, modified_at: '2026-06-09T00:00:00Z' },
+            { name: 'export.csv', size_bytes: 2048, modified_at: '2026-06-10T12:00:00Z' },
+          ],
+        }),
+      ),
+    );
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/artifacts` });
+
+    // Cards should appear — no <table> element.
+    await screen.findByText('report.pdf');
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+
+    // Both cards visible
+    expect(screen.getByText('report.pdf')).toBeInTheDocument();
+    expect(screen.getByText('export.csv')).toBeInTheDocument();
+
+    // Size formatted
+    expect(screen.getByText('5 MB')).toBeInTheDocument();
+    expect(screen.getByText('2 KB')).toBeInTheDocument();
+  });
+
+  /* ------------------------------------------------------------------ */
+  /*  Download                                                          */
+  /* ------------------------------------------------------------------ */
+
+  test('downloads via token-bearing fetch from a card', async () => {
+    seedToken();
     stubBaseHandlers();
     let downloadHit = false;
     server.use(
@@ -43,7 +84,6 @@ describe('ArtifactsPage', () => {
       }),
     );
 
-    // jsdom doesn't ship createObjectURL / revokeObjectURL — stub them.
     const objectUrl = 'blob:fake';
     const createObjectUrlSpy = vi.fn().mockReturnValue(objectUrl);
     const revokeObjectUrlSpy = vi.fn();
@@ -58,10 +98,10 @@ describe('ArtifactsPage', () => {
     const user = userEvent.setup();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/artifacts` });
 
-    const downloadButton = await screen.findByRole('button', { name: /Download/i });
-    expect(screen.getByText('dev_agent-2026-06-09-report.pdf')).toBeInTheDocument();
-    expect(screen.getByText('5 MB')).toBeInTheDocument();
+    await screen.findByText('dev_agent-2026-06-09-report.pdf');
 
+    // Find the Download button within the card
+    const downloadButton = screen.getByRole('button', { name: /Download/i });
     await user.click(downloadButton);
 
     await waitFor(() => {
@@ -73,8 +113,12 @@ describe('ArtifactsPage', () => {
     expect(revokeObjectUrlSpy).toHaveBeenCalledWith(objectUrl);
   });
 
+  /* ------------------------------------------------------------------ */
+  /*  Upload                                                            */
+  /* ------------------------------------------------------------------ */
+
   test('blocks upload with an invalid name client-side before POSTing', async () => {
-    sessionStorage.setItem('happyranch.token', 'tok');
+    seedToken();
     stubBaseHandlers();
     let postHit = false;
     server.use(
@@ -94,22 +138,35 @@ describe('ArtifactsPage', () => {
     const user = userEvent.setup();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/artifacts` });
 
+    // Open the upload form
+    await user.click(screen.getByRole('button', { name: /Upload$/i }));
+
     const file = new File(['hi'], 'report.pdf', { type: 'application/pdf' });
     await user.upload(await screen.findByLabelText(/^File$/i), file);
     await user.type(screen.getByLabelText(/^Name/i), 'bad name.pdf');
-    await user.click(screen.getByRole('button', { name: /Upload/i }));
+
+    // Click the inner Upload button (the submit one)
+    const buttons = screen.getAllByRole('button', { name: /Upload/i });
+    const submitButton = buttons.find(
+      (b) => b.textContent !== 'Upload' || b.closest('section') !== null,
+    )!;
+    await user.click(submitButton);
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/letters, digits/i);
     expect(postHit).toBe(false);
   });
+
+  /* ------------------------------------------------------------------ */
+  /*  Delete                                                            */
+  /* ------------------------------------------------------------------ */
 
   describe('delete', () => {
     afterEach(() => {
       vi.restoreAllMocks();
     });
 
-    test('confirms, deletes, and removes the row on success', async () => {
-      sessionStorage.setItem('happyranch.token', 'tok');
+    test('confirms, deletes, and removes the card on success', async () => {
+      seedToken();
       stubBaseHandlers();
       vi.spyOn(window, 'confirm').mockReturnValue(true);
       let artifacts = [
@@ -142,7 +199,7 @@ describe('ArtifactsPage', () => {
     });
 
     test('does not delete when the confirm is dismissed', async () => {
-      sessionStorage.setItem('happyranch.token', 'tok');
+      seedToken();
       stubBaseHandlers();
       vi.spyOn(window, 'confirm').mockReturnValue(false);
       let deleteHit = false;
@@ -171,8 +228,8 @@ describe('ArtifactsPage', () => {
       expect(screen.getByText('doomed.pdf')).toBeInTheDocument();
     });
 
-    test('surfaces an error and keeps the row when delete fails', async () => {
-      sessionStorage.setItem('happyranch.token', 'tok');
+    test('surfaces an error and keeps the card when delete fails', async () => {
+      seedToken();
       stubBaseHandlers();
       vi.spyOn(window, 'confirm').mockReturnValue(true);
       server.use(
@@ -200,5 +257,95 @@ describe('ArtifactsPage', () => {
       expect(await screen.findByRole('alert')).toHaveTextContent(/no longer exists/i);
       expect(screen.getByText('doomed.pdf')).toBeInTheDocument();
     });
+  });
+
+  /* ------------------------------------------------------------------ */
+  /*  States                                                            */
+  /* ------------------------------------------------------------------ */
+
+  test('shows loading skeleton while fetching', async () => {
+    seedToken();
+    stubBaseHandlers();
+    // Never resolve — loading stays true.
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/artifacts`, () =>
+        new Promise(() => void 0),
+      ),
+    );
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/artifacts` });
+
+    // The skeleton aria-label confirms it renders.
+    expect(await screen.findByLabelText('Loading artifacts')).toBeInTheDocument();
+  });
+
+  test('shows calm empty state when no artifacts exist', async () => {
+    seedToken();
+    stubBaseHandlers();
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/artifacts`, () =>
+        HttpResponse.json({ artifacts: [] }),
+      ),
+    );
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/artifacts` });
+
+    expect(await screen.findByText('No artifacts yet')).toBeInTheDocument();
+    expect(screen.getByText(/Upload a file above/i)).toBeInTheDocument();
+  });
+
+  test('shows error with retry button on fetch failure', async () => {
+    seedToken();
+    stubBaseHandlers();
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/artifacts`, () =>
+        HttpResponse.json({ detail: 'boom' }, { status: 500 }),
+      ),
+    );
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/artifacts` });
+
+    expect(await screen.findByText(/Could not load artifacts/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
+
+  /* ------------------------------------------------------------------ */
+  /*  Honesty lens                                                      */
+  /* ------------------------------------------------------------------ */
+
+  test('cards show only stored fields — no fabricated provenance, kind, status, or IDs', async () => {
+    seedToken();
+    stubBaseHandlers();
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/artifacts`, () =>
+        HttpResponse.json({
+          artifacts: [
+            { name: 'report.pdf', size_bytes: 1024, modified_at: '2026-06-09T00:00:00Z' },
+          ],
+        }),
+      ),
+    );
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/artifacts` });
+
+    await screen.findByText('report.pdf');
+
+    // Name is present
+    expect(screen.getByText('report.pdf')).toBeInTheDocument();
+    // Size is present
+    expect(screen.getByText('1 KB')).toBeInTheDocument();
+
+    // No TASK- or THR- badges (no stored task_id/thread)
+    expect(screen.queryByText(/TASK-/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/THR-/)).not.toBeInTheDocument();
+    // No agent name chips (no stored agent)
+    expect(screen.queryByText(/dev_agent/)).not.toBeInTheDocument();
+    // No PR/CI panel or check status
+    expect(screen.queryByText(/checks/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/CI/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/merge/i)).not.toBeInTheDocument();
+    // No kind pill (no stored kind/type)
+    expect(screen.queryByText(/Pull request/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Doc/i)).not.toBeInTheDocument();
   });
 });
