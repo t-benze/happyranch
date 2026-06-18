@@ -494,4 +494,87 @@ describe('AuditPage — day-grouped timeline', () => {
       document.createElement = originalCreateElement;
     }
   });
+
+  test('export respects active legend filter — matching row present, non-matching absent', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const user = userEvent.setup();
+
+    // Capture the since query param sent to the backend
+    let capturedSince: string | null = null;
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/audit`, ({ request }) => {
+        const url = new URL(request.url);
+        capturedSince = url.searchParams.get('since');
+        return HttpResponse.json({
+          entries: [
+            {
+              id: 1,
+              task_id: 'TASK-1',
+              agent: 'dev_agent',
+              action: 'completion_report',
+              payload: { token_usage: { total: 1500 }, executor: 'claude-sonnet-4' },
+              timestamp: '2026-06-18T10:00:00Z',
+            },
+            {
+              id: 2,
+              task_id: 'TASK-2',
+              agent: 'code_reviewer',
+              action: 'review_verdict',
+              payload: { verdict: 'APPROVE' },
+              timestamp: '2026-06-18T09:00:00Z',
+            },
+          ],
+        });
+      }),
+    );
+
+    // Mount with active legend filter: action=completion_report, time window 7d
+    mountAt(`/orgs/${SLUG}/audit?action=completion_report&since=7d`);
+
+    // Wait for data to load — legend chips depend on allEntries
+    await waitFor(() => {
+      expect(screen.getByText('Export')).toBeInTheDocument();
+      expect(screen.getByText('Completed')).toBeInTheDocument();
+      expect(screen.getByText(/Filtered:/)).toBeInTheDocument();
+    });
+
+    // Spy on Blob/URL for export
+    let capturedBlob: Blob | null = null;
+    const originalCreateObjectURL = URL.createObjectURL;
+    URL.createObjectURL = (blob: Blob) => {
+      capturedBlob = blob;
+      return 'blob:test';
+    };
+
+    try {
+      const exportBtn = screen.getByText('Export');
+      await user.click(exportBtn);
+
+      expect(capturedBlob).not.toBeNull();
+      const csv = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsText(capturedBlob!);
+      });
+
+      // CSV headers
+      expect(csv).toContain('timestamp,task_id,agent,action,executor,tokens,dream_id,job_id');
+
+      // Matching row (completion_report) IS present
+      expect(csv).toContain('TASK-1');
+      expect(csv).toContain('completion_report');
+
+      // Non-matching row (review_verdict) is ABSENT — this is the key assertion
+      // that proves handleExport respects filters.action, not just allEntries
+      expect(csv).not.toContain('TASK-2');
+      expect(csv).not.toContain('review_verdict');
+
+      // MSW handler should have received a since param (ISO date from 7d window)
+      expect(capturedSince).not.toBeNull();
+      expect(capturedSince).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    } finally {
+      URL.createObjectURL = originalCreateObjectURL;
+    }
+  });
 });
