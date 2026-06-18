@@ -10,16 +10,10 @@
  * - CLI paths (claude, codex, opencode, pi): module-global Settings singleton
  *   loaded once at import → RESTART REQUIRED. ✓
  * - session_timeout_seconds (system default): module-global Settings singleton
- *   → RESTART REQUIRED. (The route currently says false — this is a pre-existing
- *   label; we keep it as-is since the org-level session_timeout is the one
- *   that matters and IS live-apply.)
+ *   → RESTART REQUIRED. ✓
  * - max_orchestration_steps: module-global → RESTART REQUIRED. ✓
  * - queue_workers: module-global → RESTART REQUIRED. ✓
  * - protocol_dir: module-global → RESTART REQUIRED. ✓
- *
- * NOTABLE: The backend currently marks session_timeout_seconds restart_required=false
- * which is technically incorrect for the system-level value. This is a pre-existing
- * state from Phase 1; we display what the backend returns (honesty lens).
  */
 import type { SystemSettings } from '@/lib/api/types';
 

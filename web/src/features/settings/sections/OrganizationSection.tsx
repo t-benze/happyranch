@@ -18,8 +18,9 @@
  *
  * Unsaved-changes guard: prompts on nav-away via beforeunload.
  */
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useUpdateOrgSettings } from '@/hooks/settings';
+import { useAgentsList } from '@/hooks/agents';
 import {
   Select,
   SelectContent,
@@ -27,6 +28,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/design-system/primitives/Select';
+import { RecipientsInput } from '@/design-system/patterns/RecipientsInput';
 import type { OrgSettings, OrgSettingsPatch } from '@/lib/api/types';
 
 interface FieldState {
@@ -93,6 +95,11 @@ export function OrganizationSection({ org }: Props): JSX.Element {
   const [lastSaved, setLastSaved] = useState<FieldState>(() => buildFieldState(org));
   const [saveState, setSaveState] = useState<SaveState>({ phase: 'idle' });
   const mutation = useUpdateOrgSettings();
+  const agentsQuery = useAgentsList();
+  const agentsList = useMemo(
+    () => agentsQuery.data?.agents ?? [],
+    [agentsQuery.data?.agents],
+  );
 
   // Reset fields when org data changes externally
   const prevOrgRef = useRef(org);
@@ -256,21 +263,21 @@ export function OrganizationSection({ org }: Props): JSX.Element {
           </Select>
         </EditableRow>
         <EditableRow label="Included agents" badge="Applies live">
-          <input
-            type="text"
+          <RecipientsInput
             value={fields.dreamInclude}
-            onChange={(e) => update('dreamInclude', e.target.value)}
-            placeholder="comma-separated"
-            className="bg-bg-raised border-border text-fg w-48 rounded border px-2 py-0.5 text-sm"
+            onChange={(next) => update('dreamInclude', next)}
+            agents={agentsList}
+            placeholder="add agents…"
+            className="bg-bg-raised border-border text-fg w-56 rounded border px-2 py-0.5 text-sm"
           />
         </EditableRow>
         <EditableRow label="Excluded agents" badge="Applies live">
-          <input
-            type="text"
+          <RecipientsInput
             value={fields.dreamExclude}
-            onChange={(e) => update('dreamExclude', e.target.value)}
-            placeholder="comma-separated"
-            className="bg-bg-raised border-border text-fg w-48 rounded border px-2 py-0.5 text-sm"
+            onChange={(next) => update('dreamExclude', next)}
+            agents={agentsList}
+            placeholder="add agents…"
+            className="bg-bg-raised border-border text-fg w-56 rounded border px-2 py-0.5 text-sm"
           />
         </EditableRow>
       </div>

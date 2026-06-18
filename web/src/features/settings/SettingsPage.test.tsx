@@ -14,7 +14,7 @@ const SETTINGS_PAYLOAD = {
     codex_cli_path: { value: 'codex', restart_required: true },
     opencode_cli_path: { value: 'opencode', restart_required: true },
     pi_cli_path: { value: 'pi', restart_required: true },
-    session_timeout_seconds: { value: 1800, restart_required: false },
+    session_timeout_seconds: { value: 1800, restart_required: true },
     max_orchestration_steps: { value: 50, restart_required: true },
     queue_workers: { value: 3, restart_required: true },
     protocol_dir: { value: 'protocol', restart_required: true },
@@ -135,26 +135,21 @@ describe('SettingsPage — System section', () => {
       expect(screen.getByText('Protocol dir')).toBeInTheDocument(),
     );
 
-    // restart-required fields should show badge
+    // All 8 system fields are restart-required
     const badges = screen.getAllByText('Restart required');
-    // All system fields except session_timeout_seconds are restart-required
-    // That's 7 fields with restart_required = true
-    expect(badges.length).toBeGreaterThanOrEqual(6);
+    expect(badges.length).toBeGreaterThanOrEqual(7);
   });
 
-  test('session_timeout_seconds shows no restart badge (as returned by backend)', async () => {
+  test('session_timeout_seconds shows restart-required badge', async () => {
     mountAt(`/orgs/${SLUG}/settings/system`);
 
     await waitFor(() =>
       expect(screen.getByText('Session timeout (s)')).toBeInTheDocument(),
     );
 
-    // The row for session_timeout_seconds should NOT have a restart badge
-    // because the backend returns restart_required=false
+    // All 8 system fields (including session_timeout_seconds) are restart-required
     const restartBadges = screen.getAllByText('Restart required');
-    // All 7 restart-required rows have badges; session_timeout is the only one without
-    expect(restartBadges.length).toBe(7); // actually: claude, codex, opencode, pi, max_steps, queue_workers, protocol_dir = 7
-    // session_timeout should have "1800" value but no restart badge next to it
+    expect(restartBadges.length).toBe(8);
   });
 });
 
@@ -317,6 +312,70 @@ describe('SettingsPage — Organization section', () => {
 
     await waitFor(() =>
       expect(within(content).getByText('Save failed', { exact: false })).toBeInTheDocument(),
+    );
+  });
+
+  test('iAC3: dreaming include/exclude inputs render roster-autocomplete', async () => {
+    mountAt(`/orgs/${SLUG}/settings/organization`);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-content')).toBeInTheDocument(),
+    );
+    const content = screen.getByTestId('settings-content');
+
+    await waitFor(() =>
+      expect(within(content).getByText('Included agents')).toBeInTheDocument(),
+    );
+    expect(within(content).getByText('Excluded agents')).toBeInTheDocument();
+
+    // Both include and exclude fields have the same placeholder; pick the include field
+    const inputs = screen.getAllByPlaceholderText('add agents…');
+    expect(inputs).toHaveLength(2);
+    const includeInput = inputs[0];
+    expect(includeInput).toHaveAttribute('autocomplete', 'off');
+
+    // Typing should trigger suggestions from the roster
+    const user = userEvent.setup();
+    await user.click(includeInput);
+    await user.type(includeInput, 'dev');
+
+    // The autocomplete listbox should appear with matching agent
+    await waitFor(() =>
+      expect(screen.getByRole('listbox')).toBeInTheDocument(),
+    );
+    // Should contain dev_agent from the roster
+    expect(screen.getByText('dev_agent')).toBeInTheDocument();
+  });
+
+  test('iAC3: selecting an agent from autocomplete commits as comma-separated token', async () => {
+    mountAt(`/orgs/${SLUG}/settings/organization`);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-content')).toBeInTheDocument(),
+    );
+    const content = screen.getByTestId('settings-content');
+
+    await waitFor(() =>
+      expect(within(content).getByText('Included agents')).toBeInTheDocument(),
+    );
+
+    const inputs = screen.getAllByPlaceholderText('add agents…');
+    const includeInput = inputs[0];
+    const user = userEvent.setup();
+    await user.click(includeInput);
+    await user.type(includeInput, 'dev');
+
+    // Wait for listbox to appear
+    await waitFor(() =>
+      expect(screen.getByRole('listbox')).toBeInTheDocument(),
+    );
+
+    // Click the matching agent to select it
+    await user.click(screen.getByText('dev_agent'));
+
+    // The field should now contain the selected agent
+    await waitFor(() =>
+      expect(includeInput).toHaveValue('dev_agent, '),
     );
   });
 });
