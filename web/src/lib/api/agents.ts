@@ -1,8 +1,11 @@
 /** Mirror of src/daemon/routes/agents.py — founder-facing read + enrollment subset.
  *
- * Excluded (agent-subprocess-only): POST /agents/{a}/repos,
- * POST /agents/manage, POST /agents/{a}/learnings (legacy + entries
- * add/update/promote, reindex). See spec §2.
+ * Agent-subprocess-only routes (task_id/session_id auth) excluded:
+ * POST /agents/manage (enroll/update/terminate via team-manager session),
+ * POST /agents/{a}/learnings (legacy + entries add/update/promote, reindex).
+ *
+ * Founder-facing write routes included for the Agents surface reshape:
+ * PUT /agents/{name}/executor, POST /agents/{name}/repos.
  *
  * Type definitions live in `./types.ts` so feature compositions can import
  * them without violating the no-restricted-imports rule that forbids
@@ -104,3 +107,48 @@ export const searchLearnings = (
     method: 'POST',
     body,
   });
+
+// ---------------------------------------------------------------------------
+// Founder-facing agent write routes (Agents surface reshape, design-overhaul)
+// ---------------------------------------------------------------------------
+
+/** Switch an agent's executor end-to-end (org .md + workspace agent.yaml). */
+export const setAgentExecutor = (
+  slug: string,
+  agentName: string,
+  body: { executor: string; clean?: boolean },
+): Promise<{
+  agent: string;
+  before: { org_executor: string | null; workspace_executor: string | null };
+  after: { org_executor: string; workspace_executor: string };
+  stale_files: string[];
+}> =>
+  request(`/orgs/${slug}/agents/${agentName}/executor`, {
+    method: 'PUT',
+    body,
+  });
+
+/** Add, remove, or update an agent's repo binding. */
+export interface ManageAgentRepoBody {
+  action: 'add' | 'remove' | 'update';
+  repo_name: string;
+  url?: string;
+}
+
+export const manageAgentRepo = (
+  slug: string,
+  agentName: string,
+  body: ManageAgentRepoBody,
+): Promise<{ ok: true }> =>
+  request(`/orgs/${slug}/agents/${agentName}/repos`, {
+    method: 'POST',
+    body,
+  });
+
+// ---------------------------------------------------------------------------
+// GAP (surfaced per brief): no founder-facing route to update system_prompt
+// or description. The daemon's POST /agents/manage (action=update) requires
+// task_id + session_id (team-manager agent session). A founder-facing PUT
+// /agents/{name} or PUT /orgs/{slug}/agents/{name} would be needed. Until
+// then, system_prompt and description render as read-only in the detail pane.
+// ---------------------------------------------------------------------------
