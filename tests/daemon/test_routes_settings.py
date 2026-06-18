@@ -57,7 +57,9 @@ def test_settings_returns_200_with_system_and_org(tmp_home, app, org_state, auth
 def test_settings_system_entries_carry_correct_restart_flags(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """Each system entry must have restart_required: true except session_timeout_seconds."""
+    """Each system entry must have restart_required: true — all system-level
+    settings including session_timeout_seconds are module-global singletons
+    that require a daemon restart to apply."""
     client = TestClient(app)
     r = client.get(
         f"/api/v1/orgs/{org_state.slug}/settings",
@@ -68,11 +70,12 @@ def test_settings_system_entries_carry_correct_restart_flags(
 
     restart_true = {
         "claude_cli_path", "codex_cli_path", "opencode_cli_path",
-        "pi_cli_path", "max_orchestration_steps", "queue_workers", "protocol_dir",
+        "pi_cli_path", "session_timeout_seconds", "max_orchestration_steps",
+        "queue_workers", "protocol_dir",
     }
     for key in restart_true:
         assert sys_[key]["restart_required"] is True, f"{key} restart_required must be True"
-    assert sys_["session_timeout_seconds"]["restart_required"] is False
+    assert sys_["session_timeout_seconds"]["restart_required"] is True
 
 
 def test_settings_requires_auth(tmp_home, app, org_state) -> None:

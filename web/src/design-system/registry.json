@@ -295,6 +295,16 @@
       "example": "<PageHeader title='Threads' meta='12 open' />"
     },
     {
+      "name": "RecipientsInput",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/RecipientsInput",
+      "variants": {},
+      "consumes": [
+        "MentionAutocomplete"
+      ],
+      "example": "<RecipientsInput value=\"\" onChange={() => {}} agents={[]} />"
+    },
+    {
       "name": "Select",
       "layer": "primitive",
       "import": "@/design-system/primitives/Select",
