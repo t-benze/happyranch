@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Moon, Plus, Sun } from 'lucide-react';
+import { Moon, Plus, Settings, Sun } from 'lucide-react';
 import { NavLink, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   Select,
@@ -14,7 +14,6 @@ import {
   TooltipTrigger,
 } from '@/design-system/primitives/Tooltip';
 import { AddOrgDialog } from '@/features/orgs/AddOrgDialog';
-import { SettingsDialog, SettingsTriggerButton } from '@/features/settings/SettingsDialog';
 import { useAgentsRoutes } from '@/hooks/agents';
 import { useKbRoutes } from '@/hooks/kb';
 import { useOrgsList } from '@/hooks/orgs';
@@ -43,7 +42,6 @@ export function Sidebar(): JSX.Element {
   const isPrototype = location.pathname.startsWith('/__prototypes');
   const orgsQuery = useOrgsList();
   const [addOrgOpen, setAddOrgOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const routes = useThreadRoutes();
   const tasksRoutes = useTasksRoutes();
   const agentsRoutes = useAgentsRoutes();
@@ -218,13 +216,25 @@ export function Sidebar(): JSX.Element {
               <Plus size={16} aria-hidden="true" />
             </button>
           )}
-          <SettingsTriggerButton onClick={() => setSettingsOpen(true)} />
+          <NavLink
+            to={activeSlug && !isPrototype ? `/orgs/${activeSlug}/settings` : '#'}
+            aria-label="Settings"
+            title="Settings"
+            className={({ isActive }) =>
+              `inline-flex h-7 w-7 items-center justify-center rounded transition-colors focus-visible:ring-2 focus-visible:outline-none focus-visible:ring-accent ${
+                isActive
+                  ? 'bg-bg-raised text-fg'
+                  : 'text-fg-muted hover:bg-bg-raised hover:text-fg'
+              }`
+            }
+          >
+            <Settings size={16} aria-hidden="true" />
+          </NavLink>
           <ThemeToggle />
         </div>
       </div>
 
       {!isPrototype && <AddOrgDialog open={addOrgOpen} onOpenChange={setAddOrgOpen} />}
-      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
     </aside>
   );
 }
