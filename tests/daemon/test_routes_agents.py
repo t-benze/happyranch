@@ -352,6 +352,88 @@ def test_manage_repo_unknown_workspace_returns_404(
     assert r.status_code == 404
 
 
+def test_repo_round_trip_add_remove_reflected_in_get_agents(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Add a repo -> GET /agents shows it. Remove a repo -> GET /agents omits it.
+
+    The GET /agents read model must reflect the same agent.yaml repo store
+    that POST /agents/{agent}/repos mutates.  This test guards against the
+    pre-fix drift where GET read from AgentDef frontmatter while the repo
+    route wrote to workspace agent.yaml.
+    """
+    from datetime import datetime, timezone
+    from runtime.orchestrator.agent_def import AgentDef
+
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\n")
+
+    paths = _paths(org_state)
+    agent = AgentDef(
+        name="dev_agent",
+        team="engineering",
+        role="worker",
+        executor="claude",
+        allow_rules=tuple(),
+        repos={},
+        enrolled_by=None,
+        enrolled_at_task=None,
+        enrolled_at=datetime.now(timezone.utc),
+        system_prompt="code",
+        description="Builds things.",
+    )
+    paths.agents_dir.mkdir(parents=True, exist_ok=True)
+    (paths.agents_dir / "dev_agent.md").write_text(
+        __import__("runtime.orchestrator.agent_def", fromlist=["render_agent_text"])
+            .render_agent_text(agent),
+    )
+
+    client = TestClient(app)
+
+    # --- Phase 1: add a repo and confirm GET /agents reflects it ---
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        mock_ctx = MockCB.return_value
+        mock_ctx.clone_repo.return_value = True
+        mock_ctx.ensure_workspace_ready.return_value = None
+        r = client.post(
+            "/api/v1/orgs/alpha/agents/dev_agent/repos",
+            json={"action": "add", "repo_name": "happyranch",
+                  "url": "https://github.com/t-benze/happyranch.git"},
+            headers=auth_headers,
+        )
+    assert r.status_code == 200
+
+    r = client.get("/api/v1/orgs/alpha/agents", headers=auth_headers)
+    assert r.status_code == 200
+    rows = {a["name"]: a for a in r.json()["agents"]}
+    assert "dev_agent" in rows
+    repos = rows["dev_agent"]["repos"]
+    assert "happyranch" in repos
+    assert repos["happyranch"] == "https://github.com/t-benze/happyranch.git"
+
+    # --- Phase 2: remove the repo and confirm it's gone from GET /agents ---
+    repo_dir = workspace / "repos" / "happyranch"
+    repo_dir.mkdir(parents=True)
+    (repo_dir / ".git").mkdir()
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        mock_ctx = MockCB.return_value
+        mock_ctx.ensure_workspace_ready.return_value = None
+        r = client.post(
+            "/api/v1/orgs/alpha/agents/dev_agent/repos",
+            json={"action": "remove", "repo_name": "happyranch"},
+            headers=auth_headers,
+        )
+    assert r.status_code == 200
+
+    r = client.get("/api/v1/orgs/alpha/agents", headers=auth_headers)
+    assert r.status_code == 200
+    rows = {a["name"]: a for a in r.json()["agents"]}
+    assert "dev_agent" in rows
+    repos_after = rows["dev_agent"]["repos"]
+    assert "happyranch" not in repos_after
+
+
 def test_manage_agent_enroll_creates_pending(
     tmp_home, app, org_state, auth_headers,
 ) -> None:

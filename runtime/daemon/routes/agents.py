@@ -200,6 +200,17 @@ def list_agents(slug: str, org: OrgDep) -> dict:
     rows = []
     for name in agent_names:
         agent_def = prompt_loader.load_agent(paths, name)
+        # Read repos from agent.yaml (the same store POST /agents/{agent}/repos
+        # mutates), falling back to the org frontmatter when the workspace
+        # doesn't exist yet. This fixes the read/write model mismatch where
+        # repo-add/remove/update persisted to agent.yaml but GET /agents
+        # read from AgentDef.repos (frontmatter).
+        workspace = paths.workspaces_dir / name
+        if workspace.exists():
+            ws_config = load_agent_config(workspace)
+            repos = dict(ws_config.get("repos", {}))
+        else:
+            repos = dict(agent_def.repos) if agent_def else {}
         rows.append({
             "name": name,
             "team": agent_def.team if agent_def else None,
@@ -207,7 +218,7 @@ def list_agents(slug: str, org: OrgDep) -> dict:
             "executor": agent_def.executor if agent_def else None,
             "description": agent_def.description if agent_def else None,
             # Phase 2: additive read-only fields (D6 spec)
-            "repos": dict(agent_def.repos) if agent_def else {},
+            "repos": repos,
             "system_prompt": agent_def.system_prompt if agent_def else "",
         })
     return {"agents": rows}
