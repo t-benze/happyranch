@@ -157,6 +157,7 @@ function useAssistantChatWs(
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const readyRef = useRef(false);
   const openSession = useAssistantSessionOpener();
 
   // Open WS when dock opens and assistant is configured.
@@ -172,6 +173,7 @@ function useAssistantChatWs(
     }
 
     let disposed = false;
+    readyRef.current = false;
     setConnecting(true);
     setError(null);
 
@@ -198,6 +200,7 @@ function useAssistantChatWs(
             );
             if (frame.type === 'status') {
               if (frame.code === 'ready') {
+                readyRef.current = true;
                 setConnecting(false);
               }
             } else if (frame.type === 'output') {
@@ -217,7 +220,16 @@ function useAssistantChatWs(
               setConnecting(false);
             }
           } catch {
-            // Non-JSON frame (legacy raw text) — treat as assistant output.
+            // OPTION 3 (founder-ruled): pre-ack raw PTY frames are
+            // buffered/ignored — the structured client sent a handshake,
+            // so it tolerates any raw frame that slipped through before
+            // the server classified the handshake.  No structured client
+            // ever surfaces a raw PTY frame to the user.
+            if (!readyRef.current) {
+              return; // pre-ack raw frame → ignore
+            }
+            // Post-ack non-JSON frame (unexpected) — handle gracefully
+            // as assistant output.
             const text =
               typeof event.data === 'string' ? event.data : String(event.data);
             if (text.trim()) {

@@ -443,17 +443,21 @@ async def attach_assistant_session(websocket: WebSocket) -> None:
         await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
         return
 
-    # Buffer early PTY output while we await the first client message to
-    # detect a JSON handshake. This guarantees structured clients never
-    # receive a raw-text frame before the server classifies the handshake.
+    # OPTION 3 (founder-ruled): the output pump starts in raw mode
+    # immediately — NO buffering.  Legacy xterm clients receive PTY output
+    # at once (byte-identical frozen contract).  Structured (json-chat)
+    # clients send a handshake as their first frame; the server detects it
+    # and switches the pump to structured JSON mode for SUBSEQUENT output.
+    # Any raw PTY frame that arrives before the mode switch is tolerated
+    # client-side; the structured frontend buffers/ignores pre-ack frames
+    # so the user never sees a raw frame.
     queue = session.subscribe()
-    output_buffer: list[str] = []
-    output_mode: str = "buffering"
+    output_mode: str = "raw"
 
-    async def _pump_with_buffering() -> None:
-        """Unified output pump: buffers in 'buffering' mode;
-        emits structured JSON frames in 'json-chat' mode;
-        emits raw text in 'raw' (legacy) mode."""
+    async def _pump_assistant_output_dual() -> None:
+        """Unified output pump: emits raw text by default (legacy xterm
+        path, byte-identical frozen); switches to structured JSON frames
+        when output_mode is set to 'json-chat' after handshake detection."""
         nonlocal output_mode
         try:
             while True:
@@ -470,9 +474,7 @@ async def attach_assistant_session(websocket: WebSocket) -> None:
                         websocket, code=status.WS_1000_NORMAL_CLOSURE
                     )
                     return
-                if output_mode == "buffering":
-                    output_buffer.append(text)
-                elif output_mode == "json-chat":
+                if output_mode == "json-chat":
                     await _safe_websocket_send_text(
                         websocket,
                         _json.dumps({"type": "output", "text": text}),
@@ -482,12 +484,14 @@ async def attach_assistant_session(websocket: WebSocket) -> None:
         finally:
             session.unsubscribe(queue)
 
-    output_task = asyncio.create_task(_pump_with_buffering())
+    output_task = asyncio.create_task(_pump_assistant_output_dual())
 
-    # Negotiate mode: read the first client message to detect a JSON handshake.
-    # If it matches, flush buffered output as structured frames and switch to
-    # structured mode; otherwise flush as raw text and continue in legacy
-    # PTY-tunnel mode (xterm terminal).
+    # Negotiate mode: read the first client message to detect a JSON
+    # handshake.  The output pump is already streaming in raw mode, so
+    # legacy clients that connect and never send a frame receive PTY
+    # output immediately (no hang).  Structured clients send a handshake
+    # as their first frame; any raw frames that slipped through before
+    # the mode switch are tolerated by the frontend.
     try:
         first_text = await websocket.receive_text()
     except WebSocketDisconnect:
@@ -496,22 +500,12 @@ async def attach_assistant_session(websocket: WebSocket) -> None:
     handshake = _try_parse_handshake(first_text)
     is_structured = handshake is not None and handshake.get("protocol") == "json-chat"
 
-    # Switch mode so the pump routes new output correctly, then flush any
-    # early output that accumulated before the handshake was received.
-    output_mode = "json-chat" if is_structured else "raw"
-    for buffered in output_buffer:
-        if is_structured:
-            await _safe_websocket_send_text(
-                websocket,
-                _json.dumps({"type": "output", "text": buffered}),
-            )
-        else:
-            await _safe_websocket_send_text(websocket, buffered)
-    output_buffer.clear()
-
     if is_structured:
+        # Switch the pump to structured JSON mode for all SUBSEQUENT
+        # PTY output.  Raw frames that arrived before the switch were
+        # already sent; the frontend tolerates/buffers them.
+        output_mode = "json-chat"
         # Hand off to the structured chat I/O loop (ack + chat input).
-        # The output pump is already running.
         await _run_structured_session(websocket, session)
         output_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
