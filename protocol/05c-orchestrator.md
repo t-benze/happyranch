@@ -157,6 +157,7 @@ There are four types of permission blocks, each handled differently:
 - **blocked** — suspended, awaiting an external event. Requires `block_kind`:
   - `delegated` — waiting on one or more child subtasks to terminate.
   - `escalated` — waiting on the founder (via `happyranch resolve-escalation`).
+  - `blocked_on_job` — waiting on one or more background jobs to reach a terminal state; set when a completion report carries a non-empty `waiting_on_job_ids`.
 - **completed** — terminal, success.
 - **failed** — terminal, unsuccessful.
 - **resolved_superseded** — terminal. A `blocked(escalated|delegated)` task closed because a human-authorized continuation (founder `revisit`, or a founder/manager thread-dispatch) superseded it; the close cites the successor task and does **not** re-run the work.
@@ -200,6 +201,7 @@ pending → (run_step pickup) → in_progress → { completed | failed | blocked
 blocked(delegated) → (child terminates, sibling sweep clears) → in_progress (re-entry)
 blocked(escalated) → (POST /resolve-escalation approve) → pending (re-enqueued; manager's next prompt carries an ESCALATION RESOLVED header with the founder's rationale)
 blocked(escalated) → (POST /resolve-escalation reject)  → failed (cascade-fails the parent if any)
+blocked(blocked_on_job) → (all blocking jobs reach terminal state; resume predicate `_maybe_resume_blocked_task` fires and re-enqueues) → pending (re-enqueued; run_step CAS admits exactly one on pickup → in_progress)
 blocked(escalated|delegated) → (revisit / thread-dispatch names it in lineage) → resolved_superseded (terminal; block_kind cleared, audit cites the continuation root task_id; NO re-enqueue. The delegated close is gated on all children being terminal and never cascade-SIGTERMs live siblings)
 blocked(ESCALATED) → (POST /resolve-escalation approve on exhaustion escalation) → pending (re-enqueued; parent carries the exhaustion context + failure reason from the failed subtask — manager can re-ground and re-delegate)
 ```
