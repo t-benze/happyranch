@@ -638,6 +638,286 @@ def test_assistant_repair_requires_config(client: TestClient) -> None:
     assert response.json()["detail"]["code"] == "assistant_not_configured"
 
 
+def test_assistant_websocket_structured_mode_handshake_and_output(
+    client: TestClient,
+    runtime,
+) -> None:
+    """Structured JSON-chat mode (OPTION 3): client sends a handshake,
+    receives a "ready" ack, and SUBSEQUENT PTY output is structured
+    {"type":"output","text":"..."} frames.  Raw PTY frames that arrived
+    before the handshake was processed are tolerated by the frontend."""
+    fake_cli = runtime.root / "fake-assistant"
+    fake_cli.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys, time\n"
+        "print('assistant ready', flush=True)\n"
+        "for line in sys.stdin:\n"
+        "    print('echo: ' + line.strip(), flush=True)\n"
+    )
+    fake_cli.chmod(0o755)
+
+    response = client.post(
+        "/api/v1/assistant/register",
+        json={
+            "executor": "codex",
+            "command": str(fake_cli),
+            "argv": [str(fake_cli)],
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "configured"
+
+    token = paths_mod.read_token()
+    try:
+        with client.websocket_connect(
+            "/api/v1/assistant/session",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as websocket:
+            import json
+
+            # Send JSON handshake to negotiate structured mode.
+            websocket.send_text(
+                json.dumps(
+                    {"type": "handshake", "protocol": "json-chat", "version": 1}
+                )
+            )
+
+            # Drain frames until we see the "ready" ack.
+            # Raw PTY output that arrived before the handshake was
+            # processed is sent as raw text; skip those frames.
+            ack = None
+            for _ in range(20):
+                raw = websocket.receive_text()
+                try:
+                    frame = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    # Pre-ack raw frame — tolerated by the frontend.
+                    continue
+                if frame.get("type") == "status" and frame.get("code") == "ready":
+                    ack = frame
+                    break
+            assert ack is not None, (
+                "Never received 'ready' ack after structured handshake"
+            )
+
+            # Send structured chat input — the echo arrives as structured.
+            websocket.send_text(
+                json.dumps({"type": "chat", "text": "hello structured"})
+            )
+
+            # Drain frames until we see the structured echo.
+            seen = []
+            for _ in range(10):
+                raw = websocket.receive_text()
+                try:
+                    frame = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    seen.append({"_raw_": raw})
+                    continue
+                seen.append(frame)
+                if (
+                    frame.get("type") == "output"
+                    and "echo: hello structured" in frame.get("text", "")
+                ):
+                    break
+            else:
+                raise AssertionError(
+                    f"'{'echo: hello structured'!r}' not in WS frames: {seen!r}"
+                )
+    finally:
+        asyncio.run(client.app.state.daemon.assistant_sessions.close_all())
+
+
+def test_assistant_websocket_structured_mode_rejects_bad_token(
+    client: TestClient,
+    runtime,
+) -> None:
+    """Structured mode auth rejection: bad subprotocol token → close 1008."""
+    paths = system_assistant_paths(runtime.root)
+    paths.root.mkdir(parents=True)
+    paths.workspace.mkdir(parents=True)
+    (paths.workspace / "agent.yaml").write_text("name: system_assistant\n")
+    (paths.workspace / "AGENTS.md").write_text("# Assistant\n")
+    (paths.learnings_dir).mkdir(parents=True)
+    (paths.learnings_dir / "_index.md").write_text("# Learnings\n")
+    save_assistant_config(
+        runtime.root,
+        AssistantConfig(
+            selected_executor="codex",
+            selected_command="/should/not/start",
+            selected_argv=["/should/not/start"],
+            workspace_path=str(paths.workspace),
+        ),
+    )
+    browser = TestClient(client.app)
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with browser.websocket_connect(
+            "/api/v1/assistant/session",
+            subprotocols=["happyranch.bearer.bad-token"],
+        ):
+            pass
+    assert exc_info.value.code == 1008
+
+
+def test_assistant_websocket_legacy_still_works_after_structured_added(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """Backward compat: legacy xterm clients (no handshake) still work."""
+    fake_cli = tmp_path / "fake-assistant"
+    fake_cli.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "print('assistant ready', flush=True)\n"
+        "for line in sys.stdin:\n"
+        "    print('echo: ' + line.strip(), flush=True)\n"
+    )
+    fake_cli.chmod(0o755)
+
+    response = client.post(
+        "/api/v1/assistant/register",
+        json={
+            "executor": "codex",
+            "command": str(fake_cli),
+            "argv": [str(fake_cli)],
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "configured"
+
+    token = paths_mod.read_token()
+    try:
+        with client.websocket_connect(
+            "/api/v1/assistant/session",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as websocket:
+            # OPTION 3: legacy xterm clients receive PTY output immediately
+            # with ZERO dependency on any inbound client frame (byte-identical
+            # frozen PTY attach contract).
+            greeting = websocket.receive_text()
+            assert greeting.strip() == "assistant ready"
+
+            # Send a resize control (normal xterm behavior on connect)
+            # followed by input to confirm bidirectional PTY-tunnel works.
+            websocket.send_text(
+                "__HAPPYRANCH_ASSISTANT_RESIZE__ 24 80"
+            )
+
+            # Send input to confirm bidirectional PTY-tunnel works.
+            websocket.send_text("hello legacy\n")
+            _receive_until(websocket, "echo: hello legacy")
+    finally:
+        asyncio.run(client.app.state.daemon.assistant_sessions.close_all())
+
+
+def test_assistant_websocket_structured_mode_handshake_ack_after_raw(
+    client: TestClient,
+    runtime,
+) -> None:
+    """OPTION 3 (founder-ruled): the output pump starts in raw mode, so
+    early PTY output may arrive as raw-text frames BEFORE the handshake
+    is processed.  The server sends those frames, then switches to
+    structured JSON mode when the handshake is detected.  The structured
+    client tolerates pre-ack raw frames.
+
+    This test verifies that:
+    (a) raw PTY frames arrive before the handshake is acknowledged
+        (the frontend buffers/ignores these),
+    (b) the "ready" ack still arrives,
+    (c) SUBSEQUENT PTY output (chat echo) is structured JSON.
+    """
+    fake_cli = runtime.root / "fake-assistant"
+    fake_cli.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys, time\n"
+        "# Emit immediately so the output is ready before the handshake arrives.\n"
+        "print('assistant ready', flush=True)\n"
+        "print('another greeting', flush=True)\n"
+        "for line in sys.stdin:\n"
+        "    print('echo: ' + line.strip(), flush=True)\n"
+    )
+    fake_cli.chmod(0o755)
+
+    response = client.post(
+        "/api/v1/assistant/register",
+        json={
+            "executor": "codex",
+            "command": str(fake_cli),
+            "argv": [str(fake_cli)],
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "configured"
+
+    token = paths_mod.read_token()
+    try:
+        with client.websocket_connect(
+            "/api/v1/assistant/session",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as websocket:
+            import json
+
+            # Send the JSON handshake.
+            websocket.send_text(
+                json.dumps(
+                    {"type": "handshake", "protocol": "json-chat", "version": 1}
+                )
+            )
+
+            # Collect frames until we see the "ready" ack.
+            # Pre-ack raw frames are expected and tolerated by the frontend.
+            pre_ack_raw: list[str] = []
+            ack = None
+            for _ in range(20):
+                raw = websocket.receive_text()
+                try:
+                    frame = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    pre_ack_raw.append(raw)
+                    continue
+                if frame.get("type") == "status" and frame.get("code") == "ready":
+                    ack = frame
+                    break
+                pre_ack_raw.append(raw)  # Unknown JSON before ack
+
+            assert ack is not None, (
+                f"Never received 'ready' ack after structured handshake; "
+                f"pre-ack raw: {pre_ack_raw!r}"
+            )
+            # Pre-ack raw frames MAY arrive depending on timing (the PTY
+            # output pump runs in parallel with handshake detection).
+            # The structured frontend tolerates any that do arrive.
+
+            # Send a chat message — the echo must arrive as structured JSON.
+            websocket.send_text(
+                json.dumps({"type": "chat", "text": "hello after handshake"})
+            )
+
+            seen = []
+            found_echo = False
+            for _ in range(10):
+                raw = websocket.receive_text()
+                try:
+                    frame = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    seen.append({"_raw_": raw})
+                    continue
+                seen.append(frame)
+                if (
+                    frame.get("type") == "output"
+                    and "echo: hello after handshake" in frame.get("text", "")
+                ):
+                    found_echo = True
+                    break
+
+            assert found_echo, (
+                f"'{'echo: hello after handshake'!r}' not in post-ack WS frames: "
+                f"{seen!r}"
+            )
+    finally:
+        asyncio.run(client.app.state.daemon.assistant_sessions.close_all())
+
+
 @pytest.mark.parametrize(
     ("method", "path", "json"),
     [

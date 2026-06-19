@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Moon, Plus, Settings, Sun } from 'lucide-react';
+import { Moon, Plus, Search, Settings, Sun } from 'lucide-react';
 import { NavLink, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   Select,
@@ -122,6 +122,21 @@ export function Sidebar(): JSX.Element {
 
       {/* Spacer */}
       <div className="h-2" />
+
+      {/* "Ask or search" pill — opens the global Assistant Dock */}
+      <div className="px-2">
+        <button
+          type="button"
+          data-assistant-open="true"
+          className="border-border bg-bg-subtle text-fg-muted hover:border-accent-ring hover:text-fg focus-visible:ring-accent mb-2 flex w-full items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors focus-visible:ring-2 focus-visible:outline-none"
+        >
+          <Search size={14} aria-hidden="true" />
+          <span className="flex-1 text-left">Ask or search…</span>
+          <kbd className="text-fg-subtle border-border bg-bg-raised rounded border px-1.5 py-0.5 font-mono text-[10px]">
+            ⌘K
+          </kbd>
+        </button>
+      </div>
 
       {/* Primary group */}
       <div className="px-3">

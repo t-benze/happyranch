@@ -16,6 +16,7 @@ import { JobsPage } from '@/features/jobs/JobsPage';
 import { JobDetailPage } from '@/features/jobs/JobDetailPage';
 import { CommandPaletteHost } from '@/host/CommandPaletteHost';
 import { HelpDrawerHost } from '@/host/HelpDrawerHost';
+import { AssistantDockHost } from '@/features/system-assistant/AssistantDockHost';
 import { AuditPage } from '@/features/audit/AuditPage';
 import { DashboardPage } from '@/features/dashboard/DashboardPage';
 import { KbPage } from '@/features/kb/KbPage';
@@ -65,6 +66,7 @@ function AppShell(): JSX.Element {
       </main>
       <CommandPaletteHost />
       <HelpDrawerHost />
+      <AssistantDockHost />
     </div>
   );
 }
