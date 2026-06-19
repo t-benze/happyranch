@@ -11,7 +11,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from runtime.infrastructure.database import Database
 
@@ -61,7 +61,7 @@ class ActivityRow(BaseModel):
     event_kind: str
     task_id: str | None
     verdict: Literal["ok", "fail", "warn"] | None
-    _thread_dream_id: str | None = None
+    thread_dream_id: str | None = Field(default=None, serialization_alias="_thread_dream_id")
 
 
 class UpdateRow(BaseModel):
@@ -312,7 +312,7 @@ def compute_recent_activity(db: Database, *, n: int = 6) -> list[ActivityRow]:
             event_kind=r["action"],
             task_id=r["task_id"],
             verdict=_verdict_from_payload(r["action"], r["payload"]),
-            _thread_dream_id=dream_map.get(r["task_id"]) if r["task_id"] else None,
+            thread_dream_id=dream_map.get(r["task_id"]) if r["task_id"] else None,
         )
         for r in rows
     ]

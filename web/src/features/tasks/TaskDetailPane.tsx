@@ -174,7 +174,27 @@ function BlockedOnInfo({
   } else if (blockKind === 'delegated') {
     blockerText = 'Delegated — waiting on children';
   } else if (blockedOnJobIds && blockedOnJobIds.length > 0) {
-    blockerText = `Waiting on job${blockedOnJobIds.length > 1 ? 's' : ''}: ${blockedOnJobIds.map((j) => j.job_id).join(', ')}`;
+    return (
+      <div className="bg-tier-red-tint text-status-abandoned mt-3 rounded-sm px-3 py-2 text-sm">
+        <span className="font-semibold">Blocked:</span>{' '}
+        Waiting on job{blockedOnJobIds.length > 1 ? 's' : ''}:{' '}
+        {blockedOnJobIds.map((j, i) => (
+          <span key={j.job_id}>
+            {slug ? (
+              <Link
+                to={`/orgs/${slug}/jobs/${j.job_id}`}
+                className="text-accent font-mono text-xs hover:underline"
+              >
+                {j.job_id}
+              </Link>
+            ) : (
+              <span className="font-mono text-xs">{j.job_id}</span>
+            )}
+            {i < blockedOnJobIds.length - 1 ? ', ' : null}
+          </span>
+        ))}
+      </div>
+    );
   }
 
   return (

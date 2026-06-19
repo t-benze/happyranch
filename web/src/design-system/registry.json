@@ -192,16 +192,6 @@
       "example": "<IdBadge id='THR-042' kind='thread' />"
     },
     {
-      "name": "LinkifyId",
-      "layer": "pattern",
-      "import": "@/design-system/patterns/LinkifyId",
-      "variants": {},
-      "consumes": [
-        "components.link"
-      ],
-      "example": "<LinkifyId text='task TASK-042 dispatched' slug='myorg' />"
-    },
-    {
       "name": "InboxRow",
       "layer": "pattern",
       "import": "@/design-system/patterns/InboxRow",
