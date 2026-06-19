@@ -441,28 +441,30 @@ def test_per_kind_cap_admits_different_kind_after_session_timeout(runtime, db):
 
 
 def test_cascade_fail_suppressed_when_root_auto_revisit_spawned(runtime, db):
-    """3-level lineage: founder-dispatched root T-ROOT → manager step T-MID
-    → worker child T-CHD. Worker fails with session_timeout. The root's
-    auto-revisit fires (silent retry). The intermediate manager parent
-    T-MID must be cascade-failed BUT its Feishu notification must be
-    suppressed because the work is already being retried at the root."""
+    """TASK-573 bounded failure-recovery: when a subtask fails and the root
+    auto-revisit fires, the intermediate parent gets a bounded-wake decision
+    step (BLOCKED+DELEGATED, enqueued). The Feishu notification path is
+    removed; no cascade-fail happens."""
     from runtime.orchestrator.orchestrator import Orchestrator
     from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
 
     db.insert_task(TaskRecord(id="T-ROOT", brief="root", team="engineering",
                               assigned_agent="engineering_head",
                               status=TaskStatus.BLOCKED,
-                              block_kind=BlockKind.DELEGATED))
+                              block_kind=BlockKind.DELEGATED,
+                              task_type="task"))
     db.insert_task(TaskRecord(id="T-MID", brief="mid", team="engineering",
                               assigned_agent="engineering_head",
                               parent_task_id="T-ROOT",
                               status=TaskStatus.BLOCKED,
-                              block_kind=BlockKind.DELEGATED))
+                              block_kind=BlockKind.DELEGATED,
+                              task_type="task"))
     db.insert_task(TaskRecord(id="T-CHD", brief="chd", team="engineering",
                               assigned_agent="dev_agent",
                               parent_task_id="T-MID",
                               status=TaskStatus.FAILED,
-                              note="agent session failed (rc=?; Session timed out after 5400 seconds)"))
+                              note="agent session failed (rc=?; Session timed out after 5400 seconds)",
+                              task_type="subtask"))
 
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
                         slug="test", teams=TeamsRegistry.load(runtime.root))
@@ -480,32 +482,34 @@ def test_cascade_fail_suppressed_when_root_auto_revisit_spawned(runtime, db):
         orch, "T-CHD", root_auto_revisit_spawned=True,
     )
 
-    # Both ancestors should be FAILED (cascade still happens — _fail is
-    # load-bearing for parent state, only the Feishu ping is suppressed).
-    assert db.get_task("T-MID").status == TaskStatus.FAILED
-    assert db.get_task("T-ROOT").status == TaskStatus.FAILED
-    # ZERO Feishu notifications: the cascade is silent because auto-revisit
-    # is already retrying the work.
+    # T-MID stays BLOCKED(DELEGATED) — bounded manager-wake (TASK-573).
+    assert db.get_task("T-MID").status == TaskStatus.BLOCKED
+    assert db.get_task("T-MID").block_kind == BlockKind.DELEGATED
+    # T-ROOT stays BLOCKED(DELEGATED) — not reachable until T-MID advances.
+    assert db.get_task("T-ROOT").status == TaskStatus.BLOCKED
+    assert db.get_task("T-ROOT").block_kind == BlockKind.DELEGATED
+    # ZERO Feishu notifications.
     assert notify_calls == []
 
 
 def test_cascade_fail_no_auto_revisit(runtime, db):
-    """When no auto-revisit was spawned (e.g., the original failure was a
-    deliberate self-block, not an opaque error), cascade_fail still
-    transitions the parent correctly. Notification is no longer wired
-    (Feishu removed)."""
+    """TASK-573: when no auto-revisit was spawned (e.g., a deliberate
+    self-block), the parent gets a bounded-wake decision step — stays
+    BLOCKED(DELEGATED) and is enqueued, NOT cascade-failed."""
     from runtime.orchestrator.orchestrator import Orchestrator
     from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
 
     db.insert_task(TaskRecord(id="T-ROOT", brief="root", team="engineering",
                               assigned_agent="engineering_head",
                               status=TaskStatus.BLOCKED,
-                              block_kind=BlockKind.DELEGATED))
+                              block_kind=BlockKind.DELEGATED,
+                              task_type="task"))
     db.insert_task(TaskRecord(id="T-CHD", brief="chd", team="engineering",
                               assigned_agent="dev_agent",
                               parent_task_id="T-ROOT",
                               status=TaskStatus.FAILED,
-                              note="self-blocked: missing API key"))
+                              note="self-blocked: missing API key",
+                              task_type="subtask"))
 
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
                         slug="test", teams=TeamsRegistry.load(runtime.root))
@@ -518,6 +522,8 @@ def test_cascade_fail_no_auto_revisit(runtime, db):
         orch, "T-CHD", root_auto_revisit_spawned=False,
     )
 
-    assert db.get_task("T-ROOT").status == TaskStatus.FAILED
+    # Parent stays BLOCKED(DELEGATED) — bounded-wake (TASK-573), not cascade-fail.
+    assert db.get_task("T-ROOT").status == TaskStatus.BLOCKED
+    assert db.get_task("T-ROOT").block_kind == BlockKind.DELEGATED
     # No notification fires — Feishu removed.
     assert len(notify_calls) == 0

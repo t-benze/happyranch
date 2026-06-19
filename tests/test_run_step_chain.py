@@ -481,9 +481,9 @@ def test_chain_summary_not_appended_when_no_chain_ran(tmp_path):
 
 
 def test_cascade_fail_clears_active_chain(tmp_path):
-    """When a chain leg's child fails, the cascade-fail path must clear the
-    parent's active_chain so the FAILED parent doesn't carry a stale chain
-    pointer (would render confusingly in CLI/Web UI)."""
+    """TASK-573: when a chain leg's subtask fails, the bounded-wake path clears
+    the parent's active_chain and keeps the parent BLOCKED(DELEGATED) for a
+    manager decision step (not cascade-failed)."""
     from runtime.infrastructure.database import Database
     from runtime.orchestrator.chain import ChainState
     from runtime.orchestrator._paths import OrgPaths
@@ -500,28 +500,30 @@ def test_cascade_fail_clears_active_chain(tmp_path):
     )
     db.update_task_active_chain("TASK-P", chain.serialize())
 
-    # Child that ended in FAILED (not COMPLETED) — triggers cascade-fail path.
+    # Subtask that ended in FAILED (not COMPLETED) — triggers bounded-wake path.
     db.insert_task(TaskRecord(
         id="TASK-C1", team="engineering", brief="b",
         parent_task_id="TASK-P", assigned_agent="dev",
+        task_type="subtask",
     ))
     db.update_task("TASK-C1", status=TaskStatus.FAILED, note="executor crashed")
 
+    import asyncio
+    q = asyncio.Queue()
     orch = MagicMock()
     orch._db = db
     orch._audit = AuditLogger(db)
-    orch._queue = None
+    orch._queue = None  # _queue only put_nowait'd when not None; set None first
     orch._slug = "test-org"
-    # Use a real OrgPaths pointing at tmp_path so _notify_failure_if_eligible →
-    # load_org_config finds no config.yaml and returns early (a MagicMock path
-    # causes yaml.safe_load to hang indefinitely reading MagicMock.read() calls).
     orch._paths = OrgPaths(tmp_path)
 
     _enqueue_parent_if_waiting(orch, "TASK-C1")
 
     parent_after = db.get_task("TASK-P")
-    assert parent_after.status == TaskStatus.FAILED
-    assert parent_after.active_chain is None, "cascade-fail must clear active_chain"
+    # Parent stays BLOCKED(DELEGATED) for bounded-wake, not FAILED.
+    assert parent_after.status == TaskStatus.BLOCKED
+    assert parent_after.block_kind == BlockKind.DELEGATED
+    assert parent_after.active_chain is None, "failed leg must clear active_chain"
 
 
 def test_chain_cleared_on_cascade_fail(tmp_path):

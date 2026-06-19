@@ -886,15 +886,16 @@ def test_resolve_escalation_approve_reenqueues_child_not_parent(client_with_runt
 
 
 def test_resolve_escalation_reject_cascades_to_parent(client_with_runtime):
-    """Reject on a child fails it and cascade-fails the parent (existing
-    `_enqueue_parent_if_waiting` behavior on FAILED siblings)."""
+    """Reject on a child fails it and wakes the parent via bounded
+    failure-recovery (TASK-573) — parent stays BLOCKED(DELEGATED) for
+    a bounded-wake decision step, NOT cascade-failed."""
     from runtime.models import TaskRecord, TaskStatus, BlockKind
     client, state = client_with_runtime
-    state.db.insert_task(TaskRecord(id="T-PAR", brief="p"))
+    state.db.insert_task(TaskRecord(id="T-PAR", brief="p", task_type="task"))
     state.db.update_task("T-PAR", status=TaskStatus.BLOCKED,
                          block_kind=BlockKind.DELEGATED, note="waiting")
     state.db.insert_task(TaskRecord(
-        id="T-CHD", brief="c", parent_task_id="T-PAR"))
+        id="T-CHD", brief="c", parent_task_id="T-PAR", task_type="subtask"))
     state.db.update_task("T-CHD", status=TaskStatus.BLOCKED,
                          block_kind=BlockKind.ESCALATED, note="halt")
 
@@ -910,8 +911,9 @@ def test_resolve_escalation_reject_cascades_to_parent(client_with_runtime):
     chd = state.db.get_task("T-CHD")
     assert chd.status == TaskStatus.FAILED
     par = state.db.get_task("T-PAR")
-    # _enqueue_parent_if_waiting cascade-fails on FAILED child
-    assert par.status == TaskStatus.FAILED
+    # TASK-573: bounded-wake, not cascade-fail.
+    assert par.status == TaskStatus.BLOCKED
+    assert par.block_kind == BlockKind.DELEGATED
 
 
 # -------- /tasks/{id}/cancel --------

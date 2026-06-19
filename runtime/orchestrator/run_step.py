@@ -534,12 +534,12 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
     `role_guidance: |` in the outer wrapper built by
     ``Orchestrator._build_agent_prompt``.
 
-    Workers return an empty string: their per-task instruction is the brief,
+    Subtask agents get their per-task instruction as the bare brief,
     which the outer wrapper already renders as ``Parameters.brief``. Echoing
-    it here would duplicate the brief in every worker spawn (the wrapper
+    it here would duplicate the brief in every subtask agent spawn (the wrapper
     drops the ``role_guidance:`` line when this returns empty).
 
-    Managers return the capabilities prompt (decision schema, agent roster,
+    Task owners return the capabilities prompt (decision schema, agent roster,
     prior steps). For revisited roots, a one-shot context header is prepended
     on the very first orchestration step (detected via audit log).
     """
@@ -633,7 +633,7 @@ def _revisit_header_if_applicable(orch: "Orchestrator", task_id: str) -> str | N
 
     Trigger: the task has a `revisit_of` OR `auto_revisit_of` audit entry
     AND no `orchestration_step` audit entry. The latter is how we detect
-    "first step" without timestamps — once the team manager has produced
+    "first step" without timestamps — once the task owner has produced
     a decision, `log_orchestration_step` writes a row and this helper
     returns None on every subsequent call.
     """
@@ -869,7 +869,7 @@ def _resolved_escalation_header_if_applicable(
 
 
 def _build_prior_steps_from_db(orch: "Orchestrator", task_id: str):
-    """Reconstruct StepRecord[] for the team manager by reading children's
+    """Reconstruct StepRecord[] for the parent task by reading subtasks'
     terminal outcomes from the DB. Only direct children of `task_id` count
     — each child is one past orchestration step. Order: creation order,
     1-indexed.
@@ -1085,10 +1085,10 @@ def _kill_jobs_for_terminating_task(orch: "Orchestrator", task_id: str) -> None:
 def _log_verdict_if_delegated(
     orch: "Orchestrator", task_id: str, *, success: bool,
 ) -> None:
-    """Emit the implicit manager review_verdict audit row for a delegated child.
+    """Emit the implicit review_verdict audit row for a delegated subtask.
 
-    The team manager is the implicit reviewer of every delegated child:
-    a COMPLETED child is an "approved" delegation, a FAILED child is
+    The parent task owner is the implicit reviewer of every delegated subtask:
+    a COMPLETED subtask is an "approved" delegation, a FAILED subtask is
     "rejected". Audit rows are how the founder reviews which agents need
     attention; they are the canonical record of delegation outcomes.
     """
@@ -1119,15 +1119,15 @@ def _advance_chain_for_completed_child(
     parent_task_id: str,
     child_task_id: str,
 ) -> str:
-    """Inspect the parent's active_chain against the just-completed child's
+    """Inspect the parent's active_chain against the just-completed subtask's
     report. Either spawn the next leg ("advance") or clear the chain so the
     caller falls through to the normal parent-wake path ("wake").
 
     Returns "advance" or "wake". When "advance" is returned, the parent is
     NOT re-enqueued and orchestration_step_count is NOT bumped.
 
-    Only called when child.status == COMPLETED — failed/cancelled children
-    cascade-fail as before; chains do NOT survive an opaque leg failure in v1.
+    Only called when child.status == COMPLETED — FAILED subtasks are handled
+    by the bounded-wake logic in _enqueue_parent_if_waiting (TASK-573).
     """
     from runtime.models import TaskRecord
     from runtime.orchestrator.chain import (
@@ -1189,6 +1189,9 @@ def _advance_chain_for_completed_child(
     return "advance"
 
 
+_FAILURE_ROUND_BOUND = 2  # at most 2 re-spawn rounds before escalation
+
+
 def _enqueue_parent_if_waiting(
     orch: "Orchestrator",
     task_id: str,
@@ -1198,22 +1201,30 @@ def _enqueue_parent_if_waiting(
     """Idempotent: advance the parent only if it's actually waiting on THIS
     lineage (blocked+DELEGATED) AND all its children are now terminal.
 
-    Two outcomes:
-      - every child COMPLETED → enqueue parent for its next manager decision
-        step.
-      - any child FAILED → cascade-fail the parent with a referencing note
-        and recurse up. No retry: the team manager does not get another
-        decision step after a failed delegation. The alternative
-        (re-enqueueing so the manager can "try again") has historically
-        produced runs of 6+ failed retries on the same brief
-        (TASK-033..038, TASK-041..045), burning tokens and masking the real
-        failure mode.
+    Three outcomes (TASK-573 bounded failure-recovery):
+      - every subtask COMPLETED → enqueue parent for its next manager
+        decision step (unchanged happy path).
+      - a subtask FAILED, but fewer than 2 prior failed subtasks exist in
+        this delegation slot → clear any active chain, enqueue the parent
+        for a bounded manager-wake decision step. The parent receives the
+        failed subtask's reason so it can author an updated brief.
+      - a subtask FAILED and 2+ prior failed subtasks already exist (bound
+        exhausted) → escalate the parent to blocked(ESCALATED) via
+        try_escalate, carrying the last failure reason. The parent does NOT
+        cascade-fail — the founder can resolve the escalation per existing
+        routes. The round count is derived from the count of FAILED subtask
+        siblings in the DB (no schema migration).
 
     ``root_auto_revisit_spawned`` is threaded through the cascade so every
     ancestor knows the founder-dispatched root has already been auto-revisited —
     the work IS being retried. Callers that did not spawn an auto-revisit pass
     the default ``False``. See spec
     2026-05-25-session-timeout-auto-route-design.md §6.
+
+    Chain handling: a FAILED chain leg clears the active chain and falls
+    through to the bounded-wake logic (same round bound + escalation). A
+    COMPLETED chain leg tries to auto-advance as before; on mismatch it
+    clears the chain and wakes the parent.
     """
     task = orch._db.get_task(task_id)
     if task is None or task.parent_task_id is None:
@@ -1225,22 +1236,23 @@ def _enqueue_parent_if_waiting(
         return
 
     # Chain-advance branch: if the parent has an active chain and the just-
-    # completed child terminated cleanly, try to auto-advance to the next leg
-    # instead of waking the parent. Failed children skip this branch and fall
-    # through to the cascade-fail path below.
+    # terminated subtask completed cleanly, try to auto-advance to the next
+    # leg instead of waking the parent. FAILED subtasks clear the chain and
+    # fall through to the bounded-wake logic below.
     child = orch._db.get_task(task_id)
-    if (
-        child is not None
-        and child.status == TaskStatus.COMPLETED
-        and parent.active_chain is not None
-    ):
-        outcome = _advance_chain_for_completed_child(
-            orch=orch, parent_task_id=parent.id, child_task_id=task_id,
-        )
-        if outcome == "advance":
-            return  # next leg spawned; parent stays blocked-delegated
-        # outcome == "wake" → chain cleared; fall through to sibling-check
-        # + parent-wake path below.
+    if child is not None and parent.active_chain is not None:
+        if child.status == TaskStatus.COMPLETED:
+            outcome = _advance_chain_for_completed_child(
+                orch=orch, parent_task_id=parent.id, child_task_id=task_id,
+            )
+            if outcome == "advance":
+                return  # next leg spawned; parent stays blocked-delegated
+            # outcome == "wake" → chain cleared; fall through to sibling-check
+            # + parent-wake path below.
+        else:
+            # FAILED chain leg: clear the chain so the parent's next decision
+            # step doesn't see a stale chain. Fall through to bounded-wake.
+            orch._db.update_task_active_chain(parent.id, None)
 
     siblings = [orch._db.get_task(cid) for cid in orch._db.get_children(parent.id)]
     if any(s is None or s.status not in TERMINAL_STATES for s in siblings):
@@ -1248,19 +1260,32 @@ def _enqueue_parent_if_waiting(
 
     failed = [s for s in siblings if s.status == TaskStatus.FAILED]
     if failed:
-        first = failed[0]
-        note = f"delegated child {first.id} failed: {first.note or '(no note)'}"
+        # Bounded failure-recovery (TASK-573): count FAILED subtasks to
+        # derive the re-spawn round count from existing DB state (no schema
+        # change). At most _FAILURE_ROUND_BOUND (2) re-spawns before
+        # escalation.
+        if len(failed) >= _FAILURE_ROUND_BOUND:
+            # Round bound exhausted → escalate, NOT cascade-fail.
+            last = failed[-1]
+            reason = (
+                f"failure-round bound ({_FAILURE_ROUND_BOUND}) exhausted: "
+                f"subtask {last.id} failed: {last.note or '(no note)'}"
+            )
+            if parent.active_chain is not None:
+                orch._db.update_task_active_chain(parent.id, None)
+            if orch._db.try_escalate(parent.id, reason=reason):
+                orch._audit.log_escalation(parent.id, "orchestrator", reason)
+                _maybe_post_thread_escalation(
+                    orch, parent.id, reason=reason,
+                )
+            return
+        # Within the bound: clear chain, enqueue parent for a fresh
+        # manager decision step. Do NOT cascade-fail.
         if parent.active_chain is not None:
             orch._db.update_task_active_chain(parent.id, None)
-        _fail(orch, parent.id, note=note)
-        _enqueue_parent_if_waiting(
-            orch, parent.id,
-            root_auto_revisit_spawned=root_auto_revisit_spawned,
-        )
-        _maybe_post_thread_followup(
-            orch, parent.id,
-            status=TaskStatus.FAILED, auto_revisit_spawned=root_auto_revisit_spawned,
-        )
+        queue = getattr(orch, "_queue", None)
+        if queue is not None:
+            queue.put_nowait(orch._slug, parent.id)
         return
 
     queue = getattr(orch, "_queue", None)
@@ -1386,7 +1411,7 @@ def _executor_failure_context(result, report) -> dict:
     """Build the structured error_context payload for the auto_revisit_of audit.
 
     Captures rc, stderr/stdout tail, executor error string, and a flag for
-    the "rc=0 but no completion callback" branch. The team manager's first
+    the "rc=0 but no completion callback" branch. The task owner's first
     step on the auto-revisit reads this back via the revisit header so the
     decision is grounded in the actual failure mode, not a free-form note.
     """
@@ -1420,15 +1445,15 @@ def _maybe_spawn_auto_revisit(
     Triggered ONLY by the two opaque agent-error paths in run_step (an
     exception escaping ``_run_agent`` or a non-success ``ExecutorResult``
     branch which subsumes both subprocess timeouts and rc=0-no-callback).
-    Self-blocked workers, invalid-delegate JSON, max-step escalations, and
+    Self-blocked subtask agents, invalid-delegate JSON, max-step escalations, and
     founder cancellations do NOT auto-revisit — those failures are
     deliberate or load-bearing.
 
-    Walks parent links to find the team-manager root (the original task the
+    Walks parent links to find the orchestrating root task (the original task the
     founder dispatched), then spawns a NEW root linked via
     ``revisit_of_task_id``. The original lineage's cascade-to-parent
     behavior is unchanged; the auto-revisit runs as an independent tree
-    so the team manager can re-decide with the structured ``error_context``
+    so the task owner can re-decide with the structured ``error_context``
     in hand.
 
     Capped at ``_AUTO_REVISIT_CAP_PER_KIND`` auto-revisits **per
