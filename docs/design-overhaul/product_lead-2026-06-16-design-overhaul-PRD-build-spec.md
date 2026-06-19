@@ -476,7 +476,7 @@ criteria** with P1 as the dominant lens. Ordered by the Direction A sidebar.
 - **Purpose.** The in-app configuration surface.
 - **v1 scope.**
   - Dedicated **page** with sticky left sub-nav (`Assistant · System ·
-    Organization · Agents · Executors · Billing`) + field panel + sticky save bar;
+    Organization · Agents · Executors · Usage`) + field panel + sticky save bar;
     a real bookmarkable **`/settings` route**.
   - **Org section editable** (Nightly dreaming: enabled / schedule / timezone /
     agent mode / catch-up; Threads: default turn cap / session timeout) — **already
@@ -487,7 +487,7 @@ criteria** with P1 as the dominant lens. Ordered by the Direction A sidebar.
   - System Assistant config (status, Init/Repair, "Open terminal") lives here,
     integrating §4.10.
 - **Deferred.** Unifying Agents + Settings into one admin surface (non-blocking,
-  not ruled — see §3.2 note); Billing sub-nav remains tokens-only until the cost
+  not ruled — see §3.2 note); Usage sub-nav remains tokens-only until the cost
   meter is ruled in (Q1 → §6).
 - **Acceptance criteria.**
   - AC1: `/settings` is a real bookmarkable route. **[verifiable]**
@@ -589,7 +589,7 @@ without sign-off. **None block the v1 render-only/derive build.**
 
 | # | Deferred item | Why gated | Unblocks |
 |---|---|---|---|
-| D1 | **Real-dollar cost meter** (Spend dollars, Home dollar burn, Audit per-event cost, Settings → Billing) | NEW-STORE: per-model price table + cost computed at capture-time + persisted `cost_usd` (or populate `task_results.estimated_cost`). Executors are flat-rate local CLIs; `costUSD` is currently discarded. **(Q1 / A6)** | Dollar framing across all cost surfaces. |
+| D1 | **Real-dollar cost meter** (Spend dollars, Home dollar burn, Audit per-event cost, Settings → Usage) | NEW-STORE: per-model price table + cost computed at capture-time + persisted `cost_usd` (or populate `task_results.estimated_cost`). Executors are flat-rate local CLIs; `costUSD` is currently discarded. **(Q1 / A6)** | Dollar framing across all cost surfaces. |
 | D2 | **Agent autonomy toggle** ("can act autonomously / skip approval for low-risk") | NEW-STORE **+ permission-model**: no autonomy field exists; double-gated (schema + changes the approval/permission model). **(A1)** | Per-agent autonomy in Agents §4.4. |
 | D3 | **@mention routing** in Threads | NEW-LOGIC: daemon is pure broadcast; real routing changes orchestration semantics. Until then, broadcast-only (A2). | Directed thread messaging. |
 | D4 | **Artifacts ↔ PR/CI/review/job linkage** (rich PR detail: checks + files-changed + diff) | NEW-STORE: substantial new persisted linkage; none stored today. **(A5)** | Artifacts §4.6 PR detail. |
