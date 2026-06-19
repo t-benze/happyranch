@@ -20,6 +20,7 @@ import { Input } from '@/design-system/primitives/Input';
 import { Tabs, TabsList, TabsTrigger } from '@/design-system/primitives/Tabs';
 import { ThreadsLayout } from '@/design-system/layouts/ThreadsLayout';
 import { Composer } from '@/design-system/patterns/Composer';
+import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { InboxRow } from '@/design-system/patterns/InboxRow';
 import { KbdChip } from '@/design-system/patterns/KbdChip';
@@ -49,26 +50,6 @@ import { ResumeButton } from './ResumeButton';
 import { selectInFlightResponders } from './inFlightResponders';
 import { describeError, THREADS_STRINGS as S } from './strings';
 import { TypingBubble } from './TypingBubble';
-
-/* ------------------------------------------------------------------ */
-/*  Dream marker — crescent moon SVG badge (A4, same as Dreams surface)*/
-/* ------------------------------------------------------------------ */
-
-function CrescentMoonBadge({ className }: { className?: string }): JSX.Element {
-  return (
-    <svg
-      className={`text-accent inline-block shrink-0 ${className ?? ''}`}
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="currentColor"
-      aria-label={S.dreamOriginated}
-      role="img"
-    >
-      <path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a6.4 6.4 0 0 1-4.54 1.86c-3.53 0-6.4-2.87-6.4-6.4 0-1.62.6-3.1 1.6-4.24A9 9 0 0 0 12 3Z" />
-    </svg>
-  );
-}
 
 /* ------------------------------------------------------------------ */
 /*  helpers                                                            */

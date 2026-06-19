@@ -61,6 +61,7 @@ class ActivityRow(BaseModel):
     event_kind: str
     task_id: str | None
     verdict: Literal["ok", "fail", "warn"] | None
+    _thread_dream_id: str | None = None
 
 
 class UpdateRow(BaseModel):
@@ -273,7 +274,13 @@ def _verdict_from_payload(
 
 
 def compute_recent_activity(db: Database, *, n: int = 6) -> list[ActivityRow]:
-    """Last n audit rows of meaningful kinds, DESC by timestamp."""
+    """Last n audit rows of meaningful kinds, DESC by timestamp.
+
+    Enriches thread-scoped entries (task_id starting with 'THR-') with
+    ``_thread_dream_id`` from the threads table for dream-marker rendering
+    (A4). Honest read — only adds the field when the thread has a stored
+    ``composed_from_dream_id``.
+    """
     placeholders = ",".join("?" * len(_RECENT_ACTIVITY_KINDS))
     rows = db.fetch_all_readonly(
         f"SELECT timestamp, task_id, agent, action, payload "
@@ -281,6 +288,23 @@ def compute_recent_activity(db: Database, *, n: int = 6) -> list[ActivityRow]:
         f"ORDER BY timestamp DESC LIMIT ?",
         (*_RECENT_ACTIVITY_KINDS, n),
     )
+    if not rows:
+        return []
+
+    # Batch-resolve composed_from_dream_id for THR- task_ids
+    thread_ids = [r["task_id"] for r in rows if r["task_id"] and r["task_id"].startswith("THR-")]
+    dream_map: dict[str, str | None] = {}
+    if thread_ids:
+        t_placeholders = ",".join("?" * len(thread_ids))
+        t_rows = db.fetch_all_readonly(
+            f"SELECT id, composed_from_dream_id FROM threads WHERE id IN ({t_placeholders})",
+            tuple(thread_ids),
+        )
+        dream_map = {
+            r["id"]: r["composed_from_dream_id"] if "composed_from_dream_id" in r.keys() else None
+            for r in t_rows
+        }
+
     return [
         ActivityRow(
             timestamp=datetime.fromisoformat(r["timestamp"]),
@@ -288,6 +312,7 @@ def compute_recent_activity(db: Database, *, n: int = 6) -> list[ActivityRow]:
             event_kind=r["action"],
             task_id=r["task_id"],
             verdict=_verdict_from_payload(r["action"], r["payload"]),
+            _thread_dream_id=dream_map.get(r["task_id"]) if r["task_id"] else None,
         )
         for r in rows
     ]

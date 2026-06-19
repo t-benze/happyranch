@@ -167,6 +167,16 @@
       "example": "<HelpSheet open={false} onClose={() => {}} shortcuts={[{ keys: ['?'], description: 'Help' }]} />"
     },
     {
+      "name": "CrescentMoonBadge",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/CrescentMoonBadge",
+      "variants": {},
+      "consumes": [
+        "components.badge"
+      ],
+      "example": "<CrescentMoonBadge />"
+    },
+    {
       "name": "IdBadge",
       "layer": "pattern",
       "import": "@/design-system/patterns/IdBadge",
@@ -180,6 +190,16 @@
         "components.badge"
       ],
       "example": "<IdBadge id='THR-042' kind='thread' />"
+    },
+    {
+      "name": "LinkifyId",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/LinkifyId",
+      "variants": {},
+      "consumes": [
+        "components.link"
+      ],
+      "example": "<LinkifyId text='task TASK-042 dispatched' slug='myorg' />"
     },
     {
       "name": "InboxRow",

@@ -216,7 +216,7 @@ describe('ThreadsPage — list (design-overhaul reshape)', () => {
     await waitFor(() => {
       expect(screen.getByText(/Dream reflection/)).toBeInTheDocument();
       // Moon badge with aria-label
-      expect(screen.getByLabelText(/Dream-originated thread/)).toBeInTheDocument();
+      expect(screen.getByLabelText(/Dream-originated/)).toBeInTheDocument();
     });
   });
 
@@ -337,7 +337,7 @@ describe('ThreadsPage — detail (design-overhaul reshape)', () => {
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: /Dream thread/i })).toBeInTheDocument();
       // Dream moon marker appears in both inbox row and detail header
-      expect(screen.getAllByLabelText(/Dream-originated thread/).length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByLabelText(/Dream-originated/).length).toBeGreaterThanOrEqual(1);
     });
   });
 

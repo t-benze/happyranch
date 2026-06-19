@@ -188,8 +188,8 @@ function BlockedOnInfo({
 // Property rail
 // ---------------------------------------------------------------------------
 
-function PropertyRail({ task }: { task: Record<string, unknown> }): JSX.Element | null {
-  const items: { label: string; value: string }[] = [];
+function PropertyRail({ task, slug }: { task: Record<string, unknown>; slug: string }): JSX.Element | null {
+  const items: { label: string; value: string; isLink?: boolean; linkTo?: string }[] = [];
   if (task.assigned_agent) {
     items.push({ label: 'Assignee', value: task.assigned_agent as string });
   }
@@ -200,9 +200,12 @@ function PropertyRail({ task }: { task: Record<string, unknown> }): JSX.Element 
     items.push({ label: 'Created', value: new Date(task.created_at as string).toLocaleDateString() });
   }
   if ((task as Record<string, unknown>).dispatched_from_thread_id) {
+    const threadId = (task as Record<string, unknown>).dispatched_from_thread_id as string;
     items.push({
       label: 'Thread',
-      value: (task as Record<string, unknown>).dispatched_from_thread_id as string,
+      value: threadId,
+      isLink: true,
+      linkTo: `/orgs/${slug}/threads/${threadId}`,
     });
   }
 
@@ -217,7 +220,15 @@ function PropertyRail({ task }: { task: Record<string, unknown> }): JSX.Element 
         {items.map((item) => (
           <div key={item.label} className="flex justify-between gap-2">
             <dt className="text-fg-muted">{item.label}</dt>
-            <dd className="text-fg truncate font-mono text-xs">{item.value}</dd>
+            <dd className="text-fg truncate font-mono text-xs">
+              {item.isLink && item.linkTo ? (
+                <Link to={item.linkTo} className="text-accent hover:underline">
+                  {item.value}
+                </Link>
+              ) : (
+                item.value
+              )}
+            </dd>
           </div>
         ))}
       </dl>
@@ -338,7 +349,10 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
             {task.data && (
               <>
                 {/* Property rail */}
-                <PropertyRail task={task.data as unknown as Record<string, unknown>} />
+                <PropertyRail
+                  task={task.data as unknown as Record<string, unknown>}
+                  slug={slug ?? ''}
+                />
 
                 {/* Revisit chain timeline */}
                 {slug && revisitChain.length > 0 && (
