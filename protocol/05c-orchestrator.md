@@ -201,7 +201,7 @@ pending → (run_step pickup) → in_progress → { completed | failed | blocked
 blocked(delegated) → (child terminates, sibling sweep clears) → in_progress (re-entry)
 blocked(escalated) → (POST /resolve-escalation approve) → pending (re-enqueued; manager's next prompt carries an ESCALATION RESOLVED header with the founder's rationale)
 blocked(escalated) → (POST /resolve-escalation reject)  → failed (cascade-fails the parent if any)
-blocked(blocked_on_job) → (all blocking jobs reach terminal state; resume predicate `_maybe_resume_blocked_task` fires and re-enqueues) → pending (re-enqueued; run_step CAS admits exactly one on pickup → in_progress)
+blocked(blocked_on_job) → (all blocking jobs reach terminal state; _maybe_resume_blocked_task enqueues while the row stays blocked) → in_progress (run_step CAS admits exactly one on pickup, clearing block_kind)
 blocked(escalated|delegated) → (revisit / thread-dispatch names it in lineage) → resolved_superseded (terminal; block_kind cleared, audit cites the continuation root task_id; NO re-enqueue. The delegated close is gated on all children being terminal and never cascade-SIGTERMs live siblings)
 blocked(ESCALATED) → (POST /resolve-escalation approve on exhaustion escalation) → pending (re-enqueued; parent carries the exhaustion context + failure reason from the failed subtask — manager can re-ground and re-delegate)
 ```
