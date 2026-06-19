@@ -774,12 +774,12 @@ to **§A**.
 
 - **Purpose.** The in-app configuration surface.
 - **v1 scope** (unchanged): dedicated **page** with sticky left sub-nav (`Assistant ·
-  System · Organization · Agents · Executors · Billing`) + field panel + sticky save
+  System · Organization · Agents · Executors · Usage`) + field panel + sticky save
   bar; real bookmarkable **`/settings` route**; **Org section editable** (already
   shipped #102) — **real saves (Q7)**; **per-field live-vs-restart labeling**
   matching actual daemon behavior (P1); **agent-name chips with autocomplete**;
   System Assistant config (status, Init/Repair, "Open terminal") integrating §4.10.
-- **Deferred.** Agents+Settings unification (non-blocking); Billing stays
+- **Deferred.** Agents+Settings unification (non-blocking); Usage stays
   tokens-only until the cost meter is ruled in (D1).
 
 **INTERACTION SPEC.**
