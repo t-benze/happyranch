@@ -186,36 +186,6 @@ async def _pump_assistant_output(
         session.unsubscribe(queue)
 
 
-async def _pump_assistant_output_structured(
-    websocket: WebSocket,
-    session: AssistantPtySession,
-    queue: asyncio.Queue[str | None],
-) -> None:
-    """Pump PTY output to WS as structured JSON frames.
-
-    Each chunk of PTY output is wrapped in ``{"type":"output","text":"..."}``
-    so the structured chat dock can render it as a turn. The session-close
-    sentinel also sends a ``{"type":"status","code":"session_closed"}`` frame.
-    """
-    try:
-        while True:
-            text = await queue.get()
-            if text is None:
-                frame = _json.dumps(
-                    {"type": "status", "code": "session_closed"}
-                )
-                await _safe_websocket_send_text(websocket, frame)
-                await _safe_websocket_close(
-                    websocket,
-                    code=status.WS_1000_NORMAL_CLOSURE,
-                )
-                return
-            frame = _json.dumps({"type": "output", "text": text})
-            if not await _safe_websocket_send_text(websocket, frame):
-                return
-    finally:
-        session.unsubscribe(queue)
-
 
 def _try_parse_handshake(text: str) -> dict[str, Any] | None:
     """Parse a JSON handshake frame; return None if it isn't one."""

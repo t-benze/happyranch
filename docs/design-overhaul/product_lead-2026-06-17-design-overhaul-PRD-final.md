@@ -162,7 +162,18 @@ must implement; where the prototype already implements it, it is marked
     doesn't drop it. AC: `⌘K` opens from every surface and the dock is the same
     instance.
 - **`ran: <cmd>` transparency cards are REAL** (the dock executes real commands;
-  A3). Action chips are **gated** — see §4.10.
+  A3).
+- **Hybrid dock (OPTION 3, founder-ruled).** The dock uses a JSON-chat handshake
+  over the EXISTING `/api/v1/assistant/session` WebSocket — bearer-subprotocol auth
+  and the PTY attach contract are **frozen and byte-identical**. The server output
+  pump starts in raw-text mode immediately (legacy xterm path unchanged); the
+  structured frontend tolerates/ignores any raw PTY frame received before its
+  handshake ack, so no user ever sees a raw frame. **Zero server-side change** to
+  connect/upgrade/endpoint/auth/handshake/PTY-attach.
+- **Action chips are reference-existing-ID deep-links only** — each chip
+  (`"Open THR-021"`, `"Show diff PR #121"`, `"Approve JOB-083"`) navigates to
+  the object's existing approval or detail surface. No propose-new-action chip;
+  no self-approve/self-execute path (TASK-414 guardrail). See §4.10.
 
 #### 2.5.3 Theme — [prototype-verified]
 - Toggle in the top bar swaps light⇄dark, writes `localStorage['hr-theme']`,
@@ -701,28 +712,36 @@ to **§A**.
 
 ---
 
-### 4.10 Assistant (dock, not a page) — RENDER-ONLY + gated chips
+### 4.10 Assistant (dock, not a page) — reference-existing-ID deep-links only
 
 - **Purpose.** A **conversational operator** that both answers and acts on the
   runtime — "an assistant that runs your runtime, not a terminal."
 - **PRODUCT INTENT (RULED — A3)** unchanged: omnipresent **dock** (⌘K / pill; Esc
   closes; persists across nav); inline **`ran: <cmd>` transparency cards** (real);
-  **one-click action chips** offered ONLY for already-gated ops, **every chip routes
-  through the EXISTING founder/job gate — a chip NEVER bypasses merge / protocol-edit
-  approval**; the current `/assistant` xterm becomes the dock header's **"Open full
+  the current `/assistant` xterm becomes the dock header's **"Open full
   session"** escape hatch.
+- **IMPLEMENTATION (OPTION 3, founder-ruled):** hybrid dock with zero
+  frozen-contract change. The server output pump starts raw immediately (legacy
+  xterm path byte-identical); the structured frontend tolerates/buffers any raw
+  PTY frame received before its handshake ack, so the user never sees a raw
+  frame. No change to connect/upgrade/endpoint/auth/bearer-subprotocol/handshake/
+  PTY-attach. **Action chips are reference-existing-ID deep-links only** — each
+  chip navigates to the object's existing approval or detail surface. No
+  propose-new-action chip; no self-approve/self-execute path (TASK-414 guardrail).
+  See `docs/agent-guides/features-and-invariants.md` (System assistant section)
+  for the definitive invariant.
 - **BUILD APPROACH** (xterm-on-top vs separate React component) is **EM's
   feasibility spike TASK-414's call** — this PRD specifies product intent only.
 
 **INTERACTION SPEC.**
 - **Interaction logic.** **[prototype-verified core]** (see §2.5.2 for the canonical
   open/close/focus spec). Composer accepts text + `/` to run a command; `Enter`
-  sends. **Action chips** ("Approve JOB-083", "Open THR-021", "Show the diff"):
-  - A **navigation chip** ("Open THR-021") deep-links.
-  - A **gated-op chip** ("Approve JOB-083") **surfaces the standard approval**
-    (job/PR/protocol gate) — it must **not** auto-execute the privileged op (P1/
-    safety). *(Prototype chips are presentational stubs; the gating is a build
-    requirement, not yet wired.)*
+  sends. **Action chips** ("Approve JOB-083", "Open THR-021", "Show the diff")
+  are **reference-existing-ID deep-links only** — each chip navigates to the
+  object's existing approval or detail surface (e.g. "Open THR-021" opens the
+  thread detail page, "Approve JOB-083" opens the job review gate). No
+  propose-new-action chip; no self-approve/self-execute path (TASK-414
+  guardrail, consistent with §1.2).
   - **`ran:` cards** show the verbatim command + churn/cache/model where relevant —
     real, because the dock executes real commands.
 - **States + transitions.** Closed (default, `pointer-events:none`) ⇄ Open (focus
@@ -731,13 +750,11 @@ to **§A**.
   **Empty** (fresh dock) shows a calm prompt, not fake history.
 - **Keyboard/gesture.** `⌘K` toggle, `Esc` close (**[prototype-verified]**),
   `Enter` send, `/` command mode. **Build must add focus-trap + focus-restore**
-  (§2.5.2). **EM-validated B.5: DAEMON-BACKED, NO new privileged path.** A gated-op
-  chip routes to the **existing** job-approval gate — it submits a
-  `review_required=True` job (`POST /jobs/submit` → inserts PENDING, returns without
-  running; founder approves via run / rejects via reject). The chip carries *intent*;
-  the daemon's existing review gate is the enforcement point. The TASK-414 guardrail
-  holds: a gated chip MUST submit a `review_required` job and MUST NOT execute
-  directly. (Chips are net-new frontend on today's PTY-attach assistant.)
+  (§2.5.2). **EM-validated B.5: frontend-only deep-links, NO new privileged path.**
+  Action chips are reference-existing-ID deep-links only — each chip navigates to
+  the object's existing surface (no POST, no job submission, no executable payload).
+  The TASK-414 guardrail holds: the assistant NEVER self-approves or self-executes
+  a privileged op. (Chips are net-new frontend on today's PTY-attach assistant.)
 - **Edge/empty/error.** A chip whose underlying op is **not** already gated must not
   exist in v1 (→ §6 if ever proposed). "Open full session" reaches the retained
   xterm.
@@ -1035,7 +1052,7 @@ RESOLVED** (the finalised design conforms to the locked decision in each case);
 | **B.2** | Knowledge / Dreams (§4.5/4.8) | **"Edit first"** on a KB candidate | **DEFERRED for v1 (no new store, no new edit-then-accept route).** v1 ships **Accept / Dismiss** (status mutation on the existing `dream_kb_candidates` table) + **accept-then-edit-the-live-entry** via the **existing KB edit paths**. The edit-the-candidate-body-before-accepting route is post-v1 (§6 D10). Folded into §4.5/§4.8. |
 | **B.3** | Threads (§4.2) | **Unread→read** clears on open | **DEFERRED for v1 (no new read-state store).** No backed per-(founder, thread) read/unread state exists; v1 **omits persistent unread styling** rather than render it as if backed (P1). Persistent unread tracking is post-v1 (§6 D11). Folded into §4.2. |
 | **B.4** | Spend (§4.7) | **Window toggle** (24h/7d/30d) re-queries all cards | **DAEMON-BACKED (render/derive), no store.** `GET /tokens` `since` (ISO-8601) AND-composes across every aggregation; window = `since = now − window`, consistent across breakdowns. **Caveat:** no `model` group_by exists yet (`valid_groups` lacks `model`) — the **Model** pivot needs a new aggregation (DERIVE, no schema) or drop it. Folded into §4.7. |
-| **B.5** | Assistant (§4.10) | **Gated-op chip → existing approval gate** | **DAEMON-BACKED, NO new privileged path.** A gated chip submits a `review_required=True` job (`POST /jobs/submit` → PENDING; founder runs/rejects). TASK-414 guardrail upheld — a gated chip must use the job gate, never auto-execute. Folded into §4.10. |
+| **B.5** | Assistant (§4.10) | **Reference-existing-ID deep-link chips** | **FRONTEND-ONLY, NO new privileged path.** Each chip navigates to the object's existing approval or detail surface — no POST, no job submission, no executable payload. TASK-414 guardrail upheld — the assistant never self-approves or self-executes. Folded into §4.10. |
 | **B.6** | Settings/Agents (§4.4/4.11) | **`⌘S` save**, unsaved-changes guard, list keyboard nav, dock **focus-trap/restore** | **Frontend-only — clears.** No daemon dependency; touches no route (⌘S fires the existing Save route). Folded into §2.5.2 / §2.5.6 / §4.4. |
 
 > B.1/B.4/B.5 are DAEMON-BACKED; B.2/B.3 are DEFERRED (no new store); B.6 is
