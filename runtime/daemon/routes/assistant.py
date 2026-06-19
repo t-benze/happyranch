@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json as _json
 from pathlib import Path
 import secrets
 import shutil
@@ -185,6 +186,106 @@ async def _pump_assistant_output(
         session.unsubscribe(queue)
 
 
+async def _pump_assistant_output_structured(
+    websocket: WebSocket,
+    session: AssistantPtySession,
+    queue: asyncio.Queue[str | None],
+) -> None:
+    """Pump PTY output to WS as structured JSON frames.
+
+    Each chunk of PTY output is wrapped in ``{"type":"output","text":"..."}``
+    so the structured chat dock can render it as a turn. The session-close
+    sentinel also sends a ``{"type":"status","code":"session_closed"}`` frame.
+    """
+    try:
+        while True:
+            text = await queue.get()
+            if text is None:
+                frame = _json.dumps(
+                    {"type": "status", "code": "session_closed"}
+                )
+                await _safe_websocket_send_text(websocket, frame)
+                await _safe_websocket_close(
+                    websocket,
+                    code=status.WS_1000_NORMAL_CLOSURE,
+                )
+                return
+            frame = _json.dumps({"type": "output", "text": text})
+            if not await _safe_websocket_send_text(websocket, frame):
+                return
+    finally:
+        session.unsubscribe(queue)
+
+
+def _try_parse_handshake(text: str) -> dict[str, Any] | None:
+    """Parse a JSON handshake frame; return None if it isn't one."""
+    try:
+        obj = _json.loads(text)
+    except (_json.JSONDecodeError, ValueError):
+        return None
+    if isinstance(obj, dict) and obj.get("type") == "handshake":
+        return obj
+    return None
+
+
+async def _run_structured_session(
+    websocket: WebSocket,
+    session: AssistantPtySession,
+) -> None:
+    """Run the WS session in structured JSON mode.
+
+    Client sends JSON messages (``{"type":"chat","text":"..."}``); PTY output
+    is forwarded as ``{"type":"output","text":"..."}`` JSON frames.  Resize
+    control strings and raw text (legacy fallback) are still accepted.
+    """
+    queue = session.subscribe()
+    output_task = asyncio.create_task(
+        _pump_assistant_output_structured(websocket, session, queue)
+    )
+    try:
+        # Ack the handshake.
+        await websocket.send_text(
+            _json.dumps({"type": "status", "code": "ready"})
+        )
+        while True:
+            text = await websocket.receive_text()
+            # Resize controls still work in structured mode (frozen PTY contract).
+            resize = _parse_resize_control(text)
+            if resize is not None:
+                rows, cols = resize
+                await session.resize(rows=rows, cols=cols)
+                continue
+            # Try structured JSON input.
+            try:
+                msg = _json.loads(text)
+            except (_json.JSONDecodeError, ValueError):
+                # Fallback: forward as raw text (backward compat).
+                await session.write_text(text)
+                continue
+            if isinstance(msg, dict):
+                msg_type = msg.get("type")
+                if msg_type == "chat":
+                    chat_text = msg.get("text", "")
+                    if chat_text:
+                        await session.write_text(chat_text + "\n")
+                elif msg_type == "resize":
+                    rows = msg.get("rows", 0)
+                    cols = msg.get("cols", 0)
+                    if rows > 0 and cols > 0:
+                        await session.resize(rows=rows, cols=cols)
+                else:
+                    # Unknown structured type — forward raw.
+                    await session.write_text(text)
+            else:
+                await session.write_text(text)
+    except WebSocketDisconnect:
+        return
+    finally:
+        output_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await output_task
+
+
 @router.get("/assistant/status", dependencies=[require_token()])
 async def get_assistant_status(request: Request) -> dict[str, Any]:
     root = _runtime_root(request)
@@ -349,9 +450,35 @@ async def attach_assistant_session(websocket: WebSocket) -> None:
         await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
         return
 
+    # Start PTY output pump immediately as a background task so that any
+    # early output (e.g. CLI greeting) reaches the client even while the
+    # server awaits the first client message for handshake detection.
     queue = session.subscribe()
     output_task = asyncio.create_task(_pump_assistant_output(websocket, session, queue))
+
+    # Negotiate mode: read the first client message to detect a JSON handshake.
+    # If it matches, cancel the legacy pump and enter structured (chat dock)
+    # mode; otherwise continue in legacy PTY-tunnel mode (xterm terminal).
     try:
+        first_text = await websocket.receive_text()
+    except WebSocketDisconnect:
+        return
+    handshake = _try_parse_handshake(first_text)
+    if handshake is not None and handshake.get("protocol") == "json-chat":
+        output_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await output_task
+        await _run_structured_session(websocket, session)
+        return
+
+    # Legacy PTY-tunnel mode: replay first_text as normal input.
+    try:
+        resize = _parse_resize_control(first_text)
+        if resize is not None:
+            rows, cols = resize
+            await session.resize(rows=rows, cols=cols)
+        else:
+            await session.write_text(first_text)
         while True:
             text = await websocket.receive_text()
             resize = _parse_resize_control(text)

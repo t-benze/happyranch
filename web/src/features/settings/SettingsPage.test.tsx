@@ -111,8 +111,11 @@ describe('SettingsPage — sub-nav and routing', () => {
       expect(screen.getByText('System Assistant')).toBeInTheDocument(),
     );
 
+    // The AssistantDockHost (global ⌘K dock) is now mounted in AppShell;
+    // wait for any async side-effects to settle before finding sub-nav.
     const user = userEvent.setup();
-    await user.click(screen.getByText('System'));
+    const content = await screen.findByTestId('settings-content');
+    await user.click(within(content).getByText('System'));
 
     // System section should show daemon-wide settings notice
     await waitFor(() =>

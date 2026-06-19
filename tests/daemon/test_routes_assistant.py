@@ -638,6 +638,157 @@ def test_assistant_repair_requires_config(client: TestClient) -> None:
     assert response.json()["detail"]["code"] == "assistant_not_configured"
 
 
+def test_assistant_websocket_structured_mode_handshake_and_output(
+    client: TestClient,
+    runtime,
+) -> None:
+    """Structured JSON-chat mode: client sends a handshake, receives
+    structured {"type":"output","text":"..."} frames for PTY output."""
+    fake_cli = runtime.root / "fake-assistant"
+    fake_cli.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys, time\n"
+        "print('assistant ready', flush=True)\n"
+        "for line in sys.stdin:\n"
+        "    print('echo: ' + line.strip(), flush=True)\n"
+    )
+    fake_cli.chmod(0o755)
+
+    response = client.post(
+        "/api/v1/assistant/register",
+        json={
+            "executor": "codex",
+            "command": str(fake_cli),
+            "argv": [str(fake_cli)],
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "configured"
+
+    token = paths_mod.read_token()
+    try:
+        with client.websocket_connect(
+            "/api/v1/assistant/session",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as websocket:
+            # Send JSON handshake to negotiate structured mode.
+            import json
+
+            websocket.send_text(
+                json.dumps(
+                    {"type": "handshake", "protocol": "json-chat", "version": 1}
+                )
+            )
+
+            # First frame: ack.
+            ack = json.loads(websocket.receive_text())
+            assert ack["type"] == "status"
+            assert ack["code"] == "ready"
+
+            # Second frame: structured PTY output.
+            output_frame = json.loads(websocket.receive_text())
+            assert output_frame["type"] == "output"
+            assert "assistant ready" in output_frame["text"]
+
+            # Send structured chat input.
+            websocket.send_text(
+                json.dumps({"type": "chat", "text": "hello structured"})
+            )
+
+            # Drain frames until we see the echo.
+            seen = []
+            for _ in range(10):
+                frame_text = websocket.receive_text()
+                frame = json.loads(frame_text)
+                seen.append(frame)
+                if (
+                    frame.get("type") == "output"
+                    and "echo: hello structured" in frame.get("text", "")
+                ):
+                    break
+            else:
+                raise AssertionError(
+                    f"'{'echo: hello structured'!r}' not in WS frames: {seen!r}"
+                )
+    finally:
+        asyncio.run(client.app.state.daemon.assistant_sessions.close_all())
+
+
+def test_assistant_websocket_structured_mode_rejects_bad_token(
+    client: TestClient,
+    runtime,
+) -> None:
+    """Structured mode auth rejection: bad subprotocol token → close 1008."""
+    paths = system_assistant_paths(runtime.root)
+    paths.root.mkdir(parents=True)
+    paths.workspace.mkdir(parents=True)
+    (paths.workspace / "agent.yaml").write_text("name: system_assistant\n")
+    (paths.workspace / "AGENTS.md").write_text("# Assistant\n")
+    (paths.learnings_dir).mkdir(parents=True)
+    (paths.learnings_dir / "_index.md").write_text("# Learnings\n")
+    save_assistant_config(
+        runtime.root,
+        AssistantConfig(
+            selected_executor="codex",
+            selected_command="/should/not/start",
+            selected_argv=["/should/not/start"],
+            workspace_path=str(paths.workspace),
+        ),
+    )
+    browser = TestClient(client.app)
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with browser.websocket_connect(
+            "/api/v1/assistant/session",
+            subprotocols=["happyranch.bearer.bad-token"],
+        ):
+            pass
+    assert exc_info.value.code == 1008
+
+
+def test_assistant_websocket_legacy_still_works_after_structured_added(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """Backward compat: legacy xterm clients (no handshake) still work."""
+    fake_cli = tmp_path / "fake-assistant"
+    fake_cli.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "print('assistant ready', flush=True)\n"
+        "for line in sys.stdin:\n"
+        "    print('echo: ' + line.strip(), flush=True)\n"
+    )
+    fake_cli.chmod(0o755)
+
+    response = client.post(
+        "/api/v1/assistant/register",
+        json={
+            "executor": "codex",
+            "command": str(fake_cli),
+            "argv": [str(fake_cli)],
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "configured"
+
+    token = paths_mod.read_token()
+    try:
+        with client.websocket_connect(
+            "/api/v1/assistant/session",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as websocket:
+            # Backward compat: receive PTY greeting first (legacy mode sends
+            # output before waiting for client input).
+            greeting = websocket.receive_text()
+            assert greeting.strip() == "assistant ready"
+
+            # Send input to confirm bidirectional PTY-tunnel works.
+            websocket.send_text("hello legacy\n")
+            _receive_until(websocket, "echo: hello legacy")
+    finally:
+        asyncio.run(client.app.state.daemon.assistant_sessions.close_all())
+
+
 @pytest.mark.parametrize(
     ("method", "path", "json"),
     [
