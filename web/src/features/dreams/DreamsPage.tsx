@@ -13,30 +13,12 @@ import { Link, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useDreamsList } from '@/hooks/dreams';
 import { Button } from '@/design-system/primitives/Button';
+import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { cn } from '@/lib/utils';
 import { DreamDetailPane } from './DreamDetailPane';
 import { DREAM_STRINGS } from './strings';
 import type { DreamRecord } from '@/hooks/dreams';
-
-/* ------------------------------------------------------------------ */
-/*  Dream marker — crescent moon SVG badge                             */
-/* ------------------------------------------------------------------ */
-
-function CrescentMoonBadge({ className }: { className?: string }): JSX.Element {
-  return (
-    <svg
-      className={cn('text-accent inline-block shrink-0', className)}
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="currentColor"
-      aria-hidden="true"
-    >
-      <path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a6.4 6.4 0 0 1-4.54 1.86c-3.53 0-6.4-2.87-6.4-6.4 0-1.62.6-3.1 1.6-4.24A9 9 0 0 0 12 3Z" />
-    </svg>
-  );
-}
 
 /* ------------------------------------------------------------------ */
 /*  Status badge                                                       */

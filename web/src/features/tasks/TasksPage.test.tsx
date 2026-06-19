@@ -218,6 +218,127 @@ describe('TaskDetailPane — jobs cross-link', () => {
   });
 });
 
+describe('TaskDetailPane — BlockedOnInfo job links', () => {
+  const TASK_BLOCKED_ON_JOBS = {
+    task_id: 'TASK-0200',
+    team: 'engineering',
+    brief: 'Task blocked on two jobs',
+    status: 'blocked',
+    block_kind: null,
+    parent_task_id: null,
+    revisit_of_task_id: null,
+    assigned_agent: 'dev_agent',
+    created_at: '2026-05-18T10:00:00Z',
+    updated_at: '2026-05-18T10:06:12Z',
+    closed_at: null,
+    cancelled_at: null,
+    session_timeout_seconds: null,
+    severity_rollup: 'blocked',
+  };
+
+  const BLOCKED_ON_JOBS = [
+    { job_id: 'JOB-0050', status: 'running' },
+    { job_id: 'JOB-0051', status: 'failed' },
+  ];
+
+  function stubHandlers() {
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [TASK_BLOCKED_ON_JOBS] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK_BLOCKED_ON_JOBS.task_id}`, () =>
+        HttpResponse.json({
+          task: TASK_BLOCKED_ON_JOBS,
+          results: [],
+          audit_log: [],
+          revisit_chain: [TASK_BLOCKED_ON_JOBS.task_id],
+          direct_revisits: [],
+          predecessor_prior_status: null,
+          blocked_on_jobs: BLOCKED_ON_JOBS,
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK_BLOCKED_ON_JOBS.task_id}/recall`, () =>
+        HttpResponse.json({
+          task_id: TASK_BLOCKED_ON_JOBS.task_id,
+          assigned_agent: null,
+          brief: TASK_BLOCKED_ON_JOBS.brief,
+          status: TASK_BLOCKED_ON_JOBS.status,
+          output_summary: null,
+          children: [],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
+        HttpResponse.json({ jobs: [] }),
+      ),
+    );
+  }
+
+  test('renders blocked-on job IDs as navigable links', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubHandlers();
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK_BLOCKED_ON_JOBS.task_id}`,
+    });
+    await waitFor(() =>
+      expect(screen.getByText(/Waiting on jobs/i)).toBeInTheDocument(),
+    );
+    const link50 = screen.getByRole('link', { name: 'JOB-0050' });
+    expect(link50).toBeInTheDocument();
+    expect(link50).toHaveAttribute('href', `/orgs/${SLUG}/jobs/JOB-0050`);
+    const link51 = screen.getByRole('link', { name: 'JOB-0051' });
+    expect(link51).toBeInTheDocument();
+    expect(link51).toHaveAttribute('href', `/orgs/${SLUG}/jobs/JOB-0051`);
+  });
+
+  test('renders blocked-on single job with singular label', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [TASK_BLOCKED_ON_JOBS] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK_BLOCKED_ON_JOBS.task_id}`, () =>
+        HttpResponse.json({
+          task: TASK_BLOCKED_ON_JOBS,
+          results: [],
+          audit_log: [],
+          revisit_chain: [TASK_BLOCKED_ON_JOBS.task_id],
+          direct_revisits: [],
+          predecessor_prior_status: null,
+          blocked_on_jobs: [{ job_id: 'JOB-0099', status: 'running' }],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK_BLOCKED_ON_JOBS.task_id}/recall`, () =>
+        HttpResponse.json({
+          task_id: TASK_BLOCKED_ON_JOBS.task_id,
+          assigned_agent: null,
+          brief: TASK_BLOCKED_ON_JOBS.task_id,
+          status: TASK_BLOCKED_ON_JOBS.status,
+          output_summary: null,
+          children: [],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () =>
+        HttpResponse.json({ jobs: [] }),
+      ),
+    );
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK_BLOCKED_ON_JOBS.task_id}`,
+    });
+    await waitFor(() =>
+      expect(screen.getByText(/Waiting on job:/i)).toBeInTheDocument(),
+    );
+    const link = screen.getByRole('link', { name: 'JOB-0099' });
+    expect(link).toBeInTheDocument();
+    expect(link).toHaveAttribute('href', `/orgs/${SLUG}/jobs/JOB-0099`);
+  });
+});
+
 describe('TaskDetailPane — workflow chain strip', () => {
   const ACTIVE_CHAIN: ActiveChainResponse = {
     step_index: 1,

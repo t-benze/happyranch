@@ -1,6 +1,9 @@
 import { useCallback, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { useTasksRoots, useTasksRoutes } from '@/hooks/tasks';
+import { Button } from '@/design-system/primitives/Button';
+import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { TaskDetailPane } from './TaskDetailPane';
 import type { TaskRecord } from '@/lib/api/types';
 
@@ -183,11 +186,13 @@ function GroupedList({
   selectedIdx,
   onSelect,
   onOpen,
+  slug,
 }: {
   groups: Record<string, TaskRecord[]>;
   selectedIdx: number;
   onSelect: (idx: number) => void;
   onOpen: (taskId: string) => void;
+  slug: string;
 }): JSX.Element {
   const flat: { task: TaskRecord; groupKey: string }[] = [];
   for (const key of getOrderedGroupKeys(groups)) {
@@ -246,7 +251,7 @@ function GroupedList({
           {item.task.brief.slice(0, 120)}
         </span>
         {/* Lineage inline */}
-        <LineageInline task={item.task} />
+        <LineageInline task={item.task} slug={slug} />
         {/* Team / Agent */}
         <span className="text-fg-muted hidden shrink-0 text-xs sm:inline">
           {item.task.team ?? ''}
@@ -268,7 +273,7 @@ function GroupedList({
 // Bidirectional lineage inline
 // ---------------------------------------------------------------------------
 
-function LineageInline({ task }: { task: TaskRecord }): JSX.Element | null {
+function LineageInline({ task, slug }: { task: TaskRecord; slug: string }): JSX.Element | null {
   const revisitOf = task.revisit_of_task_id;
   // Direct revisits come from the roots endpoint if available
   const directRevisits = (task as Record<string, unknown>).direct_revisits as string[] | undefined;
@@ -279,13 +284,19 @@ function LineageInline({ task }: { task: TaskRecord }): JSX.Element | null {
     <span className="text-fg-muted shrink-0 text-xs">
       {revisitOf && (
         <span title={`Supersedes ${revisitOf}`}>
-          ↳ {revisitOf}
+          ↳{' '}
+          <Link to={`/orgs/${slug}/tasks/${revisitOf}`} className="text-accent hover:underline">
+            {revisitOf}
+          </Link>
         </span>
       )}
       {revisitOf && directRevisits && directRevisits.length > 0 && ' · '}
       {directRevisits && directRevisits.length > 0 && (
         <span title={`Revisited by ${directRevisits.join(', ')}`}>
-          → {directRevisits[0]}
+          →{' '}
+          <Link to={`/orgs/${slug}/tasks/${directRevisits[0]}`} className="text-accent hover:underline">
+            {directRevisits[0]}
+          </Link>
           {directRevisits.length > 1 && ` +${directRevisits.length - 1}`}
         </span>
       )}
@@ -298,15 +309,16 @@ function LineageInline({ task }: { task: TaskRecord }): JSX.Element | null {
 // ---------------------------------------------------------------------------
 
 export function TasksPage(): JSX.Element {
-  const { task_id: openTaskId } = useParams<{ task_id: string }>();
+  const { task_id: openTaskId, slug } = useParams<{ task_id: string; slug: string }>();
   const navigate = useNavigate();
   const routes = useTasksRoutes();
+  const queryClient = useQueryClient();
 
   const [groupBy, setGroupBy] = useState<GroupByMode>('status');
   const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined);
   const [selectedIdx, setSelectedIdx] = useState(-1);
 
-  const { data, isLoading, isError, error } = useTasksRoots(
+  const { data, isLoading, isError } = useTasksRoots(
     statusFilter ? { status: statusFilter } : undefined,
   );
 
@@ -418,26 +430,42 @@ export function TasksPage(): JSX.Element {
         {isLoading ? (
           <SkeletonRows count={6} />
         ) : isError ? (
-          <div className="flex flex-col items-center gap-3 py-12 text-center">
-            <p className="text-fg-muted text-sm">
-              Couldn&apos;t load tasks — {(error as Error)?.message || 'unknown error'}
+          <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
+            <p className="text-tier-red text-sm">
+              Couldn&apos;t load tasks.
             </p>
-            <p className="text-fg-muted text-xs">
-              Check your connection and reload the page to try again.
-            </p>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                queryClient.invalidateQueries({
+                  queryKey: ['tasks-roots', slug],
+                })
+              }
+            >
+              Retry
+            </Button>
           </div>
         ) : allRoots.length === 0 ? (
-          <p className="text-fg-muted py-12 text-center text-sm">
-            {statusFilter
-              ? `Nothing ${STATUS_GROUP_LABELS[statusFilter]?.toLowerCase() ?? statusFilter}`
-              : 'No tasks yet'}
-          </p>
+          <EmptyState
+            title={
+              statusFilter
+                ? `Nothing ${STATUS_GROUP_LABELS[statusFilter]?.toLowerCase() ?? statusFilter}`
+                : 'No tasks yet'
+            }
+            body={
+              statusFilter
+                ? 'No tasks match the current filter.'
+                : 'Tasks dispatched to agents will appear here.'
+            }
+          />
         ) : (
           <GroupedList
             groups={groups}
             selectedIdx={selectedIdx}
             onSelect={setSelectedIdx}
             onOpen={openTask}
+            slug={slug ?? ''}
           />
         )}
       </main>

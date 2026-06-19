@@ -360,9 +360,9 @@ describe('DreamsPage', () => {
   it('renders crescent moon badge SVG on dream cards', () => {
     mockDreamsList.mockReturnValue(loaded({ dreams: [QUIET_DREAM] }));
     renderPage(<DreamsPage />);
-    // The SVG is rendered as aria-hidden
-    const svgs = document.querySelectorAll('svg[aria-hidden="true"]');
-    expect(svgs.length).toBeGreaterThan(0);
+    // The shared CrescentMoonBadge renders role="img" with aria-label
+    const badge = document.querySelector('svg[aria-label="Dream-originated"]');
+    expect(badge).not.toBeNull();
   });
 
   it('renders italic quote with accent left-border for summary', () => {

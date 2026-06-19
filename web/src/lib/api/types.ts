@@ -437,6 +437,9 @@ export interface DashboardActivityRow {
   event_kind: string;
   task_id: string | null;
   verdict: ActivityVerdict | null;
+  /** DERIVE enrichment (A4): the dream that composed the thread
+   *  referenced by task_id, when task_id is THR-*. Null otherwise. */
+  _thread_dream_id?: string | null;
 }
 
 export type UpdateMarker = 'add' | 'warn' | 'info';
