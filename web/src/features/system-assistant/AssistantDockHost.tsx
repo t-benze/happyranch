@@ -43,13 +43,15 @@ export function useAssistantDockHotkey(
       const isCmdK =
         (ev.metaKey || ev.ctrlKey) && (ev.key === 'k' || ev.key === 'K');
       if (!isCmdK) return;
-      if (isInEditable(ev.target)) return;
+      // When the dock is open, always allow Cmd-K to close it,
+      // even when focus is inside the composer (an editable element).
+      if (!open && isInEditable(ev.target)) return;
       ev.preventDefault();
       onToggle();
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [onToggle]);
+  }, [onToggle, open]);
 
   // Esc to close
   useEffect(() => {
@@ -149,20 +151,22 @@ interface UseAssistantChatWs {
 function useAssistantChatWs(
   open: boolean,
   status: AssistantStatus | undefined,
+  statusLoading: boolean,
 ): UseAssistantChatWs {
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const openSession = useAssistantSessionOpener();
-  const statusRef = useRef(status);
-
-  statusRef.current = status;
 
   // Open WS when dock opens and assistant is configured.
   useEffect(() => {
     if (!open) return;
-    if (statusRef.current?.state !== 'configured') {
+    // Don't decide until the status query has actually resolved.
+    // On cold load Cmd-K before the query completes, status is still
+    // undefined — wait rather than emitting a permanent error.
+    if (statusLoading) return;
+    if (status?.state !== 'configured') {
       setError('Assistant not configured. Set it up in Settings.');
       return;
     }
@@ -253,7 +257,7 @@ function useAssistantChatWs(
         wsRef.current = null;
       }
     };
-  }, [open, openSession]);
+  }, [open, openSession, status, statusLoading]);
 
   const sendMessage = useCallback(
     (text: string) => {
@@ -298,7 +302,7 @@ export function AssistantDockHost(): JSX.Element {
   const status = statusQuery.data;
 
   const { messages, sendMessage, connecting, error: wsError } =
-    useAssistantChatWs(open, status);
+    useAssistantChatWs(open, status, statusQuery.isLoading);
 
   const toggle = useCallback(() => setOpen((o) => !o), []);
   useAssistantDockHotkey(toggle, open);

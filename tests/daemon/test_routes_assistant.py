@@ -777,14 +777,100 @@ def test_assistant_websocket_legacy_still_works_after_structured_added(
             "/api/v1/assistant/session",
             headers={"Authorization": f"Bearer {token}"},
         ) as websocket:
-            # Backward compat: receive PTY greeting first (legacy mode sends
-            # output before waiting for client input).
+            # Backward compat: the server buffers output until the first
+            # client message to detect structured handshakes.  Real xterm
+            # clients send a resize control on connect; send one here so
+            # the server flushes buffered output as raw text.
+            websocket.send_text(
+                "__HAPPYRANCH_ASSISTANT_RESIZE__ 24 80"
+            )
             greeting = websocket.receive_text()
             assert greeting.strip() == "assistant ready"
 
             # Send input to confirm bidirectional PTY-tunnel works.
             websocket.send_text("hello legacy\n")
             _receive_until(websocket, "echo: hello legacy")
+    finally:
+        asyncio.run(client.app.state.daemon.assistant_sessions.close_all())
+
+
+def test_assistant_websocket_structured_mode_no_raw_frames_before_handshake(
+    client: TestClient,
+    runtime,
+) -> None:
+    """Structured clients must NEVER receive a raw-text frame before the
+    handshake ack and structured output frames.
+
+    The fake CLI prints 'assistant ready' immediately when the session
+    starts.  If the server pumps PTY output before reading the client's
+    handshake, the greeting would leak as a raw-text frame.  This test
+    verifies that EVERY frame arriving before the structured output is
+    valid JSON — no raw-text leak.
+    """
+    fake_cli = runtime.root / "fake-assistant"
+    fake_cli.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys, time\n"
+        "# Emit immediately so the output is ready before the handshake arrives.\n"
+        "print('assistant ready', flush=True)\n"
+        "print('another greeting', flush=True)\n"
+        "for line in sys.stdin:\n"
+        "    print('echo: ' + line.strip(), flush=True)\n"
+    )
+    fake_cli.chmod(0o755)
+
+    response = client.post(
+        "/api/v1/assistant/register",
+        json={
+            "executor": "codex",
+            "command": str(fake_cli),
+            "argv": [str(fake_cli)],
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "configured"
+
+    token = paths_mod.read_token()
+    try:
+        with client.websocket_connect(
+            "/api/v1/assistant/session",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as websocket:
+            import json
+
+            # Send the JSON handshake.
+            websocket.send_text(
+                json.dumps(
+                    {"type": "handshake", "protocol": "json-chat", "version": 1}
+                )
+            )
+
+            # Collect all frames until we've seen the structured greeting.
+            seen = []
+            found_greeting = False
+            for _ in range(20):
+                raw = websocket.receive_text()
+                try:
+                    frame = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    raise AssertionError(
+                        f"Raw-text frame leaked before handshake was complete: {raw!r}"
+                    ) from None
+                seen.append(frame)
+                if (
+                    frame.get("type") == "output"
+                    and "assistant ready" in frame.get("text", "")
+                ):
+                    found_greeting = True
+                    break
+
+            assert found_greeting, (
+                f"Never received structured output with 'assistant ready'; "
+                f"frames so far: {seen!r}"
+            )
+
+            # Every frame we received must be valid JSON — the assertion
+            # above already enforces this in the loop.
     finally:
         asyncio.run(client.app.state.daemon.assistant_sessions.close_all())
 

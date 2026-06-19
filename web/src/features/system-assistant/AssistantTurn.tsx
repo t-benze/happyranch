@@ -40,9 +40,10 @@ export function AssistantTurn({
       ranMatches.push(match[1].trim());
     }
     // If ran: lines are present, strip them for the main display
-    // and show them as separate cards.
+    // and show them as separate cards.  Use a global regex so ALL
+    // verbatim ran: lines are removed, not just the first one.
     if (ranMatches.length > 0) {
-      displayText = message.text.replace(RAN_LINE_RE, '').trim();
+      displayText = message.text.replace(/^ran:\s+.+$/gim, '').trim();
     }
   }
 

@@ -232,21 +232,18 @@ async def _run_structured_session(
     websocket: WebSocket,
     session: AssistantPtySession,
 ) -> None:
-    """Run the WS session in structured JSON mode.
+    """Run the WS session chat I/O loop in structured JSON mode.
 
-    Client sends JSON messages (``{"type":"chat","text":"..."}``); PTY output
-    is forwarded as ``{"type":"output","text":"..."}`` JSON frames.  Resize
-    control strings and raw text (legacy fallback) are still accepted.
+    The output pump is already running (managed by the caller).  This function
+    only handles the handshake ack and the structured ``{"type":"chat",…}``
+    input loop.  Resize control strings and raw text (legacy fallback) are
+    still accepted.
     """
-    queue = session.subscribe()
-    output_task = asyncio.create_task(
-        _pump_assistant_output_structured(websocket, session, queue)
+    # Ack the handshake.
+    await websocket.send_text(
+        _json.dumps({"type": "status", "code": "ready"})
     )
     try:
-        # Ack the handshake.
-        await websocket.send_text(
-            _json.dumps({"type": "status", "code": "ready"})
-        )
         while True:
             text = await websocket.receive_text()
             # Resize controls still work in structured mode (frozen PTY contract).
@@ -280,10 +277,6 @@ async def _run_structured_session(
                 await session.write_text(text)
     except WebSocketDisconnect:
         return
-    finally:
-        output_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await output_task
 
 
 @router.get("/assistant/status", dependencies=[require_token()])
@@ -450,25 +443,79 @@ async def attach_assistant_session(websocket: WebSocket) -> None:
         await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
         return
 
-    # Start PTY output pump immediately as a background task so that any
-    # early output (e.g. CLI greeting) reaches the client even while the
-    # server awaits the first client message for handshake detection.
+    # Buffer early PTY output while we await the first client message to
+    # detect a JSON handshake. This guarantees structured clients never
+    # receive a raw-text frame before the server classifies the handshake.
     queue = session.subscribe()
-    output_task = asyncio.create_task(_pump_assistant_output(websocket, session, queue))
+    output_buffer: list[str] = []
+    output_mode: str = "buffering"
+
+    async def _pump_with_buffering() -> None:
+        """Unified output pump: buffers in 'buffering' mode;
+        emits structured JSON frames in 'json-chat' mode;
+        emits raw text in 'raw' (legacy) mode."""
+        nonlocal output_mode
+        try:
+            while True:
+                text = await queue.get()
+                if text is None:
+                    if output_mode == "json-chat":
+                        await _safe_websocket_send_text(
+                            websocket,
+                            _json.dumps(
+                                {"type": "status", "code": "session_closed"}
+                            ),
+                        )
+                    await _safe_websocket_close(
+                        websocket, code=status.WS_1000_NORMAL_CLOSURE
+                    )
+                    return
+                if output_mode == "buffering":
+                    output_buffer.append(text)
+                elif output_mode == "json-chat":
+                    await _safe_websocket_send_text(
+                        websocket,
+                        _json.dumps({"type": "output", "text": text}),
+                    )
+                else:
+                    await _safe_websocket_send_text(websocket, text)
+        finally:
+            session.unsubscribe(queue)
+
+    output_task = asyncio.create_task(_pump_with_buffering())
 
     # Negotiate mode: read the first client message to detect a JSON handshake.
-    # If it matches, cancel the legacy pump and enter structured (chat dock)
-    # mode; otherwise continue in legacy PTY-tunnel mode (xterm terminal).
+    # If it matches, flush buffered output as structured frames and switch to
+    # structured mode; otherwise flush as raw text and continue in legacy
+    # PTY-tunnel mode (xterm terminal).
     try:
         first_text = await websocket.receive_text()
     except WebSocketDisconnect:
+        output_task.cancel()
         return
     handshake = _try_parse_handshake(first_text)
-    if handshake is not None and handshake.get("protocol") == "json-chat":
+    is_structured = handshake is not None and handshake.get("protocol") == "json-chat"
+
+    # Switch mode so the pump routes new output correctly, then flush any
+    # early output that accumulated before the handshake was received.
+    output_mode = "json-chat" if is_structured else "raw"
+    for buffered in output_buffer:
+        if is_structured:
+            await _safe_websocket_send_text(
+                websocket,
+                _json.dumps({"type": "output", "text": buffered}),
+            )
+        else:
+            await _safe_websocket_send_text(websocket, buffered)
+    output_buffer.clear()
+
+    if is_structured:
+        # Hand off to the structured chat I/O loop (ack + chat input).
+        # The output pump is already running.
+        await _run_structured_session(websocket, session)
         output_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await output_task
-        await _run_structured_session(websocket, session)
         return
 
     # Legacy PTY-tunnel mode: replay first_text as normal input.
