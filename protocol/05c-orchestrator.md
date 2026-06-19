@@ -155,11 +155,42 @@ There are four types of permission blocks, each handled differently:
 - **pending** — created; no agent subprocess started yet.
 - **in_progress** — an agent subprocess is running *right now* for this task.
 - **blocked** — suspended, awaiting an external event. Requires `block_kind`:
-  - `delegated` — waiting on one or more child tasks to terminate.
+  - `delegated` — waiting on one or more child subtasks to terminate.
   - `escalated` — waiting on the founder (via `happyranch resolve-escalation`).
 - **completed** — terminal, success.
 - **failed** — terminal, unsuccessful.
 - **resolved_superseded** — terminal. A `blocked(escalated|delegated)` task closed because a human-authorized continuation (founder `revisit`, or a founder/manager thread-dispatch) superseded it; the close cites the successor task and does **not** re-run the work.
+
+#### Failure-recovery contract (TASK-573, THR-028)
+
+When a subtask reaches a terminal state, the orchestrator evaluates the parent task
+for advancement. If any subtask FAILED (rather than COMPLETED), the parent is NOT
+cascade-failed. Instead:
+
+1. **Bounded manager-wake.** The parent task (a task with `task_type='task'`) is
+   re-enqueued for a fresh manager decision step. The failed subtask's reason
+   (`note` + completion report / error context) is available to the parent so it
+   can author an updated brief and re-delegate.
+
+2. **Round bound.** At most 2 re-spawn rounds per delegation slot. The round count
+   is derived from EXISTING database state (count of FAILED subtasks of this
+   parent) — no schema migration, no new/alter/overload column. Each child
+   failure that re-wakes the parent consumes one round.
+
+3. **Exhaustion escalation.** When the round bound is exhausted (> 2 FAILED
+   subtasks in this delegation slot), the parent transitions to
+   `blocked(ESCALATED)` via `db.try_escalate()`, carrying the last failure
+   reason. The parent does NOT cascade-fail — the founder can resolve the
+   escalation per existing routes.
+
+4. **Chain-leg failure.** When a workflow chain leg fails (subtask is FAILED, not
+   COMPLETED), the chain does NOT cascade-fail the parent. Instead, the
+   chain is cleared and the parent is handed back to its manager decision step
+   (subject to the same 2-round bound and exhaustion escalation).
+
+5. **Happy path unchanged.** All subtasks COMPLETED → parent advances to its
+   next decision step (existing behavior). REVISE-verdict auto-advance is
+   unchanged.
 
 #### Transitions
 
@@ -170,6 +201,7 @@ blocked(delegated) → (child terminates, sibling sweep clears) → in_progress 
 blocked(escalated) → (POST /resolve-escalation approve) → pending (re-enqueued; manager's next prompt carries an ESCALATION RESOLVED header with the founder's rationale)
 blocked(escalated) → (POST /resolve-escalation reject)  → failed (cascade-fails the parent if any)
 blocked(escalated|delegated) → (revisit / thread-dispatch names it in lineage) → resolved_superseded (terminal; block_kind cleared, audit cites the continuation root task_id; NO re-enqueue. The delegated close is gated on all children being terminal and never cascade-SIGTERMs live siblings)
+blocked(ESCALATED) → (POST /resolve-escalation approve on exhaustion escalation) → pending (re-enqueued; parent carries the exhaustion context + failure reason from the failed subtask — manager can re-ground and re-delegate)
 ```
 
 #### Execution model
@@ -202,3 +234,12 @@ The orchestrator runs a background check every 15 minutes for timed-out tasks. I
 Permissions aren't static. As the system matures:
 - Novel situations that the founder resolves become codified rules — the orchestrator updates the permission config and knowledge base so that situation is handled automatically next time
 - The founder can adjust any agent's permissions at any time via the dashboard
+
+### Reviewer/QA verdict discipline
+
+Review and QA leg tasks (code_reviewer, qa_engineer) MUST complete their leg
+with a verdict (APPROVE / REVISE / PASS / FAIL) and MUST NOT self-block. A
+completion report with `status=blocked` and an EMPTY `waiting_on_job_ids` is a
+MALFORMED report — the leg is treated as FAILED, and the parent wakes for a
+manager decision step (not cascade-failed). Self-blocked reviews that omit a
+verdict waste the delegation and burn a re-spawn round.
