@@ -62,6 +62,63 @@ Example:
 }
 ```
 
+## Task/Subtask Terminology
+
+The data model uses `task_type` `Literal['task','subtask']`:
+
+- **Task** (`task_type='task'`): the task owner — holds the decision-making
+  loop and produces `decision` blocks (`delegate`/`done`/`escalate`).
+- **Subtask** (`task_type='subtask'`): the delegated agent — executes a
+  bounded unit of work and reports a plain completion (no `decision` field).
+
+Prose in docstrings, comments, and prompt strings prefers "task owner" and
+"subtask agent" over the legacy "team manager" / "worker" language. The
+`task_type` enum values were already correct before TASK-573; the sweep only
+updated prose, not schema or role-identity strings.
+
+## Bounded Failure-Recovery (TASK-573)
+
+When a subtask fails, the parent task is re-enqueued for a bounded manager-wake
+decision step — NOT cascade-failed. This replaces the pre-TASK-573 behavior where
+any subtask FAILED unconditionally cascade-failed the parent without giving the
+task owner a chance to re-ground.
+
+Contract (founder-approved in THR-028):
+
+1. **Bounded wake.** On subtask failure, re-enqueue the parent for a fresh
+   decision step. The failed subtask's reason is available so the task owner can
+   author an updated brief.
+
+2. **Round bound.** At most 2 re-spawn rounds per delegation slot. The round
+   count is derived from EXISTING database state (count of FAILED subtask
+   siblings) — no schema migration.
+
+3. **Escalation on exhaustion.** When the bound is exhausted (> 2 FAILED
+   subtasks in this delegation slot), the parent transitions to
+   `blocked(ESCALATED)` via `try_escalate()`. The parent does NOT cascade-fail.
+
+4. **Chain-leg failure.** A failed workflow chain leg (subtask FAILED, not
+   COMPLETED) clears the active chain and hands the parent back to its
+   bounded-wake path (same 2-round bound + escalation).
+
+5. **Happy path unchanged.** All subtasks COMPLETED → parent enqueued for
+   next decision step. REVISE-verdict auto-advance in chains is unchanged.
+
+6. **Reviewer/QA verdict discipline.** A review/QA leg completes with an
+   APPROVE/REVISE/PASS/FAIL verdict and never self-blocks. A `status=blocked`
+   with empty `waiting_on_job_ids` is a malformed report; the leg is treated
+   as FAILED and wakes the parent for a decision step.
+
+Traps:
+
+- Round count = `len([s for s in siblings if s.status == FAILED])`;
+  threshold `_FAILURE_ROUND_BOUND = 2` (`>= 2` → escalate).
+- The bound escalation uses `try_escalate` (atomic CAS under Database RLock).
+- Chain-advance in `_enqueue_parent_if_waiting` handles FAILED subtasks:
+  failed chain legs clear the chain and fall through to bounded-wake.
+- Self-block (`status=blocked` + empty `waiting_on_job_ids`) is a malformed
+  report that fails the review/QA leg. Never self-block in a review/QA role.
+
 Inline traps:
 
 - Auto-advances do not consume orchestration steps. Declaring a chain costs one step; the final-leg wake costs one.
