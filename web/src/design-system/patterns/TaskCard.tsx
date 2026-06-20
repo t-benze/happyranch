@@ -36,28 +36,29 @@ export interface TaskCardProps {
   density?: Density;
 }
 
+/** Direction-A Pasture task card — ds.css .card (bg-surface, rounded-lg 18px, soft shadow). */
 export function TaskCard({ task, to, active, density = 'comfortable' }: TaskCardProps): JSX.Element {
-  const pad = density === 'compact' ? 'p-2' : 'p-3';
+  const pad = density === 'compact' ? 'px-3 py-2' : 'px-4 py-3';
   return (
     <Link
       to={to}
       className={cn(
-        'border-border-subtle bg-surface-raised block rounded-lg border',
+        'border-border-default bg-surface shadow-pasture-sm block rounded-lg border',
         pad,
-        active && 'ring-accent ring-2',
-        'hover:bg-surface-raised/80',
+        active && 'ring-accent-default ring-2',
+        'hover:bg-surface-hover transition-colors',
       )}
     >
       <div className="flex items-center gap-2 text-xs">
         <IdBadge kind="task" id={task.task_id} />
         <StatusBadge status={task.status} blockKind={task.block_kind} />
-        <span className="text-fg-muted">{task.team}</span>
+        <span className="text-text-muted font-mono text-xs tabular-nums">{task.team}</span>
         {task.assigned_agent && (
-          <span className="text-fg-muted">· {task.assigned_agent}</span>
+          <span className="text-text-muted">· {task.assigned_agent}</span>
         )}
-        <span className="text-fg-muted ml-auto">{relativeAge(task.updated_at)}</span>
+        <span className="text-text-muted ml-auto text-xs tabular-nums">{relativeAge(task.updated_at)}</span>
       </div>
-      <p className="text-fg mt-1 line-clamp-1 text-sm">{briefHeadline(task.brief)}</p>
+      <p className="text-text-primary mt-1 line-clamp-1 text-sm">{briefHeadline(task.brief)}</p>
     </Link>
   );
 }
