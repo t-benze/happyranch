@@ -337,26 +337,22 @@ def test_run_step_invalid_delegate_fails_task(runtime, db, monkeypatch):
 def test_run_step_session_failure_cascades_to_parent_no_retry(
     runtime, db, monkeypatch,
 ):
-    """In-tree no-retry policy: when a delegated child fails, the parent
-    must FAIL too with a cascading note — the EH does not get another
-    decision step in the original lineage. (Re-enqueueing the parent has
-    historically produced runs of 6+ failed retries: TASK-033..045.)
-
-    The auto-revisit that fires alongside the cascade is a SEPARATE,
-    independent root, not a re-enqueue of the parent — so this test only
-    asserts the in-tree cascade behavior. See
-    test_run_step_opaque_failure_spawns_auto_revisit for the new tree.
-    """
+    """TASK-573 bounded failure-recovery: when a delegated subtask fails,
+    the parent gets a bounded manager-wake decision step (enqueued),
+    NOT cascade-failed. The auto-revisit that fires is a SEPARATE,
+    independent root. See test_run_step_opaque_failure_spawns_auto_revisit."""
     import asyncio
     from runtime.orchestrator.orchestrator import Orchestrator
 
     db.insert_task(TaskRecord(id="T-PAR", brief="p",
-                              assigned_agent="engineering_head"))
+                              assigned_agent="engineering_head",
+                              task_type="task"))
     db.update_task("T-PAR", status=TaskStatus.BLOCKED,
                    block_kind=BlockKind.DELEGATED, note="waiting")
     db.insert_task(TaskRecord(
         id="T-CHD", brief="c",
         assigned_agent="engineering_head", parent_task_id="T-PAR",
+        task_type="subtask",
     ))
 
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
@@ -372,43 +368,51 @@ def test_run_step_session_failure_cascades_to_parent_no_retry(
     assert child.status == TaskStatus.FAILED
     assert "session failed" in (child.note or "")
 
+    # Parent stays BLOCKED(DELEGATED) for bounded manager-wake (TASK-573).
     parent = db.get_task("T-PAR")
-    assert parent.status == TaskStatus.FAILED
-    assert parent.block_kind is None
-    assert "T-CHD" in (parent.note or "")
-    assert "delegated child" in (parent.note or "")
-    # Queue holds the spawned auto-revisit root (NOT a re-enqueue of T-PAR).
-    assert q.qsize() == 1
-    slug, revisit_id = q.get_nowait()
-    assert slug == "test"
+    assert parent.status == TaskStatus.BLOCKED
+    assert parent.block_kind == BlockKind.DELEGATED
+    # Queue holds BOTH the auto-revisit root (spawned first) AND the
+    # parent re-enqueue (decision step). Call order: _maybe_spawn_auto_revisit
+    # fires before _enqueue_parent_if_waiting.
+    assert q.qsize() == 2
+    # First: the auto-revisit root.
+    slug1, revisit_id = q.get_nowait()
+    assert slug1 == "test"
     assert revisit_id != "T-PAR"
     revisit = db.get_task(revisit_id)
     assert revisit.parent_task_id is None
     assert revisit.revisit_of_task_id == "T-PAR"
+    # Second: the parent re-enqueue for the bounded-wake decision step.
+    slug2, tid2 = q.get_nowait()
+    assert tid2 == "T-PAR"
 
 
 def test_run_step_session_failure_cascades_up_chain(
     runtime, db, monkeypatch,
 ):
-    """No-retry policy bubbles through the full ancestor chain: a failing
-    grandchild fails its parent, which fails its grandparent, and so on.
-    """
+    """TASK-573 bounded failure-recovery: a failing grandchild wakes its
+    immediate parent for a decision step (not cascade-fail). The chain no
+    longer bubbles FAILED status up — each parent wakes independently."""
     import asyncio
     from runtime.orchestrator.orchestrator import Orchestrator
 
     db.insert_task(TaskRecord(id="T-ROOT", brief="r",
-                              assigned_agent="engineering_head"))
+                              assigned_agent="engineering_head",
+                              task_type="task"))
     db.update_task("T-ROOT", status=TaskStatus.BLOCKED,
                    block_kind=BlockKind.DELEGATED, note="waiting")
     db.insert_task(TaskRecord(
         id="T-MID", brief="m",
         assigned_agent="engineering_head", parent_task_id="T-ROOT",
+        task_type="task",
     ))
     db.update_task("T-MID", status=TaskStatus.BLOCKED,
                    block_kind=BlockKind.DELEGATED, note="waiting")
     db.insert_task(TaskRecord(
         id="T-LEAF", brief="l",
         assigned_agent="dev_agent", parent_task_id="T-MID",
+        task_type="subtask",
     ))
 
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
@@ -418,19 +422,27 @@ def test_run_step_session_failure_cascades_up_chain(
 
     orch.run_step("T-LEAF")
 
+    # T-LEAF is FAILED (opaque session failure).
     assert db.get_task("T-LEAF").status == TaskStatus.FAILED
-    assert db.get_task("T-MID").status == TaskStatus.FAILED
-    assert db.get_task("T-ROOT").status == TaskStatus.FAILED
-    # Cascade in-tree happens as before; the auto-revisit is a SEPARATE
-    # new root (queued once, predecessor=T-ROOT). Queue contains the new
-    # root only — no in-tree re-enqueues.
-    assert orch._queue.qsize() == 1
+    # T-MID stays BLOCKED(DELEGATED) — bounded manager-wake.
+    assert db.get_task("T-MID").status == TaskStatus.BLOCKED
+    assert db.get_task("T-MID").block_kind == BlockKind.DELEGATED
+    # T-ROOT stays BLOCKED(DELEGATED) — not reachable until T-MID advances.
+    assert db.get_task("T-ROOT").status == TaskStatus.BLOCKED
+    assert db.get_task("T-ROOT").block_kind == BlockKind.DELEGATED
+    # Queue holds auto-revisit root (spawned first) + T-MID enqueue.
+    # Call order: _maybe_spawn_auto_revisit fires before _enqueue_parent_if_waiting.
+    assert orch._queue.qsize() == 2
+    # First: the auto-revisit root (SEPARATE independent root).
     slug, revisit_id = orch._queue.get_nowait()
     assert slug == "test"
     assert revisit_id not in ("T-ROOT", "T-MID", "T-LEAF")
     revisit = db.get_task(revisit_id)
     assert revisit.parent_task_id is None
     assert revisit.revisit_of_task_id == "T-ROOT"
+    # Second: T-MID bounded-wake enqueue.
+    slug_mid, tid_mid = orch._queue.get_nowait()
+    assert tid_mid == "T-MID"
 
 
 def test_run_step_session_failure_note_includes_diagnostics(
@@ -1841,3 +1853,249 @@ def test_build_agent_prompt_manager_roster_includes_self(runtime, db):
     assert "Available Agents" in p          # full roster prompt
     assert "engineering_head" in p          # self advertised in the roster
     assert "yourself" in p
+
+
+# ═══════════════════════════════════════════════════════════════════
+# TASK-573 — bounded failure-recovery tests
+# ═══════════════════════════════════════════════════════════════════
+
+
+def test_failed_child_wakes_parent_for_decision_step_not_cascade(
+    runtime, db, monkeypatch,
+):
+    """One failed child → parent gets a manager decision step (enqueued),
+    NOT cascade-failed. The old behavior unconditionally _fail'd the parent;
+    the new contract wakes it for a bounded re-decision."""
+    import asyncio
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    db.insert_task(TaskRecord(id="T-PAR", brief="parent brief",
+                              assigned_agent="engineering_head",
+                              task_type="task"))
+    db.update_task("T-PAR", status=TaskStatus.BLOCKED,
+                   block_kind=BlockKind.DELEGATED, note="waiting")
+    db.insert_task(TaskRecord(
+        id="T-CHD", brief="child brief",
+        assigned_agent="dev_agent", parent_task_id="T-PAR",
+        task_type="subtask",
+    ))
+    # Child is FAILED — the scenario the orchestrator must handle.
+    db.update_task("T-CHD", status=TaskStatus.FAILED,
+                   note="reviewer found issues: REQUEST_CHANGES")
+
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+    _enqueue_parent_if_waiting(orch, "T-CHD")
+
+    # Parent must NOT be FAILED — it gets a decision step.
+    parent = db.get_task("T-PAR")
+    assert parent.status == TaskStatus.BLOCKED, (
+        f"parent should stay BLOCKED(DELEGATED) for decision step, got {parent.status}"
+    )
+    assert parent.block_kind == BlockKind.DELEGATED
+
+    # Parent is enqueued for its next decision step.
+    assert orch._queue.qsize() == 1
+    slug, tid = orch._queue.get_nowait()
+    assert tid == "T-PAR"
+
+
+def test_two_failed_children_escalates_parent_not_fail(runtime, db, monkeypatch):
+    """Exhausting the 2-round bound (>1 prior failed child) escalates the
+    parent to blocked(ESCALATED), NOT failed. The founder can then resolve."""
+    import asyncio
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    db.insert_task(TaskRecord(id="T-PAR", brief="parent brief",
+                              assigned_agent="engineering_head",
+                              task_type="task"))
+    db.update_task("T-PAR", status=TaskStatus.BLOCKED,
+                   block_kind=BlockKind.DELEGATED, note="waiting")
+
+    # Round 0 had one failed child already.
+    db.insert_task(TaskRecord(
+        id="T-F1", brief="first failed child",
+        assigned_agent="dev_agent", parent_task_id="T-PAR",
+        task_type="subtask",
+    ))
+    db.update_task("T-F1", status=TaskStatus.FAILED,
+                   note="first failure")
+
+    # Current (second) failed child — this should push the bound to 2 → escalate.
+    db.insert_task(TaskRecord(
+        id="T-F2", brief="second failed child",
+        assigned_agent="dev_agent", parent_task_id="T-PAR",
+        task_type="subtask",
+    ))
+    db.update_task("T-F2", status=TaskStatus.FAILED,
+                   note="second failure — bound exhausted")
+
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+    _enqueue_parent_if_waiting(orch, "T-F2")
+
+    parent = db.get_task("T-PAR")
+    assert parent.status == TaskStatus.BLOCKED, (
+        f"parent should go to BLOCKED(ESCALATED), got {parent.status}"
+    )
+    assert parent.block_kind == BlockKind.ESCALATED, (
+        f"exhausted bound must escalate parent, got block_kind={parent.block_kind}"
+    )
+    assert "T-F2" in (parent.note or "")
+
+    # No queue entries — escalation is not the same as waking the parent.
+    assert orch._queue.qsize() == 0
+
+
+def test_chain_leg_failure_wakes_parent_not_cascade(runtime, db, monkeypatch):
+    """A failed chain leg clears the chain and hands back to the parent's
+    manager decision step (subject to the same 2-round bound), NOT cascade-fail."""
+    import asyncio
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    db.insert_task(TaskRecord(id="T-PAR", brief="chain parent",
+                              assigned_agent="engineering_head",
+                              task_type="task"))
+    db.update_task("T-PAR", status=TaskStatus.BLOCKED,
+                   block_kind=BlockKind.DELEGATED, note="waiting")
+
+    # Set up an active chain on the parent.
+    from runtime.orchestrator.chain import ChainState, ChainLeg
+    chain = ChainState(
+        step_index=0, first_leg_expect_verdict=None,
+        legs=[ChainLeg(agent="code_reviewer", prompt="review",
+                       expect_verdict="APPROVE")],
+        step_audit_id=1,
+    )
+    db.update_task_active_chain("T-PAR", chain.serialize())
+
+    # Chain leg child FAILED.
+    db.insert_task(TaskRecord(
+        id="T-LEG", brief="review",
+        assigned_agent="code_reviewer", parent_task_id="T-PAR",
+        task_type="subtask",
+    ))
+    db.update_task("T-LEG", status=TaskStatus.FAILED,
+                   note="self-blocked: REQUEST_CHANGES")
+
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+    _enqueue_parent_if_waiting(orch, "T-LEG")
+
+    parent = db.get_task("T-PAR")
+    # Chain cleared; parent gets a decision step, not cascade-failed.
+    assert parent.active_chain is None, "chain must be cleared on leg failure"
+    assert parent.status == TaskStatus.BLOCKED
+    assert parent.block_kind == BlockKind.DELEGATED
+    # Parent is enqueued.
+    assert orch._queue.qsize() == 1
+    slug, tid = orch._queue.get_nowait()
+    assert tid == "T-PAR"
+
+
+def test_regression_all_children_completed_wakes_parent_unchanged(
+    runtime, db, monkeypatch,
+):
+    """REGRESSION GUARD: happy path — all children COMPLETED → parent enqueued
+    for next decision step. This behavior MUST NOT change."""
+    import asyncio
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    db.insert_task(TaskRecord(id="T-PAR", brief="parent brief",
+                              assigned_agent="engineering_head",
+                              task_type="task"))
+    db.update_task("T-PAR", status=TaskStatus.BLOCKED,
+                   block_kind=BlockKind.DELEGATED, note="waiting")
+    db.insert_task(TaskRecord(
+        id="T-CHD", brief="child brief",
+        assigned_agent="dev_agent", parent_task_id="T-PAR",
+        task_type="subtask",
+    ))
+    db.update_task("T-CHD", status=TaskStatus.COMPLETED, note="all good")
+
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+    _enqueue_parent_if_waiting(orch, "T-CHD")
+
+    parent = db.get_task("T-PAR")
+    assert parent.status == TaskStatus.BLOCKED
+    assert parent.block_kind == BlockKind.DELEGATED
+    assert orch._queue.qsize() == 1
+    slug, tid = orch._queue.get_nowait()
+    assert tid == "T-PAR"
+
+
+def test_regression_revise_verdict_chain_advance_unchanged(
+    runtime, db, monkeypatch,
+):
+    """REGRESSION GUARD: REVISE-verdict auto-advance in chains is UNCHANGED.
+    A COMPLETED child with REVISE verdict must still advance the chain."""
+    import asyncio
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    db.insert_task(TaskRecord(id="T-PAR", brief="chain parent",
+                              assigned_agent="engineering_head",
+                              task_type="task"))
+    db.update_task("T-PAR", status=TaskStatus.BLOCKED,
+                   block_kind=BlockKind.DELEGATED, note="waiting")
+
+    from runtime.orchestrator.chain import ChainState, ChainLeg
+    chain = ChainState(
+        step_index=0, first_leg_expect_verdict="APPROVE",
+        legs=[
+            ChainLeg(agent="code_reviewer", prompt="review",
+                     expect_verdict="APPROVE"),
+            ChainLeg(agent="dev_agent", prompt="revise",
+                     expect_verdict=None),
+        ],
+        step_audit_id=1,
+    )
+    db.update_task_active_chain("T-PAR", chain.serialize())
+
+    # Chain leg child COMPLETED with REVISE verdict.
+    db.insert_task(TaskRecord(
+        id="T-LEG", brief="review",
+        assigned_agent="code_reviewer", parent_task_id="T-PAR",
+        task_type="subtask",
+    ))
+    db.update_task("T-LEG", status=TaskStatus.COMPLETED, note="done")
+    db.insert_task_result(
+        task_id="T-LEG", agent="code_reviewer", session_id="s",
+        status="completed", confidence_score=85,
+        output_summary="found issues, REVISE",
+        verdict="REVISE",
+    )
+
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+    _enqueue_parent_if_waiting(orch, "T-LEG")
+
+    # Chain auto-advance: REVISE verdict matches first_leg_expect_verdict=APPROVE?
+    # No — REVISE does NOT match APPROVE, so the chain should clear and the
+    # parent should wake. The REVISE auto-advance works by having
+    # expect_verdict=None on the follow-up leg (the advance_action returns
+    # advance regardless of verdict when expect_verdict is None).
+    # In this test: first_leg_expect_verdict="APPROVE", child verdict="REVISE"
+    # → mismatch → wake. The parent gets enqueued for a decision step.
+    parent = db.get_task("T-PAR")
+    assert parent.status == TaskStatus.BLOCKED
+    assert parent.block_kind == BlockKind.DELEGATED
+    assert parent.active_chain is None  # chain cleared on mismatch
+    assert orch._queue.qsize() == 1
+    slug, tid = orch._queue.get_nowait()
+    assert tid == "T-PAR"

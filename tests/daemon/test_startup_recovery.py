@@ -79,22 +79,22 @@ def test_sweep_blocked_delegated_with_all_children_terminal_reenqueues(tmp_path)
 
 
 def test_sweep_blocked_delegated_with_live_child_cascades_via_auto_revisit(tmp_path):
-    """Production path: when sweep force-fails an in-progress child of a
-    BLOCKED+DELEGATED parent, the cascade propagates to FAIL the parent and
-    spawns an auto-revisit at the root. The old behavior was to wake the
-    parent for a re-decision step — that left the failed child as a poisoned
-    sibling. Now cascade is unified."""
+    """TASK-573: when sweep force-fails an in-progress child of a
+    BLOCKED+DELEGATED parent, the parent gets a bounded-wake decision step
+    (enqueued, NOT cascade-failed). The auto-revisit is still spawned."""
     db, orch, queue = _seed_org_with_orch(tmp_path)
     db.insert_task(TaskRecord(
         id="T-PAR", brief="p", team="engineering",
         assigned_agent="engineering_head",
         status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED,
         note="waiting",
+        task_type="task",
     ))
     db.insert_task(TaskRecord(
         id="T-CHD", brief="c", team="engineering",
         assigned_agent="dev_agent", parent_task_id="T-PAR",
         status=TaskStatus.IN_PROGRESS,
+        task_type="subtask",
     ))
 
     # Suppress feishu side effects from the real orch.
@@ -102,9 +102,11 @@ def test_sweep_blocked_delegated_with_live_child_cascades_via_auto_revisit(tmp_p
 
     _sweep_on_startup(db, queue, "test", orch)
 
-    # Child force-failed; parent cascade-failed (not woken for re-decision).
+    # Child force-failed.
     assert db.get_task("T-CHD").status == TaskStatus.FAILED
-    assert db.get_task("T-PAR").status == TaskStatus.FAILED
+    # TASK-573: parent stays BLOCKED(DELEGATED) for bounded-wake, not FAILED.
+    assert db.get_task("T-PAR").status == TaskStatus.BLOCKED
+    assert db.get_task("T-PAR").block_kind == BlockKind.DELEGATED
     # A fresh root was spawned via revisit_of_task_id=T-PAR.
     revisits = [
         t for t in (db.get_task(tid)
@@ -112,15 +114,13 @@ def test_sweep_blocked_delegated_with_live_child_cascades_via_auto_revisit(tmp_p
         if t is not None and t.revisit_of_task_id == "T-PAR"
     ]
     assert len(revisits) == 1
-    # The queue gets the new auto-revisit root, NOT the old parent T-PAR
-    # (the old behavior re-enqueued T-PAR for a manager re-decision; the
-    # unified path replaces that with a fresh root).
+    # Queue gets BOTH the auto-revisit root AND the parent bounded-wake enqueue.
     enqueued = []
     while not queue._queue.empty():
         enqueued.append(queue._queue.get_nowait())
     enqueued_ids = [tid for (_slug, tid, _md) in enqueued]
-    assert "T-PAR" not in enqueued_ids
     assert revisits[0].id in enqueued_ids
+    assert "T-PAR" in enqueued_ids  # parent bounded-wake
 
 
 def test_sweep_leaves_blocked_escalated_alone(tmp_path):
@@ -167,21 +167,24 @@ def test_sweep_works_without_orchestrator_arg(tmp_path):
 
 
 def test_sweep_in_progress_spawns_auto_revisit(tmp_path):
-    """Production path: in-progress task at restart routes through the
+    """TASK-573: in-progress task at restart routes through the
     unified auto-revisit primitive. A fresh root is spawned with
-    revisit_of_task_id=root; notify_failed is suppressed because the work
+    revisit_of_task_id=root; parent gets bounded-wake (BLOCKED+DELEGATED),
+    not cascade-failed. notify_failed is suppressed because the work
     is being retried."""
     db, orch, queue = _seed_org_with_orch(tmp_path)
-    # Root manager task is BLOCKED+DELEGATED waiting on its in-flight child.
+    # Root parent task is BLOCKED+DELEGATED waiting on its in-flight child.
     db.insert_task(TaskRecord(
         id="T-ROOT", brief="root work", team="engineering",
         assigned_agent="engineering_head",
         status=TaskStatus.BLOCKED, block_kind=BlockKind.DELEGATED,
+        task_type="task",
     ))
     db.insert_task(TaskRecord(
         id="T-CHD", brief="child work", team="engineering",
         assigned_agent="dev_agent", parent_task_id="T-ROOT",
         status=TaskStatus.IN_PROGRESS,
+        task_type="subtask",
     ))
 
     notify_calls: list[dict] = []
@@ -191,8 +194,9 @@ def test_sweep_in_progress_spawns_auto_revisit(tmp_path):
 
     # Child force-failed.
     assert db.get_task("T-CHD").status == TaskStatus.FAILED
-    # Cascade propagated to root.
-    assert db.get_task("T-ROOT").status == TaskStatus.FAILED
+    # TASK-573: bounded-wake, not cascade-fail.
+    assert db.get_task("T-ROOT").status == TaskStatus.BLOCKED
+    assert db.get_task("T-ROOT").block_kind == BlockKind.DELEGATED
     # A new root was spawned via revisit_of_task_id=T-ROOT.
     revisits = [
         t for t in (db.get_task(tid)

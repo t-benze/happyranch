@@ -85,6 +85,47 @@ Per-org `dreaming:` config controls the private nightly reflection scheduler: en
 
 Positive integers only. `<= 0` or non-int raises at parse time. The `agent_name` argument is unused but kept for call-site symmetry. Legacy `session_timeout_seconds` in agent frontmatter is silently ignored.
 
+## Bounded Failure-Recovery (TASK-573)
+
+When a subtask fails, the parent task is re-enqueued for a bounded manager-wake
+decision step — NOT cascade-failed. This replaces the pre-TASK-573 behavior where
+any subtask FAILED unconditionally cascade-failed the parent without giving the
+task owner a chance to re-ground.
+
+Contract (founder-approved in THR-028):
+
+1. **Bounded wake.** On subtask failure, re-enqueue the parent for a fresh
+   decision step. The failed subtask's reason (`note` + completion report /
+   error context) is available so the task owner can author an updated brief.
+
+2. **Round bound.** At most 2 re-spawn rounds per delegation slot. The round
+   count is derived from EXISTING database state (count of FAILED subtask
+   siblings) — no schema migration, no new/alter/overload column.
+
+3. **Escalation on exhaustion.** When the bound is exhausted (> 2 FAILED
+   subtasks in this delegation slot), the parent transitions to
+   `blocked(ESCALATED)` via `try_escalate()`, carrying the last failure
+   reason. The parent does NOT cascade-fail — the founder can resolve the
+   escalation per existing routes.
+
+4. **Chain-leg failure.** A failed workflow chain leg (subtask FAILED, not
+   COMPLETED) clears the active chain and hands the parent back to its
+   bounded-wake path (same 2-round bound + escalation).
+
+5. **Happy path unchanged.** All subtasks COMPLETED → parent enqueued for
+   next decision step. REVISE-verdict auto-advance in chains is unchanged.
+
+6. **Reviewer/QA verdict discipline.** A review/QA leg completes with an
+   APPROVE/REVISE/PASS/FAIL verdict and never self-blocks. A `status=blocked`
+   with empty `waiting_on_job_ids` is a malformed report; the leg is treated
+   as FAILED and wakes the parent for a decision step.
+
+Implementation: `runtime/orchestrator/run_step.py` —
+`_enqueue_parent_if_waiting`, `_advance_chain_for_completed_child`,
+`_FAILURE_ROUND_BOUND`. See also
+`docs/agent-guides/features-and-invariants.md#bounded-failure-recovery` and
+`docs/agent-guides/orchestrator-contracts.md`.
+
 ## Running The Daemon
 
 The CLI is an HTTP client. Start the daemon once, then run CLI commands.

@@ -9,13 +9,14 @@ For current behavior always prefer `protocol/`, `docs/agent-guides/`, tests, the
 ### Orchestration core
 
 - **Orchestrator & task state machine.** The daemon-side loop that advances each task one step at a time, drives manager-decision turns, spawns children, and records terminal state. Spec `docs/superpowers/specs/2026-04-14-orchestrator-daemon-design.md`; current contract `docs/agent-guides/orchestrator-contracts.md`; impl `runtime/orchestrator/run_step.py`, `runtime/orchestrator/orchestrator.py`.
-- **Manager-decision loop & completion contract.** Team managers end every turn with a `decision` (`delegate`/`done`/`escalate`); workers report a plain completion. Contract `protocol/00-completion-contract.md`; guide `docs/agent-guides/orchestrator-contracts.md`; impl in `runtime/orchestrator/run_step.py`.
-- **Inline delegation chains.** A manager can declare a multi-leg worker chain inline via `then: [...]`; the orchestrator auto-advances routine legs on matching verdict without consuming orchestration steps. Spec `docs/superpowers/specs/2026-05-30-inline-delegation-chain-design.md` (current); impl `runtime/orchestrator/chain.py`.
+- **Task-owner decision loop & completion contract.** Task owners (task_type='task') end every turn with a `decision` (`delegate`/`done`/`escalate`); subtask agents report a plain completion. Contract `protocol/00-completion-contract.md`; guide `docs/agent-guides/orchestrator-contracts.md`; impl in `runtime/orchestrator/run_step.py`.
+- **Inline delegation chains.** A task owner can declare a multi-leg subtask chain inline via `then: [...]`; the orchestrator auto-advances routine legs on matching verdict without consuming orchestration steps. Spec `docs/superpowers/specs/2026-05-30-inline-delegation-chain-design.md` (current); impl `runtime/orchestrator/chain.py`.
 - **Task status model.** The canonical task status vocabulary and transition rules (`in_progress`, `blocked`, `completed`, `failed`, etc.). Spec `docs/superpowers/specs/2026-04-19-task-status-redesign.md`; current vocabulary `docs/agent-guides/orchestrator-contracts.md`.
-- **Subtask / composite tasks.** Worker-spawned bounded subtasks under a parent, for decomposing a single delegation into iterative steps. Spec `docs/superpowers/specs/2026-06-03-subtask-composite-task-design.md`; impl in `runtime/orchestrator/run_step.py`.
+- **Subtask / composite tasks.** Subtask agents spawn bounded subtasks under a parent task, for decomposing a single delegation into iterative steps. Spec `docs/superpowers/specs/2026-06-03-subtask-composite-task-design.md`; impl in `runtime/orchestrator/run_step.py`.
 - **Revisit.** `happyranch revisit <task-id>` spawns a fresh root task inheriting brief and team from a terminal predecessor; old lineage freezes. Specs `docs/superpowers/specs/2026-04-21-opc-revisit-design.md`, `docs/superpowers/specs/2026-04-23-revisit-root-link-design.md`. See [Revisit](#revisit) below for traps.
 - **Session-timeout auto-route.** Silent auto-revisit on opaque agent failures (timeout, no-callback, rate-limit, executor error, etc.), capped per failure kind. Spec `docs/superpowers/specs/2026-05-25-session-timeout-auto-route-design.md`. See [Session-Timeout Auto-Route](#session-timeout-auto-route) below for traps.
 - **Cancel (race + actor attribution).** Founder/agent task cancellation with race-safe state handling and audit attribution of who cancelled. Specs `docs/superpowers/specs/2026-05-26-cancel-race-design.md`, `docs/superpowers/specs/2026-06-06-cancel-actor-attribution-design.md`; impl in task routes and run-step helpers.
+- **Bounded failure-recovery (TASK-573).** When a subtask fails, the parent task is re-enqueued for a bounded manager-wake decision step (not cascade-failed). At most 2 re-spawn rounds per delegation slot; round count derived from existing DB state (count of FAILED subtasks). On exhaustion the parent escalates to `blocked(ESCALATED)` rather than failing silently. Failed chain legs also wake the parent instead of cascading. Happy path (all subtasks COMPLETED) and REVISE-verdict auto-advance are unchanged. Thread: THR-028. Implementation: `runtime/orchestrator/run_step.py:_enqueue_parent_if_waiting`. See [Bounded failure-recovery](#bounded-failure-recovery).
 
 ### Agent runtime & executors
 
@@ -115,9 +116,57 @@ Traps:
 - `_AUTO_REVISIT_CAP_PER_KIND = 2`; it is per kind, not global.
 - `_maybe_spawn_auto_revisit` must run before `_enqueue_parent_if_waiting`.
 - `failure_kind` is top-level on `auto_revisit_of`, not under `error_context`.
-- Cascade still fails ancestors when `root_auto_revisit_spawned=True`.
+- Bounded failure-recovery wakes the parent (not cascade-fail) on subtask failure;
+  the bound (2 FAILED subtasks per delegation slot) escalates the parent on
+  exhaustion (TASK-573). See [Bounded failure-recovery](#bounded-failure-recovery).
 - Startup sweep dedups with `revisited_roots: set[str]`.
 
+## Bounded Failure-Recovery (TASK-573)
+
+When a subtask fails, the parent task is re-enqueued for a bounded manager-wake
+decision step — NOT cascade-failed. Fundamental change from the pre-TASK-573
+behavior where any child FAILED unconditionally cascade-failed the parent
+without giving the task owner a chance to re-ground.
+
+Contract (founder-approved in THR-028):
+
+1. **Bounded wake.** On child failure, re-enqueue the parent for a fresh
+   decision step. The failed subtask's reason (`note` + completion report /
+   error context) is available so the task owner can author an updated brief.
+
+2. **Round bound.** At most 2 re-spawn rounds per delegation slot. The round
+   count is derived from EXISTING database state (count of FAILED subtask
+   siblings) — no schema migration, no new/alter/overload column.
+
+3. **Escalation on exhaustion.** When the bound is exhausted (> 2 FAILED
+   subtasks in this delegation slot), the parent transitions to
+   `blocked(ESCALATED)` via `db.try_escalate()`, carrying the last failure
+   reason. The parent does NOT cascade-fail — the founder can resolve the
+   escalation per existing routes.
+
+4. **Chain-leg failure.** A failed workflow chain leg (subtask FAILED, not
+   COMPLETED) clears the active chain and hands the parent back to its
+   bounded-wake path (same 2-round bound + escalation).
+
+5. **Happy path unchanged.** All subtasks COMPLETED → parent enqueued for
+   next decision step. REVISE-verdict auto-advance in chains is unchanged.
+
+6. **Reviewer/QA verdict discipline.** A review/QA leg completes with an
+   APPROVE/REVISE/PASS/FAIL verdict and never self-blocks. A `status=blocked`
+   with empty `waiting_on_job_ids` is a malformed report; the leg is treated
+   as FAILED and wakes the parent for a decision step.
+
+Traps:
+
+- Round count = `len([s for s in siblings if s.status == FAILED])`;
+  threshold `_FAILURE_ROUND_BOUND = 2` (`>= 2` → escalate).
+- The bound escalation uses `try_escalate` (atomic CAS under Database RLock),
+  same as the existing over-budget escalation path.
+- Chain-advance branch in `_enqueue_parent_if_waiting` now handles FAILED
+  subtasks as well as COMPLETED: FAILED subtasks clear the chain and fall
+  through to the bounded-wake sibling check.
+- `test_cascade_fail_*` tests updated: they now assert parent stays
+  BLOCKED(DELEGATED) for the bounded-wake, not FAILED.
 ## Thread Broadcast Routing
 
 Every `kind=message` thread row mints a `REPLY` invocation for every participant except the speaker. There is no `addressed_to`, `@all`, or `@founder` token. Founder participates through the web UI; Feishu is not used for ongoing thread conversation. Spec: `docs/superpowers/specs/2026-05-30-thread-broadcast-only-design.md`.
@@ -171,7 +220,7 @@ Traps:
 
 Traps:
 
-- Applies to managers and workers uniformly.
+- Applies to task owners and subtask agents uniformly.
 - Doctrine is system-prompt-injected through `_thread_talk_dispatch_doctrine_section()`.
 - Shared error hint `SELF_DISPATCH_HINT` lives in `runtime/daemon/routes/_doctrine.py`.
 

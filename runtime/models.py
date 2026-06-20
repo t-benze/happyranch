@@ -87,7 +87,7 @@ class ChainLeg(BaseModel):
 
 
 class NextStep(BaseModel):
-    """Decision returned by a team manager for what the orchestrator should do next."""
+    """Decision returned by a task owner for what the orchestrator should do next."""
     action: Literal["delegate", "done", "escalate"]
     agent: str | None = None
     prompt: str | None = None
@@ -108,7 +108,7 @@ class CompletionReport(BaseModel):
     # team's workflow KB entry. Used by inline delegation chains to gate
     # auto-advance.
     verdict: str | None = None
-    # Manager-only: structured next-step decision. Workers leave this None.
+    # Task-owner-only: structured next-step decision. Subtask agents leave this None.
     # Separating the decision from the prose summary eliminates the
     # double-encoding trap where the manager's output_summary had to itself
     # be JSON (see TASK-071 post-mortem).
@@ -127,7 +127,7 @@ class TaskStep(BaseModel):
 
 
 class StepRecord(BaseModel):
-    """Record of a completed orchestration step, shown to the team manager as history."""
+    """Record of a completed orchestration step, shown to the task owner as history."""
     step_number: int
     agent: str
     action: str

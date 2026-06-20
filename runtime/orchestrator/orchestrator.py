@@ -400,7 +400,7 @@ class Orchestrator:
         run_step_impl(self, task_id, metadata=metadata)
 
     def _parse_next_step(self, report: CompletionReport | None) -> NextStep:
-        """Parse the team manager's decision from its completion report.
+        """Parse the task owner's decision from its completion report.
 
         Preferred path: ``report.decision`` is a structured NextStep supplied
         by the manager alongside a prose ``output_summary``. That separation
@@ -414,7 +414,7 @@ class Orchestrator:
         the root cause of TASK-013 / TASK-016.
         """
         if report is None:
-            return NextStep(action="escalate", reason="No completion report from team manager")
+            return NextStep(action="escalate", reason="No completion report from task owner")
         if report.decision is not None:
             return report.decision
         text = report.output_summary or ""
@@ -423,7 +423,7 @@ class Orchestrator:
             return NextStep(
                 action="escalate",
                 reason=(
-                    "Team manager returned neither a `decision` field nor an "
+                    "Task owner returned neither a `decision` field nor an "
                     "`output_summary`; no decision to act on."
                 ),
             )
@@ -434,7 +434,7 @@ class Orchestrator:
             return NextStep(
                 action="escalate",
                 reason=(
-                    "Team manager omitted the `decision` field and its "
+                    "Task owner omitted the `decision` field and its "
                     "`output_summary` is not JSON. The completion payload "
                     "must include a `decision` object "
                     "(delegate/done/escalate). "
@@ -445,7 +445,7 @@ class Orchestrator:
             return NextStep(
                 action="escalate",
                 reason=(
-                    "Team manager legacy output_summary parsed as non-object "
+                    "Task owner legacy output_summary parsed as non-object "
                     f"JSON; expected a decision object. Got: {type(data).__name__}"
                 ),
             )
@@ -454,7 +454,7 @@ class Orchestrator:
         except (KeyError, ValueError, ValidationError) as exc:
             return NextStep(
                 action="escalate",
-                reason=f"Malformed team-manager decision: {exc}",
+                reason=f"Malformed task-owner decision: {exc}",
             )
 
     def _run_agent(

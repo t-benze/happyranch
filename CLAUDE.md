@@ -11,7 +11,7 @@ Keep this file short. It is loaded at the start of every Claude Code session. De
 | Project shape, architecture, runtime container paths | `docs/agent-guides/project-layout.md` |
 | Settings, daemon startup, test modes, runtime config | `docs/agent-guides/runtime-and-configuration.md` |
 | Executor behavior, workspace bootstrap, allow rules | `docs/agent-guides/agent-executors-and-permissions.md` |
-| Orchestrator decisions, task state, agent files, teams, chains | `docs/agent-guides/orchestrator-contracts.md` |
+| Orchestrator decisions, task state, agent files, teams, chains, failure-recovery, task/subtask terminology | `docs/agent-guides/orchestrator-contracts.md` |
 | Web app, OpenAPI pinning, CLI behavior, agent callbacks | `docs/agent-guides/web-and-cli.md` |
 | KB, learnings, artifacts, revisit, threads, jobs | `docs/agent-guides/features-and-invariants.md` |
 
@@ -24,6 +24,7 @@ Keep this file short. It is loaded at the start of every Claude Code session. De
 - Runtime containers are schema v2 multi-org trees: `<runtime>/orgs/<slug>/...`. Per-org routes are under `/api/v1/orgs/<slug>/...`; container-level routes are under `/api/v1/runtime` and `/api/v1/orgs`.
 - Settings come from `HAPPYRANCH_` env vars, then `~/.happyranch/config.yaml`, then code defaults. There is no `.env` support.
 - Agent names are plain strings discovered from `<runtime>/orgs/<slug>/org/agents/*.md`; do not introduce static agent enums.
+- The task/subtask model distinguishes task owners (`task_type='task'`, produce `decision` blocks) from delegated subtask agents (`task_type='subtask'`, produce plain completions). Prose uses "task owner" and "subtask agent" over legacy "team manager"/"worker" language.
 - Agents should perform side effects through the `happyranch` CLI. Baseline allow rule for every agent is `happyranch`.
 - Agent-side completion and callback payloads must be single-line `happyranch ... --from-file <path>` invocations; shell separators and multiline continuations break permission matching.
 

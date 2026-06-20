@@ -11,7 +11,7 @@ def build_capabilities_prompt(
     manager_name: str = "team_manager",
     self_only: bool = False,
 ) -> str:
-    """Build the prompt sent to a team manager for each decision step.
+    """Build the prompt sent to a task owner for each decision step.
 
     The task brief is NOT rendered here — it is carried in the outer
     ``Parameters.brief`` block built by ``Orchestrator._build_agent_prompt``.
@@ -109,7 +109,7 @@ def build_capabilities_prompt(
         "```",
         "",
         "Each leg in `then` has `agent`, `prompt`, and optional `expect_verdict`.",
-        "The orchestrator auto-advances on verdict match; mismatches, blocked workers,",
+        "The orchestrator auto-advances on verdict match; mismatches, blocked subtasks,",
         "or final-leg matches wake you. Full shape: `protocol/00-completion-contract.md`.\n",
         "**done** -- Task is complete (or you handled it yourself):",
         "```json",
@@ -128,7 +128,7 @@ def build_capabilities_prompt(
         f'  "agent": "{manager_name}",',
         '  "status": "completed",',
         '  "confidence": 90,',
-        '  "summary": "Triaged the request and staged implementation for the worker.",',
+        '  "summary": "Triaged the request and staged implementation for the subtask.",',
         '  "decision": {"action": "delegate", "agent": "<worker_agent_name>", "prompt": "<detailed instructions>"}',
         "}",
         "```\n",
