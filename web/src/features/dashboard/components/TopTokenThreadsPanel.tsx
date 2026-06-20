@@ -64,10 +64,10 @@ export function TopTokenThreadsPanel(): JSX.Element {
   const max = Math.max(...rows.map((r) => r.totalTokens), 1);
 
   return (
-    <section className="border-border-subtle bg-surface-sunken rounded-md border p-4">
-      <header className="mb-3 flex items-baseline justify-between">
-        <h2 className="text-text-muted text-xs font-medium tracking-wider uppercase">
-          Top token threads
+    <section className="border-border-default bg-surface shadow-pasture-sm rounded-lg border p-5">
+      <header className="mb-4 flex items-baseline justify-between">
+        <h2 className="text-text-secondary text-xs font-semibold tracking-wider uppercase">
+          Top token threads · {win.label}
         </h2>
         <div className="flex gap-1 font-mono text-xs" role="group" aria-label="Window">
           {WINDOWS.map((w, i) => (
