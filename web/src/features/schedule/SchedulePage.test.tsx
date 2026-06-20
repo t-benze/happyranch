@@ -87,7 +87,7 @@ function defaultEntries(): WorkHourRecord[] {
   ];
 }
 
-describe('SchedulePage — read-only work-hours list', () => {
+describe('SchedulePage — Pasture fidelity read-only work-hours list', () => {
   test('renders page header and description', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     seedWorkHours();
@@ -115,17 +115,28 @@ describe('SchedulePage — read-only work-hours list', () => {
     });
   });
 
-  test('groups entries by agent with agent header links', async () => {
+  test('renders count eyebrow with total wakes and agent count', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     seedWorkHours();
     mountAt(`/orgs/${SLUG}/schedule`);
 
     await waitFor(() => {
-      // Two agent groups
+      // Count eyebrow: "3 wakes across 2 agents"
+      expect(screen.getByText(/3 wakes across 2 agents/)).toBeInTheDocument();
+    });
+  });
+
+  test('groups entries by agent in Pasture cards with font-display agent links', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    seedWorkHours();
+    mountAt(`/orgs/${SLUG}/schedule`);
+
+    await waitFor(() => {
+      // Two agent group cards
       expect(screen.getByText('code_reviewer')).toBeInTheDocument();
       expect(screen.getByText('dev_agent')).toBeInTheDocument();
 
-      // Agent names are links to Agents page
+      // Agent names are links to Agents page (inside card headers)
       const crLink = screen.getByText('code_reviewer').closest('a');
       expect(crLink).toHaveAttribute('href', `/orgs/${SLUG}/agents/code_reviewer`);
       const daLink = screen.getByText('dev_agent').closest('a');
@@ -133,18 +144,18 @@ describe('SchedulePage — read-only work-hours list', () => {
     });
   });
 
-  test('renders wake entries with fields: date, slot, mode, scheduled, status, routines', async () => {
+  test('renders wake entries with status pills and fields: date, slot, mode, scheduled, routines', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     seedWorkHours();
     mountAt(`/orgs/${SLUG}/schedule`);
 
-    // Wait for all entries to render (check both extremes: first and last entry)
+    // Wait for all entries to render
     await waitFor(() => {
       expect(screen.getByText('3 routines')).toBeInTheDocument();
       expect(screen.getByText('Pending')).toBeInTheDocument();
     });
 
-    // Local dates — two entries share 2026-06-18
+    // Local dates
     const date18 = screen.getAllByText('2026-06-18');
     expect(date18).toHaveLength(2);
     expect(screen.getByText('2026-06-17')).toBeInTheDocument();
@@ -156,11 +167,11 @@ describe('SchedulePage — read-only work-hours list', () => {
     // Modes
     expect(screen.getAllByText('windowed').length).toBe(3);
 
-    // Statuses
-    expect(screen.getAllByText('Completed').length).toBe(2);
+    // Status pills (rendered as uppercase pill text)
+    const completedBadges = screen.getAllByText('Completed');
+    expect(completedBadges.length).toBe(2);
 
-    // Routine counts (already verified in waitFor)
-    // Two entries have 2 routines each
+    // Routine counts
     expect(screen.getAllByText('2 routines').length).toBe(2);
   });
 
@@ -217,11 +228,22 @@ describe('SchedulePage — read-only work-hours list', () => {
     });
 
     // No "create", "new wake", "add wake" buttons present
-    // (sidebar has an "Add org" button, so /add/i is too broad)
     expect(screen.queryByRole('button', { name: /create/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /new wake/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /add wake/i })).toBeNull();
-    // No form inputs for editing (sidebar may have org selector)
+    // No form inputs for editing
     expect(screen.queryByPlaceholderText(/type a message/i)).toBeNull();
+  });
+
+  test('shows wake count per agent in card headers', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    seedWorkHours();
+    mountAt(`/orgs/${SLUG}/schedule`);
+
+    await waitFor(() => {
+      // dev_agent has 2 wakes, code_reviewer has 1
+      expect(screen.getByText('2 wakes')).toBeInTheDocument();
+      expect(screen.getByText('1 wake')).toBeInTheDocument();
+    });
   });
 });

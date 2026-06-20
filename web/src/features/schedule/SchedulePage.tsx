@@ -1,14 +1,38 @@
 /**
  * SchedulePage — read-only list of scheduled work-hours wakes (§4.9 PRD final).
+ * Direction-A Pasture fidelity pass (THR-030 Leg B Batch 10).
  *
  * - Fetches work-hours list from the daemon's work_hours table.
- * - Groups entries by agent name, sorted by scheduled_for descending.
- * - Each entry shows: agent, local_date, slot, mode, scheduled_for, status,
- *   routine_count, spawned task IDs (IdBadge click-through to Tasks).
- * - Agent names link to the Agents page.
+ * - Groups entries by agent name, each agent in a Pasture card.
+ * - Each wake entry shows: local_date, slot, mode, scheduled_for, status pill,
+ *   routine_count, spawned task IDs (IdBadge click-through to Tasks), summary,
+ *   and error (if present).
+ * - Agent names link to the Agents page (font-display heading within card).
  * - NO authoring controls — no create/edit/delete, no "add wake" form (D6 deferred).
  *
  * States: loading skeleton, calm empty ("No scheduled wakes"), error with Retry.
+ *
+ * Pasture vocabulary:
+ *   Cards: bg-surface + border-border-default + shadow-pasture-sm + rounded-lg
+ *   Page heading: font-display serif (Newsreader) via PageHeader
+ *   Agent names: font-display
+ *   IDs / times / counts: font-mono tabular-nums
+ *   Status pills: rounded-full bg-accent-soft/text-accent-text (completed/running),
+ *     bg-danger-soft/text-feedback-danger (failed/timeout),
+ *     bg-surface-sunken/text-text-muted (pending/skipped)
+ *   Count eyebrow: text-overline uppercase tracking-wider
+ *   Semantic text: text-text-primary / secondary / muted — no hardcoded colors
+ *   Calm empty state: EmptyState pattern
+ *
+ * HONESTY FENCE: renders ONLY fields from WorkHourRecord data model
+ * (work_hour_id, agent_name, local_date, slot, mode, scheduled_for,
+ * started_at, ended_at, status, routine_count, spawned_task_ids,
+ * spawned_task_count, summary, error, session_id, transcript_path, created_at).
+ * OMITTED (no backing field): week grid / 24h visual timeline /
+ * "While you were away" feed / calm toggles / schedule-health metrics /
+ * run history / next-run predictions — none of these fields exist on
+ * WorkHourRecord. The a-schedule.html reference elements without data-model
+ * backing are documented here per Confusion-Protocol, not fabricated.
  */
 import { useMemo } from 'react';
 import { Link, useParams } from 'react-router-dom';
@@ -34,14 +58,20 @@ const STATUS_LABEL: Record<string, string> = {
   skipped: 'Skipped',
 };
 
-const STATUS_COLOR: Record<string, string> = {
-  pending: 'text-fg-muted',
-  running: 'text-accent',
-  completed: 'text-feedback-success',
-  failed: 'text-tier-red',
-  timeout: 'text-feedback-warning',
-  skipped: 'text-fg-muted',
-};
+function statusPill(status: string): string {
+  switch (status) {
+    case 'completed':
+    case 'running':
+      return 'bg-accent-soft text-accent-text';
+    case 'failed':
+    case 'timeout':
+      return 'bg-danger-soft text-feedback-danger';
+    case 'pending':
+    case 'skipped':
+    default:
+      return 'bg-surface-sunken text-text-muted';
+  }
+}
 
 function formatStatus(status: string): string {
   return STATUS_LABEL[status] ?? status;
@@ -81,24 +111,24 @@ function groupByAgent(entries: WorkHourRecord[]): { agent: string; entries: Work
 }
 
 /* ------------------------------------------------------------------ */
-/*  Skeleton                                                           */
+/*  Skeleton — Pasture card-shaped                                     */
 /* ------------------------------------------------------------------ */
 
 function ScheduleSkeleton(): JSX.Element {
   return (
-    <div className="space-y-4 p-4" aria-label="Loading scheduled wakes">
-      {[1, 2, 3].map((i) => (
-        <div key={i}>
-          <div className="bg-surface-sunken mb-2 h-4 w-32 animate-pulse rounded" />
-          {[1, 2].map((j) => (
-            <div
-              key={j}
-              className="border-border-subtle flex items-center gap-3 border-b px-3 py-2"
-            >
-              <div className="bg-surface-sunken h-3 w-20 animate-pulse rounded" />
-              <div className="bg-surface-sunken h-3 w-24 animate-pulse rounded" />
-              <div className="bg-surface-sunken h-3 w-16 animate-pulse rounded" />
-              <div className="bg-surface-sunken h-3 w-32 animate-pulse rounded" />
+    <div className="flex flex-col gap-4 p-4" aria-label="Loading scheduled wakes">
+      {[1, 2].map((i) => (
+        <div
+          key={i}
+          className="bg-surface border-border-default shadow-pasture-sm animate-pulse space-y-3 rounded-lg border p-4"
+        >
+          <div className="bg-surface-sunken h-4 w-24 rounded" />
+          {[1, 2, 3].map((j) => (
+            <div key={j} className="flex items-center gap-3">
+              <div className="bg-surface-sunken h-3 w-16 rounded" />
+              <div className="bg-surface-sunken h-3 w-12 rounded" />
+              <div className="bg-surface-sunken h-3 w-20 rounded" />
+              <div className="bg-surface-sunken h-3 w-28 rounded" />
             </div>
           ))}
         </div>
@@ -108,40 +138,45 @@ function ScheduleSkeleton(): JSX.Element {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Wake row                                                           */
+/*  Wake row — within a per-agent Pasture card                         */
 /* ------------------------------------------------------------------ */
 
 function WakeRow({ entry, slug }: { entry: WorkHourRecord; slug: string }): JSX.Element {
   return (
-    <div className="border-border-subtle hover:bg-surface-raised flex items-center gap-3 border-b px-3 py-2 text-sm transition-colors">
+    <div className="hover:bg-surface-hover flex items-center gap-3 rounded px-2 py-1.5 text-sm transition-colors">
+      {/* Status pill */}
+      <span
+        className={cn(
+          'shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide',
+          statusPill(entry.status),
+        )}
+      >
+        {formatStatus(entry.status)}
+      </span>
+
       {/* Local date */}
-      <span className="text-fg-muted w-24 shrink-0 font-mono text-xs">
+      <span className="text-text-muted shrink-0 font-mono text-xs tabular-nums">
         {entry.local_date}
       </span>
 
-      {/* Slot (cadence label) */}
-      <span className="text-fg shrink-0 font-mono text-xs" title={`Slot: ${entry.slot}`}>
+      {/* Slot */}
+      <span className="text-text-secondary shrink-0 font-mono text-xs tabular-nums">
         {entry.slot}
       </span>
 
       {/* Mode */}
-      <span className="text-fg-muted shrink-0 text-xs capitalize">
+      <span className="text-text-muted shrink-0 text-xs capitalize">
         {entry.mode}
       </span>
 
       {/* Scheduled for */}
-      <span className="text-fg-muted w-40 shrink-0 text-xs">
+      <span className="text-text-muted shrink-0 text-xs">
         {formatScheduledFor(entry.scheduled_for)}
-      </span>
-
-      {/* Status */}
-      <span className={cn('shrink-0 text-xs font-medium', STATUS_COLOR[entry.status] ?? 'text-fg-muted')}>
-        {formatStatus(entry.status)}
       </span>
 
       {/* Routine count */}
       {entry.routine_count > 0 && (
-        <span className="text-fg-muted shrink-0 text-xs">
+        <span className="text-text-muted shrink-0 text-xs tabular-nums">
           {entry.routine_count} {entry.routine_count === 1 ? 'routine' : 'routines'}
         </span>
       )}
@@ -167,11 +202,49 @@ function WakeRow({ entry, slug }: { entry: WorkHourRecord; slug: string }): JSX.
 }
 
 /* ------------------------------------------------------------------ */
+/*  Agent group card — Pasture card with font-display header          */
+/* ------------------------------------------------------------------ */
+
+function AgentGroupCard({
+  agent,
+  entries,
+  slug,
+}: {
+  agent: string;
+  entries: WorkHourRecord[];
+  slug: string;
+}): JSX.Element {
+  return (
+    <div className="bg-surface border-border-default shadow-pasture-sm overflow-hidden rounded-lg border">
+      {/* Card header — agent name + count eyebrow */}
+      <div className="border-border-default flex items-center justify-between border-b px-4 py-3">
+        <Link
+          to={`/orgs/${slug}/agents/${agent}`}
+          className="text-text-primary font-display text-base hover:underline"
+        >
+          {agent}
+        </Link>
+        <span className="text-text-muted font-mono text-xs tabular-nums">
+          {entries.length} wake{entries.length !== 1 ? 's' : ''}
+        </span>
+      </div>
+
+      {/* Wake entries */}
+      <div className="divide-border-subtle divide-y px-2 py-1">
+        {entries.map((e) => (
+          <WakeRow key={e.work_hour_id} entry={e} slug={slug} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Main component                                                     */
 /* ------------------------------------------------------------------ */
 
 export function SchedulePage(): JSX.Element {
-  const { slug = '' } = useParams<{ slug: string }>();
+  const { slug: orgSlug } = useParams<{ slug: string }>();
   const query = useWorkHoursList({ limit: 100 });
   const queryClient = useQueryClient();
 
@@ -181,14 +254,14 @@ export function SchedulePage(): JSX.Element {
   const groups = useMemo(() => groupByAgent(entries), [entries]);
 
   return (
-    <div className="bg-surface-canvas flex h-full flex-col">
-      {/* Header */}
-      <header className="border-border-subtle border-b p-4">
+    <div className="flex h-full flex-col">
+      {/* Header — Pasture PageHeader with font-display */}
+      <header className="border-border-default border-b p-4">
         <PageHeader
-          title="Schedule"
+          title={<span className="font-display">Schedule</span>}
           meta="Per-agent working-hours wakes — when agents run and what they spawn."
         />
-        <p className="text-caption text-fg-muted mt-2">
+        <p className="text-text-muted mt-2 text-xs">
           View-only. Creating named recurring wakes is not available in this release.
         </p>
       </header>
@@ -199,7 +272,7 @@ export function SchedulePage(): JSX.Element {
       {/* Error */}
       {query.isError && (
         <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
-          <p className="text-tier-red text-sm">
+          <p className="text-feedback-danger text-sm">
             Could not load scheduled wakes.
             {query.error?.message && <> {query.error.message}</>}
           </p>
@@ -208,7 +281,7 @@ export function SchedulePage(): JSX.Element {
             variant="outline"
             onClick={() =>
               queryClient.invalidateQueries({
-                queryKey: ['work-hours-list', slug],
+                queryKey: ['work-hours-list', orgSlug],
               })
             }
           >
@@ -227,25 +300,24 @@ export function SchedulePage(): JSX.Element {
         </div>
       )}
 
-      {/* Wake list */}
+      {/* Wake list — agent cards */}
       {!query.isLoading && !query.isError && entries.length > 0 && (
         <div className="flex-1 overflow-y-auto" aria-label="Scheduled wakes">
-          {groups.map(({ agent, entries: agentEntries }) => (
-            <div key={agent}>
-              {/* Agent group header */}
-              <h3 className="text-fg-muted bg-surface-sunken sticky top-0 z-10 border-b px-3 py-2 text-xs font-medium tracking-wider uppercase">
-                <Link
-                  to={`/orgs/${slug}/agents/${agent}`}
-                  className="text-accent hover:underline"
-                >
-                  {agent}
-                </Link>
-              </h3>
-              {agentEntries.map((e) => (
-                <WakeRow key={e.work_hour_id} entry={e} slug={slug} />
-              ))}
-            </div>
-          ))}
+          {/* Count eyebrow */}
+          <p className="text-text-secondary mx-4 mt-4 mb-2 text-xs font-semibold tracking-wider uppercase">
+            {entries.length} wake{entries.length !== 1 ? 's' : ''} across {groups.length} agent{groups.length !== 1 ? 's' : ''}
+          </p>
+
+          <div className="space-y-4 p-4">
+            {groups.map(({ agent, entries: agentEntries }) => (
+              <AgentGroupCard
+                key={agent}
+                agent={agent}
+                entries={agentEntries}
+                slug={orgSlug ?? ''}
+              />
+            ))}
+          </div>
         </div>
       )}
     </div>
