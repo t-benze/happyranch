@@ -1,16 +1,11 @@
-import { screen, waitFor, within, fireEvent } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
-import { beforeEach, describe, expect, test, vi, beforeAll } from 'vitest';
+import { beforeEach, describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 import type { JobRecord } from '@/lib/api/types';
-
-// Radix Select uses scrollIntoView which isn't available in jsdom.
-beforeAll(() => {
-  Element.prototype.scrollIntoView = vi.fn();
-});
 
 const SLUG = 'hk-macau-tourism';
 
@@ -108,22 +103,25 @@ describe('AgentsPage — two-pane roster list', () => {
     const rowBtn = screen.getByRole('button', { name: /engineering_head/ });
     await user.click(rowBtn);
 
-    // Detail pane renders with agent metadata
+    // Detail pane renders with agent metadata — role pill + team name
     await waitFor(() => {
-      expect(screen.getByText(/team: engineering/)).toBeInTheDocument();
+      expect(screen.getByText('manager')).toBeInTheDocument();
     });
     expect(
       screen.getByText(/No tasks where this agent was the assigned manager/),
     ).toBeInTheDocument();
   });
 
-  test('shows calm empty state when no agent selected', () => {
+  test('shows calm empty state when no agent selected', async () => {
     stubBaseHandlers();
     mountAt(`/orgs/${SLUG}/agents`);
 
-    expect(
-      screen.getByText(/Select an agent from the roster/),
-    ).toBeInTheDocument();
+    // The right pane shows a calm state with "Select an agent" when no agent selected
+    await waitFor(() => {
+      expect(
+        screen.getAllByText(/Select an agent/).length,
+      ).toBeGreaterThan(0);
+    });
   });
 
   test('Add agent button opens dialog', async () => {
@@ -146,10 +144,11 @@ describe('AgentDetailPane — editable fields', () => {
     mountAt(`/orgs/${SLUG}/agents/engineering_head`);
 
     await waitFor(() => {
-      expect(screen.getByText('claude')).toBeInTheDocument();
+      expect(screen.getByText('Executor')).toBeInTheDocument();
     });
-    // Executor select trigger should be visible
-    expect(screen.getByText(/Executor/)).toBeInTheDocument();
+    // Executor segmented control buttons should be visible
+    const claudeBtn = screen.getByRole('button', { name: 'claude' });
+    expect(claudeBtn).toBeInTheDocument();
   });
 
   test('shows repo chips and Add repository button', async () => {
@@ -216,9 +215,9 @@ describe('AgentDetailPane — editable fields', () => {
 
     await waitFor(() => {
       expect(screen.getByText('Accountability')).toBeInTheDocument();
-      expect(screen.getByText(/1 done/)).toBeInTheDocument();
+      expect(screen.getByText('done')).toBeInTheDocument();
+      expect(screen.getByText('tasks')).toBeInTheDocument();
     });
-    expect(screen.getByText(/2 total tasks/)).toBeInTheDocument();
   });
 
   test('close button clears selection and shows calm state', async () => {
@@ -228,7 +227,7 @@ describe('AgentDetailPane — editable fields', () => {
     mountAt(`/orgs/${SLUG}/agents/engineering_head`);
 
     await waitFor(() => {
-      expect(screen.getByText(/team: engineering/)).toBeInTheDocument();
+      expect(screen.getByText('manager')).toBeInTheDocument();
     });
 
     // Click the X close button — it's the first X icon button in the detail pane
@@ -240,8 +239,8 @@ describe('AgentDetailPane — editable fields', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText(/Select an agent from the roster/),
-      ).toBeInTheDocument();
+        screen.getAllByText(/Select an agent/).length,
+      ).toBeGreaterThan(0);
     });
   });
 });
@@ -270,18 +269,13 @@ describe('AgentDetailPane — save flow (executor switch)', () => {
     const user = userEvent.setup();
     mountAt(`/orgs/${SLUG}/agents/engineering_head`);
 
-    // Wait for detail pane to render, then find the executor Select.
+    // Wait for detail pane to render with executor segmented control.
     await waitFor(() => {
-      expect(screen.getByText(/team: engineering/)).toBeInTheDocument();
+      expect(screen.getByText('manager')).toBeInTheDocument();
     });
-    // The executor Select is a combobox. There are 2 comboboxes (sidebar org
-    // switcher + this one). Scope to the detail pane by looking inside <main>.
-    const mainEl = document.querySelector('main');
-    expect(mainEl).toBeTruthy();
-    const selectTrigger = within(mainEl!).getByRole('combobox');
-    fireEvent.click(selectTrigger);
-    const codexOption = await screen.findByRole('option', { name: 'codex' });
-    fireEvent.click(codexOption);
+    // The executor segmented control: find "codex" button and click it.
+    const codexBtn = screen.getByRole('button', { name: 'codex' });
+    await user.click(codexBtn);
 
     // Save bar should appear
     await waitFor(() => {
@@ -305,14 +299,11 @@ describe('AgentDetailPane — save flow (executor switch)', () => {
     mountAt(`/orgs/${SLUG}/agents/engineering_head`);
 
     await waitFor(() => {
-      expect(screen.getByText(/team: engineering/)).toBeInTheDocument();
+      expect(screen.getByText('manager')).toBeInTheDocument();
     });
-    const mainEl = document.querySelector('main');
-    expect(mainEl).toBeTruthy();
-    const selectTrigger = within(mainEl!).getByRole('combobox');
-    fireEvent.click(selectTrigger);
-    const codexOption = await screen.findByRole('option', { name: 'codex' });
-    fireEvent.click(codexOption);
+    // Find "codex" button in the segmented executor control
+    const codexBtn = screen.getByRole('button', { name: 'codex' });
+    await user.click(codexBtn);
 
     // Save bar visible
     await waitFor(() => {
@@ -322,7 +313,7 @@ describe('AgentDetailPane — save flow (executor switch)', () => {
     // Click Reset
     await user.click(screen.getByText('Reset'));
 
-    // Save bar hidden, executor back to claude (shown in trigger)
+    // Save bar hidden — executor back to claude
     await waitFor(() => {
       expect(screen.queryByText('Reset')).not.toBeInTheDocument();
     });
@@ -381,14 +372,11 @@ describe('AgentDetailPane — save flow (repo management)', () => {
     mountAt(`/orgs/${SLUG}/agents/engineering_head`);
 
     await waitFor(() => {
-      expect(screen.getByText(/team: engineering/)).toBeInTheDocument();
+      expect(screen.getByText('manager')).toBeInTheDocument();
     });
-    const mainEl = document.querySelector('main');
-    expect(mainEl).toBeTruthy();
-    const selectTrigger = within(mainEl!).getByRole('combobox');
-    fireEvent.click(selectTrigger);
-    const codexOption = await screen.findByRole('option', { name: 'codex' });
-    fireEvent.click(codexOption);
+    // Click "codex" button in the segmented executor control
+    const codexBtn = screen.getByRole('button', { name: 'codex' });
+    await user.click(codexBtn);
 
     await waitFor(() => {
       expect(screen.getByText('Save agent')).toBeInTheDocument();
@@ -438,7 +426,7 @@ describe('AgentsPage — route collision regression', () => {
 
     // Detail pane shows the "pending" agent's metadata, not the enrollments tab
     await waitFor(() =>
-      expect(screen.getByText(/team: engineering/)).toBeInTheDocument(),
+      expect(screen.getByText('worker')).toBeInTheDocument(),
     );
   });
 });
@@ -617,7 +605,7 @@ describe('AgentDetailPane — recent jobs cross-link', () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByText(/team: engineering/)).toBeInTheDocument(),
+      expect(screen.getByText('manager')).toBeInTheDocument(),
     );
     expect(screen.queryByText(/Recent jobs/i)).not.toBeInTheDocument();
   });

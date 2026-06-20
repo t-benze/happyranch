@@ -1,17 +1,14 @@
 /**
- * AgentsPage — two-pane layout (§4.4, design-overhaul).
+ * AgentsPage — two-pane Pasture layout.
  *
- * LEFT PANE: agent roster list with status dot + role strings from real
- * stored data. Click selects an agent → detail/edit appears in the right
- * pane. Pending enrollments tab available via search param `?view=pending`.
+ * LEFT PANE: agent roster list at w-rail (244px) with Pasture card styling,
+ * role-colored led dot, active-state left-marker accent bar.
  *
- * RIGHT PANE: AgentDetailPane — editable executor, repo chips (real saves),
- * read-only system prompt + description (gap: no founder-facing update route),
- * accountability metrics (DERIVE from real tasks), recent tasks/learnings/jobs
- * with object-ID click-through.
+ * RIGHT PANE: AgentDetailPane — editable executor segmented control,
+ * repo/tool chips as rounded-full tags, accountability metrics with
+ * display font, real saves. Calm empty-state when no agent selected.
  *
- * States: Loading skeleton, Empty roster (calm), Error with retry.
- * NO autonomy toggle (A1 deferred). NO dollar/cost meter.
+ * NO autonomy toggle (founder ruling). NO permission-model changes.
  */
 import { useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
@@ -23,7 +20,6 @@ import {
   TabsContent,
 } from '@/design-system/primitives/Tabs';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
-import { AgentChip } from '@/design-system/patterns/AgentChip';
 import { Button } from '@/design-system/primitives/Button';
 import { useAgentsList, useAgentsRoutes } from '@/hooks/agents';
 import { useDensity } from '@/hooks/density';
@@ -80,8 +76,8 @@ export function AgentsPage(): JSX.Element {
 
       {/* --- Two-pane body --- */}
       <div className="flex flex-1 overflow-hidden">
-        {/* LEFT: Roster list */}
-        <aside className="border-border-subtle bg-surface-sunken w-80 shrink-0 overflow-y-auto border-r">
+        {/* LEFT: Roster list — Pasture w-rail (244px) */}
+        <aside className="border-border-subtle bg-surface-sunken w-rail shrink-0 overflow-y-auto border-r">
           <Tabs value={tab}>
             <TabsContent value="active" className="mt-0">
               {agentsQuery.isLoading ? (
@@ -89,7 +85,7 @@ export function AgentsPage(): JSX.Element {
                   {[1, 2, 3, 4, 5].map((i) => (
                     <div
                       key={i}
-                      className="bg-bg-raised h-10 w-full rounded"
+                      className="bg-surface-raised h-10 w-full rounded-lg"
                     />
                   ))}
                 </div>
@@ -105,7 +101,7 @@ export function AgentsPage(): JSX.Element {
                   />
                 </div>
               ) : (
-                <ul className="divide-border-subtle divide-y">
+                <ul className="flex flex-col gap-1 p-2">
                   {agents.map((a) => {
                     const active = selectedAgent === a.name;
                     return (
@@ -113,18 +109,36 @@ export function AgentsPage(): JSX.Element {
                         <button
                           type="button"
                           onClick={() => navigate(routes.detail(a.name))}
-                          className={`hover:bg-surface-raised/60 w-full px-3 ${rowPad} text-left transition-colors ${
-                            active ? 'bg-accent-muted' : ''
+                          className={`hover:bg-surface-hover relative w-full overflow-hidden px-3 ${rowPad} rounded-lg text-left transition-colors ${
+                            active
+                              ? 'bg-accent-muted border-accent-muted shadow-pasture-sm border'
+                              : 'bg-surface hover:border-border-default border border-transparent'
                           }`}
                         >
+                          {active && (
+                            <span
+                              aria-hidden="true"
+                              className="bg-accent absolute top-1 bottom-1 left-0 w-0.5 rounded-full"
+                            />
+                          )}
                           <div className="flex items-center gap-2">
-                            <AgentChip name={a.name} role={a.role ?? 'worker'} />
+                            <span className="font-display text-text-primary truncate text-sm font-medium">
+                              {a.name}
+                            </span>
+                            <span
+                              aria-hidden="true"
+                              className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
+                                a.role === 'manager'
+                                  ? 'bg-agent-manager'
+                                  : 'bg-agent-worker'
+                              }`}
+                            />
                           </div>
-                          <div className="text-fg-muted mt-0.5 text-xs">
+                          <div className="text-text-muted mt-0.5 text-xs tabular-nums">
                             {a.team ?? 'No team'} · {a.executor ?? 'No executor'}
                           </div>
                           {a.description && (
-                            <p className="text-fg-muted mt-0.5 truncate text-xs">
+                            <p className="text-text-muted mt-0.5 truncate text-xs leading-relaxed">
                               {a.description}
                             </p>
                           )}
@@ -149,10 +163,18 @@ export function AgentsPage(): JSX.Element {
               onClose={() => navigate(routes.inbox())}
             />
           ) : (
-            <div className="text-fg-muted flex h-full items-center justify-center">
+            <div className="text-text-muted flex h-full items-center justify-center">
               <div className="text-center">
-                <p className="text-sm">Select an agent from the roster to view details.</p>
-                <p className="mt-1 text-xs">Or add a new agent to get started.</p>
+                <p className="font-display text-text-primary text-lg font-medium">
+                  {agents.length > 0
+                    ? 'Select an agent'
+                    : 'No agents yet'}
+                </p>
+                <p className="text-text-muted mt-2 text-sm">
+                  {agents.length > 0
+                    ? 'Select an agent from the roster to view and edit details.'
+                    : 'Add a manager to create your first team.'}
+                </p>
               </div>
             </div>
           )}

@@ -1,39 +1,20 @@
 /**
- * AgentDetailPane — inline right detail/edit pane (replaces AgentDetailDrawer).
+ * AgentDetailPane — inline right detail/edit pane (Direction-A Pasture).
  *
- * Two-pane Agents surface: this is the detail/edit pane, rendered inline
- * alongside the roster list. The PRD calls for two-pane; the drawer was the
- * pre-reshape IA-shell pattern.
+ * Direction-A Pasture styling: font-display for agent name / section headings,
+ * cards with shadow-pasture-sm + rounded-lg (18px), tag pills (rounded-full,
+ * led dot), tabular-nums for counts/IDs, executor as segmented control.
  *
- * Sections:
- *   1. Header — AgentChip, role + team + status dot.
- *   2. Editable fields — executor segmented, repo chips with add/remove.
- *      System prompt + description are READ-ONLY (gap: no founder-facing
- *      route for POST /agents/manage action=update — that route requires
- *      task_id+session_id agent auth). Honest-gap label rendered.
- *   3. Sticky save bar — appears when executor or repos are dirty.
- *      Save → real PUT /agents/{name}/executor + POST /agents/{name}/repos.
- *   4. Accountability metrics — DERIVE: real task counts, acceptance rate.
- *   5. Object-ID click-through — recent tasks, threads, jobs.
- *   6. Learnings — read-only list.
- *
- * States: Clean ⇄ Dirty (save bar hidden/shown); Saving → Saved / Error.
- * Renders a calm empty-state when no agent is selected.
+ * Sections: Header (agent identity), executor segmented control, repo/tool
+ * chips, system prompt collapsible, accountability metrics, recent
+ * tasks/learnings/jobs. Sticky save bar at bottom.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { ChevronDown, ChevronRight, Plus, X, AlertCircle } from 'lucide-react';
-import { AgentChip } from '@/design-system/patterns/AgentChip';
 import { TaskCard } from '@/design-system/patterns/TaskCard';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { Button } from '@/design-system/primitives/Button';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/design-system/primitives/Select';
 import { ApiError } from '@/lib/api';
 import {
   useAgentLearnings,
@@ -258,125 +239,143 @@ export function AgentDetailPane({ agentName, onClose }: AgentDetailPaneProps): J
   return (
     <section className="flex h-full flex-col">
       {/* --- Header --- */}
-      <header className="border-border-subtle flex items-start justify-between gap-3 border-b p-4">
-        <div>
+      <header className="border-border-default flex items-start justify-between gap-3 border-b px-5 py-4">
+        <div className="min-w-0 flex-1">
           <div className="flex items-center gap-3">
-            <AgentChip name={agentName} role={agent?.role ?? 'worker'} />
+            <h2 className="font-display text-text-primary truncate text-xl font-medium">
+              {agentName}
+            </h2>
+            <span
+              aria-hidden="true"
+              className={`inline-block h-2 w-2 shrink-0 rounded-full ${
+                agent?.role === 'manager'
+                  ? 'bg-agent-manager'
+                  : 'bg-agent-worker'
+              }`}
+            />
           </div>
-          <p className="text-fg-muted mt-1 text-xs">
-            {agent ? (
+          <div className="text-text-muted mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
+            <span className="bg-surface-sunken border-border-default rounded-full border px-2 py-px text-xs font-medium">
+              {agent?.role ?? '…'}
+            </span>
+            <span className="tabular-nums">
+              {agent?.team ?? '—'}
+            </span>
+            {agent?.executor && (
               <>
-                <span>team: {agent.team ?? '—'}</span>
-                {agent.executor && <span> · executor: {agent.executor}</span>}
+                <span aria-hidden="true" className="text-text-muted">·</span>
+                <span className="bg-accent-soft text-accent-text rounded-full px-2 py-px text-xs font-medium">
+                  {agent.executor}
+                </span>
               </>
-            ) : agentsQuery.isLoading ? (
-              'Loading…'
-            ) : (
-              'Agent not found'
             )}
-          </p>
+          </div>
           {agent?.description && (
-            <p className="text-fg mt-2 text-sm">{agent.description}</p>
+            <p className="text-text-secondary mt-2 text-sm leading-relaxed">{agent.description}</p>
           )}
         </div>
-        <Button variant="ghost" size="sm" onClick={onClose}>
+        <Button variant="ghost" size="sm" className="shrink-0" onClick={onClose}>
           <X size={16} />
         </Button>
       </header>
 
-      {/* --- Editable fields --- */}
-      <div className="flex-1 space-y-5 overflow-y-auto p-4">
-        {/* Executor switch */}
-        <div>
-          <label className="text-fg-muted mb-1 block text-xs font-medium tracking-wider uppercase">
+      {/* --- Editable fields — Pasture card sections --- */}
+      <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4">
+        {/* Executor — segmented control */}
+        <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+          <h3 className="text-overline text-text-muted mb-3 tracking-wider uppercase">
             Executor
-          </label>
-          <Select value={displayExecutor} onValueChange={onExecutorChange}>
-            <SelectTrigger>
-              <SelectValue placeholder="Select executor…" />
-            </SelectTrigger>
-            <SelectContent>
-              {EXECUTOR_OPTIONS.map((opt) => (
-                <SelectItem key={opt.value} value={opt.value}>
+          </h3>
+          <div className="flex gap-1">
+            {EXECUTOR_OPTIONS.map((opt) => {
+              const selected = displayExecutor === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => onExecutorChange(opt.value)}
+                  className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                    selected
+                      ? 'bg-accent-soft text-accent-text border border-transparent'
+                      : 'bg-surface-sunken text-text-muted border-border-default hover:border-border-strong border'
+                  }`}
+                >
                   {opt.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <p className="text-fg-muted mt-1 text-xs">
-            Edits take effect on this agent's next task.
+                </button>
+              );
+            })}
+          </div>
+          <p className="text-text-muted mt-2 text-xs">
+            Takes effect on this agent's next task.
           </p>
-        </div>
+        </section>
 
-        {/* System prompt — READ-ONLY with gap notice */}
+        {/* System prompt — READ-ONLY card */}
         {agent?.system_prompt && (
-          <div>
+          <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border">
             <button
               type="button"
               onClick={() => setShowPrompt(!showPrompt)}
-              className="text-fg-muted hover:text-fg flex w-full items-center gap-1 text-xs font-medium tracking-wider uppercase transition-colors"
+              className="text-text-secondary hover:text-text-primary flex w-full items-center gap-2 px-4 py-3 text-xs font-medium tracking-wider uppercase transition-colors"
             >
               {showPrompt ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
               System prompt
             </button>
             {showPrompt && (
-              <>
-                <pre className="bg-bg-raised border-border mt-2 max-h-48 overflow-auto rounded border p-3 text-xs whitespace-pre-wrap">
+              <div className="border-border-default border-t px-4 pb-4">
+                <pre className="bg-surface-sunken border-border-subtle mt-3 max-h-48 overflow-auto rounded-md border p-3 font-mono text-xs whitespace-pre-wrap">
                   {agent.system_prompt}
                 </pre>
-                <div className="text-fg-muted mt-1 flex items-center gap-1 text-xs">
+                <div className="text-text-muted mt-2 flex items-center gap-1.5 text-xs">
                   <AlertCircle size={12} />
                   <span>
                     Read-only. Updating system prompt from the web UI requires a
-                    founder-facing PUT route (the daemon's POST /agents/manage
-                    action=update needs task_id+session_id agent auth).
+                    founder-facing route.
                   </span>
                 </div>
-              </>
+              </div>
             )}
-          </div>
+          </section>
         )}
 
         {/* Description — READ-ONLY */}
         {agent?.description && (
-          <div>
-            <span className="text-fg-muted mb-1 block text-xs font-medium tracking-wider uppercase">
+          <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+            <h3 className="text-overline text-text-muted mb-2 tracking-wider uppercase">
               Description
-            </span>
-            <p className="text-fg text-sm">{agent.description}</p>
-            <div className="text-fg-muted mt-1 flex items-center gap-1 text-xs">
+            </h3>
+            <p className="text-text-secondary text-sm leading-relaxed">{agent.description}</p>
+            <div className="text-text-muted mt-2 flex items-center gap-1.5 text-xs">
               <AlertCircle size={12} />
-              <span>
-                Read-only. Same gap as system prompt — no founder-facing update route
-                for agent description.
-              </span>
+              <span>Read-only — no founder-facing update route for description.</span>
             </div>
-          </div>
+          </section>
         )}
 
-        {/* Repo chips */}
-        <div>
-          <label className="text-fg-muted mb-1 block text-xs font-medium tracking-wider uppercase">
+        {/* Repo chips — rounded-full tag pattern */}
+        <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+          <h3 className="text-overline text-text-muted mb-3 tracking-wider uppercase">
             Repositories
-          </label>
-          <div className="mb-2 flex flex-wrap gap-1">
+          </h3>
+          <div className="mb-3 flex flex-wrap gap-1.5">
             {Object.entries(displayRepos).map(([key, url]) => (
               <span
                 key={key}
-                className="bg-bg-raised border-border text-fg-muted group inline-flex items-center gap-1 rounded border px-2 py-0.5 text-xs"
+                className="bg-surface-sunken border-border-default text-text-secondary inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium"
               >
+                <span className="bg-agent-worker inline-block h-1.5 w-1.5 shrink-0 rounded-full" />
                 <a
                   href={url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="hover:text-accent transition-colors"
+                  className="hover:text-accent-text transition-colors"
                 >
                   {key}
                 </a>
                 <button
                   type="button"
                   onClick={() => onRepoRemove(key)}
-                  className="text-fg-muted hover:text-tier-red ml-1 transition-colors"
+                  className="text-text-muted hover:text-tier-red ml-0.5 transition-colors"
                   aria-label={`Remove ${key}`}
                 >
                   <X size={12} />
@@ -384,19 +383,19 @@ export function AgentDetailPane({ agentName, onClose }: AgentDetailPaneProps): J
               </span>
             ))}
             {Object.keys(displayRepos).length === 0 && (
-              <span className="text-fg-muted text-xs">None</span>
+              <span className="text-text-muted text-xs">No repositories configured.</span>
             )}
           </div>
           {showRepoAdd ? (
-            <div className="bg-surface-raised border-border space-y-2 rounded-md border p-2">
+            <div className="bg-surface-sunken border-border-default space-y-2 rounded-lg border p-3">
               <input
-                className="border-border-subtle bg-bg-subtle w-full rounded border px-2 py-1 text-xs"
+                className="border-border-subtle bg-surface w-full rounded-md border px-2.5 py-1.5 text-xs"
                 placeholder="Repo name (e.g. happyranch)"
                 value={repoAddName}
                 onChange={(e) => setRepoAddName(e.target.value)}
               />
               <input
-                className="border-border-subtle bg-bg-subtle w-full rounded border px-2 py-1 text-xs"
+                className="border-border-subtle bg-surface w-full rounded-md border px-2.5 py-1.5 text-xs"
                 placeholder="Git URL"
                 value={repoAddUrl}
                 onChange={(e) => setRepoAddUrl(e.target.value)}
@@ -420,35 +419,45 @@ export function AgentDetailPane({ agentName, onClose }: AgentDetailPaneProps): J
               Add repository
             </Button>
           )}
-        </div>
+        </section>
 
-        {/* Accountability metrics */}
-        <div className="border-border-subtle rounded-lg border p-3">
-          <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+        {/* Accountability metrics — display font, card */}
+        <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+          <h3 className="text-overline text-text-muted mb-3 tracking-wider uppercase">
             Accountability
           </h3>
           {tasksQuery.isLoading ? (
-            <p className="text-fg-muted text-xs">Loading…</p>
+            <p className="text-text-muted text-xs">Loading…</p>
           ) : tasksQuery.isError ? (
             <p className="text-tier-red text-xs">
               Failed to load task counts.
             </p>
           ) : (
-            <div className="text-sm">
-              <span className="text-fg">
-                {done} done · {total} total tasks
+            <div className="flex items-baseline gap-3">
+              <span className="font-display text-text-primary text-2xl font-medium tabular-nums">
+                {total}
+              </span>
+              <span className="text-text-secondary text-sm tabular-nums">
+                tasks
+              </span>
+              <span aria-hidden="true" className="text-text-muted">·</span>
+              <span className="font-display text-text-primary text-2xl font-medium tabular-nums">
+                {done}
+              </span>
+              <span className="text-text-secondary text-sm tabular-nums">
+                done
               </span>
             </div>
           )}
-        </div>
+        </section>
 
         {/* Recent tasks */}
-        <div>
-          <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+        <section>
+          <h3 className="text-overline text-text-muted mb-3 tracking-wider uppercase">
             Recent tasks
           </h3>
           {tasksQuery.isLoading ? (
-            <p className="text-fg-muted text-xs">Loading tasks…</p>
+            <p className="text-text-muted text-xs">Loading tasks…</p>
           ) : tasksQuery.data && tasksQuery.data.tasks.length > 0 ? (
             <ul className="space-y-2">
               {tasksQuery.data.tasks.map((t) => (
@@ -463,21 +472,21 @@ export function AgentDetailPane({ agentName, onClose }: AgentDetailPaneProps): J
               ))}
             </ul>
           ) : (
-            <p className="text-fg-muted text-xs">
+            <p className="text-text-muted text-xs">
               No tasks where this agent was the assigned manager.
             </p>
           )}
-        </div>
+        </section>
 
         {/* Learnings */}
-        <div>
-          <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+        <section>
+          <h3 className="text-overline text-text-muted mb-3 tracking-wider uppercase">
             Learnings
           </h3>
           {learningsQuery.isLoading ? (
-            <p className="text-fg-muted text-xs">Loading learnings…</p>
+            <p className="text-text-muted text-xs">Loading learnings…</p>
           ) : learningsError?.status === 412 ? (
-            <p className="text-fg-muted text-xs">
+            <p className="text-text-muted text-xs">
               This workspace hasn't been migrated to the per-entry learnings
               layout yet. Run <code>happyranch learning reindex</code> from the
               CLI to upgrade.
@@ -491,14 +500,14 @@ export function AgentDetailPane({ agentName, onClose }: AgentDetailPaneProps): J
               {learningsQuery.data.entries.map((e) => (
                 <li
                   key={e.id}
-                  className="border-border-subtle bg-surface-raised rounded-md border p-2"
+                  className="border-border-default bg-surface shadow-pasture-sm rounded-lg border p-3"
                 >
                   <div className="flex items-center gap-2 text-xs">
-                    <span className="text-fg-muted font-mono">{e.id}</span>
-                    <span className="text-fg-muted">·</span>
-                    <span className="text-fg-muted">{e.topic}</span>
+                    <span className="text-text-muted font-mono tabular-nums">{e.id}</span>
+                    <span className="text-text-muted">·</span>
+                    <span className="text-text-muted">{e.topic}</span>
                   </div>
-                  <p className="text-fg mt-1 text-sm">{e.title}</p>
+                  <p className="text-text-primary mt-1 text-sm font-medium">{e.title}</p>
                 </li>
               ))}
             </ul>
@@ -508,47 +517,56 @@ export function AgentDetailPane({ agentName, onClose }: AgentDetailPaneProps): J
               body="This agent has not filed any learnings yet."
             />
           )}
-        </div>
+        </section>
 
         {/* Recent jobs — object-ID click-through */}
         {jobsQuery.data && jobsQuery.data.jobs.length > 0 && (
-          <div>
-            <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+          <section>
+            <h3 className="text-overline text-text-muted mb-3 tracking-wider uppercase">
               Recent jobs
             </h3>
-            <ul className="space-y-1 text-sm">
+            <ul className="space-y-1.5 text-sm">
               {jobsQuery.data.jobs.map((j) => (
-                <li key={j.id}>
+                <li
+                  key={j.id}
+                  className="border-border-default bg-surface shadow-pasture-sm rounded-lg border px-3 py-2"
+                >
                   {slug ? (
                     <Link
                       to={`/orgs/${slug}/jobs/${j.id}`}
-                      className="text-accent font-mono hover:underline"
+                      className="text-accent-text font-mono text-xs tabular-nums hover:underline"
                     >
                       {j.id}
                     </Link>
                   ) : (
-                    <span className="font-mono">{j.id}</span>
+                    <span className="font-mono text-xs tabular-nums">{j.id}</span>
                   )}
-                  {' — '}
-                  {j.title}{' '}
-                  <span className="text-fg-muted">({j.status})</span>
+                  <span className="text-text-primary ml-2">{j.title}</span>
+                  <span className="text-text-muted ml-2 text-xs">
+                    <span className="bg-surface-sunken border-border-default rounded-full border px-1.5 py-px text-xs font-medium">
+                      {j.status}
+                    </span>
+                  </span>
                 </li>
               ))}
             </ul>
-          </div>
+          </section>
         )}
       </div>
 
-      {/* --- Sticky save bar --- */}
+      {/* --- Sticky save bar — Pasture border/background --- */}
       {isDirty && (
-        <footer className="border-border-subtle bg-surface-sunken flex items-center justify-between gap-3 border-t p-3">
+        <footer className="border-border-default bg-surface-sunken flex items-center justify-between gap-3 border-t px-4 py-3">
           <div className="flex items-center gap-2">
             {saveError && (
-              <p className="text-tier-red text-xs">Save error: {saveError}</p>
+              <div className="text-tier-red flex items-center gap-1.5 text-xs">
+                <AlertCircle size={12} />
+                <span>Save error: {saveError}</span>
+              </div>
             )}
             {!saveError && (
-              <p className="text-fg-muted text-xs">
-                You have unsaved changes. ⌘S to save.
+              <p className="text-text-muted text-xs">
+                You have unsaved changes. <kbd className="bg-surface border-border-default rounded border px-1.5 py-px font-mono text-xs">⌘S</kbd> to save.
               </p>
             )}
           </div>
