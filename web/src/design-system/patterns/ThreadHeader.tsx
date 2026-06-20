@@ -1,6 +1,10 @@
 /**
  * ThreadHeader — the band above the message transcript. Per UI_SPEC §3.
- * Composes PageHeader + StatusBadge + IdBadge + participant list + actions.
+ * Composes PageHeader + inline Pasture status pill + IdBadge + participant
+ * list + actions.
+ *
+ * Direction-A Pasture: subject title uses --font-display (Newsreader serif),
+ * turn budget is a display-num readout, status pill matches ds.css .tag pattern.
  *
  * Pure prop-driven. Actions are handed in as a slot so the composition can
  * compose Button primitives with its own onClick wiring.
@@ -9,7 +13,6 @@ import type { ReactNode } from 'react';
 import { CrescentMoonBadge } from './CrescentMoonBadge';
 import { IdBadge } from './IdBadge';
 import { PageHeader } from './PageHeader';
-import { StatusBadge } from './StatusBadge';
 
 interface ThreadHeaderProps {
   threadId: string;
@@ -35,14 +38,23 @@ export function ThreadHeader({
   dreamOriginated,
   actions,
 }: ThreadHeaderProps): JSX.Element {
+  const statusPillCls =
+    status === 'open'
+      ? 'bg-accent-soft text-accent-text'
+      : 'bg-surface-sunken border border-border-default text-text-muted';
+
   return (
     <header className="border-border-default bg-surface-sunken border-b px-4 py-3">
       <PageHeader
         title={
           <span className="inline-flex items-center gap-2">
             {dreamOriginated && <CrescentMoonBadge />}
-            <span className="truncate">{subject}</span>
-            <StatusBadge status={status} />
+            <span className="font-display truncate font-medium tracking-tight">{subject}</span>
+            <span
+              className={`inline-flex items-center rounded-full px-2 py-px text-xs leading-relaxed font-semibold ${statusPillCls}`}
+            >
+              {status === 'open' ? 'active' : 'archived'}
+            </span>
           </span>
         }
         meta={
@@ -51,9 +63,10 @@ export function ThreadHeader({
             <span aria-hidden="true">·</span>
             <span>{participants.join(', ') || 'no participants'}</span>
             <span aria-hidden="true">·</span>
-            <span>
-              {turnsUsed}/{turnCap} turns
+            <span className="font-mono text-xs tabular-nums">
+              {turnsUsed}/{turnCap}
             </span>
+            <span className="text-text-muted text-xs">turns</span>
           </div>
         }
         actions={actions}

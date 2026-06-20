@@ -10,12 +10,14 @@
  * default full-page reload, so the composition can drive SPA routing.
  *
  * Renders AgentChip for `lastSpeaker`, IdBadge for the thread id,
- * StatusBadge for status. The needs-you dot is a leading 6px accent.
+ * inline Pasture pill for status. The needs-you dot is a leading 6px accent.
+ *
+ * Direction-A Pasture card styling: bg-surface border-border-default rounded-lg
+ * shadow-pasture-sm (ds.css .card). Active row uses accent-muted + left marker.
  */
 import type { ReactNode } from 'react';
 import { AgentChip } from './AgentChip';
 import { IdBadge } from './IdBadge';
-import { StatusBadge } from './StatusBadge';
 
 interface InboxRowProps {
   threadId: string;
@@ -54,21 +56,27 @@ export function InboxRow({
     e.preventDefault();
     onSelect();
   };
+  const statusLabel = status === 'open' ? 'active' : 'archived';
+  const statusPillCls =
+    status === 'open'
+      ? 'bg-accent-soft text-accent-text'
+      : 'bg-surface-sunken border border-border-default text-text-muted';
+
   return (
     <a
       href={href}
       onClick={handleClick}
       aria-current={active ? 'page' : undefined}
-      className={`group relative block w-full rounded-md px-3 py-2 text-left no-underline transition-colors ${
+      className={`group relative block w-full rounded-lg border px-3 py-2 text-left no-underline transition-colors ${
         active
-          ? 'bg-accent-muted'
-          : 'hover:bg-surface-raised'
+          ? 'bg-accent-muted border-accent-muted shadow-pasture-sm'
+          : 'bg-surface border-border-default shadow-pasture-sm hover:border-border-strong'
       }`}
     >
       {active && (
         <span
           aria-hidden="true"
-          className="bg-accent-default absolute inset-y-1 left-0 w-0.5 rounded-full"
+          className="bg-accent absolute inset-y-1 left-0 w-0.5 rounded-full"
         />
       )}
       <div className="flex items-center justify-between gap-2">
@@ -76,14 +84,18 @@ export function InboxRow({
           {needsYou && (
             <span
               aria-label="needs you"
-              className="bg-accent-default inline-block h-1.5 w-1.5 shrink-0 rounded-full"
+              className="bg-accent inline-block h-1.5 w-1.5 shrink-0 rounded-full"
             />
           )}
           <span className="text-body-sm text-text-primary truncate font-medium">
             {subject}
           </span>
         </div>
-        <StatusBadge status={status} />
+        <span
+          className={`inline-flex items-center rounded-full px-2 py-px text-xs leading-relaxed font-semibold ${statusPillCls}`}
+        >
+          {statusLabel}
+        </span>
       </div>
       <div className="text-caption text-text-muted mt-1 flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
