@@ -140,8 +140,8 @@ print("short lived", flush=True)
     await manager.close_all()
     pids = [int(line) for line in pid_log.read_text().splitlines()]
     assert session2 is not session1
-    assert output1 == ["short lived\r\n"]
-    assert output2 == ["short lived\r\n"]
+    assert "".join(output1) == "short lived\r\n"
+    assert "".join(output2) == "short lived\r\n"
     assert len(pids) == 2
     assert pids[0] != pids[1]
 
@@ -239,6 +239,6 @@ else:
     await session.start()
     output = await _read_until_terminal(session.subscribe())
 
-    assert output == ["ctty ok: True\r\n"]
+    assert "".join(output) == "ctty ok: True\r\n"
     assert session.is_running() is False
     assert session.master_fd is None
