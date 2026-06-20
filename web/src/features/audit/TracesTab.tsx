@@ -66,20 +66,20 @@ export function TracesTab(): JSX.Element {
 
   return (
     <div className="flex h-full gap-4">
-      <aside className="border-border-subtle w-72 shrink-0 overflow-y-auto border-r">
-        <h3 className="text-fg-muted px-3 pt-3 text-xs font-medium tracking-wider uppercase">
+      <aside className="border-border-default w-72 shrink-0 overflow-y-auto border-r">
+        <h3 className="text-text-secondary font-display px-3 pt-3 text-sm font-medium">
           Recent tasks
         </h3>
         {tasks.length === 0 ? (
-          <p className="text-fg-muted px-3 py-2 text-sm">No tasks in range.</p>
+          <p className="text-text-muted px-3 py-2 text-sm">No tasks in range.</p>
         ) : (
           <ul>
             {tasks.map((t) => (
               <li key={t.task_id}>
                 <Link
                   to={`${traceBase}/${t.task_id}${pickerSuffix}`}
-                  className={`hover:bg-surface-raised flex items-center gap-2 px-3 py-1.5 text-sm ${
-                    openTaskId === t.task_id ? 'bg-accent-muted' : ''
+                  className={`hover:bg-surface-hover flex items-center gap-2 px-3 py-1.5 text-sm ${
+                    openTaskId === t.task_id ? 'bg-accent-soft text-accent-text' : ''
                   }`}
                 >
                   <IdBadge kind="task" id={t.task_id} />
@@ -97,7 +97,7 @@ export function TracesTab(): JSX.Element {
             body="Select a task on the left to view its execution trace."
           />
         ) : recallQuery.isLoading ? (
-          <p className="text-fg-muted">Loading recall…</p>
+          <p className="text-text-muted p-4">Loading recall…</p>
         ) : recallQuery.data ? (
           <TraceTree
             root={recallQuery.data}

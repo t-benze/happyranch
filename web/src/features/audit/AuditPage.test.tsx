@@ -114,7 +114,7 @@ describe('AuditPage — day-grouped timeline', () => {
       // getSearchParams is driven by URL; check the active filter banner
       expect(screen.getByText(/Filtered:/)).toBeInTheDocument();
       // Verify the filter action text appears in the banner
-      expect(screen.getByText('escalation', { selector: '.text-fg.font-medium' })).toBeInTheDocument();
+      expect(screen.getByText('escalation', { selector: '.text-text-primary.font-medium' })).toBeInTheDocument();
     });
   });
 

@@ -33,7 +33,7 @@ export function EscalationsTab(): JSX.Element {
     limit: 500,
   });
 
-  if (auditQuery.isLoading) return <p className="text-fg-muted">Loading…</p>;
+  if (auditQuery.isLoading) return <p className="text-text-muted p-4">Loading…</p>;
   const entries = auditQuery.data?.entries ?? [];
   let folded = foldEscalations(entries);
   if (filters.agent) {
@@ -49,7 +49,7 @@ export function EscalationsTab(): JSX.Element {
   }
   return (
     <table className="w-full text-sm">
-      <thead className="text-fg-muted border-border-subtle border-b text-left">
+      <thead className="text-text-muted border-border-default border-b text-left">
         <tr>
           <th className="px-3 py-2">Raised</th>
           <th className="px-3 py-2">Agent</th>
@@ -62,7 +62,7 @@ export function EscalationsTab(): JSX.Element {
         {folded.map((row, i) => (
           <tr
             key={`${row.task_id ?? 'no-task'}-${row.raised_at}-${i}`}
-            className="border-border-subtle border-b"
+            className="border-border-default border-b"
           >
             <td className="text-fg-muted px-3 py-2 font-mono text-xs">
               {new Date(row.raised_at).toLocaleString()}
@@ -80,7 +80,7 @@ export function EscalationsTab(): JSX.Element {
             <td className="px-3 py-2">
               <span
                 className={
-                  row.resolved_at ? 'text-fg-muted' : 'text-feedback-warning'
+                  row.resolved_at ? 'text-text-muted' : 'text-attention'
                 }
               >
                 {row.resolved_at ? 'resolved' : 'open'}

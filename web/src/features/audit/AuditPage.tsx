@@ -23,6 +23,7 @@ import {
   encodeFilters,
   buildLegend,
   sinceToISO,
+  DOT_COLOR_CLASS,
   type AuditFilters,
   type LegendEntry,
 } from './audit-filters';
@@ -108,7 +109,7 @@ export function AuditPage(): JSX.Element {
   return (
     <div className="bg-surface-canvas flex h-full flex-col">
       {/* --- Top bar --- */}
-      <header className="border-border-subtle border-b p-4">
+      <header className="bg-surface border-border-default mx-4 mt-4 rounded-lg border p-4">
         <div className="flex items-start justify-between gap-3">
           <PageHeader
             title="Audit"
@@ -133,8 +134,8 @@ export function AuditPage(): JSX.Element {
                 className={cn(
                   'rounded-full px-3 py-1 text-xs font-medium transition-colors',
                   active
-                    ? 'bg-accent-default text-accent-contrast'
-                    : 'bg-surface-sunken text-fg-muted hover:bg-surface-raised hover:text-fg',
+                    ? 'bg-accent-soft text-accent-text border border-transparent'
+                    : 'bg-surface-sunken text-text-muted hover:bg-surface-raised hover:text-text-primary',
                 )}
               >
                 {opt.label}
@@ -158,13 +159,13 @@ export function AuditPage(): JSX.Element {
 
       {/* Active filter banner */}
       {filters.action && (
-        <div className="bg-surface-sunken border-border-subtle flex items-center gap-2 border-b px-4 py-1.5 text-xs">
-          <span className="text-fg-muted">Filtered:</span>
-          <span className="text-fg font-medium">{filters.action}</span>
+        <div className="bg-surface border-border-default flex items-center gap-2 border-b px-4 py-1.5 text-xs">
+          <span className="text-text-muted">Filtered:</span>
+          <span className="text-text-primary font-medium">{filters.action}</span>
           <button
             type="button"
             onClick={clearAction}
-            className="text-accent hover:underline"
+            className="text-accent-text hover:underline"
           >
             Clear filter
           </button>
@@ -178,16 +179,6 @@ export function AuditPage(): JSX.Element {
     </div>
   );
 }
-
-/* ------------------------------------------------------------------ */
-/*  Legend filter row                                                  */
-/* ------------------------------------------------------------------ */
-
-const DOT_COLOR: Record<string, string> = {
-  green: 'bg-feedback-success',
-  amber: 'bg-feedback-warning',
-  red: 'bg-tier-red',
-};
 
 /** Convert audit entries to CSV string. Respects the currently active
  *  legend filter + time-window (caller provides filtered entries). */
@@ -244,7 +235,7 @@ function LegendFilter({
         <button
           type="button"
           onClick={onClear}
-          className="text-fg-muted hover:text-fg rounded-full px-2 py-0.5 text-xs"
+          className="text-text-muted hover:text-text-primary rounded-full px-2 py-0.5 text-xs"
         >
           All
         </button>
@@ -259,16 +250,16 @@ function LegendFilter({
             className={cn(
               'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs transition-colors',
               active
-                ? 'bg-accent-muted ring-accent-default ring-1'
-                : 'bg-surface-sunken hover:bg-surface-raised',
+                ? 'bg-accent-soft text-accent-text border border-transparent'
+                : 'bg-surface-sunken text-text-muted hover:bg-surface-raised hover:text-text-primary',
             )}
           >
             <span
               aria-hidden="true"
-              className={cn('inline-block h-2 w-2 rounded-full', DOT_COLOR[le.color] ?? 'bg-fg-muted')}
+              className={cn('inline-block h-2 w-2 rounded-full', DOT_COLOR_CLASS[le.color])}
             />
-            <span className="text-fg">{le.label}</span>
-            <span className="text-fg-muted">{le.count}</span>
+            <span className="text-text-primary">{le.label}</span>
+            <span className="text-text-muted tabular-nums">{le.count}</span>
           </button>
         );
       })}

@@ -20,18 +20,13 @@ import type { AuditEntry } from '@/lib/api/types';
 import {
   decodeFilters,
   isAllClear,
+  DOT_COLOR_CLASS,
 } from './audit-filters';
 import { useQueryClient } from '@tanstack/react-query';
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
-
-const DOT_COLOR: Record<string, string> = {
-  green: 'bg-feedback-success',
-  amber: 'bg-feedback-warning',
-  red: 'bg-tier-red',
-};
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString(undefined, {
@@ -124,14 +119,14 @@ function TimelineRow({ entry, legendColor, slug }: TimelineRowProps): JSX.Elemen
   return (
     <div className="border-border-subtle hover:bg-surface-raised flex items-center gap-3 border-b px-3 py-2 text-sm transition-colors">
       {/* Time */}
-      <span className="text-fg-muted w-20 shrink-0 font-mono text-xs">
+      <span className="text-fg-muted w-20 shrink-0 font-mono text-xs tabular-nums">
         {formatTime(entry.timestamp)}
       </span>
 
       {/* Color-coded event dot */}
       <span
         aria-hidden="true"
-        className={cn('inline-block h-2 w-2 shrink-0 rounded-full', DOT_COLOR[legendColor] ?? 'bg-fg-muted')}
+        className={cn('inline-block h-2 w-2 shrink-0 rounded-full', DOT_COLOR_CLASS[legendColor as keyof typeof DOT_COLOR_CLASS] ?? 'bg-fg-muted')}
       />
 
       {/* Agent */}
@@ -151,7 +146,7 @@ function TimelineRow({ entry, legendColor, slug }: TimelineRowProps): JSX.Elemen
 
       {/* Token cost */}
       {tokens != null && tokens > 0 && (
-        <span className="text-fg-muted shrink-0 text-xs font-mono">
+        <span className="text-fg-muted shrink-0 font-mono text-xs tabular-nums">
           {formatTokens(tokens)} tok
         </span>
       )}
@@ -295,14 +290,14 @@ export function AuditTimeline({ legendMap, sinceISO }: AuditTimelineProps): JSX.
 
 function AllClearBanner(): JSX.Element {
   return (
-    <div className="bg-surface-sunken border-border-subtle mx-4 mt-4 flex items-center gap-3 rounded-lg border px-4 py-3">
+    <div className="bg-surface border-border-default shadow-pasture-sm mx-4 mt-4 flex items-center gap-3 rounded-lg border p-4">
       <span
         aria-hidden="true"
-        className="bg-feedback-success inline-block h-2.5 w-2.5 rounded-full"
+        className="bg-positive inline-block h-2.5 w-2.5 rounded-full"
       />
       <div>
-        <p className="text-fg text-sm font-medium">All clear</p>
-        <p className="text-fg-muted text-xs">
+        <p className="text-text-primary font-display text-sm font-medium">All clear</p>
+        <p className="text-text-muted text-xs">
           No failures or escalations in this window.
         </p>
       </div>
@@ -325,7 +320,7 @@ function TimelineBody({
     <div className="flex-1 overflow-y-auto" aria-label="Audit timeline">
       {days.map(({ date, entries: dayEntries }) => (
         <div key={date}>
-          <h3 className="text-fg-muted bg-surface-sunken sticky top-0 z-10 border-b px-3 py-2 text-xs font-medium tracking-wider uppercase">
+          <h3 className="text-text-secondary bg-surface-sunken border-border-subtle font-display sticky top-0 z-10 border-b px-4 py-2 text-sm font-medium">
             {formatDateHeader(date)}
           </h3>
           {dayEntries.map((e) => (

@@ -66,32 +66,42 @@ export interface LegendEntry {
   label: string;
   /** Count of matching entries in the current window. */
   count: number;
-  /** Dot color class: 'green' (ok), 'amber' (merge/escalation), 'red' (failure). */
-  color: 'green' | 'amber' | 'red';
+  /** Dot color mapped to LOCKED Pasture semantic tokens
+   *  (positive/attention/danger/info). */
+  color: 'positive' | 'attention' | 'danger' | 'info';
 }
 
+/** Dot color map keyed by LegendEntry.color → Tailwind bg-<token> utility.
+ *  Shared between AuditPage legend chips and AuditTimeline row dots. */
+export const DOT_COLOR_CLASS: Record<LegendEntry['color'], string> = {
+  positive: 'bg-positive',
+  attention: 'bg-attention',
+  danger: 'bg-danger',
+  info: 'bg-feedback-info',
+};
+
 const EVENT_CLASS_MAP: Record<string, { label: string; color: LegendEntry['color'] }> = {
-  completion_report: { label: 'Completed', color: 'green' },
-  session_end: { label: 'Completed', color: 'green' },
-  session_start: { label: 'Started', color: 'green' },
-  review_verdict: { label: 'Reviewed', color: 'green' },
-  task_cancelled: { label: 'Cancelled', color: 'amber' },
-  merge_pr_opened: { label: 'Merge', color: 'amber' },
-  merge_pr_merged: { label: 'Merge', color: 'amber' },
-  merge_pr_closed: { label: 'Merge', color: 'amber' },
-  job_submitted: { label: 'Job', color: 'amber' },
-  job_rejected: { label: 'Job', color: 'amber' },
-  job_run_started: { label: 'Job', color: 'amber' },
-  job_auto_started: { label: 'Job', color: 'amber' },
-  job_run_completed: { label: 'Job', color: 'amber' },
-  job_run_failed: { label: 'Job', color: 'red' },
-  job_stopped: { label: 'Job', color: 'amber' },
-  escalation: { label: 'Escalation', color: 'red' },
-  escalation_resolved: { label: 'Escalated — resolved', color: 'green' },
-  session_timeout: { label: 'Failure', color: 'red' },
-  session_failed: { label: 'Failure', color: 'red' },
-  session_cancelled: { label: 'Cancelled', color: 'amber' },
-  executor_error: { label: 'Failure', color: 'red' },
+  completion_report: { label: 'Completed', color: 'positive' },
+  session_end: { label: 'Completed', color: 'positive' },
+  session_start: { label: 'Started', color: 'info' },
+  review_verdict: { label: 'Reviewed', color: 'info' },
+  task_cancelled: { label: 'Cancelled', color: 'attention' },
+  merge_pr_opened: { label: 'Merge', color: 'attention' },
+  merge_pr_merged: { label: 'Merge', color: 'attention' },
+  merge_pr_closed: { label: 'Merge', color: 'attention' },
+  job_submitted: { label: 'Job', color: 'attention' },
+  job_rejected: { label: 'Job', color: 'attention' },
+  job_run_started: { label: 'Job', color: 'attention' },
+  job_auto_started: { label: 'Job', color: 'attention' },
+  job_run_completed: { label: 'Job', color: 'attention' },
+  job_run_failed: { label: 'Job', color: 'danger' },
+  job_stopped: { label: 'Job', color: 'attention' },
+  escalation: { label: 'Escalation', color: 'danger' },
+  escalation_resolved: { label: 'Escalated — resolved', color: 'positive' },
+  session_timeout: { label: 'Failure', color: 'danger' },
+  session_failed: { label: 'Failure', color: 'danger' },
+  session_cancelled: { label: 'Cancelled', color: 'attention' },
+  executor_error: { label: 'Failure', color: 'danger' },
 };
 
 const LEGEND_ORDER: string[] = [
@@ -126,13 +136,13 @@ export function buildLegend(entries: AuditEntry[]): LegendEntry[] {
     const count = counts.get(action);
     if (count) {
       seen.add(action);
-      const cls = EVENT_CLASS_MAP[action] ?? { label: action, color: 'amber' as const };
+      const cls = EVENT_CLASS_MAP[action] ?? { label: action, color: 'attention' as const };
       result.push({ action, label: cls.label, count, color: cls.color });
     }
   }
   for (const [action, count] of [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
     if (!seen.has(action)) {
-      const cls = EVENT_CLASS_MAP[action] ?? { label: action, color: 'amber' as const };
+      const cls = EVENT_CLASS_MAP[action] ?? { label: action, color: 'attention' as const };
       result.push({ action, label: cls.label, count, color: cls.color });
     }
   }
