@@ -84,6 +84,35 @@ function useTasksRoots(
   }) as QueryLike<Awaited<ReturnType<typeof tasksApi.listTaskRoots>>>;
 }
 
+function useTasksRootsInfinite(
+  params?: { status?: string; assigned_agent?: string },
+): InfiniteQueryLike<TasksListPage> {
+  const slug = useRealOrgSlug();
+  const PAGE_SIZE = 50;
+  const q = useInfiniteQuery<TasksListPage>({
+    queryKey: ['tasks-roots-infinite', slug, params],
+    initialPageParam: undefined,
+    queryFn: ({ pageParam }) =>
+      tasksApi.listTaskRoots(slug, {
+        ...(params?.status ? { status: params.status } : {}),
+        ...(params?.assigned_agent ? { assigned_agent: params.assigned_agent } : {}),
+        limit: PAGE_SIZE,
+        ...(pageParam ? { before: pageParam as string } : {}),
+      }),
+    getNextPageParam: (last) => last.next_cursor ?? undefined,
+    enabled: !!slug,
+  });
+  return {
+    data: q.data ? { pages: q.data.pages } : undefined,
+    isLoading: q.isLoading,
+    isError: q.isError,
+    error: (q.error as Error | null) ?? null,
+    fetchNextPage: () => { void q.fetchNextPage(); },
+    hasNextPage: !!q.hasNextPage,
+    isFetchingNextPage: q.isFetchingNextPage,
+  };
+}
+
 function useTask(taskId: string | undefined) {
   const slug = useRealOrgSlug();
   return useQuery({
@@ -170,6 +199,7 @@ export const realTasksApi: TasksApi = {
   useTasksList,
   useTasksInfiniteList,
   useTasksRoots,
+  useTasksRootsInfinite,
   useTask: useTask as TasksApi['useTask'],
   useTaskRecall: useTaskRecall as TasksApi['useTaskRecall'],
   useTaskTailSSE,

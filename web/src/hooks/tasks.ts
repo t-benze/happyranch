@@ -34,6 +34,10 @@ export const useTasksRoots: ReturnType<typeof useData>['tasks']['useTasksRoots']
   params,
 ) => useData().tasks.useTasksRoots(params);
 
+export const useTasksRootsInfinite: ReturnType<typeof useData>['tasks']['useTasksRootsInfinite'] = (
+  params,
+) => useData().tasks.useTasksRootsInfinite(params);
+
 export const useTask: ReturnType<typeof useData>['tasks']['useTask'] = (
   taskId,
 ) => useData().tasks.useTask(taskId);

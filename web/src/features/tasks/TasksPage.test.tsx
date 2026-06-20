@@ -1,10 +1,11 @@
 import { screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
-import type { ActiveChainResponse, JobRecord } from '@/lib/api/types';
+import type { ActiveChainResponse, JobRecord, TaskRecord } from '@/lib/api/types';
 
 const SLUG = 'hk-macau-tourism';
 
@@ -17,20 +18,27 @@ function mountAt(route: string) {
   return renderWithProviders(<AppRoutes />, { route });
 }
 
-const TASK = {
-  task_id: 'TASK-0091',
-  team: 'content',
-  brief: 'Draft Hong Kong visa guide v2',
-  status: 'in_progress',
-  block_kind: null,
-  parent_task_id: null,
-  revisit_of_task_id: null,
-  created_at: '2026-05-18T10:00:00Z',
-  updated_at: '2026-05-18T10:06:12Z',
-  closed_at: null,
-  cancelled_at: null,
-  session_timeout_seconds: null,
-};
+/** A root task fixture with severity_rollup (roots endpoint field). */
+function rootTask(overrides?: Partial<TaskRecord> & Record<string, unknown>): TaskRecord {
+  return {
+    task_id: 'TASK-0091',
+    team: 'content',
+    brief: 'Draft Hong Kong visa guide v2',
+    status: 'completed',
+    block_kind: null,
+    parent_task_id: null,
+    revisit_of_task_id: null,
+    created_at: '2026-05-18T10:00:00Z',
+    updated_at: '2026-05-18T10:06:12Z',
+    closed_at: null,
+    cancelled_at: null,
+    session_timeout_seconds: null,
+    severity_rollup: 'completed',
+    ...overrides,
+  } as TaskRecord;
+}
+
+const TASK = rootTask({ status: 'in_progress', severity_rollup: 'in_progress' });
 
 const JOB: JobRecord = {
   id: 'JOB-0001',
@@ -62,11 +70,11 @@ const JOB: JobRecord = {
   created_at: '2026-05-18T10:01:00Z',
 };
 
-describe('TasksPage — read path', () => {
-  test('renders the inbox with fixture tasks', async () => {
+describe('TasksPage — read path (roots endpoint)', () => {
+  test('fetches from /tasks/roots and renders fixture tasks', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
-      http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
         HttpResponse.json({ tasks: [TASK] }),
       ),
     );
@@ -79,29 +87,120 @@ describe('TasksPage — read path', () => {
   test('renders group-by selector tabs', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
-      http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
         HttpResponse.json({ tasks: [TASK] }),
       ),
     );
     mountAt(`/orgs/${SLUG}/tasks`);
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: 'Tasks' })).toBeInTheDocument();
-      expect(screen.getByRole('tab', { name: /Status/ })).toBeInTheDocument();
-      expect(screen.getByRole('tab', { name: /Agent/ })).toBeInTheDocument();
-      expect(screen.getByRole('tab', { name: /Thread/ })).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: 'Status' })).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: 'Agent' })).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: 'Thread' })).toBeInTheDocument();
     });
   });
 
   test('groups tasks by status with group heading', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
-      http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
         HttpResponse.json({ tasks: [TASK] }),
       ),
     );
     mountAt(`/orgs/${SLUG}/tasks`);
     await waitFor(() => {
       expect(screen.getByText(/In progress/)).toBeInTheDocument();
+    });
+  });
+
+  test('renders severity_rollup badge in TaskCard (worst subtree status)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    // Root is pending but has a blocked child → severity_rollup = 'blocked'
+    // Use a brief that doesn't contain 'blocked' to avoid ambiguity with badge text
+    const taskWithRollup = rootTask({
+      task_id: 'TASK-0100',
+      status: 'pending',
+      severity_rollup: 'blocked',
+      brief: 'Root task that has a stuck child',
+    });
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [taskWithRollup] }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/tasks`);
+    await waitFor(() => {
+      // The badge should show 'blocked' from severity_rollup, not 'pending'
+      expect(screen.getByText('blocked')).toBeInTheDocument();
+      expect(screen.getByText(/Root task that has a stuck child/)).toBeInTheDocument();
+    });
+  });
+
+  test('groups by thread on dispatched_from_thread_id, with no-thread bucket', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const threaded = rootTask({
+      task_id: 'TASK-0200',
+      dispatched_from_thread_id: 'THR-0030',
+      status: 'in_progress',
+      severity_rollup: 'in_progress',
+    });
+    const unthreaded = rootTask({
+      task_id: 'TASK-0201',
+      team: 'engineering',
+      status: 'pending',
+      severity_rollup: 'pending',
+    });
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [threaded, unthreaded] }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/tasks`);
+    // Switch to the Thread group-by tab
+    const user = userEvent.setup();
+    const threadTab = await screen.findByRole('tab', { name: 'Thread' });
+    await user.click(threadTab);
+    await waitFor(() => {
+      // Should have a THR-0030 group heading AND a "No thread" heading
+      expect(screen.getByText('THR-0030')).toBeInTheDocument();
+      expect(screen.getByText('No thread')).toBeInTheDocument();
+    });
+  });
+
+  test('renders supersede/revisit links from roots payload fields', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const superseder = rootTask({
+      task_id: 'TASK-0300',
+      revisit_of_task_id: 'TASK-0299',
+      direct_revisits: ['TASK-0301'],
+      status: 'completed',
+      severity_rollup: 'completed',
+    });
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [superseder] }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/tasks`);
+    await waitFor(() => {
+      expect(screen.getByText(/supersedes/)).toBeInTheDocument();
+      expect(screen.getByText(/TASK-0299/)).toBeInTheDocument();
+      expect(screen.getByText(/superseded by/)).toBeInTheDocument();
+      expect(screen.getByText(/TASK-0301/)).toBeInTheDocument();
+    });
+  });
+
+  test('renders 0 count when query resolves to empty (no loading placeholder)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [] }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/tasks`);
+    await waitFor(() => {
+      // Empty state, not a loading indicator
+      expect(screen.getByText(/No tasks match/)).toBeInTheDocument();
     });
   });
 });
@@ -112,7 +211,7 @@ describe('TaskDetailPane — jobs cross-link', () => {
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
       ),
-      http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
         HttpResponse.json({ tasks: [TASK] }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}`, () =>
@@ -184,23 +283,33 @@ describe('TaskDetailPane — workflow chain timeline', () => {
     blocked_on_jobs: null,
   };
 
-  function stubHandlers(active_chain: ActiveChainResponse | null) {
+  function stubHandlers(
+    active_chain: ActiveChainResponse | null,
+    taskOverrides?: Partial<TaskRecord> & Record<string, unknown>,
+    blocked_on_jobs?: unknown,
+  ) {
+    const detailTask = { ...TASK, ...taskOverrides } as TaskRecord;
     server.use(
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
       ),
-      http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
         HttpResponse.json({ tasks: [TASK] }),
       ),
-      http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}`, () =>
-        HttpResponse.json({ ...TASK_DETAIL_ENVELOPE, active_chain }),
-      ),
-      http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/recall`, () =>
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${detailTask.task_id}`, () =>
         HttpResponse.json({
-          task_id: TASK.task_id,
+          ...TASK_DETAIL_ENVELOPE,
+          task: detailTask,
+          active_chain,
+          blocked_on_jobs: blocked_on_jobs ?? null,
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${detailTask.task_id}/recall`, () =>
+        HttpResponse.json({
+          task_id: detailTask.task_id,
           assigned_agent: null,
-          brief: TASK.brief,
-          status: TASK.status,
+          brief: detailTask.brief,
+          status: detailTask.status,
           output_summary: null,
           children: [],
         }),
@@ -234,6 +343,36 @@ describe('TaskDetailPane — workflow chain timeline', () => {
     );
     expect(screen.queryByText(/Workflow chain/i)).not.toBeInTheDocument();
   });
+
+  test('renders blocked chain node when task is blocked with block_kind', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubHandlers(
+      { ...ACTIVE_CHAIN, step_index: 0 },
+      { status: 'blocked', block_kind: 'escalated' },
+    );
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+    });
+    expect(await screen.findByText(/Workflow chain/i)).toBeInTheDocument();
+    // The blocked node should show "Blocked on: escalation"
+    expect(screen.getByText(/Blocked on:/)).toBeInTheDocument();
+    expect(screen.getByText(/escalation/)).toBeInTheDocument();
+  });
+
+  test('renders blocked chain node with job IDs from blocked_on_jobs', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubHandlers(
+      { ...ACTIVE_CHAIN, step_index: 1 },
+      { status: 'blocked', block_kind: 'delegated' },
+      ['JOB-0042'],
+    );
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+    });
+    expect(await screen.findByText(/Workflow chain/i)).toBeInTheDocument();
+    expect(screen.getByText(/Blocked on:/)).toBeInTheDocument();
+    expect(screen.getByText(/JOB-0042/)).toBeInTheDocument();
+  });
 });
 
 describe('TaskDetailPane — execution subtasks', () => {
@@ -242,7 +381,7 @@ describe('TaskDetailPane — execution subtasks', () => {
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
       ),
-      http.get(`/api/v1/orgs/${SLUG}/tasks`, () =>
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
         HttpResponse.json({ tasks: [TASK] }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}`, () =>

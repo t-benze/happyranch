@@ -154,6 +154,11 @@ export interface TasksApi {
     limit?: number;
     assigned_agent?: string;
   }) => QueryLike<{ tasks: TaskRecord[] }>;
+  /** Cursor-paginated roots-only variant for infinite scroll. */
+  useTasksRootsInfinite: (params?: {
+    status?: string;
+    assigned_agent?: string;
+  }) => InfiniteQueryLike<TasksListPage>;
   useTask: (taskId: string | undefined) => QueryLike<TaskRecord>;
   useTaskRecall: (taskId: string | undefined) => QueryLike<TaskRecallNode>;
 

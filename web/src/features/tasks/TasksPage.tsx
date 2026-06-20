@@ -7,13 +7,16 @@
  *
  * Per founder ruling: NO in-list 'show subtasks' toggle. The list is
  * roots-only; execution subtasks live on the Task detail surface.
+ *
+ * Driven by GET /tasks/roots (roots-only invariant). Cursor pagination
+ * via next_cursor with IntersectionObserver sentinel.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { Tabs, TabsList, TabsTrigger } from '@/design-system/primitives/Tabs';
 import { TaskCard } from '@/design-system/patterns/TaskCard';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
-import { useTasksInfiniteList, useTasksRoutes } from '@/hooks/tasks';
+import { useTasksRootsInfinite, useTasksRoutes } from '@/hooks/tasks';
 import { useDensity } from '@/hooks/density';
 import { TaskDetailPane } from './TaskDetailPane';
 import type { TaskRecord } from '@/lib/api/types';
@@ -29,11 +32,9 @@ const GROUP_BY_OPTIONS: { value: GroupBy; label: string }[] = [
 /** Pasture group section heading — serif display, muted for resolved groups. */
 function GroupHeading({
   label,
-  count,
   dimmed,
 }: {
   label: string;
-  count: number;
   dimmed?: boolean;
 }): JSX.Element {
   return (
@@ -45,9 +46,6 @@ function GroupHeading({
       }
     >
       {label}
-      <span className="text-text-muted ml-2 font-mono text-sm font-normal tabular-nums">
-        {count}
-      </span>
     </h2>
   );
 }
@@ -59,10 +57,11 @@ function groupKey(task: TaskRecord, by: GroupBy): string {
     case 'agent':
       return task.assigned_agent || 'Unassigned';
     case 'thread': {
-      // Extract thread identifier from task_id prefix — tasks dispatched
-      // from a thread have the thread id in metadata or brief; otherwise
-      // fall back to team.
-      return task.team;
+      const threadId = (task as Record<string, unknown>).dispatched_from_thread_id;
+      if (threadId && typeof threadId === 'string' && threadId.length > 0) {
+        return threadId;
+      }
+      return 'No thread';
     }
   }
 }
@@ -103,7 +102,7 @@ export function TasksPage(): JSX.Element {
   const [groupBy, setGroupBy] = useState<GroupBy>('status');
   const { density } = useDensity();
   const routes = useTasksRoutes();
-  const tasksQuery = useTasksInfiniteList();
+  const tasksQuery = useTasksRootsInfinite();
 
   const allTasks = useMemo(
     () => tasksQuery.data?.pages.flatMap((p) => p.tasks) ?? [],
@@ -158,6 +157,8 @@ export function TasksPage(): JSX.Element {
     return () => obs.disconnect();
   }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
 
+  const isLoading = tasksQuery.isLoading;
+
   return (
     <div className="bg-surface-canvas flex h-full flex-col">
       {/* Page title + group-by selector */}
@@ -172,25 +173,18 @@ export function TasksPage(): JSX.Element {
           aria-label="Group by"
         >
           <TabsList>
-            {GROUP_BY_OPTIONS.map((opt) => {
-              const count = new Set(allTasks.map((t) => groupKey(t, opt.value)))
-                .size;
-              return (
-                <TabsTrigger key={opt.value} value={opt.value}>
-                  {opt.label}
-                  <span className="text-text-muted ml-1 text-xs tabular-nums">
-                    {tasksQuery.isLoading ? '…' : count}
-                  </span>
-                </TabsTrigger>
-              );
-            })}
+            {GROUP_BY_OPTIONS.map((opt) => (
+              <TabsTrigger key={opt.value} value={opt.value}>
+                {opt.label}
+              </TabsTrigger>
+            ))}
           </TabsList>
         </Tabs>
       </header>
 
       {/* Task list */}
       <main className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
-        {tasksQuery.isLoading ? (
+        {isLoading ? (
           <p className="text-text-muted py-6 text-center text-sm">Loading…</p>
         ) : allTasks.length === 0 ? (
           <EmptyState title="No tasks" body="No tasks match the current filters." />
@@ -202,7 +196,6 @@ export function TasksPage(): JSX.Element {
                 <section key={key} className={dimmed ? 'opacity-60' : undefined}>
                   <GroupHeading
                     label={groupLabel(key, groupBy)}
-                    count={tasks.length}
                     dimmed={dimmed}
                   />
                   <ul className="mt-2 space-y-1.5">

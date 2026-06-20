@@ -8,7 +8,7 @@
  * Uses ds.css .card styling (bg-surface, rounded-lg, shadow-pasture-sm).
  * Title in serif font-display.
  */
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -113,10 +113,35 @@ function TimelineNodeItem({
  * Chain timeline
  * ================================================================ */
 
+interface ChainTimelineBlockInfo {
+  isBlocked: boolean;
+  blockerName?: string;
+}
+
+/** Derive a human-readable blocker name from the task block context. */
+function deriveBlockerName(
+  blockKind: string | null | undefined,
+  blockedOnJobs: unknown,
+): string | undefined {
+  if (Array.isArray(blockedOnJobs) && blockedOnJobs.length > 0) {
+    const jobIds = blockedOnJobs.filter(
+      (v): v is string => typeof v === 'string',
+    );
+    if (jobIds.length > 0) {
+      return `job(s) ${jobIds.join(', ')}`;
+    }
+  }
+  if (blockKind === 'escalated') return 'escalation';
+  if (blockKind === 'delegated') return 'delegation';
+  return blockKind ?? undefined;
+}
+
 function WorkflowChainTimeline({
   chain,
+  blockInfo,
 }: {
   chain: ActiveChainResponse;
+  blockInfo?: ChainTimelineBlockInfo;
 }): JSX.Element {
   const totalLegs = 1 + chain.legs.length;
   const currentIdx = chain.step_index;
@@ -131,23 +156,44 @@ function WorkflowChainTimeline({
         <TimelineNodeItem
           label="Leg 1 (first leg)"
           detail={chain.first_leg_expect_verdict ?? undefined}
-          state={currentIdx === 0 ? 'current' : currentIdx > 0 ? 'done' : 'pending'}
+          state={
+            blockInfo?.isBlocked && currentIdx === 0
+              ? 'blocked'
+              : currentIdx === 0
+                ? 'current'
+                : currentIdx > 0
+                  ? 'done'
+                  : 'pending'
+          }
+          blockerName={
+            blockInfo?.isBlocked && currentIdx === 0
+              ? blockInfo.blockerName
+              : undefined
+          }
         />
         {/* Subsequent legs */}
         {chain.legs.map((leg, i) => {
           const legNum = i + 2;
+          const isCurrentLeg = currentIdx === legNum - 1;
           const legState: TimelineNodeProps['state'] =
-            currentIdx === legNum - 1
-              ? 'current'
-              : currentIdx >= legNum
-                ? 'done'
-                : 'pending';
+            blockInfo?.isBlocked && isCurrentLeg
+              ? 'blocked'
+              : isCurrentLeg
+                ? 'current'
+                : currentIdx >= legNum
+                  ? 'done'
+                  : 'pending';
           return (
             <TimelineNodeItem
               key={legNum}
               label={leg.agent}
               detail={leg.expect_verdict ?? undefined}
               state={legState}
+              blockerName={
+                blockInfo?.isBlocked && isCurrentLeg
+                  ? blockInfo.blockerName
+                  : undefined
+              }
             />
           );
         })}
@@ -259,6 +305,32 @@ function BriefSection({ brief }: { brief: string }): JSX.Element {
 }
 
 /* ================================================================
+ * Chain + block context query
+ * ================================================================ */
+
+interface ChainWithBlock {
+  chain: ActiveChainResponse | null;
+  blockedOnJobs: string[] | null;
+}
+
+function useChainWithBlock(slug: string | undefined, taskId: string | undefined) {
+  return useQuery({
+    queryKey: ['task-chain-block', slug, taskId],
+    queryFn: () => getTask(slug as string, taskId as string),
+    select: (r): ChainWithBlock => {
+      const bj = (r as Record<string, unknown>).blocked_on_jobs;
+      const blockedOnJobs: string[] | null =
+        Array.isArray(bj) ? bj.filter((v): v is string => typeof v === 'string') : null;
+      return {
+        chain: r.active_chain ?? null,
+        blockedOnJobs,
+      };
+    },
+    enabled: !!slug && !!taskId,
+  });
+}
+
+/* ================================================================
  * Main pane
  * ================================================================ */
 
@@ -276,12 +348,7 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
   const task = useTask(taskId);
   const recall = useTaskRecall(taskId);
   const jobsQuery = useJobsList({ task_id: taskId, status: 'all', limit: 100 });
-  const activeChainQuery = useQuery({
-    queryKey: ['task', slug, taskId],
-    queryFn: () => getTask(slug as string, taskId),
-    select: (r) => r.active_chain ?? null,
-    enabled: !!slug && !!taskId,
-  });
+  const chainQuery = useChainWithBlock(slug, taskId);
   const [dialog, setDialog] = useState<null | 'cancel' | 'revisit' | 'resolve'>(null);
 
   const onClose = () => navigate(routes.inbox());
@@ -291,6 +358,18 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
   const note = task.data ? (task.data as { note?: unknown }).note : undefined;
   const failureNote = isFailed && typeof note === 'string' && note ? note : null;
   const brief = task.data?.brief ?? '';
+
+  // Build block info for the chain timeline
+  const blockInfo: ChainTimelineBlockInfo | undefined = useMemo(() => {
+    if (!task.data) return undefined;
+    const isBlocked = task.data.status === 'blocked';
+    if (!isBlocked) return { isBlocked: false };
+    const blockerName = deriveBlockerName(
+      task.data.block_kind,
+      chainQuery.data?.blockedOnJobs ?? null,
+    );
+    return { isBlocked: true, blockerName };
+  }, [task.data, chainQuery.data]);
 
   return (
     <>
@@ -385,8 +464,11 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
           <section className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
             {task.data?.brief && <BriefSection brief={brief} />}
 
-            {activeChainQuery.data && (
-              <WorkflowChainTimeline chain={activeChainQuery.data} />
+            {chainQuery.data?.chain && (
+              <WorkflowChainTimeline
+                chain={chainQuery.data.chain}
+                blockInfo={blockInfo}
+              />
             )}
 
             {recall.data && <ExecutionSubtasks recall={recall.data} />}
