@@ -111,7 +111,7 @@ export function AssistantTerminal(): JSX.Element {
     <div
       ref={containerRef}
       data-testid="assistant-terminal"
-      className="border-border bg-bg-sunken h-96 w-full overflow-hidden rounded-md border p-2"
+      className="border-border-default bg-surface-sunken h-96 w-full overflow-hidden rounded-lg border p-2"
     />
   );
 }

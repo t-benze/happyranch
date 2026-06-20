@@ -366,29 +366,29 @@ export function AssistantDockHost(): JSX.Element {
 
   return (
     <>
-      {/* Scrim */}
+      {/* Scrim — Pasture surface-scrim token, same opacity semantics */}
       {open && (
         <div
-          className="fixed inset-0 z-40 bg-black/30 transition-opacity"
+          className="bg-surface-scrim fixed inset-0 z-40 transition-opacity"
           onClick={() => setOpen(false)}
           aria-hidden="true"
         />
       )}
 
-      {/* Dock panel */}
+      {/* Dock panel — Pasture surface card with warm shadow */}
       <div
         ref={containerRef}
         role="dialog"
         aria-label="System Assistant"
         aria-modal={open ? 'true' : undefined}
         className={[
-          'border-border bg-bg fixed right-0 top-0 z-50 flex h-full w-full max-w-lg flex-col border-l shadow-2xl transition-transform duration-200',
+          'border-border-default bg-surface-raised fixed right-0 top-0 z-50 flex h-full w-full max-w-lg flex-col border-l shadow-pasture-lg rounded-l-lg transition-transform duration-200',
           open ? 'translate-x-0' : 'translate-x-full pointer-events-none',
         ].join(' ')}
       >
-        {/* Header */}
-        <div className="border-border flex shrink-0 items-center gap-2 border-b px-4 py-3">
-          <span className="text-fg flex-1 text-sm font-semibold">
+        {/* Header — Pasture font-display heading */}
+        <div className="border-border-default flex shrink-0 items-center gap-2 border-b px-4 py-3">
+          <span className="text-text-primary font-display flex-1 text-base">
             System Assistant
           </span>
 
@@ -400,7 +400,7 @@ export function AssistantDockHost(): JSX.Element {
               setOpen(false);
               navigate(assistantPath);
             }}
-            className="text-fg-muted hover:text-fg hover:bg-bg-raised inline-flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors"
+            className="text-text-secondary hover:text-text-primary hover:bg-surface-hover inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors"
             title="Open full terminal session"
           >
             <Terminal size={14} aria-hidden="true" />
@@ -411,7 +411,7 @@ export function AssistantDockHost(): JSX.Element {
             type="button"
             onClick={() => setOpen(false)}
             aria-label="Close assistant"
-            className="text-fg-muted hover:text-fg hover:bg-bg-raised inline-flex h-7 w-7 items-center justify-center rounded transition-colors"
+            className="text-text-secondary hover:text-text-primary hover:bg-surface-hover inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors"
           >
             <X size={16} aria-hidden="true" />
           </button>
@@ -420,7 +420,7 @@ export function AssistantDockHost(): JSX.Element {
         {/* Messages area */}
         <div className="flex-1 overflow-y-auto px-4 py-3">
           {statusQuery.isLoading ? (
-            <EmptyState text="Loading…" />
+            <EmptyState text="Loading…" calm />
           ) : !assistantConfigured ? (
             <EmptyState
               text={
@@ -429,6 +429,7 @@ export function AssistantDockHost(): JSX.Element {
                   : 'Could not load assistant status.'
               }
               error={!status}
+              calm
             />
           ) : connecting ? (
             <LoadingState />
@@ -452,16 +453,16 @@ export function AssistantDockHost(): JSX.Element {
           {wsError && (
             <div
               role="alert"
-              className="border-border bg-bg-subtle text-feedback-danger mt-3 rounded border p-2 text-xs"
+              className="border-border-default bg-surface-sunken text-feedback-danger mt-3 rounded-lg border p-2 text-xs"
             >
               {wsError}
             </div>
           )}
         </div>
 
-        {/* Composer */}
+        {/* Composer — Pasture surface tokens */}
         {assistantConfigured && (
-          <div className="border-border shrink-0 border-t p-3">
+          <div className="border-border-default shrink-0 border-t p-3">
             <div className="flex items-end gap-2">
               <textarea
                 ref={composerRef}
@@ -470,19 +471,19 @@ export function AssistantDockHost(): JSX.Element {
                 onKeyDown={handleComposerKeyDown}
                 placeholder="Ask or search…"
                 rows={1}
-                className="border-border bg-bg-subtle text-fg placeholder:text-fg-subtle focus:border-accent-ring min-h-9 flex-1 resize-none rounded border px-3 py-2 text-sm focus:outline-none"
+                className="border-border-default bg-surface-sunken text-text-primary placeholder:text-text-muted focus:border-accent-ring min-h-9 flex-1 resize-none rounded-lg border px-3 py-2 text-sm focus:outline-none"
                 aria-label="Assistant composer"
               />
               <button
                 type="button"
                 onClick={handleSend}
                 disabled={!composerDraft.trim() || connecting}
-                className="bg-accent text-fg-on-accent hover:bg-accent-hover inline-flex h-9 items-center gap-1.5 rounded px-3 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+                className="bg-accent-default text-text-inverse hover:bg-accent-hover inline-flex h-9 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40"
               >
                 Send
               </button>
             </div>
-            <p className="text-fg-subtle mt-1 text-xs">
+            <p className="text-text-muted mt-1 text-xs">
               <kbd className="font-mono">Enter</kbd> to send ·{' '}
               <kbd className="font-mono">Shift+Enter</kbd> for new line
             </p>
@@ -508,7 +509,7 @@ function EmptyState({
 }): JSX.Element {
   return (
     <div className="flex h-full items-center justify-center">
-      <div className="text-fg-muted max-w-xs text-center text-sm">
+      <div className="text-text-secondary max-w-xs text-center text-sm">
         {calm && (
           <div className="mb-2 text-3xl" aria-hidden="true">
             🌾
@@ -531,10 +532,10 @@ function LoadingState(): JSX.Element {
       {widths.map(([w1, w2], i) => (
         <div
           key={i}
-          className="bg-bg-subtle animate-pulse rounded-lg p-4"
+          className="bg-surface-sunken animate-pulse rounded-lg p-4"
         >
-          <div className={`bg-bg-raised h-3 rounded ${w1}`} />
-          <div className={`bg-bg-raised mt-2 h-3 rounded ${w2}`} />
+          <div className={`bg-surface-raised h-3 rounded-md ${w1}`} />
+          <div className={`bg-surface-raised mt-2 h-3 rounded-md ${w2}`} />
         </div>
       ))}
     </div>
