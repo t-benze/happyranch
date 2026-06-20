@@ -99,19 +99,19 @@ export function KbCandidateCard({
   };
 
   return (
-    <div className="kb-cand border border-border-subtle rounded-lg p-4 bg-surface-sunken">
+    <div className="kb-cand border border-border-default rounded-lg p-4 bg-surface-raised shadow-pasture-sm">
       {/* Header with dream marker */}
       <div className="flex items-center gap-2 mb-2">
         <CrescentMoonBadge className="w-3 h-3" />
-        <span className="text-xs text-text-muted italic">{label}</span>
+        <span className="text-xs text-text-secondary italic">{label}</span>
       </div>
 
       {/* Title */}
-      <h4 className="text-text-primary text-sm font-medium mb-1">{candidate.title}</h4>
+      <h4 className="font-display text-text-primary text-sm font-medium mb-1">{candidate.title}</h4>
 
       {/* Slug / topic */}
       <div className="flex items-center gap-2 text-xs text-text-muted mb-2">
-        <span className="font-mono">{candidate.slug}</span>
+        <span className="font-mono tabular-nums">{candidate.slug}</span>
         <span>·</span>
         <span>{candidate.topic}</span>
       </div>
@@ -125,7 +125,7 @@ export function KbCandidateCard({
 
       {/* Body preview */}
       {candidate.body_markdown && (
-        <div className="text-xs text-text-secondary mb-3 max-h-32 overflow-hidden border-l-2 border-border-subtle pl-3 font-mono whitespace-pre-wrap">
+        <div className="text-xs text-text-secondary mb-3 max-h-32 overflow-hidden border-l-2 border-border-default pl-3 font-mono whitespace-pre-wrap">
           {candidate.body_markdown.slice(0, 300)}
           {candidate.body_markdown.length > 300 ? '…' : ''}
         </div>
