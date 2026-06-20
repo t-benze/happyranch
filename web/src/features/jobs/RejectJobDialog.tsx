@@ -61,7 +61,7 @@ export function RejectJobDialog({ jobId, open, onClose, onSuccess }: Props): JSX
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Reject {jobId}</DialogTitle>
+          <DialogTitle className="font-display">Reject {jobId}</DialogTitle>
           <DialogDescription className="sr-only">
             Reject this job. The requesting agent will be notified.
           </DialogDescription>
@@ -77,7 +77,7 @@ export function RejectJobDialog({ jobId, open, onClose, onSuccess }: Props): JSX
               autoFocus
             />
           </FormField>
-          <p className="text-xs text-text-muted text-right">
+          <p className="text-text-muted text-right font-mono text-xs tabular-nums">
             {reason.length}/1000
           </p>
         </div>

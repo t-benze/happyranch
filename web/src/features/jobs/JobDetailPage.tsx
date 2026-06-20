@@ -52,13 +52,13 @@ function formatDateTime(iso: string | null | undefined): string | null {
 function ScriptBlock({ job }: { job: JobRecord }): JSX.Element {
   return (
     <section>
-      <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+      <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
         Command
         <span className="ml-1 font-normal normal-case">
           ({job.interpreter}{job.cwd_hint ? ` · cwd: ${job.cwd_hint}` : ''})
         </span>
       </h3>
-      <pre className="bg-surface-canvas text-fg overflow-x-auto rounded p-3 font-mono text-xs whitespace-pre">
+      <pre className="bg-surface-sunken border-border-default text-text-primary overflow-x-auto rounded-lg border p-3 font-mono text-xs whitespace-pre">
         {job.script_text}
       </pre>
     </section>
@@ -95,14 +95,14 @@ function PropertyRail({ job }: { job: JobRecord }): JSX.Element {
 
   return (
     <section>
-      <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+      <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
         Details
       </h3>
       <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
         {visible.map(({ label, value }) => (
           <div key={label} className="flex gap-2">
-            <dt className="text-fg-muted shrink-0">{label}</dt>
-            <dd className="text-fg truncate font-mono text-xs">{value}</dd>
+            <dt className="text-text-muted shrink-0">{label}</dt>
+            <dd className="text-text-primary truncate font-mono text-xs tabular-nums">{value}</dd>
           </div>
         ))}
       </dl>
@@ -127,10 +127,10 @@ function IfApprovedCascade({ slug, jobId }: { slug: string; jobId: string }): JS
   if (blockedTasksQuery.isLoading) {
     return (
       <section>
-        <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+        <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
           If approved
         </h3>
-        <p className="text-fg-muted text-sm">Loading blocked tasks…</p>
+        <p className="text-text-muted text-sm">Loading blocked tasks…</p>
       </section>
     );
   }
@@ -138,10 +138,10 @@ function IfApprovedCascade({ slug, jobId }: { slug: string; jobId: string }): JS
   if (blockedTasksQuery.isError) {
     return (
       <section>
-        <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+        <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
           If approved
         </h3>
-        <p className="text-fg-muted text-sm">Could not load blocked tasks.</p>
+        <p className="text-text-muted text-sm">Could not load blocked tasks.</p>
       </section>
     );
   }
@@ -149,17 +149,17 @@ function IfApprovedCascade({ slug, jobId }: { slug: string; jobId: string }): JS
   if (tasks.length === 0) {
     return (
       <section>
-        <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+        <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
           If approved
         </h3>
-        <p className="text-fg-muted text-sm">No tasks are currently blocked on this job.</p>
+        <p className="text-text-muted text-sm">No tasks are currently blocked on this job.</p>
       </section>
     );
   }
 
   return (
     <section>
-      <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+      <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
         If approved — {tasks.length} task{tasks.length !== 1 ? 's' : ''} unblocks
       </h3>
       <ul className="space-y-1">
@@ -167,11 +167,11 @@ function IfApprovedCascade({ slug, jobId }: { slug: string; jobId: string }): JS
           <li key={t.task_id} className="flex items-center gap-2 text-sm">
             <Link
               to={`/orgs/${slug}/tasks/${t.task_id}`}
-              className="text-accent font-mono text-xs hover:underline"
+              className="text-accent-default font-mono text-xs hover:underline"
             >
               {t.task_id}
             </Link>
-            <span className="text-fg truncate">{t.brief.slice(0, 80)}{t.brief.length > 80 ? '…' : ''}</span>
+            <span className="text-text-primary truncate">{t.brief.slice(0, 80)}{t.brief.length > 80 ? '…' : ''}</span>
             <StatusBadge
               status={t.status as 'blocked'}
               blockKind={(t as { block_kind?: string }).block_kind as 'escalated' | 'delegated' | null}
@@ -198,10 +198,10 @@ function TwoStepConfirm({
   const [step, setStep] = useState<1 | 2>(1);
 
   return (
-    <div className="border-border-subtle bg-surface-raised mt-4 rounded-lg border p-4">
+    <div className="border-border-default bg-surface-raised shadow-pasture-sm mt-4 rounded-lg border p-4">
       {step === 1 ? (
         <div className="flex items-center gap-3">
-          <p className="text-fg text-sm">
+          <p className="text-text-primary text-sm">
             {action === 'approve'
               ? 'Approve this job to allow the blocked tasks to proceed.'
               : 'Run this script. It will execute immediately in the agent workspace.'}
@@ -217,7 +217,7 @@ function TwoStepConfirm({
         </div>
       ) : (
         <div className="space-y-3">
-          <p className="text-tier-yellow-tint text-sm font-medium">
+          <p className="text-attention-text text-sm font-medium">
             Confirm: are you sure you want to {action} this job?
           </p>
           <div className="flex gap-2">
@@ -252,11 +252,11 @@ function GatedChip({
   onReject: () => void;
 }): JSX.Element {
   return (
-    <div className="border-border-subtle bg-tier-yellow-tint mt-4 rounded-lg border p-4">
+    <div className="border-border-default bg-attention-soft shadow-pasture-sm mt-4 rounded-lg border p-4">
       <div className="flex items-center gap-3">
         <div className="flex-1">
-          <p className="text-fg text-sm font-medium">🔑 Needs your approval</p>
-          <p className="text-fg-muted mt-0.5 text-xs">
+          <p className="text-text-primary text-sm font-medium">🔑 Needs your approval</p>
+          <p className="text-text-muted mt-0.5 text-xs">
             This job was flagged for review by the requesting agent. Review the command
             and approve or reject.
           </p>
@@ -308,7 +308,7 @@ export function JobDetailPage(): JSX.Element {
   if (query.isLoading) {
     return (
       <div className="flex h-full items-center justify-center">
-        <p className="text-fg-muted">Loading {jobId}…</p>
+        <p className="text-text-muted">Loading {jobId}…</p>
       </div>
     );
   }
@@ -317,7 +317,7 @@ export function JobDetailPage(): JSX.Element {
   if (query.isError) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 p-8">
-        <p className="text-fg-muted">Failed to load {jobId}.</p>
+        <p className="text-text-muted">Failed to load {jobId}.</p>
         <Button variant="ghost" size="sm" onClick={handleRetry}>
           Retry
         </Button>
@@ -342,7 +342,7 @@ export function JobDetailPage(): JSX.Element {
       <nav className="mb-4">
         <Link
           to={`/orgs/${slug}/tasks/${job.task_id}`}
-          className="text-fg-muted hover:text-fg text-xs transition-colors"
+          className="text-text-muted hover:text-text-primary text-xs transition-colors"
         >
           ← Back to {job.task_id}
         </Link>
@@ -352,7 +352,7 @@ export function JobDetailPage(): JSX.Element {
       <PageHeader
         title={
           <span className="flex items-center gap-2">
-            <span className="text-id-job font-mono text-base">{job.id}</span>
+            <span className="text-text-primary font-mono text-base tabular-nums">{job.id}</span>
             <StatusBadge status={job.status as 'pending'} />
           </span>
         }
@@ -368,15 +368,15 @@ export function JobDetailPage(): JSX.Element {
       />
 
       {/* Title */}
-      <h2 className="text-fg mt-4 text-base font-semibold">{job.title}</h2>
+      <h2 className="text-text-primary font-display mt-4 text-base font-semibold">{job.title}</h2>
 
       {/* Rationale */}
       {job.rationale && (
         <section className="mt-5">
-          <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+          <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
             Rationale
           </h3>
-          <p className="text-fg text-sm whitespace-pre-wrap">{job.rationale}</p>
+          <p className="text-text-primary text-sm whitespace-pre-wrap">{job.rationale}</p>
         </section>
       )}
 
@@ -388,20 +388,20 @@ export function JobDetailPage(): JSX.Element {
       {/* Rejection reason */}
       {job.status === 'rejected' && job.reject_reason && (
         <section className="mt-5">
-          <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+          <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
             Rejection reason
           </h3>
-          <p className="text-fg text-sm whitespace-pre-wrap">{job.reject_reason}</p>
+          <p className="text-text-primary text-sm whitespace-pre-wrap">{job.reject_reason}</p>
         </section>
       )}
 
       {/* Failure reason */}
       {job.status === 'failed' && job.reason && (
         <section className="mt-5">
-          <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+          <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
             Failure reason
           </h3>
-          <p className="text-fg font-mono text-sm">{job.reason}</p>
+          <p className="text-text-primary font-mono text-sm">{job.reason}</p>
         </section>
       )}
 
@@ -462,7 +462,7 @@ export function JobDetailPage(): JSX.Element {
             </Button>
           </div>
           {actionError && (
-            <p className="text-fg-danger text-sm">{actionError}</p>
+            <p className="text-feedback-danger text-sm">{actionError}</p>
           )}
         </div>
       )}
