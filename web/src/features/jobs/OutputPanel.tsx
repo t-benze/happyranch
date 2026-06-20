@@ -79,30 +79,30 @@ export function OutputPanel({ job, slug }: Props): JSX.Element | null {
 
   return (
     <section>
-      <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+      <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
         Output
       </h3>
 
       {isLive && (
         <div
           ref={containerRef}
-          className="bg-surface-canvas h-64 overflow-y-auto rounded p-3 font-mono text-xs whitespace-pre-wrap"
+          className="bg-surface-sunken border-border-default h-64 overflow-y-auto rounded-lg border p-3 font-mono text-xs whitespace-pre-wrap"
         >
           {seedLines.length === 0 && events.length === 0 && !terminal && (
-            <span className="text-fg-muted">Waiting for output…</span>
+            <span className="text-text-muted">Waiting for output…</span>
           )}
           {seedLines.map((e, i) => (
-            <div key={`seed-${i}`} className={e.kind === 'stderr' ? 'text-fg-danger' : ''}>
+            <div key={`seed-${i}`} className={e.kind === 'stderr' ? 'text-feedback-danger' : ''}>
               {e.line}
             </div>
           ))}
           {events.map((e, i) => (
-            <div key={`live-${i}`} className={e.kind === 'stderr' ? 'text-fg-danger' : ''}>
+            <div key={`live-${i}`} className={e.kind === 'stderr' ? 'text-feedback-danger' : ''}>
               {e.line}
             </div>
           ))}
           {terminal && (
-            <div className="text-fg-muted mt-2">
+            <div className="text-text-muted mt-2">
               [done] {terminal.status} exit={terminal.exit_code ?? 'n/a'}
             </div>
           )}
@@ -110,20 +110,20 @@ export function OutputPanel({ job, slug }: Props): JSX.Element | null {
       )}
 
       {!isLive && outputQuery.isLoading && (
-        <p className="text-fg-muted text-sm">Loading output…</p>
+        <p className="text-text-muted text-sm">Loading output…</p>
       )}
 
       {!isLive && outputQuery.data && (
         <div className="space-y-3">
           <div>
-            <h4 className="text-fg-muted mb-1 text-xs uppercase">stdout</h4>
-            <pre className="bg-surface-canvas overflow-x-auto rounded p-3 text-xs whitespace-pre-wrap">
+            <h4 className="text-text-muted mb-1 text-xs uppercase">stdout</h4>
+            <pre className="bg-surface-sunken border-border-default overflow-x-auto rounded-lg border p-3 text-xs whitespace-pre-wrap">
               {outputQuery.data.stdout || '(empty)'}
             </pre>
           </div>
           <div>
-            <h4 className="text-fg-muted mb-1 text-xs uppercase">stderr</h4>
-            <pre className="bg-surface-canvas overflow-x-auto rounded p-3 text-xs whitespace-pre-wrap">
+            <h4 className="text-text-muted mb-1 text-xs uppercase">stderr</h4>
+            <pre className="bg-surface-sunken border-border-default overflow-x-auto rounded-lg border p-3 text-xs whitespace-pre-wrap">
               {outputQuery.data.stderr || '(empty)'}
             </pre>
           </div>

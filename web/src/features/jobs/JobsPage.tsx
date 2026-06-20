@@ -19,11 +19,11 @@ export function JobsPage(): JSX.Element {
       body={
         <span>
           Jobs are reachable contextually — find them in the{' '}
-          <Link to={`/orgs/${slug}/audit`} className="text-accent hover:underline">
+          <Link to={`/orgs/${slug}/audit`} className="text-accent-default hover:underline">
             Audit
           </Link>{' '}
           timeline or on the{' '}
-          <Link to={`/orgs/${slug}/dashboard`} className="text-accent hover:underline">
+          <Link to={`/orgs/${slug}/dashboard`} className="text-accent-default hover:underline">
             Dashboard
           </Link>{' '}
           awaiting-your-approval rollup.

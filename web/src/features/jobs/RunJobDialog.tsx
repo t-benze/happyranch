@@ -78,7 +78,7 @@ export function RunJobDialog({ job, open, onClose, onSuccess }: Props): JSX.Elem
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Run {job.id}</DialogTitle>
+          <DialogTitle className="font-display">Run {job.id}</DialogTitle>
           <DialogDescription className="sr-only">
             Approve and run this job. The script will execute immediately.
           </DialogDescription>
@@ -87,13 +87,13 @@ export function RunJobDialog({ job, open, onClose, onSuccess }: Props): JSX.Elem
         {/* Script preview */}
         <div className="min-w-0 space-y-3">
           <div className="min-w-0">
-            <p className="text-fg-muted mb-1 text-xs font-medium uppercase tracking-wider">
+            <p className="text-text-muted mb-1 text-xs font-medium tracking-wider uppercase">
               Script
               <span className="ml-1 normal-case">
                 ({job.interpreter}{job.cwd_hint ? ` · cwd hint: ${job.cwd_hint}` : ''})
               </span>
             </p>
-            <pre className="bg-surface-canvas text-fg max-h-40 max-w-full min-w-0 overflow-x-auto overflow-y-auto rounded p-3 text-xs whitespace-pre">
+            <pre className="bg-surface-sunken border-border-default text-text-primary max-h-40 max-w-full min-w-0 overflow-x-auto overflow-y-auto rounded-lg border p-3 text-xs whitespace-pre">
               {job.script_text}
             </pre>
           </div>
@@ -122,7 +122,7 @@ export function RunJobDialog({ job, open, onClose, onSuccess }: Props): JSX.Elem
           </FormField>
 
           {errorMsg && (
-            <p className="text-fg-danger text-sm">{errorMsg}</p>
+            <p className="text-feedback-danger text-sm">{errorMsg}</p>
           )}
         </div>
 

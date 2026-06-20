@@ -19,16 +19,16 @@ import { OutputPanel } from './OutputPanel';
 const STATUS_CLASS: Record<JobStatus, string> = {
   pending: 'bg-tier-yellow-tint text-status-archiving',
   running: 'bg-tier-green-tint text-status-open',
-  completed: 'border border-border-subtle bg-transparent text-status-archived',
+  completed: 'border border-border-default bg-transparent text-status-archived',
   failed: 'bg-tier-red-tint text-status-abandoned',
-  rejected: 'border border-border-subtle bg-transparent text-fg-muted',
+  rejected: 'border border-border-default bg-transparent text-text-muted',
 };
 
 function JobStatusBadge({ status }: { status: JobStatus }): JSX.Element {
   return (
     <span
       className={cn(
-        'text-mono-sm inline-flex items-center rounded-sm px-2 py-px font-mono text-xs font-semibold',
+        'text-mono-sm inline-flex items-center rounded-full px-2 py-px font-mono text-xs font-semibold',
         STATUS_CLASS[status],
       )}
     >
@@ -74,37 +74,37 @@ export function JobDetailPane({ jobId }: JobDetailPaneProps): JSX.Element {
       <Drawer open onOpenChange={(o) => !o && onClose()}>
         <DrawerContent className="flex flex-col">
           {/* ── Header ── */}
-          <header className="border-border-subtle shrink-0 border-b p-4">
-            <DrawerTitle className="text-fg flex items-center gap-2 text-lg">
-              <span className="text-id-task font-mono text-sm">{jobId}</span>
+          <header className="border-border-default shrink-0 border-b p-4">
+            <DrawerTitle className="text-text-primary font-display flex items-center gap-2 text-lg">
+              <span className="text-id-task font-mono text-sm tabular-nums">{jobId}</span>
               {job && <JobStatusBadge status={job.status} />}
             </DrawerTitle>
             {job && (
-              <p className="text-fg-muted mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+              <p className="text-text-muted mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
                 <span>{job.agent_name}</span>
                 <span>·</span>
                 {slug ? (
                   <Link
                     to={`/orgs/${slug}/tasks/${job.task_id}`}
-                    className="text-id-task font-mono hover:underline"
+                    className="text-id-task font-mono tabular-nums hover:underline"
                   >
                     {job.task_id}
                   </Link>
                 ) : (
-                  <span className="text-id-task font-mono">{job.task_id}</span>
+                  <span className="text-id-task font-mono tabular-nums">{job.task_id}</span>
                 )}
                 <span>·</span>
                 <span>{job.interpreter}</span>
                 {job.persistent && (
                   <>
                     <span>·</span>
-                    <span className="uppercase tracking-wider">persistent</span>
+                    <span className="tracking-wider uppercase">persistent</span>
                   </>
                 )}
                 {job.review_required && (
                   <>
                     <span>·</span>
-                    <span className="uppercase tracking-wider">review</span>
+                    <span className="tracking-wider uppercase">review</span>
                   </>
                 )}
                 {job.created_at && (
@@ -118,35 +118,35 @@ export function JobDetailPane({ jobId }: JobDetailPaneProps): JSX.Element {
           </header>
 
           {/* ── Body ── */}
-          <section className="min-h-0 flex-1 overflow-y-auto p-4 space-y-5">
+          <section className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4">
             {query.isLoading && (
-              <p className="text-fg-muted text-sm">Loading…</p>
+              <p className="text-text-muted text-sm">Loading…</p>
             )}
             {query.isError && (
-              <p className="text-fg-muted text-sm">Error loading {jobId}.</p>
+              <p className="text-text-muted text-sm">Error loading {jobId}.</p>
             )}
             {job && (
               <>
                 {/* 1. Title */}
-                <h2 className="text-fg text-base font-semibold">{job.title}</h2>
+                <h2 className="text-text-primary font-display text-base font-semibold">{job.title}</h2>
 
                 {/* 2. Rationale */}
                 <div>
-                  <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+                  <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
                     Rationale
                   </h3>
-                  <p className="text-fg text-sm whitespace-pre-wrap">{job.rationale}</p>
+                  <p className="text-text-primary text-sm whitespace-pre-wrap">{job.rationale}</p>
                 </div>
 
                 {/* 3. Script preview */}
                 <div>
-                  <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+                  <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
                     Script
                     <span className="ml-1 normal-case">({job.interpreter}
                       {job.cwd_hint ? ` · cwd: ${job.cwd_hint}` : ''}
                     )</span>
                   </h3>
-                  <pre className="bg-surface-canvas text-fg overflow-x-auto rounded p-3 text-xs whitespace-pre">
+                  <pre className="bg-surface-sunken border-border-default text-text-primary overflow-x-auto rounded-lg border p-3 text-xs whitespace-pre">
                     {job.script_text}
                   </pre>
                 </div>
@@ -181,7 +181,7 @@ export function JobDetailPane({ jobId }: JobDetailPaneProps): JSX.Element {
                       </Button>
                     </div>
                     {stopError && (
-                      <p className="text-fg-danger text-sm">{stopError}</p>
+                      <p className="text-feedback-danger text-sm">{stopError}</p>
                     )}
                   </div>
                 )}
@@ -189,7 +189,7 @@ export function JobDetailPane({ jobId }: JobDetailPaneProps): JSX.Element {
                 {/* 5. Reject reason — rejected only */}
                 {job.status === 'rejected' && job.reject_reason && (
                   <div>
-                    <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+                    <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
                       Reject reason
                     </h3>
                     <p className="text-sm whitespace-pre-wrap">{job.reject_reason}</p>
@@ -199,10 +199,10 @@ export function JobDetailPane({ jobId }: JobDetailPaneProps): JSX.Element {
                 {/* 6. Failure reason — for failed jobs, surface why */}
                 {job.status === 'failed' && job.reason && (
                   <div>
-                    <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+                    <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
                       Failure reason
                     </h3>
-                    <p className="text-sm font-mono">{job.reason}</p>
+                    <p className="text-text-primary font-mono text-sm">{job.reason}</p>
                   </div>
                 )}
 
