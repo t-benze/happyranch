@@ -265,9 +265,9 @@ export function ThreadsPage(): JSX.Element {
       <ThreadsLayout
         inbox={(
       <aside className="border-border-default bg-surface-sunken flex h-full flex-col border-r">
-        <header className="border-border-default border-b px-3 py-2">
+        <header className="border-border-default border-b px-3 py-3">
           <div className="flex items-center justify-between gap-2">
-            <h2 className="text-overline text-text-muted tracking-wide uppercase">{S.pageTitle}</h2>
+            <h2 className="font-display text-text-primary text-lg font-medium tracking-tight">{S.pageTitle}</h2>
             <Button
               size="sm"
               onClick={openNew}
@@ -292,11 +292,20 @@ export function ThreadsPage(): JSX.Element {
             aria-label="Status filter"
           >
             <TabsList>
-              {STATUS_TABS.map((s) => (
-                <TabsTrigger key={s} value={s}>
-                  {s}
-                </TabsTrigger>
-              ))}
+              {STATUS_TABS.map((s) => {
+                const all = threadsQuery.data?.threads ?? [];
+                const count = s === 'open'
+                  ? all.filter((t) => t.status === 'open').length
+                  : all.filter((t) => t.status === 'archived').length;
+                return (
+                  <TabsTrigger key={s} value={s}>
+                    {s}
+                    <span className="text-text-muted ml-1 text-xs tabular-nums">
+                      {all.length > 0 ? count : '…'}
+                    </span>
+                  </TabsTrigger>
+                );
+              })}
             </TabsList>
           </Tabs>
         </header>
@@ -453,6 +462,7 @@ interface DetailColumnProps {
         thread_id: string;
         subject: string;
         status: string;
+        started_at: string;
         participants: string[];
         turns_used: number;
         turn_cap: number;
@@ -525,6 +535,10 @@ function DetailColumn({
 
   const open = thread.status === 'open';
   const isDreamOriginated = !!thread.composed_from_dream_id;
+  const statusPillCls =
+    thread.status === 'open'
+      ? 'bg-accent-soft text-accent-text'
+      : 'bg-surface-sunken border border-border-default text-text-muted';
 
   return (
     <section className="flex h-full flex-col">
@@ -555,17 +569,89 @@ function DetailColumn({
           </>
         }
       />
-      <div className="flex-1 overflow-hidden">
-        <ThreadDetailTranscript
-          messages={messages}
-          loading={messagesLoading}
-          slug={slug}
-          nowMs={nowMs}
-        />
+      <div className="flex min-h-0 flex-1">
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div className="flex-1 overflow-auto">
+            <ThreadDetailTranscript
+              messages={messages}
+              loading={messagesLoading}
+              slug={slug}
+              nowMs={nowMs}
+            />
+          </div>
+          <footer className="border-border-default bg-surface-sunken border-t p-3">
+            {composer}
+          </footer>
+        </div>
+        {/* Properties rail — 244px wide, Direction-A Pasture */}
+        <aside className="border-border-default bg-surface-sunken w-rail flex shrink-0 flex-col gap-3 overflow-auto border-l p-4">
+          {/* Status */}
+          <div>
+            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">Status</h3>
+            <span
+              className={`inline-flex items-center rounded-full px-2 py-px text-xs leading-relaxed font-semibold ${statusPillCls}`}
+            >
+              {thread.status === 'open' ? 'active' : 'archived'}
+            </span>
+          </div>
+
+          {/* Turn budget */}
+          <div>
+            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">Turn budget</h3>
+            <p className="font-display text-text-primary text-2xl font-medium tracking-tight tabular-nums">
+              {thread.turns_used}
+              <span className="text-text-muted text-lg font-normal">/{thread.turn_cap}</span>
+            </p>
+          </div>
+
+          {/* Participants */}
+          <div>
+            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">Participants</h3>
+            <ul className="space-y-0.5">
+              {thread.participants.length > 0 ? (
+                thread.participants.map((p) => (
+                  <li key={p} className="text-text-secondary text-xs">{p}</li>
+                ))
+              ) : (
+                <li className="text-text-muted text-xs">none</li>
+              )}
+            </ul>
+          </div>
+
+          {/* Thread ID */}
+          <div>
+            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">ID</h3>
+            <p className="text-text-secondary font-mono text-xs">{thread.thread_id}</p>
+          </div>
+
+          {/* Started */}
+          <div>
+            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">Started</h3>
+            <p className="text-text-secondary text-xs">
+              {new Date(thread.started_at).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
+            </p>
+          </div>
+
+          {/* Dream marker */}
+          {isDreamOriginated && (
+            <div>
+              <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">Origin</h3>
+              <span className="bg-accent-soft text-accent-text inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-semibold">
+                <CrescentMoonBadge className="h-3 w-3" />
+                dream
+              </span>
+            </div>
+          )}
+
+          {/* Archive summary */}
+          {thread.summary && (
+            <div>
+              <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">Summary</h3>
+              <p className="text-text-secondary text-xs leading-relaxed">{thread.summary}</p>
+            </div>
+          )}
+        </aside>
       </div>
-      <footer className="border-border-default bg-surface-sunken border-t p-3">
-        {composer}
-      </footer>
     </section>
   );
 }
