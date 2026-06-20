@@ -290,7 +290,62 @@ def test_recent_activity_extracts_verdict(db: Database) -> None:
     assert by_kind["review_verdict"].verdict == "fail"
 
 
-from runtime.orchestrator.dashboard_summary import compute_updates_this_week
+def test_recent_activity_serializes_dream_id_for_dream_thread(db: Database) -> None:
+    """ActivityRow serializes _thread_dream_id ONLY for dream-originated threads."""
+    base = datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc)
+
+    # Thread with composed_from_dream_id set
+    db._conn.execute(
+        "INSERT INTO threads (id, subject, started_at, status, composed_from_dream_id) "
+        "VALUES ('THR-001', 'Dream chat', ?, 'open', 'dream-alpha')",
+        (base.isoformat(),),
+    )
+    # Thread without composed_from_dream_id
+    db._conn.execute(
+        "INSERT INTO threads (id, subject, started_at, status) "
+        "VALUES ('THR-002', 'Normal chat', ?, 'open')",
+        (base.isoformat(),),
+    )
+    # Audit entry for dream thread
+    db._conn.execute(
+        "INSERT INTO audit_log (timestamp, task_id, agent, action, payload) "
+        "VALUES (?, 'THR-001', 'founder', 'session_start', NULL)",
+        ((base + timedelta(seconds=1)).isoformat(),),
+    )
+    # Audit entry for non-dream thread
+    db._conn.execute(
+        "INSERT INTO audit_log (timestamp, task_id, agent, action, payload) "
+        "VALUES (?, 'THR-002', 'founder', 'session_start', NULL)",
+        ((base + timedelta(seconds=2)).isoformat(),),
+    )
+    db._conn.commit()
+
+    rows = compute_recent_activity(db, n=6)
+    assert len(rows) == 2
+
+    # Non-dream thread (newer, so index 0): _thread_dream_id must be absent in dump
+    non_dream = rows[0]
+    assert non_dream.task_id == "THR-002"
+    dumped_non = non_dream.model_dump(by_alias=True)
+    assert "_thread_dream_id" in dumped_non
+    assert dumped_non["_thread_dream_id"] is None
+
+    # Dream thread: _thread_dream_id must carry the dream id
+    dream_row = rows[1]
+    assert dream_row.task_id == "THR-001"
+    dumped_dream = dream_row.model_dump(by_alias=True)
+    assert "_thread_dream_id" in dumped_dream
+    assert dumped_dream["_thread_dream_id"] == "dream-alpha"
+
+    # Verify by_alias=False also works (no alias, uses field name)
+    dumped_fieldname = dream_row.model_dump()
+    assert "thread_dream_id" in dumped_fieldname
+    assert dumped_fieldname["thread_dream_id"] == "dream-alpha"
+
+
+from runtime.orchestrator.dashboard_summary import (
+    compute_updates_this_week, ActivityRow, DashboardSummaryResponse,
+)
 
 
 def test_updates_this_week_empty(db: Database, mock_kb_store: _MockKbStore) -> None:

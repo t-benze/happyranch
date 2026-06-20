@@ -113,3 +113,81 @@ def test_list_tasks_blocked_on_jobs_filters_correctly():
 
         result = db.list_tasks_blocked_on_jobs()
         assert set(result) == {"TASK-A"}
+
+
+def test_list_tasks_blocked_on_job_id_filter_requires_blocked_status():
+    """list_tasks(blocked_on_job_id=...) MUST constrain status=blocked AND
+    block_kind=blocked_on_job — non-blocked (e.g., done) tasks with the same
+    job in blocked_on_job_ids must NOT appear.
+
+    Regression for TASK-548: the initial DERIVE filter did an unconstrained
+    LIKE match, leaking stale done/running tasks into the "if approved" cascade.
+    """
+    import json
+    from runtime.models import TaskRecord, TaskStatus
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "test.db"
+        db = Database(db_path)
+
+        # (a) A task that WAS blocked on JOB-X but is now DONE — must NOT appear.
+        done_task = TaskRecord(
+            id="TASK-DONE", team="engineering", brief="done",
+            status=TaskStatus.FAILED, parent_task_id=None,
+        )
+        db.insert_task(done_task)
+        db.update_task(
+            "TASK-DONE",
+            status=TaskStatus.FAILED,
+            blocked_on_job_ids=json.dumps(["JOB-X"]),
+        )
+
+        # (b) A genuinely BLOCKED + BLOCKED_ON_JOB task on JOB-X — MUST appear.
+        blocked_task = TaskRecord(
+            id="TASK-BLOCKED", team="engineering", brief="blocked",
+            status=TaskStatus.BLOCKED, parent_task_id=None,
+        )
+        db.insert_task(blocked_task)
+        db.update_task(
+            "TASK-BLOCKED",
+            status=TaskStatus.BLOCKED,
+            block_kind=BlockKind.BLOCKED_ON_JOB,
+            blocked_on_job_ids=json.dumps(["JOB-X"]),
+        )
+
+        # (c) A task blocked on JOB-12 — must NOT match JOB-1.
+        wrong_job_task = TaskRecord(
+            id="TASK-JOB12", team="engineering", brief="wrong",
+            status=TaskStatus.BLOCKED, parent_task_id=None,
+        )
+        db.insert_task(wrong_job_task)
+        db.update_task(
+            "TASK-JOB12",
+            status=TaskStatus.BLOCKED,
+            block_kind=BlockKind.BLOCKED_ON_JOB,
+            blocked_on_job_ids=json.dumps(["JOB-12"]),
+        )
+
+        # Query for JOB-X: should return ONLY TASK-BLOCKED.
+        result = db.list_tasks(blocked_on_job_id="JOB-X", limit=50)
+        result_ids = [t.id for t in result]
+
+        # (a) Done task must NOT appear.
+        assert "TASK-DONE" not in result_ids, (
+            f"TASK-DONE (status=FAILED) leaked into blocked_on_job_id filter; "
+            f"got {result_ids}"
+        )
+
+        # (b) Blocked task MUST appear.
+        assert "TASK-BLOCKED" in result_ids, (
+            f"TASK-BLOCKED (BLOCKED+BLOCKED_ON_JOB) missing from blocked_on_job_id filter; "
+            f"got {result_ids}"
+        )
+
+        # (c) JOB-12 must NOT match JOB-1.
+        result_job1 = db.list_tasks(blocked_on_job_id="JOB-1", limit=50)
+        job1_ids = [t.id for t in result_job1]
+        assert "TASK-JOB12" not in job1_ids, (
+            f"JOB-12 leaked into blocked_on_job_id='JOB-1' filter; "
+            f"got {job1_ids}"
+        )

@@ -14,7 +14,7 @@ import { useTask, useTaskRecall, useTasksRoutes } from '@/hooks/tasks';
 import { useJobsList } from '@/hooks/jobs';
 // eslint-disable-next-line no-restricted-imports -- no @/hooks accessor exposes getTask (useTask deliberately drops active_chain); routed direct per THR-011 founder ruling (option 3), pending a future hook
 import { getTask } from '@/lib/api/tasks';
-import type { ActiveChainResponse } from '@/lib/api/types';
+import type { ActiveChainResponse, TaskDetailResponse } from '@/lib/api/types';
 import { TaskRecallTree } from './TaskRecallTree';
 import { TaskEventsLog } from './TaskEventsLog';
 import { CancelTaskDialog } from './CancelTaskDialog';
@@ -60,6 +60,206 @@ function WorkflowChainStrip({ chain }: { chain: ActiveChainResponse }): JSX.Elem
   );
 }
 
+// ---------------------------------------------------------------------------
+// Revisit chain timeline
+// ---------------------------------------------------------------------------
+
+interface ChainNode {
+  taskId: string;
+  status: string;
+  isCurrent: boolean;
+}
+
+function RevisitChainTimeline({
+  chainIds,
+  currentTaskId,
+  slug,
+}: {
+  chainIds: string[];
+  currentTaskId: string;
+  slug: string;
+}): JSX.Element | null {
+  if (chainIds.length <= 1) return null;
+
+  // The chain is [current, predecessor, ..., original] — reverse for timeline
+  const nodes: ChainNode[] = chainIds.map((id) => ({
+    taskId: id,
+    status: id === currentTaskId ? 'current' : 'done',
+    isCurrent: id === currentTaskId,
+  }));
+
+  return (
+    <section className="mt-6">
+      <h3 className="text-fg-muted mb-3 text-xs font-medium tracking-wider uppercase">
+        Lineage
+      </h3>
+      <div className="relative pl-4">
+        {nodes.reverse().map((node, i) => {
+          const isLast = i === nodes.length - 1;
+          const marker = node.isCurrent ? '●' : '○';
+          const markerColor = node.isCurrent
+            ? 'text-accent ring-accent/30 ring-4 ring-offset-2'
+            : 'text-fg-muted';
+
+          return (
+            <div key={node.taskId} className="relative flex items-start gap-3 pb-4">
+              {/* Vertical line */}
+              {!isLast && (
+                <div className="border-border-subtle absolute left-2 top-6 h-full w-px border-l" />
+              )}
+              {/* Node marker */}
+              <span
+                className={`relative z-10 mt-1 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-xs ${markerColor}`}
+                aria-hidden
+              >
+                {marker}
+              </span>
+              {/* Node content */}
+              <div className="min-w-0 flex-1">
+                {slug ? (
+                  <Link
+                    to={`/orgs/${slug}/tasks/${node.taskId}`}
+                    className="text-accent hover:underline font-mono text-sm tab-focus"
+                  >
+                    {node.taskId}
+                  </Link>
+                ) : (
+                  <span className="font-mono text-sm">{node.taskId}</span>
+                )}
+                {node.isCurrent && (
+                  <span className="text-fg-muted ml-2 text-xs">(current)</span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Blocked-on display
+// ---------------------------------------------------------------------------
+
+function BlockedOnInfo({
+  taskId,
+  slug,
+}: {
+  taskId: string;
+  slug: string;
+}): JSX.Element | null {
+  const detailQuery = useQuery({
+    queryKey: ['task', slug, taskId, 'blocked'],
+    queryFn: () => getTask(slug, taskId),
+    select: (r: TaskDetailResponse) => ({
+      status: r.task.status,
+      blockKind: r.task.block_kind,
+      blockedOnJobIds: (r as Record<string, unknown>).blocked_on_jobs as
+        | Array<{ job_id: string; status: string }>
+        | null
+        | undefined,
+    }),
+    enabled: !!slug && !!taskId,
+  });
+
+  if (!detailQuery.data) return null;
+  const { status, blockKind, blockedOnJobIds } = detailQuery.data;
+
+  if (status !== 'blocked') return null;
+
+  let blockerText = 'Blocked';
+  if (blockKind === 'escalated') {
+    blockerText = 'Escalated — awaiting founder';
+  } else if (blockKind === 'delegated') {
+    blockerText = 'Delegated — waiting on children';
+  } else if (blockedOnJobIds && blockedOnJobIds.length > 0) {
+    return (
+      <div className="bg-tier-red-tint text-status-abandoned mt-3 rounded-sm px-3 py-2 text-sm">
+        <span className="font-semibold">Blocked:</span>{' '}
+        Waiting on job{blockedOnJobIds.length > 1 ? 's' : ''}:{' '}
+        {blockedOnJobIds.map((j, i) => (
+          <span key={j.job_id}>
+            {slug ? (
+              <Link
+                to={`/orgs/${slug}/jobs/${j.job_id}`}
+                className="text-accent font-mono text-xs hover:underline"
+              >
+                {j.job_id}
+              </Link>
+            ) : (
+              <span className="font-mono text-xs">{j.job_id}</span>
+            )}
+            {i < blockedOnJobIds.length - 1 ? ', ' : null}
+          </span>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-tier-red-tint text-status-abandoned mt-3 rounded-sm px-3 py-2 text-sm">
+      <span className="font-semibold">Blocked:</span> {blockerText}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Property rail
+// ---------------------------------------------------------------------------
+
+function PropertyRail({ task, slug }: { task: Record<string, unknown>; slug: string }): JSX.Element | null {
+  const items: { label: string; value: string; isLink?: boolean; linkTo?: string }[] = [];
+  if (task.assigned_agent) {
+    items.push({ label: 'Assignee', value: task.assigned_agent as string });
+  }
+  if (task.team) {
+    items.push({ label: 'Team', value: task.team as string });
+  }
+  if (task.created_at) {
+    items.push({ label: 'Created', value: new Date(task.created_at as string).toLocaleDateString() });
+  }
+  if ((task as Record<string, unknown>).dispatched_from_thread_id) {
+    const threadId = (task as Record<string, unknown>).dispatched_from_thread_id as string;
+    items.push({
+      label: 'Thread',
+      value: threadId,
+      isLink: true,
+      linkTo: `/orgs/${slug}/threads/${threadId}`,
+    });
+  }
+
+  if (items.length === 0) return null;
+
+  return (
+    <div className="border-border-subtle mt-4 rounded border p-3">
+      <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+        Properties
+      </h3>
+      <dl className="space-y-1 text-sm">
+        {items.map((item) => (
+          <div key={item.label} className="flex justify-between gap-2">
+            <dt className="text-fg-muted">{item.label}</dt>
+            <dd className="text-fg truncate font-mono text-xs">
+              {item.isLink && item.linkTo ? (
+                <Link to={item.linkTo} className="text-accent hover:underline">
+                  {item.value}
+                </Link>
+              ) : (
+                item.value
+              )}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main component
+// ---------------------------------------------------------------------------
+
 const BRIEF_COLLAPSE_THRESHOLD = 600;
 
 const TERMINAL_STATUSES: ReadonlySet<string> = new Set([
@@ -84,6 +284,13 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
     select: (r) => r.active_chain ?? null,
     enabled: !!slug && !!taskId,
   });
+  // Full detail response for chain + blocked_on data
+  const detailQuery = useQuery({
+    queryKey: ['task-detail', slug, taskId],
+    queryFn: () => getTask(slug as string, taskId),
+    enabled: !!slug && !!taskId,
+  });
+
   const [dialog, setDialog] = useState<null | 'cancel' | 'revisit' | 'resolve'>(null);
   const [briefExpanded, setBriefExpanded] = useState(false);
 
@@ -99,6 +306,8 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
     briefShouldCollapse && !briefExpanded
       ? brief.slice(0, BRIEF_COLLAPSE_THRESHOLD).replace(/\s+\S*$/, '') + '…'
       : brief;
+
+  const revisitChain = (detailQuery.data?.revisit_chain as string[]) ?? [];
 
   return (
     <>
@@ -125,6 +334,10 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
                 <span className="font-semibold">Failure reason:</span>{' '}
                 <span className="font-mono">{failureNote}</span>
               </div>
+            )}
+            {/* Blocked info */}
+            {task.data?.status === 'blocked' && slug && (
+              <BlockedOnInfo taskId={taskId} slug={slug} />
             )}
             <div className="mt-3 flex gap-2">
               {isEscalated && (
@@ -155,7 +368,22 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
           <section className="min-h-0 flex-1 overflow-y-auto p-4">
             {task.data && (
               <>
-                <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+                {/* Property rail */}
+                <PropertyRail
+                  task={task.data as unknown as Record<string, unknown>}
+                  slug={slug ?? ''}
+                />
+
+                {/* Revisit chain timeline */}
+                {slug && revisitChain.length > 0 && (
+                  <RevisitChainTimeline
+                    chainIds={revisitChain}
+                    currentTaskId={taskId}
+                    slug={slug}
+                  />
+                )}
+
+                <h3 className="text-fg-muted mt-6 mb-2 text-xs font-medium tracking-wider uppercase">
                   Brief
                 </h3>
                 <Markdown body={briefPreview} />

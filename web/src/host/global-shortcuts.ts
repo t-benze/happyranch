@@ -5,7 +5,7 @@
 import type { ShortcutEntry } from '@/design-system/patterns/HelpSheet';
 
 export const GLOBAL_SHORTCUTS: ShortcutEntry[] = [
-  { keys: ['Cmd', 'K'], description: 'Open command palette' },
+  { keys: ['Cmd', 'K'], description: 'Open assistant dock' },
   { keys: ['?'], description: 'Show this help' },
   { keys: ['Esc'], description: 'Close any dialog, drawer, or palette' },
   { keys: ['g', 'd'], description: 'Jump to Dashboard' },

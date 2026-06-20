@@ -1346,3 +1346,185 @@ def test_task_type_round_trips(tmp_path):
     assert db.get_task("TASK-001").task_type == "task"
     assert db.get_task("TASK-002").task_type == "subtask"
     db.close()
+
+
+# ---------------------------------------------------------------------------
+# get_subtree_statuses — severity rollup derive for Tasks list
+# ---------------------------------------------------------------------------
+
+def test_get_subtree_statuses_root_with_no_subtree_returns_empty(db):
+    """A root task with zero children returns an empty status list."""
+    db.insert_task(TaskRecord(id="ROOT-1", brief="alone"))
+    assert db.get_subtree_statuses("ROOT-1") == []
+
+
+def test_get_subtree_statuses_returns_direct_child_statuses(db):
+    """Direct children statuses are collected."""
+    db.insert_task(TaskRecord(id="ROOT-1", brief="root"))
+    db.insert_task(TaskRecord(
+        id="CHILD-1", brief="c1", parent_task_id="ROOT-1",
+        status=TaskStatus.BLOCKED,
+    ))
+    db.insert_task(TaskRecord(
+        id="CHILD-2", brief="c2", parent_task_id="ROOT-1",
+        status=TaskStatus.COMPLETED,
+    ))
+    result = db.get_subtree_statuses("ROOT-1")
+    assert sorted(result) == sorted(["blocked", "completed"])
+
+
+def test_get_subtree_statuses_walks_deeply_nested_subtree(db):
+    """Statuses from grandchild and great-grandchild levels are collected."""
+    db.insert_task(TaskRecord(id="ROOT-1", brief="root"))
+    db.insert_task(TaskRecord(
+        id="CHILD-1", brief="c1", parent_task_id="ROOT-1",
+        status=TaskStatus.PENDING,
+    ))
+    db.insert_task(TaskRecord(
+        id="GRAND-1", brief="gc1", parent_task_id="CHILD-1",
+        status=TaskStatus.FAILED,
+    ))
+    db.insert_task(TaskRecord(
+        id="GREAT-1", brief="ggc1", parent_task_id="GRAND-1",
+        status=TaskStatus.IN_PROGRESS,
+    ))
+    result = db.get_subtree_statuses("ROOT-1")
+    # Should collect all three descendant statuses.
+    assert sorted(result) == sorted(["pending", "failed", "in_progress"])
+
+
+def test_get_subtree_statuses_multiple_branches(db):
+    """Multiple child branches are all traversed."""
+    db.insert_task(TaskRecord(id="ROOT-1", brief="root"))
+    # Branch A: child -> grandchild
+    db.insert_task(TaskRecord(
+        id="CHILD-A", brief="ca", parent_task_id="ROOT-1",
+        status=TaskStatus.COMPLETED,
+    ))
+    db.insert_task(TaskRecord(
+        id="GRAND-A", brief="ga", parent_task_id="CHILD-A",
+        status=TaskStatus.FAILED,
+    ))
+    # Branch B: child only
+    db.insert_task(TaskRecord(
+        id="CHILD-B", brief="cb", parent_task_id="ROOT-1",
+        status=TaskStatus.BLOCKED,
+    ))
+    # Branch C: child -> grandchild with subtask
+    db.insert_task(TaskRecord(
+        id="CHILD-C", brief="cc", parent_task_id="ROOT-1",
+        status=TaskStatus.IN_PROGRESS, task_type="subtask",
+    ))
+    db.insert_task(TaskRecord(
+        id="GRAND-C", brief="gc", parent_task_id="CHILD-C",
+        status=TaskStatus.RESOLVED_SUPERSEDED,
+    ))
+    result = db.get_subtree_statuses("ROOT-1")
+    assert sorted(result) == sorted([
+        "completed", "failed", "blocked", "in_progress", "resolved_superseded",
+    ])
+
+
+# ---------------------------------------------------------------------------
+# list_roots — roots-only list with severity rollup
+# ---------------------------------------------------------------------------
+
+def test_list_roots_returns_only_root_tasks(db):
+    """Tasks with a parent_task_id are excluded."""
+    db.insert_task(TaskRecord(id="ROOT-1", brief="r1"))
+    db.insert_task(TaskRecord(id="ROOT-2", brief="r2"))
+    db.insert_task(TaskRecord(
+        id="CHILD-1", brief="c1", parent_task_id="ROOT-1"
+    ))
+    result = db.list_roots()
+    ids = [t.id for t in result]
+    assert "ROOT-1" in ids
+    assert "ROOT-2" in ids
+    assert "CHILD-1" not in ids
+
+
+def test_list_roots_includes_severity_rollup(db):
+    """Each root carries a _severity_rollup string reflecting worst child status."""
+    db.insert_task(TaskRecord(id="ROOT-1", brief="ok", status=TaskStatus.COMPLETED))
+    db.insert_task(TaskRecord(
+        id="CHILD-1", brief="c1", parent_task_id="ROOT-1",
+        status=TaskStatus.BLOCKED,
+    ))
+    result = db.list_roots()
+    assert len(result) == 1
+    root = result[0]
+    assert hasattr(root, '_severity_rollup')
+    # blocked child → root rollup should be 'blocked'
+    assert root._severity_rollup == 'blocked'
+
+
+def test_list_roots_severity_rollup_root_without_subtree_is_own_status(db):
+    """A root without any child tasks reflects its own status as rollup."""
+    db.insert_task(TaskRecord(id="ROOT-1", brief="alone", status=TaskStatus.IN_PROGRESS))
+    result = db.list_roots()
+    assert result[0]._severity_rollup == 'in_progress'
+
+
+def test_list_roots_severity_rollup_failed_wins_over_completed(db):
+    """Failed is worse than completed in the rollup."""
+    db.insert_task(TaskRecord(id="ROOT-1", brief="ok", status=TaskStatus.COMPLETED))
+    db.insert_task(TaskRecord(
+        id="CHILD-1", brief="c1", parent_task_id="ROOT-1",
+        status=TaskStatus.FAILED,
+    ))
+    db.insert_task(TaskRecord(
+        id="CHILD-2", brief="c2", parent_task_id="ROOT-1",
+        status=TaskStatus.COMPLETED,
+    ))
+    result = db.list_roots()
+    assert result[0]._severity_rollup == 'failed'
+
+
+def test_list_roots_severity_rollup_blocked_wins_over_failed(db):
+    """Blocked is the worst severity — blocked > failed > in_progress > pending > completed."""
+    db.insert_task(TaskRecord(id="ROOT-1", brief="ok", status=TaskStatus.COMPLETED))
+    db.insert_task(TaskRecord(
+        id="CHILD-1", brief="c1", parent_task_id="ROOT-1",
+        status=TaskStatus.BLOCKED,
+    ))
+    db.insert_task(TaskRecord(
+        id="CHILD-2", brief="c2", parent_task_id="ROOT-1",
+        status=TaskStatus.FAILED,
+    ))
+    result = db.list_roots()
+    assert result[0]._severity_rollup == 'blocked'
+
+
+def test_list_roots_filters_by_status(db):
+    """Status filter applied to the root itself, rollup computed on full subtree."""
+    db.insert_task(TaskRecord(id="ROOT-1", brief="r1", status=TaskStatus.BLOCKED))
+    db.insert_task(TaskRecord(id="ROOT-2", brief="r2", status=TaskStatus.COMPLETED))
+    result = db.list_roots(status=TaskStatus.BLOCKED)
+    assert len(result) == 1
+    assert result[0].id == "ROOT-1"
+
+
+def test_list_roots_filters_by_agent(db):
+    """Assigned agent filter on roots."""
+    db.insert_task(TaskRecord(
+        id="ROOT-1", brief="r1", assigned_agent="dev_agent"
+    ))
+    db.insert_task(TaskRecord(
+        id="ROOT-2", brief="r2", assigned_agent="qa_engineer"
+    ))
+    result = db.list_roots(assigned_agent="dev_agent")
+    assert [t.id for t in result] == ["ROOT-1"]
+
+
+def test_list_roots_severity_rollup_ignores_revisit_chain(db):
+    """The rollup is ONLY on the parent_task_id subtree, not revisit predecessors."""
+    db.insert_task(TaskRecord(id="ROOT-1", brief="r1", status=TaskStatus.COMPLETED))
+    # This task revisits ROOT-1 (it's a successor, not a child)
+    db.insert_task(TaskRecord(
+        id="ROOT-2", brief="r2", status=TaskStatus.FAILED,
+        revisit_of_task_id="ROOT-1",
+    ))
+    result = db.list_roots()
+    # ROOT-1's rollup should be its own status (COMPLETED), not FAILED from the revisit.
+    root1 = [r for r in result if r.id == "ROOT-1"][0]
+    assert root1._severity_rollup == 'completed'

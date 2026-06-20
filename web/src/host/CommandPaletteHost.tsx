@@ -15,7 +15,10 @@ import {
   CommandPalette,
   type CommandPaletteSection,
 } from '@/design-system/patterns/CommandPalette';
-import { useCommandPaletteHotkey } from '@/hooks/command-palette';
+// ⌘K hotkey is now owned by AssistantDockHost (design-overhaul v1).
+// The pre-overhaul command palette is retained but opened via a different
+// trigger; remove its ⌘K hotkey to avoid conflicts.
+// import { useCommandPaletteHotkey } from '@/hooks/command-palette';
 import type {
   AgentSummary,
   KBEntry,
@@ -172,8 +175,8 @@ export function CommandPaletteHost(): JSX.Element {
   const navigate = useNavigate();
   const qc = useQueryClient();
 
-  const toggle = React.useCallback(() => setOpen((o) => !o), []);
-  useCommandPaletteHotkey(toggle);
+  // const toggle = React.useCallback(() => setOpen((o) => !o), []);
+  // useCommandPaletteHotkey(toggle); — disabled: ⌘K now opens AssistantDock.
 
   React.useEffect(() => {
     if (!open) return;

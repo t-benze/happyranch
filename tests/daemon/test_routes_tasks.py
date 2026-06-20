@@ -1811,3 +1811,233 @@ def test_cancel_defaults_to_founder(
         if e["action"] == "task_cancelled"
     ]
     assert cancel_logs[0]["agent"] == "founder"
+
+
+# ---------------------------------------------------------------------------
+# GET /tasks/roots — roots-only list with severity rollup
+# ---------------------------------------------------------------------------
+
+def test_list_roots_returns_only_root_tasks(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Children (parent_task_id != NULL) are excluded from the list."""
+    from datetime import datetime, timezone
+    from runtime.models import TaskRecord
+
+    now = datetime.now(timezone.utc)
+    org_state.db.insert_task(TaskRecord(
+        id="ROOT-A", brief="root", team="engineering",
+        assigned_agent="dev_agent",
+        created_at=now, updated_at=now,
+    ))
+    org_state.db.insert_task(TaskRecord(
+        id="CHILD-A", brief="child", team="engineering",
+        assigned_agent="dev_agent", parent_task_id="ROOT-A",
+        created_at=now, updated_at=now,
+    ))
+
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tasks/roots", headers=auth_headers,
+    )
+    assert r.status_code == 200
+    ids = [t["task_id"] for t in r.json()["tasks"]]
+    assert "ROOT-A" in ids
+    assert "CHILD-A" not in ids
+
+
+def test_list_roots_includes_severity_rollup_field(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Each root task dict carries a severity_rollup field."""
+    from datetime import datetime, timezone
+    from runtime.models import TaskRecord, TaskStatus
+
+    now = datetime.now(timezone.utc)
+    org_state.db.insert_task(TaskRecord(
+        id="ROOT-A", brief="root", team="engineering",
+        assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+        created_at=now, updated_at=now,
+    ))
+
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tasks/roots", headers=auth_headers,
+    )
+    assert r.status_code == 200
+    task = r.json()["tasks"][0]
+    assert "severity_rollup" in task
+    assert task["severity_rollup"] == "completed"
+
+
+def test_list_roots_severity_rollup_reflects_blocked_child(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """A root with a blocked child shows 'blocked' in severity_rollup."""
+    from datetime import datetime, timezone
+    from runtime.models import TaskRecord, TaskStatus
+
+    now = datetime.now(timezone.utc)
+    org_state.db.insert_task(TaskRecord(
+        id="ROOT-A", brief="root", team="engineering",
+        assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+        created_at=now, updated_at=now,
+    ))
+    org_state.db.insert_task(TaskRecord(
+        id="CHILD-B", brief="child", team="engineering",
+        assigned_agent="dev_agent", parent_task_id="ROOT-A",
+        status=TaskStatus.BLOCKED,
+        created_at=now, updated_at=now,
+    ))
+
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tasks/roots", headers=auth_headers,
+    )
+    assert r.status_code == 200
+    task = r.json()["tasks"][0]
+    assert task["severity_rollup"] == "blocked"
+
+
+def test_list_roots_supports_status_filter(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Status filter applies to the root itself, rollup still computed."""
+    from datetime import datetime, timezone
+    from runtime.models import TaskRecord, TaskStatus
+
+    now = datetime.now(timezone.utc)
+    org_state.db.insert_task(TaskRecord(
+        id="ROOT-A", brief="root", team="engineering",
+        assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+        created_at=now, updated_at=now,
+    ))
+    org_state.db.insert_task(TaskRecord(
+        id="ROOT-B", brief="root2", team="engineering",
+        assigned_agent="dev_agent", status=TaskStatus.BLOCKED,
+        created_at=now, updated_at=now,
+    ))
+
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tasks/roots?status=blocked", headers=auth_headers,
+    )
+    assert r.status_code == 200
+    tasks = r.json()["tasks"]
+    assert len(tasks) == 1
+    assert tasks[0]["task_id"] == "ROOT-B"
+
+
+def test_list_roots_supports_agent_filter(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Assigned agent filter on roots."""
+    from datetime import datetime, timezone
+    from runtime.models import TaskRecord
+
+    now = datetime.now(timezone.utc)
+    org_state.db.insert_task(TaskRecord(
+        id="ROOT-A", brief="root", team="engineering",
+        assigned_agent="dev_agent",
+        created_at=now, updated_at=now,
+    ))
+    org_state.db.insert_task(TaskRecord(
+        id="ROOT-B", brief="root2", team="engineering",
+        assigned_agent="qa_engineer",
+        created_at=now, updated_at=now,
+    ))
+
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tasks/roots?assigned_agent=dev_agent",
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    ids = [t["task_id"] for t in r.json()["tasks"]]
+    assert ids == ["ROOT-A"]
+
+
+def test_list_roots_handles_cursor_pagination(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Cursor pagination works the same as list_tasks."""
+    from datetime import datetime, timezone, timedelta
+    from runtime.models import TaskRecord
+
+    base = datetime(2026, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
+    for i, name in enumerate(["ROOT-P1", "ROOT-P2", "ROOT-P3"]):
+        org_state.db.insert_task(TaskRecord(
+            id=name, brief=name, team="engineering",
+            assigned_agent="engineering_head",
+            created_at=base + timedelta(seconds=i),
+            updated_at=base + timedelta(seconds=i),
+        ))
+
+    page1 = TestClient(app).get(
+        "/api/v1/orgs/alpha/tasks/roots?limit=2", headers=auth_headers,
+    ).json()
+    assert [t["task_id"] for t in page1["tasks"]] == ["ROOT-P3", "ROOT-P2"]
+    assert page1["next_cursor"] == "ROOT-P2"
+
+    page2 = TestClient(app).get(
+        "/api/v1/orgs/alpha/tasks/roots?limit=2&before=ROOT-P2",
+        headers=auth_headers,
+    ).json()
+    assert [t["task_id"] for t in page2["tasks"]] == ["ROOT-P1"]
+    assert page2["next_cursor"] is None
+
+
+def test_list_roots_includes_direct_revisits(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Each root task dict carries a direct_revisits field listing tasks
+    that revisit this root (backed by revisit_of_task_id)."""
+    from datetime import datetime, timezone
+    from runtime.models import TaskRecord
+
+    now = datetime.now(timezone.utc)
+    org_state.db.insert_task(TaskRecord(
+        id="ROOT-Z", brief="root", team="engineering",
+        assigned_agent="dev_agent",
+        created_at=now, updated_at=now,
+    ))
+    # Insert a revisit that points back at ROOT-Z
+    org_state.db.insert_task(TaskRecord(
+        id="REVISIT-Z", brief="revisit", team="engineering",
+        assigned_agent="dev_agent", revisit_of_task_id="ROOT-Z",
+        created_at=now, updated_at=now,
+    ))
+    # Insert a SECOND revisit — both should appear
+    org_state.db.insert_task(TaskRecord(
+        id="REVISIT-Z2", brief="revisit2", team="engineering",
+        assigned_agent="dev_agent", revisit_of_task_id="ROOT-Z",
+        created_at=now, updated_at=now,
+    ))
+
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tasks/roots", headers=auth_headers,
+    )
+    assert r.status_code == 200
+    task = r.json()["tasks"][0]
+    assert task["task_id"] == "ROOT-Z"
+    assert "direct_revisits" in task
+    assert isinstance(task["direct_revisits"], list)
+    assert set(task["direct_revisits"]) == {"REVISIT-Z", "REVISIT-Z2"}
+
+
+def test_list_roots_direct_revisits_empty_when_no_revisits(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """A root with no revisits gets an empty direct_revisits list."""
+    from datetime import datetime, timezone
+    from runtime.models import TaskRecord
+
+    now = datetime.now(timezone.utc)
+    org_state.db.insert_task(TaskRecord(
+        id="ROOT-NO-REV", brief="root without revisits", team="engineering",
+        assigned_agent="dev_agent",
+        created_at=now, updated_at=now,
+    ))
+
+    r = TestClient(app).get(
+        "/api/v1/orgs/alpha/tasks/roots", headers=auth_headers,
+    )
+    assert r.status_code == 200
+    task = r.json()["tasks"][0]
+    assert "direct_revisits" in task
+    assert task["direct_revisits"] == []

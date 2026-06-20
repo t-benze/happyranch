@@ -606,6 +606,10 @@
             "header"
           ],
           [
+            "include_thread_origin",
+            "query"
+          ],
+          [
             "limit",
             "query"
           ],
@@ -660,6 +664,50 @@
           [
             "limit",
             "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/dreams/candidates/{candidate_id}/accept": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "candidate_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/dreams/candidates/{candidate_id}/dismiss": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "candidate_id",
+            "path"
           ],
           [
             "slug",
@@ -1278,6 +1326,10 @@
             "query"
           ],
           [
+            "blocked_on_job_id",
+            "query"
+          ],
+          [
             "limit",
             "query"
           ],
@@ -1304,6 +1356,44 @@
           [
             "slug",
             "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/tasks/roots": {
+      "GET": {
+        "params": [
+          [
+            "assigned_agent",
+            "query"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "before",
+            "query"
+          ],
+          [
+            "block_kind",
+            "query"
+          ],
+          [
+            "limit",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "status",
+            "query"
           ]
         ],
         "responses": [

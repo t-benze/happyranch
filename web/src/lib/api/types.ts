@@ -110,6 +110,10 @@ export interface AuditEntry {
   action: string;
   payload: Record<string, unknown>;
   timestamp: string;
+  /** DERIVE enrichment (include_thread_origin=true): the dream that composed
+   *  the thread referenced by task_id, when task_id is thread-scoped (THR-*).
+   *  Absent for non-thread or non-dream-originated entries. */
+  _thread_dream_id?: string | null;
 }
 
 /** Recall payload. With `?tree=true`, `children` is recursive; without it,
@@ -140,6 +144,8 @@ export interface ThreadRecord {
   turns_used: number;
   summary: string | null;
   transcript_path: string | null;
+  composed_from_dream_id: string | null;
+  last_speaker: string | null;
 }
 
 export interface ThreadDetailResponse extends ThreadRecord {
@@ -431,6 +437,9 @@ export interface DashboardActivityRow {
   event_kind: string;
   task_id: string | null;
   verdict: ActivityVerdict | null;
+  /** DERIVE enrichment (A4): the dream that composed the thread
+   *  referenced by task_id, when task_id is THR-*. Null otherwise. */
+  _thread_dream_id?: string | null;
 }
 
 export type UpdateMarker = 'add' | 'warn' | 'info';
@@ -550,4 +559,36 @@ export interface OrgSettingsPatch {
   session_timeout_seconds?: number | null;
   dreaming?: DreamingPatch;
   threads?: ThreadsPatch;
+}
+
+// ---------------------------------------------------------------------------
+// Work-hours (Schedule surface)
+// ---------------------------------------------------------------------------
+
+export interface WorkHourRecord {
+  work_hour_id: string;
+  agent_name: string;
+  local_date: string;
+  slot: string;
+  mode: string;
+  scheduled_for: string;
+  started_at: string | null;
+  ended_at: string | null;
+  status: string;
+  routine_count: number;
+  spawned_task_ids: string[];
+  spawned_task_count: number;
+  summary: string | null;
+  transcript_path: string | null;
+  session_id: string | null;
+  error: string | null;
+  created_at: string;
+}
+
+export interface WorkHourListResponse {
+  work_hours: WorkHourRecord[];
+}
+
+export interface WorkHourStatusResponse {
+  recent: WorkHourRecord[];
 }

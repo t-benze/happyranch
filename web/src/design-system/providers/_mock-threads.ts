@@ -196,6 +196,8 @@ function useComposeThread(): MutationLike<ComposeArgs, ComposeResult> {
         turns_used: 1,
         summary: null,
         transcript_path: null,
+        composed_from_dream_id: null,
+        last_speaker: 'founder',
       };
       store.threads = [rec, ...store.threads];
       store.participants[newId] = ['founder', ...body.recipients];

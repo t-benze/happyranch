@@ -11,7 +11,7 @@
  * `detail` return `'#'`, which renders the NavLink as inert.
  */
 import { useOrgSlugOptional } from '@/lib/orgSlug';
-import type { AgentsRoutes, JobsRoutes, KbRoutes, TasksRoutes, ThreadRoutes } from './DataContext';
+import type { AgentsRoutes, DreamsRoutes, JobsRoutes, KbRoutes, TasksRoutes, ThreadRoutes } from './DataContext';
 
 export function useRealThreadRoutes(): ThreadRoutes {
   const slug = useOrgSlugOptional();
@@ -51,6 +51,16 @@ export function useRealAgentsRoutes(): AgentsRoutes {
     detail: (agentName: string) =>
       slug ? `/orgs/${slug}/agents/${agentName}` : '#',
     inboxForOrg: (target: string) => `/orgs/${target}/agents`,
+  };
+}
+
+export function useRealDreamsRoutes(): DreamsRoutes {
+  const slug = useOrgSlugOptional();
+  return {
+    detail: (dreamId: string) =>
+      slug ? `/orgs/${slug}/dreams/${dreamId}` : '#',
+    inbox: () => (slug ? `/orgs/${slug}/dreams` : '#'),
+    inboxForOrg: (target: string) => `/orgs/${target}/dreams`,
   };
 }
 

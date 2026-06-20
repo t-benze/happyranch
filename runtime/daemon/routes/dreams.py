@@ -152,6 +152,7 @@ async def complete_dream(slug: str, dream_id: str, body: DreamCompleteBody, org:
                 body_text=founder_thread_preview,
                 recipients=[FOUNDER_LITERAL],
                 turn_cap=turn_cap,
+                composed_from_dream_id=dream_id,
             )
 
         learnings_dir = org.root / "workspaces" / dream.agent_name / "learnings"
@@ -223,3 +224,82 @@ async def complete_dream(slug: str, dream_id: str, body: DreamCompleteBody, org:
         founder_thread_id=founder_thread_id,
     )
     return {"dream_id": dream_id, "status": "completed", "founder_thread_id": founder_thread_id}
+
+
+def _candidate_to_dict(candidate: DreamKbCandidate) -> dict:
+    return {
+        "id": candidate.id,
+        "dream_id": candidate.dream_id,
+        "agent_name": candidate.agent_name,
+        "slug": candidate.slug,
+        "title": candidate.title,
+        "topic": candidate.topic,
+        "rationale": candidate.rationale,
+        "body_markdown": candidate.body_markdown,
+        "status": candidate.status,
+        "promoted_kb_slug": candidate.promoted_kb_slug,
+        "created_at": candidate.created_at.isoformat(),
+        "updated_at": candidate.updated_at.isoformat(),
+    }
+
+
+@router.post("/dreams/candidates/{candidate_id}/accept")
+async def accept_candidate(slug: str, candidate_id: int, org: OrgDep) -> dict:
+    from runtime.daemon.routes.kb import _kb_write
+    from runtime.infrastructure.kb_store import KBEntry
+
+    rows = org.db.list_dream_kb_candidates(candidate_id=candidate_id)
+    if not rows:
+        raise HTTPException(status_code=404, detail={"code": "candidate_not_found", "candidate_id": candidate_id})
+    candidate = rows[0]
+
+    if candidate.status == "promoted":
+        return _candidate_to_dict(candidate)
+    if candidate.status != "pending":
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "candidate_already_decided", "status": candidate.status},
+        )
+
+    entry = KBEntry(
+        slug=candidate.slug,
+        title=candidate.title,
+        type="precedent",
+        topic=candidate.topic,
+        body=candidate.body_markdown,
+        source_task=candidate.dream_id,
+    )
+
+    async with org.kb_lock:
+        written = _kb_write(org, entry, agent=candidate.agent_name, force_new_sibling=False)
+
+    org.db.update_dream_kb_candidate(
+        candidate_id, status="promoted", promoted_kb_slug=written.slug,
+    )
+    updated = org.db.list_dream_kb_candidates(candidate_id=candidate_id)[0]
+    return _candidate_to_dict(updated)
+
+
+@router.post("/dreams/candidates/{candidate_id}/dismiss")
+async def dismiss_candidate(slug: str, candidate_id: int, org: OrgDep) -> dict:
+    rows = org.db.list_dream_kb_candidates(candidate_id=candidate_id)
+    if not rows:
+        raise HTTPException(status_code=404, detail={"code": "candidate_not_found", "candidate_id": candidate_id})
+    candidate = rows[0]
+
+    if candidate.status == "rejected":
+        return _candidate_to_dict(candidate)
+    if candidate.status == "promoted":
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "candidate_already_promoted", "status": candidate.status},
+        )
+    if candidate.status != "pending":
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "candidate_already_decided", "status": candidate.status},
+        )
+
+    org.db.update_dream_kb_candidate(candidate_id, status="rejected")
+    updated = org.db.list_dream_kb_candidates(candidate_id=candidate_id)[0]
+    return _candidate_to_dict(updated)

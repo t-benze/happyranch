@@ -167,6 +167,16 @@
       "example": "<HelpSheet open={false} onClose={() => {}} shortcuts={[{ keys: ['?'], description: 'Help' }]} />"
     },
     {
+      "name": "CrescentMoonBadge",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/CrescentMoonBadge",
+      "variants": {},
+      "consumes": [
+        "components.badge"
+      ],
+      "example": "<CrescentMoonBadge />"
+    },
+    {
       "name": "IdBadge",
       "layer": "pattern",
       "import": "@/design-system/patterns/IdBadge",
@@ -295,6 +305,16 @@
       "example": "<PageHeader title='Threads' meta='12 open' />"
     },
     {
+      "name": "RecipientsInput",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/RecipientsInput",
+      "variants": {},
+      "consumes": [
+        "MentionAutocomplete"
+      ],
+      "example": "<RecipientsInput value=\"\" onChange={() => {}} agents={[]} />"
+    },
+    {
       "name": "Select",
       "layer": "primitive",
       "import": "@/design-system/primitives/Select",
@@ -303,6 +323,17 @@
         "components.select"
       ],
       "example": "<Select value='a'><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value='a'>A</SelectItem></SelectContent></Select>"
+    },
+    {
+      "name": "Sidebar",
+      "layer": "layout",
+      "import": "@/design-system/layouts/AppShell/Sidebar",
+      "variants": {},
+      "consumes": [
+        "components.sidebar",
+        "layout.grid.app_shell"
+      ],
+      "example": "<Sidebar />"
     },
     {
       "name": "Sparkline",
@@ -334,7 +365,8 @@
           "in_progress",
           "blocked",
           "completed",
-          "failed"
+          "failed",
+          "resolved_superseded"
         ]
       },
       "consumes": [

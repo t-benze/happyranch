@@ -11,6 +11,7 @@
  * KB promotion is deferred — see spec §4.6.
  */
 import { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import type { DashboardEscalationRow } from '@/lib/api/types';
 import { useResolveEscalation } from '@/hooks/tasks';
 import { Button } from '@/design-system/primitives/Button';
@@ -21,6 +22,7 @@ interface EscalationInboxRowProps {
   expanded: boolean;
   onExpand: () => void;
   onCollapse: () => void;
+  slug: string;
 }
 
 function relativeAge(seconds: number): string {
@@ -35,6 +37,7 @@ export function EscalationInboxRow({
   expanded,
   onExpand,
   onCollapse,
+  slug,
 }: EscalationInboxRowProps): JSX.Element {
   const [rationale, setRationale] = useState('');
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -74,7 +77,13 @@ export function EscalationInboxRow({
         </span>
         <span className="text-text-muted font-mono text-xs">·</span>
         <span className="text-text-muted font-mono text-xs">
-          {row.task_id} · {row.team} · {relativeAge(row.age_seconds)}
+          <Link
+            to={`/orgs/${slug}/tasks/${row.task_id}`}
+            className="text-id-task hover:underline"
+          >
+            {row.task_id}
+          </Link>
+          {' · '}{row.team}{' · '}{relativeAge(row.age_seconds)}
         </span>
       </div>
       <p className="text-text-primary mt-1 text-sm">{row.question}</p>

@@ -24,6 +24,8 @@ export const MOCK_THREADS: ThreadRecord[] = [
     turns_used: 28,
     summary: null,
     transcript_path: null,
+    composed_from_dream_id: null,
+    last_speaker: 'engineering_head',
   },
   {
     thread_id: 'THR-002',
@@ -37,6 +39,8 @@ export const MOCK_THREADS: ThreadRecord[] = [
     turns_used: 84,
     summary: null,
     transcript_path: null,
+    composed_from_dream_id: null,
+    last_speaker: 'support_lead',
   },
   {
     thread_id: 'THR-003',
@@ -50,6 +54,8 @@ export const MOCK_THREADS: ThreadRecord[] = [
     turns_used: 412,
     summary: null,
     transcript_path: null,
+    composed_from_dream_id: null,
+    last_speaker: 'ops_lead',
   },
   {
     thread_id: 'THR-004',
@@ -63,5 +69,7 @@ export const MOCK_THREADS: ThreadRecord[] = [
     turns_used: 17,
     summary: 'Group A refund honored, KB updated; SOP unchanged.',
     transcript_path: 'threads/THR-004.md',
+    composed_from_dream_id: null,
+    last_speaker: 'founder',
   },
 ];

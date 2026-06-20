@@ -9,7 +9,10 @@
  */
 import { useState, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { useDashboardSummary } from '@/hooks/dashboard';
+import { Button } from '@/design-system/primitives/Button';
+import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { useOrgSlugOptional } from '@/lib/orgSlug';
 import { Heartbeat } from './components/Heartbeat';
@@ -58,6 +61,7 @@ function useActiveSlug(): string | null {
 }
 
 export function DashboardPage(): JSX.Element {
+  const queryClient = useQueryClient();
   const q = useDashboardSummary();
   const [expandedEscId, setExpandedEscId] = useState<string | null>(null);
   const slug = useActiveSlug();
@@ -67,9 +71,20 @@ export function DashboardPage(): JSX.Element {
   }
   if (q.isError || !q.data) {
     return (
-      <p className="text-feedback-danger p-6 text-sm">
-        Failed to load dashboard. Try refreshing.
-      </p>
+      <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
+        <p className="text-tier-red text-sm">Failed to load dashboard.</p>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() =>
+            queryClient.invalidateQueries({
+              queryKey: ['dashboard-summary', slug],
+            })
+          }
+        >
+          Retry
+        </Button>
+      </div>
     );
   }
   const s = q.data;
@@ -199,6 +214,9 @@ export function DashboardPage(): JSX.Element {
                       {r.verdict === 'fail' && (
                         <span className="text-tier-red">· fail</span>
                       )}
+                      {r._thread_dream_id && (
+                        <CrescentMoonBadge className="h-3 w-3" />
+                      )}
                       {r.task_id && slug && (
                         <Link
                           to={
@@ -242,6 +260,7 @@ export function DashboardPage(): JSX.Element {
                       expanded={expandedEscId === row.task_id}
                       onExpand={() => setExpandedEscId(row.task_id)}
                       onCollapse={() => setExpandedEscId(null)}
+                      slug={slug ?? ''}
                     />
                   ))}
                 </div>

@@ -83,7 +83,7 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
           )}
           {agent && agent.repos && Object.keys(agent.repos).length > 0 && (
             <div className="mt-2">
-              <p className="text-fg-muted text-xs font-medium mb-1">Repositories</p>
+              <p className="text-fg-muted mb-1 text-xs font-medium">Repositories</p>
               <div className="flex flex-wrap gap-1">
                 {Object.entries(agent.repos).map(([key, _url]) => (
                   <span
@@ -189,7 +189,7 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
                     {slug ? (
                       <Link
                         to={`/orgs/${slug}/jobs/${j.id}`}
-                        className="text-accent hover:underline font-mono"
+                        className="text-accent font-mono hover:underline"
                       >
                         {j.id}
                       </Link>

@@ -891,6 +891,19 @@ class Database:
             "ON threads(composed_from_task_id) "
             "WHERE composed_from_task_id IS NOT NULL"
         )
+        # Dream-originated threads: dream attribution marker (design-overhaul A4).
+        # Additive nullable; existing rows stay NULL.
+        try:
+            self._conn.execute(
+                "ALTER TABLE threads ADD COLUMN composed_from_dream_id TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_threads_composed_from_dream "
+            "ON threads(composed_from_dream_id) "
+            "WHERE composed_from_dream_id IS NOT NULL"
+        )
         # kind column for escalation_notifications: 'escalation' (default) or
         # 'failure'. Additive; existing rows keep the default.
         try:
@@ -1136,11 +1149,14 @@ class Database:
         before_task_id: str | None = None,
         status: TaskStatus | str | None = None,
         block_kind: BlockKind | str | None = None,
+        blocked_on_job_id: str | None = None,
     ) -> list[TaskRecord]:
         # Cursor pagination: callers pass the last task_id of the previous page
         # as `before_task_id`; we resolve its created_at and emit the next page
         # using (created_at, id) DESC for a stable tiebreak. `status` and
         # `block_kind` are optional equality filters (read-only backlog queries).
+        # `blocked_on_job_id` is a DERIVE filter for the Jobs "if-approved"
+        # cascade — finds tasks blocked on a specific job id.
         cursor_created_at: str | None = None
         if before_task_id is not None:
             row = self._conn.execute(
@@ -1165,6 +1181,17 @@ class Database:
         if block_kind is not None:
             conditions.append("block_kind = ?")
             params.append(str(block_kind))
+        if blocked_on_job_id is not None:
+            # Mirror jobs_runner.py canonic pred: status + block_kind + LIKE.
+            # Without the status/block_kind guard a task that was once
+            # blocked on JOB-X but is now done/running leaks into the
+            # "if approved" cascade.
+            conditions.append("status = ? AND block_kind = ? AND blocked_on_job_ids LIKE ?")
+            params.extend([
+                TaskStatus.BLOCKED.value,
+                BlockKind.BLOCKED_ON_JOB.value,
+                f'%"{blocked_on_job_id}"%',
+            ])
         if cursor_created_at is not None:
             conditions.append("(created_at, id) < (?, ?)")
             params.extend([cursor_created_at, before_task_id])
@@ -1211,6 +1238,135 @@ class Database:
         )
         return [row["id"] for row in cursor.fetchall()]
 
+    # Severity ranking for subtree rollup: lower = worse.
+    # blocked is the attention-grabbing worst; resolved_superseded is the calmest.
+    _SEVERITY_RANK: dict[str, int] = {
+        "blocked": 0,
+        "failed": 1,
+        "in_progress": 2,
+        "pending": 3,
+        "completed": 4,
+        "resolved_superseded": 5,
+    }
+
+    @_synchronized
+    def get_subtree_statuses(self, root_task_id: str) -> list[str]:
+        """Return the status values of all descendant tasks in the
+        parent_task_id subtree (direct children, grandchildren, etc.).
+
+        Walks the tree recursively via get_children(). Excludes the root
+        task itself; only descendants are collected. An empty list means the
+        root has no children (rollup = the root's own status).
+
+        This is a DERIVE — no schema change; uses existing parent_task_id
+        and get_children().
+        """
+        statuses: list[str] = []
+        stack = list(self.get_children(root_task_id))
+        while stack:
+            child_id = stack.pop()
+            child = self.get_task(child_id)
+            if child is not None:
+                statuses.append(child.status.value)
+                stack.extend(self.get_children(child_id))
+        return statuses
+
+    def _worst_subtree_status(self, root_status: str, child_statuses: list[str]) -> str:
+        """Return the worst status among a root's own status and its
+        descendants' statuses.
+
+        The rollup of a singleton subtree is the root's own status (P1: no
+        guessed severity). Uses _SEVERITY_RANK — lowest rank wins.
+        """
+        worst = root_status
+        worst_rank = self._SEVERITY_RANK.get(worst, 99)
+        for s in child_statuses:
+            rank = self._SEVERITY_RANK.get(s, 99)
+            if rank < worst_rank:
+                worst = s
+                worst_rank = rank
+        return worst
+
+    @_synchronized
+    def list_roots(
+        self,
+        limit: int = 20,
+        assigned_agent: str | None = None,
+        before_task_id: str | None = None,
+        status: TaskStatus | str | None = None,
+        block_kind: BlockKind | str | None = None,
+    ) -> list[TaskRecord]:
+        """Return root tasks (parent_task_id IS NULL) with cursor pagination,
+        same filter parameters as list_tasks(), plus a per-root _severity_rollup.
+
+        The _severity_rollup attribute (str) is the worst status among the
+        root's own status and its entire parent_task_id subtree. A root
+        without children shows its own status. Set as a dynamic attribute on
+        the TaskRecord (not a model field — DERIVE, no schema).
+        """
+        cursor_created_at: str | None = None
+        if before_task_id is not None:
+            row = self._conn.execute(
+                "SELECT created_at FROM tasks WHERE id = ?", (before_task_id,),
+            ).fetchone()
+            if row is None:
+                return []
+            cursor_created_at = row["created_at"]
+
+        conditions = ["parent_task_id IS NULL"]
+        params: list = []
+        if assigned_agent is not None:
+            conditions.append("assigned_agent = ?")
+            params.append(assigned_agent)
+        if status is not None:
+            conditions.append("status = ?")
+            params.append(str(status))
+        if block_kind is not None:
+            conditions.append("block_kind = ?")
+            params.append(str(block_kind))
+        if cursor_created_at is not None:
+            conditions.append("(created_at, id) < (?, ?)")
+            params.extend([cursor_created_at, before_task_id])
+        where = f"WHERE {' AND '.join(conditions)} "
+        params.append(limit)
+        cursor = self._conn.execute(
+            f"SELECT * FROM tasks {where}"
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            tuple(params),
+        )
+        results: list[TaskRecord] = []
+        for row in cursor.fetchall():
+            task = TaskRecord(
+                id=row["id"],
+                status=row["status"],
+                assigned_agent=row["assigned_agent"],
+                team=row["team"],
+                brief=row["brief"],
+                revision_count=row["revision_count"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+                completed_at=row["completed_at"],
+                parent_task_id=row["parent_task_id"],
+                revisit_of_task_id=row["revisit_of_task_id"],
+                dispatched_from_thread_id=row["dispatched_from_thread_id"],
+                block_kind=row["block_kind"],
+                blocked_on_job_ids=row["blocked_on_job_ids"],
+                note=row["note"],
+                orchestration_step_count=row["orchestration_step_count"] or 0,
+                final_output_dir=row["final_output_dir"],
+                cancelled_at=row["cancelled_at"],
+                last_heartbeat=row["last_heartbeat"],
+                session_timeout_seconds=row["session_timeout_seconds"],
+                task_type=row["task_type"],
+            )
+            child_statuses = self.get_subtree_statuses(task.id)
+            object.__setattr__(
+                task, '_severity_rollup',
+                self._worst_subtree_status(task.status.value, child_statuses),
+            )
+            results.append(task)
+        return results
+
     @_synchronized
     def get_direct_revisits(self, task_id: str) -> list[str]:
         """Return IDs of tasks whose revisit_of_task_id points at this task,
@@ -1221,6 +1377,30 @@ class Database:
             (task_id,),
         )
         return [row["id"] for row in cursor.fetchall()]
+
+    @_synchronized
+    def batch_get_direct_revisits(
+        self, task_ids: list[str],
+    ) -> dict[str, list[str]]:
+        """Return direct revisits for multiple task_ids in a single query.
+
+        Avoids the N+1 pattern when a list route needs direct_revisits for
+        every returned item. Uses idx_tasks_revisit_of.
+        """
+        if not task_ids:
+            return {}
+        placeholders = ','.join(['?'] * len(task_ids))
+        cursor = self._conn.execute(
+            f"SELECT revisit_of_task_id, id FROM tasks"
+            f" WHERE revisit_of_task_id IN ({placeholders})"
+            f" ORDER BY created_at",
+            tuple(task_ids),
+        )
+        result: dict[str, list[str]] = {tid: [] for tid in task_ids}
+        for row in cursor.fetchall():
+            root_id = row["revisit_of_task_id"]
+            result.setdefault(root_id, []).append(row["id"])
+        return result
 
     @_synchronized
     def walk_ancestors(self, task_id: str, max_hops: int = 20) -> list[TaskRecord]:
@@ -2235,6 +2415,38 @@ class Database:
         rows = self._conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
+    @_synchronized
+    def aggregate_session_token_usage_by_model(
+        self,
+        since: str | None = None,
+        task_id: str | None = None,
+        agent: str | None = None,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        thread_id: str | None = None,
+        purpose: str | None = None,
+    ) -> list[dict]:
+        """Roll up session_token_usage grouped by model.
+
+        NULL models are honest (not blank, not a guessed correction).
+        The ``since`` window AND-composes with every other filter.
+        """
+        where, params = self._session_token_usage_filters(
+            since=since,
+            task_id=task_id,
+            agent=agent,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            thread_id=thread_id,
+            purpose=purpose,
+        )
+        sql = self._token_usage_rollup_select("model", "model")
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " GROUP BY model ORDER BY COALESCE(model, '')"
+        rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
     # --- KB views ---
 
     @_synchronized
@@ -2538,8 +2750,8 @@ class Database:
                 forwarded_from_id, forwarded_from_kind,
                 turn_cap, turns_used, summary,
                 transcript_path,
-                composed_by, composed_from_task_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                composed_by, composed_from_task_id, composed_from_dream_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 t.id,
                 t.subject,
@@ -2554,6 +2766,7 @@ class Database:
                 t.transcript_path,
                 t.composed_by,
                 t.composed_from_task_id,
+                t.composed_from_dream_id,
             ),
         )
         self._conn.commit()
@@ -2574,6 +2787,8 @@ class Database:
             transcript_path=row["transcript_path"],
             composed_by=row["composed_by"] if "composed_by" in keys else "founder",
             composed_from_task_id=row["composed_from_task_id"] if "composed_from_task_id" in keys else None,
+            composed_from_dream_id=row["composed_from_dream_id"] if "composed_from_dream_id" in keys else None,
+            last_speaker=row["last_speaker"] if "last_speaker" in keys else None,
         )
 
     @_synchronized
@@ -2586,16 +2801,20 @@ class Database:
 
     @_synchronized
     def list_threads(self, *, status: str | None = None, limit: int = 50) -> list[ThreadRecord]:
+        query = (
+            "SELECT t.*, "
+            "(SELECT tm.speaker FROM thread_messages tm "
+            " WHERE tm.thread_id = t.id ORDER BY tm.seq DESC LIMIT 1) AS last_speaker "
+            "FROM threads t "
+        )
+        params: tuple
         if status:
-            cursor = self._conn.execute(
-                "SELECT * FROM threads WHERE status = ? ORDER BY started_at DESC LIMIT ?",
-                (status, limit),
-            )
+            query += "WHERE t.status = ? ORDER BY t.started_at DESC LIMIT ?"
+            params = (status, limit)
         else:
-            cursor = self._conn.execute(
-                "SELECT * FROM threads ORDER BY started_at DESC LIMIT ?",
-                (limit,),
-            )
+            query += "ORDER BY t.started_at DESC LIMIT ?"
+            params = (limit,)
+        cursor = self._conn.execute(query, params)
         return [self._row_to_thread(r) for r in cursor.fetchall()]
 
     @_synchronized
@@ -3356,7 +3575,11 @@ class Database:
 
     @_synchronized
     def list_dream_kb_candidates(
-        self, *, dream_id: str | None = None, agent: str | None = None,
+        self,
+        *,
+        dream_id: str | None = None,
+        agent: str | None = None,
+        candidate_id: int | None = None,
     ) -> list[DreamKbCandidate]:
         clauses = []
         params: list[object] = []
@@ -3366,12 +3589,41 @@ class Database:
         if agent is not None:
             clauses.append("agent_name = ?")
             params.append(agent)
+        if candidate_id is not None:
+            clauses.append("id = ?")
+            params.append(candidate_id)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = self._conn.execute(
             f"SELECT * FROM dream_kb_candidates {where} ORDER BY created_at DESC",
             params,
         ).fetchall()
         return [self._dream_candidate_row_to_model(row) for row in rows]
+
+    @_synchronized
+    def update_dream_kb_candidate(
+        self,
+        candidate_id: int,
+        *,
+        status: str,
+        promoted_kb_slug: str | None = None,
+    ) -> None:
+        allowed = {"pending", "promoted", "rejected", "superseded"}
+        if status not in allowed:
+            raise ValueError(f"invalid status: {status!r}, expected one of {sorted(allowed)}")
+        now = _now().isoformat()
+        params: list[object] = [status, now]
+        slug_assign = ""
+        if promoted_kb_slug is not None:
+            slug_assign = ", promoted_kb_slug = ?"
+            params.append(promoted_kb_slug)
+        params.append(candidate_id)
+        cursor = self._conn.execute(
+            f"UPDATE dream_kb_candidates SET status = ?, updated_at = ?{slug_assign} WHERE id = ?",
+            params,
+        )
+        if cursor.rowcount == 0:
+            raise ValueError(f"dream_kb_candidate {candidate_id} not found")
+        self._conn.commit()
 
     # --- Escalation Notifications ---
 

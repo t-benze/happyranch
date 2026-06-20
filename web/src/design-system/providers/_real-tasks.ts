@@ -72,6 +72,18 @@ function useTasksInfiniteList(
   };
 }
 
+function useTasksRoots(
+  params?: { status?: string; limit?: number; assigned_agent?: string },
+) {
+  const slug = useRealOrgSlug();
+  return useQuery({
+    queryKey: ['tasks-roots', slug, params],
+    queryFn: () => tasksApi.listTaskRoots(slug, params),
+    enabled: !!slug,
+    refetchInterval: 10_000,
+  }) as QueryLike<Awaited<ReturnType<typeof tasksApi.listTaskRoots>>>;
+}
+
 function useTask(taskId: string | undefined) {
   const slug = useRealOrgSlug();
   return useQuery({
@@ -157,6 +169,7 @@ function useResolveEscalation(taskId: string): MutationLike<ResolveEscalationArg
 export const realTasksApi: TasksApi = {
   useTasksList,
   useTasksInfiniteList,
+  useTasksRoots,
   useTask: useTask as TasksApi['useTask'],
   useTaskRecall: useTaskRecall as TasksApi['useTaskRecall'],
   useTaskTailSSE,

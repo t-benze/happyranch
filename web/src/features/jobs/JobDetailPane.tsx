@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   Drawer,
   DrawerContent,
@@ -83,7 +83,16 @@ export function JobDetailPane({ jobId }: JobDetailPaneProps): JSX.Element {
               <p className="text-fg-muted mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
                 <span>{job.agent_name}</span>
                 <span>·</span>
-                <span className="text-id-task font-mono">{job.task_id}</span>
+                {slug ? (
+                  <Link
+                    to={`/orgs/${slug}/tasks/${job.task_id}`}
+                    className="text-id-task font-mono hover:underline"
+                  >
+                    {job.task_id}
+                  </Link>
+                ) : (
+                  <span className="text-id-task font-mono">{job.task_id}</span>
+                )}
                 <span>·</span>
                 <span>{job.interpreter}</span>
                 {job.persistent && (

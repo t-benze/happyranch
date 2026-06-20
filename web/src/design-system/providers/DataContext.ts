@@ -33,6 +33,8 @@ import type { kb as kbApi } from '@/lib/api';
 import type { audit as auditApi } from '@/lib/api';
 import type { agents as agentsApi } from '@/lib/api';
 import type { jobs as jobsApi } from '@/lib/api';
+import type { DreamRecord, DreamKbCandidate } from '@/lib/api/dreams';
+import type { workHours as workHoursApi } from '@/lib/api';
 import type {
   AssistantRegisterBody,
   AssistantStatus,
@@ -146,6 +148,12 @@ export interface TasksApi {
   useTasksInfiniteList: (params?: {
     status?: string;
   }) => InfiniteQueryLike<TasksListPage>;
+  /** Roots-only list with per-root severity_rollup (design-overhaul §4.3). */
+  useTasksRoots: (params?: {
+    status?: string;
+    limit?: number;
+    assigned_agent?: string;
+  }) => QueryLike<{ tasks: TaskRecord[] }>;
   useTask: (taskId: string | undefined) => QueryLike<TaskRecord>;
   useTaskRecall: (taskId: string | undefined) => QueryLike<TaskRecallNode>;
 
@@ -184,6 +192,7 @@ export interface KbApi {
     params?: { limit?: number },
   ) => QueryLike<{ entries: KBEntry[] }>;
   useKBEntry: (entrySlug: string | undefined) => QueryLike<KBEntry>;
+  useKBStats: () => QueryLike<{ entries: import('@/lib/api/kb').KBViewStat[] }>;
   /** Mutation is wired only under the real provider; mocks no-op. */
   useAddKBEntry: () => MutationLike<AddKBEntryArgs, AddKBEntryResult>;
 }
@@ -195,8 +204,27 @@ export interface KbRoutes {
 }
 
 // ---------------------------------------------------------------------------
-// Context shape — one bag per feature domain. Future PRs add `kb`…
+// DreamsApi — covers every hook the Dreams page + its detail drawer consume.
 // ---------------------------------------------------------------------------
+
+export interface DreamsApi {
+  useDreamsList: (params?: {
+    agent?: string;
+    limit?: number;
+  }) => QueryLike<{ dreams: DreamRecord[] }>;
+  useDream: (dreamId: string | undefined) => QueryLike<DreamRecord & {
+    transcript?: string;
+    kb_candidates?: DreamKbCandidate[];
+  }>;
+  useAcceptCandidate: () => MutationLike<number, DreamKbCandidate>;
+  useDismissCandidate: () => MutationLike<number, DreamKbCandidate>;
+}
+
+export interface DreamsRoutes {
+  inbox: () => string;
+  detail: (dreamId: string) => string;
+  inboxForOrg: (slug: string) => string;
+}
 
 // ---------------------------------------------------------------------------
 // OrgsApi — minimal read-only surface so the TopBar org dropdown works
@@ -247,6 +275,12 @@ export type RejectAgentResult = Awaited<ReturnType<typeof agentsApi.rejectAgent>
 export type CreateAgentArgs = Parameters<typeof agentsApi.createAgent>[1];
 export type CreateAgentResult = Awaited<ReturnType<typeof agentsApi.createAgent>>;
 
+export type SetAgentExecutorArgs = Parameters<typeof agentsApi.setAgentExecutor>[2];
+export type SetAgentExecutorResult = Awaited<ReturnType<typeof agentsApi.setAgentExecutor>>;
+
+export type ManageAgentRepoArgs = Parameters<typeof agentsApi.manageAgentRepo>[2];
+export type ManageAgentRepoResult = Awaited<ReturnType<typeof agentsApi.manageAgentRepo>>;
+
 export interface AgentsApi {
   useAgentsList: () => QueryLike<{ agents: import('@/lib/api/agents').AgentSummary[] }>;
   /** Pending enrollments — `status` filter narrows the file scan. */
@@ -267,6 +301,14 @@ export interface AgentsApi {
   useRejectAgent: () => MutationLike<
     { agentName: string; body?: { reason?: string } },
     RejectAgentResult
+  >;
+  useSetAgentExecutor: () => MutationLike<
+    { agentName: string; body: SetAgentExecutorArgs },
+    SetAgentExecutorResult
+  >;
+  useManageAgentRepo: () => MutationLike<
+    { agentName: string; body: ManageAgentRepoArgs },
+    ManageAgentRepoResult
   >;
 }
 
@@ -358,6 +400,17 @@ export interface SettingsApi {
   >;
 }
 
+// ---------------------------------------------------------------------------
+// WorkHoursApi — read-only work-hours list for the Schedule feature page.
+// ---------------------------------------------------------------------------
+
+export interface WorkHoursApi {
+  useWorkHoursList: (params?: {
+    agent?: string;
+    limit?: number;
+  }) => QueryLike<Awaited<ReturnType<typeof workHoursApi.listWorkHours>>>;
+}
+
 /**
  * Per-feature URL builders. Compositions consume these via the
  * provider-aware `useThreadRoutes()` hook in `@/hooks/threads` instead of
@@ -393,6 +446,8 @@ export interface DataContextValue {
   jobs: JobsApi;
   dashboard: DashboardApi;
   settings: SettingsApi;
+  dreams: DreamsApi;
+  workHours: WorkHoursApi;
   /**
    * Provider-supplied React hook that returns the active feature's route
    * builders. A hook (not a plain object) so the implementation can read
@@ -403,6 +458,7 @@ export interface DataContextValue {
   useKbRoutes: () => KbRoutes;
   useAgentsRoutes: () => AgentsRoutes;
   useJobsRoutes: () => JobsRoutes;
+  useDreamsRoutes: () => DreamsRoutes;
 }
 
 export const DataContext = createContext<DataContextValue | null>(null);

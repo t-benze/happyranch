@@ -148,6 +148,7 @@ def list_tasks(
     before: str | None = None,
     status: str | None = None,
     block_kind: str | None = None,
+    blocked_on_job_id: str | None = None,
 ) -> dict:
     # Cursor pagination: `before` is the task_id of the last item on the
     # previous page. `next_cursor` is the last id of this page when the page
@@ -156,13 +157,52 @@ def list_tasks(
     # database returns [] and we surface that as the end of the list.
     # `status` / `block_kind` are read-only equality filters for backlog
     # queries (e.g. `tasks --status blocked --block-kind escalated`).
+    # `blocked_on_job_id` is a DERIVE filter for the Jobs "if-approved"
+    # cascade — finds tasks blocked on a specific job id.
     tasks = org.db.list_tasks(
         limit=limit, assigned_agent=assigned_agent, before_task_id=before,
         status=status, block_kind=block_kind,
+        blocked_on_job_id=blocked_on_job_id,
     )
     next_cursor = tasks[-1].id if len(tasks) == limit else None
     return {
         "tasks": [_task_to_dict(t) for t in tasks],
+        "next_cursor": next_cursor,
+    }
+
+
+@router.get("/tasks/roots")
+def list_roots(
+    org: OrgDep,
+    limit: int = 20,
+    assigned_agent: str | None = None,
+    before: str | None = None,
+    status: str | None = None,
+    block_kind: str | None = None,
+) -> dict:
+    """Return root tasks only (parent_task_id IS NULL) with a per-root
+    severity rollup reflecting the worst status of each root's subtree.
+
+    The rollup is a DERIVE over existing child statuses — no schema change.
+    Each task dict includes a ``severity_rollup`` field (the worst status
+    among the root and its entire parent_task_id subtree).
+    """
+    tasks = org.db.list_roots(
+        limit=limit, assigned_agent=assigned_agent, before_task_id=before,
+        status=status, block_kind=block_kind,
+    )
+    next_cursor = tasks[-1].id if len(tasks) == limit else None
+    # Batch-fetch direct revisits for all returned roots (avoid N+1).
+    root_ids = [t.id for t in tasks]
+    revisits_map = org.db.batch_get_direct_revisits(root_ids)
+    result_tasks: list[dict] = []
+    for t in tasks:
+        d = _task_to_dict(t)
+        d["severity_rollup"] = getattr(t, '_severity_rollup', t.status.value)
+        d["direct_revisits"] = revisits_map.get(t.id, [])
+        result_tasks.append(d)
+    return {
+        "tasks": result_tasks,
         "next_cursor": next_cursor,
     }
 

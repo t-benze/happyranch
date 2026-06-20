@@ -18,10 +18,10 @@ function useAuditList(params?: {
   const slug = useRealOrgSlug();
   const clean = Object.fromEntries(
     Object.entries(params ?? {}).filter(([, v]) => v != null && v !== ''),
-  ) as Parameters<typeof auditApi.listAudit>[1];
+  ) as Record<string, string | number>;
   return useQuery({
     queryKey: ['audit', slug, clean],
-    queryFn: () => auditApi.listAudit(slug, clean),
+    queryFn: () => auditApi.listAudit(slug, { ...clean, include_thread_origin: true }),
     enabled: !!slug,
     refetchInterval: 60_000,
   }) as QueryLike<Awaited<ReturnType<typeof auditApi.listAudit>>>;

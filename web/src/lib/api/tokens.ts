@@ -26,6 +26,7 @@ export interface TokenUsageRollup {
   scope_type?: 'task' | 'thread';
   scope_id?: string | null;
   thread_id?: string;
+  model?: string | null;
   sessions: number;
   input_tokens: number;
   output_tokens: number;
@@ -52,7 +53,8 @@ export type TokenUsageGroupBy =
   | 'failed_task'
   | 'scope'
   | 'thread'
-  | 'purpose';
+  | 'purpose'
+  | 'model';
 
 export interface ListTokensParams {
   task_id?: string;

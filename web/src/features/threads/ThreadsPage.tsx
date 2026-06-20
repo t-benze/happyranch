@@ -1,19 +1,26 @@
 /**
- * Two-pane threads composition.
+ * ThreadsPage — list + detail reshape (§4.2, design-overhaul).
  *
- * Owns every TanStack Query hook + SSE subscription for this screen, plus
- * dialog state and routing. The visual pieces — InboxRow, ThreadHeader,
- * MessageBubble, Composer, EmptyState — are pure-prop patterns from
- * @/design-system/patterns/. The `?` HelpDrawer is owned globally by
- * `HelpDrawerHost` mounted in AppShell, not by this page.
+ * LIST: each row shows LAST SPEAKER, STATUS PILL, TURN BUDGET X/500,
+ * and a crescent-moon marker for dream-originated threads.
+ *
+ * DETAIL: turn cards; SYSTEM CARDS visually distinct from agent-turn
+ * cards. In-thread agent-own "ran:" cards are OMITTED (P1 — D7 deferred).
+ *
+ * States: Loading (skeleton), Empty (calm), Error-with-retry (§2.5.5).
+ * NO persistent unread/read-state (B.3 deferred — no markRead/unread).
+ *
+ * Composer: BROADCAST-ONLY ("Message the thread — all participants see it").
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/design-system/primitives/Button';
 import { Input } from '@/design-system/primitives/Input';
 import { Tabs, TabsList, TabsTrigger } from '@/design-system/primitives/Tabs';
 import { ThreadsLayout } from '@/design-system/layouts/ThreadsLayout';
 import { Composer } from '@/design-system/patterns/Composer';
+import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { InboxRow } from '@/design-system/patterns/InboxRow';
 import { KbdChip } from '@/design-system/patterns/KbdChip';
@@ -41,8 +48,12 @@ import { NewThreadDialog } from './NewThreadDialog';
 import { ResponderStatusStrip } from './ResponderStatusStrip';
 import { ResumeButton } from './ResumeButton';
 import { selectInFlightResponders } from './inFlightResponders';
-import { describeError } from './strings';
+import { describeError, THREADS_STRINGS as S } from './strings';
 import { TypingBubble } from './TypingBubble';
+
+/* ------------------------------------------------------------------ */
+/*  helpers                                                            */
+/* ------------------------------------------------------------------ */
 
 function useNowMs(active: boolean): number {
   const [now, setNow] = useState(() => Date.now());
@@ -54,12 +65,57 @@ function useNowMs(active: boolean): number {
   return now;
 }
 
-const STATUS_TABS = ['open', 'archived'] as const;
-type StatusTab = (typeof STATUS_TABS)[number];
+type StatusTab = 'open' | 'archived';
+const STATUS_TABS: StatusTab[] = ['open', 'archived'];
+
+function threadStatusOrFallback(status: string): 'open' | 'archived' {
+  if (status === 'open' || status === 'archived') return status;
+  return 'open';
+}
+
+/**
+ * Derive a display label for the last speaker.
+ * Returns { name, role } for AgentChip, or null if the thread has no speaker yet.
+ */
+function lastSpeakerChip(speaker: string | null | undefined): { name: string; role: 'manager' | 'worker' | 'founder' } | null {
+  if (!speaker) return null;
+  if (speaker === 'founder') return { name: 'founder', role: 'founder' };
+  if (speaker === 'system') return { name: 'system', role: 'worker' };
+  return { name: speaker, role: 'worker' };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Loading skeleton                                                   */
+/* ------------------------------------------------------------------ */
+
+function InboxSkeleton(): JSX.Element {
+  return (
+    <div className="animate-pulse space-y-2 p-2">
+      {[1, 2, 3, 4, 5].map((i) => (
+        <div key={i} className="space-y-2 rounded-md px-3 py-2">
+          <div className="flex items-center justify-between gap-2">
+            <div className="bg-bg-raised h-4 w-48 rounded" />
+            <div className="bg-bg-raised h-4 w-12 rounded-full" />
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="bg-bg-raised h-3 w-16 rounded" />
+            <div className="bg-bg-raised h-3 w-20 rounded" />
+            <div className="bg-bg-raised ml-auto h-3 w-12 rounded" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Main page                                                          */
+/* ------------------------------------------------------------------ */
 
 export function ThreadsPage(): JSX.Element {
   const routes = useThreadRoutes();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { slug, thread_id: threadId } = useParams<{ slug: string; thread_id: string }>();
   const composerFocusRef = useRef<(() => void) | null>(null);
 
@@ -183,10 +239,7 @@ export function ThreadsPage(): JSX.Element {
     }
   };
 
-  // Keyboard shortcuts: N / I / A / F / R. Limited to when no input is
-  // focused. The `?` help trigger lives on the global `HelpDrawerHost`.
-  // `isGPrefixArmed()` keeps `g i / g a / g d`-style chords from also
-  // firing the bare-letter dialogs here.
+  // Keyboard shortcuts
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
@@ -214,21 +267,21 @@ export function ThreadsPage(): JSX.Element {
       <aside className="border-border-default bg-surface-sunken flex h-full flex-col border-r">
         <header className="border-border-default border-b px-3 py-2">
           <div className="flex items-center justify-between gap-2">
-            <h2 className="text-overline text-text-muted tracking-wide uppercase">Inbox</h2>
+            <h2 className="text-overline text-text-muted tracking-wide uppercase">{S.pageTitle}</h2>
             <Button
               size="sm"
               onClick={openNew}
               aria-label="New thread"
               title="New thread (N)"
             >
-              + New
+              {S.newThread}
             </Button>
           </div>
           <Input
             type="text"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
-            placeholder="Filter…"
+            placeholder={S.filterPlaceholder}
             className="text-caption mt-2 h-7 px-2 py-1"
             aria-label="Filter threads"
           />
@@ -248,39 +301,70 @@ export function ThreadsPage(): JSX.Element {
           </Tabs>
         </header>
         <div className="flex-1 overflow-auto p-2">
-          {threadsQuery.isLoading && (
-            <p className="text-caption text-text-muted px-2 py-4">Loading…</p>
-          )}
+          {/* Loading skeleton */}
+          {threadsQuery.isLoading && <InboxSkeleton />}
+
+          {/* Error with retry — §2.5.5 */}
           {threadsQuery.isError && (
-            <p className="text-caption text-feedback-danger px-2 py-4">
-              Failed to load threads.
-            </p>
+            <div className="space-y-3 p-4 text-center">
+              <p className="text-feedback-danger text-sm">{S.errorTitle}</p>
+              <p className="text-text-muted text-xs">{S.errorBody}</p>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  queryClient.invalidateQueries({
+                    queryKey: ['threads', slug],
+                  })
+                }
+              >
+                {S.retry}
+              </Button>
+            </div>
           )}
-          {!threadsQuery.isLoading && threads.length === 0 && (
-            <p className="text-caption text-text-muted px-2 py-4">
-              {filter
-                ? 'No threads match the filter.'
-                : 'No threads yet. Press N to compose.'}
-            </p>
+
+          {/* Empty — calm §2.5.5 */}
+          {!threadsQuery.isLoading && !threadsQuery.isError && threads.length === 0 && (
+            <EmptyState
+              title={S.emptyTitle}
+              body={
+                <span>
+                  {filter ? S.filterEmpty : S.emptyBody}
+                </span>
+              }
+            />
           )}
-          <div className="flex flex-col gap-1">
-            {threads.map((t) => {
-              const path = routes.detail(t.thread_id);
-              return (
-                <InboxRow
-                  key={t.thread_id}
-                  threadId={t.thread_id}
-                  subject={t.subject}
-                  status={threadStatusOrFallback(t.status)}
-                  needsYou={false}
-                  active={t.thread_id === threadId}
-                  meta={`${t.turns_used}/${t.turn_cap} turns`}
-                  href={path}
-                  onSelect={() => navigate(path)}
-                />
-              );
-            })}
-          </div>
+
+          {/* Populated list */}
+          {!threadsQuery.isLoading && !threadsQuery.isError && threads.length > 0 && (
+            <div className="flex flex-col gap-1">
+              {threads.map((t) => {
+                const path = routes.detail(t.thread_id);
+                const speaker = lastSpeakerChip(t.last_speaker);
+                return (
+                  <InboxRow
+                    key={t.thread_id}
+                    threadId={t.thread_id}
+                    subject={t.subject}
+                    lastSpeaker={speaker ?? undefined}
+                    status={threadStatusOrFallback(t.status)}
+                    needsYou={false}
+                    active={t.thread_id === threadId}
+                    meta={
+                      <span className="flex items-center gap-1.5">
+                        {t.composed_from_dream_id && (
+                          <CrescentMoonBadge className="h-3 w-3" />
+                        )}
+                        <span>{S.turnBudget(t.turns_used, t.turn_cap)}</span>
+                      </span>
+                    }
+                    href={path}
+                    onSelect={() => navigate(path)}
+                  />
+                );
+              })}
+            </div>
+          )}
         </div>
       </aside>
         )}
@@ -302,7 +386,7 @@ export function ThreadsPage(): JSX.Element {
               disabled={activeThread.data?.status !== 'open'}
               pending={sendFollowUp.isPending}
               errorMessage={composerError}
-              helper="Sends as founder — all participants are notified."
+              helper={S.composerHelper}
               onSend={onSendFollowUp}
               attachments={pendingAttachments}
               onAttachmentsChange={setPendingAttachments}
@@ -310,15 +394,15 @@ export function ThreadsPage(): JSX.Element {
             />
           }
           slug={slug}
+          threadId={threadId}
         />
       ) : (
         <EmptyState
-          title="Select a thread"
+          title={S.selectThread}
           body={
             <span className="inline-flex flex-wrap items-center justify-center gap-1">
-              Select a thread from the inbox, or press
+              {S.selectThreadBody}
               <KbdChip keys={['N']} />
-              to compose.
             </span>
           }
         />
@@ -356,14 +440,14 @@ export function ThreadsPage(): JSX.Element {
   );
 }
 
-function threadStatusOrFallback(status: string): 'open' | 'archived' {
-  if (status === 'open' || status === 'archived') return status;
-  return 'open';
-}
+/* ------------------------------------------------------------------ */
+/*  Detail column                                                      */
+/* ------------------------------------------------------------------ */
 
 interface DetailColumnProps {
   loading: boolean;
   errored: boolean;
+  threadId: string | undefined;
   thread:
     | {
         thread_id: string;
@@ -373,6 +457,7 @@ interface DetailColumnProps {
         turns_used: number;
         turn_cap: number;
         summary: string | null;
+        composed_from_dream_id?: string | null;
       }
     | undefined;
   messages: ThreadMessage[];
@@ -382,13 +467,13 @@ interface DetailColumnProps {
   onArchive: () => void;
   onExtend: () => void;
   composer: JSX.Element;
-  /** Active org slug — used to build the cross-surface "View audit" link. */
   slug: string | undefined;
 }
 
 function DetailColumn({
   loading,
   errored,
+  threadId,
   thread,
   messages,
   messagesLoading,
@@ -399,21 +484,48 @@ function DetailColumn({
   composer,
   slug,
 }: DetailColumnProps): JSX.Element {
+  const queryClient = useQueryClient();
+  // Loading skeleton
   if (loading) {
     return (
-      <section className="text-text-muted flex h-full items-center justify-center">
-        <p className="text-body">Loading…</p>
+      <section className="flex h-full flex-col">
+        <div className="border-border-subtle animate-pulse space-y-2 border-b px-4 py-3">
+          <div className="bg-bg-raised h-5 w-64 rounded" />
+          <div className="bg-bg-raised h-3 w-48 rounded" />
+        </div>
+        <div className="flex flex-1 items-center justify-center">
+          <p className="text-text-muted text-body">{S.loadingMessages}</p>
+        </div>
       </section>
     );
   }
+
+  // Error with retry — §2.5.5
   if (errored || !thread) {
     return (
-      <section className="text-feedback-danger flex h-full items-center justify-center">
-        <p className="text-body">Failed to load thread.</p>
+      <section className="flex h-full flex-col items-center justify-center space-y-3 p-4">
+        <p className="text-feedback-danger text-body">{S.detailError}</p>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => {
+            queryClient.invalidateQueries({
+              queryKey: ['thread', slug, threadId],
+            });
+            queryClient.invalidateQueries({
+              queryKey: ['thread-messages', slug, threadId],
+            });
+          }}
+        >
+          {S.retry}
+        </Button>
       </section>
     );
   }
+
   const open = thread.status === 'open';
+  const isDreamOriginated = !!thread.composed_from_dream_id;
+
   return (
     <section className="flex h-full flex-col">
       <ThreadHeader
@@ -424,6 +536,7 @@ function DetailColumn({
         turnsUsed={thread.turns_used}
         turnCap={thread.turn_cap}
         archiveSummary={thread.summary}
+        dreamOriginated={isDreamOriginated}
         actions={
           <>
             <Button variant="ghost" size="sm" onClick={onInvite} disabled={!open} title="Invite (I)">Invite</Button>
@@ -443,7 +556,12 @@ function DetailColumn({
         }
       />
       <div className="flex-1 overflow-hidden">
-        <MessageTranscript messages={messages} loading={messagesLoading} slug={slug} nowMs={nowMs} />
+        <ThreadDetailTranscript
+          messages={messages}
+          loading={messagesLoading}
+          slug={slug}
+          nowMs={nowMs}
+        />
       </div>
       <footer className="border-border-default bg-surface-sunken border-t p-3">
         {composer}
@@ -452,19 +570,21 @@ function DetailColumn({
   );
 }
 
+/* ------------------------------------------------------------------ */
+/*  Thread detail transcript — turn cards                              */
+/* ------------------------------------------------------------------ */
+
 interface TranscriptProps {
   messages: ThreadMessage[];
   loading: boolean;
-  /** Active org slug — used to build cross-surface task links in system messages. */
   slug?: string;
   nowMs?: number;
 }
 
-function MessageTranscript({ messages, loading, slug, nowMs }: TranscriptProps): JSX.Element {
+function ThreadDetailTranscript({ messages, loading, slug, nowMs }: TranscriptProps): JSX.Element {
   const endRef = useRef<HTMLDivElement>(null);
 
-  // Agents mid-reply (working) or waiting to reply (queued), deduped by name —
-  // a working turn wins over a queued one (see selectInFlightResponders).
+  // Agents mid-reply (working) or waiting to reply (queued)
   const inFlight = useMemo(() => selectInFlightResponders(messages), [messages]);
   const inFlightKey = inFlight.map((s) => `${s.agent_name}:${s.status}`).join(',');
 
@@ -474,33 +594,56 @@ function MessageTranscript({ messages, loading, slug, nowMs }: TranscriptProps):
     }
   }, [messages.length, inFlightKey]);
 
+  // Error with retry for messages
+  if (loading && messages.length === 0) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <p className="text-text-muted text-caption">{S.loadingMessages}</p>
+      </div>
+    );
+  }
+
+  if (!loading && messages.length === 0) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <p className="text-text-muted text-caption">{S.noMessages}</p>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full flex-col gap-2 overflow-auto px-4 py-3">
-      {loading && messages.length === 0 && (
-        <p className="text-caption text-text-muted">Loading messages…</p>
-      )}
-      {!loading && messages.length === 0 && (
-        <p className="text-caption text-text-muted">No messages yet.</p>
-      )}
-      {messages.map((m) => (
-        <div key={`${m.seq}-${m.speaker}-${m.kind}`}>
-          <MessageBubble
-            variant={messageVariant(m)}
-            seq={m.seq}
-            speaker={m.kind === 'system' ? undefined : m.speaker}
-            speakerRole={m.speaker === 'founder' ? 'founder' : 'worker'}
-            timestamp={m.created_at}
-            body={m.body_markdown}
-            declineReason={m.decline_reason}
-            systemDescription={m.kind === 'system' ? describeSystem(m.system_payload, slug) : undefined}
-            attachments={m.attachments}
-            attachmentHref={slug ? (artifactName) => artifactsApi.artifactDownloadPath(slug, artifactName) : undefined}
-          />
-          {m.kind === 'message' && (
-            <ResponderStatusStrip statuses={m.responder_status ?? []} nowMs={nowMs} />
-          )}
-        </div>
-      ))}
+      {messages.map((m) => {
+        const variant = messageVariant(m);
+        return (
+          <div key={`${m.seq}-${m.speaker}-${m.kind}`}>
+            {/* System cards — visually distinct */}
+            {variant === 'system' ? (
+              <SystemCard
+                seq={m.seq}
+                timestamp={m.created_at}
+                systemPayload={m.system_payload}
+                slug={slug}
+              />
+            ) : (
+              <MessageBubble
+                variant={variant}
+                seq={m.seq}
+                speaker={m.speaker}
+                speakerRole={m.speaker === 'founder' ? 'founder' : 'worker'}
+                timestamp={m.created_at}
+                body={m.body_markdown}
+                declineReason={m.decline_reason}
+                attachments={m.attachments}
+                attachmentHref={slug ? (artifactName) => artifactsApi.artifactDownloadPath(slug, artifactName) : undefined}
+              />
+            )}
+            {m.kind === 'message' && (
+              <ResponderStatusStrip statuses={m.responder_status ?? []} nowMs={nowMs} />
+            )}
+          </div>
+        );
+      })}
       {inFlight.map((s) => (
         <TypingBubble
           key={`typing-${s.agent_name}`}
@@ -515,16 +658,55 @@ function MessageTranscript({ messages, loading, slug, nowMs }: TranscriptProps):
   );
 }
 
+/* ------------------------------------------------------------------ */
+/*  System card — visually distinct from agent-turn cards              */
+/* ------------------------------------------------------------------ */
+
+interface SystemCardProps {
+  seq: number;
+  timestamp: string;
+  systemPayload: Record<string, unknown> | null;
+  slug?: string;
+}
+
+function SystemCard({ seq, timestamp, systemPayload, slug }: SystemCardProps): JSX.Element {
+  const description = describeSystem(systemPayload, slug);
+  return (
+    <div className="bg-surface-sunken border-border-subtle flex items-center gap-2 rounded-md border px-2 py-1.5">
+      <span className="text-caption text-text-muted font-mono">{seq}</span>
+      <span className="text-caption bg-bg-raised text-text-muted rounded-full px-1.5 py-0.5 font-medium uppercase">
+        {S.systemEventLabel}
+      </span>
+      <span className="text-text-secondary flex-1 text-xs">{description}</span>
+      <time
+        dateTime={timestamp}
+        className="text-caption text-text-disabled shrink-0"
+      >
+        {new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+      </time>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Message variant logic (excludes ran: cards — D7 deferred)          */
+/* ------------------------------------------------------------------ */
+
 function messageVariant(m: ThreadMessage): MessageVariant {
+  // Omit in-thread agent-own ran: cards (D7 deferred, P1)
+  // These would be system messages with kind_tag matching ran: command patterns
   if (m.kind === 'system') return 'system';
   if (m.kind === 'decline') return 'decline';
   if (m.speaker === 'founder') return 'founder';
   return 'worker';
 }
 
+/* ------------------------------------------------------------------ */
+/*  System event descriptions                                          */
+/* ------------------------------------------------------------------ */
+
 function describeSystem(payload: Record<string, unknown> | null, slug?: string): React.ReactNode {
   if (!payload) return 'system event';
-  // Real API payloads use kind_tag; mock/legacy payloads use event.
   const tag = String(payload.kind_tag ?? payload.event ?? '');
   switch (tag) {
     case 'invited':

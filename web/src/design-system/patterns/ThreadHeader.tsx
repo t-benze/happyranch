@@ -6,6 +6,7 @@
  * compose Button primitives with its own onClick wiring.
  */
 import type { ReactNode } from 'react';
+import { CrescentMoonBadge } from './CrescentMoonBadge';
 import { IdBadge } from './IdBadge';
 import { PageHeader } from './PageHeader';
 import { StatusBadge } from './StatusBadge';
@@ -18,6 +19,8 @@ interface ThreadHeaderProps {
   turnsUsed: number;
   turnCap: number;
   archiveSummary?: string | null;
+  /** When true, renders a crescent-moon badge (dream-originated marker, A4). */
+  dreamOriginated?: boolean;
   actions?: ReactNode;
 }
 
@@ -29,6 +32,7 @@ export function ThreadHeader({
   turnsUsed,
   turnCap,
   archiveSummary,
+  dreamOriginated,
   actions,
 }: ThreadHeaderProps): JSX.Element {
   return (
@@ -36,6 +40,7 @@ export function ThreadHeader({
       <PageHeader
         title={
           <span className="inline-flex items-center gap-2">
+            {dreamOriginated && <CrescentMoonBadge />}
             <span className="truncate">{subject}</span>
             <StatusBadge status={status} />
           </span>

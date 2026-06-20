@@ -28,9 +28,11 @@ import { realDashboardApi } from './_real-dashboard';
 import { realSettingsApi } from './_real-settings';
 import { realHealthApi } from './_real-health';
 import { realKbApi } from './_real-kb';
+import { realDreamsApi } from './_real-dreams';
 import { realOrgsApi } from './_real-orgs';
 import {
   useRealAgentsRoutes,
+  useRealDreamsRoutes,
   useRealJobsRoutes,
   useRealKbRoutes,
   useRealTasksRoutes,
@@ -40,6 +42,7 @@ import { realJobsApi } from './_real-jobs';
 import { realTasksApi } from './_real-tasks';
 import { realTeamsApi } from './_real-teams';
 import { realThreadsApi } from './_real-threads';
+import { realWorkHoursApi } from './_real-work-hours';
 
 export function makeQueryClient(): QueryClient {
   return new QueryClient({
@@ -74,15 +77,18 @@ export function AppProvider({ children, client }: AppProviderProps): JSX.Element
           dashboard: realDashboardApi,
           settings: realSettingsApi,
           kb: realKbApi,
+          dreams: realDreamsApi,
           teams: realTeamsApi,
           health: realHealthApi,
           assistant: realAssistantApi,
           jobs: realJobsApi,
+          workHours: realWorkHoursApi,
           useThreadRoutes: useRealThreadRoutes,
           useTasksRoutes: useRealTasksRoutes,
           useKbRoutes: useRealKbRoutes,
           useAgentsRoutes: useRealAgentsRoutes,
           useJobsRoutes: useRealJobsRoutes,
+          useDreamsRoutes: useRealDreamsRoutes,
         }}
       >
         <TooltipProvider delayDuration={300}>{children}</TooltipProvider>
