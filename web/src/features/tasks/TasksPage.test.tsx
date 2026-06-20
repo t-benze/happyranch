@@ -188,6 +188,12 @@ describe('TasksPage — read path (roots endpoint)', () => {
       expect(screen.getByText(/superseded by/)).toBeInTheDocument();
       expect(screen.getByText(/TASK-0301/)).toBeInTheDocument();
     });
+
+    // Lineage links carry correct hrefs
+    const supersedesLink = screen.getByRole('link', { name: /supersedes TASK-0299/ });
+    expect(supersedesLink).toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-0299`);
+    const supersededByLink = screen.getByRole('link', { name: /superseded by TASK-0301/ });
+    expect(supersededByLink).toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-0301`);
   });
 
   test('renders 0 count when query resolves to empty (no loading placeholder)', async () => {
@@ -363,8 +369,8 @@ describe('TaskDetailPane — workflow chain timeline', () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubHandlers(
       { ...ACTIVE_CHAIN, step_index: 1 },
-      { status: 'blocked', block_kind: 'delegated' },
-      ['JOB-0042'],
+      { status: 'blocked', block_kind: 'blocked_on_job' },
+      [{ job_id: 'JOB-0042', status: 'pending' }],
     );
     renderWithProviders(<AppRoutes />, {
       route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,

@@ -118,21 +118,20 @@ interface ChainTimelineBlockInfo {
   blockerName?: string;
 }
 
+type BlockedJobEntry = { job_id: string; status: string };
+
 /** Derive a human-readable blocker name from the task block context. */
 function deriveBlockerName(
   blockKind: string | null | undefined,
-  blockedOnJobs: unknown,
+  blockedOnJobs: BlockedJobEntry[] | null | undefined,
 ): string | undefined {
-  if (Array.isArray(blockedOnJobs) && blockedOnJobs.length > 0) {
-    const jobIds = blockedOnJobs.filter(
-      (v): v is string => typeof v === 'string',
-    );
-    if (jobIds.length > 0) {
-      return `job(s) ${jobIds.join(', ')}`;
-    }
+  if (blockedOnJobs && blockedOnJobs.length > 0) {
+    const jobIds = blockedOnJobs.map((e) => e.job_id);
+    return `job(s) ${jobIds.join(', ')}`;
   }
   if (blockKind === 'escalated') return 'escalation';
   if (blockKind === 'delegated') return 'delegation';
+  if (blockKind === 'blocked_on_job') return 'blocked on job';
   return blockKind ?? undefined;
 }
 
@@ -310,7 +309,7 @@ function BriefSection({ brief }: { brief: string }): JSX.Element {
 
 interface ChainWithBlock {
   chain: ActiveChainResponse | null;
-  blockedOnJobs: string[] | null;
+  blockedOnJobs: BlockedJobEntry[] | null;
 }
 
 function useChainWithBlock(slug: string | undefined, taskId: string | undefined) {
@@ -319,8 +318,15 @@ function useChainWithBlock(slug: string | undefined, taskId: string | undefined)
     queryFn: () => getTask(slug as string, taskId as string),
     select: (r): ChainWithBlock => {
       const bj = (r as Record<string, unknown>).blocked_on_jobs;
-      const blockedOnJobs: string[] | null =
-        Array.isArray(bj) ? bj.filter((v): v is string => typeof v === 'string') : null;
+      const blockedOnJobs: BlockedJobEntry[] | null =
+        Array.isArray(bj)
+          ? bj.filter(
+              (v): v is BlockedJobEntry =>
+                typeof v === 'object' &&
+                v !== null &&
+                typeof (v as Record<string, unknown>).job_id === 'string',
+            )
+          : null;
       return {
         chain: r.active_chain ?? null,
         blockedOnJobs,

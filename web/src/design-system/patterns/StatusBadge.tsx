@@ -18,7 +18,7 @@ export type TaskStatus =
   | 'completed'
   | 'failed'
   | 'resolved_superseded';
-export type BlockKind = 'delegated' | 'escalated';
+export type BlockKind = 'delegated' | 'escalated' | 'blocked_on_job';
 
 interface StatusBadgeProps {
   status: ThreadStatus | TaskStatus;

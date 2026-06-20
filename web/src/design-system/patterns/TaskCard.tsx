@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { StatusBadge } from './StatusBadge';
 import { IdBadge } from './IdBadge';
+import { useTasksRoutes } from '@/hooks/tasks';
 import type { TaskRecord, TaskStatus } from '@/lib/api/types';
 
 // Inline the union rather than importing `Density` from `@/hooks/` —
@@ -58,46 +59,57 @@ export function TaskCard({ task, to, active, density = 'comfortable' }: TaskCard
   const pad = density === 'compact' ? 'px-3 py-2' : 'px-4 py-3';
   const rollup = severityRollupStatus(task);
   const revisits = directRevisits(task);
+  const routes = useTasksRoutes();
 
   return (
-    <Link
-      to={to}
+    <div
       className={cn(
-        'border-border-default bg-surface shadow-pasture-sm block rounded-lg border',
+        'border-border-default bg-surface shadow-pasture-sm rounded-lg border',
         pad,
         active && 'ring-accent-default ring-2',
-        'hover:bg-surface-hover transition-colors',
       )}
     >
-      <div className="flex items-center gap-2 text-xs">
-        <IdBadge kind="task" id={task.task_id} />
-        <StatusBadge status={rollup} blockKind={task.block_kind} />
-        <span className="text-text-muted font-mono text-xs tabular-nums">{task.team}</span>
-        {task.assigned_agent && (
-          <span className="text-text-muted">· {task.assigned_agent}</span>
-        )}
-        <span className="text-text-muted ml-auto text-xs tabular-nums">{relativeAge(task.updated_at)}</span>
-      </div>
-      <p className="text-text-primary mt-1 line-clamp-1 text-sm">{briefHeadline(task.brief)}</p>
+      <Link
+        to={to}
+        className="block hover:bg-surface-hover transition-colors rounded-lg"
+      >
+        <div className="flex items-center gap-2 text-xs">
+          <IdBadge kind="task" id={task.task_id} />
+          <StatusBadge status={rollup} blockKind={task.block_kind} />
+          <span className="text-text-muted font-mono text-xs tabular-nums">{task.team}</span>
+          {task.assigned_agent && (
+            <span className="text-text-muted">· {task.assigned_agent}</span>
+          )}
+          <span className="text-text-muted ml-auto text-xs tabular-nums">{relativeAge(task.updated_at)}</span>
+        </div>
+        <p className="text-text-primary mt-1 line-clamp-1 text-sm">{briefHeadline(task.brief)}</p>
+      </Link>
 
-      {/* Supersede / revisit links — from roots-payload fields */}
+      {/* Supersede / revisit links — from roots-payload fields, siblings of the main Link */}
       {(task.revisit_of_task_id || revisits.length > 0) && (
         <div className="text-text-muted mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-xs">
           {task.revisit_of_task_id && (
-            <span>
+            <Link
+              to={routes.detail(task.revisit_of_task_id)}
+              className="hover:underline"
+            >
               supersedes{' '}
               <span className="font-mono text-id-task">{task.revisit_of_task_id}</span>
-            </span>
+            </Link>
           )}
           {revisits.map((rid) => (
-            <span key={rid}>
+            <Link
+              key={rid}
+              to={routes.detail(rid)}
+              className="hover:underline"
+            >
               superseded by{' '}
               <span className="font-mono text-id-task">{rid}</span>
-            </span>
+            </Link>
           ))}
         </div>
       )}
-    </Link>
+    </div>
   );
 }
 
