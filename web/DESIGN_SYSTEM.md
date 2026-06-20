@@ -1,8 +1,43 @@
 # DESIGN_SYSTEM.md — HappyRanch Founder Console
 
-**Status:** v0.1 — implementation contract. Supersedes the deleted `SHADCN_ADOPTION.md`.
+**Status:** v0.2 — Pasture foundation (THR-030 / TASK-603 Leg A). Supersedes the deleted `SHADCN_ADOPTION.md`.
 **Companion to:** `web/DESIGN.md` (token source of truth), `web/UI_SPEC.md` (per-screen UX),
 `web/ARCHITECTURE.md` (the three-layer boundary rule this doc reconciles with).
+
+---
+
+## 0. Direction-A "Pasture" foundation (2026-06-20)
+
+The design-overhaul (PR #110) shipped with a **dark-first, blue-accent, Public-Sans**
+token system ("Mission Control" lineage). THR-030 finalized the **Direction A
+'Pasture'** design direction. This leg rewrote the foundation tokens in
+`web/src/design-system/tokens/tokens.css` to Pasture.
+
+**What changed at the token level:**
+- **Palette:** OKLCH warm spectrum — light-first background (`oklch(0.975…)` warm
+off-white), warm inks (`oklch(0.28…)` through `0.66…`), warm borders.
+- **Accent:** Green `oklch(0.58 0.11 152)` (+press/soft/text companions).
+- **Theme default:** LIGHT. Dark is a `[data-theme="dark"]` override with its own
+full warm-dark palette.
+- **Typography:** `--font-sans` → Hanken Grotesk (UI), `--font-display` → Newsreader
+serif (headings/greeting), `--font-mono` → JetBrains Mono (unchanged).
+- **Radii:** 8px / 12px / 18px / pill.
+- **Shadows:** Soft warm scale (`rgba(40,30,20,…)`).
+- **Rail width:** 244px (unchanged from prior, now explicit in tokens).
+
+**What did NOT change:** Token NAMES. All existing Tailwind class names (`bg-surface-*`,
+`text-text-*`, `bg-bg-*`, `text-fg-*`, `border-border-*`, `bg-accent`, `text-accent`,
+`bg-accent-default`, etc.) are preserved — only their resolved color VALUES flipped.
+The shadcn generic-var aliasing (`--background`, `--primary`, etc.) continues to
+point at the semantic tokens, so Radix/shadcn primitives inherit Pasture without
+source edits.
+
+**Font delivery:** Hanken Grotesk and Newsreader follow the existing self-host
+pattern (named font-family stacks with system fallbacks). No `@fontsource/*` npm
+dependency was added; the local-first webview remains offline-capable.
+
+**Follow-on work:** Per-surface fidelity passes (THR-030 legs B…N) tune each
+surface to its `a-*.html` reference after this foundation merges.
 
 ---
 

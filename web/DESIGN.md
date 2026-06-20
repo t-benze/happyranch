@@ -5,6 +5,13 @@
 #
 # Owner: the one human founder running this org. Everything is a single
 # desktop SPA, served on localhost, used daily, for years.
+#
+# NOTE (2026-06-20, THR-030 / TASK-603): The live token system now uses
+# Direction-A "Pasture" (light-first, warm, green accent). The palette
+# below was the original dark-first / blue "Mission Control" lineage and
+# is retained as the DESIGN.md specification reference. The implementation
+# tokens.css diverges per the Pasture foundation; the semantic token
+# NAMES are identical, only VALUES changed.
 
 name: HappyRanch Founder Console
 version: 0.1.0

@@ -8,9 +8,9 @@ describe('useTheme', () => {
     document.documentElement.removeAttribute('data-theme');
   });
 
-  it('defaults to dark', () => {
+  it('defaults to light', () => {
     const { result } = renderHook(() => useTheme());
-    expect(result.current.theme).toBe('dark');
+    expect(result.current.theme).toBe('light');
   });
 
   it('reads persisted value', () => {
@@ -30,7 +30,7 @@ describe('useTheme', () => {
   it('ignores invalid persisted value', () => {
     localStorage.setItem('happyranch.theme', 'sepia');
     const { result } = renderHook(() => useTheme());
-    expect(result.current.theme).toBe('dark');
+    expect(result.current.theme).toBe('light');
   });
 
   it('mirrors storage events from other tabs', () => {

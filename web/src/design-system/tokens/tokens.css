@@ -3,128 +3,140 @@
  * Single source of truth for design values. Tailwind v4 reads the @theme block
  * below to derive utilities; nobody references hex codes outside this file.
  *
- * PR 1 contract:
- *   - Define the full DESIGN.md `semantic.dark` token set as --color-*
- *     under the non-conflicting names (surface-*, text-*, agent-*, status-*,
- *     id-*, feedback-*, accent-default/hover/muted/ring).
- *   - Keep v3 backwards-compat aliases (--color-bg*, --color-fg*, --color-border,
- *     --color-border-subtle, --color-accent, --color-accent-hover,
- *     --color-tier-green/yellow/red) AT THE V3 HEX VALUES so existing .tsx
- *     files render pixel-identically. PR 2 renames callsites to the
- *     DESIGN.md semantic names; these aliases retire then. Where a name
- *     collides between DESIGN.md and v3 (tier-*, border-subtle), v3 hex wins
- *     in PR 1 — PR 2 flips them.
- *   - Alias shadcn's generic vars (--background, --primary, ...) to our
- *     semantic tokens so shadcn primitives inherit our palette.
+ * Direction-A "Pasture" — LIGHT-FIRST, warm, green accent.
+ * (THR-030 / TASK-603 Leg A — design-system foundation)
  *
- * Light-mode overrides are out of scope for PR 1; the toggle ships later.
+ * Token names are unchanged from the post-PR-#110 system; only VALUES flip
+ * to the Pasture palette. v3 backwards-compat aliases, semantic names, and
+ * shadcn generic-var aliasing all survive.
+ *
+ * LIGHT is the default (values directly in @theme). Dark is a
+ * [data-theme="dark"] override block on <html>.
  */
 
 @import "tailwindcss";
 
 @theme {
   /* ====================================================================== */
-  /* DESIGN.md `semantic.dark` — names that do NOT collide with v3 aliases. */
+  /* SEMANTIC SURFACE — warm off-white / warm dark                            */
   /* ====================================================================== */
 
-  /* ---- Surface ---- */
-  --color-surface-canvas:  #0c0d0f;   /* palette.ink_950 */
-  --color-surface-sunken:  #121317;   /* palette.ink_900 */
-  --color-surface-raised:  #171920;   /* palette.ink_850 */
-  --color-surface-overlay: #1d1f27;   /* palette.ink_800 */
-  --color-surface-scrim:   rgba(0, 0, 0, 0.55);
+  --color-surface-canvas:  oklch(0.975 0.007 80);
+  --color-surface-sunken:  oklch(0.982 0.006 80);
+  --color-surface-raised:  oklch(1 0 0);
+  --color-surface-overlay: oklch(1 0 0);
+  --color-surface-scrim:   rgba(40, 30, 20, 0.25);
+  --color-surface:         oklch(1 0 0);            /* bare "surface" used by attachment labels */
+  --color-surface-hover:   oklch(0.982 0.006 80);    /* hover on bare surface */
+  --color-surface-subtle:  oklch(0.988 0.004 82);    /* skeleton-loading variant */
 
-  /* ---- Text ---- */
-  --color-text-primary:    #e7e8ec;   /* palette.ink_100 */
-  --color-text-secondary:  #9aa0ac;   /* palette.ink_300 */
-  --color-text-muted:      #6d7280;   /* palette.ink_400 */
-  --color-text-inverse:    #121317;   /* palette.ink_900 */
+  /* ---- SEMANTIC TEXT ---- */
 
-  /* ---- Border (DESIGN.md adds `default` and `strong`; `subtle` collides
-   *      with v3 below, so PR 1 keeps v3's hex for `subtle`). */
-  --color-border-default:  #262932;   /* palette.ink_700 */
-  --color-border-strong:   #363a45;   /* palette.ink_600 */
+  --color-text-primary:    oklch(0.28 0.014 60);
+  --color-text-secondary:  oklch(0.50 0.013 60);
+  --color-text-muted:      oklch(0.66 0.012 65);
+  --color-text-inverse:    oklch(0.99 0 0);
+  --color-text-disabled:   oklch(0.78 0.010 72);
 
-  /* ---- Accent (DESIGN.md adds `-default`/`-muted`/`-ring`; bare `accent`
-   *      and `accent-hover` collide with v3 below). */
-  --color-accent-default:  #1894d3;   /* palette.signal_500 */
-  --color-accent-muted:    rgba(24, 148, 211, 0.12);
-  --color-accent-ring:     rgba(24, 148, 211, 0.45);
+  /* ---- SEMANTIC BORDER ---- */
 
-  /* ---- Agent identity ---- */
-  --color-agent-manager:   #8265c8;   /* palette.violet_500 */
-  --color-agent-worker:    #2a9a93;   /* palette.teal_500   */
-  --color-agent-founder:   #3aabe3;   /* palette.signal_400 */
+  --color-border-default:  oklch(0.915 0.008 75);
+  --color-border-strong:   oklch(0.86 0.01 75);
+  --color-border-subtle:   oklch(0.935 0.006 78);
 
-  /* ---- Status ---- */
-  --color-status-open:       #2ea36a;
-  --color-status-archiving:  #caa72a;
-  --color-status-archived:   #6d7280;
-  --color-status-abandoned:  #d04a3a;
-  --color-status-blocked:    #caa72a;
-  --color-status-escalated:  #d04a3a;
+  /* ---- SEMANTIC ACCENT (green) ---- */
 
-  /* ---- ID badges ---- */
-  --color-id-thread:       #6dc1ec;
+  --color-accent-default:  oklch(0.58 0.11 152);
+  --color-accent-hover:    oklch(0.52 0.11 152);
+  --color-accent-muted:    oklch(0.93 0.045 152);
+  --color-accent-ring:     rgba(134, 172, 98, 0.45);  /* accent at ~45% */
+
+  /* ---- TIER / SEMANTIC STATUS ---- */
+
+  --color-tier-green:       oklch(0.58 0.11 152);
+  --color-tier-green-tint:  oklch(0.93 0.045 152 / 0.60);
+
+  --color-tier-yellow:      oklch(0.70 0.13 64);
+  --color-tier-yellow-tint: oklch(0.94 0.05 70 / 0.60);
+
+  --color-tier-red:         oklch(0.55 0.16 25);
+  --color-tier-red-tint:    oklch(0.94 0.04 28 / 0.60);
+
+  /* ---- AGENT IDENTITY ---- */
+
+  --color-agent-manager:   #8265c8;
+  --color-agent-worker:    #2a9a93;
+  --color-agent-founder:   oklch(0.58 0.11 152);
+
+  /* ---- STATUS ---- */
+
+  --color-status-open:       oklch(0.58 0.11 152);
+  --color-status-archiving:  oklch(0.70 0.13 64);
+  --color-status-archived:   oklch(0.50 0.013 60);
+  --color-status-abandoned:  oklch(0.55 0.16 25);
+  --color-status-blocked:    oklch(0.70 0.13 64);
+  --color-status-escalated:  oklch(0.55 0.16 25);
+
+  /* ---- ID BADGES ---- */
+
+  --color-id-thread:       oklch(0.56 0.10 152);
   --color-id-task:         #b6a3e1;
-  --color-id-job:          #e8b44b;
 
-  /* ---- Feedback ---- */
-  --color-feedback-success:#2ea36a;
-  --color-feedback-warning:#caa72a;
-  --color-feedback-danger: #d04a3a;
-  --color-feedback-info:   #3aabe3;
+  /* ---- FEEDBACK ---- */
 
-  /* ====================================================================== */
-  /* v3 backwards-compat aliases — every Tailwind class today's .tsx files  */
-  /* use, AT THE V3 HEX VALUES (per tailwind.config.ts before deletion).    */
-  /* These keep PR 1 a pure foundation flip with zero pixel diff. PR 2     */
-  /* renames callsites to DESIGN.md semantic names and retires this block.  */
-  /* ====================================================================== */
-
-  /* v3 `bg.{DEFAULT,subtle,raised}` */
-  --color-bg:              #0b0d10;
-  --color-bg-subtle:       #11141a;
-  --color-bg-raised:       #1a1d22;
-
-  /* v3 `border.{DEFAULT,subtle}` */
-  --color-border:          #262a31;
-  --color-border-subtle:   #1f2229;
-
-  /* v3 `fg.{DEFAULT,muted,subtle}` */
-  --color-fg:              #e6e6e6;
-  --color-fg-muted:        #9ba1ab;
-  --color-fg-subtle:       #6b7280;
-
-  /* v3 `accent.{DEFAULT,hover}` */
-  --color-accent:          #3b82f6;
-  --color-accent-hover:    #2563eb;
-
-  /* v3 `tier.{green,yellow,red}` */
-  --color-tier-green:      #22c55e;
-  --color-tier-yellow:     #eab308;
-  --color-tier-red:        #ef4444;
-
-  /* DESIGN.md `tier.*_tint` — 14% alpha companions to the tier colors. Used by
-   * StatusBadge / MessageBubble.decline backgrounds and other status-tinted UI. */
-  --color-tier-green-tint:  rgba(46, 163, 106, 0.14);
-  --color-tier-yellow-tint: rgba(202, 167, 42, 0.14);
-  --color-tier-red-tint:    rgba(208, 74, 58, 0.14);
+  --color-feedback-success: oklch(0.58 0.11 152);
+  --color-feedback-warning: oklch(0.70 0.13 64);
+  --color-feedback-danger:  oklch(0.55 0.16 25);
+  --color-feedback-info:    oklch(0.56 0.10 248);
 
   /* ====================================================================== */
-  /* Typography                                                             */
+  /* v3 BACKWARDS-COMPAT ALIASES — pasted into Pasture values.               */
+  /* Per brief: keep all v3 class names working. Per-surface rename is       */
+  /* a follow-on leg.                                                        */
   /* ====================================================================== */
 
-  --font-sans: "Public Sans", "Public Sans Local", -apple-system,
-               BlinkMacSystemFont, "Segoe UI", Helvetica, sans-serif;
-  --font-mono: "JetBrains Mono", "JetBrains Mono Local", ui-monospace,
+  --color-bg:              oklch(0.975 0.007 80);
+  --color-bg-subtle:       oklch(0.982 0.006 80);
+  --color-bg-raised:       oklch(1 0 0);
+  --color-bg-muted:        oklch(0.982 0.006 80);    /* used in ErrorBoundary */
+
+  --color-border:          oklch(0.915 0.008 75);
+  --color-border-subtle:   oklch(0.935 0.006 78);
+
+  --color-fg:              oklch(0.28 0.014 60);
+  --color-fg-muted:        oklch(0.50 0.013 60);
+  --color-fg-subtle:       oklch(0.66 0.012 65);
+
+  --color-accent:          oklch(0.58 0.11 152);
+  --color-accent-hover:    oklch(0.52 0.11 152);
+  /* Note: --color-accent-fg used by bg-accent text-accent-fg pattern in Settings */
+  --color-accent-fg:       oklch(0.99 0 0);
+
+  /* ---- v3 tier (same as tier-* above, just v3 names) ---- */
+  --color-tier-green:       oklch(0.58 0.11 152);
+  --color-tier-yellow:      oklch(0.70 0.13 64);
+  --color-tier-red:         oklch(0.55 0.16 25);
+  --color-tier-green-tint:  oklch(0.93 0.045 152 / 0.60);
+  --color-tier-yellow-tint: oklch(0.94 0.05 70 / 0.60);
+  --color-tier-red-tint:    oklch(0.94 0.04 28 / 0.60);
+
+  /* ---- v3 job-status / additional patterns ---- */
+  --color-tier-slate-tint:  oklch(0.94 0.008 75);    /* used by TasksPage resolved group */
+
+  /* ====================================================================== */
+  /* TYPOGRAPHY — Hanken Grotesk UI, Newsreader display, JetBrains Mono      */
+  /* ====================================================================== */
+
+  --font-sans: "Hanken Grotesk", system-ui, -apple-system,
+               BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-display: "Newsreader", Georgia, "Times New Roman", serif;
+  --font-mono: "JetBrains Mono", ui-monospace,
                "SF Mono", Menlo, Consolas, monospace;
 
-  /* DESIGN.md `typography.scale.*` — size + line-height + weight via the
-   * v4 `--text-{step}--line-height` convention. */
+  /* Type scale — sizes unchanged from prior, weight tweaked for Hanken */
   --text-display:              1.875rem;
   --text-display--line-height: 2.25rem;
-  --text-display--font-weight: 600;
+  --text-display--font-weight: 500;
 
   --text-h1:                   1.375rem;
   --text-h1--line-height:      1.75rem;
@@ -170,11 +182,13 @@
   --text-mono-sm--line-height: 1rem;
   --text-mono-sm--font-weight: 500;
 
+  /* ---- Extra utility classes ---- */
+  --text-2xs:                  0.625rem;
+  --text-2xs--line-height:     0.875rem;
+
   /* ====================================================================== */
-  /* shadcn generic semantic names — aliased to our DESIGN.md tokens so the */
-  /* upstream shadcn primitive sources (`bg-primary`, `bg-card`, ...) just  */
-  /* work without us forking templates. These live IN @theme so Tailwind v4 */
-  /* generates the matching utility classes.                                */
+  /* shadcn GENERIC-VAR ALIASING — so Radix/shadcn primitives inherit       */
+  /* the Pasture palette without source edits.                              */
   /* ====================================================================== */
 
   --color-background:             var(--color-surface-canvas);
@@ -195,7 +209,7 @@
   --color-ring:                   var(--color-accent-ring);
 
   /* ====================================================================== */
-  /* Spacing — 8pt grid + 4pt hairline (DESIGN.md `layout.spacing`)         */
+  /* SPACING — 8pt grid + 4pt hairline (unchanged)                           */
   /* ====================================================================== */
 
   --spacing-0: 0;
@@ -209,13 +223,13 @@
   --spacing-8: 4rem;
 
   /* ====================================================================== */
-  /* Radius (DESIGN.md `layout.radius`)                                     */
+  /* RADIUS — Pasture 8 / 12 / 18 / pill                                     */
   /* ====================================================================== */
 
   --radius-none: 0;
-  --radius-sm:   0.1875rem;
-  --radius-md:   0.3125rem;
-  --radius-lg:   0.5rem;
+  --radius-sm:   8px;
+  --radius-md:   12px;
+  --radius-lg:   18px;
   --radius-pill: 999px;
 }
 
@@ -229,41 +243,93 @@
 }
 
 /* ========================================================================== */
-/* Light-mode overrides — PR 13 polish (spec 2026-05-19-web-polish-design §3).*/
-/* Token names do not change; only their values flip when                    */
-/* `<html data-theme="light">` is set by useTheme(). Accent + tier + the     */
-/* `_tint` rgba companions are mode-neutral and stay at their dark values.   */
+/* DARK THEME OVERRIDES                                                       */
+/* <html data-theme="dark"> set by useTheme() when the user toggles dark.    */
 /* ========================================================================== */
 
-:root[data-theme="light"] {
-  /* DESIGN.md `semantic.light` surface ramp — light ink_50…ink_300. */
-  --color-surface-canvas:  #f7f8fa;
-  --color-surface-sunken:  #eef0f4;
-  --color-surface-raised:  #ffffff;
-  --color-surface-overlay: #ffffff;
-  --color-surface-scrim:   rgba(12, 13, 15, 0.35);
+:root[data-theme="dark"] {
+  /* ---- Semantic surface (dark) ---- */
+  --color-surface-canvas:  oklch(0.205 0.011 70);
+  --color-surface-sunken:  oklch(0.225 0.011 70);
+  --color-surface-raised:  oklch(0.245 0.012 70);
+  --color-surface-overlay: oklch(0.275 0.013 70);
+  --color-surface-scrim:   rgba(0, 0, 0, 0.55);
+  --color-surface:         oklch(0.245 0.012 70);
+  --color-surface-hover:   oklch(0.265 0.012 70);
+  --color-surface-subtle:  oklch(0.215 0.010 72);
 
-  /* Text — invert primary, soften muted, keep mid-grey muted as-is. */
-  --color-text-primary:    #0c0d0f;
-  --color-text-secondary:  #3e424b;
-  --color-text-muted:      #6d7280;
-  --color-text-inverse:    #ffffff;
+  /* ---- Semantic text (dark) ---- */
+  --color-text-primary:    oklch(0.94 0.008 80);
+  --color-text-secondary:  oklch(0.72 0.01 75);
+  --color-text-muted:      oklch(0.56 0.011 72);
+  --color-text-inverse:    oklch(0.18 0.02 152);
+  --color-text-disabled:   oklch(0.45 0.010 70);
 
-  /* Borders pick lighter neutrals; strong stays a notch darker. */
-  --color-border-default:  #d8dbe2;
-  --color-border-strong:   #b9bdc6;
+  /* ---- Semantic border (dark) ---- */
+  --color-border-default:  oklch(0.32 0.012 72);
+  --color-border-strong:   oklch(0.40 0.013 72);
+  --color-border-subtle:   oklch(0.28 0.010 70);
 
-  /* Accent muted/ring scale stays the same rgba — the alpha gives it
-   * acceptable contrast on either surface. */
+  /* ---- Semantic accent (dark) — brighter for dark bg ---- */
+  --color-accent-default:  oklch(0.70 0.13 152);
+  --color-accent-hover:    oklch(0.76 0.13 152);
+  --color-accent-muted:    oklch(0.32 0.06 152);
+  --color-accent-ring:     rgba(165, 207, 112, 0.45);
 
-  /* v3 backwards-compat aliases — keep every utility used in the codebase
-   * pointing at the light hex equivalents so no .tsx file has to change. */
-  --color-bg:              #f7f8fa;
-  --color-bg-subtle:       #eef0f4;
-  --color-bg-raised:       #ffffff;
-  --color-border:          #d8dbe2;
-  --color-border-subtle:   #e3e6ec;
-  --color-fg:              #0c0d0f;
-  --color-fg-muted:        #3e424b;
-  --color-fg-subtle:       #6d7280;
+  /* ---- Tier / status (dark) ---- */
+  --color-tier-green:       oklch(0.72 0.12 152);
+  --color-tier-green-tint:  oklch(0.30 0.05 152 / 0.60);
+  --color-tier-yellow:      oklch(0.78 0.13 70);
+  --color-tier-yellow-tint: oklch(0.34 0.05 65 / 0.60);
+  --color-tier-red:         oklch(0.70 0.15 25);
+  --color-tier-red-tint:    oklch(0.34 0.06 28 / 0.60);
+
+  /* ---- Agent identity (dark) — same hex, still ok ---- */
+  --color-agent-manager:   #8265c8;
+  --color-agent-worker:    #2a9a93;
+  --color-agent-founder:   oklch(0.70 0.13 152);
+
+  /* ---- Status (dark) ---- */
+  --color-status-open:      oklch(0.72 0.12 152);
+  --color-status-archiving: oklch(0.78 0.13 70);
+  --color-status-archived:  oklch(0.56 0.011 72);
+  --color-status-abandoned: oklch(0.70 0.15 25);
+  --color-status-blocked:   oklch(0.78 0.13 70);
+  --color-status-escalated: oklch(0.70 0.15 25);
+
+  /* ---- ID badges (dark) ---- */
+  --color-id-thread: oklch(0.80 0.12 152);
+  --color-id-task:   #d0c4f0;
+
+  /* ---- Feedback (dark) ---- */
+  --color-feedback-success: oklch(0.72 0.12 152);
+  --color-feedback-warning: oklch(0.78 0.13 70);
+  --color-feedback-danger:  oklch(0.70 0.15 25);
+  --color-feedback-info:    oklch(0.72 0.11 245);
+
+  /* ---- v3 backwards-compat aliases (dark) ---- */
+  --color-bg:              oklch(0.205 0.011 70);
+  --color-bg-subtle:       oklch(0.225 0.011 70);
+  --color-bg-raised:       oklch(0.245 0.012 70);
+  --color-bg-muted:        oklch(0.245 0.012 70);
+
+  --color-border:          oklch(0.32 0.012 72);
+  --color-border-subtle:   oklch(0.28 0.010 70);
+
+  --color-fg:              oklch(0.94 0.008 80);
+  --color-fg-muted:        oklch(0.72 0.01 75);
+  --color-fg-subtle:       oklch(0.56 0.011 72);
+
+  --color-accent:          oklch(0.70 0.13 152);
+  --color-accent-hover:    oklch(0.76 0.13 152);
+  --color-accent-fg:       oklch(0.18 0.02 152);
+
+  --color-tier-green:       oklch(0.72 0.12 152);
+  --color-tier-yellow:      oklch(0.78 0.13 70);
+  --color-tier-red:         oklch(0.70 0.15 25);
+  --color-tier-green-tint:  oklch(0.30 0.05 152 / 0.60);
+  --color-tier-yellow-tint: oklch(0.34 0.05 65 / 0.60);
+  --color-tier-red-tint:    oklch(0.34 0.06 28 / 0.60);
+
+  --color-tier-slate-tint:  oklch(0.28 0.010 72);
 }
