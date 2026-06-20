@@ -4,7 +4,7 @@
  * below to derive utilities; nobody references hex codes outside this file.
  *
  * Direction-A "Pasture" — LIGHT-FIRST, warm, green accent.
- * (THR-030 / TASK-603 Leg A — design-system foundation)
+ * (THR-030 / TASK-603 Leg A — design-system foundation; revised TASK-605)
  *
  * Token names are unchanged from the post-PR-#110 system; only VALUES flip
  * to the Pasture palette. v3 backwards-compat aliases, semantic names, and
@@ -13,6 +13,35 @@
  * LIGHT is the default (values directly in @theme). Dark is a
  * [data-theme="dark"] override block on <html>.
  */
+
+/* ========================================================================== */
+/* SELF-HOSTED FONTS — Hanken Grotesk + Newsreader, SIL OFL 1.1              */
+/* Latin subsets only; weights matched to the type scale below.              */
+/* ========================================================================== */
+
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('/fonts/HankenGrotesk-latin.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Newsreader';
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url('/fonts/Newsreader-normal-latin.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Newsreader';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/Newsreader-italic-latin.woff2') format('woff2');
+}
 
 @import "tailwindcss";
 
@@ -50,6 +79,7 @@
   --color-accent-hover:    oklch(0.52 0.11 152);
   --color-accent-muted:    oklch(0.93 0.045 152);
   --color-accent-ring:     rgba(134, 172, 98, 0.45);  /* accent at ~45% */
+  --color-accent-text:     oklch(0.46 0.10 152);       /* ds.css --accent-text */
 
   /* ---- TIER / SEMANTIC STATUS ---- */
 
@@ -61,6 +91,12 @@
 
   --color-tier-red:         oklch(0.55 0.16 25);
   --color-tier-red-tint:    oklch(0.94 0.04 28 / 0.60);
+
+  /* ---- Semantic attention / info / danger soft + text companions (ds.css parity) ---- */
+  --color-attention-soft: oklch(0.94 0.05 70);
+  --color-attention-text: oklch(0.52 0.12 58);
+  --color-info-soft:      oklch(0.94 0.035 248);
+  --color-danger-soft:    oklch(0.94 0.04 28);
 
   /* ---- AGENT IDENTITY ---- */
 
@@ -231,6 +267,22 @@
   --radius-md:   12px;
   --radius-lg:   18px;
   --radius-pill: 999px;
+
+  /* ====================================================================== */
+  /* RAIL — Direction-A 244px sidebar / layout rail (ds.css --rail-w)       */
+  /* ====================================================================== */
+
+  --spacing-rail: 244px;
+
+  /* ====================================================================== */
+  /* SHADOWS — warm/soft Pasture scale (ds.css --shadow / --shadow-sm /     */
+  /* --shadow-lg)                                                            */
+  /* ====================================================================== */
+
+  --shadow-pasture-sm:  0 1px 2px rgba(40, 30, 20, 0.05);
+  --shadow-pasture:     0 1px 3px rgba(40, 30, 20, 0.06),
+                        0 8px 24px -12px rgba(40, 30, 20, 0.10);
+  --shadow-pasture-lg:  0 24px 60px -24px rgba(40, 30, 20, 0.28);
 }
 
 /* ========================================================================== */
@@ -275,6 +327,7 @@
   --color-accent-hover:    oklch(0.76 0.13 152);
   --color-accent-muted:    oklch(0.32 0.06 152);
   --color-accent-ring:     rgba(165, 207, 112, 0.45);
+  --color-accent-text:     oklch(0.80 0.12 152);       /* ds.css --accent-text dark */
 
   /* ---- Tier / status (dark) ---- */
   --color-tier-green:       oklch(0.72 0.12 152);
@@ -332,4 +385,10 @@
   --color-tier-red-tint:    oklch(0.34 0.06 28 / 0.60);
 
   --color-tier-slate-tint:  oklch(0.28 0.010 72);
+
+  /* ---- Semantic attention / info / danger soft + text companions (dark) ---- */
+  --color-attention-soft: oklch(0.34 0.05 65);
+  --color-attention-text: oklch(0.84 0.11 72);
+  --color-info-soft:      oklch(0.32 0.045 245);
+  --color-danger-soft:    oklch(0.34 0.06 28);
 }
