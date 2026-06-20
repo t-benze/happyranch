@@ -1,8 +1,20 @@
 /**
  * DreamDetailPane — detail drawer for a single dream.
+ * Direction-A Pasture fidelity pass (THR-030 Leg B Batch 9).
  *
  * Shows summary/transcript, learnings count, KB candidates with the
  * Accept/Dismiss review gate, and a link to the reflection thread.
+ *
+ * Pasture vocabulary:
+ *   Cards: bg-surface + border-border-default + shadow-pasture-sm + rounded-lg
+ *   Headings: font-display serif (Newsreader) where appropriate
+ *   Dream ID / counts: font-mono tabular-nums
+ *   Status pills: rounded-full bg-accent-soft/text-accent-text (completed)
+ *   Semantic text: text-text-primary / secondary / muted
+ *   Error panels: border-feedback-danger/30 bg-feedback-danger/5
+ *
+ * HONESTY FENCE: renders ONLY fields from DreamRecord + DreamKbCandidate
+ * data models. No fabricated provenance, sub-states, or metrics.
  *
  * States: Loading, Populated, Error. Candidate mutations invalidate
  * the dream query so the list re-fetches after accept/dismiss.
@@ -21,45 +33,27 @@ import {
   useAcceptCandidate,
   useDismissCandidate,
 } from '@/hooks/dreams';
+import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { cn } from '@/lib/utils';
 import { DREAM_STRINGS } from './strings';
 import type { DreamKbCandidate } from '@/hooks/dreams';
 
 /* ------------------------------------------------------------------ */
-/*  Crescent moon icon (reused)                                        */
+/*  Status pill                                                        */
 /* ------------------------------------------------------------------ */
 
-function CrescentMoonBadge({ className }: { className?: string }): JSX.Element {
-  return (
-    <svg
-      className={cn('text-accent inline-block shrink-0', className)}
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="currentColor"
-      aria-hidden="true"
-    >
-      <path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a6.4 6.4 0 0 1-4.54 1.86c-3.53 0-6.4-2.87-6.4-6.4 0-1.62.6-3.1 1.6-4.24A9 9 0 0 0 12 3Z" />
-    </svg>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Status badge                                                       */
-/* ------------------------------------------------------------------ */
-
-function statusColor(status: string): string {
+function statusPill(status: string): string {
   switch (status) {
-    case 'completed': return 'bg-accent/10 text-accent';
-    case 'failed': case 'timeout': return 'bg-feedback-danger/10 text-feedback-danger';
-    case 'missed': case 'skipped': return 'bg-bg-raised text-text-muted';
-    case 'running': return 'bg-feedback-success/10 text-feedback-success';
-    default: return 'bg-bg-raised text-text-muted';
+    case 'completed': return 'bg-accent-soft text-accent-text';
+    case 'failed': case 'timeout': return 'bg-danger-soft text-feedback-danger';
+    case 'missed': case 'skipped': return 'bg-surface-sunken text-text-muted';
+    case 'running': return 'bg-accent-soft text-accent-text';
+    default: return 'bg-surface-sunken text-text-muted';
   }
 }
 
 /* ------------------------------------------------------------------ */
-/*  Candidate card with review gate                                    */
+/*  Candidate card with review gate — Pasture card pattern             */
 /* ------------------------------------------------------------------ */
 
 function CandidateCard({
@@ -89,33 +83,33 @@ function CandidateCard({
         : candidate.status;
 
   return (
-    <div className="kb-cand border border-border-subtle rounded-lg p-4 bg-surface-sunken">
+    <div className="kb-cand bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
       {/* Header with dream marker */}
-      <div className="flex items-center gap-2 mb-2">
-        <CrescentMoonBadge className="w-3 h-3" />
-        <span className="text-xs text-text-muted italic">{label}</span>
+      <div className="mb-2 flex items-center gap-2">
+        <CrescentMoonBadge className="h-3 w-3" />
+        <span className="text-text-muted text-xs italic">{label}</span>
       </div>
 
       {/* Title */}
-      <h4 className="text-text-primary text-sm font-medium mb-1">{candidate.title}</h4>
+      <h4 className="text-text-primary mb-1 text-sm font-medium">{candidate.title}</h4>
 
       {/* Slug / type / topic */}
-      <div className="flex items-center gap-2 text-xs text-text-muted mb-2">
-        <span className="font-mono">{candidate.slug}</span>
+      <div className="text-text-muted mb-2 flex items-center gap-2 font-mono text-xs tabular-nums">
+        <span>{candidate.slug}</span>
         <span>·</span>
         <span>{candidate.topic}</span>
       </div>
 
       {/* Rationale */}
       {candidate.rationale && (
-        <p className="text-xs text-text-secondary mb-3 italic">
+        <p className="text-text-secondary mb-3 text-xs italic">
           &ldquo;{candidate.rationale}&rdquo;
         </p>
       )}
 
       {/* Body preview */}
       {candidate.body_markdown && (
-        <div className="text-xs text-text-secondary mb-3 max-h-32 overflow-hidden border-l-2 border-border-subtle pl-3 font-mono whitespace-pre-wrap">
+        <div className="text-text-secondary border-border-default mb-3 max-h-32 overflow-hidden border-l-2 pl-3 font-mono text-xs whitespace-pre-wrap">
           {candidate.body_markdown.slice(0, 300)}
           {candidate.body_markdown.length > 300 ? '…' : ''}
         </div>
@@ -123,7 +117,7 @@ function CandidateCard({
 
       {/* Review gate — only for pending candidates */}
       {isPending && (
-        <div className="flex gap-2 mt-3">
+        <div className="mt-3 flex gap-2">
           <Button
             size="sm"
             aria-label={DREAM_STRINGS.acceptButton}
@@ -152,12 +146,12 @@ function CandidateCard({
 
       {/* Resolved indicator */}
       {isPromoted && (
-        <p className="text-xs text-feedback-success mt-2">
+        <p className="text-accent-text mt-2 text-xs">
           Promoted to KB{candidate.promoted_kb_slug ? ` — ${candidate.promoted_kb_slug}` : ''}
         </p>
       )}
       {isRejected && (
-        <p className="text-xs text-text-muted mt-2">Dismissed</p>
+        <p className="text-text-muted mt-2 text-xs">Dismissed</p>
       )}
     </div>
   );
@@ -209,29 +203,29 @@ export function DreamDetailPane({
     <Drawer open onOpenChange={(o) => !o && onClose()}>
       <DrawerContent className="flex flex-col">
         {/* Header */}
-        <header className="border-b border-border-subtle p-4">
-          <div className="flex items-center gap-2 mb-1">
-            <CrescentMoonBadge className="w-3.5 h-3.5" />
-            <span className="font-mono text-xs text-text-primary font-medium">{dreamId}</span>
+        <header className="border-border-default border-b p-4">
+          <div className="mb-1 flex items-center gap-2">
+            <CrescentMoonBadge className="h-3.5 w-3.5" />
+            <span className="text-text-primary font-mono text-xs font-medium tabular-nums">{dreamId}</span>
           </div>
-          <DrawerTitle className="text-fg mt-1 text-lg">
+          <DrawerTitle className="text-text-primary font-display mt-1 text-lg">
             {dream ? `${dream.agent_name} · ${dream.local_date}` : DREAM_STRINGS.drawerLoading}
           </DrawerTitle>
           {dream && (
-            <div className="flex items-center gap-2 mt-1">
+            <div className="mt-1 flex items-center gap-2">
               <span className={cn(
                 'text-[10px] px-1.5 py-0.5 rounded-full font-medium uppercase tracking-wide',
-                statusColor(dream.status),
+                statusPill(dream.status),
               )}>
                 {DREAM_STRINGS.statusLabel(dream.status)}
               </span>
               {dream.ended_at && (
-                <span className="text-xs text-text-muted">
+                <span className="text-text-muted text-xs">
                   {new Date(dream.ended_at).toLocaleTimeString()}
                 </span>
               )}
               {dream.error && (
-                <span className="text-xs text-feedback-danger ml-auto truncate">{dream.error}</span>
+                <span className="text-feedback-danger ml-auto truncate text-xs">{dream.error}</span>
               )}
             </div>
           )}
@@ -243,22 +237,22 @@ export function DreamDetailPane({
             <div className="animate-pulse space-y-4 p-2">
               {/* Skeleton header row */}
               <div className="flex items-center gap-2">
-                <div className="bg-bg-raised h-3 w-3 rounded-full" />
-                <div className="bg-bg-raised h-3 w-24 rounded" />
+                <div className="bg-surface-sunken h-3 w-3 rounded-full" />
+                <div className="bg-surface-sunken h-3 w-24 rounded" />
               </div>
-              <div className="bg-bg-raised h-4 w-3/4 rounded" />
+              <div className="bg-surface-sunken h-4 w-3/4 rounded" />
               {/* Skeleton stat row */}
               <div className="flex items-center gap-3">
-                <div className="bg-bg-raised h-2.5 w-16 rounded" />
-                <div className="bg-bg-raised h-2.5 w-16 rounded" />
-                <div className="bg-bg-raised h-2.5 w-24 rounded" />
+                <div className="bg-surface-sunken h-2.5 w-16 rounded" />
+                <div className="bg-surface-sunken h-2.5 w-16 rounded" />
+                <div className="bg-surface-sunken h-2.5 w-24 rounded" />
               </div>
               {/* Skeleton content cards */}
-              <div className="bg-bg-raised rounded-lg h-24" />
-              <div className="bg-bg-raised rounded-lg h-20" />
+              <div className="bg-surface border-border-default shadow-pasture-sm h-24 rounded-lg border" />
+              <div className="bg-surface border-border-default shadow-pasture-sm h-20 rounded-lg border" />
             </div>
           ) : dreamQ.isError ? (
-            <div className="text-center space-y-3 p-4">
+            <div className="space-y-3 p-4 text-center">
               <p className="text-feedback-danger text-sm">{DREAM_STRINGS.errorTitle}</p>
               <Button
                 size="sm"
@@ -276,27 +270,27 @@ export function DreamDetailPane({
             <div className="space-y-4">
               {/* Quote / summary */}
               {dream.summary && (
-                <blockquote className="text-sm italic border-l-2 border-accent pl-4 text-text-secondary">
+                <blockquote className="border-accent-default text-text-secondary border-l-2 pl-4 text-sm italic">
                   &ldquo;{dream.summary}&rdquo;
                 </blockquote>
               )}
 
-              {/* Quiet-dream indicator */}
+              {/* Quiet-dream indicator — Pasture card */}
               {isQuiet && (
-                <div className="rounded-lg border border-border-subtle bg-surface-sunken p-4">
+                <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
                   <p className="text-text-primary text-sm font-medium">{DREAM_STRINGS.quietTitle}</p>
-                  <p className="text-text-muted text-xs mt-1">{DREAM_STRINGS.quietBody}</p>
+                  <p className="text-text-muted mt-1 text-xs">{DREAM_STRINGS.quietBody}</p>
                 </div>
               )}
 
-              {/* Stat strip */}
-              <div className="flex items-center gap-4 text-xs text-text-muted border-b border-border-subtle pb-3">
+              {/* Stat strip — font-mono tabular-nums */}
+              <div className="text-text-muted border-border-default flex items-center gap-4 border-b pb-3 font-mono text-xs tabular-nums">
                 <span>{DREAM_STRINGS.learningsCount(dream.new_learnings_count)}</span>
                 <span>·</span>
                 <span>
                   {DREAM_STRINGS.candidatesCount(dream.kb_candidate_count)}
                   {pendingCount > 0 && (
-                    <span className="text-accent ml-1 font-medium">{pendingCount} to review</span>
+                    <span className="text-accent-default ml-1 font-medium">{pendingCount} to review</span>
                   )}
                 </span>
                 {dream.scheduled_for && (
@@ -307,16 +301,16 @@ export function DreamDetailPane({
                 )}
               </div>
 
-              {/* Transcript */}
+              {/* Transcript — Pasture card */}
               {dream.transcript && (
-                <div className="text-xs text-text-secondary whitespace-pre-wrap font-mono bg-surface-sunken rounded-lg p-4 border border-border-subtle">
+                <div className="text-text-secondary bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4 font-mono text-xs whitespace-pre-wrap">
                   {dream.transcript}
                 </div>
               )}
 
-              {/* Action error */}
+              {/* Action error — Pasture error panel */}
               {actionError && (
-                <div className="rounded border border-feedback-danger/30 bg-feedback-danger/5 p-3">
+                <div className="border-feedback-danger/30 bg-feedback-danger/5 rounded-lg border p-4">
                   <p className="text-feedback-danger text-xs">{actionError}</p>
                 </div>
               )}
@@ -344,12 +338,12 @@ export function DreamDetailPane({
               {dream.founder_thread_id ? (
                 <Link
                   to={orgSlug ? `/orgs/${orgSlug}/threads/${dream.founder_thread_id}` : '#'}
-                  className="text-accent text-sm hover:underline inline-block"
+                  className="text-accent-default inline-block text-sm hover:underline"
                 >
                   {DREAM_STRINGS.openReflectionThread} &rarr;
                 </Link>
               ) : (
-                <p className="text-xs text-text-disabled italic">
+                <p className="text-text-muted text-xs italic">
                   {DREAM_STRINGS.noReflectionThread}
                 </p>
               )}

@@ -1,12 +1,28 @@
 /**
- * DreamsPage — the reflection feed (§4.8).
+ * DreamsPage — the reflection feed (§4.8). Direction-A Pasture fidelity
+ * pass (THR-030 Leg B Batch 9).
  *
- * Lists dreams with card routing: .dream-card -> dream detail,
+ * Lists dreams with Pasture card routing: dream card -> dream detail,
  * .kb-cand -> KB candidate detail (within the dream detail drawer),
  * "Open reflection thread" -> the dream's thread.
  *
- * States: Loading (skeleton), Empty ("No dreams yet"),
+ * Pasture vocabulary:
+ *   Cards: bg-surface + border-border-default + shadow-pasture-sm + rounded-lg
+ *   Heading: font-display serif (Newsreader) page heading + PageHeader
+ *   Dream ID / timestamps / counts: font-mono tabular-nums
+ *   Status pills: rounded-full bg-accent-soft/text-accent-text (completed),
+ *     bg-danger-soft/text-feedback-danger (failed/timeout)
+ *   List rail: w-rail (244px)
+ *   Semantic text: text-text-primary / secondary / muted — no hardcoded colors
+ *   Calm empty state: EmptyState with display heading
+ *
+ * States: Loading (skeleton cards), Empty ("No dreams yet"),
  * Quiet (positive first-class per §2.5.5), Error (retry).
+ *
+ * HONESTY FENCE: renders ONLY fields from DreamRecord data model
+ * (dream_id, agent_name, local_date, status, summary, new_learnings_count,
+ * kb_candidate_count, founder_thread_id, error). No fabricated provenance,
+ * sub-states, scores, or schedule glance fields not on the model.
  */
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
@@ -15,22 +31,23 @@ import { useDreamsList } from '@/hooks/dreams';
 import { Button } from '@/design-system/primitives/Button';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
+import { PageHeader } from '@/design-system/patterns/PageHeader';
 import { cn } from '@/lib/utils';
 import { DreamDetailPane } from './DreamDetailPane';
 import { DREAM_STRINGS } from './strings';
 import type { DreamRecord } from '@/hooks/dreams';
 
 /* ------------------------------------------------------------------ */
-/*  Status badge                                                       */
+/*  Status pill                                                        */
 /* ------------------------------------------------------------------ */
 
-function statusColor(status: string): string {
+function statusPill(status: string): string {
   switch (status) {
-    case 'completed': return 'bg-accent/10 text-accent';
-    case 'failed': case 'timeout': return 'bg-feedback-danger/10 text-feedback-danger';
-    case 'missed': case 'skipped': return 'bg-bg-raised text-text-muted';
-    case 'running': return 'bg-feedback-success/10 text-feedback-success';
-    default: return 'bg-bg-raised text-text-muted';
+    case 'completed': return 'bg-accent-soft text-accent-text';
+    case 'failed': case 'timeout': return 'bg-danger-soft text-feedback-danger';
+    case 'missed': case 'skipped': return 'bg-surface-sunken text-text-muted';
+    case 'running': return 'bg-accent-soft text-accent-text';
+    default: return 'bg-surface-sunken text-text-muted';
   }
 }
 
@@ -50,7 +67,7 @@ function relativeAge(iso: string): string {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Dream card                                                         */
+/*  Dream card — Pasture card pattern                                  */
 /* ------------------------------------------------------------------ */
 
 function DreamCard({
@@ -72,29 +89,29 @@ function DreamCard({
         type="button"
         onClick={onClick}
         className={cn(
-          'dream-card w-full text-left p-4 border-b border-border-subtle',
-          'hover:bg-surface-sunken transition-colors',
-          active && 'bg-surface-sunken',
+          'bg-surface border border-border-default shadow-pasture-sm hover:bg-surface-sunken',
+          'w-full text-left p-4 rounded-lg transition-colors',
+          active && 'ring-2 ring-accent-soft',
         )}
       >
-        {/* Header row */}
-        <div className="flex items-center gap-2 mb-1">
-          <CrescentMoonBadge className="w-3.5 h-3.5" />
-          <span className="text-xs font-mono text-text-primary font-medium">{dream.dream_id}</span>
-          <span className="text-xs text-text-muted">·</span>
-          <span className="text-xs text-text-muted">{dream.agent_name}</span>
+        {/* Header row — dream ID + agent + status pill */}
+        <div className="mb-1.5 flex items-center gap-2">
+          <CrescentMoonBadge className="h-3.5 w-3.5" />
+          <span className="text-text-primary font-mono text-xs font-medium tabular-nums">{dream.dream_id}</span>
+          <span className="text-text-muted text-xs">·</span>
+          <span className="text-text-secondary text-xs">{dream.agent_name}</span>
           <span className={cn(
             'ml-auto text-[10px] px-1.5 py-0.5 rounded-full font-medium uppercase tracking-wide',
-            statusColor(dream.status),
+            statusPill(dream.status),
           )}>
             {DREAM_STRINGS.statusLabel(dream.status)}
           </span>
         </div>
 
-        {/* Quote / summary */}
+        {/* Quote / summary — italic with accent left border */}
         {dream.summary && (
           <p className={cn(
-            'text-sm italic border-l-2 border-accent pl-3 mb-2',
+            'text-sm italic border-l-2 border-accent-default pl-3 mb-2',
             'text-text-secondary line-clamp-2',
           )}>
             {dream.summary}
@@ -103,13 +120,13 @@ function DreamCard({
 
         {/* Quiet-dream state — positive first-class */}
         {isQuiet && (
-          <p className="text-xs text-text-muted italic mb-2">
+          <p className="text-text-muted mb-2 text-xs italic">
             {DREAM_STRINGS.quietTitle}
           </p>
         )}
 
-        {/* Stat strip */}
-        <div className="flex items-center gap-3 text-xs text-text-muted">
+        {/* Stat strip — font-mono tabular-nums for counts */}
+        <div className="text-text-muted flex items-center gap-3 font-mono text-xs tabular-nums">
           <span>{dream.local_date}</span>
           <span>·</span>
           <span>{DREAM_STRINGS.learningsCount(dream.new_learnings_count)}</span>
@@ -125,7 +142,7 @@ function DreamCard({
 
         {/* Error indicator */}
         {dream.error && (
-          <p className="text-xs text-feedback-danger mt-1 font-mono truncate">{dream.error}</p>
+          <p className="text-feedback-danger mt-1 truncate font-mono text-xs">{dream.error}</p>
         )}
 
         {/* Open reflection thread link */}
@@ -133,13 +150,13 @@ function DreamCard({
           {dream.founder_thread_id ? (
             <Link
               to={`/orgs/${slug}/threads/${dream.founder_thread_id}`}
-              className="text-xs text-accent hover:underline inline-block"
+              className="text-accent-default inline-block text-xs hover:underline"
               onClick={(e) => e.stopPropagation()}
             >
               {DREAM_STRINGS.openReflectionThread} &rarr;
             </Link>
           ) : (
-            <span className="text-xs text-text-disabled italic">
+            <span className="text-text-muted text-xs italic">
               {DREAM_STRINGS.noReflectionThread}
             </span>
           )}
@@ -150,21 +167,24 @@ function DreamCard({
 }
 
 /* ------------------------------------------------------------------ */
-/*  Loading skeleton                                                   */
+/*  Loading skeleton — Pasture card-shaped                             */
 /* ------------------------------------------------------------------ */
 
 function LoadingSkeleton(): JSX.Element {
   return (
-    <div className="animate-pulse space-y-4 p-4">
+    <div className="flex flex-col gap-3 p-4" aria-label="Loading dreams">
       {[1, 2, 3].map((i) => (
-        <div key={i} className="space-y-2">
+        <div
+          key={i}
+          className="bg-surface border-border-default shadow-pasture-sm animate-pulse space-y-2 rounded-lg border p-4"
+        >
           <div className="flex items-center gap-2">
-            <div className="bg-bg-raised h-3 w-3 rounded-full" />
-            <div className="bg-bg-raised h-3 w-16 rounded" />
-            <div className="bg-bg-raised h-3 w-24 rounded" />
+            <div className="bg-surface-sunken h-3.5 w-3.5 rounded-full" />
+            <div className="bg-surface-sunken h-3 w-16 rounded" />
+            <div className="bg-surface-sunken h-3 w-24 rounded" />
           </div>
-          <div className="bg-bg-raised h-3 w-3/4 rounded" />
-          <div className="bg-bg-raised h-3 w-1/2 rounded" />
+          <div className="bg-surface-sunken h-3 w-3/4 rounded" />
+          <div className="bg-surface-sunken h-3 w-1/2 rounded" />
         </div>
       ))}
     </div>
@@ -185,17 +205,19 @@ export function DreamsPage(): JSX.Element {
 
   return (
     <div className="flex h-full">
-      {/* List */}
-      <main className="flex-1 overflow-y-auto border-r border-border-subtle bg-surface-canvas">
-        <header className="border-b border-border-subtle p-4">
-          <h1 className="text-h2 text-text-primary">{DREAM_STRINGS.pageTitle}</h1>
-          <p className="text-text-muted text-sm">{DREAM_STRINGS.pageSubtitle}</p>
+      {/* List rail — w-rail (244px) */}
+      <main className="w-rail border-border-default bg-surface shrink-0 overflow-y-auto border-r">
+        <header className="border-border-default border-b p-4">
+          <PageHeader
+            title={<span className="font-display">{DREAM_STRINGS.pageTitle}</span>}
+            meta={DREAM_STRINGS.pageSubtitle}
+          />
         </header>
 
         {dreamsQ.isLoading ? (
           <LoadingSkeleton />
         ) : dreamsQ.isError ? (
-          <div className="p-4 text-center space-y-3">
+          <div className="space-y-3 p-4 text-center">
             <p className="text-feedback-danger text-sm">{DREAM_STRINGS.errorTitle}</p>
             <Button
               size="sm"
@@ -215,25 +237,31 @@ export function DreamsPage(): JSX.Element {
             body={DREAM_STRINGS.emptyBody}
           />
         ) : (
-          <ul className="divide-y divide-border-subtle">
-            {dreams.map((d) => (
-              <DreamCard
-                key={d.dream_id}
-                dream={d}
-                slug={orgSlug ?? ''}
-                active={selectedDreamId === d.dream_id}
-                onClick={() =>
-                  setSelectedDreamId((prev) =>
-                    prev === d.dream_id ? null : d.dream_id,
-                  )
-                }
-              />
-            ))}
-          </ul>
+          <div className="flex flex-col gap-1 p-3">
+            {/* Count eyebrow — Pasture label */}
+            <p className="text-text-secondary mb-1 px-1 text-xs font-semibold tracking-wider uppercase">
+              {dreams.length} dream{dreams.length !== 1 ? 's' : ''}
+            </p>
+            <ul className="flex flex-col gap-3">
+              {dreams.map((d) => (
+                <DreamCard
+                  key={d.dream_id}
+                  dream={d}
+                  slug={orgSlug ?? ''}
+                  active={selectedDreamId === d.dream_id}
+                  onClick={() =>
+                    setSelectedDreamId((prev) =>
+                      prev === d.dream_id ? null : d.dream_id,
+                    )
+                  }
+                />
+              ))}
+            </ul>
+          </div>
         )}
       </main>
 
-      {/* Detail drawer */}
+      {/* Detail drawer — fills remaining space */}
       {selectedDreamId && (
         <DreamDetailPane
           dreamId={selectedDreamId}
