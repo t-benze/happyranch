@@ -1,13 +1,17 @@
 /**
- * Founder dashboard.
+ * Founder dashboard — Direction-A Pasture Home surface (THR-030 Leg B).
  *
  * Single useDashboardSummary() query powers the whole page. Left column
  * is read-only (heartbeat + narrative + counters + activity), right
  * column is interactive (escalation inbox + updates feed).
  *
+ * Design: a-dashboard.html reference from the Direction-A design bundle.
+ * Pasture tokens (tokens.css) provide the full warm/green OKLCH palette
+ * with Hanken Grotesk UI, Newsreader display serif, JetBrains Mono.
+ *
  * Spec: docs/superpowers/specs/2026-05-30-dashboard-overhaul-design.md
  */
-import { useState, type ReactNode } from 'react';
+import { useState, useMemo, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useDashboardSummary } from '@/hooks/dashboard';
@@ -20,6 +24,12 @@ import { NarrativeParagraph } from './components/NarrativeParagraph';
 import { OrgPulseTable } from './components/OrgPulseTable';
 import { EscalationInboxRow } from './components/EscalationInboxRow';
 import { TopTokenThreadsPanel } from './components/TopTokenThreadsPanel';
+
+function greeting(hour: number): string {
+  if (hour < 12) return 'Good morning';
+  if (hour < 18) return 'Good afternoon';
+  return 'Good evening';
+}
 
 function relativeAge(iso: string, now: Date): string {
   const seconds = Math.max(
@@ -38,11 +48,12 @@ interface PanelProps {
   children: ReactNode;
 }
 
+/** Direction-A Pasture card — matches ds.css .card (bg-surface, rounded-lg 18px, soft shadow). */
 function Panel({ title, meta, children }: PanelProps): JSX.Element {
   return (
-    <section className="border-border-subtle bg-surface-sunken rounded-md border p-4">
-      <header className="mb-3 flex items-baseline justify-between">
-        <h2 className="text-text-muted text-xs font-medium tracking-wider uppercase">
+    <section className="border-border-default bg-surface shadow-pasture-sm rounded-lg border p-5">
+      <header className="mb-4 flex items-baseline justify-between">
+        <h2 className="text-text-secondary text-xs font-semibold tracking-wider uppercase">
           {title}
         </h2>
         {meta ? (
@@ -65,6 +76,10 @@ export function DashboardPage(): JSX.Element {
   const q = useDashboardSummary();
   const [expandedEscId, setExpandedEscId] = useState<string | null>(null);
   const slug = useActiveSlug();
+  const greetingText = useMemo(
+    () => greeting(new Date(q.data?.server_now ?? Date.now()).getUTCHours()),
+    [q.data?.server_now],
+  );
 
   if (q.isLoading) {
     return <p className="text-text-muted p-6 text-sm">Loading dashboard…</p>;
@@ -112,8 +127,12 @@ export function DashboardPage(): JSX.Element {
 
   return (
     <div className="bg-surface-canvas h-full overflow-y-auto">
-      <div className="p-6">
-        <div className="text-text-muted mb-4 flex items-baseline gap-3 font-mono text-xs">
+      <div className="mx-auto max-w-5xl p-6">
+        {/* Greeting heading — Direction-A serif, ds.css .h1 parity */}
+        <h1 className="font-display text-display text-text-primary mb-1 font-medium">
+          {greetingText}, founder
+        </h1>
+        <div className="text-text-muted mb-8 flex items-baseline gap-3 font-mono text-xs">
           <span className="text-text-primary font-medium">
             {now.toLocaleDateString(undefined, {
               weekday: 'short',
@@ -122,11 +141,13 @@ export function DashboardPage(): JSX.Element {
             })}
           </span>
           <span>·</span>
-          <span>Day {s.org_age_days} of org</span>
+          <span>Day {s.org_age_days}</span>
           <span className="grow" />
-          <span>{s.narrative_counts.agents_active_now} agents active now</span>
+          <span>{s.narrative_counts.agents_active_now} agents active</span>
           <span>·</span>
-          <span>spend · ${s.narrative_counts.spend_today_usd.toFixed(2)} today</span>
+          <span>
+            spend · ${s.narrative_counts.spend_today_usd.toFixed(2)} today
+          </span>
         </div>
 
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -137,53 +158,48 @@ export function DashboardPage(): JSX.Element {
               <div className="mt-3">
                 <NarrativeParagraph counts={s.narrative_counts} />
               </div>
-              <div className="border-border-subtle mt-4 flex justify-between border-t pt-3 font-mono text-xs">
-                <div>
-                  <div className="text-tier-green font-medium">
+              {/* Counter tiles — ds.css display-num / mono pattern */}
+              <div className="border-border-default mt-5 grid grid-cols-5 gap-3 border-t pt-4">
+                <div className="text-center">
+                  <div className="font-display text-h1 text-tier-green font-medium tabular-nums">
                     {s.narrative_counts.completed_today}
                   </div>
-                  <div className="text-text-muted">completed</div>
+                  <div className="text-text-muted text-overline mt-1">Completed</div>
                 </div>
-                <div>
+                <div className="text-center">
                   <div
                     className={
                       s.narrative_counts.failed_today
-                        ? 'text-tier-red font-medium'
-                        : 'text-text-muted'
+                        ? 'font-display text-h1 text-tier-red font-medium tabular-nums'
+                        : 'font-display text-h1 text-text-muted font-medium tabular-nums'
                     }
                   >
                     {s.narrative_counts.failed_today}
                   </div>
-                  <div className="text-text-muted">failed</div>
+                  <div className="text-text-muted text-overline mt-1">Failed</div>
                 </div>
-                <div>
-                  <div
-                    className={
-                      s.narrative_counts.escalated_open
-                        ? 'text-tier-yellow font-medium'
-                        : 'text-text-muted'
-                    }
-                  >
-                    {s.narrative_counts.escalated_open}
+                <div className="text-center">
+                  <div className="font-display text-h1 text-tier-green font-medium tabular-nums">
+                    {s.narrative_counts.agents_active_now}
                   </div>
-                  <div className="text-text-muted">escalated</div>
+                  <div className="text-text-muted text-overline mt-1">Active</div>
                 </div>
-                <div>
-                  <div className="text-text-primary font-medium">
+                <div className="text-center">
+                  <div className="font-display text-h1 text-text-primary font-medium tabular-nums">
                     +{s.narrative_counts.kb_added_today}
                   </div>
-                  <div className="text-text-muted">kb entries</div>
+                  <div className="text-text-muted text-overline mt-1">KB entries</div>
                 </div>
-                <div>
-                  <div className="text-text-primary font-medium">
+                <div className="text-center">
+                  <div className="text-h2 text-text-primary font-mono font-medium tabular-nums">
                     ${s.narrative_counts.spend_today_usd.toFixed(2)}
                   </div>
-                  <div className="text-text-muted">spend</div>
+                  <div className="text-text-muted text-overline mt-1">Spend today</div>
                 </div>
               </div>
             </Panel>
 
-            <Panel title="Org pulse · last 7 days" meta="acceptance">
+            <Panel title="Org pulse · last 7d" meta="acceptance %">
               <OrgPulseTable rows={s.org_pulse} />
             </Panel>
 

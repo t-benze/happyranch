@@ -79,6 +79,16 @@
       "example": "<Composer onSend={(md) => {}} helper='Enter to send · Shift+Enter for new line' agents={[]} threadId='THR-001' />"
     },
     {
+      "name": "CrescentMoonBadge",
+      "layer": "pattern",
+      "import": "@/design-system/patterns/CrescentMoonBadge",
+      "variants": {},
+      "consumes": [
+        "components.badge"
+      ],
+      "example": "<CrescentMoonBadge />"
+    },
+    {
       "name": "DashboardLayout",
       "layer": "layout",
       "import": "@/design-system/layouts/DashboardLayout",
@@ -165,16 +175,6 @@
         "components.kbd_chip"
       ],
       "example": "<HelpSheet open={false} onClose={() => {}} shortcuts={[{ keys: ['?'], description: 'Help' }]} />"
-    },
-    {
-      "name": "CrescentMoonBadge",
-      "layer": "pattern",
-      "import": "@/design-system/patterns/CrescentMoonBadge",
-      "variants": {},
-      "consumes": [
-        "components.badge"
-      ],
-      "example": "<CrescentMoonBadge />"
     },
     {
       "name": "IdBadge",
