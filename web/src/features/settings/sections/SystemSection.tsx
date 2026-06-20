@@ -35,17 +35,17 @@ const ROWS: { key: keyof SystemSettings; label: string }[] = [
 export function SystemSection({ sys }: Props): JSX.Element {
   return (
     <section>
-      <div className="border-border divide-border divide-y rounded-md border">
+      <div className="bg-surface border-border-default shadow-pasture-sm divide-border-default divide-y rounded-lg border">
         {ROWS.map(({ key, label }) => {
           const entry = sys[key];
           const badge = entry.restart_required ? 'Restart required' : undefined;
           return (
             <div key={key} className="flex items-center justify-between px-3 py-2 text-sm">
-              <span className="text-fg-muted">{label}</span>
+              <span className="text-text-secondary">{label}</span>
               <span className="flex items-center gap-2">
-                <span className="text-fg">{String(entry.value)}</span>
+                <span className="text-text-primary font-mono tabular-nums text-xs">{String(entry.value)}</span>
                 {badge && (
-                  <span className="bg-bg-raised text-accent rounded px-1.5 py-0.5 text-xs font-medium">
+                  <span className="bg-accent-soft text-accent-text rounded-full px-2 py-0.5 text-xs font-medium">
                     {badge}
                   </span>
                 )}

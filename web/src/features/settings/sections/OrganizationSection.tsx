@@ -324,7 +324,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
             min={1}
             value={fields.threadsCap}
             onChange={(e) => update('threadsCap', e.target.value)}
-            className="bg-bg-raised border-border text-fg w-28 rounded border px-2 py-0.5 text-sm"
+            className="bg-surface-sunken border-border-default text-text-primary w-28 rounded-lg border px-2 py-0.5 text-sm"
           />
         </EditableRow>
         <EditableRow label="Invocation timeout (s)" badge="Applies live">
@@ -334,7 +334,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
             value={fields.threadsTimeout}
             onChange={(e) => update('threadsTimeout', e.target.value)}
             placeholder="none"
-            className="bg-bg-raised border-border text-fg w-28 rounded border px-2 py-0.5 text-sm"
+            className="bg-surface-sunken border-border-default text-text-primary w-28 rounded-lg border px-2 py-0.5 text-sm"
           />
         </EditableRow>
       </div>

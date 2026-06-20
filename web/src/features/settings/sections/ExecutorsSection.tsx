@@ -8,18 +8,18 @@
 export function ExecutorsSection(): JSX.Element {
   return (
     <section className="space-y-4">
-      <div className="border-border bg-bg-subtle rounded-md border p-4">
-        <h3 className="text-sm font-medium">Executor configuration</h3>
-        <p className="text-fg-muted mt-1 text-sm">
+      <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+        <h3 className="text-sm font-medium text-text-primary">Executor configuration</h3>
+        <p className="text-text-secondary mt-1 text-sm">
           Executor paths and settings are configured in the daemon config file
-          (<code className="text-fg-subtle bg-bg-raised rounded px-1 text-xs">~/.happyranch/config.yaml</code>).
+          (<code className="text-text-secondary bg-surface-sunken rounded px-1 text-xs font-mono">~/.happyranch/config.yaml</code>).
           Changes require a daemon restart.
         </p>
       </div>
 
-      <div className="border-border bg-bg-subtle rounded-md border p-4">
-        <h3 className="text-sm font-medium">Per-agent executor assignment</h3>
-        <p className="text-fg-muted mt-1 text-sm">
+      <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+        <h3 className="text-sm font-medium text-text-primary">Per-agent executor assignment</h3>
+        <p className="text-text-secondary mt-1 text-sm">
           Assign executors to individual agents from the{' '}
           <a href="../agents" className="text-accent hover:underline">
             Agents page

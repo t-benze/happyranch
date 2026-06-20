@@ -19,9 +19,9 @@ const STATE_LABEL: Record<AssistantState, string> = {
 };
 
 const STATE_BADGE: Record<AssistantState, string> = {
-  uninitialized: 'bg-bg-raised text-fg-muted',
-  configured: 'bg-feedback-success/15 text-feedback-success',
-  stale_or_broken: 'bg-feedback-danger/15 text-feedback-danger',
+  uninitialized: 'bg-surface-sunken text-text-muted',
+  configured: 'bg-accent-soft text-accent-text',
+  stale_or_broken: 'bg-danger-soft text-feedback-danger',
 };
 
 export function AssistantSection(): JSX.Element {
@@ -35,30 +35,30 @@ export function AssistantSection(): JSX.Element {
   return (
     <section>
       {statusQuery.isLoading ? (
-        <p className="text-fg-muted text-sm">Loading…</p>
+        <p className="text-text-secondary text-sm">Loading…</p>
       ) : statusQuery.isError || !status ? (
-        <p className="text-tier-red text-sm">Could not load assistant status.</p>
+        <p className="text-feedback-danger text-sm">Could not load assistant status.</p>
       ) : (
-        <div className="border-border bg-bg-subtle space-y-3 rounded-md border p-4">
+        <div className="bg-surface border-border-default shadow-pasture-sm space-y-3 rounded-lg border p-4">
           {/* Status badge + executor/workspace */}
           <div className="flex items-center gap-2">
-            <span className="text-fg-muted text-sm">State</span>
+            <span className="text-text-secondary text-sm">State</span>
             <span
-              className={`rounded px-2 py-0.5 text-xs font-medium ${STATE_BADGE[status.state]}`}
+              className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATE_BADGE[status.state]}`}
             >
               {STATE_LABEL[status.state]}
             </span>
           </div>
           <dl className="flex flex-col gap-1 text-sm">
             <div className="flex gap-4">
-              <dt className="text-fg-muted w-24 shrink-0">Executor</dt>
-              <dd className="text-fg break-all">
+              <dt className="text-text-secondary w-24 shrink-0">Executor</dt>
+              <dd className="text-text-primary break-all">
                 {status.selected_executor ?? '—'}
               </dd>
             </div>
             <div className="flex gap-4">
-              <dt className="text-fg-muted w-24 shrink-0">Workspace</dt>
-              <dd className="text-fg break-all">
+              <dt className="text-text-secondary w-24 shrink-0">Workspace</dt>
+              <dd className="text-text-primary break-all">
                 {status.workspace_path ?? '—'}
               </dd>
             </div>

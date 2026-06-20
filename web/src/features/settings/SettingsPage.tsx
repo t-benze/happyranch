@@ -44,18 +44,18 @@ export function SettingsPage(): JSX.Element {
 
   return (
     <div className="bg-surface-canvas flex h-full flex-col">
-      <header className="border-border-subtle border-b p-4">
+      <header className="border-border-default border-b p-4">
         <PageHeader
-          title="Settings"
+          title={<span className="font-display">Settings</span>}
           meta="Daemon and org configuration."
         />
       </header>
 
       {settingsQuery.isLoading && (
-        <div className="text-fg-muted flex-1 p-6 text-sm">Loading settings…</div>
+        <div className="text-text-secondary flex-1 p-6 text-sm">Loading settings…</div>
       )}
       {settingsQuery.isError && (
-        <div className="text-tier-red flex-1 p-6 text-sm">
+        <div className="text-feedback-danger flex-1 p-6 text-sm">
           Could not load settings.
           {settingsQuery.error?.message && <> {settingsQuery.error.message}</>}
         </div>
@@ -88,13 +88,14 @@ export function SettingsPage(): JSX.Element {
 /**
  * SettingsSubNav — sticky left rail of section links.
  * Each link navigates to /orgs/:slug/settings/:section.
+ * Active link uses Pasture rounded-full pill style.
  */
 function SettingsSubNav(): JSX.Element {
   const { slug } = useParams<{ slug: string }>();
 
   return (
-    <aside className="border-border-subtle bg-surface-sunken w-52 shrink-0 overflow-y-auto border-r p-3">
-      <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+    <aside className="border-border-default bg-surface-sunken w-52 shrink-0 overflow-y-auto border-r p-3">
+      <h3 className="text-overline text-text-secondary mb-2 tracking-wider uppercase">
         Configuration
       </h3>
       <ul className="space-y-0.5">
@@ -103,10 +104,10 @@ function SettingsSubNav(): JSX.Element {
             <NavLink
               to={`/orgs/${slug}/settings/${s.key}`}
               className={({ isActive }) =>
-                `block w-full rounded px-2 py-1 text-left text-sm ${
+                `block w-full rounded-full px-3 py-1 text-left text-sm transition-colors ${
                   isActive
-                    ? 'bg-accent-muted text-fg'
-                    : 'text-fg-muted hover:bg-surface-raised hover:text-fg'
+                    ? 'bg-accent-soft text-accent-text'
+                    : 'text-text-secondary hover:bg-surface-hover hover:text-text-primary'
                 }`
               }
             >
@@ -135,7 +136,7 @@ import type { SystemSettings, OrgSettings } from '@/lib/api/types';
 function AssistantPanel(): JSX.Element {
   return (
     <div className="max-w-2xl p-6">
-      <h2 className="mb-4 text-lg font-semibold">System Assistant</h2>
+      <h2 className="font-display mb-4 text-lg font-semibold">System Assistant</h2>
       <AssistantSection />
     </div>
   );
@@ -144,8 +145,8 @@ function AssistantPanel(): JSX.Element {
 function SystemPanel({ sys }: { sys: SystemSettings }): JSX.Element {
   return (
     <div className="max-w-2xl p-6">
-      <h2 className="mb-4 text-lg font-semibold">System</h2>
-      <p className="text-fg-muted mb-4 text-sm">
+      <h2 className="font-display mb-4 text-lg font-semibold">System</h2>
+      <p className="text-text-secondary mb-4 text-sm">
         Daemon-wide settings. These are read-only — changes require a restart and
         must be made in the daemon config file.
       </p>
@@ -157,8 +158,8 @@ function SystemPanel({ sys }: { sys: SystemSettings }): JSX.Element {
 function OrganizationPanel({ org }: { org: OrgSettings }): JSX.Element {
   return (
     <div className="max-w-2xl p-6">
-      <h2 className="mb-4 text-lg font-semibold">Organization</h2>
-      <p className="text-fg-muted mb-4 text-sm">
+      <h2 className="font-display mb-4 text-lg font-semibold">Organization</h2>
+      <p className="text-text-secondary mb-4 text-sm">
         Org-level settings. Changes apply live — the daemon hot-reloads them
         automatically.
       </p>
@@ -170,7 +171,7 @@ function OrganizationPanel({ org }: { org: OrgSettings }): JSX.Element {
 function AgentsPanel(): JSX.Element {
   return (
     <div className="max-w-2xl p-6">
-      <h2 className="mb-4 text-lg font-semibold">Agents</h2>
+      <h2 className="font-display mb-4 text-lg font-semibold">Agents</h2>
       <AgentsSection />
     </div>
   );
@@ -179,7 +180,7 @@ function AgentsPanel(): JSX.Element {
 function ExecutorsPanel(): JSX.Element {
   return (
     <div className="max-w-2xl p-6">
-      <h2 className="mb-4 text-lg font-semibold">Executors</h2>
+      <h2 className="font-display mb-4 text-lg font-semibold">Executors</h2>
       <ExecutorsSection />
     </div>
   );
@@ -188,8 +189,8 @@ function ExecutorsPanel(): JSX.Element {
 function UsagePanel(): JSX.Element {
   return (
     <div className="max-w-2xl p-6">
-      <h2 className="mb-4 text-lg font-semibold">Usage</h2>
-      <p className="text-fg-muted mb-4 text-sm">
+      <h2 className="font-display mb-4 text-lg font-semibold">Usage</h2>
+      <p className="text-text-secondary mb-4 text-sm">
         Token consumption across the org.
       </p>
       <UsageSection />
