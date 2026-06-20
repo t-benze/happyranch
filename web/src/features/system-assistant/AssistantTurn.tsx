@@ -53,22 +53,22 @@ export function AssistantTurn({
       {ranMatches.map((cmd, i) => (
         <div
           key={`ran-${i}`}
-          className="border-border bg-bg-subtle mb-2 w-full rounded border px-3 py-2 font-mono text-xs"
+          className="border-border-default bg-surface-sunken mb-2 w-full rounded-lg border px-3 py-2 font-mono text-xs"
           aria-label={`ran: ${cmd}`}
         >
-          <span className="text-fg-subtle">ran: </span>
-          <span className="text-fg">{cmd}</span>
+          <span className="text-text-muted">ran: </span>
+          <span className="text-text-primary">{cmd}</span>
         </div>
       ))}
 
-      {/* Message bubble */}
+      {/* Message bubble — Pasture surface tokens, accent-muted for user */}
       {displayText && (
         <div
           className={[
             'max-w-[85%] rounded-lg px-3 py-2 text-sm',
             isUser
-              ? 'bg-accent-muted border border-accent-ring text-fg'
-              : 'bg-bg-raised border border-border-subtle text-fg',
+              ? 'bg-accent-muted border border-accent-ring text-text-primary'
+              : 'bg-surface-raised border border-border-default text-text-primary',
           ].join(' ')}
         >
           {isUser ? (
@@ -79,8 +79,8 @@ export function AssistantTurn({
         </div>
       )}
 
-      {/* Timestamp */}
-      <span className="text-fg-subtle mt-0.5 text-xs">
+      {/* Timestamp — mono tabular-nums for alignment */}
+      <span className="text-text-muted mt-0.5 font-mono text-xs tabular-nums">
         {fmtTime(message.timestamp)}
       </span>
     </div>

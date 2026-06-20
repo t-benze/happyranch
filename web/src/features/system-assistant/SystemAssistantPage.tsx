@@ -74,15 +74,15 @@ export function SystemAssistantPage(): JSX.Element {
     <div className="bg-surface-canvas h-full overflow-y-auto p-4">
       <div className="mx-auto flex max-w-3xl flex-col gap-6">
         <header>
-          <h1 className="text-fg text-lg font-semibold">System Assistant</h1>
-          <p className="text-fg-muted text-sm">
+          <h1 className="text-text-primary font-display text-lg">System Assistant</h1>
+          <p className="text-text-secondary text-sm">
             A single agentic CLI bound to this runtime. Configure it here, then
             attach an in-browser terminal.
           </p>
         </header>
 
         {statusQuery.isLoading ? (
-          <p className="text-fg-muted">Loading…</p>
+          <p className="text-text-secondary">Loading…</p>
         ) : statusQuery.isError || !status ? (
           <p role="alert" className="text-feedback-danger text-sm">
             Could not load assistant status.
@@ -94,7 +94,7 @@ export function SystemAssistantPage(): JSX.Element {
             <RegisterExecutorSection currentExecutor={status.selected_executor} />
             {status.state === 'configured' && (
               <section aria-label="Assistant terminal" className="flex flex-col gap-2">
-                <h2 className="text-fg text-sm font-semibold">Terminal</h2>
+                <h2 className="text-text-primary font-display text-sm">Terminal</h2>
                 <AssistantTerminal />
               </section>
             )}
@@ -109,24 +109,24 @@ function StatusCard({ status }: { status: AssistantStatus }): JSX.Element {
   return (
     <section
       aria-label="Assistant status"
-      className="border-border bg-bg-subtle flex flex-col gap-2 rounded-md border p-4"
+      className="border-border-default bg-surface-raised shadow-pasture-sm flex flex-col gap-2 rounded-lg border p-4"
     >
       <div className="flex items-center gap-2">
-        <span className="text-fg-muted text-sm">State</span>
+        <span className="text-text-secondary text-sm">State</span>
         <span
-          className={`rounded px-2 py-0.5 text-xs font-medium ${STATE_BADGE[status.state]}`}
+          className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATE_BADGE[status.state]}`}
         >
           {STATE_LABEL[status.state]}
         </span>
       </div>
       <dl className="flex flex-col gap-1 text-sm">
         <div className="flex gap-4">
-          <dt className="text-fg-muted w-24 shrink-0">Executor</dt>
-          <dd className="text-fg break-all">{status.selected_executor ?? '—'}</dd>
+          <dt className="text-text-secondary w-24 shrink-0">Executor</dt>
+          <dd className="text-text-primary font-mono break-all tabular-nums">{status.selected_executor ?? '—'}</dd>
         </div>
         <div className="flex gap-4">
-          <dt className="text-fg-muted w-24 shrink-0">Workspace</dt>
-          <dd className="text-fg break-all">{status.workspace_path ?? '—'}</dd>
+          <dt className="text-text-secondary w-24 shrink-0">Workspace</dt>
+          <dd className="text-text-primary break-all">{status.workspace_path ?? '—'}</dd>
         </div>
       </dl>
       {status.state === 'stale_or_broken' && status.detail && (
@@ -158,7 +158,7 @@ function SetupActions({ status }: { status: AssistantStatus }): JSX.Element {
 
       {status.state === 'uninitialized' && (
         <div className="flex flex-col gap-2">
-          <p className="text-fg-muted text-sm">
+          <p className="text-text-secondary text-sm">
             Prepare the registration workspace, then either register an executor
             below or launch your CLI in the workspace and let it self-register.
           </p>
@@ -168,16 +168,16 @@ function SetupActions({ status }: { status: AssistantStatus }): JSX.Element {
             </Button>
           </div>
           {showInstructions && (
-            <div className="border-border bg-bg-raised rounded-md border p-3 text-sm">
-              <p className="text-fg font-medium">Self-registration</p>
-              <ol className="text-fg-muted mt-1 list-decimal pl-5">
+            <div className="border-border-default bg-surface-sunken rounded-lg border p-3 text-sm">
+              <p className="text-text-primary font-medium">Self-registration</p>
+              <ol className="text-text-secondary mt-1 list-decimal pl-5">
                 <li>
                   Open your agentic CLI (claude, codex, opencode, pi, …) in the
                   workspace shown above.
                 </li>
                 <li>
                   Ask it to register itself; it runs{' '}
-                  <code className="text-fg">happyranch assistant register</code>.
+                  <code className="text-text-primary font-mono">happyranch assistant register</code>.
                 </li>
               </ol>
             </div>
@@ -187,7 +187,7 @@ function SetupActions({ status }: { status: AssistantStatus }): JSX.Element {
 
       {status.state === 'stale_or_broken' && (
         <div className="flex flex-col gap-2">
-          <p className="text-fg-muted text-sm">
+          <p className="text-text-secondary text-sm">
             The workspace drifted from the saved config. Repair rebuilds it from
             the recorded executor without clearing your registration.
           </p>
@@ -201,7 +201,7 @@ function SetupActions({ status }: { status: AssistantStatus }): JSX.Element {
 
       {status.state === 'configured' && (
         <div className="flex flex-col gap-2">
-          <p className="text-fg-muted text-sm">
+          <p className="text-text-secondary text-sm">
             Reconfiguring closes any open sessions and clears the saved config so
             you can register a different executor from scratch.
           </p>
@@ -238,7 +238,7 @@ function ReconfigureDialog({
         <DialogHeader>
           <DialogTitle>Reconfigure the assistant?</DialogTitle>
         </DialogHeader>
-        <p className="text-fg-muted text-sm">
+        <p className="text-text-secondary text-sm">
           This closes all open assistant sessions and clears the saved
           configuration. You will need to register an executor again.
         </p>
@@ -302,12 +302,12 @@ function RegisterExecutorSection({
   return (
     <section
       aria-label="Register executor"
-      className="border-border bg-bg-subtle flex flex-col gap-3 rounded-md border p-4"
+      className="border-border-default bg-surface-raised shadow-pasture-sm flex flex-col gap-3 rounded-lg border p-4"
     >
-      <h2 className="text-fg text-sm font-semibold">
+      <h2 className="text-text-primary font-display text-sm">
         {currentExecutor ? 'Switch executor' : 'Register executor'}
       </h2>
-      <p className="text-fg-muted text-sm">
+      <p className="text-text-secondary text-sm">
         Re-registering preserves the workspace — the server derives it from the
         runtime root, not from any input here — and only one executor is active
         at a time, so registering replaces the current one.
@@ -368,7 +368,7 @@ function RegisterExecutorSection({
             setError(null);
           }}
         />
-        <p className="text-fg-muted text-xs">
+        <p className="text-text-muted text-xs">
           Space-separated. Leave blank to launch the command with no extra args.
         </p>
       </div>
