@@ -6,3 +6,27 @@ threads:
   enabled: true
   default_turn_cap: 500
   # invocation_timeout_seconds: null  # falls through to session_timeout_seconds
+
+working_hours:
+  enabled: true
+  # Tier 1 (org default): windowed business-hours cadence.
+  default:
+    mode: windowed
+    window:
+      start: "09:00"
+      end: "18:00"
+      timezone: "Asia/Hong_Kong"
+    interval: "2h"            # wakes 09:00,11:00,13:00,15:00,17:00 on weekdays
+    days: [mon, tue, wed, thu, fri]
+    catch_up_on_startup: true
+  agents:
+    mode: all
+    include: []
+    exclude: []
+  # Tier 3 (agent override): make dev_agent's windowed cadence explicit.
+  overrides:
+    dev_agent:
+      mode: windowed
+      window: { start: "09:00", end: "18:00", timezone: "Asia/Hong_Kong" }
+      interval: "2h"
+      days: [mon, tue, wed, thu, fri]
