@@ -90,7 +90,7 @@ describe('buildLegend', () => {
     expect(legend[2]).toMatchObject({ action: 'escalation', count: 1, label: 'Escalation' });
   });
 
-  test('colors: green for completed, red for failure/escalation', () => {
+  test('colors: positive for completed, danger for failure/escalation', () => {
     const entries = [
       makeEntry({ action: 'completion_report' }),
       makeEntry({ action: 'escalation' }),
@@ -99,15 +99,15 @@ describe('buildLegend', () => {
     const legend = buildLegend(entries);
     const byAction = Object.fromEntries(legend.map((l) => [l.action, l]));
 
-    expect(byAction['completion_report'].color).toBe('green');
-    expect(byAction['escalation'].color).toBe('red');
-    expect(byAction['session_timeout'].color).toBe('red');
+    expect(byAction['completion_report'].color).toBe('positive');
+    expect(byAction['escalation'].color).toBe('danger');
+    expect(byAction['session_timeout'].color).toBe('danger');
   });
 
-  test('unknown actions get amber and label equals action', () => {
+  test('unknown actions get attention and label equals action', () => {
     const entries = [makeEntry({ action: 'custom_action' })];
     const legend = buildLegend(entries);
-    expect(legend[0]).toMatchObject({ action: 'custom_action', label: 'custom_action', color: 'amber' });
+    expect(legend[0]).toMatchObject({ action: 'custom_action', label: 'custom_action', color: 'attention' });
   });
 
   test('empty entries returns empty legend', () => {

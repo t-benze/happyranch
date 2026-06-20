@@ -20,7 +20,7 @@ export function ActivityTab(): JSX.Element {
   });
 
   if (auditQuery.isLoading) {
-    return <p className="text-fg-muted">Loading…</p>;
+    return <p className="text-text-muted p-4">Loading…</p>;
   }
   const entries = auditQuery.data?.entries ?? [];
   if (entries.length === 0) {
