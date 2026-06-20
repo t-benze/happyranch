@@ -130,6 +130,7 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
                     task={t}
                     to={taskRoutes.detail(t.task_id)}
                     density={density}
+                    taskRoutes={taskRoutes}
                   />
                 </li>
               ))}

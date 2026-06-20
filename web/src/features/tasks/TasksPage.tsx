@@ -1,476 +1,234 @@
-import { useCallback, useMemo, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
-import { useQueryClient } from '@tanstack/react-query';
-import { useTasksRoots, useTasksRoutes } from '@/hooks/tasks';
-import { Button } from '@/design-system/primitives/Button';
+/**
+ * Tasks list — Direction-A Pasture, roots-only dense list.
+ *
+ * Group by Status / Agent / Thread. Each group renders as a Pasture card
+ * with serif section headings. Resolved groups are visually dimmed.
+ * Status pills follow ds.css .tag (rounded-pill, led dot).
+ *
+ * Per founder ruling: NO in-list 'show subtasks' toggle. The list is
+ * roots-only; execution subtasks live on the Task detail surface.
+ *
+ * Driven by GET /tasks/roots (roots-only invariant). Cursor pagination
+ * via next_cursor with IntersectionObserver sentinel.
+ */
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useParams } from 'react-router-dom';
+import { Tabs, TabsList, TabsTrigger } from '@/design-system/primitives/Tabs';
+import { TaskCard } from '@/design-system/patterns/TaskCard';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
+import { useTasksRootsInfinite, useTasksRoutes } from '@/hooks/tasks';
+import { useDensity } from '@/hooks/density';
 import { TaskDetailPane } from './TaskDetailPane';
 import type { TaskRecord } from '@/lib/api/types';
 
-// ---------------------------------------------------------------------------
-// Group-by modes
-// ---------------------------------------------------------------------------
+type GroupBy = 'status' | 'agent' | 'thread';
 
-type GroupByMode = 'status' | 'agent' | 'thread';
-
-const GROUP_LABELS: Record<GroupByMode, string> = {
-  status: 'Status',
-  agent: 'Agent',
-  thread: 'Thread',
-};
-
-// ---------------------------------------------------------------------------
-// Severity rollup helpers
-// ---------------------------------------------------------------------------
-
-const SEVERITY_LABELS: Record<string, string> = {
-  blocked: 'Blocked',
-  failed: 'Failed',
-  in_progress: 'In progress',
-  pending: 'Pending',
-  completed: 'Done',
-  resolved_superseded: 'Resolved',
-};
-
-function severityColor(rollup: string): string {
-  switch (rollup) {
-    case 'blocked':
-      return 'bg-tier-red-tint text-status-abandoned';
-    case 'failed':
-      return 'bg-tier-amber-tint text-status-failed';
-    case 'in_progress':
-      return 'bg-tier-blue-tint text-status-active';
-    case 'pending':
-      return 'bg-tier-slate-tint text-fg-muted';
-    case 'completed':
-      return 'bg-tier-green-tint text-status-success';
-    case 'resolved_superseded':
-      return 'bg-tier-slate-tint text-fg-muted';
-    default:
-      return 'bg-tier-slate-tint text-fg-muted';
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Grouping helpers
-// ---------------------------------------------------------------------------
-
-function groupByStatus(tasks: TaskRecord[]): Record<string, TaskRecord[]> {
-  const groups: Record<string, TaskRecord[]> = {
-    blocked: [],
-    failed: [],
-    in_progress: [],
-    pending: [],
-    completed: [],
-    resolved_superseded: [],
-  };
-  for (const t of tasks) {
-    const key = t.status;
-    if (!groups[key]) groups[key] = [];
-    groups[key].push(t);
-  }
-  return groups;
-}
-
-function groupByAgent(tasks: TaskRecord[]): Record<string, TaskRecord[]> {
-  const groups: Record<string, TaskRecord[]> = {};
-  for (const t of tasks) {
-    const key = t.assigned_agent || 'Unassigned';
-    if (!groups[key]) groups[key] = [];
-    groups[key].push(t);
-  }
-  return groups;
-}
-
-function groupByThread(tasks: TaskRecord[]): Record<string, TaskRecord[]> {
-  const groups: Record<string, TaskRecord[]> = {};
-  for (const t of tasks) {
-    const key = (t as Record<string, unknown>).dispatched_from_thread_id
-      ? `Thread ${(t as Record<string, unknown>).dispatched_from_thread_id}`
-      : 'No thread';
-    if (!groups[key]) groups[key] = [];
-    groups[key].push(t);
-  }
-  return groups;
-}
-
-function groupTasks(
-  tasks: TaskRecord[],
-  mode: GroupByMode,
-): Record<string, TaskRecord[]> {
-  switch (mode) {
-    case 'agent':
-      return groupByAgent(tasks);
-    case 'thread':
-      return groupByThread(tasks);
-    default:
-      return groupByStatus(tasks);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Severity rollup pill
-// ---------------------------------------------------------------------------
-
-function SeverityPill({ task }: { task: TaskRecord }): JSX.Element {
-  const rollup = (task as Record<string, unknown>).severity_rollup as string | undefined;
-  const label = SEVERITY_LABELS[rollup ?? task.status] ?? rollup ?? task.status;
-  return (
-    <span
-      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${severityColor(rollup ?? task.status)}`}
-    >
-      {label}
-    </span>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Skeleton
-// ---------------------------------------------------------------------------
-
-function SkeletonRows({ count = 5 }: { count?: number }): JSX.Element {
-  return (
-    <div className="space-y-1" aria-busy="true">
-      {Array.from({ length: count }).map((_, i) => (
-        <div
-          key={i}
-          className="bg-surface-raised flex h-11 animate-pulse items-center gap-3 rounded px-3"
-        >
-          <div className="bg-surface-subtle h-4 w-24 rounded" />
-          <div className="bg-surface-subtle h-4 flex-1 rounded" />
-          <div className="bg-surface-subtle h-5 w-16 rounded-full" />
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Grouped list
-// ---------------------------------------------------------------------------
-
-const STATUS_GROUP_ORDER = [
-  'blocked', 'failed', 'in_progress', 'pending',
-  'completed', 'resolved_superseded',
+const GROUP_BY_OPTIONS: { value: GroupBy; label: string }[] = [
+  { value: 'status', label: 'Status' },
+  { value: 'agent', label: 'Agent' },
+  { value: 'thread', label: 'Thread' },
 ];
 
-const STATUS_GROUP_LABELS: Record<string, string> = {
-  blocked: 'Blocked',
-  failed: 'Failed',
-  in_progress: 'In review',
-  pending: 'Pending',
-  completed: 'Done',
-  resolved_superseded: 'Resolved (superseded)',
+/** Pasture group section heading — serif display, muted for resolved groups. */
+function GroupHeading({
+  label,
+  dimmed,
+}: {
+  label: string;
+  dimmed?: boolean;
+}): JSX.Element {
+  return (
+    <h2
+      className={
+        dimmed
+          ? 'font-display text-text-muted text-lg font-medium'
+          : 'font-display text-text-primary text-lg font-medium'
+      }
+    >
+      {label}
+    </h2>
+  );
+}
+
+function groupKey(task: TaskRecord, by: GroupBy): string {
+  switch (by) {
+    case 'status':
+      return task.status;
+    case 'agent':
+      return task.assigned_agent || 'Unassigned';
+    case 'thread': {
+      const threadId = (task as Record<string, unknown>).dispatched_from_thread_id;
+      if (threadId && typeof threadId === 'string' && threadId.length > 0) {
+        return threadId;
+      }
+      return 'No thread';
+    }
+  }
+}
+
+function groupLabel(key: string, by: GroupBy): string {
+  if (by === 'status') {
+    const map: Record<string, string> = {
+      pending: 'Pending',
+      in_progress: 'In progress',
+      blocked: 'Blocked',
+      completed: 'Completed',
+      failed: 'Failed',
+      resolved_superseded: 'Resolved',
+    };
+    return map[key] ?? key;
+  }
+  return key;
+}
+
+function isResolvedGroup(key: string, by: GroupBy): boolean {
+  if (by === 'status') {
+    return key === 'completed' || key === 'failed' || key === 'resolved_superseded';
+  }
+  return false;
+}
+
+const GROUP_ORDER_STATUS: Record<string, number> = {
+  in_progress: 0,
+  pending: 1,
+  blocked: 2,
+  completed: 3,
+  failed: 4,
+  resolved_superseded: 5,
 };
 
-// ---------------------------------------------------------------------------
-// Shared group-key ordering — used by BOTH GroupedList (render) and flatItems
-// (keyboard handler) so ArrowDown-highlight and Enter-open always agree.
-// ---------------------------------------------------------------------------
+export function TasksPage(): JSX.Element {
+  const { task_id: openTaskId } = useParams<{ task_id: string }>();
+  const [groupBy, setGroupBy] = useState<GroupBy>('status');
+  const { density } = useDensity();
+  const routes = useTasksRoutes();
+  const tasksQuery = useTasksRootsInfinite();
 
-function getOrderedGroupKeys(groups: Record<string, TaskRecord[]>): string[] {
-  const statusKeys: string[] = [];
-  for (const key of STATUS_GROUP_ORDER) {
-    if (groups[key] && groups[key].length > 0) {
-      statusKeys.push(key);
+  const allTasks = useMemo(
+    () => tasksQuery.data?.pages.flatMap((p) => p.tasks) ?? [],
+    [tasksQuery.data],
+  );
+
+  // Group tasks by the active dimension, sorted by group priority then recency.
+  const groups = useMemo(() => {
+    const map = new Map<string, TaskRecord[]>();
+    for (const t of allTasks) {
+      const k = groupKey(t, groupBy);
+      const list = map.get(k);
+      if (list) list.push(t);
+      else map.set(k, [t]);
     }
-  }
-  const nonStatusKeys = Object.keys(groups)
-    .filter((k) => !STATUS_GROUP_ORDER.includes(k))
-    .sort((a, b) => a.localeCompare(b));
-  return [...statusKeys, ...nonStatusKeys];
-}
-
-function GroupedList({
-  groups,
-  selectedIdx,
-  onSelect,
-  onOpen,
-  slug,
-}: {
-  groups: Record<string, TaskRecord[]>;
-  selectedIdx: number;
-  onSelect: (idx: number) => void;
-  onOpen: (taskId: string) => void;
-  slug: string;
-}): JSX.Element {
-  const flat: { task: TaskRecord; groupKey: string }[] = [];
-  for (const key of getOrderedGroupKeys(groups)) {
-    for (const t of groups[key]) {
-      flat.push({ task: t, groupKey: key });
-    }
-  }
-
-  if (flat.length === 0) {
-    return (
-      <p className="text-fg-muted py-4 text-center text-sm">Nothing here.</p>
-    );
-  }
-
-  // Rebuild group boundaries for rendering
-  let lastGroup = '';
-  const rows: JSX.Element[] = [];
-  let idx = 0;
-  for (const item of flat) {
-    if (item.groupKey !== lastGroup) {
-      lastGroup = item.groupKey;
-      const groupLabel =
-        STATUS_GROUP_LABELS[item.groupKey] ?? item.groupKey;
-      rows.push(
-        <div
-          key={`hdr-${item.groupKey}`}
-          className="text-fg-muted sticky top-0 bg-surface-canvas px-3 py-1 text-xs font-medium uppercase tracking-wider"
-        >
-          {groupLabel}
-        </div>,
+    // Sort within each group by updated_at desc (most recent first).
+    for (const [, tasks] of map) {
+      tasks.sort(
+        (a, b) =>
+          new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
       );
     }
-    const isSelected = idx === selectedIdx;
-    const isResolved = item.task.status === 'resolved_superseded';
-    const isCurrent = idx === selectedIdx;
-    rows.push(
-      <div
-        key={item.task.task_id}
-        role="option"
-        aria-selected={isSelected}
-        data-task-id={item.task.task_id}
-        tabIndex={0}
-        className={`flex h-11 cursor-pointer items-center gap-3 rounded px-3 text-sm transition-colors ${
-          isCurrent
-            ? 'bg-accent-muted ring-accent/30 ring-1'
-            : 'hover:bg-surface-raised'
-        } ${isResolved ? 'opacity-50' : ''}`}
-        onClick={() => onOpen(item.task.task_id)}
-        onMouseEnter={() => onSelect(idx)}
-        onFocus={() => onSelect(idx)}
-      >
-        {/* Severity pill */}
-        <SeverityPill task={item.task} />
-        {/* Brief (truncated) */}
-        <span className="min-w-0 flex-1 truncate text-fg">
-          {item.task.brief.slice(0, 120)}
-        </span>
-        {/* Lineage inline */}
-        <LineageInline task={item.task} slug={slug} />
-        {/* Team / Agent */}
-        <span className="text-fg-muted hidden shrink-0 text-xs sm:inline">
-          {item.task.team ?? ''}
-          {item.task.assigned_agent ? ` · ${item.task.assigned_agent}` : ''}
-        </span>
-      </div>,
-    );
-    idx++;
-  }
-
-  return (
-    <div role="listbox" aria-label="Tasks list" className="space-y-0">
-      {rows}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Bidirectional lineage inline
-// ---------------------------------------------------------------------------
-
-function LineageInline({ task, slug }: { task: TaskRecord; slug: string }): JSX.Element | null {
-  const revisitOf = task.revisit_of_task_id;
-  // Direct revisits come from the roots endpoint if available
-  const directRevisits = (task as Record<string, unknown>).direct_revisits as string[] | undefined;
-
-  if (!revisitOf && (!directRevisits || directRevisits.length === 0)) return null;
-
-  return (
-    <span className="text-fg-muted shrink-0 text-xs">
-      {revisitOf && (
-        <span title={`Supersedes ${revisitOf}`}>
-          ↳{' '}
-          <Link to={`/orgs/${slug}/tasks/${revisitOf}`} className="text-accent hover:underline">
-            {revisitOf}
-          </Link>
-        </span>
-      )}
-      {revisitOf && directRevisits && directRevisits.length > 0 && ' · '}
-      {directRevisits && directRevisits.length > 0 && (
-        <span title={`Revisited by ${directRevisits.join(', ')}`}>
-          →{' '}
-          <Link to={`/orgs/${slug}/tasks/${directRevisits[0]}`} className="text-accent hover:underline">
-            {directRevisits[0]}
-          </Link>
-          {directRevisits.length > 1 && ` +${directRevisits.length - 1}`}
-        </span>
-      )}
-    </span>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Main page
-// ---------------------------------------------------------------------------
-
-export function TasksPage(): JSX.Element {
-  const { task_id: openTaskId, slug } = useParams<{ task_id: string; slug: string }>();
-  const navigate = useNavigate();
-  const routes = useTasksRoutes();
-  const queryClient = useQueryClient();
-
-  const [groupBy, setGroupBy] = useState<GroupByMode>('status');
-  const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined);
-  const [selectedIdx, setSelectedIdx] = useState(-1);
-
-  const { data, isLoading, isError } = useTasksRoots(
-    statusFilter ? { status: statusFilter } : undefined,
-  );
-
-  const allRoots = useMemo(() => data?.tasks ?? [], [data]);
-  const groups = useMemo(() => groupTasks(allRoots, groupBy), [allRoots, groupBy]);
-
-  // Flatten groups for keyboard nav (uses same ordering as GroupedList).
-  const flatItems = useMemo(() => {
-    const result: TaskRecord[] = [];
-    for (const key of getOrderedGroupKeys(groups)) {
-      for (const t of groups[key]) {
-        result.push(t);
-      }
+    // Sort groups: by explicit order for status, alpha for others.
+    const entries = [...map.entries()];
+    if (groupBy === 'status') {
+      entries.sort(
+        (a, b) =>
+          (GROUP_ORDER_STATUS[a[0]] ?? 99) -
+          (GROUP_ORDER_STATUS[b[0]] ?? 99),
+      );
+    } else {
+      entries.sort((a, b) => a[0].localeCompare(b[0]));
     }
-    return result;
-  }, [groups]);
+    return entries;
+  }, [allTasks, groupBy]);
 
-  const openTask = useCallback(
-    (taskId: string) => {
-      navigate(routes.detail(taskId));
-    },
-    [navigate, routes],
-  );
+  // Sentinel observer for infinite scroll.
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const { fetchNextPage, hasNextPage, isFetchingNextPage } = tasksQuery;
+  useEffect(() => {
+    const node = sentinelRef.current;
+    if (!node || !hasNextPage) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting && !isFetchingNextPage) {
+          fetchNextPage();
+        }
+      },
+      { rootMargin: '200px' },
+    );
+    obs.observe(node);
+    return () => obs.disconnect();
+  }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
 
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        setSelectedIdx((prev) => Math.min(prev + 1, flatItems.length - 1));
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        setSelectedIdx((prev) => Math.max(prev - 1, 0));
-      } else if (e.key === 'Enter' && selectedIdx >= 0 && flatItems[selectedIdx]) {
-        e.preventDefault();
-        openTask(flatItems[selectedIdx].task_id);
-      } else if (e.key === 'Escape') {
-        e.preventDefault();
-        setSelectedIdx(-1);
-      }
-    },
-    [selectedIdx, flatItems, openTask],
-  );
-
-  // -------------------------------------------------------------------
-  // Status filter tabs (when groupBy === 'status')
-  // -------------------------------------------------------------------
+  const isLoading = tasksQuery.isLoading;
 
   return (
-    <div
-      className="flex h-full flex-col outline-none"
-      onKeyDown={handleKeyDown}
-      tabIndex={-1}
-    >
-      {/* Header: group-by + filter */}
-      <header className="border-border-subtle shrink-0 border-b px-4 py-3">
-        <div className="flex items-center gap-4">
-          {/* Group-by segmented control */}
-          <nav role="group" aria-label="Group tasks by" className="flex gap-1">
-            {(['status', 'agent', 'thread'] as GroupByMode[]).map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                onClick={() => {
-                  setGroupBy(mode);
-                  setSelectedIdx(-1);
-                }}
-                className={`rounded px-3 py-1 text-sm font-medium transition-colors ${
-                  groupBy === mode
-                    ? 'bg-accent text-fg-on-accent'
-                    : 'text-fg-muted hover:bg-surface-raised'
-                }`}
-              >
-                {GROUP_LABELS[mode]}
-              </button>
+    <div className="bg-surface-canvas flex h-full flex-col">
+      {/* Page title + group-by selector */}
+      <header className="border-border-default shrink-0 border-b px-6 py-5">
+        <h1 className="font-display text-display text-text-primary font-medium">
+          Tasks
+        </h1>
+        <Tabs
+          className="mt-3"
+          value={groupBy}
+          onValueChange={(v) => setGroupBy(v as GroupBy)}
+          aria-label="Group by"
+        >
+          <TabsList>
+            {GROUP_BY_OPTIONS.map((opt) => (
+              <TabsTrigger key={opt.value} value={opt.value}>
+                {opt.label}
+              </TabsTrigger>
             ))}
-          </nav>
-
-          {/* Status quick-filters */}
-          <div className="flex gap-1">
-            {[
-              { label: 'All', value: undefined },
-              { label: 'Blocked', value: 'blocked' },
-              { label: 'Active', value: 'in_progress' },
-              { label: 'Done', value: 'completed' },
-              { label: 'Resolved', value: 'resolved_superseded' },
-            ].map((f) => (
-              <button
-                key={f.label}
-                type="button"
-                onClick={() => {
-                  setStatusFilter(f.value);
-                  setSelectedIdx(-1);
-                }}
-                className={`rounded px-2 py-1 text-xs transition-colors ${
-                  statusFilter === f.value
-                    ? 'bg-surface-raised text-fg font-medium'
-                    : 'text-fg-muted hover:bg-surface-raised'
-                }`}
-              >
-                {f.label}
-              </button>
-            ))}
-          </div>
-        </div>
+          </TabsList>
+        </Tabs>
       </header>
 
-      {/* Body */}
-      <main className="min-h-0 flex-1 overflow-y-auto p-4">
+      {/* Task list */}
+      <main className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
         {isLoading ? (
-          <SkeletonRows count={6} />
-        ) : isError ? (
-          <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
-            <p className="text-tier-red text-sm">
-              Couldn&apos;t load tasks.
-            </p>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() =>
-                queryClient.invalidateQueries({
-                  queryKey: ['tasks-roots', slug],
-                })
-              }
-            >
-              Retry
-            </Button>
-          </div>
-        ) : allRoots.length === 0 ? (
-          <EmptyState
-            title={
-              statusFilter
-                ? `Nothing ${STATUS_GROUP_LABELS[statusFilter]?.toLowerCase() ?? statusFilter}`
-                : 'No tasks yet'
-            }
-            body={
-              statusFilter
-                ? 'No tasks match the current filter.'
-                : 'Tasks dispatched to agents will appear here.'
-            }
-          />
+          <p className="text-text-muted py-6 text-center text-sm">Loading…</p>
+        ) : allTasks.length === 0 ? (
+          <EmptyState title="No tasks" body="No tasks match the current filters." />
         ) : (
-          <GroupedList
-            groups={groups}
-            selectedIdx={selectedIdx}
-            onSelect={setSelectedIdx}
-            onOpen={openTask}
-            slug={slug ?? ''}
-          />
+          <div className="mx-auto max-w-3xl space-y-6">
+            {groups.map(([key, tasks]) => {
+              const dimmed = isResolvedGroup(key, groupBy);
+              return (
+                <section key={key} className={dimmed ? 'opacity-60' : undefined}>
+                  <GroupHeading
+                    label={groupLabel(key, groupBy)}
+                    dimmed={dimmed}
+                  />
+                  <ul className="mt-2 space-y-1.5">
+                    {tasks.map((t) => (
+                      <li key={t.task_id}>
+                        <TaskCard
+                          task={t}
+                          to={routes.detail(t.task_id)}
+                          active={openTaskId === t.task_id}
+                          density={density}
+                          taskRoutes={routes}
+                        />
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              );
+            })}
+            <div ref={sentinelRef} aria-hidden className="h-1" />
+            {isFetchingNextPage && (
+              <p className="text-text-muted py-3 text-center text-sm">
+                Loading more…
+              </p>
+            )}
+            {!hasNextPage && allTasks.length > 0 && (
+              <p className="text-text-muted py-4 text-center text-xs">
+                End of list
+              </p>
+            )}
+          </div>
         )}
       </main>
 
-      {/* Detail pane */}
       {openTaskId && <TaskDetailPane taskId={openTaskId} />}
     </div>
   );

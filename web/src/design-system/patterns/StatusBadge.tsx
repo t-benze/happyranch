@@ -1,6 +1,7 @@
 /**
- * StatusBadge — pill for thread OR task status. Per DESIGN.md
- * `components.badge.variants.status_*`.
+ * StatusBadge — pill for thread OR task status. Direction-A Pasture style
+ * matching ds.css .tag pattern: rounded-pill, inline-flex, led dot for
+ * active states, tinted fills.
  *
  * For task status `blocked`, the optional `blockKind` modifier renders
  * "blocked (escalated)" vs "blocked (delegated)" with escalated using the
@@ -17,26 +18,28 @@ export type TaskStatus =
   | 'completed'
   | 'failed'
   | 'resolved_superseded';
-export type BlockKind = 'delegated' | 'escalated';
+export type BlockKind = 'delegated' | 'escalated' | 'blocked_on_job';
 
 interface StatusBadgeProps {
   status: ThreadStatus | TaskStatus;
   blockKind?: BlockKind | null;
 }
 
-// Reuse tokens to keep the palette tight. The mapping mirrors semantic
-// kinship: in_progress→open (green), completed→archived (grey),
-// failed→abandoned tint (red), resolved_superseded→archived (grey, a clean
-// non-failure terminal like completed).
-const STATUS_CLASS: Record<ThreadStatus | TaskStatus, string> = {
-  open: 'bg-tier-green-tint text-status-open',
-  archived: 'border border-border-subtle bg-transparent text-status-archived',
-  pending: 'bg-tier-yellow-tint text-status-archiving',
-  in_progress: 'bg-tier-green-tint text-status-open',
-  blocked: 'bg-tier-yellow-tint text-status-blocked',
-  completed: 'border border-border-subtle bg-transparent text-status-archived',
-  failed: 'bg-tier-red-tint text-status-abandoned',
-  resolved_superseded: 'border border-border-subtle bg-transparent text-status-archived',
+// ds.css .tag pattern: rounded-pill, 11px/600, tinted bg + text, optional led dot.
+// .tag.ok = green (open/in_progress/completed)
+// .tag.run = blue (in_progress alternate — we use green via .ok)
+// .tag.warn = amber (pending/blocked)
+// .tag.bad = red (failed/escalated)
+// .tag.mute = grey (resolved_superseded/archived)
+const STATUS_STYLE: Record<ThreadStatus | TaskStatus, string> = {
+  open: 'text-status-open bg-tier-green-tint',
+  archived: 'text-status-archived border border-border-default bg-transparent',
+  pending: 'text-status-archiving bg-tier-yellow-tint',
+  in_progress: 'text-status-open bg-tier-green-tint',
+  blocked: 'text-status-blocked bg-tier-yellow-tint',
+  completed: 'text-status-open bg-tier-green-tint',
+  failed: 'text-status-abandoned bg-tier-red-tint',
+  resolved_superseded: 'text-status-archived border border-border-default bg-transparent',
 };
 
 function label(status: ThreadStatus | TaskStatus, blockKind?: BlockKind | null): string {
@@ -46,14 +49,17 @@ function label(status: ThreadStatus | TaskStatus, blockKind?: BlockKind | null):
 }
 
 export function StatusBadge({ status, blockKind }: StatusBadgeProps): JSX.Element {
-  const cls =
-    status === 'blocked' && blockKind === 'escalated'
-      ? 'bg-tier-red-tint text-status-escalated'
-      : STATUS_CLASS[status];
+  const escalated = status === 'blocked' && blockKind === 'escalated';
+  const cls = escalated
+    ? 'text-status-escalated bg-tier-red-tint'
+    : STATUS_STYLE[status];
   return (
     <span
-      className={`text-mono-sm inline-flex items-center rounded-sm px-2 py-px font-mono font-semibold ${cls}`}
+      className={`text-mono-sm inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 font-semibold tabular-nums ${cls}`}
     >
+      {!escalated && (status === 'in_progress' || status === 'completed' || status === 'pending') && (
+        <span className="inline-block h-1.5 w-1.5 rounded-full bg-current opacity-70" aria-hidden />
+      )}
       {label(status, blockKind)}
     </span>
   );

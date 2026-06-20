@@ -22,7 +22,7 @@ export type TaskStatus =
   // human-authorized continuation (revisit / thread-dispatch).
   | 'resolved_superseded';
 
-export type BlockKind = 'delegated' | 'escalated';
+export type BlockKind = 'delegated' | 'escalated' | 'blocked_on_job';
 
 export type ReviewVerdict =
   | 'accept'

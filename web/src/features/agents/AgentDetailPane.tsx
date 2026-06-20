@@ -457,6 +457,7 @@ export function AgentDetailPane({ agentName, onClose }: AgentDetailPaneProps): J
                     task={t}
                     to={taskRoutes.detail(t.task_id)}
                     density={density}
+                    taskRoutes={taskRoutes}
                   />
                 </li>
               ))}
