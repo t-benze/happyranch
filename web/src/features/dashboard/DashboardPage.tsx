@@ -146,7 +146,7 @@ export function DashboardPage(): JSX.Element {
           <span>{s.narrative_counts.agents_active_now} agents active</span>
           <span>·</span>
           <span>
-            burn · {s.narrative_counts.spend_today_usd.toFixed(2)} today
+            spend · ${s.narrative_counts.spend_today_usd.toFixed(2)} today
           </span>
         </div>
 
@@ -179,16 +179,10 @@ export function DashboardPage(): JSX.Element {
                   <div className="text-text-muted text-overline mt-1">Failed</div>
                 </div>
                 <div className="text-center">
-                  <div
-                    className={
-                      s.narrative_counts.escalated_open
-                        ? 'font-display text-h1 text-tier-yellow font-medium tabular-nums'
-                        : 'font-display text-h1 text-text-muted font-medium tabular-nums'
-                    }
-                  >
-                    {s.narrative_counts.escalated_open}
+                  <div className="font-display text-h1 text-tier-green font-medium tabular-nums">
+                    {s.narrative_counts.agents_active_now}
                   </div>
-                  <div className="text-text-muted text-overline mt-1">Escalated</div>
+                  <div className="text-text-muted text-overline mt-1">Active</div>
                 </div>
                 <div className="text-center">
                   <div className="font-display text-h1 text-text-primary font-medium tabular-nums">
@@ -198,9 +192,9 @@ export function DashboardPage(): JSX.Element {
                 </div>
                 <div className="text-center">
                   <div className="text-h2 text-text-primary font-mono font-medium tabular-nums">
-                    {s.narrative_counts.spend_today_usd.toFixed(2)}
+                    ${s.narrative_counts.spend_today_usd.toFixed(2)}
                   </div>
-                  <div className="text-text-muted text-overline mt-1">Burn today</div>
+                  <div className="text-text-muted text-overline mt-1">Spend today</div>
                 </div>
               </div>
             </Panel>

@@ -67,7 +67,7 @@ export function TopTokenThreadsPanel(): JSX.Element {
     <section className="border-border-default bg-surface shadow-pasture-sm rounded-lg border p-5">
       <header className="mb-4 flex items-baseline justify-between">
         <h2 className="text-text-secondary text-xs font-semibold tracking-wider uppercase">
-          This week's burn
+          Top token threads · {win.label}
         </h2>
         <div className="flex gap-1 font-mono text-xs" role="group" aria-label="Window">
           {WINDOWS.map((w, i) => (
