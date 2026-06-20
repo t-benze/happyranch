@@ -126,6 +126,10 @@ export function ThreadsPage(): JSX.Element {
   const agentsQuery = useAgentsList();
   const agents = useMemo(() => agentsQuery.data?.agents ?? [], [agentsQuery.data]);
   const threadsQuery = useThreadsList({ status });
+  // Per-status count queries so each pill's count is backed by a real, honest fetch
+  // (not derived from the already-filtered main list).
+  const openCountQuery = useThreadsList({ status: 'open' });
+  const archivedCountQuery = useThreadsList({ status: 'archived' });
   const threads = useMemo(() => {
     const all = threadsQuery.data?.threads ?? [];
     if (!filter.trim()) return all;
@@ -293,15 +297,13 @@ export function ThreadsPage(): JSX.Element {
           >
             <TabsList>
               {STATUS_TABS.map((s) => {
-                const all = threadsQuery.data?.threads ?? [];
-                const count = s === 'open'
-                  ? all.filter((t) => t.status === 'open').length
-                  : all.filter((t) => t.status === 'archived').length;
+                const countQuery = s === 'open' ? openCountQuery : archivedCountQuery;
+                const count = countQuery.data?.threads?.length ?? 0;
                 return (
                   <TabsTrigger key={s} value={s}>
                     {s}
                     <span className="text-text-muted ml-1 text-xs tabular-nums">
-                      {all.length > 0 ? count : '…'}
+                      {countQuery.isLoading ? '…' : count}
                     </span>
                   </TabsTrigger>
                 );
