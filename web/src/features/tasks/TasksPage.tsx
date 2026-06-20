@@ -206,6 +206,7 @@ export function TasksPage(): JSX.Element {
                           to={routes.detail(t.task_id)}
                           active={openTaskId === t.task_id}
                           density={density}
+                          taskRoutes={routes}
                         />
                       </li>
                     ))}

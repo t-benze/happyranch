@@ -2,7 +2,6 @@ import { Link } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { StatusBadge } from './StatusBadge';
 import { IdBadge } from './IdBadge';
-import { useTasksRoutes } from '@/hooks/tasks';
 import type { TaskRecord, TaskStatus } from '@/lib/api/types';
 
 // Inline the union rather than importing `Density` from `@/hooks/` —
@@ -47,19 +46,26 @@ function directRevisits(task: TaskRecord): string[] {
   return [];
 }
 
+/** Shape of the route helper injected by feature callers so TaskCard
+ *  stays a pure pattern (props in, JSX out) with no hook imports. */
+export interface TaskCardRoutes {
+  detail(taskId: string): string;
+}
+
 export interface TaskCardProps {
   task: TaskRecord;
   to: string;
   active?: boolean;
   density?: Density;
+  /** Injected by the feature layer so the pattern doesn't import useTasksRoutes. */
+  taskRoutes?: TaskCardRoutes;
 }
 
 /** Direction-A Pasture task card — ds.css .card (bg-surface, rounded-lg 18px, soft shadow). */
-export function TaskCard({ task, to, active, density = 'comfortable' }: TaskCardProps): JSX.Element {
+export function TaskCard({ task, to, active, density = 'comfortable', taskRoutes }: TaskCardProps): JSX.Element {
   const pad = density === 'compact' ? 'px-3 py-2' : 'px-4 py-3';
   const rollup = severityRollupStatus(task);
   const revisits = directRevisits(task);
-  const routes = useTasksRoutes();
 
   return (
     <div
@@ -86,11 +92,11 @@ export function TaskCard({ task, to, active, density = 'comfortable' }: TaskCard
       </Link>
 
       {/* Supersede / revisit links — from roots-payload fields, siblings of the main Link */}
-      {(task.revisit_of_task_id || revisits.length > 0) && (
+      {taskRoutes && (task.revisit_of_task_id || revisits.length > 0) && (
         <div className="text-text-muted mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-xs">
           {task.revisit_of_task_id && (
             <Link
-              to={routes.detail(task.revisit_of_task_id)}
+              to={taskRoutes.detail(task.revisit_of_task_id)}
               className="hover:underline"
             >
               supersedes{' '}
@@ -100,7 +106,7 @@ export function TaskCard({ task, to, active, density = 'comfortable' }: TaskCard
           {revisits.map((rid) => (
             <Link
               key={rid}
-              to={routes.detail(rid)}
+              to={taskRoutes.detail(rid)}
               className="hover:underline"
             >
               superseded by{' '}
