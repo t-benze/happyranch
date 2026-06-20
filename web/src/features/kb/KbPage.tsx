@@ -115,7 +115,7 @@ function DreamCandidateRow({
             type="button"
             onClick={() => onSelect(c)}
             className={cn(
-              'kb-cand w-full text-left p-3 border-b border-border-subtle',
+              'kb-cand w-full text-left p-3 border-b border-border-default',
               'hover:bg-surface-sunken transition-colors',
               detailCandidate?.id === c.id && 'bg-surface-sunken',
             )}
@@ -295,7 +295,7 @@ export function KbPage(): JSX.Element {
       {/* Folder rail */}
       <aside
         aria-label="KB folders"
-        className="w-56 shrink-0 overflow-y-auto border-r border-border-subtle bg-surface-sunken p-3"
+        className="w-rail shrink-0 overflow-y-auto border-r border-border-default bg-surface-sunken p-3"
       >
         <div className="mb-3">
           <Input
@@ -318,7 +318,7 @@ export function KbPage(): JSX.Element {
         <header className="border-b border-border-subtle p-4">
           <div className="flex items-center justify-between">
             <div>
-              <h1 className="text-h2 text-text-primary">{KB_STRINGS.pageTitle}</h1>
+              <h1 className="font-display text-h2 text-text-primary font-medium">{KB_STRINGS.pageTitle}</h1>
               <p className="text-text-muted text-sm">
                 {KB_STRINGS.pageSubtitle}
               </p>
@@ -329,7 +329,7 @@ export function KbPage(): JSX.Element {
               </Button>
             )}
             {candidatePendingCount > 0 && (
-              <span className="text-xs font-medium text-accent bg-accent/10 px-2 py-1 rounded-full">
+              <span className="text-xs font-medium text-accent-text bg-accent-muted px-2.5 py-1 rounded-full">
                 {KB_STRINGS.pendingCandidatesTag(candidatePendingCount)}
               </span>
             )}
@@ -369,7 +369,7 @@ export function KbPage(): JSX.Element {
             />
           )
         ) : (
-          <ul className="divide-y divide-border-subtle">
+          <ul className="space-y-2 p-4">
             {/* Dream candidates (loaded per-dream via DreamCandidateRow) */}
             {!isSearching && dreamsWithCandidates.map((d) => (
               <DreamCandidateRow
@@ -381,6 +381,7 @@ export function KbPage(): JSX.Element {
               />
             ))}
 
+            {/* Live KB entries */}
             {/* Live KB entries */}
             {liveEntries.map((entry) => (
               <li key={entry.slug}>

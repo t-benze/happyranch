@@ -87,41 +87,45 @@ export function KbEntryDetailPane({
     <Drawer open onOpenChange={(o) => !o && handleClose()}>
       <DrawerContent className="flex flex-col">
         {/* Header */}
-        <header className="border-b border-border-subtle p-4">
+        <header className="border-b border-border-default p-4">
           {isCandidate ? (
             <>
-              <div className="text-fg-muted font-mono text-xs">
+              <div className="text-text-muted font-mono text-xs tabular-nums">
                 {candidate.slug}
               </div>
-              <DrawerTitle className="text-fg mt-1 text-lg">
+              <DrawerTitle className="font-display text-text-primary mt-1 text-lg font-medium">
                 {candidate.title}
               </DrawerTitle>
-              <p className="text-fg-muted mt-1 text-xs">
+              <p className="text-text-muted mt-1 text-xs font-mono tabular-nums">
                 {candidate.topic} · from {candidate.dream_id}
               </p>
             </>
           ) : entry ? (
             <>
-              <div className="text-fg-muted font-mono text-xs">{entrySlug}</div>
-              <DrawerTitle className="text-fg mt-1 text-lg">
+              <div className="text-text-muted font-mono text-xs tabular-nums">{entrySlug}</div>
+              <DrawerTitle className="font-display text-text-primary mt-1 text-lg font-medium">
                 {entry.title}
               </DrawerTitle>
-              <p className="text-fg-muted mt-1 text-xs">
+              <p className="text-text-muted mt-1 text-xs">
                 {entry.type} · updated {relativeAge(entry.updated_at)} ·{' '}
                 {KB_STRINGS.authoredBy(entry.authored_by)}
               </p>
               {entry.tags.length > 0 && (
-                <p className="text-fg-muted mt-1 text-xs">
-                  {entry.tags.join(', ')}
-                </p>
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {entry.tags.map((t) => (
+                    <span key={t} className="inline-flex items-center rounded-full bg-surface-sunken px-2 py-0.5 text-xs text-text-muted border border-border-subtle">
+                      {t}
+                    </span>
+                  ))}
+                </div>
               )}
             </>
           ) : (
             <>
-              <div className="text-fg-muted font-mono text-xs">
+              <div className="text-text-muted font-mono text-xs tabular-nums">
                 {entrySlug ?? ''}
               </div>
-              <DrawerTitle className="text-fg mt-1 text-lg">
+              <DrawerTitle className="font-display text-text-primary mt-1 text-lg font-medium">
                 {KB_STRINGS.drawerLoading}
               </DrawerTitle>
             </>
@@ -176,7 +180,7 @@ export function KbEntryDetailPane({
 
               {/* Source task badge */}
               {entry.source_task && (
-                <p className="text-fg-muted mt-6 text-xs">
+                <p className="text-text-muted mt-6 text-xs">
                   {KB_STRINGS.sourceTaskLabel}{' '}
                   <IdBadge
                     kind="task"
@@ -188,7 +192,7 @@ export function KbEntryDetailPane({
 
               {/* Related entries */}
               {entry.related_entries && entry.related_entries.length > 0 && (
-                <div className="text-fg-muted mt-3 text-xs">
+                <div className="text-text-muted mt-3 text-xs">
                   <div>{KB_STRINGS.relatedEntriesLabel}</div>
                   <ul className="mt-1 list-disc pl-5">
                     {entry.related_entries.map((slug) => (
