@@ -1,10 +1,9 @@
 /**
  * useTheme — light/dark mode persistence + `<html data-theme>` swap.
  *
- * Per spec `2026-05-19-web-polish-design.md` §3. Mirrors useDensity:
- * localStorage-backed, dark by default. On change, writes the attribute
- * synchronously so the CSS variable override under
- * `:root[data-theme="light"]` flips immediately.
+ * Direction-A "Pasture" light-first. localStorage-backed, LIGHT by default.
+ * On change, writes the attribute synchronously so the CSS variable override
+ * under `:root[data-theme="dark"]` flips immediately.
  *
  * A `storage` listener keeps two open tabs in sync without a refresh.
  */
@@ -14,9 +13,9 @@ export type Theme = 'dark' | 'light';
 const KEY = 'happyranch.theme';
 
 function readInitial(): Theme {
-  if (typeof window === 'undefined') return 'dark';
+  if (typeof window === 'undefined') return 'light';
   const v = window.localStorage.getItem(KEY);
-  return v === 'light' ? 'light' : 'dark';
+  return v === 'dark' ? 'dark' : 'light';
 }
 
 function applyAttribute(theme: Theme): void {
@@ -38,7 +37,7 @@ export function useTheme(): {
     if (typeof window === 'undefined') return;
     const onStorage = (ev: StorageEvent) => {
       if (ev.key !== KEY) return;
-      const next = ev.newValue === 'light' ? 'light' : 'dark';
+      const next = ev.newValue === 'dark' ? 'dark' : 'light';
       setThemeState(next);
     };
     window.addEventListener('storage', onStorage);

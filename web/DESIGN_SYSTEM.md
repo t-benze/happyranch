@@ -1,8 +1,52 @@
 # DESIGN_SYSTEM.md — HappyRanch Founder Console
 
-**Status:** v0.1 — implementation contract. Supersedes the deleted `SHADCN_ADOPTION.md`.
+**Status:** v0.3 — Pasture foundation (THR-030 / TASK-603 Leg A, revised TASK-605). Supersedes the deleted `SHADCN_ADOPTION.md`.
 **Companion to:** `web/DESIGN.md` (token source of truth), `web/UI_SPEC.md` (per-screen UX),
 `web/ARCHITECTURE.md` (the three-layer boundary rule this doc reconciles with).
+
+---
+
+## 0. Direction-A "Pasture" foundation (2026-06-20)
+
+The design-overhaul (PR #110) shipped with a **dark-first, blue-accent, Public-Sans**
+token system ("Mission Control" lineage). THR-030 finalized the **Direction A
+'Pasture'** design direction. This leg rewrote the foundation tokens in
+`web/src/design-system/tokens/tokens.css` to Pasture.
+
+**What changed at the token level:**
+- **Palette:** OKLCH warm spectrum — light-first background (`oklch(0.975…)` warm
+off-white), warm inks (`oklch(0.28…)` through `0.66…`), warm borders.
+- **Accent:** Green `oklch(0.58 0.11 152)` (+press/soft/text companions).
+- **Theme default:** LIGHT. Dark is a `[data-theme="dark"]` override with its own
+full warm-dark palette.
+- **Typography:** `--font-sans` → Hanken Grotesk (UI), `--font-display` → Newsreader
+serif (headings/greeting), `--font-mono` → JetBrains Mono (unchanged).
+- **Radii:** 8px / 12px / 18px / pill.
+- **Shadows:** Soft warm scale (`rgba(40,30,20,…)`).
+- **Rail width:** 244px (Direction-A `--rail-w`), surfaced as `--spacing-rail` in `@theme` → Tailwind utility `w-rail`. The app Sidebar (`w-56` → `w-rail`) is wired to the token.
+
+**What did NOT change:** Token NAMES. All existing Tailwind class names (`bg-surface-*`,
+`text-text-*`, `bg-bg-*`, `text-fg-*`, `border-border-*`, `bg-accent`, `text-accent`,
+`bg-accent-default`, etc.) are preserved — only their resolved color VALUES flipped.
+The shadcn generic-var aliasing (`--background`, `--primary`, etc.) continues to
+point at the semantic tokens, so Radix/shadcn primitives inherit Pasture without
+source edits.
+
+**Font delivery:** Hanken Grotesk and Newsreader are self-hosted as WOFF2 files
+under `web/public/fonts/` with `@font-face` declarations in `tokens.css`.
+Latin subsets only (the full variable-font files cover weights 400–700 and
+400–600 respectively). SIL OFL 1.1 licensed — freely embeddable and redistributable.
+No `@fontsource/*` npm dependency; the local-first webview remains offline-capable.
+
+**Full token vocabulary (Direction-A parity):** The `@theme` block now exposes
+the complete Direction-A semantic companion set from `ds.css`:
+`--color-accent-text`, `--color-attention-soft`, `--color-attention-text`,
+`--color-info-soft`, `--color-danger-soft` — plus the Pasture shadow scale
+(`--shadow-pasture-sm`, `--shadow-pasture`, `--shadow-pasture-lg`). Dark-mode
+equivalents are in the `[data-theme="dark"]` override block.
+
+**Follow-on work:** Per-surface fidelity passes (THR-030 legs B…N) tune each
+surface to its `a-*.html` reference after this foundation merges.
 
 ---
 

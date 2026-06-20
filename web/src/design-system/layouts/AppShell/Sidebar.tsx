@@ -83,7 +83,7 @@ export function Sidebar(): JSX.Element {
     <aside
       role="navigation"
       aria-label="Primary navigation"
-      className="border-border bg-bg-subtle flex h-full w-56 shrink-0 flex-col border-r"
+      className="border-border bg-bg-subtle flex h-full w-rail shrink-0 flex-col border-r"
     >
       {/* Brand lockup */}
       <div className="flex items-center gap-1.5 px-4 py-3">
