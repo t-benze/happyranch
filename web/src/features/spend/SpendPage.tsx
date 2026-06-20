@@ -1,14 +1,22 @@
 /**
- * SpendPage — the single owner of token observability (§4.7).
+ * SpendPage — Direction-A Pasture fidelity pass (THR-030 Leg B batch 5).
  *
- * Tokens-only. No dollar amounts (Q1). Cache reads in a separate column,
- * never folded into churn. Churn = input + output + reasoning.
+ * Tokens-only observability. No dollar amounts — render "$0.00 · not metered"
+ * per the honesty fence. Cache reads in a separate column, never folded into
+ * churn. Churn = input + output + reasoning.
  *
- * Window toggle (24h/7d/30d) re-queries every card and persists the choice
- * in localStorage (B.4). The Model breakdown segment queries the new
- * `group_by=model` aggregation.
+ * Window toggle (24h/7d/30d) — rounded-full pill buttons with
+ * accent-soft/accent-text active state (matching the shipped Agents executor
+ * segmented control). Drives the ACTUAL query window; headings read from the
+ * selected window label (not a hard-coded string). Storage in localStorage.
  *
- * States: Loading (skeletons), Empty ("No token spend in this window"),
+ * Breakdown: agent / thread / model (segmented control, same pill vocabulary).
+ * Hero burn numeral: font-display serif (Newsreader). Cards: bg-surface +
+ * rounded-lg + shadow-pasture-sm.
+ *
+ * Export: client-side CSV of currently visible breakdown data.
+ *
+ * States: Loading (Pasture skeletons), Empty (calm display-font empty state),
  * Error (retry), Populated (hero + breakdown + top-threads).
  */
 import { useMemo, useState, useCallback, useRef } from 'react';
@@ -19,6 +27,8 @@ import { cn } from '@/lib/utils';
 // would be a cosmetic refactor that adds no safety value.
 // eslint-disable-next-line no-restricted-imports
 import { classifyModel } from '@/features/dashboard/topTokens';
+import { Button } from '@/design-system/primitives/Button';
+import { PageHeader } from '@/design-system/patterns/PageHeader';
 import type { TokenUsageRollup } from '@/hooks/spend';
 
 /* ------------------------------------------------------------------ */
@@ -72,7 +82,7 @@ function pct(part: number, whole: number): string {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Hero section                                                       */
+/*  Hero section — Pasture card w/ font-display burn numeral            */
 /* ------------------------------------------------------------------ */
 
 function HeroCard({
@@ -92,53 +102,67 @@ function HeroCard({
 }): JSX.Element {
   if (loading) {
     return (
-      <div className="border-border-subtle bg-surface-sunken rounded-lg border p-6">
-        <div className="animate-pulse space-y-2">
-          <div className="bg-bg-raised h-4 w-24 rounded" />
-          <div className="bg-bg-raised h-8 w-40 rounded" />
-          <div className="bg-bg-raised h-3 w-56 rounded" />
+      <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-6">
+        <div className="animate-pulse space-y-3">
+          <div className="bg-surface-raised h-3 w-28 rounded" />
+          <div className="bg-surface-raised h-10 w-36 rounded" />
+          <div className="bg-surface-raised h-4 w-44 rounded" />
         </div>
-      </div>
+      </section>
     );
   }
 
   if (totalChurn === 0) {
     return (
-      <div className="border-border-subtle bg-surface-sunken rounded-lg border p-6">
-        <p className="text-text-muted text-xs font-medium tracking-wider uppercase">Token churn · {windowLabel}</p>
-        <p className="text-fg mt-2 text-3xl font-light tabular-nums">0</p>
-        {/* brief-specified deferred-dollar placeholder: dollar metering is deferred (tokens-only Q1) */}
+      <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-6">
+        <p className="text-text-secondary text-xs font-semibold tracking-wider uppercase">
+          Token burn · {windowLabel}
+        </p>
+        <p className="font-display text-display text-text-primary mt-2 font-medium tabular-nums">
+          0
+        </p>
+        {/* Dollars always zero — honesty fence: no dollar metric in data-model. */}
         <p className="text-text-muted mt-1 text-sm">$0.00 · not metered</p>
-        <p className="text-text-muted mt-1 text-sm">No token spend in this window</p>
-      </div>
+        <p className="text-text-muted mt-2 text-sm">No token spend in this window</p>
+      </section>
     );
   }
 
-  const cachePct = pct(cacheRead, totalChurn + cacheRead);
-  const churn = totalChurn;
-
   return (
-    <div className="border-border-subtle bg-surface-sunken rounded-lg border p-6">
-      <p className="text-text-muted text-xs font-medium tracking-wider uppercase">Token churn · {windowLabel}</p>
-      <p className="text-fg mt-2 text-3xl font-light tabular-nums">{fmtNum(churn)}</p>
-      {/* brief-specified deferred-dollar placeholder: dollar metering is deferred (tokens-only Q1) */}
+    <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-6">
+      <p className="text-text-secondary text-xs font-semibold tracking-wider uppercase">
+        Token burn · {windowLabel}
+      </p>
+      <p className="font-display text-display text-text-primary mt-2 font-medium tabular-nums">
+        {fmtNum(totalChurn)}
+      </p>
+      {/* Dollars always zero — honesty fence: no dollar metric in data-model. */}
       <p className="text-text-muted mt-1 text-sm">$0.00 · not metered</p>
-      <div className="border-border-subtle mt-3 flex gap-4 border-t pt-3">
+      <div className="border-border-default mt-4 grid grid-cols-3 gap-4 border-t pt-4">
         <div>
-          <p className="text-text-muted text-xs">Cache savings</p>
-          <p className="text-fg text-lg tabular-nums">{fmtNum(cacheRead)}</p>
-          <p className="text-text-muted text-xs">{cachePct} from cache</p>
+          <p className="text-text-muted text-xs">Fresh</p>
+          <p className="font-display text-h2 text-text-primary font-medium tabular-nums">
+            {fmtNum(totalChurn)}
+          </p>
+          <p className="text-text-muted text-2xs">input + output + reasoning</p>
         </div>
         <div>
-          <p className="text-text-muted text-xs">Input</p>
-          <p className="text-fg text-lg tabular-nums">{fmtNum(inputTokens)}</p>
+          <p className="text-text-muted text-xs">From cache</p>
+          <p className="font-display text-h2 text-text-primary font-medium tabular-nums">
+            {fmtNum(cacheRead)}
+          </p>
+          <p className="text-text-muted text-2xs">
+            {cacheRead > 0 ? pct(cacheRead, totalChurn + cacheRead) + ' of all reads' : 'none'}
+          </p>
         </div>
         <div>
-          <p className="text-text-muted text-xs">Output</p>
-          <p className="text-fg text-lg tabular-nums">{fmtNum(outputTokens)}</p>
+          <p className="text-text-muted text-xs">Detail</p>
+          <p className="font-mono text-body text-text-primary tabular-nums">
+            in {fmtNum(inputTokens)} / out {fmtNum(outputTokens)}
+          </p>
         </div>
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -234,7 +258,7 @@ function BreakdownTable({
 
   if (error) {
     return (
-      <div className="border-border-subtle bg-surface-sunken rounded-lg border p-6">
+      <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-6">
         <p className="text-feedback-danger text-sm">Couldn't load spend breakdown — retry</p>
       </div>
     );
@@ -242,10 +266,10 @@ function BreakdownTable({
 
   if (loading) {
     return (
-      <div className="border-border-subtle bg-surface-sunken rounded-lg border p-6">
+      <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-6">
         <div className="animate-pulse space-y-2">
           {[1, 2, 3, 4].map((i) => (
-            <div key={i} className="bg-bg-raised h-6 rounded" />
+            <div key={i} className="bg-surface-raised h-6 rounded" />
           ))}
         </div>
       </div>
@@ -254,7 +278,7 @@ function BreakdownTable({
 
   if (rows.length === 0) {
     return (
-      <div className="border-border-subtle bg-surface-sunken rounded-lg border p-6">
+      <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-6">
         <p className="text-text-muted text-sm">No token spend in this window</p>
       </div>
     );
@@ -263,21 +287,21 @@ function BreakdownTable({
   const maxTokens = Math.max(...rows.map((r) => r.totalTokens), 1);
 
   return (
-    <div className="border-border-subtle bg-surface-sunken rounded-lg border p-4">
+    <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
       <div className="overflow-x-auto">
         <table className="w-full text-left font-mono text-xs">
           <thead>
-            <tr className="text-text-muted border-border-subtle border-b">
+            <tr className="text-text-muted border-border-default border-b">
               <th className="pr-3 pb-2 font-medium">{segment === 'agent' ? 'Agent' : segment === 'thread' ? 'Thread' : 'Model'}</th>
               <th className="pr-3 pb-2 text-right font-medium">Sessions</th>
-              <th className="pr-3 pb-2 font-medium">Churn</th>
+              <th className="pr-3 pb-2 font-medium">Burn</th>
               <th className="pr-3 pb-2 text-right font-medium">Total</th>
               <th className="pb-2 text-right font-medium">Cache reads</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((r) => (
-              <tr key={r.key} className="border-border-subtle border-b last:border-0">
+              <tr key={r.key} className="border-border-default border-b last:border-0">
                 <td className="text-text-primary max-w-48 truncate py-2 pr-3" title={r.label}>
                   {r.label}
                 </td>
@@ -354,7 +378,7 @@ function TopThreadsTable({
 
   if (error) {
     return (
-      <div className="border-border-subtle bg-surface-sunken rounded-lg border p-4">
+      <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
         <p className="text-feedback-danger text-sm">Failed to load top threads.</p>
       </div>
     );
@@ -362,10 +386,10 @@ function TopThreadsTable({
 
   if (loading) {
     return (
-      <div className="border-border-subtle bg-surface-sunken rounded-lg border p-4">
+      <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
         <div className="animate-pulse space-y-2">
           {[1, 2, 3].map((i) => (
-            <div key={i} className="bg-bg-raised h-5 rounded" />
+            <div key={i} className="bg-surface-raised h-5 rounded" />
           ))}
         </div>
       </div>
@@ -374,15 +398,17 @@ function TopThreadsTable({
 
   if (rows.length === 0) {
     return (
-      <div className="border-border-subtle bg-surface-sunken rounded-lg border p-4">
+      <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
         <p className="text-text-muted text-sm">No token usage in window.</p>
       </div>
     );
   }
 
   return (
-    <div className="border-border-subtle bg-surface-sunken rounded-lg border p-4">
-      <h2 className="text-text-muted mb-3 text-xs font-medium tracking-wider uppercase">Top threads by churn</h2>
+    <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+      <h2 className="text-text-secondary text-xs font-semibold tracking-wider uppercase mb-3">
+        Top threads by burn
+      </h2>
       <ul className="space-y-1.5 font-mono text-xs">
         {rows.map((r) => {
           return (
@@ -408,7 +434,7 @@ function TopThreadsTable({
               </span>
               <span
                 className="text-text-muted w-20 shrink-0 text-right tabular-nums"
-                title="cache reads — never counted toward churn"
+                title="cache reads — never counted toward burn"
               >
                 {r.cacheReadTokens.toLocaleString()}
                 <span className="text-text-disabled ml-1.5">cache</span>
@@ -463,10 +489,10 @@ function WindowToggle({
           onKeyDown={handleKeyDown(i)}
           aria-pressed={i === winIdx}
           className={cn(
-            'rounded px-2 py-1',
+            'rounded-full px-3 py-1 transition-colors',
             i === winIdx
-              ? 'bg-bg-raised text-text-primary font-medium'
-              : 'text-text-muted hover:text-text-primary',
+              ? 'bg-accent-soft text-accent-text border border-transparent'
+              : 'text-text-muted hover:text-text-primary border border-transparent',
           )}
         >
           {w.label}
@@ -495,10 +521,10 @@ function BreakdownToggle({
           onKeyDown={handleKeyDown(i)}
           aria-pressed={segment === s.key}
           className={cn(
-            'rounded px-2 py-1',
+            'rounded-full px-3 py-1 transition-colors',
             segment === s.key
-              ? 'bg-bg-raised text-text-primary font-medium'
-              : 'text-text-muted hover:text-text-primary',
+              ? 'bg-accent-soft text-accent-text border border-transparent'
+              : 'text-text-muted hover:text-text-primary border border-transparent',
           )}
         >
           {s.label}
@@ -506,6 +532,33 @@ function BreakdownToggle({
       ))}
     </div>
   );
+}
+
+/* ------------------------------------------------------------------ */
+/*  CSV export helper                                                  */
+/* ------------------------------------------------------------------ */
+
+function breakdownRowsToCSV(rows: BreakdownRow[]): string {
+  const header = 'Label,Sessions,Fresh (total),Cache reads';
+  const body = rows
+    .map(
+      (r) => `"${r.label}",${r.sessions},${r.totalTokens},${r.cacheReadTokens}`,
+    )
+    .join('\n');
+  return `${header}\n${body}\n`;
+}
+
+function downloadCSV(csv: string, filename: string): void {
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  // jsdom may not provide revokeObjectURL; guard defensively.
+  if (typeof URL.revokeObjectURL === 'function') {
+    URL.revokeObjectURL(url);
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -547,19 +600,60 @@ export function SpendPage(): JSX.Element {
     return { totalChurn, cacheRead, inputTokens, outputTokens };
   }, [agentQ.data, threadQ.data]);
 
+  // Build exportable breakdown rows (mirrors BreakdownTable logic)
+  const exportRows = useMemo((): BreakdownRow[] => {
+    let raw: TokenUsageRollup[];
+    switch (segment) {
+      case 'agent':
+        raw = agentQ.data ?? [];
+        break;
+      case 'thread':
+        raw = threadQ.data ?? [];
+        break;
+      case 'model':
+        raw = modelQ.data ?? [];
+        break;
+      default:
+        raw = [];
+    }
+    return raw
+      .map((r): BreakdownRow => ({
+        key: segment === 'agent' ? r.agent! : segment === 'thread' ? r.thread_id! : r.model ?? '__null__',
+        label: segment === 'agent' ? r.agent! : segment === 'thread' ? r.thread_id! : buildModelLabel(r),
+        sessions: r.sessions,
+        inputTokens: r.input_tokens,
+        outputTokens: r.output_tokens,
+        cacheReadTokens: r.cache_read_tokens,
+        totalTokens: r.total_tokens,
+      }))
+      .sort((a, b) => b.totalTokens - a.totalTokens);
+  }, [segment, agentQ.data, threadQ.data, modelQ.data]);
+
+  const handleExport = useCallback(() => {
+    const csv = breakdownRowsToCSV(exportRows);
+    downloadCSV(csv, `spend-${segment}-${win.label}.csv`);
+  }, [exportRows, segment, win.label]);
+
   const isAnyLoading = agentQ.isLoading || threadQ.isLoading || modelQ.isLoading;
   const isAnyError = agentQ.isError || threadQ.isError || modelQ.isError;
 
   return (
     <div className="bg-surface-canvas h-full overflow-y-auto">
       <div className="mx-auto max-w-5xl p-6">
-        {/* Header */}
-        <header className="mb-6 flex items-center justify-between">
-          <div>
-            <h1 className="text-h2 text-text-primary">Spend</h1>
-            <p className="text-text-muted text-sm">Token usage and cache savings</p>
+        {/* Header — Pasture PageHeader pattern */}
+        <header className="mb-6 flex items-start justify-between gap-3">
+          <PageHeader
+            title="Spend"
+            meta="Token usage and cache savings"
+          />
+          <div className="flex items-center gap-3">
+            <WindowToggle winIdx={winIdx} onChangeWindow={onChangeWindow} />
+            {exportRows.length > 0 && !isAnyLoading && (
+              <Button variant="secondary" size="sm" onClick={handleExport}>
+                Export
+              </Button>
+            )}
           </div>
-          <WindowToggle winIdx={winIdx} onChangeWindow={onChangeWindow} />
         </header>
 
         {/* Error banner */}
@@ -586,7 +680,9 @@ export function SpendPage(): JSX.Element {
         {/* Breakdown */}
         <div className="mb-6">
           <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-text-muted text-xs font-medium tracking-wider uppercase">Where it went</h2>
+            <h2 className="text-text-secondary text-xs font-semibold tracking-wider uppercase">
+              Where it went
+            </h2>
             <BreakdownToggle segment={segment} setSegment={setSegment} />
           </div>
           <BreakdownTable
