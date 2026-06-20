@@ -299,7 +299,7 @@ function EditableOrgSection({
               min={1}
               value={threadsCap}
               onChange={(e) => setThreadsCap(e.target.value)}
-              className="bg-bg-raised border-border text-fg w-28 rounded border px-2 py-0.5 text-sm"
+              className="bg-surface-sunken border-border-default text-text-primary w-28 rounded-lg border px-2 py-0.5 text-sm"
             />
           </EditableRow>
           <EditableRow label="Invocation timeout (s)">
@@ -309,7 +309,7 @@ function EditableOrgSection({
               value={threadsTimeout}
               onChange={(e) => setThreadsTimeout(e.target.value)}
               placeholder="none"
-              className="bg-bg-raised border-border text-fg w-28 rounded border px-2 py-0.5 text-sm"
+              className="bg-surface-sunken border-border-default text-text-primary w-28 rounded-lg border px-2 py-0.5 text-sm"
             />
           </EditableRow>
         </div>
