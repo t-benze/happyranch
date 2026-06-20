@@ -98,6 +98,12 @@
   --color-info-soft:      oklch(0.94 0.035 248);
   --color-danger-soft:    oklch(0.94 0.04 28);
 
+  /* ---- Direct semantic names (ds.css Direction-A parity) ---- */
+  --color-accent-soft:  oklch(0.93 0.045 152);
+  --color-attention:    oklch(0.70 0.13 64);
+  --color-positive:     oklch(0.58 0.11 152);
+  --color-danger:       oklch(0.55 0.16 25);
+
   /* ---- AGENT IDENTITY ---- */
 
   --color-agent-manager:   #8265c8;
@@ -391,4 +397,10 @@
   --color-attention-text: oklch(0.84 0.11 72);
   --color-info-soft:      oklch(0.32 0.045 245);
   --color-danger-soft:    oklch(0.34 0.06 28);
+
+  /* ---- Direct semantic names (ds.css Direction-A parity, dark) ---- */
+  --color-accent-soft:  oklch(0.32 0.06 152);
+  --color-attention:    oklch(0.78 0.13 70);
+  --color-positive:     oklch(0.72 0.12 152);
+  --color-danger:       oklch(0.70 0.15 25);
 }

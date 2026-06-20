@@ -60,6 +60,7 @@ describe('useTheme', () => {
     // 3. Remount — readInitial() should find "dark" in localStorage
     const { result: second } = renderHook(() => useTheme());
     expect(second.current.theme).toBe('dark');
+    expect(localStorage.getItem('happyranch.theme')).toBe('dark');
     expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
   });
 });
