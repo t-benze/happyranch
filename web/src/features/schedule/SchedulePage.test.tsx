@@ -121,8 +121,14 @@ describe('SchedulePage — Pasture fidelity read-only work-hours list', () => {
     mountAt(`/orgs/${SLUG}/schedule`);
 
     await waitFor(() => {
-      // Count eyebrow: "3 wakes across 2 agents"
-      expect(screen.getByText(/3 wakes across 2 agents/)).toBeInTheDocument();
+      // Count eyebrow: "3 wakes across 2 agents" (text split across <span> wrappers)
+      expect(
+        screen.getByText(
+          (_content, element) =>
+            element?.tagName === 'P' &&
+            (element?.textContent?.includes('3 wakes across 2 agents') ?? false),
+        ),
+      ).toBeInTheDocument();
     });
   });
 

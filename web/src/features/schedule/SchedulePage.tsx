@@ -170,13 +170,13 @@ function WakeRow({ entry, slug }: { entry: WorkHourRecord; slug: string }): JSX.
       </span>
 
       {/* Scheduled for */}
-      <span className="text-text-muted shrink-0 text-xs">
+      <span className="text-text-muted shrink-0 font-mono text-xs tabular-nums">
         {formatScheduledFor(entry.scheduled_for)}
       </span>
 
       {/* Routine count */}
       {entry.routine_count > 0 && (
-        <span className="text-text-muted shrink-0 text-xs tabular-nums">
+        <span className="text-text-muted shrink-0 font-mono text-xs tabular-nums">
           {entry.routine_count} {entry.routine_count === 1 ? 'routine' : 'routines'}
         </span>
       )}
@@ -304,8 +304,8 @@ export function SchedulePage(): JSX.Element {
       {!query.isLoading && !query.isError && entries.length > 0 && (
         <div className="flex-1 overflow-y-auto" aria-label="Scheduled wakes">
           {/* Count eyebrow */}
-          <p className="text-text-secondary mx-4 mt-4 mb-2 text-xs font-semibold tracking-wider uppercase">
-            {entries.length} wake{entries.length !== 1 ? 's' : ''} across {groups.length} agent{groups.length !== 1 ? 's' : ''}
+          <p className="text-overline text-text-secondary mx-4 mt-4 mb-2 tracking-wider uppercase">
+            <span className="font-mono tabular-nums">{entries.length}</span> wake{entries.length !== 1 ? 's' : ''} across <span className="font-mono tabular-nums">{groups.length}</span> agent{groups.length !== 1 ? 's' : ''}
           </p>
 
           <div className="space-y-4 p-4">
