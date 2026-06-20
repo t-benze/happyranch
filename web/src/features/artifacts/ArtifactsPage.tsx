@@ -1,20 +1,28 @@
 /**
- * Artifacts page — flat 3-column card grid (§4.6 PRD final).
+ * Artifacts page — Direction-A Pasture fidelity pass (THR-030 Leg B batch 8).
  *
- * The daemon artifact route returns only `name`, `size_bytes`, and
- * `modified_at` — no agent, task_id, thread, kind/type, or dream_id fields.
- * Per the honesty lens (P1), cards show ONLY stored fields:
- *   - name (artifact file name)
- *   - size (formatted: "5 MB", etc.)
- *   - modified_at (formatted timestamp)
- *   - download action (wired to existing `GET /artifacts/{name}` route)
- *   - delete action (wired to existing `DELETE /artifacts/{name}` route)
+ * Flat 3-column card grid. The daemon artifact route returns only `name`,
+ * `size_bytes`, and `modified_at` — no agent, task_id, thread, kind/type,
+ * or dream_id fields. Per the honesty fence, cards show ONLY stored fields:
+ *   - name (artifact file name) — font-display heading
+ *   - size (formatted: "5 MB", etc.) — font-mono tabular-nums
+ *   - modified_at (formatted timestamp) — font-mono tabular-nums
+ *   - download action (wired to `GET /artifacts/{name}`)
+ *   - delete action (wired to `DELETE /artifacts/{name}`)
  *
- * No kind pill, status tag, provenance, IdBadge, PR/CI panel, or dream
- * marker — none of those fields exist on the stored artifact record.
- * Upload remains available (existing feature, kept per reshape directive).
+ * No kind pill, status tag, provenance, type filter, IdBadge, PR/CI panel,
+ * or dream marker — none of those fields exist on the stored artifact record.
+ * Upload remains available as a collapsible section (existing feature).
  *
- * States: loading skeleton, calm empty ("No artifacts yet"), error with retry.
+ * Pasture vocabulary:
+ *   Cards: bg-surface + border-border-default + shadow-pasture-sm + rounded-lg
+ *   Heading: font-display text-h2
+ *   Size/timestamp: font-mono tabular-nums
+ *   Labels: text-text-secondary text-xs font-semibold tracking-wider uppercase
+ *   Empty state: calm EmptyState ("No artifacts yet")
+ *   Segmented controls/filter pills: rounded-full (per ds.css --radius-pill)
+ *
+ * States: loading skeleton, calm empty, error with retry.
  */
 import { useId, useRef, useState } from 'react';
 import { Download, Trash2, Upload } from 'lucide-react';
@@ -75,7 +83,7 @@ function ArtifactsSkeleton(): JSX.Element {
       {[1, 2, 3, 4, 5, 6].map((i) => (
         <div
           key={i}
-          className="border-border-subtle bg-surface-canvas rounded-lg border p-4"
+          className="bg-surface border-border-default rounded-lg border p-4"
         >
           <div className="bg-surface-sunken mb-2 h-4 w-3/4 animate-pulse rounded" />
           <div className="bg-surface-sunken mb-3 h-3 w-1/3 animate-pulse rounded" />
@@ -110,17 +118,17 @@ function ArtifactCard({
   const size = formatAttachmentSize(sizeBytes) ?? '—';
 
   return (
-    <div className="border-border-subtle bg-surface-canvas hover:bg-surface-raised flex flex-col rounded-lg border p-4 transition-colors">
-      {/* File name */}
+    <div className="bg-surface border-border-default shadow-pasture-sm hover:bg-surface-hover flex flex-col rounded-lg border p-4 transition-colors">
+      {/* File name — font-display heading */}
       <h3
-        className="text-fg mb-1 text-sm font-medium break-all"
+        className="font-display text-text-primary mb-2 text-sm font-medium break-all"
         title={name}
       >
         {name}
       </h3>
 
-      {/* Size + modified */}
-      <div className="text-fg-muted mb-3 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs">
+      {/* Size + modified — font-mono tabular-nums */}
+      <div className="text-text-muted mb-3 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-xs tabular-nums">
         <span>{size}</span>
         <span>{formatModifiedAt(modifiedAt)}</span>
       </div>
@@ -130,7 +138,7 @@ function ArtifactCard({
         <button
           type="button"
           onClick={() => onDownload(name)}
-          className="text-accent inline-flex items-center gap-1 text-xs hover:underline"
+          className="text-accent-default inline-flex items-center gap-1 text-xs hover:underline"
         >
           <Download size={14} aria-hidden="true" />
           Download
@@ -228,11 +236,11 @@ export function ArtifactsPage(): JSX.Element {
 
   return (
     <div className="bg-surface-canvas flex h-full flex-col">
-      {/* Header */}
-      <header className="border-border-subtle border-b p-4">
+      {/* Header — Pasture font-display heading */}
+      <header className="border-border-default border-b p-4">
         <div className="flex items-start justify-between gap-3">
           <PageHeader
-            title="Artifacts"
+            title={<span className="font-display">Artifacts</span>}
             meta="Org-wide artifacts. Browse, download, upload, or delete."
           />
           <Button
@@ -245,13 +253,13 @@ export function ArtifactsPage(): JSX.Element {
           </Button>
         </div>
 
-        {/* Upload form (collapsible) */}
+        {/* Upload form (collapsible) — Pasture card */}
         {showUpload && (
           <section
             aria-label="Upload artifact"
-            className="border-border bg-surface-sunken mt-4 flex flex-col gap-3 rounded-md border p-4"
+            className="bg-surface border-border-default shadow-pasture-sm mt-4 flex flex-col gap-3 rounded-lg border p-4"
           >
-            <h3 className="text-fg text-sm font-semibold">Upload artifact</h3>
+            <h3 className="text-text-primary text-sm font-semibold">Upload artifact</h3>
             <div className="flex flex-col gap-1">
               <Label htmlFor={fileId}>File</Label>
               <Input
@@ -276,7 +284,7 @@ export function ArtifactsPage(): JSX.Element {
                   setError(null);
                 }}
               />
-              <p className="text-fg-muted text-xs">
+              <p className="text-text-muted text-xs">
                 Each '/'-separated segment must match [A-Za-z0-9._-]+ (letters, digits, dot, underscore, hyphen). Forward slash only as separator; no leading/trailing/empty segments. Max 200 characters, 10 MB.
               </p>
             </div>
@@ -303,7 +311,7 @@ export function ArtifactsPage(): JSX.Element {
         {/* Error */}
         {listQuery.isError && (
           <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
-            <p className="text-tier-red text-sm">
+            <p className="text-feedback-danger text-sm">
               Could not load artifacts.
               {listQuery.error?.message && <> {listQuery.error.message}</>}
             </p>
@@ -319,7 +327,7 @@ export function ArtifactsPage(): JSX.Element {
           </div>
         )}
 
-        {/* Empty */}
+        {/* Empty — Pasture calm empty state */}
         {!listQuery.isLoading && !listQuery.isError && artifacts.length === 0 && (
           <div className="flex h-full items-center justify-center">
             <EmptyState
@@ -332,6 +340,11 @@ export function ArtifactsPage(): JSX.Element {
         {/* Card grid */}
         {!listQuery.isLoading && !listQuery.isError && artifacts.length > 0 && (
           <>
+            {/* Count label — Pasture eyebrow */}
+            <p className="text-text-secondary mb-4 text-xs font-semibold tracking-wider uppercase">
+              {artifacts.length} artifact{artifacts.length !== 1 ? 's' : ''}
+            </p>
+
             {/* Banner for delete/download errors */}
             {deleteError && (
               <p role="alert" className="text-feedback-danger mb-4 text-sm">
