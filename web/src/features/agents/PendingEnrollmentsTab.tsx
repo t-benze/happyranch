@@ -18,7 +18,6 @@ import {
 } from '@/design-system/primitives/Dialog';
 import { Button } from '@/design-system/primitives/Button';
 import { Textarea } from '@/design-system/primitives/Textarea';
-import { AgentChip } from '@/design-system/patterns/AgentChip';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { useApproveAgent, useEnrollmentsList, useRejectAgent } from '@/hooks/agents';
 
@@ -31,7 +30,7 @@ export function PendingEnrollmentsTab(): JSX.Element {
   const [pendingName, setPendingName] = useState<string | null>(null);
 
   if (enrollments.isLoading) {
-    return <p className="text-fg-muted p-4 text-sm">Loading…</p>;
+    return <p className="text-text-muted p-4 text-sm">Loading…</p>;
   }
   if (enrollments.isError) {
     return (
@@ -81,17 +80,29 @@ export function PendingEnrollmentsTab(): JSX.Element {
         {rows.map((e) => (
           <li
             key={e.name}
-            className="border-border-subtle bg-surface-raised rounded-lg border p-3"
+            className="border-border-default bg-surface shadow-pasture-sm rounded-lg border p-3"
           >
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <AgentChip name={e.name} role={e.role} />
-                <p className="text-fg-muted mt-1 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="font-display text-text-primary text-sm font-medium">
+                    {e.name}
+                  </span>
+                  <span
+                    aria-hidden="true"
+                    className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
+                      e.role === 'manager'
+                        ? 'bg-agent-manager'
+                        : 'bg-agent-worker'
+                    }`}
+                  />
+                </div>
+                <p className="text-text-muted mt-1 text-xs">
                   team: {e.team} · executor: {e.executor}
                   {e.enrolled_by && <> · enrolled by {e.enrolled_by}</>}
                 </p>
                 {e.description && (
-                  <p className="text-fg mt-2 text-sm">{e.description}</p>
+                  <p className="text-text-secondary mt-2 text-sm">{e.description}</p>
                 )}
               </div>
               <div className="flex shrink-0 gap-2">
