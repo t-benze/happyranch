@@ -227,7 +227,8 @@ describe('AuditPage — day-grouped timeline', () => {
     mountAt(`/orgs/${SLUG}/audit`);
 
     await waitFor(() => {
-      expect(screen.getByText('1.5K tok')).toBeInTheDocument();
+      // Token cost now renders in the mono secondary detail line ("… tokens").
+      expect(screen.getByText('1.5K tokens')).toBeInTheDocument();
     });
   });
 
@@ -359,8 +360,8 @@ describe('AuditPage — day-grouped timeline', () => {
     mountAt(`/orgs/${SLUG}/audit`);
 
     await waitFor(() => {
-      // Token cost should render
-      expect(screen.getByText('500 tok')).toBeInTheDocument();
+      // Token cost renders in the mono secondary detail line.
+      expect(screen.getByText('500 tokens')).toBeInTheDocument();
       // agent_session_id must NOT appear as executor text
       expect(screen.queryByText(/abc12345/)).not.toBeInTheDocument();
     });
