@@ -66,6 +66,90 @@ function seedSidebarShell(): void {
   );
 }
 
+/** A dashboard/summary payload with overridable narrative_counts + org_age_days. */
+function dashboardSummary(
+  over: { org_age_days?: number; counts?: Partial<Record<string, number>> } = {},
+) {
+  return {
+    heartbeat: [],
+    narrative_counts: {
+      completed_today: 0,
+      failed_today: 0,
+      escalated_open: 0,
+      kb_added_today: 0,
+      agents_active_now: 0,
+      spend_today_usd: 0,
+      ...(over.counts ?? {}),
+    },
+    escalations: [],
+    active_by_team: [],
+    recent_activity: [],
+    updates_this_week: [],
+    org_pulse: [],
+    org_age_days: over.org_age_days ?? 0,
+    server_now: '2026-06-17T12:00:00Z',
+  };
+}
+
+describe('THR-030 BUG-08: sidebar Day/team context line', () => {
+  test('renders "Day N · <org>" when org_age_days > 0', async () => {
+    seedSidebarShell();
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/dashboard/summary`, () =>
+        HttpResponse.json(dashboardSummary({ org_age_days: 15 })),
+      ),
+    );
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
+
+    await waitFor(() => {
+      expect(screen.getByText(`Day 15 · ${SLUG}`)).toBeInTheDocument();
+    });
+  });
+
+  test('degrades to bare org slug (no garish "Day 0") on a brand-new org', async () => {
+    seedSidebarShell(); // fixture already reports org_age_days: 0
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
+
+    await waitFor(() => {
+      // The context line still names the org…
+      expect(screen.getByText(SLUG)).toBeInTheDocument();
+    });
+    // …but never shows "Day 0".
+    expect(screen.queryByText(/Day 0/)).toBeNull();
+  });
+});
+
+describe('THR-030 BUG-03: nav count badges (wired from narrative_counts)', () => {
+  test('positive counts render badges (Agents ← agents_active_now, Audit ← escalated_open)', async () => {
+    seedSidebarShell();
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/dashboard/summary`, () =>
+        HttpResponse.json(
+          dashboardSummary({ counts: { agents_active_now: 5, escalated_open: 3 } }),
+        ),
+      ),
+    );
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
+
+    await waitFor(() => {
+      expect(screen.getByRole('link', { name: /Agents/ })).toHaveTextContent('5');
+    });
+    expect(screen.getByRole('link', { name: /Audit/ })).toHaveTextContent('3');
+  });
+
+  test('zero counts render NO badge (no "0" noise, no NaN)', async () => {
+    seedSidebarShell(); // fixture reports all narrative_counts: 0
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
+
+    await waitFor(() => {
+      // Exact accessible name = "Agents"/"Audit" proves no trailing badge digit.
+      expect(screen.getByRole('link', { name: 'Agents' })).toBeInTheDocument();
+    });
+    expect(screen.getByRole('link', { name: 'Audit' })).toBeInTheDocument();
+    expect(screen.queryByText('NaN')).toBeNull();
+  });
+});
+
 describe('IA-1: Sidebar (left rail replaces TopBar)', () => {
   test('renders Primary group nav items', async () => {
     seedSidebarShell();

@@ -30,6 +30,7 @@ import {
 } from '@/design-system/primitives/Tooltip';
 import { AddOrgDialog } from '@/features/orgs/AddOrgDialog';
 import { useAgentsRoutes } from '@/hooks/agents';
+import { useDashboardSummary } from '@/hooks/dashboard';
 import { useKbRoutes } from '@/hooks/kb';
 import { useOrgsList } from '@/hooks/orgs';
 import { useTasksRoutes } from '@/hooks/tasks';
@@ -40,10 +41,12 @@ import { useOrgSlugOptional } from '@/lib/orgSlug';
 /**
  * IA-1: Grouped left sidebar + desktop window chrome, retiring the ~9-tab TopBar.
  *
- * Header: context switcher (wordmark + "<team>" line + caret) — the org
- *   switcher, restyled as a context header (THR-030 BUG-01/BUG-08). It keeps
- *   the existing org-switch navigation logic; only the trigger widget changed
- *   from a native-style <Select> combobox to a context-header DropdownMenu.
+ * Header: context switcher (wordmark + "Day N · <team>" line + caret) — the
+ *   org switcher, restyled as a context header (THR-030 BUG-01/BUG-08). It
+ *   keeps the existing org-switch navigation logic; only the trigger widget
+ *   changed from a native-style <Select> combobox to a context-header
+ *   DropdownMenu. The "Day N" prefix reads org_age_days from the dashboard
+ *   summary and is hidden on a brand-new org (org_age_days === 0).
  * Primary group: Home, Threads, Tasks, Agents, Knowledge, Artifacts
  * Operate group: Spend, Dreams, Schedule, Audit
  * Footer: Settings (labeled row + gear) above the account identity row.
@@ -67,6 +70,16 @@ export function Sidebar(): JSX.Element {
   const tasksRoutes = useTasksRoutes();
   const agentsRoutes = useAgentsRoutes();
   const kbRoutes = useKbRoutes();
+
+  // Dashboard summary drives the header context line ("Day N") and the nav
+  // count badges (THR-030 BUG-08/BUG-03). Same query DashboardPage consumes —
+  // React Query dedupes when both are mounted; presentation-only, no new route.
+  const summary = useDashboardSummary().data;
+  // First-run degrade: a brand-new org reports org_age_days === 0; the
+  // reference hides "Day 0" (mirrors DashboardPage's first-run handling), so
+  // fall back to the bare org slug until day 1.
+  const orgAgeDays = summary?.org_age_days ?? 0;
+  const counts = summary?.narrative_counts;
 
   // Global jump chords — reused from TopBar verbatim
   useGlobalJump('d', () => {
@@ -158,7 +171,7 @@ export function Sidebar(): JSX.Element {
               </span>
               {activeSlug && (
                 <span className="text-fg-muted mt-0.5 block truncate text-xs">
-                  {activeSlug}
+                  {orgAgeDays > 0 ? `Day ${orgAgeDays} · ${activeSlug}` : activeSlug}
                 </span>
               )}
             </span>
@@ -204,7 +217,11 @@ export function Sidebar(): JSX.Element {
           <SidebarNavItem icon={ListTodo} {...sidebarLink('tasks', true)}>
             Tasks
           </SidebarNavItem>
-          <SidebarNavItem icon={Users} {...sidebarLink('agents', true)}>
+          <SidebarNavItem
+            icon={Users}
+            badge={counts?.agents_active_now}
+            {...sidebarLink('agents', true)}
+          >
             Agents
           </SidebarNavItem>
           <SidebarNavItem icon={BookOpen} {...sidebarLink('kb', true)}>
@@ -229,7 +246,11 @@ export function Sidebar(): JSX.Element {
           <SidebarNavItem icon={CalendarClock} {...sidebarLink('schedule', true)}>
             Schedule
           </SidebarNavItem>
-          <SidebarNavItem icon={ClipboardList} {...sidebarLink('audit', true)}>
+          <SidebarNavItem
+            icon={ClipboardList}
+            badge={counts?.escalated_open}
+            {...sidebarLink('audit', true)}
+          >
             Audit
           </SidebarNavItem>
         </nav>
@@ -293,9 +314,10 @@ function SidebarNavItem({
   icon: LucideIcon;
   /**
    * Optional count badge (BUG-03). Rendered only when a positive count is
-   * supplied. Counts are NOT wired in this batch — binding them would require
-   * adding cross-surface data fetches to the global chrome (escalated to the
-   * engineering_manager per the THR-030 presentation-only wiring constraint).
+   * supplied (undefined / 0 → no badge, no "0" noise). Wired from the
+   * dashboard summary's narrative_counts: Agents ← agents_active_now,
+   * Audit ← escalated_open. Threads/Tasks have no matching narrative_counts
+   * field, so they stay badge-less pending a founder ruling (THR-030 round 1).
    */
   badge?: number;
   children: React.ReactNode;
