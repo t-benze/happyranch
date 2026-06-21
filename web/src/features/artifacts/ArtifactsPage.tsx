@@ -1,31 +1,32 @@
 /**
- * Artifacts page — Direction-A Pasture fidelity pass (THR-030 Leg B batch 8).
+ * Artifacts page — "produced-artifacts" recency card grid (THR-030 ART-01..04).
  *
- * Flat 3-column card grid. The daemon artifact route returns only `name`,
- * `size_bytes`, and `modified_at` — no agent, task_id, thread, kind/type,
- * or dream_id fields. Per the honesty fence, cards show ONLY stored fields:
- *   - name (artifact file name) — font-display heading
- *   - size (formatted: "5 MB", etc.) — font-mono tabular-nums
- *   - modified_at (formatted timestamp) — font-mono tabular-nums
- *   - download action (wired to `GET /artifacts/{name}`)
- *   - delete action (wired to `DELETE /artifacts/{name}`)
+ * The daemon artifact route returns only `name`, `size_bytes`, and
+ * `modified_at` — no stored type, status, agent, thread, or authored-at.
+ * Per the honesty fence, everything richer than those three fields is DERIVED
+ * client-side from the file name (see ./artifact-meta):
+ *   - type pill + centered type icon, from the extension / a PR token (ART-01)
+ *   - provenance line "THR · agent · date", parsed from the
+ *     `<agent>-<YYYY-MM-DD>-<slug>` convention; neutral when it doesn't match
+ *   - eyebrow "N ARTIFACTS · PRODUCED BY N THREADS" + serif title (ART-03)
+ *   - segmented type filter + "Recent first" sort (ART-02)
  *
- * No kind pill, status tag, provenance, type filter, IdBadge, PR/CI panel,
- * or dream marker — none of those fields exist on the stored artifact record.
- * Upload remains available as a collapsible section (existing feature).
+ * DELIBERATELY NOT rendered (no data source — deferred to a backend change):
+ *   - the authoritative status pill (merged/draft/open/final/applied)
+ *   - server-captured provenance (real agent/thread/time at put-time)
+ * We never fabricate either.
  *
- * Pasture vocabulary:
- *   Cards: bg-surface + border-border-default + shadow-pasture-sm + rounded-lg
- *   Heading: font-display text-h2
- *   Size/timestamp: font-mono tabular-nums
- *   Labels: text-text-secondary text-xs font-semibold tracking-wider uppercase
- *   Empty state: calm EmptyState ("No artifacts yet")
- *   Segmented controls/filter pills: rounded-full (per ds.css --radius-pill)
+ * ART-04: this is presented as a read view of what the org produced. Download
+ * stays the primary card action (wiring unchanged); Delete is de-emphasised to
+ * an icon affordance and Upload to a secondary header toggle — the raw
+ * file-manager chrome is no longer the primary vocabulary.
  *
- * States: loading skeleton, calm empty, error with retry.
+ * Recency: the list is sorted by `modified_at` (the real, always-present server
+ * mtime) descending — a stronger "Recent first" signal than the name-embedded
+ * date, and ISO-8601 "Z" strings sort lexicographically = chronologically.
  */
-import { useId, useRef, useState } from 'react';
-import { Download, Trash2, Upload } from 'lucide-react';
+import { useId, useMemo, useRef, useState } from 'react';
+import { Download, File, FileDiff, FileText, GitPullRequest, Image, Trash2, Upload } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { artifacts as artifactsApi, ApiError } from '@/lib/api';
 import { useOrgSlug } from '@/lib/orgSlug';
@@ -33,9 +34,40 @@ import { formatAttachmentSize } from '@/lib/threadAttachments';
 import { Button } from '@/design-system/primitives/Button';
 import { Input } from '@/design-system/primitives/Input';
 import { Label } from '@/design-system/primitives/Label';
-import { PageHeader } from '@/design-system/patterns/PageHeader';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
+import { IdBadge } from '@/design-system/patterns/IdBadge';
+import {
+  deriveArtifactType,
+  deriveTitle,
+  formatProvenanceDate,
+  parseProvenance,
+  type ArtifactType,
+} from './artifact-meta';
 import { validateArtifactUpload } from './validation';
+
+/* ------------------------------------------------------------------ */
+/*  Type → presentation (pill label, centered icon, icon tint)         */
+/* ------------------------------------------------------------------ */
+
+const TYPE_META: Record<
+  ArtifactType,
+  { pill: string; Icon: typeof File; tint: string }
+> = {
+  'pull-request': { pill: 'pull request', Icon: GitPullRequest, tint: 'text-accent-text' },
+  doc: { pill: 'document', Icon: FileText, tint: 'text-text-secondary' },
+  patch: { pill: 'patch', Icon: FileDiff, tint: 'text-accent-text' },
+  design: { pill: 'design', Icon: Image, tint: 'text-text-secondary' },
+  file: { pill: 'file', Icon: File, tint: 'text-text-muted' },
+};
+
+/** Segmented filter — "All" plus the four named categories ("file" lives in All). */
+const FILTERS: { key: ArtifactType | 'all'; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'pull-request', label: 'Pull requests' },
+  { key: 'doc', label: 'Docs' },
+  { key: 'patch', label: 'Patches' },
+  { key: 'design', label: 'Designs' },
+];
 
 /* ------------------------------------------------------------------ */
 /*  Error helpers                                                      */
@@ -60,16 +92,6 @@ function describeDeleteError(err: unknown): string {
   return String(err);
 }
 
-function formatModifiedAt(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
 /* ------------------------------------------------------------------ */
 /*  Skeleton                                                           */
 /* ------------------------------------------------------------------ */
@@ -83,13 +105,51 @@ function ArtifactsSkeleton(): JSX.Element {
       {[1, 2, 3, 4, 5, 6].map((i) => (
         <div
           key={i}
-          className="bg-surface border-border-default rounded-lg border p-4"
+          className="bg-surface border-border-default overflow-hidden rounded-lg border"
         >
-          <div className="bg-surface-sunken mb-2 h-4 w-3/4 animate-pulse rounded" />
-          <div className="bg-surface-sunken mb-3 h-3 w-1/3 animate-pulse rounded" />
-          <div className="bg-surface-sunken h-3 w-1/2 animate-pulse rounded" />
+          <div className="bg-surface-sunken h-28 animate-pulse" />
+          <div className="flex flex-col gap-2 p-4">
+            <div className="bg-surface-sunken h-4 w-3/4 animate-pulse rounded" />
+            <div className="bg-surface-sunken h-3 w-1/2 animate-pulse rounded" />
+          </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Thumbnail header — hatched backdrop + type pill + centered icon    */
+/* ------------------------------------------------------------------ */
+
+function ThumbnailHeader({ type }: { type: ArtifactType }): JSX.Element {
+  const patternId = useId();
+  const { pill, Icon, tint } = TYPE_META[type];
+  return (
+    <div className="bg-surface-sunken border-border-subtle relative flex h-28 items-center justify-center overflow-hidden border-b">
+      {/* Diagonal hatch — SVG (no inline style / arbitrary Tailwind, per LRN-037). */}
+      <svg aria-hidden="true" className="text-border-strong absolute inset-0 h-full w-full">
+        <defs>
+          <pattern
+            id={patternId}
+            width="9"
+            height="9"
+            patternUnits="userSpaceOnUse"
+            patternTransform="rotate(45)"
+          >
+            <line x1="0" y1="0" x2="0" y2="9" stroke="currentColor" strokeWidth="1" />
+          </pattern>
+        </defs>
+        <rect width="100%" height="100%" fill={`url(#${patternId})`} opacity="0.45" />
+      </svg>
+      <span className="bg-surface text-text-secondary border-border-subtle absolute top-3 left-3 rounded-full border px-2 py-0.5 text-xs lowercase">
+        {pill}
+      </span>
+      <div
+        className={`bg-surface shadow-pasture-sm relative flex h-12 w-12 items-center justify-center rounded-xl ${tint}`}
+      >
+        <Icon size={22} aria-hidden="true" />
+      </div>
     </div>
   );
 }
@@ -101,7 +161,7 @@ function ArtifactsSkeleton(): JSX.Element {
 interface ArtifactCardProps {
   name: string;
   sizeBytes: number;
-  modifiedAt: string;
+  slug: string;
   onDownload: (name: string) => void;
   onDelete: (name: string) => void;
   isDeleting: boolean;
@@ -110,51 +170,72 @@ interface ArtifactCardProps {
 function ArtifactCard({
   name,
   sizeBytes,
-  modifiedAt,
+  slug,
   onDownload,
   onDelete,
   isDeleting,
 }: ArtifactCardProps): JSX.Element {
+  const type = deriveArtifactType(name);
+  const title = deriveTitle(name);
+  const prov = parseProvenance(name);
   const size = formatAttachmentSize(sizeBytes) ?? '—';
+  const hasProvenance = Boolean(prov.threadId || prov.agent);
 
   return (
-    <div className="bg-surface border-border-default shadow-pasture-sm hover:bg-surface-hover flex flex-col rounded-lg border p-4 transition-colors">
-      {/* File name — font-display heading */}
-      <h3
-        className="font-display text-text-primary mb-2 text-sm font-medium break-all"
-        title={name}
-      >
-        {name}
-      </h3>
+    <article className="bg-surface border-border-default shadow-pasture-sm hover:border-border-strong flex flex-col overflow-hidden rounded-lg border transition-colors">
+      <ThumbnailHeader type={type} />
 
-      {/* Size + modified — font-mono tabular-nums */}
-      <div className="text-text-muted mb-3 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-xs tabular-nums">
-        <span>{size}</span>
-        <span>{formatModifiedAt(modifiedAt)}</span>
-      </div>
+      <div className="flex flex-1 flex-col p-4">
+        {/* Title — font-display heading; canonical name on hover. */}
+        <h3
+          className="font-display text-text-primary text-sm font-medium break-words"
+          title={name}
+        >
+          {title}
+        </h3>
 
-      {/* Actions */}
-      <div className="mt-auto flex items-center gap-3">
-        <button
-          type="button"
-          onClick={() => onDownload(name)}
-          className="text-accent-default inline-flex items-center gap-1 text-xs hover:underline"
-        >
-          <Download size={14} aria-hidden="true" />
-          Download
-        </button>
-        <button
-          type="button"
-          onClick={() => onDelete(name)}
-          disabled={isDeleting}
-          aria-label={`Delete ${name}`}
-          className="text-feedback-danger inline-flex items-center gap-1 text-xs hover:underline disabled:opacity-50"
-        >
-          <Trash2 size={14} aria-hidden="true" />
-          {isDeleting ? 'Deleting…' : 'Delete'}
-        </button>
+        {/* Provenance — parsed from the name; omitted entirely when absent. */}
+        {hasProvenance && (
+          <p className="text-text-muted mt-1 flex flex-wrap items-center gap-x-1.5 text-xs">
+            {prov.threadId && (
+              <IdBadge
+                id={prov.threadId}
+                kind="thread"
+                to={`/orgs/${slug}/threads/${prov.threadId}`}
+              />
+            )}
+            {prov.threadId && prov.agent && <span aria-hidden="true">·</span>}
+            {prov.agent && <span>{prov.agent}</span>}
+            {prov.agent && prov.date && <span aria-hidden="true">·</span>}
+            {prov.date && <span>{formatProvenanceDate(prov.date)}</span>}
+          </p>
+        )}
+
+        {/* Footer: size + read actions (Download primary, Delete de-emphasised). */}
+        <div className="mt-auto flex items-center justify-between gap-3 pt-3">
+          <span className="text-text-muted font-mono text-xs tabular-nums">{size}</span>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => onDownload(name)}
+              className="text-accent-text inline-flex items-center gap-1 text-xs hover:underline"
+            >
+              <Download size={14} aria-hidden="true" />
+              Download
+            </button>
+            <button
+              type="button"
+              onClick={() => onDelete(name)}
+              disabled={isDeleting}
+              aria-label={`Delete ${name}`}
+              className="text-text-muted hover:text-feedback-danger inline-flex items-center text-xs transition-colors disabled:opacity-50"
+            >
+              <Trash2 size={14} aria-hidden="true" />
+            </button>
+          </div>
+        </div>
       </div>
-    </div>
+    </article>
   );
 }
 
@@ -173,6 +254,7 @@ export function ArtifactsPage(): JSX.Element {
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [showUpload, setShowUpload] = useState(false);
+  const [activeFilter, setActiveFilter] = useState<ArtifactType | 'all'>('all');
 
   const listQuery = useQuery({
     queryKey: ['artifacts', slug],
@@ -232,28 +314,63 @@ export function ArtifactsPage(): JSX.Element {
 
   const fileId = `${idBase}-file`;
   const nameId = `${idBase}-name`;
-  const artifacts = listQuery.data?.artifacts ?? [];
+  // Stable reference so the derived useMemos below don't recompute every render.
+  const artifacts = useMemo(() => listQuery.data?.artifacts ?? [], [listQuery.data]);
+
+  // Recency-sorted (modified_at desc) once; filter is applied on top per-render.
+  const sorted = useMemo(
+    () => [...artifacts].sort((a, b) => b.modified_at.localeCompare(a.modified_at)),
+    [artifacts],
+  );
+  const visible = useMemo(
+    () =>
+      activeFilter === 'all'
+        ? sorted
+        : sorted.filter((a) => deriveArtifactType(a.name) === activeFilter),
+    [sorted, activeFilter],
+  );
+
+  // Eyebrow counts: artifacts from the list; threads = distinct parsed THR ids.
+  const threadCount = useMemo(() => {
+    const ids = new Set<string>();
+    for (const a of artifacts) {
+      const { threadId } = parseProvenance(a.name);
+      if (threadId) ids.add(threadId);
+    }
+    return ids.size;
+  }, [artifacts]);
+
+  const artifactCount = artifacts.length;
+  const eyebrow =
+    `${artifactCount} artifact${artifactCount === 1 ? '' : 's'}` +
+    (threadCount > 0
+      ? ` · produced by ${threadCount} thread${threadCount === 1 ? '' : 's'}`
+      : '');
+
+  const hasData = !listQuery.isLoading && !listQuery.isError;
 
   return (
     <div className="bg-surface-canvas flex h-full flex-col">
-      {/* Header — Pasture font-display heading */}
-      <header className="border-border-default border-b p-4">
+      {/* Header — eyebrow + serif title (ART-03); Upload de-emphasised (ART-04). */}
+      <header className="border-border-default border-b p-6">
         <div className="flex items-start justify-between gap-3">
-          <PageHeader
-            title={<span className="font-display">Artifacts</span>}
-            meta="Org-wide artifacts. Browse, download, upload, or delete."
-          />
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => setShowUpload((v) => !v)}
-          >
+          <div className="min-w-0">
+            {hasData && (
+              <p className="text-text-secondary text-xs font-semibold tracking-wider uppercase">
+                {eyebrow}
+              </p>
+            )}
+            <h1 className="font-display text-display text-text-primary mt-2 font-medium">
+              Everything the org has produced
+            </h1>
+          </div>
+          <Button variant="ghost" size="sm" onClick={() => setShowUpload((v) => !v)}>
             <Upload aria-hidden="true" size={14} />
             {showUpload ? 'Cancel' : 'Upload'}
           </Button>
         </div>
 
-        {/* Upload form (collapsible) — Pasture card */}
+        {/* Upload form (collapsible) — secondary affordance, not primary chrome. */}
         {showUpload && (
           <section
             aria-label="Upload artifact"
@@ -304,7 +421,7 @@ export function ArtifactsPage(): JSX.Element {
       </header>
 
       {/* Main content */}
-      <div className="flex-1 overflow-y-auto p-4">
+      <div className="flex-1 overflow-y-auto p-6">
         {/* Loading */}
         {listQuery.isLoading && <ArtifactsSkeleton />}
 
@@ -318,17 +435,15 @@ export function ArtifactsPage(): JSX.Element {
             <Button
               size="sm"
               variant="outline"
-              onClick={() =>
-                qc.invalidateQueries({ queryKey: ['artifacts', slug] })
-              }
+              onClick={() => qc.invalidateQueries({ queryKey: ['artifacts', slug] })}
             >
               Retry
             </Button>
           </div>
         )}
 
-        {/* Empty — Pasture calm empty state */}
-        {!listQuery.isLoading && !listQuery.isError && artifacts.length === 0 && (
+        {/* Empty — calm empty state */}
+        {hasData && artifacts.length === 0 && (
           <div className="flex h-full items-center justify-center">
             <EmptyState
               title="No artifacts yet"
@@ -338,12 +453,37 @@ export function ArtifactsPage(): JSX.Element {
         )}
 
         {/* Card grid */}
-        {!listQuery.isLoading && !listQuery.isError && artifacts.length > 0 && (
+        {hasData && artifacts.length > 0 && (
           <>
-            {/* Count label — Pasture eyebrow */}
-            <p className="text-text-secondary mb-4 text-xs font-semibold tracking-wider uppercase">
-              {artifacts.length} artifact{artifacts.length !== 1 ? 's' : ''}
-            </p>
+            {/* Filter (segmented) + sort row (ART-02) */}
+            <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+              <div
+                role="tablist"
+                aria-label="Filter artifacts by type"
+                className="flex flex-wrap items-center gap-1"
+              >
+                {FILTERS.map((f) => {
+                  const active = activeFilter === f.key;
+                  return (
+                    <button
+                      key={f.key}
+                      type="button"
+                      role="tab"
+                      aria-selected={active}
+                      onClick={() => setActiveFilter(f.key)}
+                      className={
+                        active
+                          ? 'bg-accent-muted text-accent-text rounded-full px-3 py-1 text-sm font-medium'
+                          : 'text-text-secondary hover:text-text-primary hover:bg-surface-hover rounded-full px-3 py-1 text-sm'
+                      }
+                    >
+                      {f.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <span className="text-text-muted text-sm">Recent first</span>
+            </div>
 
             {/* Banner for delete/download errors */}
             {deleteError && (
@@ -357,33 +497,35 @@ export function ArtifactsPage(): JSX.Element {
               </p>
             )}
 
-            <div
-              aria-label="Artifacts list"
-              className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"
-            >
-              {artifacts.map((a) => (
-                <ArtifactCard
-                  key={a.name}
-                  name={a.name}
-                  sizeBytes={a.size_bytes}
-                  modifiedAt={a.modified_at}
-                  onDownload={(artifactName) => {
-                    setDownloadError(null);
-                    artifactsApi
-                      .downloadArtifact(slug, artifactName)
-                      .catch((err: unknown) => {
+            {visible.length === 0 ? (
+              <p className="text-text-muted text-sm">No artifacts match this filter.</p>
+            ) : (
+              <div
+                aria-label="Artifacts list"
+                className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"
+              >
+                {visible.map((a) => (
+                  <ArtifactCard
+                    key={a.name}
+                    name={a.name}
+                    sizeBytes={a.size_bytes}
+                    slug={slug}
+                    onDownload={(artifactName) => {
+                      setDownloadError(null);
+                      artifactsApi.downloadArtifact(slug, artifactName).catch((err: unknown) => {
                         const msg =
                           err instanceof ApiError
                             ? `Download failed (HTTP ${err.status}).`
                             : String(err);
                         setDownloadError(msg);
                       });
-                  }}
-                  onDelete={requestDelete}
-                  isDeleting={del.isPending && del.variables === a.name}
-                />
-              ))}
-            </div>
+                    }}
+                    onDelete={requestDelete}
+                    isDeleting={del.isPending && del.variables === a.name}
+                  />
+                ))}
+              </div>
+            )}
           </>
         )}
       </div>

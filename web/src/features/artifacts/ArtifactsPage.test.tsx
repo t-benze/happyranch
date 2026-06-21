@@ -98,7 +98,8 @@ describe('ArtifactsPage', () => {
     const user = userEvent.setup();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/artifacts` });
 
-    await screen.findByText('dev_agent-2026-06-09-report.pdf');
+    // The card title is the slug after the <agent>-<date>- prefix is stripped.
+    await screen.findByText('report.pdf');
 
     // Find the Download button within the card
     const downloadButton = screen.getByRole('button', { name: /Download/i });
@@ -310,16 +311,47 @@ describe('ArtifactsPage', () => {
   });
 
   /* ------------------------------------------------------------------ */
-  /*  Honesty lens                                                      */
+  /*  Header (ART-03)                                                    */
   /* ------------------------------------------------------------------ */
 
-  test('cards show only stored fields — no fabricated provenance, kind, status, or IDs', async () => {
+  test('renders the eyebrow (artifact + distinct-thread counts) and serif title', async () => {
     seedToken();
     stubBaseHandlers();
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/artifacts`, () =>
         HttpResponse.json({
           artifacts: [
+            { name: 'dev_agent-2026-06-11-THR-010-a.md', size_bytes: 10, modified_at: '2026-06-11T00:00:00Z' },
+            { name: 'qa_engineer-2026-06-12-THR-021-b.md', size_bytes: 20, modified_at: '2026-06-12T00:00:00Z' },
+            { name: 'plain-note.txt', size_bytes: 30, modified_at: '2026-06-13T00:00:00Z' },
+          ],
+        }),
+      ),
+    );
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/artifacts` });
+
+    expect(await screen.findByText('Everything the org has produced')).toBeInTheDocument();
+    // 3 artifacts, 2 distinct THR ids (await — the eyebrow renders once data loads).
+    expect(
+      await screen.findByText(/3 artifacts · produced by 2 threads/i),
+    ).toBeInTheDocument();
+  });
+
+  /* ------------------------------------------------------------------ */
+  /*  Derived type pill + provenance (ART-01) — honesty boundary         */
+  /* ------------------------------------------------------------------ */
+
+  test('derives type pill + provenance from the name; never fabricates for non-convention names', async () => {
+    seedToken();
+    stubBaseHandlers();
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/artifacts`, () =>
+        HttpResponse.json({
+          artifacts: [
+            // Matches the convention + carries a THR token.
+            { name: 'dev_agent-2026-06-16-THR-030-handoff.md', size_bytes: 1024, modified_at: '2026-06-16T00:00:00Z' },
+            // Does NOT match the convention — provenance must stay neutral.
             { name: 'report.pdf', size_bytes: 1024, modified_at: '2026-06-09T00:00:00Z' },
           ],
         }),
@@ -328,24 +360,73 @@ describe('ArtifactsPage', () => {
 
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/artifacts` });
 
-    await screen.findByText('report.pdf');
+    // Derived type pill (document) appears for the .md artifact.
+    expect(await screen.findAllByText('document')).not.toHaveLength(0);
+    // Provenance parsed from the name: THR link + agent + formatted date.
+    expect(screen.getByText('THR-030')).toBeInTheDocument();
+    expect(screen.getByText('dev_agent')).toBeInTheDocument();
+    expect(screen.getByText('Jun 16, 2026')).toBeInTheDocument();
 
-    // Name is present
+    // The non-convention 'report.pdf' shows no fabricated agent/THR/date.
     expect(screen.getByText('report.pdf')).toBeInTheDocument();
-    // Size is present
-    expect(screen.getByText('1 KB')).toBeInTheDocument();
-
-    // No TASK- or THR- badges (no stored task_id/thread)
     expect(screen.queryByText(/TASK-/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/THR-/)).not.toBeInTheDocument();
-    // No agent name chips (no stored agent)
-    expect(screen.queryByText(/dev_agent/)).not.toBeInTheDocument();
-    // No PR/CI panel or check status
-    expect(screen.queryByText(/checks/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/CI/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/merge/i)).not.toBeInTheDocument();
-    // No kind pill (no stored kind/type)
-    expect(screen.queryByText(/Pull request/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Doc/i)).not.toBeInTheDocument();
+
+    // The deferred status pill is NEVER rendered (no data source).
+    for (const status of ['merged', 'draft', 'open', 'final', 'applied']) {
+      expect(screen.queryByText(status)).not.toBeInTheDocument();
+    }
+  });
+
+  /* ------------------------------------------------------------------ */
+  /*  Filter + sort (ART-02)                                             */
+  /* ------------------------------------------------------------------ */
+
+  test('the type filter narrows the grid to a single derived category', async () => {
+    seedToken();
+    stubBaseHandlers();
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/artifacts`, () =>
+        HttpResponse.json({
+          artifacts: [
+            { name: 'notes.md', size_bytes: 10, modified_at: '2026-06-11T00:00:00Z' },
+            { name: 'mock.png', size_bytes: 20, modified_at: '2026-06-12T00:00:00Z' },
+          ],
+        }),
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/artifacts` });
+
+    await screen.findByText('notes.md');
+    expect(screen.getByText('mock.png')).toBeInTheDocument();
+
+    // Filter to Designs — the doc drops out, the image stays.
+    await user.click(screen.getByRole('tab', { name: 'Designs' }));
+    expect(screen.getByText('mock.png')).toBeInTheDocument();
+    expect(screen.queryByText('notes.md')).not.toBeInTheDocument();
+  });
+
+  test('sorts the grid by modified_at, most recent first', async () => {
+    seedToken();
+    stubBaseHandlers();
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/artifacts`, () =>
+        HttpResponse.json({
+          artifacts: [
+            { name: 'older.md', size_bytes: 10, modified_at: '2026-06-01T00:00:00Z' },
+            { name: 'newer.md', size_bytes: 20, modified_at: '2026-06-20T00:00:00Z' },
+          ],
+        }),
+      ),
+    );
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/artifacts` });
+
+    await screen.findByText('newer.md');
+    const titles = screen
+      .getAllByRole('heading', { level: 3 })
+      .map((h) => h.textContent);
+    expect(titles).toEqual(['newer.md', 'older.md']);
   });
 });
