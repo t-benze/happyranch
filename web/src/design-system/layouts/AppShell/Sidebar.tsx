@@ -54,6 +54,12 @@ import { useOrgSlugOptional } from '@/lib/orgSlug';
 
 const ADD_ORG_VALUE = '__add_org__';
 
+// BUG-03: Threads/Tasks/Agents carry count-badge chrome. No count is available
+// to the Sidebar client-side without a forbidden data fetch, so the badge
+// renders a static placeholder glyph — the chrome is present, the value stays
+// deliberately unwired (flagged for escalation).
+const NAV_BADGE_PLACEHOLDER = '—';
+
 export function Sidebar(): JSX.Element {
   const { slug: urlSlug } = useParams<{ slug: string }>();
   const contextSlug = useOrgSlugOptional();
@@ -138,8 +144,20 @@ export function Sidebar(): JSX.Element {
                 <span className="text-[#4ade80]">Happy</span>
                 <span className="text-fg">Ranch</span>
               </span>
+              {/* Context line — design target "Day N · <team>" (BUG-08). The
+                  team is the already-loaded active org slug; the "Day N" value
+                  is not available client-side without a forbidden fetch, so it
+                  renders as a placeholder ("Day —") and stays deliberately
+                  unwired. */}
               <span className="text-fg-subtle truncate text-[0.7rem] leading-tight">
-                {activeSlug ?? 'No org'}
+                {activeSlug ? (
+                  <>
+                    <span className="text-fg-muted">Day —</span> ·{' '}
+                    <span>{activeSlug}</span>
+                  </>
+                ) : (
+                  'No org'
+                )}
               </span>
             </span>
             <ChevronDown size={14} aria-hidden="true" className="text-fg-muted shrink-0" />
@@ -171,13 +189,14 @@ export function Sidebar(): JSX.Element {
             to={routes.inboxForOrg(activeSlug ?? '')}
             enabled={!!activeSlug && !isPrototype}
             icon={MessageSquare}
+            badge={NAV_BADGE_PLACEHOLDER}
           >
             Threads
           </SidebarNavItem>
-          <SidebarNavItem {...sidebarLink('tasks', true)} icon={ListChecks}>
+          <SidebarNavItem {...sidebarLink('tasks', true)} icon={ListChecks} badge={NAV_BADGE_PLACEHOLDER}>
             Tasks
           </SidebarNavItem>
-          <SidebarNavItem {...sidebarLink('agents', true)} icon={Users}>
+          <SidebarNavItem {...sidebarLink('agents', true)} icon={Users} badge={NAV_BADGE_PLACEHOLDER}>
             Agents
           </SidebarNavItem>
           <SidebarNavItem {...sidebarLink('kb', true)} icon={BookOpen}>
@@ -285,18 +304,32 @@ function SidebarGroupLabel({ children }: { children: React.ReactNode }): JSX.Ele
   );
 }
 
+function NavCountBadge({ value }: { value: string }): JSX.Element {
+  return (
+    <span
+      data-testid="nav-count-badge"
+      aria-hidden="true"
+      className="bg-bg-raised text-fg-subtle ml-auto inline-flex min-w-[1.25rem] items-center justify-center rounded-full px-1.5 py-0.5 text-[0.65rem] font-medium tabular-nums"
+    >
+      {value}
+    </span>
+  );
+}
+
 function SidebarNavItem({
   to,
   enabled,
   children,
   icon: Icon,
   tooltip,
+  badge,
 }: {
   to: string;
   enabled: boolean;
   children: React.ReactNode;
   icon: LucideIcon;
   tooltip?: string;
+  badge?: string;
 }): JSX.Element {
   if (!enabled) {
     const span = (
@@ -306,6 +339,7 @@ function SidebarNavItem({
       >
         <Icon size={16} aria-hidden="true" className="shrink-0" />
         <span>{children}</span>
+        {badge !== undefined && <NavCountBadge value={badge} />}
       </span>
     );
     if (!tooltip) return span;
@@ -329,6 +363,7 @@ function SidebarNavItem({
     >
       <Icon size={16} aria-hidden="true" className="shrink-0" />
       <span>{children}</span>
+      {badge !== undefined && <NavCountBadge value={badge} />}
     </NavLink>
   );
 }

@@ -110,8 +110,27 @@ describe('IA-1: Sidebar (left rail replaces TopBar)', () => {
       // The context header is the org switcher (keeps the "Active org" label)
       // and is no longer a native footer combobox.
       expect(screen.getByLabelText(/Active org/i)).toBeInTheDocument();
-      // Context line shows the active org slug under the wordmark (BUG-08).
+      // Context line is shaped "Day N · <team>" under the wordmark (BUG-08).
+      // The team is the active org slug; "Day —" is the deliberately-unwired
+      // (no-fetch) placeholder for the not-client-side-available Day value.
       expect(screen.getByText(SLUG)).toBeInTheDocument();
+      expect(screen.getByText(/Day —/)).toBeInTheDocument();
+    });
+  });
+
+  test('renders count-badge chrome on Threads/Tasks/Agents rows (BUG-03)', async () => {
+    seedSidebarShell();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
+
+    await waitFor(() => {
+      // Each of the three rows carries count-badge chrome. The value is a
+      // deliberately-unwired placeholder (no client-side count without a
+      // forbidden fetch), but the badge element must be present per BUG-03.
+      for (const label of ['Threads', 'Tasks', 'Agents']) {
+        const row = screen.getByText(label).closest('a');
+        expect(row).not.toBeNull();
+        expect(within(row!).getByTestId('nav-count-badge')).toBeInTheDocument();
+      }
     });
   });
 
