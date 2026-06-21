@@ -10,6 +10,7 @@ import { screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
+import type { NarrativeCounts } from '@/lib/api/types';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 
@@ -18,8 +19,15 @@ const SLUG = 'test-org';
 /**
  * Seed the MSW handlers that the AppShell + Sidebar query on mount.
  * The Sidebar fetches orgs list, agents, threads, etc. — we answer them all.
+ *
+ * `summary` overrides the dashboard-summary payload the Sidebar context header
+ * (Day-N, BUG-08) and nav badges (BUG-03) read via the shared
+ * `useDashboardSummary()` query. Defaults to a brand-new org (Day 0, all counts
+ * zero) — the degraded / badge-less state.
  */
-function seedSidebarShell(): void {
+function seedSidebarShell(
+  summary: { org_age_days?: number; narrative_counts?: Partial<NarrativeCounts> } = {},
+): void {
   sessionStorage.setItem('happyranch.token', 'tok');
   server.use(
     http.get('/api/v1/orgs', () =>
@@ -44,13 +52,14 @@ function seedSidebarShell(): void {
           kb_added_today: 0,
           agents_active_now: 0,
           spend_today_usd: 0,
+          ...summary.narrative_counts,
         },
         escalations: [],
         active_by_team: [],
         recent_activity: [],
         updates_this_week: [],
         org_pulse: [],
-        org_age_days: 0,
+        org_age_days: summary.org_age_days ?? 0,
         server_now: '2026-06-17T12:00:00Z',
       }),
     ),
@@ -110,27 +119,9 @@ describe('IA-1: Sidebar (left rail replaces TopBar)', () => {
       // The context header is the org switcher (keeps the "Active org" label)
       // and is no longer a native footer combobox.
       expect(screen.getByLabelText(/Active org/i)).toBeInTheDocument();
-      // Context line is shaped "Day N · <team>" under the wordmark (BUG-08).
-      // The team is the active org slug; "Day —" is the deliberately-unwired
-      // (no-fetch) placeholder for the not-client-side-available Day value.
-      expect(screen.getByText(SLUG)).toBeInTheDocument();
-      expect(screen.getByText(/Day —/)).toBeInTheDocument();
-    });
-  });
-
-  test('renders count-badge chrome on Threads/Tasks/Agents rows (BUG-03)', async () => {
-    seedSidebarShell();
-    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
-
-    await waitFor(() => {
-      // Each of the three rows carries count-badge chrome. The value is a
-      // deliberately-unwired placeholder (no client-side count without a
-      // forbidden fetch), but the badge element must be present per BUG-03.
-      for (const label of ['Threads', 'Tasks', 'Agents']) {
-        const row = screen.getByText(label).closest('a');
-        expect(row).not.toBeNull();
-        expect(within(row!).getByTestId('nav-count-badge')).toBeInTheDocument();
-      }
+      // Context line shows the team (active org slug) under the wordmark.
+      const aside = within(screen.getByRole('navigation', { name: /Primary navigation/i }));
+      expect(aside.getByText(SLUG)).toBeInTheDocument();
     });
   });
 
@@ -194,6 +185,89 @@ describe('IA-1: Sidebar (left rail replaces TopBar)', () => {
       const nav = screen.getByRole('navigation', { name: /Primary navigation/i });
       expect(nav.tagName).toBe('ASIDE');
     });
+  });
+});
+
+describe('BUG-08: real Day-N context line (wired to org_age_days)', () => {
+  function aside() {
+    return within(screen.getByRole('navigation', { name: /Primary navigation/i }));
+  }
+
+  test('renders "Day N · <team>" from org_age_days when positive', async () => {
+    seedSidebarShell({ org_age_days: 15 });
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
+
+    await waitFor(() => {
+      // Real day value, reference order "Day N · <team>". Scoped to the
+      // sidebar so it doesn't collide with the page body.
+      expect(aside().getByText(/Day\s*15/)).toBeInTheDocument();
+      expect(aside().getByText(SLUG)).toBeInTheDocument();
+    });
+  });
+
+  test('degrades to the bare org slug when org_age_days is 0 (new org)', async () => {
+    seedSidebarShell({ org_age_days: 0 });
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
+
+    await waitFor(() => {
+      expect(aside().getByText(SLUG)).toBeInTheDocument();
+    });
+    // Never "Day 0" or "Day —" — the day token is suppressed entirely.
+    expect(aside().queryByText(/Day/)).toBeNull();
+  });
+});
+
+describe('BUG-03: real nav badges (honest, no placeholder noise)', () => {
+  test('Agents and Audit render badges from positive narrative_counts', async () => {
+    seedSidebarShell({
+      narrative_counts: { agents_active_now: 3, escalated_open: 2 },
+    });
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
+
+    await waitFor(() => {
+      const agents = screen.getByText('Agents').closest('a');
+      expect(agents).not.toBeNull();
+      expect(within(agents!).getByTestId('nav-count-badge')).toHaveTextContent('3');
+
+      const audit = screen.getByText('Audit').closest('a');
+      expect(audit).not.toBeNull();
+      expect(within(audit!).getByTestId('nav-count-badge')).toHaveTextContent('2');
+    });
+  });
+
+  test('zero / undefined count suppresses the badge (no "0" noise)', async () => {
+    seedSidebarShell({
+      narrative_counts: { agents_active_now: 0, escalated_open: 0 },
+    });
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
+
+    await waitFor(() => {
+      expect(screen.getByText('Agents').closest('a')).not.toBeNull();
+    });
+    expect(
+      within(screen.getByText('Agents').closest('a')!).queryByTestId('nav-count-badge'),
+    ).toBeNull();
+    expect(
+      within(screen.getByText('Audit').closest('a')!).queryByTestId('nav-count-badge'),
+    ).toBeNull();
+  });
+
+  test('Threads / Tasks / Dreams render badge-less (no client-side count exists)', async () => {
+    // Even with rich counts present, these rows have NO backing field in
+    // narrative_counts, so they must stay badge-less (scope fence).
+    seedSidebarShell({
+      narrative_counts: { agents_active_now: 3, escalated_open: 2 },
+    });
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
+
+    await waitFor(() => {
+      expect(screen.getByText('Threads').closest('a')).not.toBeNull();
+    });
+    for (const label of ['Threads', 'Tasks', 'Dreams']) {
+      const row = screen.getByText(label).closest('a');
+      expect(row).not.toBeNull();
+      expect(within(row!).queryByTestId('nav-count-badge')).toBeNull();
+    }
   });
 });
 
