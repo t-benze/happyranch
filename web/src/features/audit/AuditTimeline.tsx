@@ -1,9 +1,11 @@
 /**
  * AuditTimeline — day-grouped reverse-chronological timeline.
  *
- * Each entry renders:
- *   time · agent · event-class colored dot · action label · optional
- *   executor / token cost / dream marker · object-ID badges (click-through).
+ * Each entry renders as a human-readable NARRATIVE SENTENCE with inline entity
+ * links (agent / task / thread / job → existing client routes) + an event-class
+ * colored dot + a mono secondary detail line + a right-aligned timestamp
+ * (AUDIT-01, THR-030). The event → narrative transform lives in the pure,
+ * unit-tested `describeAuditEntry`; this file only maps its segments to JSX.
  *
  * States: loading skeleton, empty ("No audit entries"), all-clear ("All clear
  * — no failures or escalations"), error with retry.
@@ -11,7 +13,6 @@
 import { useMemo } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
-import { IdBadge } from '@/design-system/patterns/IdBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { Button } from '@/design-system/primitives/Button';
 import { cn } from '@/lib/utils';
@@ -22,6 +23,11 @@ import {
   isAllClear,
   DOT_COLOR_CLASS,
 } from './audit-filters';
+import {
+  describeAuditEntry,
+  type EntityRef,
+  type NarrativeSegment,
+} from './audit-narrative';
 import { useQueryClient } from '@tanstack/react-query';
 
 /* ------------------------------------------------------------------ */
@@ -66,29 +72,54 @@ function groupByDay(entries: AuditEntry[]): { date: string; entries: AuditEntry[
     }));
 }
 
-function tokensFromPayload(p: Record<string, unknown>): number | undefined {
-  const tu = p['token_usage'];
-  if (tu && typeof tu === 'object' && 'total' in tu) {
-    const t = (tu as Record<string, unknown>).total;
-    if (typeof t === 'number') return t;
+/* ------------------------------------------------------------------ */
+/*  Entity links                                                       */
+/* ------------------------------------------------------------------ */
+
+/** Color per entity kind. task/thread reuse their locked id tokens; job and
+ *  agent links use the accent token (no `--color-id-job` token exists). */
+const REF_COLOR: Record<EntityRef['type'], string> = {
+  task: 'text-id-task',
+  thread: 'text-id-thread',
+  job: 'text-accent-text',
+  agent: 'text-accent-text',
+};
+
+function routeFor(ref: EntityRef, slug: string): string {
+  switch (ref.type) {
+    case 'task':
+      return `/orgs/${slug}/tasks/${ref.id}`;
+    case 'thread':
+      return `/orgs/${slug}/threads/${ref.id}`;
+    case 'job':
+      return `/orgs/${slug}/jobs/${ref.id}`;
+    case 'agent':
+      return `/orgs/${slug}/agents/${ref.id}`;
   }
-  const tc = p['token_count'];
-  return typeof tc === 'number' ? tc : undefined;
 }
 
-function executorFromPayload(p: Record<string, unknown>): string | undefined {
-  // executor is ONLY from payload.executor — agent_session_id is a session
-  // identifier, not the executor/provider.  Fabricating executor attribution
-  // from it violates the provenance honesty lens.
-  const ex = p['executor'];
-  if (typeof ex === 'string') return ex;
-  return undefined;
-}
-
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
+/** Render one narrative segment: bold subject, plain prose, or an entity link.
+ *  Id-shaped refs (task/thread/job) render monospace; agent refs stay prose. */
+function Segment({ seg, slug }: { seg: NarrativeSegment; slug: string }): JSX.Element {
+  if (seg.kind === 'subject') {
+    return <span className="text-text-primary font-medium">{seg.text}</span>;
+  }
+  if (seg.kind === 'text') {
+    return <span>{seg.text}</span>;
+  }
+  const { ref } = seg;
+  return (
+    <Link
+      to={routeFor(ref, slug)}
+      className={cn(
+        'hover:underline',
+        REF_COLOR[ref.type],
+        ref.type !== 'agent' && 'font-mono',
+      )}
+    >
+      {ref.label}
+    </Link>
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -102,83 +133,41 @@ interface TimelineRowProps {
 }
 
 function TimelineRow({ entry, legendColor, slug }: TimelineRowProps): JSX.Element {
-  const tokens = tokensFromPayload(entry.payload);
-  const executor = executorFromPayload(entry.payload);
+  const narrative = describeAuditEntry(entry);
   const hasDream = !!entry._thread_dream_id;
 
-  // Determine target detail path from task_id scope prefix (task/thread only;
-  // job badges are rendered separately from payload.script_request_id).
-  const scopeLink = useMemo(() => {
-    if (!entry.task_id) return null;
-    const tid = entry.task_id;
-    if (tid.startsWith('TASK-')) return { to: `/orgs/${slug}/tasks/${tid}`, kind: 'task' as const };
-    if (tid.startsWith('THR-')) return { to: `/orgs/${slug}/threads/${tid}`, kind: 'thread' as const };
-    return null;
-  }, [entry.task_id, slug]);
-
   return (
-    <div className="border-border-subtle hover:bg-surface-raised flex items-center gap-3 border-b px-3 py-2 text-sm transition-colors">
-      {/* Time */}
-      <span className="text-fg-muted w-20 shrink-0 font-mono text-xs tabular-nums">
-        {formatTime(entry.timestamp)}
-      </span>
-
+    <div className="border-border-subtle hover:bg-surface-raised flex gap-3 border-b px-3 py-2.5 text-sm transition-colors">
       {/* Color-coded event dot */}
       <span
         aria-hidden="true"
-        className={cn('inline-block h-2 w-2 shrink-0 rounded-full', DOT_COLOR_CLASS[legendColor as keyof typeof DOT_COLOR_CLASS] ?? 'bg-fg-muted')}
+        className={cn(
+          'mt-[0.4rem] inline-block h-2 w-2 shrink-0 rounded-full',
+          DOT_COLOR_CLASS[legendColor as keyof typeof DOT_COLOR_CLASS] ?? 'bg-fg-muted',
+        )}
       />
 
-      {/* Agent */}
-      {entry.agent && (
-        <span className="text-fg w-28 shrink-0 truncate">{entry.agent}</span>
-      )}
+      <div className="min-w-0 flex-1">
+        {/* Narrative sentence + timestamp */}
+        <div className="flex items-baseline gap-3">
+          <p className="text-text-secondary min-w-0 flex-1 leading-snug">
+            {narrative.segments.map((seg, i) => (
+              <Segment key={i} seg={seg} slug={slug} />
+            ))}
+          </p>
+          {hasDream && <CrescentMoonBadge className="h-3 w-3 shrink-0 self-center" />}
+          <span className="text-text-muted shrink-0 font-mono text-xs tabular-nums">
+            {formatTime(entry.timestamp)}
+          </span>
+        </div>
 
-      {/* Action label */}
-      <span className="text-fg-muted shrink-0 font-mono text-xs">{entry.action}</span>
-
-      {/* Executor */}
-      {executor && (
-        <span className="text-fg-muted shrink-0 text-xs" title={executor}>
-          {executor}
-        </span>
-      )}
-
-      {/* Token cost */}
-      {tokens != null && tokens > 0 && (
-        <span className="text-fg-muted shrink-0 font-mono text-xs tabular-nums">
-          {formatTokens(tokens)} tok
-        </span>
-      )}
-
-      {/* Dream marker */}
-      {hasDream && <CrescentMoonBadge className="h-3 w-3" />}
-
-      {/* Spacer */}
-      <span className="flex-1" />
-
-      {/* Job ID badge (click-through) — for job_* actions, the real
-          job id lives in payload.script_request_id, while task_id is the
-          parent task that owns the job.  Both are linked separately. */}
-      {entry.action.startsWith('job_') && (() => {
-        const jobId = entry.payload.script_request_id as string | undefined;
-        if (jobId) {
-          return (
-            <Link
-              to={`/orgs/${slug}/jobs/${jobId}`}
-              className="text-id-job font-mono text-xs hover:underline"
-            >
-              {jobId}
-            </Link>
-          );
-        }
-        return null;
-      })()}
-
-      {/* Object ID badge (click-through) — task/thread link */}
-      {scopeLink && (
-        <IdBadge kind={scopeLink.kind} id={entry.task_id!} to={scopeLink.to} />
-      )}
+        {/* Mono secondary detail line */}
+        {narrative.detail && (
+          <p className="text-text-muted mt-0.5 truncate font-mono text-xs">
+            {narrative.detail}
+          </p>
+        )}
+      </div>
     </div>
   );
 }
