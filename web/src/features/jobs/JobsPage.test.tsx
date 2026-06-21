@@ -57,7 +57,8 @@ describe('JobsPage — index placeholder', () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     mountAt(`/orgs/${SLUG}/jobs`);
     await waitFor(() =>
-      expect(screen.getByText('Jobs')).toBeInTheDocument(),
+      // "Jobs" appears on both the page heading and the top app-bar title.
+      expect(screen.getAllByText('Jobs').length).toBeGreaterThan(0),
     );
     // Should mention Audit and Dashboard as the surfaces where jobs live
     // (getAllByText: sidebar also contains "Audit")

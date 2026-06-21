@@ -6,6 +6,7 @@ import {
   useLocation,
   useParams,
 } from 'react-router-dom';
+import { AppTopBar } from '@/design-system/layouts/AppShell/AppTopBar';
 import { ErrorBoundary } from '@/design-system/layouts/AppShell/ErrorBoundary';
 import { Sidebar } from '@/design-system/layouts/AppShell/Sidebar';
 import { useOrgsList } from '@/hooks/orgs';
@@ -59,11 +60,14 @@ function AppShell(): JSX.Element {
   return (
     <div className="flex h-full flex-row">
       <Sidebar />
-      <main className="flex-1 overflow-hidden">
-        <ErrorBoundary resetKey={location.pathname}>
-          <Outlet />
-        </ErrorBoundary>
-      </main>
+      <div className="flex flex-1 flex-col overflow-hidden">
+        <AppTopBar />
+        <main className="flex-1 overflow-hidden">
+          <ErrorBoundary resetKey={location.pathname}>
+            <Outlet />
+          </ErrorBoundary>
+        </main>
+      </div>
       <CommandPaletteHost />
       <HelpDrawerHost />
       <AssistantDockHost />

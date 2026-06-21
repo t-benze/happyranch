@@ -18,6 +18,17 @@
       "example": "<AgentChip name='engineering_head' role='manager' />"
     },
     {
+      "name": "AppTopBar",
+      "layer": "layout",
+      "import": "@/design-system/layouts/AppShell/AppTopBar",
+      "variants": {},
+      "consumes": [
+        "components.topbar",
+        "layout.grid.app_shell"
+      ],
+      "example": "<AppTopBar />"
+    },
+    {
       "name": "AuditRow",
       "layer": "pattern",
       "import": "@/design-system/patterns/AuditRow",

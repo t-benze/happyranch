@@ -74,8 +74,9 @@ describe('IA-1: Sidebar (left rail replaces TopBar)', () => {
     await waitFor(() => {
       // Primary group label
       expect(screen.getByText('Primary')).toBeInTheDocument();
-      // Primary nav items
-      expect(screen.getByText('Home')).toBeInTheDocument();
+      // Primary nav items (Home matches both the nav link and the app-bar
+      // page title, so target the nav link specifically).
+      expect(screen.getByRole('link', { name: 'Home' })).toBeInTheDocument();
       expect(screen.getByText('Threads')).toBeInTheDocument();
       expect(screen.getByText('Tasks')).toBeInTheDocument();
       expect(screen.getByText('Agents')).toBeInTheDocument();
@@ -108,45 +109,54 @@ describe('IA-1: Sidebar (left rail replaces TopBar)', () => {
     });
   });
 
-  test('renders theme toggle in footer (IA-1 Guardrail P5)', async () => {
+  test('renders theme toggle in the top app bar (IA-1 Guardrail P5, THR-030 BUG-06)', async () => {
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
 
     await waitFor(() => {
-      // Theme toggle exists (has aria-label with "theme")
+      // Theme toggle exists (has aria-label with "theme") — now in the app bar.
       const themeBtn = screen.getByLabelText(/theme/i);
       expect(themeBtn).toBeInTheDocument();
+      // It lives inside the top app bar banner, not the sidebar.
+      expect(themeBtn.closest('[role="banner"]')).not.toBeNull();
     });
   });
 
-  test('renders Settings trigger button in footer', async () => {
+  test('renders Settings labeled row in footer (THR-030 BUG-02)', async () => {
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
 
     await waitFor(() => {
-      // SettingsTriggerButton renders a button with aria-label "Settings"
-      expect(screen.getByLabelText('Settings')).toBeInTheDocument();
+      // Settings is now a labeled row (aria-label "Settings" + visible label).
+      const settings = screen.getByLabelText('Settings');
+      expect(settings).toBeInTheDocument();
+      expect(settings).toHaveTextContent('Settings');
+      expect(settings.closest('aside')).not.toBeNull();
     });
   });
 
-  test('renders Founder label in footer', async () => {
+  test('renders account identity row in footer (THR-030 BUG-07)', async () => {
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
 
     await waitFor(() => {
+      expect(screen.getByText('You')).toBeInTheDocument();
       expect(screen.getByText('Founder')).toBeInTheDocument();
     });
   });
 
-  test('TopBar is retired — no tab-bar header role exists', async () => {
+  test('legacy 9-tab TopBar is retired (only the minimal app bar remains)', async () => {
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
 
     await waitFor(() => {
       expect(screen.getByLabelText(/Active org/i)).toBeInTheDocument();
     });
-    // The old TopBar rendered a <header role="banner"> — it should NOT exist
-    expect(screen.queryByRole('banner')).toBeNull();
+    // The retired TopBar rendered "KB" / "Jobs" tabs as top-nav links — gone.
+    expect(screen.queryByRole('link', { name: 'KB' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Jobs' })).toBeNull();
+    // The new persistent app bar (THR-030 BUG-05) is the only banner.
+    expect(screen.getAllByRole('banner')).toHaveLength(1);
   });
 
   test('Sidebar uses <aside> with navigation role', async () => {
