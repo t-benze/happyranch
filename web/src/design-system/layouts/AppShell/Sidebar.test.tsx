@@ -6,7 +6,7 @@
  * - IA-2: Default landing route resolves to Home/Dashboard.
  * - IA-10: Nav grouping (Primary / Operate) rendered correctly.
  */
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
@@ -72,15 +72,18 @@ describe('IA-1: Sidebar (left rail replaces TopBar)', () => {
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
 
     await waitFor(() => {
+      // Scope to the sidebar — the AppBar now mirrors the page name (e.g.
+      // "Home"), so unscoped getByText would match twice.
+      const aside = within(screen.getByRole('navigation', { name: /Primary navigation/i }));
       // Primary group label
-      expect(screen.getByText('Primary')).toBeInTheDocument();
+      expect(aside.getByText('Primary')).toBeInTheDocument();
       // Primary nav items
-      expect(screen.getByText('Home')).toBeInTheDocument();
-      expect(screen.getByText('Threads')).toBeInTheDocument();
-      expect(screen.getByText('Tasks')).toBeInTheDocument();
-      expect(screen.getByText('Agents')).toBeInTheDocument();
-      expect(screen.getByText('Knowledge')).toBeInTheDocument();
-      expect(screen.getByText('Artifacts')).toBeInTheDocument();
+      expect(aside.getByText('Home')).toBeInTheDocument();
+      expect(aside.getByText('Threads')).toBeInTheDocument();
+      expect(aside.getByText('Tasks')).toBeInTheDocument();
+      expect(aside.getByText('Agents')).toBeInTheDocument();
+      expect(aside.getByText('Knowledge')).toBeInTheDocument();
+      expect(aside.getByText('Artifacts')).toBeInTheDocument();
     });
   });
 
@@ -99,41 +102,75 @@ describe('IA-1: Sidebar (left rail replaces TopBar)', () => {
     });
   });
 
-  test('renders org switcher in footer', async () => {
+  test('renders org switcher as the top context header (BUG-01)', async () => {
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
 
     await waitFor(() => {
+      // The context header is the org switcher (keeps the "Active org" label)
+      // and is no longer a native footer combobox.
       expect(screen.getByLabelText(/Active org/i)).toBeInTheDocument();
+      // Context line is shaped "Day N · <team>" under the wordmark (BUG-08).
+      // The team is the active org slug; "Day —" is the deliberately-unwired
+      // (no-fetch) placeholder for the not-client-side-available Day value.
+      expect(screen.getByText(SLUG)).toBeInTheDocument();
+      expect(screen.getByText(/Day —/)).toBeInTheDocument();
     });
   });
 
-  test('renders theme toggle in footer (IA-1 Guardrail P5)', async () => {
+  test('renders count-badge chrome on Threads/Tasks/Agents rows (BUG-03)', async () => {
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
 
     await waitFor(() => {
-      // Theme toggle exists (has aria-label with "theme")
+      // Each of the three rows carries count-badge chrome. The value is a
+      // deliberately-unwired placeholder (no client-side count without a
+      // forbidden fetch), but the badge element must be present per BUG-03.
+      for (const label of ['Threads', 'Tasks', 'Agents']) {
+        const row = screen.getByText(label).closest('a');
+        expect(row).not.toBeNull();
+        expect(within(row!).getByTestId('nav-count-badge')).toBeInTheDocument();
+      }
+    });
+  });
+
+  test('renders theme toggle in the app bar (BUG-06)', async () => {
+    seedSidebarShell();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
+
+    await waitFor(() => {
+      // Theme toggle exists (has aria-label with "theme") — relocated to AppBar.
       const themeBtn = screen.getByLabelText(/theme/i);
       expect(themeBtn).toBeInTheDocument();
     });
   });
 
-  test('renders Settings trigger button in footer', async () => {
+  test('renders the global search affordance in the app bar (BUG-04/05)', async () => {
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
 
     await waitFor(() => {
-      // SettingsTriggerButton renders a button with aria-label "Settings"
-      expect(screen.getByLabelText('Settings')).toBeInTheDocument();
+      // "Ask or search" opens the Assistant Dock — now in the top app bar.
+      expect(screen.getByLabelText('Ask or search')).toBeInTheDocument();
     });
   });
 
-  test('renders Founder label in footer', async () => {
+  test('renders Settings as a labeled row linking to the settings route (BUG-02)', async () => {
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
 
     await waitFor(() => {
+      const settings = screen.getByRole('link', { name: 'Settings' });
+      expect(settings).toHaveAttribute('href', `/orgs/${SLUG}/settings`);
+    });
+  });
+
+  test('renders the account identity row (BUG-07)', async () => {
+    seedSidebarShell();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
+
+    await waitFor(() => {
+      expect(screen.getByText('You')).toBeInTheDocument();
       expect(screen.getByText('Founder')).toBeInTheDocument();
     });
   });
