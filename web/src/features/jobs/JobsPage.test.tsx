@@ -56,8 +56,10 @@ describe('JobsPage — index placeholder', () => {
   test('renders contextual guidance instead of a standalone job list', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     mountAt(`/orgs/${SLUG}/jobs`);
+    // The AppBar page name and the page body both say "Jobs", so wait on the
+    // unique contextual-guidance copy to confirm the page rendered.
     await waitFor(() =>
-      expect(screen.getByText('Jobs')).toBeInTheDocument(),
+      expect(screen.getByText(/Jobs are reachable contextually/)).toBeInTheDocument(),
     );
     // Should mention Audit and Dashboard as the surfaces where jobs live
     // (getAllByText: sidebar also contains "Audit")

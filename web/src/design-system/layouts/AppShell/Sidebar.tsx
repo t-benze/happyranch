@@ -1,12 +1,25 @@
 import { useState } from 'react';
-import { Moon, Plus, Search, Settings, Sun } from 'lucide-react';
+import * as SelectPrimitive from '@radix-ui/react-select';
+import {
+  BookOpen,
+  Calendar,
+  ChevronDown,
+  type LucideIcon,
+  ListChecks,
+  MessageSquare,
+  Package,
+  ScrollText,
+  Settings,
+  Sparkles,
+  Users,
+  Wallet,
+  Home as HomeIcon,
+} from 'lucide-react';
 import { NavLink, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
-  Select,
   SelectContent,
   SelectItem,
-  SelectTrigger,
-  SelectValue,
+  SelectSeparator,
 } from '@/design-system/primitives/Select';
 import {
   Tooltip,
@@ -18,7 +31,6 @@ import { useAgentsRoutes } from '@/hooks/agents';
 import { useKbRoutes } from '@/hooks/kb';
 import { useOrgsList } from '@/hooks/orgs';
 import { useTasksRoutes } from '@/hooks/tasks';
-import { useTheme } from '@/hooks/theme';
 import { useThreadRoutes } from '@/hooks/threads';
 import { useGlobalJump } from '@/hooks/global-jump';
 import { useOrgSlugOptional } from '@/lib/orgSlug';
@@ -26,12 +38,21 @@ import { useOrgSlugOptional } from '@/lib/orgSlug';
 /**
  * IA-1: Grouped left sidebar + desktop window chrome, retiring the ~9-tab TopBar.
  *
- * Primary group: Home, Threads, Tasks, Agents, Knowledge, Artifacts
- * Operate group: Spend, Dreams, Schedule, Audit
- * Footer: Settings (+ founder identity, theme toggle migrated from TopBar, org switcher)
+ * THR-030 chrome alignment (BUG-01..08):
+ *  - Top: context header (wordmark + org context line + caret) doubling as the
+ *    org switcher — restyled from the native footer `<select>` (BUG-01/08).
+ *  - Primary group: Home, Threads, Tasks, Agents, Knowledge, Artifacts — each
+ *    with a leading icon (BUG-03).
+ *  - Operate group: Spend, Dreams, Schedule, Audit.
+ *  - Footer: Settings as a labeled row above the account row (BUG-02), then an
+ *    avatar + identity account row (BUG-07).
+ *
+ * Global search and the theme toggle moved to the AppBar (BUG-04/05/06).
  *
  * Jobs is NOT in the sidebar (still reachable via /jobs URL — retirement is P2).
  */
+
+const ADD_ORG_VALUE = '__add_org__';
 
 export function Sidebar(): JSX.Element {
   const { slug: urlSlug } = useParams<{ slug: string }>();
@@ -72,92 +93,97 @@ export function Sidebar(): JSX.Element {
   const switchEnabled = !orgsQuery.isLoading && (orgsQuery.data?.orgs.length ?? 0) > 0;
 
   const orgs = orgsQuery.data?.orgs ?? [];
-  const currentOrg = orgs.find((o) => o.slug === activeSlug);
 
   const sidebarLink = (path: string, enabled: boolean) => ({
     to: enabled && activeSlug ? `/orgs/${activeSlug}/${path}` : '#',
     enabled: enabled && !!activeSlug && !isPrototype,
   });
 
+  const onOrgChange = (target: string): void => {
+    if (target === ADD_ORG_VALUE) {
+      setAddOrgOpen(true);
+      return;
+    }
+    if (!target || target === activeSlug) return;
+    // Stay on the same section; strip any detail suffix so we land on the
+    // section inbox, not a stale detail route.
+    const sectionMatch = activeSlug
+      ? location.pathname.match(new RegExp(`^/orgs/${activeSlug}/([^/]+)`))
+      : null;
+    const section = sectionMatch?.[1];
+    navigate(section ? `/orgs/${target}/${section}` : `/orgs/${target}/dashboard`);
+  };
+
   return (
     <aside
       role="navigation"
       aria-label="Primary navigation"
-      className="border-border bg-bg-subtle flex h-full w-rail shrink-0 flex-col border-r"
+      className="border-border bg-bg-subtle w-rail flex h-full shrink-0 flex-col border-r"
     >
-      {/* Brand lockup */}
-      <div className="flex items-center gap-1.5 px-4 py-3">
-        <svg
-          viewBox="0 0 100 100"
-          width="22"
-          height="22"
-          aria-hidden="true"
-          className="shrink-0 text-[#4ade80]"
-        >
-          <g transform="rotate(-7 50 44)">
-            <path
-              d="M50 26 C68 26 78 34 78 44 C78 54 66 60 50 60 C34 60 22 54 22 44 C22 34 32 26 50 26 Z"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="6.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </g>
-          <ellipse cx="41" cy="59" rx="6.2" ry="5" fill="none" stroke="currentColor" strokeWidth="5" />
-          <path
-            d="M44 63 C50 78 70 82 80 71 C85 65 83 59 77 60"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="6.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-        <span className="font-['Baloo_2',sans-serif] text-[1rem] leading-none font-extrabold tracking-[-0.03em]">
-          <span className="text-[#4ade80]">Happy</span>
-          <span className="text-fg">Ranch</span>
-        </span>
-      </div>
-
-      {/* Spacer */}
-      <div className="h-2" />
-
-      {/* "Ask or search" pill — opens the global Assistant Dock */}
-      <div className="px-2">
-        <button
-          type="button"
-          data-assistant-open="true"
-          className="border-border bg-bg-subtle text-fg-muted hover:border-accent-ring hover:text-fg focus-visible:ring-accent mb-2 flex w-full items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors focus-visible:ring-2 focus-visible:outline-none"
-        >
-          <Search size={14} aria-hidden="true" />
-          <span className="flex-1 text-left">Ask or search…</span>
-          <kbd className="text-fg-subtle border-border bg-bg-raised rounded border px-1.5 py-0.5 font-mono text-[10px]">
-            ⌘K
-          </kbd>
-        </button>
-      </div>
+      {/* Context header — wordmark + org context line + caret, doubling as the
+          org switcher (BUG-01/08). Keeps the existing org-switch route logic. */}
+      <SelectPrimitive.Root
+        value={activeSlug ?? undefined}
+        onValueChange={onOrgChange}
+        disabled={!switchEnabled}
+      >
+        <SelectPrimitive.Trigger asChild aria-label="Active org">
+          <button
+            type="button"
+            className="border-border hover:bg-bg-raised focus-visible:ring-accent flex w-full items-center gap-2 border-b px-4 py-3 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none disabled:cursor-not-allowed"
+          >
+            <Brandmark />
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="font-['Baloo_2',sans-serif] text-[1rem] leading-tight font-extrabold tracking-[-0.03em]">
+                <span className="text-[#4ade80]">Happy</span>
+                <span className="text-fg">Ranch</span>
+              </span>
+              <span className="text-fg-subtle truncate text-[0.7rem] leading-tight">
+                {activeSlug ?? 'No org'}
+              </span>
+            </span>
+            <ChevronDown size={14} aria-hidden="true" className="text-fg-muted shrink-0" />
+          </button>
+        </SelectPrimitive.Trigger>
+        <SelectContent>
+          {orgs.map((o) => (
+            <SelectItem key={o.slug} value={o.slug}>
+              {o.slug}
+            </SelectItem>
+          ))}
+          {!isPrototype && (
+            <>
+              <SelectSeparator />
+              <SelectItem value={ADD_ORG_VALUE}>+ Add org…</SelectItem>
+            </>
+          )}
+        </SelectContent>
+      </SelectPrimitive.Root>
 
       {/* Primary group */}
-      <div className="px-3">
+      <div className="mt-3 px-3">
         <SidebarGroupLabel>Primary</SidebarGroupLabel>
         <nav className="flex flex-col gap-0.5">
-          <SidebarNavItem {...sidebarLink('dashboard', true)}>
+          <SidebarNavItem {...sidebarLink('dashboard', true)} icon={HomeIcon}>
             Home
           </SidebarNavItem>
-          <SidebarNavItem to={routes.inboxForOrg(activeSlug ?? '')} enabled={!!activeSlug && !isPrototype}>
+          <SidebarNavItem
+            to={routes.inboxForOrg(activeSlug ?? '')}
+            enabled={!!activeSlug && !isPrototype}
+            icon={MessageSquare}
+          >
             Threads
           </SidebarNavItem>
-          <SidebarNavItem {...sidebarLink('tasks', true)}>
+          <SidebarNavItem {...sidebarLink('tasks', true)} icon={ListChecks}>
             Tasks
           </SidebarNavItem>
-          <SidebarNavItem {...sidebarLink('agents', true)}>
+          <SidebarNavItem {...sidebarLink('agents', true)} icon={Users}>
             Agents
           </SidebarNavItem>
-          <SidebarNavItem {...sidebarLink('kb', true)}>
+          <SidebarNavItem {...sidebarLink('kb', true)} icon={BookOpen}>
             Knowledge
           </SidebarNavItem>
-          <SidebarNavItem {...sidebarLink('artifacts', true)}>
+          <SidebarNavItem {...sidebarLink('artifacts', true)} icon={Package}>
             Artifacts
           </SidebarNavItem>
         </nav>
@@ -167,85 +193,50 @@ export function Sidebar(): JSX.Element {
       <div className="mt-3 px-3">
         <SidebarGroupLabel>Operate</SidebarGroupLabel>
         <nav className="flex flex-col gap-0.5">
-          <SidebarNavItem {...sidebarLink('spend', true)}>
+          <SidebarNavItem {...sidebarLink('spend', true)} icon={Wallet}>
             Spend
           </SidebarNavItem>
-          <SidebarNavItem {...sidebarLink('dreams', true)}>
+          <SidebarNavItem {...sidebarLink('dreams', true)} icon={Sparkles}>
             Dreams
           </SidebarNavItem>
-          <SidebarNavItem {...sidebarLink('schedule', true)}>
+          <SidebarNavItem {...sidebarLink('schedule', true)} icon={Calendar}>
             Schedule
           </SidebarNavItem>
-          <SidebarNavItem {...sidebarLink('audit', true)}>
+          <SidebarNavItem {...sidebarLink('audit', true)} icon={ScrollText}>
             Audit
           </SidebarNavItem>
         </nav>
       </div>
 
-      {/* Footer — Settings, theme toggle, org switcher, founder identity */}
-      <div className="border-border mt-auto border-t px-3 py-3">
-        {/* Org switcher */}
-        <Select
-          value={activeSlug ?? undefined}
-          onValueChange={(target) => {
-            if (!target || target === activeSlug) return;
-            const sectionMatch = activeSlug
-              ? location.pathname.match(
-                  new RegExp(`^/orgs/${activeSlug}/([^/]+)`),
-                )
-              : null;
-            const section = sectionMatch?.[1];
-            navigate(section ? `/orgs/${target}/${section}` : `/orgs/${target}/dashboard`);
-          }}
-          disabled={!switchEnabled}
+      {/* Footer — Settings labeled row (BUG-02) + account row (BUG-07) */}
+      <div className="border-border mt-auto flex flex-col gap-1 border-t px-3 py-3">
+        <NavLink
+          to={activeSlug && !isPrototype ? `/orgs/${activeSlug}/settings` : '#'}
+          className={({ isActive }) =>
+            `flex items-center gap-2.5 rounded px-2 py-1.5 text-sm transition-colors focus-visible:ring-2 focus-visible:outline-none focus-visible:ring-accent ${
+              isActive
+                ? 'bg-bg-raised text-fg font-medium'
+                : 'text-fg-muted hover:bg-bg-raised hover:text-fg'
+            }`
+          }
         >
-          <SelectTrigger aria-label="Active org" className="w-full">
-            <SelectValue placeholder="Select org…" />
-          </SelectTrigger>
-          <SelectContent>
-            {orgs.map((o) => (
-              <SelectItem key={o.slug} value={o.slug}>
-                {o.slug}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+          <Settings size={16} aria-hidden="true" className="shrink-0" />
+          <span>Settings</span>
+        </NavLink>
 
-        {/* Founder identity */}
-        {currentOrg && (
-          <div className="text-fg-muted mt-2 text-xs">
-            Founder
-          </div>
-        )}
-
-        {/* Action row: add org + settings + theme */}
-        <div className="mt-2 flex items-center gap-1">
-          {!isPrototype && (
-            <button
-              type="button"
-              onClick={() => setAddOrgOpen(true)}
-              aria-label="Add org"
-              title="Add org"
-              className="text-fg-muted hover:bg-bg-raised hover:text-fg focus-visible:ring-accent inline-flex h-7 w-7 items-center justify-center rounded transition-colors focus-visible:ring-2 focus-visible:outline-none"
-            >
-              <Plus size={16} aria-hidden="true" />
-            </button>
-          )}
-          <NavLink
-            to={activeSlug && !isPrototype ? `/orgs/${activeSlug}/settings` : '#'}
-            aria-label="Settings"
-            title="Settings"
-            className={({ isActive }) =>
-              `inline-flex h-7 w-7 items-center justify-center rounded transition-colors focus-visible:ring-2 focus-visible:outline-none focus-visible:ring-accent ${
-                isActive
-                  ? 'bg-bg-raised text-fg'
-                  : 'text-fg-muted hover:bg-bg-raised hover:text-fg'
-              }`
-            }
+        {/* Account row — avatar + identity. Identity is static chrome (no user
+            profile is loaded client-side). */}
+        <div className="flex items-center gap-2.5 px-2 py-1.5">
+          <span
+            aria-hidden="true"
+            className="bg-accent text-accent-fg inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[0.65rem] font-semibold"
           >
-            <Settings size={16} aria-hidden="true" />
-          </NavLink>
-          <ThemeToggle />
+            YT
+          </span>
+          <span className="flex min-w-0 flex-col leading-tight">
+            <span className="text-fg truncate text-sm">You</span>
+            <span className="text-fg-subtle truncate text-xs">Founder</span>
+          </span>
         </div>
       </div>
 
@@ -254,20 +245,35 @@ export function Sidebar(): JSX.Element {
   );
 }
 
-function ThemeToggle(): JSX.Element {
-  const { theme, setTheme } = useTheme();
-  const isDark = theme === 'dark';
-  const label = isDark ? 'Switch to light theme' : 'Switch to dark theme';
+function Brandmark(): JSX.Element {
   return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      onClick={() => setTheme(isDark ? 'light' : 'dark')}
-      className="text-fg-muted hover:bg-bg-raised hover:text-fg focus-visible:ring-accent inline-flex h-7 w-7 items-center justify-center rounded transition-colors focus-visible:ring-2 focus-visible:outline-none"
+    <svg
+      viewBox="0 0 100 100"
+      width="22"
+      height="22"
+      aria-hidden="true"
+      className="shrink-0 text-[#4ade80]"
     >
-      {isDark ? <Sun size={16} aria-hidden="true" /> : <Moon size={16} aria-hidden="true" />}
-    </button>
+      <g transform="rotate(-7 50 44)">
+        <path
+          d="M50 26 C68 26 78 34 78 44 C78 54 66 60 50 60 C34 60 22 54 22 44 C22 34 32 26 50 26 Z"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="6.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </g>
+      <ellipse cx="41" cy="59" rx="6.2" ry="5" fill="none" stroke="currentColor" strokeWidth="5" />
+      <path
+        d="M44 63 C50 78 70 82 80 71 C85 65 83 59 77 60"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="6.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }
 
@@ -283,20 +289,23 @@ function SidebarNavItem({
   to,
   enabled,
   children,
+  icon: Icon,
   tooltip,
 }: {
   to: string;
   enabled: boolean;
   children: React.ReactNode;
+  icon: LucideIcon;
   tooltip?: string;
 }): JSX.Element {
   if (!enabled) {
     const span = (
       <span
-        className="text-fg-subtle cursor-not-allowed rounded px-2 py-1.5 text-sm"
+        className="text-fg-subtle flex cursor-not-allowed items-center gap-2.5 rounded px-2 py-1.5 text-sm"
         aria-disabled="true"
       >
-        {children}
+        <Icon size={16} aria-hidden="true" className="shrink-0" />
+        <span>{children}</span>
       </span>
     );
     if (!tooltip) return span;
@@ -311,14 +320,15 @@ function SidebarNavItem({
     <NavLink
       to={to}
       className={({ isActive }) =>
-        `rounded px-2 py-1.5 text-sm ${
+        `flex items-center gap-2.5 rounded px-2 py-1.5 text-sm ${
           isActive
             ? 'bg-bg-raised text-fg font-medium'
             : 'text-fg-muted hover:bg-bg-raised hover:text-fg'
         }`
       }
     >
-      {children}
+      <Icon size={16} aria-hidden="true" className="shrink-0" />
+      <span>{children}</span>
     </NavLink>
   );
 }

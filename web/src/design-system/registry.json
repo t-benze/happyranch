@@ -325,6 +325,17 @@
       "example": "<Select value='a'><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value='a'>A</SelectItem></SelectContent></Select>"
     },
     {
+      "name": "AppBar",
+      "layer": "layout",
+      "import": "@/design-system/layouts/AppShell/AppBar",
+      "variants": {},
+      "consumes": [
+        "components.topbar",
+        "layout.grid.app_shell"
+      ],
+      "example": "<AppBar />"
+    },
+    {
       "name": "Sidebar",
       "layer": "layout",
       "import": "@/design-system/layouts/AppShell/Sidebar",
