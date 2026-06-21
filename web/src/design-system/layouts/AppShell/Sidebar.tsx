@@ -28,6 +28,7 @@ import {
 } from '@/design-system/primitives/Tooltip';
 import { AddOrgDialog } from '@/features/orgs/AddOrgDialog';
 import { useAgentsRoutes } from '@/hooks/agents';
+import { useDashboardSummary } from '@/hooks/dashboard';
 import { useKbRoutes } from '@/hooks/kb';
 import { useOrgsList } from '@/hooks/orgs';
 import { useTasksRoutes } from '@/hooks/tasks';
@@ -54,11 +55,17 @@ import { useOrgSlugOptional } from '@/lib/orgSlug';
 
 const ADD_ORG_VALUE = '__add_org__';
 
-// BUG-03: Threads/Tasks/Agents carry count-badge chrome. No count is available
-// to the Sidebar client-side without a forbidden data fetch, so the badge
-// renders a static placeholder glyph — the chrome is present, the value stays
-// deliberately unwired (flagged for escalation).
-const NAV_BADGE_PLACEHOLDER = '—';
+// BUG-03: nav badges show REAL counts from the shared dashboard summary
+// (Agents <- agents_active_now, Audit <- escalated_open). A badge renders only
+// for a positive, finite count; 0 / undefined / NaN render no badge (no "0"
+// noise). Threads/Tasks/Dreams have no backing field in narrative_counts, so
+// they stay badge-less — wiring a count there would need a new daemon/SQLite
+// data path, out of this presentation-only scope.
+function positiveCount(value: number | undefined): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? value
+    : undefined;
+}
 
 export function Sidebar(): JSX.Element {
   const { slug: urlSlug } = useParams<{ slug: string }>();
@@ -73,6 +80,14 @@ export function Sidebar(): JSX.Element {
   const tasksRoutes = useTasksRoutes();
   const agentsRoutes = useAgentsRoutes();
   const kbRoutes = useKbRoutes();
+
+  // BUG-08/BUG-03: Day-N + nav counts come from the SAME dashboard-summary
+  // query DashboardPage consumes — React Query dedupes by key, so this is not a
+  // new data path. The hook self-gates on the active org slug, so non-org
+  // routes issue no fetch.
+  const summary = useDashboardSummary().data;
+  const orgAgeDays = summary?.org_age_days;
+  const counts = summary?.narrative_counts;
 
   // Global jump chords — reused from TopBar verbatim
   useGlobalJump('d', () => {
@@ -144,17 +159,20 @@ export function Sidebar(): JSX.Element {
                 <span className="text-[#4ade80]">Happy</span>
                 <span className="text-fg">Ranch</span>
               </span>
-              {/* Context line — design target "Day N · <team>" (BUG-08). The
-                  team is the already-loaded active org slug; the "Day N" value
-                  is not available client-side without a forbidden fetch, so it
-                  renders as a placeholder ("Day —") and stays deliberately
-                  unwired. */}
+              {/* Context line — "Day N · <team>" (BUG-08). Day-N is the real
+                  org_age_days from the dashboard summary; the team is the active
+                  org slug. On a brand-new org (org_age_days 0/undefined) the day
+                  token degrades away, leaving the bare slug — never "Day 0". */}
               <span className="text-fg-subtle truncate text-[0.7rem] leading-tight">
                 {activeSlug ? (
-                  <>
-                    <span className="text-fg-muted">Day —</span> ·{' '}
+                  orgAgeDays && orgAgeDays > 0 ? (
+                    <>
+                      <span className="text-fg-muted">Day {orgAgeDays}</span> ·{' '}
+                      <span>{activeSlug}</span>
+                    </>
+                  ) : (
                     <span>{activeSlug}</span>
-                  </>
+                  )
                 ) : (
                   'No org'
                 )}
@@ -189,14 +207,17 @@ export function Sidebar(): JSX.Element {
             to={routes.inboxForOrg(activeSlug ?? '')}
             enabled={!!activeSlug && !isPrototype}
             icon={MessageSquare}
-            badge={NAV_BADGE_PLACEHOLDER}
           >
             Threads
           </SidebarNavItem>
-          <SidebarNavItem {...sidebarLink('tasks', true)} icon={ListChecks} badge={NAV_BADGE_PLACEHOLDER}>
+          <SidebarNavItem {...sidebarLink('tasks', true)} icon={ListChecks}>
             Tasks
           </SidebarNavItem>
-          <SidebarNavItem {...sidebarLink('agents', true)} icon={Users} badge={NAV_BADGE_PLACEHOLDER}>
+          <SidebarNavItem
+            {...sidebarLink('agents', true)}
+            icon={Users}
+            badge={positiveCount(counts?.agents_active_now)}
+          >
             Agents
           </SidebarNavItem>
           <SidebarNavItem {...sidebarLink('kb', true)} icon={BookOpen}>
@@ -221,7 +242,11 @@ export function Sidebar(): JSX.Element {
           <SidebarNavItem {...sidebarLink('schedule', true)} icon={Calendar}>
             Schedule
           </SidebarNavItem>
-          <SidebarNavItem {...sidebarLink('audit', true)} icon={ScrollText}>
+          <SidebarNavItem
+            {...sidebarLink('audit', true)}
+            icon={ScrollText}
+            badge={positiveCount(counts?.escalated_open)}
+          >
             Audit
           </SidebarNavItem>
         </nav>
@@ -304,7 +329,7 @@ function SidebarGroupLabel({ children }: { children: React.ReactNode }): JSX.Ele
   );
 }
 
-function NavCountBadge({ value }: { value: string }): JSX.Element {
+function NavCountBadge({ value }: { value: number }): JSX.Element {
   return (
     <span
       data-testid="nav-count-badge"
@@ -329,7 +354,7 @@ function SidebarNavItem({
   children: React.ReactNode;
   icon: LucideIcon;
   tooltip?: string;
-  badge?: string;
+  badge?: number;
 }): JSX.Element {
   if (!enabled) {
     const span = (
