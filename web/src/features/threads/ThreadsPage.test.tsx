@@ -509,6 +509,88 @@ describe('ThreadsPage — system message rendering (design-overhaul)', () => {
 });
 
 /* ------------------------------------------------------------------ */
+/*  Segmented status filter — All / Open / Done (THREADS-02)           */
+/* ------------------------------------------------------------------ */
+
+describe('ThreadsPage — segmented status filter (THREADS-02)', () => {
+  // Status-aware handler so the open and archived per-status fetches return
+  // disjoint sets — All is derived client-side by merging them.
+  function mountWithBuckets() {
+    const open = [
+      mkThread('THR-O1', 'Open alpha', { status: 'open' }),
+      mkThread('THR-O2', 'Open beta', { status: 'open' }),
+    ];
+    const archived = [
+      mkThread('THR-A1', 'Archived gamma', { status: 'archived' }),
+    ];
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/threads`, ({ request }) => {
+        const status = new URL(request.url).searchParams.get('status');
+        if (status === 'archived') return HttpResponse.json({ threads: archived });
+        if (status === 'open') return HttpResponse.json({ threads: open });
+        return HttpResponse.json({ threads: [...open, ...archived] });
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+    );
+  }
+
+  test('renders all / open / done segments with honest per-bucket counts', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    mountWithBuckets();
+    mountAt(`/orgs/${SLUG}/threads`);
+
+    // Three segments, each backed by a real count: All=3, Open=2, Done=1.
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: /all/i })).toHaveTextContent(/3/);
+      expect(screen.getByRole('tab', { name: /open/i })).toHaveTextContent(/2/);
+      expect(screen.getByRole('tab', { name: /done/i })).toHaveTextContent(/1/);
+    });
+
+    // Default bucket "open": open threads visible, archived hidden.
+    expect(screen.getByText(/Open alpha/)).toBeInTheDocument();
+    expect(screen.queryByText(/Archived gamma/)).not.toBeInTheDocument();
+  });
+
+  test('selecting a bucket filters the visible list', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    mountWithBuckets();
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/threads`);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Open alpha/)).toBeInTheDocument();
+    });
+
+    // Select "Done" → only the archived thread shows.
+    await user.click(screen.getByRole('tab', { name: /done/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/Archived gamma/)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/Open alpha/)).not.toBeInTheDocument();
+
+    // Select "All" → open + archived both show.
+    await user.click(screen.getByRole('tab', { name: /all/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/Open alpha/)).toBeInTheDocument();
+      expect(screen.getByText(/Archived gamma/)).toBeInTheDocument();
+    });
+  });
+
+  test('segmented control exposes an accessible group label', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    mountWithBuckets();
+    mountAt(`/orgs/${SLUG}/threads`);
+    await waitFor(() => {
+      expect(
+        screen.getByRole('tablist', { name: /status filter/i }),
+      ).toBeInTheDocument();
+    });
+  });
+});
+
+/* ------------------------------------------------------------------ */
 /*  Retry button query-key invalidation (regression guard for TASK-506) */
 /* ------------------------------------------------------------------ */
 
