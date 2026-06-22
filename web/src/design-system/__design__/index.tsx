@@ -103,6 +103,7 @@ const componentMap: Record<string, ReactNode> = {
       <Composer
         agents={[]}
         threadId="THR-EXAMPLE"
+        orgSlug="happyranch"
         onSend={() => {}}
         helper="Ctrl+Enter to send (preview, won't fire)"
       />

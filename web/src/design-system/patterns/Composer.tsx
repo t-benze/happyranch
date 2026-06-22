@@ -14,7 +14,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Paperclip, X } from 'lucide-react';
 import { Button } from '@/design-system/primitives/Button';
-import { useOrgSlug } from '@/lib/orgSlug';
 import { MAX_THREAD_ATTACHMENTS, REMOVE_ATTACHMENT_LABEL } from '@/lib/threadAttachments';
 import { MentionTextarea } from './MentionTextarea';
 import type { AgentSummary } from '@/lib/api/agents';
@@ -99,6 +98,12 @@ interface ComposerProps {
   // Required
   agents: AgentSummary[];
   threadId: string;
+  /**
+   * Active org slug — keys the localStorage draft alongside threadId. Passed
+   * down from the rendering feature (patterns stay pure props-in/JSX-out and
+   * must not call @/lib/orgSlug directly).
+   */
+  orgSlug: string;
 }
 
 export function Composer({
@@ -113,8 +118,8 @@ export function Composer({
   onAttachmentsChange,
   agents = [],
   threadId = '',
+  orgSlug,
 }: ComposerProps): JSX.Element {
-  const orgSlug = useOrgSlug();
   const { draft, setDraft, clearDraft } = useThreadDraft(orgSlug, threadId);
   const canSend = Boolean(draft.trim() || attachments.length);
 
@@ -215,5 +220,5 @@ export const meta = {
   import: "@/design-system/patterns/Composer",
   variants: {},
   consumes: ["components.textarea", "components.button"],
-  example: "<Composer onSend={(md) => {}} helper='Enter to send · Shift+Enter for new line' agents={[]} threadId='THR-001' />",
+  example: "<Composer onSend={(md) => {}} helper='Enter to send · Shift+Enter for new line' agents={[]} threadId='THR-001' orgSlug='happyranch' />",
 } as const;

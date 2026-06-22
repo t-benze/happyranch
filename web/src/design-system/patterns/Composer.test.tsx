@@ -18,17 +18,16 @@ afterEach(() => {
 describe('Composer / drafts', () => {
   it('restores a saved draft on mount', () => {
     localStorage.setItem('happyranch:draft:test-org:THR-001', 'in-progress text');
-    // Note: useThreadDraft needs orgSlug. Composer reads it via useOrgSlug()
-    // (the codebase already wires <OrgProvider> in routes; tests need it too).
+    // orgSlug is a plain prop now (the pattern no longer calls useOrgSlug);
+    // it keys the draft alongside threadId.
     render(
-      <WithOrgSlug slug="test-org">
-        <Composer
-          agents={[]}
-          threadId="THR-001"
-          pending={false}
-          onSend={NOOP_SEND}
-        />
-      </WithOrgSlug>,
+      <Composer
+        agents={[]}
+        threadId="THR-001"
+        orgSlug="test-org"
+        pending={false}
+        onSend={NOOP_SEND}
+      />,
     );
     expect(screen.getByRole<HTMLTextAreaElement>('textbox', { name: /compose/i }).value)
       .toBe('in-progress text');
@@ -37,14 +36,13 @@ describe('Composer / drafts', () => {
   it('clears the draft after a successful send', async () => {
     const user = userEvent.setup();
     render(
-      <WithOrgSlug slug="test-org">
-        <Composer
-          agents={[]}
-          threadId="THR-001"
-          pending={false}
-          onSend={NOOP_SEND}
-        />
-      </WithOrgSlug>,
+      <Composer
+        agents={[]}
+        threadId="THR-001"
+        orgSlug="test-org"
+        pending={false}
+        onSend={NOOP_SEND}
+      />,
     );
     const ta = screen.getByRole<HTMLTextAreaElement>('textbox', { name: /compose/i });
     await user.type(ta, 'hello');
@@ -60,14 +58,13 @@ describe('Composer / drafts', () => {
     const user = userEvent.setup();
     const failingSend = vi.fn().mockRejectedValueOnce(new Error('network down'));
     render(
-      <WithOrgSlug slug="test-org">
-        <Composer
-          agents={[]}
-          threadId="THR-002"
-          pending={false}
-          onSend={failingSend}
-        />
-      </WithOrgSlug>,
+      <Composer
+        agents={[]}
+        threadId="THR-002"
+        orgSlug="test-org"
+        pending={false}
+        onSend={failingSend}
+      />,
     );
     const ta = screen.getByRole<HTMLTextAreaElement>('textbox', { name: /compose/i });
     await user.type(ta, 'retry-me');
@@ -84,11 +81,7 @@ describe('Composer / drafts', () => {
     const user = userEvent.setup();
     const onSend = vi.fn(async () => {});
     const file = new File(['pdf'], 'report.pdf', { type: 'application/pdf' });
-    render(
-      <WithOrgSlug slug="test-org">
-        <ControlledComposer onSend={onSend} />
-      </WithOrgSlug>,
-    );
+    render(<ControlledComposer onSend={onSend} />);
 
     await user.upload(screen.getByLabelText(/Attach files/i), file);
     expect(screen.getByRole('button', { name: 'Remove attachment' })).toBeInTheDocument();
@@ -113,19 +106,13 @@ function ControlledComposer({
     <Composer
       agents={[]}
       threadId="THR-attachment"
+      orgSlug="test-org"
       pending={false}
       onSend={onSend}
       attachments={attachments}
       onAttachmentsChange={setAttachments}
     />
   );
-}
-
-// Helper: wraps children in a StaticOrgProvider so Composer's
-// useOrgSlug() resolves to a known slug under jsdom.
-import { StaticOrgProvider } from '@/lib/orgSlug';
-function WithOrgSlug({ slug, children }: { slug: string; children: React.ReactNode }) {
-  return <StaticOrgProvider slug={slug}>{children}</StaticOrgProvider>;
 }
 
 import type { AgentSummary } from '@/lib/api/agents';
@@ -139,14 +126,13 @@ describe('Composer / mentions', () => {
   it('typing @de opens the autocomplete', async () => {
     const user = userEvent.setup();
     render(
-      <WithOrgSlug slug="test-org">
-        <Composer
-          agents={TEST_AGENTS}
-          threadId="THR-002"
-          pending={false}
-          onSend={vi.fn(async () => {})}
-        />
-      </WithOrgSlug>,
+      <Composer
+        agents={TEST_AGENTS}
+        threadId="THR-002"
+        orgSlug="test-org"
+        pending={false}
+        onSend={vi.fn(async () => {})}
+      />,
     );
     const ta = screen.getByRole<HTMLTextAreaElement>('textbox', { name: /compose/i });
     await user.type(ta, '@de');
@@ -158,14 +144,13 @@ describe('Composer / mentions', () => {
     const user = userEvent.setup();
     const onSend = vi.fn(async () => {});
     render(
-      <WithOrgSlug slug="test-org">
-        <Composer
-          agents={TEST_AGENTS}
-          threadId="THR-003"
-          pending={false}
-          onSend={onSend}
-        />
-      </WithOrgSlug>,
+      <Composer
+        agents={TEST_AGENTS}
+        threadId="THR-003"
+        orgSlug="test-org"
+        pending={false}
+        onSend={onSend}
+      />,
     );
     const ta = screen.getByRole<HTMLTextAreaElement>('textbox', { name: /compose/i });
     await user.type(ta, 'hi @de');
@@ -181,14 +166,13 @@ describe('Composer / mentions', () => {
     const user = userEvent.setup();
     const onSend = vi.fn(async () => {});
     render(
-      <WithOrgSlug slug="test-org">
-        <Composer
-          agents={TEST_AGENTS}
-          threadId="THR-004"
-          pending={false}
-          onSend={onSend}
-        />
-      </WithOrgSlug>,
+      <Composer
+        agents={TEST_AGENTS}
+        threadId="THR-004"
+        orgSlug="test-org"
+        pending={false}
+        onSend={onSend}
+      />,
     );
     const ta = screen.getByRole<HTMLTextAreaElement>('textbox', { name: /compose/i });
     await user.type(ta, 'plain message');
@@ -201,14 +185,13 @@ describe('Composer / mentions', () => {
     const user = userEvent.setup();
     const onSend = vi.fn(async () => {});
     render(
-      <WithOrgSlug slug="test-org">
-        <Composer
-          agents={TEST_AGENTS}
-          threadId="THR-shift"
-          pending={false}
-          onSend={onSend}
-        />
-      </WithOrgSlug>,
+      <Composer
+        agents={TEST_AGENTS}
+        threadId="THR-shift"
+        orgSlug="test-org"
+        pending={false}
+        onSend={onSend}
+      />,
     );
     const ta = screen.getByRole<HTMLTextAreaElement>('textbox', { name: /compose/i });
     await user.type(ta, 'line one');
@@ -222,14 +205,13 @@ describe('Composer / mentions', () => {
     const user = userEvent.setup();
     const onSend = vi.fn(async () => {});
     render(
-      <WithOrgSlug slug="test-org">
-        <Composer
-          agents={[]}
-          threadId="THR-005"
-          pending={false}
-          onSend={onSend}
-        />
-      </WithOrgSlug>,
+      <Composer
+        agents={[]}
+        threadId="THR-005"
+        orgSlug="test-org"
+        pending={false}
+        onSend={onSend}
+      />,
     );
     const ta = screen.getByRole<HTMLTextAreaElement>('textbox', { name: /compose/i });
     await user.type(ta, 'heads-up @all');
