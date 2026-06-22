@@ -131,6 +131,33 @@ export default tseslint.config(
     },
   },
 
+  // Patterns compose primitives (and sibling patterns) into props-in/JSX-out
+  // composites. They may NOT reach up the layer stack (layouts, hooks,
+  // features) or pull data/auth directly — those arrive as props. This is the
+  // mechanical backstop for the layer-violation REVISE class: a pre-push
+  // checklist runs once, but eslint runs on every push, including revises
+  // (TaskCard -> useTasksRoutes slipped the checklist and was only caught at
+  // REVISE r3).
+  //
+  // `allowTypeImports: true` on the lib group is load-bearing: patterns keep
+  // their compile-erased `import type … from '@/lib/api/types'|'@/lib/api/agents'`
+  // (8 patterns rely on these) while runtime VALUE imports from the same group
+  // are still caught. Sibling-pattern composition (`@/design-system/patterns/*`)
+  // is deliberately NOT banned — e.g. RecipientsInput imports MentionAutocomplete.
+  {
+    files: ["src/design-system/patterns/**/*.{ts,tsx}"],
+    rules: {
+      "no-restricted-imports": ["error", {
+        patterns: [
+          { group: ["@/design-system/layouts/*"], message: "patterns may not import layouts" },
+          { group: ["@/hooks/*"], message: "patterns are pure props-in/JSX-out — no hooks (data arrives as props)" },
+          { group: ["@/features/*", "@/features/*/**"], message: "patterns may not reach up into features" },
+          { group: ["@/lib/api", "@/lib/api/*", "@/lib/auth", "@/lib/orgSlug"], message: "patterns take data/auth via props, not direct imports", allowTypeImports: true },
+        ],
+      }],
+    },
+  },
+
   // Tailwind class hygiene (scoped — see header comment for why primitives
   // get a pass on no-arbitrary-value).
   //

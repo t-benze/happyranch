@@ -438,6 +438,7 @@ export function ThreadsPage(): JSX.Element {
             <Composer
               agents={agents}
               threadId={threadId ?? ''}
+              orgSlug={slug ?? ''}
               disabled={activeThread.data?.status !== 'open'}
               pending={sendFollowUp.isPending}
               errorMessage={composerError}

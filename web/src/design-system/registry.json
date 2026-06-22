@@ -18,6 +18,17 @@
       "example": "<AgentChip name='engineering_head' role='manager' />"
     },
     {
+      "name": "AppBar",
+      "layer": "layout",
+      "import": "@/design-system/layouts/AppShell/AppBar",
+      "variants": {},
+      "consumes": [
+        "components.topbar",
+        "layout.grid.app_shell"
+      ],
+      "example": "<AppBar />"
+    },
+    {
       "name": "AuditRow",
       "layer": "pattern",
       "import": "@/design-system/patterns/AuditRow",
@@ -76,7 +87,7 @@
         "components.textarea",
         "components.button"
       ],
-      "example": "<Composer onSend={(md) => {}} helper='Enter to send · Shift+Enter for new line' agents={[]} threadId='THR-001' />"
+      "example": "<Composer onSend={(md) => {}} helper='Enter to send · Shift+Enter for new line' agents={[]} threadId='THR-001' orgSlug='happyranch' />"
     },
     {
       "name": "CrescentMoonBadge",
@@ -323,17 +334,6 @@
         "components.select"
       ],
       "example": "<Select value='a'><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value='a'>A</SelectItem></SelectContent></Select>"
-    },
-    {
-      "name": "AppBar",
-      "layer": "layout",
-      "import": "@/design-system/layouts/AppShell/AppBar",
-      "variants": {},
-      "consumes": [
-        "components.topbar",
-        "layout.grid.app_shell"
-      ],
-      "example": "<AppBar />"
     },
     {
       "name": "Sidebar",
