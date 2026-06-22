@@ -18,7 +18,6 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/design-system/primitives/Button';
 import { Input } from '@/design-system/primitives/Input';
 import { Tabs, TabsList, TabsTrigger } from '@/design-system/primitives/Tabs';
-import { ThreadsLayout } from '@/design-system/layouts/ThreadsLayout';
 import { Composer } from '@/design-system/patterns/Composer';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
@@ -294,16 +293,12 @@ export function ThreadsPage(): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId, activeThread.data, activeMessagesQuery.data]);
 
-  // Inbox column. On /threads (no thread selected) it renders full-width as
-  // the single-column conversation list; on /threads/:thread_id it becomes the
-  // left rail of the master-detail split (right border separates it from the
-  // detail pane).
+  // Inbox column — the full-width single-column conversation list shown on
+  // /threads (no thread selected). When a thread IS selected the list column
+  // collapses entirely (THREADDET-01 transcript-focus view): the detail column
+  // takes the full width and the inbox is not rendered.
   const inbox = (
-      <aside
-        className={`bg-surface-sunken flex h-full flex-col${
-          threadId ? ' border-border-default border-r' : ''
-        }`}
-      >
+      <aside className="bg-surface-sunken flex h-full flex-col">
         <header className="border-border-default border-b px-3 py-3">
           <div className="flex items-center justify-between gap-2">
             <h2 className="font-display text-text-primary text-lg font-medium tracking-tight">{S.pageTitle}</h2>
@@ -421,9 +416,9 @@ export function ThreadsPage(): JSX.Element {
   return (
     <>
       {threadId ? (
-        <ThreadsLayout
-          inbox={inbox}
-          detail={
+        // Transcript-focus view (THREADDET-01): the list column collapses and
+        // the detail column (transcript + composer + right rail) takes the full
+        // width. The back link returns to the single-column list.
         <DetailColumn
           loading={activeThread.isLoading}
           errored={activeThread.isError || !activeThread.data}
@@ -431,6 +426,7 @@ export function ThreadsPage(): JSX.Element {
           messages={messages}
           messagesLoading={activeMessagesQuery.isLoading}
           nowMs={nowMs}
+          backHref={routes.inbox()}
           onInvite={() => setShowInvite(true)}
           onArchive={() => setShowArchive(true)}
           onExtend={() => setShowExtend(true)}
@@ -451,8 +447,6 @@ export function ThreadsPage(): JSX.Element {
           }
           slug={slug}
           threadId={threadId}
-        />
-          }
         />
       ) : (
         inbox
@@ -513,6 +507,8 @@ interface DetailColumnProps {
   messages: ThreadMessage[];
   messagesLoading: boolean;
   nowMs: number;
+  /** Back-link target — returns to the single-column thread list (THREADDET-01). */
+  backHref: string;
   onInvite: () => void;
   onArchive: () => void;
   onExtend: () => void;
@@ -528,6 +524,7 @@ function DetailColumn({
   messages,
   messagesLoading,
   nowMs,
+  backHref,
   onInvite,
   onArchive,
   onExtend,
@@ -535,10 +532,24 @@ function DetailColumn({
   slug,
 }: DetailColumnProps): JSX.Element {
   const queryClient = useQueryClient();
+  // Back affordance — the list column is collapsed in this view, so the link
+  // back to the single-column thread list must stay reachable in every state.
+  const backNav = (
+    <div className="bg-surface-sunken px-4 pt-3">
+      <Link
+        to={backHref}
+        className="text-text-muted hover:text-text-primary text-xs transition-colors"
+      >
+        ‹ All threads
+      </Link>
+    </div>
+  );
+
   // Loading skeleton
   if (loading) {
     return (
       <section className="flex h-full flex-col">
+        {backNav}
         <div className="border-border-subtle animate-pulse space-y-2 border-b px-4 py-3">
           <div className="bg-bg-raised h-5 w-64 rounded" />
           <div className="bg-bg-raised h-3 w-48 rounded" />
@@ -553,22 +564,25 @@ function DetailColumn({
   // Error with retry — §2.5.5
   if (errored || !thread) {
     return (
-      <section className="flex h-full flex-col items-center justify-center space-y-3 p-4">
-        <p className="text-feedback-danger text-body">{S.detailError}</p>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => {
-            queryClient.invalidateQueries({
-              queryKey: ['thread', slug, threadId],
-            });
-            queryClient.invalidateQueries({
-              queryKey: ['thread-messages', slug, threadId],
-            });
-          }}
-        >
-          {S.retry}
-        </Button>
+      <section className="flex h-full flex-col">
+        {backNav}
+        <div className="flex flex-1 flex-col items-center justify-center space-y-3 p-4">
+          <p className="text-feedback-danger text-body">{S.detailError}</p>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              queryClient.invalidateQueries({
+                queryKey: ['thread', slug, threadId],
+              });
+              queryClient.invalidateQueries({
+                queryKey: ['thread-messages', slug, threadId],
+              });
+            }}
+          >
+            {S.retry}
+          </Button>
+        </div>
       </section>
     );
   }
@@ -582,6 +596,7 @@ function DetailColumn({
 
   return (
     <section className="flex h-full flex-col">
+      {backNav}
       <ThreadHeader
         threadId={thread.thread_id}
         subject={thread.subject}

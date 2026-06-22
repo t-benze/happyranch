@@ -413,6 +413,56 @@ describe('ThreadsPage — detail (design-overhaul reshape)', () => {
 });
 
 /* ------------------------------------------------------------------ */
+/*  Transcript-focus view — list column collapses (THREADDET-01)       */
+/* ------------------------------------------------------------------ */
+
+describe('ThreadsPage — transcript focus (THREADDET-01)', () => {
+  test('list column (filter + status segments) is absent when a thread is selected', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupThreadWithMessages('THR-100', [mkMessage(1, 'founder', 'message', 'Hello team')]);
+    mountAt(`/orgs/${SLUG}/threads/THR-100`);
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /Test thread/i })).toBeInTheDocument();
+    });
+    // The middle thread-LIST column collapses on a selected thread: its
+    // filter input and the All/Open/Done status segments must not render.
+    expect(screen.queryByLabelText(/Filter threads/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('tablist', { name: /status filter/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  test('list column is present as the single column on /threads (no thread selected)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
+        HttpResponse.json({ threads: [mkThread('THR-001', 'Launch plan')] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/threads`);
+    await waitFor(() => {
+      expect(screen.getByText(/Launch plan/)).toBeInTheDocument();
+    });
+    // The list column (filter + status segments) is the single column here.
+    expect(screen.getByLabelText(/Filter threads/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole('tablist', { name: /status filter/i }),
+    ).toBeInTheDocument();
+  });
+
+  test('transcript-focus view exposes a back affordance to the thread list', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupThreadWithMessages('THR-100', [mkMessage(1, 'founder', 'message', 'Hello team')]);
+    mountAt(`/orgs/${SLUG}/threads/THR-100`);
+    const back = await screen.findByRole('link', { name: /all threads/i });
+    expect(back).toHaveAttribute('href', `/orgs/${SLUG}/threads`);
+  });
+});
+
+/* ------------------------------------------------------------------ */
 /*  System messages — visually distinct cards                          */
 /* ------------------------------------------------------------------ */
 
