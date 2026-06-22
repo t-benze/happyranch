@@ -22,6 +22,7 @@ import { AuditPage } from '@/features/audit/AuditPage';
 import { DashboardPage } from '@/features/dashboard/DashboardPage';
 import { KbPage } from '@/features/kb/KbPage';
 import { TasksPage } from '@/features/tasks/TasksPage';
+import { TaskDetailPage } from '@/features/tasks/TaskDetailPage';
 import { SpendPage } from '@/features/spend/SpendPage';
 import { SystemAssistantPage } from '@/features/system-assistant/SystemAssistantPage';
 import { DreamsPage } from '@/features/dreams/DreamsPage';
@@ -92,7 +93,7 @@ export function AppRoutes(): JSX.Element {
           <Route path="threads" element={<ThreadsPage />} />
           <Route path="threads/:thread_id" element={<ThreadsPage />} />
           <Route path="tasks" element={<TasksPage />} />
-          <Route path="tasks/:task_id" element={<TasksPage />} />
+          <Route path="tasks/:task_id" element={<TaskDetailPage />} />
           <Route path="kb" element={<KbPage />} />
           <Route path="kb/*" element={<KbPage />} />
 

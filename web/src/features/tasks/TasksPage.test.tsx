@@ -211,7 +211,7 @@ describe('TasksPage — read path (roots endpoint)', () => {
   });
 });
 
-describe('TaskDetailPane — jobs cross-link', () => {
+describe('TaskDetailPage — jobs cross-link', () => {
   function stubHandlers(jobs: JobRecord[]) {
     server.use(
       http.get('/api/v1/orgs', () =>
@@ -268,7 +268,7 @@ describe('TaskDetailPane — jobs cross-link', () => {
   });
 });
 
-describe('TaskDetailPane — workflow chain timeline', () => {
+describe('TaskDetailPage — workflow chain timeline', () => {
   const ACTIVE_CHAIN: ActiveChainResponse = {
     step_index: 1,
     first_leg_expect_verdict: null,
@@ -381,7 +381,7 @@ describe('TaskDetailPane — workflow chain timeline', () => {
   });
 });
 
-describe('TaskDetailPane — execution subtasks', () => {
+describe('TaskDetailPage — execution subtasks', () => {
   function stubHandlers() {
     server.use(
       http.get('/api/v1/orgs', () =>
@@ -429,5 +429,69 @@ describe('TaskDetailPane — execution subtasks', () => {
     });
     expect(screen.getAllByText('TASK-0092').length).toBeGreaterThan(0);
     expect(screen.getAllByText('content_writer').length).toBeGreaterThan(0);
+  });
+});
+
+describe('TaskDetailPage — full-page surface', () => {
+  function stubHandlers() {
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [TASK] }),
+      ),
+      // Detail endpoint returns the envelope; useTask selects response.task.
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}`, () =>
+        HttpResponse.json({
+          task: TASK,
+          results: [],
+          audit_log: [],
+          revisit_chain: [],
+          direct_revisits: [],
+          predecessor_prior_status: null,
+          active_chain: null,
+          blocked_on_jobs: null,
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}/recall`, () =>
+        HttpResponse.json({
+          task_id: TASK.task_id,
+          assigned_agent: null,
+          brief: TASK.brief,
+          status: TASK.status,
+          output_summary: null,
+          children: [],
+        }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/jobs/`, () => HttpResponse.json({ jobs: [] })),
+    );
+  }
+
+  test('renders the task body with a "‹ All tasks" back link to the roots list', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubHandlers();
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+    });
+
+    // Wait for the data-driven Brief section (gated on task.data.brief) — the
+    // task id heading renders synchronously from the route param, so awaiting
+    // it would not wait for the detail fetch.
+    expect(
+      await screen.findByRole('heading', { name: 'Brief' }),
+    ).toBeInTheDocument();
+
+    // Full-page body renders: task id heading + brief content, no drawer overlay.
+    expect(
+      screen.getByRole('heading', { name: new RegExp(TASK.task_id) }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByText(/Draft Hong Kong visa guide/).length,
+    ).toBeGreaterThan(0);
+
+    // Back-nav returns to the roots list.
+    const backLink = screen.getByRole('link', { name: /‹ All tasks/ });
+    expect(backLink).toHaveAttribute('href', `/orgs/${SLUG}/tasks`);
   });
 });
