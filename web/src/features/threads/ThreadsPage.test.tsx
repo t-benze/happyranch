@@ -267,6 +267,25 @@ describe('ThreadsPage — list (design-overhaul reshape)', () => {
       expect(screen.getByText(/Review the budget/)).toBeInTheDocument();
     });
   });
+
+  test('no thread selected renders full-width list, not the master-detail "Select a thread" pane (THREADS-01)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
+        HttpResponse.json({ threads: [mkThread('THR-001', 'Launch plan')] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/threads`);
+    await waitFor(() => {
+      expect(screen.getByText(/Launch plan/)).toBeInTheDocument();
+    });
+    // The empty "Select a thread" detail placeholder must NOT render on /threads;
+    // the list is the full-width single column, with detail shown only on navigate.
+    expect(screen.queryByText(/Select a thread/i)).not.toBeInTheDocument();
+  });
 });
 
 /* ------------------------------------------------------------------ */

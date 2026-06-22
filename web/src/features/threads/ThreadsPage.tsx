@@ -23,7 +23,6 @@ import { Composer } from '@/design-system/patterns/Composer';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { InboxRow } from '@/design-system/patterns/InboxRow';
-import { KbdChip } from '@/design-system/patterns/KbdChip';
 import { MessageBubble, type MessageVariant } from '@/design-system/patterns/MessageBubble';
 import { ThreadHeader } from '@/design-system/patterns/ThreadHeader';
 import { artifacts as artifactsApi, ApiError } from '@/lib/api';
@@ -264,11 +263,16 @@ export function ThreadsPage(): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId, activeThread.data, activeMessagesQuery.data]);
 
-  return (
-    <>
-      <ThreadsLayout
-        inbox={(
-      <aside className="border-border-default bg-surface-sunken flex h-full flex-col border-r">
+  // Inbox column. On /threads (no thread selected) it renders full-width as
+  // the single-column conversation list; on /threads/:thread_id it becomes the
+  // left rail of the master-detail split (right border separates it from the
+  // detail pane).
+  const inbox = (
+      <aside
+        className={`bg-surface-sunken flex h-full flex-col${
+          threadId ? ' border-border-default border-r' : ''
+        }`}
+      >
         <header className="border-border-default border-b px-3 py-3">
           <div className="flex items-center justify-between gap-2">
             <h2 className="font-display text-text-primary text-lg font-medium tracking-tight">{S.pageTitle}</h2>
@@ -378,8 +382,14 @@ export function ThreadsPage(): JSX.Element {
           )}
         </div>
       </aside>
-        )}
-        detail={threadId ? (
+  );
+
+  return (
+    <>
+      {threadId ? (
+        <ThreadsLayout
+          inbox={inbox}
+          detail={
         <DetailColumn
           loading={activeThread.isLoading}
           errored={activeThread.isError || !activeThread.data}
@@ -407,18 +417,11 @@ export function ThreadsPage(): JSX.Element {
           slug={slug}
           threadId={threadId}
         />
-      ) : (
-        <EmptyState
-          title={S.selectThread}
-          body={
-            <span className="inline-flex flex-wrap items-center justify-center gap-1">
-              {S.selectThreadBody}
-              <KbdChip keys={['N']} />
-            </span>
           }
         />
+      ) : (
+        inbox
       )}
-      />
 
       <NewThreadDialog
         open={showNew}
