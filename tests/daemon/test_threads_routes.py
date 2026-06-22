@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -11,6 +13,7 @@ from runtime.models import (
     ThreadAttachment,
     ThreadMessageKind,
     ThreadRecord,
+    ThreadStatus,
 )
 from runtime.orchestrator._paths import OrgPaths
 
@@ -1241,3 +1244,193 @@ def test_resume_404_on_missing_thread(tmp_home, app, org_state, auth_headers):
     )
     assert resp.status_code == 404
     assert resp.json()["detail"]["code"] == "not_found"
+
+
+# ---------------------------------------------------------------------------
+# POST /threads/{id}/post-as-agent — a live task session appends to an
+# EXISTING thread it participates in (THR-027, participant-only ruling).
+# ---------------------------------------------------------------------------
+
+
+def _bind_task_session(org_state, *, agent: str, task_id: str, sid: str) -> None:
+    """Seed an active task owned by `agent` and register its live session."""
+    now = datetime.now(timezone.utc).isoformat()
+    org_state.db.insert_task(TaskRecord(
+        id=task_id, brief="post-as-agent test", assigned_agent=agent,
+        created_at=now, updated_at=now,
+    ))
+    org_state.sessions.set_active(task_id, agent, sid)
+
+
+def test_post_as_agent_appends_and_mints_to_other_participants(
+    tmp_home, app, org_state, auth_headers
+):
+    client = TestClient(app)
+    tid = _seed_open_thread(
+        org_state, participants=["dev_agent", "qa_engineer", "code_reviewer"]
+    )
+    _bind_task_session(org_state, agent="dev_agent", task_id="TASK-900", sid="sess-900")
+    before_turns = org_state.db.get_thread(tid).turns_used
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/post-as-agent",
+        json={
+            "composer": "dev_agent", "task_id": "TASK-900",
+            "session_id": "sess-900", "body_markdown": "status update",
+        },
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["thread_id"] == tid
+    # REPLY invocations go to OTHER participants only — composer is excluded.
+    assert set(data["pending_replies"]) == {"qa_engineer", "code_reviewer"}
+    assert "dev_agent" not in data["pending_replies"]
+
+    msgs = org_state.db.list_thread_messages(tid)
+    assert msgs[-1].speaker == "dev_agent"
+    assert msgs[-1].body_markdown == "status update"
+    assert data["seq"] == msgs[-1].seq
+    # turns_used incremented by exactly 1.
+    assert org_state.db.get_thread(tid).turns_used == before_turns + 1
+    # One REPLY invocation per other participant, triggered by this message.
+    minted = [
+        inv for inv in org_state.db.list_thread_invocations(tid)
+        if inv.triggering_seq == data["seq"]
+    ]
+    assert {inv.agent_name for inv in minted} == {"qa_engineer", "code_reviewer"}
+    assert all(inv.purpose.value == "reply" for inv in minted)
+    # Provenance column persists the posting task id (storage-only, off-model).
+    row = org_state.db._conn.execute(
+        "SELECT sent_from_task_id FROM thread_messages "
+        "WHERE thread_id = ? AND seq = ?",
+        (tid, data["seq"]),
+    ).fetchone()
+    assert row["sent_from_task_id"] == "TASK-900"
+
+
+def test_post_as_agent_rejects_non_participant(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    tid = _seed_open_thread(org_state, participants=["qa_engineer"])
+    _bind_task_session(org_state, agent="dev_agent", task_id="TASK-901", sid="sess-901")
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/post-as-agent",
+        json={
+            "composer": "dev_agent", "task_id": "TASK-901",
+            "session_id": "sess-901", "body_markdown": "let me in",
+        },
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"]["code"] == "not_a_participant"
+
+
+def test_post_as_agent_rejects_non_owner(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+    # Task is owned by someone other than the composer.
+    _bind_task_session(org_state, agent="qa_engineer", task_id="TASK-902", sid="sess-902")
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/post-as-agent",
+        json={
+            "composer": "dev_agent", "task_id": "TASK-902",
+            "session_id": "sess-902", "body_markdown": "not mine",
+        },
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"]["code"] == "composer_not_task_owner"
+
+
+def test_post_as_agent_rejects_session_mismatch(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+    _bind_task_session(org_state, agent="dev_agent", task_id="TASK-903", sid="sess-real")
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/post-as-agent",
+        json={
+            "composer": "dev_agent", "task_id": "TASK-903",
+            "session_id": "sess-stale", "body_markdown": "wrong session",
+        },
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["code"] == "session_mismatch"
+
+
+def test_post_as_agent_rejects_archived_thread(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+    org_state.db.set_thread_status(tid, status=ThreadStatus.ARCHIVED, summary="done")
+    _bind_task_session(org_state, agent="dev_agent", task_id="TASK-904", sid="sess-904")
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/post-as-agent",
+        json={
+            "composer": "dev_agent", "task_id": "TASK-904",
+            "session_id": "sess-904", "body_markdown": "too late",
+        },
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"]["code"] == "thread_not_open"
+
+
+def test_post_as_agent_rejects_turn_cap_exceeded(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    tid = org_state.db.next_thread_id()
+    org_state.db.insert_thread(ThreadRecord(id=tid, subject="cap", turn_cap=1))
+    org_state.db.add_thread_participant(tid, "dev_agent", added_by="founder")
+    org_state.db.increment_thread_turns_used(tid, by=1)  # turns_used == cap
+    _bind_task_session(org_state, agent="dev_agent", task_id="TASK-905", sid="sess-905")
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/post-as-agent",
+        json={
+            "composer": "dev_agent", "task_id": "TASK-905",
+            "session_id": "sess-905", "body_markdown": "one too many",
+        },
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 429, resp.text
+    assert resp.json()["detail"]["code"] == "turn_cap_exceeded"
+
+
+def test_post_as_agent_rejects_missing_binding(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/post-as-agent",
+        json={"composer": "dev_agent", "body_markdown": "no binding"},
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "binding_required"
+
+
+def test_post_as_agent_rejects_unknown_task(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    tid = _seed_open_thread(org_state, participants=["dev_agent"])
+
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/post-as-agent",
+        json={
+            "composer": "dev_agent", "task_id": "TASK-NOPE",
+            "session_id": "sess-x", "body_markdown": "ghost task",
+        },
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["detail"]["code"] == "unknown_task"

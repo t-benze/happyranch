@@ -628,6 +628,7 @@ class Database:
                 addressed_to_json TEXT,
                 decline_reason TEXT,
                 system_payload_json TEXT,
+                sent_from_task_id TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (thread_id) REFERENCES threads(id)
             );
@@ -904,6 +905,16 @@ class Database:
             "ON threads(composed_from_dream_id) "
             "WHERE composed_from_dream_id IS NOT NULL"
         )
+        # Task-session post-to-existing-thread provenance (THR-027): the task id
+        # whose live session appended a message via POST /threads/{id}/post-as-agent.
+        # Additive nullable; existing rows + founder/compose/reply messages stay
+        # NULL. No index — provenance is read by message, never queried by task.
+        try:
+            self._conn.execute(
+                "ALTER TABLE thread_messages ADD COLUMN sent_from_task_id TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass
         # kind column for escalation_notifications: 'escalation' (default) or
         # 'failure'. Additive; existing rows keep the default.
         try:
@@ -2905,6 +2916,7 @@ class Database:
         decline_reason: str | None = None,
         system_payload: dict | None = None,
         attachments: list[ThreadAttachment] | None = None,
+        sent_from_task_id: str | None = None,
     ) -> int:
         """Append a message and return its allocated seq.
 
@@ -2923,7 +2935,7 @@ class Database:
             self._conn.execute(
                 "INSERT INTO thread_messages (thread_id, seq, speaker, kind, "
                 "body_markdown, decline_reason, system_payload_json, "
-                "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "sent_from_task_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     thread_id,
                     next_seq,
@@ -2932,6 +2944,7 @@ class Database:
                     body_markdown,
                     decline_reason,
                     json.dumps(system_payload) if system_payload else None,
+                    sent_from_task_id,
                     _now().isoformat(),
                 ),
             )

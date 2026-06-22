@@ -1844,6 +1844,28 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/threads/{thread_id}/post-as-agent": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "thread_id",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/threads/{thread_id}/reply": {
       "POST": {
         "params": [
