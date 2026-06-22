@@ -64,8 +64,12 @@ function useNowMs(active: boolean): number {
   return now;
 }
 
-type StatusTab = 'open' | 'archived';
-const STATUS_TABS: StatusTab[] = ['open', 'archived'];
+// Segmented inbox filter (THREADS-02). 'done' = archived; 'all' = both, derived
+// client-side by merging the two per-status fetches (the list payload carries no
+// finer waiting/active split, so no other bucket is honestly derivable here).
+type InboxBucket = 'all' | 'open' | 'done';
+const INBOX_BUCKETS: InboxBucket[] = ['all', 'open', 'done'];
+const BUCKET_LABEL: Record<InboxBucket, string> = { all: 'All', open: 'Open', done: 'Done' };
 
 function threadStatusOrFallback(status: string): 'open' | 'archived' {
   if (status === 'open' || status === 'archived') return status;
@@ -118,27 +122,54 @@ export function ThreadsPage(): JSX.Element {
   const { slug, thread_id: threadId } = useParams<{ slug: string; thread_id: string }>();
   const composerFocusRef = useRef<(() => void) | null>(null);
 
-  // Inbox state
-  const [status, setStatus] = useState<StatusTab>('open');
+  // Inbox state — segmented status filter (THREADS-02).
+  const [bucket, setBucket] = useState<InboxBucket>('open');
   const [filter, setFilter] = useState('');
   useThreadsInboxSSE();
   const agentsQuery = useAgentsList();
   const agents = useMemo(() => agentsQuery.data?.agents ?? [], [agentsQuery.data]);
-  const threadsQuery = useThreadsList({ status });
-  // Per-status count queries so each pill's count is backed by a real, honest fetch
-  // (not derived from the already-filtered main list).
-  const openCountQuery = useThreadsList({ status: 'open' });
-  const archivedCountQuery = useThreadsList({ status: 'archived' });
+  // Two real per-status fetches back BOTH the per-bucket counts and the list.
+  // 'all' merges them client-side — no extra fetch, no new data field.
+  const openQuery = useThreadsList({ status: 'open' });
+  const archivedQuery = useThreadsList({ status: 'archived' });
+  const openCount = openQuery.data?.threads?.length ?? 0;
+  const archivedCount = archivedQuery.data?.threads?.length ?? 0;
+  const counts: Record<InboxBucket, number> = {
+    all: openCount + archivedCount,
+    open: openCount,
+    done: archivedCount,
+  };
+  const bucketLoading =
+    bucket === 'open'
+      ? openQuery.isLoading
+      : bucket === 'done'
+        ? archivedQuery.isLoading
+        : openQuery.isLoading || archivedQuery.isLoading;
+  const bucketError =
+    bucket === 'open'
+      ? openQuery.isError
+      : bucket === 'done'
+        ? archivedQuery.isError
+        : openQuery.isError || archivedQuery.isError;
   const threads = useMemo(() => {
-    const all = threadsQuery.data?.threads ?? [];
-    if (!filter.trim()) return all;
+    const openThreads = openQuery.data?.threads ?? [];
+    const archivedThreads = archivedQuery.data?.threads ?? [];
+    const base =
+      bucket === 'open'
+        ? openThreads
+        : bucket === 'done'
+          ? archivedThreads
+          : [...openThreads, ...archivedThreads].sort((a, b) =>
+              b.started_at.localeCompare(a.started_at),
+            );
+    if (!filter.trim()) return base;
     const needle = filter.toLowerCase();
-    return all.filter(
+    return base.filter(
       (t) =>
         t.subject.toLowerCase().includes(needle) ||
         t.thread_id.toLowerCase().includes(needle),
     );
-  }, [threadsQuery.data, filter]);
+  }, [bucket, openQuery.data, archivedQuery.data, filter]);
 
   // Active-thread data
   const activeThread = useThread(threadId);
@@ -295,19 +326,22 @@ export function ThreadsPage(): JSX.Element {
           />
           <Tabs
             className="mt-2"
-            value={status}
-            onValueChange={(v) => setStatus(v as StatusTab)}
-            aria-label="Status filter"
+            value={bucket}
+            onValueChange={(v) => setBucket(v as InboxBucket)}
           >
-            <TabsList>
-              {STATUS_TABS.map((s) => {
-                const countQuery = s === 'open' ? openCountQuery : archivedCountQuery;
-                const count = countQuery.data?.threads?.length ?? 0;
+            <TabsList aria-label="Status filter">
+              {INBOX_BUCKETS.map((b) => {
+                const loading =
+                  b === 'all'
+                    ? openQuery.isLoading || archivedQuery.isLoading
+                    : b === 'done'
+                      ? archivedQuery.isLoading
+                      : openQuery.isLoading;
                 return (
-                  <TabsTrigger key={s} value={s}>
-                    {s}
+                  <TabsTrigger key={b} value={b}>
+                    {BUCKET_LABEL[b]}
                     <span className="text-text-muted ml-1 text-xs tabular-nums">
-                      {countQuery.isLoading ? '…' : count}
+                      {loading ? '…' : counts[b]}
                     </span>
                   </TabsTrigger>
                 );
@@ -317,10 +351,10 @@ export function ThreadsPage(): JSX.Element {
         </header>
         <div className="flex-1 overflow-auto p-2">
           {/* Loading skeleton */}
-          {threadsQuery.isLoading && <InboxSkeleton />}
+          {bucketLoading && <InboxSkeleton />}
 
           {/* Error with retry — §2.5.5 */}
-          {threadsQuery.isError && (
+          {bucketError && (
             <div className="space-y-3 p-4 text-center">
               <p className="text-feedback-danger text-sm">{S.errorTitle}</p>
               <p className="text-text-muted text-xs">{S.errorBody}</p>
@@ -339,7 +373,7 @@ export function ThreadsPage(): JSX.Element {
           )}
 
           {/* Empty — calm §2.5.5 */}
-          {!threadsQuery.isLoading && !threadsQuery.isError && threads.length === 0 && (
+          {!bucketLoading && !bucketError && threads.length === 0 && (
             <EmptyState
               title={S.emptyTitle}
               body={
@@ -351,7 +385,7 @@ export function ThreadsPage(): JSX.Element {
           )}
 
           {/* Populated list */}
-          {!threadsQuery.isLoading && !threadsQuery.isError && threads.length > 0 && (
+          {!bucketLoading && !bucketError && threads.length > 0 && (
             <div className="flex flex-col gap-1">
               {threads.map((t) => {
                 const path = routes.detail(t.thread_id);
