@@ -1,9 +1,10 @@
 /**
  * Founder dashboard — Direction-A Pasture Home surface (THR-030 Leg B).
  *
- * Single useDashboardSummary() query powers the whole page. Left column
- * is read-only (heartbeat + narrative + counters + activity), right
- * column is interactive (escalation inbox + updates feed).
+ * Single useDashboardSummary() query powers the whole page. A wide MAIN
+ * column carries the Waiting-on-you escalation queue + Recent-activity
+ * feed; a narrower RIGHT RAIL stacks the secondary cards (Today heartbeat
+ * + counters, Org pulse, top-token threads, Updates-this-week).
  *
  * Design: a-dashboard.html reference from the Direction-A design bundle.
  * Pasture tokens (tokens.css) provide the full warm/green OKLCH palette
@@ -150,9 +151,96 @@ export function DashboardPage(): JSX.Element {
           </span>
         </div>
 
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          {/* LEFT COLUMN */}
-          <div className="space-y-4">
+        {/* Direction-A a-dashboard layout: a wide MAIN column (Waiting-on-you
+            queue + Recent-activity feed) beside a narrower RIGHT RAIL of
+            secondary cards (Today / Org pulse / token cards). THR-030 HOME-03. */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+          {/* MAIN COLUMN — Waiting-on-you queue on top, Recent-activity feed below */}
+          <div
+            className="space-y-4 lg:col-span-2"
+            data-testid="dashboard-main"
+            aria-label="Main column"
+          >
+            <Panel
+              title={
+                pendingCount > 0
+                  ? `Waiting on you · ${pendingCount}`
+                  : 'Waiting on you'
+              }
+              meta={pendingCount > 0 ? 'esc to close · ⌘↵ to send' : undefined}
+            >
+              {pendingCount === 0 ? (
+                <EmptyState title="All clear" body="No escalations waiting." />
+              ) : (
+                <div className="space-y-2">
+                  {s.escalations.map((row) => (
+                    <EscalationInboxRow
+                      key={row.task_id}
+                      row={row}
+                      expanded={expandedEscId === row.task_id}
+                      onExpand={() => setExpandedEscId(row.task_id)}
+                      onCollapse={() => setExpandedEscId(null)}
+                      slug={slug ?? ''}
+                    />
+                  ))}
+                </div>
+              )}
+            </Panel>
+
+            <Panel title="Recent activity">
+              {s.recent_activity.length === 0 ? (
+                <p className="text-text-muted text-sm">No recent activity.</p>
+              ) : (
+                <ul className="space-y-1 font-mono text-xs">
+                  {s.recent_activity.map((r, i) => (
+                    <li
+                      key={`${r.timestamp}-${i}`}
+                      className="flex items-baseline gap-2"
+                    >
+                      <span className="text-text-muted">
+                        {relativeAge(r.timestamp, now)} ago
+                      </span>
+                      <span className="text-text-primary">{r.who}</span>
+                      <span className="text-text-muted">
+                        {r.event_kind.replace(/_/g, ' ')}
+                      </span>
+                      {r.verdict === 'ok' && (
+                        <span className="text-tier-green">· ok</span>
+                      )}
+                      {r.verdict === 'fail' && (
+                        <span className="text-tier-red">· fail</span>
+                      )}
+                      {r._thread_dream_id && (
+                        <CrescentMoonBadge className="h-3 w-3" />
+                      )}
+                      {r.task_id && slug && (
+                        <Link
+                          to={
+                            r.task_id.startsWith('THR-')
+                              ? `/orgs/${slug}/threads/${r.task_id}`
+                              : `/orgs/${slug}/tasks/${r.task_id}`
+                          }
+                          className="text-id-task ml-auto hover:underline"
+                        >
+                          {r.task_id}
+                        </Link>
+                      )}
+                      {r.task_id && !slug && (
+                        <span className="text-id-task ml-auto">{r.task_id}</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Panel>
+          </div>
+
+          {/* RIGHT RAIL — Today / Org pulse / token cards */}
+          <div
+            className="space-y-4"
+            data-testid="dashboard-rail"
+            aria-label="Right rail"
+          >
             <Panel title="Today" meta="last 24h">
               <Heartbeat data={s.heartbeat} nowIdx={nowHour} />
               <div className="mt-3">
@@ -206,82 +294,6 @@ export function DashboardPage(): JSX.Element {
             {/* Self-contained cost-oversight card — fetches its own
                 /tokens?group_by=thread data, not DashboardSummaryResponse. */}
             <TopTokenThreadsPanel />
-
-            <Panel title="Recent activity">
-              {s.recent_activity.length === 0 ? (
-                <p className="text-text-muted text-sm">No recent activity.</p>
-              ) : (
-                <ul className="space-y-1 font-mono text-xs">
-                  {s.recent_activity.map((r, i) => (
-                    <li
-                      key={`${r.timestamp}-${i}`}
-                      className="flex items-baseline gap-2"
-                    >
-                      <span className="text-text-muted">
-                        {relativeAge(r.timestamp, now)} ago
-                      </span>
-                      <span className="text-text-primary">{r.who}</span>
-                      <span className="text-text-muted">
-                        {r.event_kind.replace(/_/g, ' ')}
-                      </span>
-                      {r.verdict === 'ok' && (
-                        <span className="text-tier-green">· ok</span>
-                      )}
-                      {r.verdict === 'fail' && (
-                        <span className="text-tier-red">· fail</span>
-                      )}
-                      {r._thread_dream_id && (
-                        <CrescentMoonBadge className="h-3 w-3" />
-                      )}
-                      {r.task_id && slug && (
-                        <Link
-                          to={
-                            r.task_id.startsWith('THR-')
-                              ? `/orgs/${slug}/threads/${r.task_id}`
-                              : `/orgs/${slug}/tasks/${r.task_id}`
-                          }
-                          className="text-id-task ml-auto hover:underline"
-                        >
-                          {r.task_id}
-                        </Link>
-                      )}
-                      {r.task_id && !slug && (
-                        <span className="text-id-task ml-auto">{r.task_id}</span>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </Panel>
-          </div>
-
-          {/* RIGHT COLUMN */}
-          <div className="space-y-4">
-            <Panel
-              title={
-                pendingCount > 0
-                  ? `Waiting on you · ${pendingCount}`
-                  : 'Waiting on you'
-              }
-              meta={pendingCount > 0 ? 'esc to close · ⌘↵ to send' : undefined}
-            >
-              {pendingCount === 0 ? (
-                <EmptyState title="All clear" body="No escalations waiting." />
-              ) : (
-                <div className="space-y-2">
-                  {s.escalations.map((row) => (
-                    <EscalationInboxRow
-                      key={row.task_id}
-                      row={row}
-                      expanded={expandedEscId === row.task_id}
-                      onExpand={() => setExpandedEscId(row.task_id)}
-                      onCollapse={() => setExpandedEscId(null)}
-                      slug={slug ?? ''}
-                    />
-                  ))}
-                </div>
-              )}
-            </Panel>
 
             <Panel title="Updates this week">
               {s.updates_this_week.length === 0 ? (

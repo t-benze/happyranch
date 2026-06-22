@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse, delay } from 'msw';
 import { describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
@@ -135,6 +135,30 @@ describe('DashboardPage', () => {
       expect(screen.getByText(/Waiting on you · 1/i)).toBeInTheDocument();
     });
     expect(screen.getByText(/Photo licensing unclear/i)).toBeInTheDocument();
+  });
+
+  test('lays out a main column (queue + activity feed) beside a right rail (secondary cards)', async () => {
+    const s = emptySummary();
+    s.org_age_days = 14;
+    s.narrative_counts.completed_today = 5;
+    seedShell();
+    server.use(handler(s));
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+
+    const main = await screen.findByTestId('dashboard-main');
+    const rail = screen.getByTestId('dashboard-rail');
+
+    // Main column: Waiting-on-you queue on top + Recent-activity feed below.
+    expect(within(main).getByText(/Waiting on you/i)).toBeInTheDocument();
+    expect(within(main).getByText(/^Recent activity$/)).toBeInTheDocument();
+
+    // Right rail: the secondary cards (Today heartbeat + Org pulse).
+    expect(within(rail).getByText(/^Today$/)).toBeInTheDocument();
+    expect(within(rail).getByText(/Org pulse/i)).toBeInTheDocument();
+
+    // The escalation queue moved out of the old right column — it is no
+    // longer in the rail.
+    expect(within(rail).queryByText(/Waiting on you/i)).not.toBeInTheDocument();
   });
 
   test('renders org pulse table when teams exist', async () => {
