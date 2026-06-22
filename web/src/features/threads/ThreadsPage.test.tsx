@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { QueryClient } from '@tanstack/react-query';
@@ -459,6 +459,135 @@ describe('ThreadsPage — transcript focus (THREADDET-01)', () => {
     mountAt(`/orgs/${SLUG}/threads/THR-100`);
     const back = await screen.findByRole('link', { name: /all threads/i });
     expect(back).toHaveAttribute('href', `/orgs/${SLUG}/threads`);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  Structured detail rail (THREADDET-02)                              */
+/* ------------------------------------------------------------------ */
+
+describe('ThreadsPage — structured detail rail (THREADDET-02)', () => {
+  type Attachment = {
+    artifact_name: string;
+    display_name: string;
+    size_bytes: number | null;
+    content_type: string | null;
+    uploaded_by: string;
+  };
+
+  function mkMessageWithAttachments(
+    seq: number,
+    speaker: string,
+    body: string,
+    attachments: Attachment[],
+  ) {
+    return { ...mkMessage(seq, speaker, 'message', body), attachments };
+  }
+
+  function setupDetail(
+    threadId: string,
+    participants: string[],
+    messages: ReturnType<typeof mkMessage | typeof mkMessageWithAttachments>[],
+  ) {
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
+        HttpResponse.json({ threads: [mkThread(threadId, 'Rail thread')] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/${threadId}`, () =>
+        HttpResponse.json({ ...mkThread(threadId, 'Rail thread'), participants, messages }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/${threadId}/messages`, () =>
+        HttpResponse.json({ messages }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/${threadId}/tail`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+    );
+  }
+
+  test('participants render as AgentChip avatar chips (role-colored dots) in the rail', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupDetail('THR-200', ['founder', 'dev_agent', 'engineering_manager'], [
+      mkMessage(1, 'founder', 'message', 'Kickoff'),
+    ]);
+    mountAt(`/orgs/${SLUG}/threads/THR-200`);
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /Rail thread/i })).toBeInTheDocument();
+    });
+    const rail = screen.getByLabelText('Thread properties');
+    // Every participant name is rendered in the rail (accessible text preserved).
+    expect(within(rail).getByText('dev_agent')).toBeInTheDocument();
+    expect(within(rail).getByText('engineering_manager')).toBeInTheDocument();
+    // The rail uses the AgentChip idiom — role-colored dots. The plain header
+    // join() carries no such dots, so their presence proves the avatar chips.
+    expect(rail.querySelectorAll('.bg-agent-worker').length).toBeGreaterThanOrEqual(1);
+    expect(rail.querySelector('.bg-agent-founder')).not.toBeNull();
+  });
+
+  test('aggregates message attachments into an Artifacts section, deduped by artifact_name', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const report: Attachment = {
+      artifact_name: 'dev_agent/2026-06-21/report.pdf',
+      display_name: 'Q2 Report.pdf',
+      size_bytes: 2048,
+      content_type: 'application/pdf',
+      uploaded_by: 'dev_agent',
+    };
+    const data: Attachment = {
+      artifact_name: 'dev_agent/2026-06-21/data.csv',
+      display_name: 'metrics.csv',
+      size_bytes: 512,
+      content_type: 'text/csv',
+      uploaded_by: 'dev_agent',
+    };
+    setupDetail('THR-201', ['dev_agent'], [
+      mkMessageWithAttachments(1, 'dev_agent', 'first', [report, data]),
+      // Re-attached SAME artifact_name in a later message — must dedupe to one.
+      mkMessageWithAttachments(2, 'dev_agent', 'second', [report]),
+    ]);
+    mountAt(`/orgs/${SLUG}/threads/THR-201`);
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /Rail thread/i })).toBeInTheDocument();
+    });
+    const rail = screen.getByLabelText('Thread properties');
+    expect(within(rail).getByText('Artifacts')).toBeInTheDocument();
+    // Real produced-artifact display names appear; the duplicate appears once.
+    expect(within(rail).getAllByText('Q2 Report.pdf')).toHaveLength(1);
+    expect(within(rail).getByText('metrics.csv')).toBeInTheDocument();
+  });
+
+  test('Artifacts section is absent when no message carries an attachment', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupDetail('THR-202', ['dev_agent'], [
+      mkMessage(1, 'dev_agent', 'message', 'No files here'),
+    ]);
+    mountAt(`/orgs/${SLUG}/threads/THR-202`);
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /Rail thread/i })).toBeInTheDocument();
+    });
+    // No attachment anywhere → no Artifacts section in the rail (the global
+    // sidebar "Artifacts" nav link is a separate landmark, excluded by scope).
+    const rail = screen.getByLabelText('Thread properties');
+    expect(within(rail).queryByText('Artifacts')).not.toBeInTheDocument();
+  });
+
+  test('deferred rail sections are not fabricated (no Linked items / Token cost)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupDetail('THR-203', ['dev_agent'], [
+      mkMessage(1, 'dev_agent', 'message', 'Hello'),
+    ]);
+    mountAt(`/orgs/${SLUG}/threads/THR-203`);
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /Rail thread/i })).toBeInTheDocument();
+    });
+    // No fabricated sections that lack a real ThreadDetailResponse data source.
+    const rail = screen.getByLabelText('Thread properties');
+    expect(within(rail).queryByText(/linked items/i)).not.toBeInTheDocument();
+    expect(within(rail).queryByText(/token cost/i)).not.toBeInTheDocument();
+    expect(within(rail).queryByText(/pull request/i)).not.toBeInTheDocument();
   });
 });
 

@@ -18,6 +18,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/design-system/primitives/Button';
 import { Input } from '@/design-system/primitives/Input';
 import { Tabs, TabsList, TabsTrigger } from '@/design-system/primitives/Tabs';
+import { AgentChip } from '@/design-system/patterns/AgentChip';
 import { Composer } from '@/design-system/patterns/Composer';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
@@ -25,7 +26,7 @@ import { InboxRow } from '@/design-system/patterns/InboxRow';
 import { MessageBubble, type MessageVariant } from '@/design-system/patterns/MessageBubble';
 import { ThreadHeader } from '@/design-system/patterns/ThreadHeader';
 import { artifacts as artifactsApi, ApiError } from '@/lib/api';
-import type { ThreadAttachmentRef, ThreadMessage } from '@/lib/api/types';
+import type { ThreadAttachment, ThreadAttachmentRef, ThreadMessage } from '@/lib/api/types';
 import { attachmentContentType, safeArtifactName } from '@/lib/threadAttachments';
 import type { PendingAttachment } from '@/design-system/patterns/Composer';
 import { useAgentsList } from '@/hooks/agents';
@@ -84,6 +85,31 @@ function lastSpeakerChip(speaker: string | null | undefined): { name: string; ro
   if (speaker === 'founder') return { name: 'founder', role: 'founder' };
   if (speaker === 'system') return { name: 'system', role: 'worker' };
   return { name: speaker, role: 'worker' };
+}
+
+/**
+ * Role for a participant avatar chip. Participants are bare name strings, so
+ * only the founder is distinguishable; every other agent renders as a worker —
+ * mirrors lastSpeakerChip's honest, no-fabrication mapping (the dot is decor).
+ */
+function participantChipRole(name: string): 'worker' | 'founder' {
+  return name === 'founder' ? 'founder' : 'worker';
+}
+
+/**
+ * Aggregate the real produced artifacts across a thread's transcript:
+ * every message's attachments, deduped by artifact_name (first occurrence
+ * wins). Pure presentation over existing ThreadDetailResponse data — no fetch,
+ * no fabrication. Guards `attachments` which older payloads may omit.
+ */
+function collectThreadArtifacts(messages: ThreadMessage[]): ThreadAttachment[] {
+  const seen = new Map<string, ThreadAttachment>();
+  for (const m of messages) {
+    for (const a of m.attachments ?? []) {
+      if (!seen.has(a.artifact_name)) seen.set(a.artifact_name, a);
+    }
+  }
+  return [...seen.values()];
 }
 
 /* ------------------------------------------------------------------ */
@@ -532,6 +558,9 @@ function DetailColumn({
   slug,
 }: DetailColumnProps): JSX.Element {
   const queryClient = useQueryClient();
+  // Real produced artifacts aggregated from the transcript (THREADDET-02).
+  // Computed before the early returns so the hook order stays stable.
+  const artifacts = useMemo(() => collectThreadArtifacts(messages), [messages]);
   // Back affordance — the list column is collapsed in this view, so the link
   // back to the single-column thread list must stay reachable in every state.
   const backNav = (
@@ -638,8 +667,28 @@ function DetailColumn({
             {composer}
           </footer>
         </div>
-        {/* Properties rail — 244px wide, Direction-A Pasture */}
-        <aside className="border-border-default bg-surface-sunken w-rail flex shrink-0 flex-col gap-3 overflow-auto border-l p-4">
+        {/* Properties rail — 244px wide, Direction-A Pasture. Structured as
+            Participants (avatars) · properties · Artifacts (THREADDET-02). */}
+        <aside
+          aria-label="Thread properties"
+          className="border-border-default bg-surface-sunken w-rail flex shrink-0 flex-col gap-3 overflow-auto border-l p-4"
+        >
+          {/* Participants — avatar chips (AgentChip idiom, role-colored dot) */}
+          <div>
+            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">Participants</h3>
+            {thread.participants.length > 0 ? (
+              <ul className="space-y-1">
+                {thread.participants.map((p) => (
+                  <li key={p}>
+                    <AgentChip name={p} role={participantChipRole(p)} />
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-text-muted text-xs">none</p>
+            )}
+          </div>
+
           {/* Status */}
           <div>
             <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">Status</h3>
@@ -659,32 +708,38 @@ function DetailColumn({
             </p>
           </div>
 
-          {/* Participants */}
+          {/* Opened */}
           <div>
-            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">Participants</h3>
-            <ul className="space-y-0.5">
-              {thread.participants.length > 0 ? (
-                thread.participants.map((p) => (
-                  <li key={p} className="text-text-secondary text-xs">{p}</li>
-                ))
-              ) : (
-                <li className="text-text-muted text-xs">none</li>
-              )}
-            </ul>
+            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">Opened</h3>
+            <p className="text-text-secondary text-xs">
+              {new Date(thread.started_at).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
+            </p>
           </div>
+
+          {/* Artifacts — real attachments produced across the transcript,
+              deduped by artifact_name; rendered only when some exist. Neutral
+              text entries (the transcript bubbles carry the download links). */}
+          {artifacts.length > 0 && (
+            <div>
+              <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">Artifacts</h3>
+              <ul className="space-y-1">
+                {artifacts.map((a) => (
+                  <li
+                    key={a.artifact_name}
+                    className="text-text-secondary block truncate text-xs"
+                    title={a.display_name}
+                  >
+                    {a.display_name}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           {/* Thread ID */}
           <div>
             <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">ID</h3>
             <p className="text-text-secondary font-mono text-xs">{thread.thread_id}</p>
-          </div>
-
-          {/* Started */}
-          <div>
-            <h3 className="text-text-muted mb-1 text-xs font-semibold tracking-wider uppercase">Started</h3>
-            <p className="text-text-secondary text-xs">
-              {new Date(thread.started_at).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
-            </p>
           </div>
 
           {/* Dream marker */}
