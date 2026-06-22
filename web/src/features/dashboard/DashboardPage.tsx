@@ -12,7 +12,7 @@
  *
  * Spec: docs/superpowers/specs/2026-05-30-dashboard-overhaul-design.md
  */
-import { useState, useMemo, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useDashboardSummary } from '@/hooks/dashboard';
@@ -26,10 +26,16 @@ import { OrgPulseTable } from './components/OrgPulseTable';
 import { EscalationInboxRow } from './components/EscalationInboxRow';
 import { TopTokenThreadsPanel } from './components/TopTokenThreadsPanel';
 
-function greeting(hour: number): string {
-  if (hour < 12) return 'Good morning';
-  if (hour < 18) return 'Good afternoon';
-  return 'Good evening';
+/**
+ * Status-summary copy for the serif greeting heading (THR-030 HOME-02).
+ * Derived only from the live waiting count — the same escalation queue
+ * length the "Waiting on you · N" card surfaces — never a hand-authored
+ * narrative.
+ */
+function statusSummary(pendingCount: number): string {
+  if (pendingCount === 0) return "You're all caught up, founder";
+  if (pendingCount === 1) return '1 thing needs you, founder';
+  return `${pendingCount} things need you, founder`;
 }
 
 function relativeAge(iso: string, now: Date): string {
@@ -77,10 +83,6 @@ export function DashboardPage(): JSX.Element {
   const q = useDashboardSummary();
   const [expandedEscId, setExpandedEscId] = useState<string | null>(null);
   const slug = useActiveSlug();
-  const greetingText = useMemo(
-    () => greeting(new Date(q.data?.server_now ?? Date.now()).getUTCHours()),
-    [q.data?.server_now],
-  );
 
   if (q.isLoading) {
     return <p className="text-text-muted p-6 text-sm">Loading dashboard…</p>;
@@ -129,9 +131,10 @@ export function DashboardPage(): JSX.Element {
   return (
     <div className="bg-surface-canvas h-full overflow-y-auto">
       <div className="mx-auto max-w-5xl p-6">
-        {/* Greeting heading — Direction-A serif, ds.css .h1 parity */}
+        {/* Greeting heading — Direction-A serif (var(--font-display)), ds.css
+            .h1 parity; copy is a data-derived status summary (THR-030 HOME-02). */}
         <h1 className="font-display text-display text-text-primary mb-1 font-medium">
-          {greetingText}, founder
+          {statusSummary(pendingCount)}
         </h1>
         <div className="text-text-muted mb-8 flex items-baseline gap-3 font-mono text-xs">
           <span className="text-text-primary font-medium">

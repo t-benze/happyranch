@@ -161,6 +161,54 @@ describe('DashboardPage', () => {
     expect(within(rail).queryByText(/Waiting on you/i)).not.toBeInTheDocument();
   });
 
+  test('greeting heading is a serif status summary derived from the waiting count', async () => {
+    const s = emptySummary();
+    s.org_age_days = 14;
+    s.narrative_counts.completed_today = 5;
+    s.narrative_counts.escalated_open = 2;
+    s.escalations = [
+      {
+        task_id: 'TASK-201',
+        agent: 'qa_engineer',
+        team: 'engineering',
+        question: 'Photo licensing unclear',
+        raised_at: '2026-05-30T11:00:00Z',
+        age_seconds: 3600,
+      },
+      {
+        task_id: 'TASK-202',
+        agent: 'dev_agent',
+        team: 'engineering',
+        question: 'Schema migration scope',
+        raised_at: '2026-05-30T10:00:00Z',
+        age_seconds: 7200,
+      },
+    ];
+    seedShell();
+    server.use(handler(s));
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+
+    const heading = await screen.findByRole('heading', { level: 1 });
+    // Typography: Newsreader display serif role (var(--font-display)).
+    expect(heading).toHaveClass('font-display');
+    // Copy: derived from the real waiting count (2 escalations), not hardcoded.
+    expect(heading).toHaveTextContent(/2 things need you/i);
+  });
+
+  test('greeting heading reads all-caught-up when nothing is waiting', async () => {
+    const s = emptySummary();
+    s.org_age_days = 14;
+    s.narrative_counts.completed_today = 5;
+    s.escalations = [];
+    seedShell();
+    server.use(handler(s));
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+
+    const heading = await screen.findByRole('heading', { level: 1 });
+    expect(heading).toHaveClass('font-display');
+    expect(heading).toHaveTextContent(/all caught up/i);
+  });
+
   test('renders org pulse table when teams exist', async () => {
     const s = emptySummary();
     s.org_age_days = 14;
