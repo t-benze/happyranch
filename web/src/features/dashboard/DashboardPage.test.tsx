@@ -1,10 +1,22 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse, delay } from 'msw';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi, beforeEach } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 import type { DashboardSummaryResponse } from '@/lib/api/types';
+
+// Partial-mock the tokens hooks: stub the new today-total hook so the
+// "Tokens today" tile renders a deterministic figure, while leaving
+// useTopThreadTokens REAL so the self-contained TopTokenThreadsPanel still
+// rides its MSW-seeded /tokens fetch (same pattern as
+// TopTokenThreadsPanel.test.tsx, scoped to the one new hook).
+vi.mock('@/hooks/tokens', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/hooks/tokens')>();
+  return { ...actual, useTokensToday: vi.fn() };
+});
+import { useTokensToday, formatTokens } from '@/hooks/tokens';
+const mockTokensToday = vi.mocked(useTokensToday);
 
 const SLUG = 'hk-macau-tourism';
 const ROUTE = `/orgs/${SLUG}/dashboard`;
@@ -65,6 +77,16 @@ function handler(summary: DashboardSummaryResponse) {
 }
 
 describe('DashboardPage', () => {
+  beforeEach(() => {
+    // Default: a quiet today. Individual tests override as needed.
+    mockTokensToday.mockReturnValue({
+      data: 0,
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+  });
+
   test('renders loading state initially', async () => {
     seedShell();
     server.use(
@@ -207,6 +229,35 @@ describe('DashboardPage', () => {
     const heading = await screen.findByRole('heading', { level: 1 });
     expect(heading).toHaveClass('font-display');
     expect(heading).toHaveTextContent(/all caught up/i);
+  });
+
+  test('TODAY card shows an honest Tokens today tile and no Spend today dollars tile (THR-030 HOME-04)', async () => {
+    const s = emptySummary();
+    s.org_age_days = 14;
+    s.narrative_counts.completed_today = 5;
+    // A real today-scoped token total flows from the (mocked) useTokensToday.
+    mockTokensToday.mockReturnValue({
+      data: 26_500_000,
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    seedShell();
+    server.use(handler(s));
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+
+    const rail = await screen.findByTestId('dashboard-rail');
+
+    // The honest tokens tile: label + value rendered via the shared compact
+    // formatter (26_500_000 -> '26.5M'), NOT a hand-rolled string.
+    expect(within(rail).getByText('Tokens today')).toBeInTheDocument();
+    expect(
+      within(rail).getByText(formatTokens(26_500_000)),
+    ).toBeInTheDocument();
+
+    // The dishonest dollars counter-tile is gone from the TODAY grid.
+    expect(within(rail).queryByText('Spend today')).not.toBeInTheDocument();
+    expect(within(rail).queryByText(/\$0\.00/)).not.toBeInTheDocument();
   });
 
   test('renders org pulse table when teams exist', async () => {
