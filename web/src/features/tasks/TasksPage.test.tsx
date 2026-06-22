@@ -93,7 +93,9 @@ describe('TasksPage — read path (roots endpoint)', () => {
     );
     mountAt(`/orgs/${SLUG}/tasks`);
     await waitFor(() => {
-      expect(screen.getByRole('heading', { name: 'Tasks' })).toBeInTheDocument();
+      expect(
+        screen.getByRole('heading', { name: 'What the org is working on' }),
+      ).toBeInTheDocument();
       expect(screen.getByRole('tab', { name: 'Status' })).toBeInTheDocument();
       expect(screen.getByRole('tab', { name: 'Agent' })).toBeInTheDocument();
       expect(screen.getByRole('tab', { name: 'Thread' })).toBeInTheDocument();
@@ -161,8 +163,9 @@ describe('TasksPage — read path (roots endpoint)', () => {
     const threadTab = await screen.findByRole('tab', { name: 'Thread' });
     await user.click(threadTab);
     await waitFor(() => {
-      // Should have a THR-0030 group heading AND a "No thread" heading
-      expect(screen.getByText('THR-0030')).toBeInTheDocument();
+      // THR-0030 appears as the group heading AND as the row's thread chip,
+      // so multiple matches are expected; plus a "No thread" group heading.
+      expect(screen.getAllByText('THR-0030').length).toBeGreaterThan(0);
       expect(screen.getByText('No thread')).toBeInTheDocument();
     });
   });
@@ -208,6 +211,115 @@ describe('TasksPage — read path (roots endpoint)', () => {
       // Empty state, not a loading indicator
       expect(screen.getByText(/No tasks match/)).toBeInTheDocument();
     });
+  });
+});
+
+describe('TasksPage — Direction-A list reshape (THR-030 TASKS-01/02/03)', () => {
+  function mountTasks(tasks: TaskRecord[]) {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks }),
+      ),
+    );
+    return mountAt(`/orgs/${SLUG}/tasks`);
+  }
+
+  // TASKS-03: page eyebrow (derived from loaded list data) + serif title.
+  test('renders serif title and a derived eyebrow with root/waiting/failed counts', async () => {
+    const running = rootTask({
+      task_id: 'TASK-0400',
+      status: 'in_progress',
+      severity_rollup: 'in_progress',
+    });
+    const escalated = rootTask({
+      task_id: 'TASK-0401',
+      status: 'blocked',
+      block_kind: 'escalated',
+      severity_rollup: 'blocked',
+    });
+    const failed = rootTask({
+      task_id: 'TASK-0402',
+      status: 'failed',
+      severity_rollup: 'failed',
+    });
+    mountTasks([running, escalated, failed]);
+
+    // Serif title replaces the bare "Tasks" heading.
+    expect(
+      await screen.findByRole('heading', { name: 'What the org is working on' }),
+    ).toBeInTheDocument();
+
+    // Eyebrow derives from loaded list data: 3 roots · 1 waiting on you
+    // (escalated) · 1 failed (rollup). Wait for the roots query to populate
+    // (the static header renders before the fetch resolves).
+    await waitFor(() =>
+      expect(screen.getByText(/ROOT TASKS/)).toHaveTextContent('3 ROOT TASKS'),
+    );
+    const eyebrow = screen.getByText(/ROOT TASKS/);
+    expect(eyebrow).toHaveTextContent('SUBTASKS ROLL UP');
+    expect(eyebrow).toHaveTextContent('1 WAITING ON YOU');
+    expect(eyebrow).toHaveTextContent('1 FAILED');
+  });
+
+  // TASKS-01: column header row aligned above the rows.
+  test('renders the TASK · TITLE · AGENT · THREAD · UPDATED column header row', async () => {
+    mountTasks([
+      rootTask({ task_id: 'TASK-0410', status: 'in_progress', severity_rollup: 'in_progress' }),
+    ]);
+    await waitFor(() => {
+      expect(screen.getByText('TASK')).toBeInTheDocument();
+    });
+    expect(screen.getByText('TITLE')).toBeInTheDocument();
+    expect(screen.getByText('AGENT')).toBeInTheDocument();
+    expect(screen.getByText('THREAD')).toBeInTheDocument();
+    expect(screen.getByText('UPDATED')).toBeInTheDocument();
+  });
+
+  // TASKS-02: agent rendered as AgentChip (avatar idiom), thread as a chip,
+  // row click-through preserved to the detail route.
+  test('renders agent as an AgentChip avatar and thread as an inline chip', async () => {
+    mountTasks([
+      rootTask({
+        task_id: 'TASK-0420',
+        assigned_agent: 'dev_agent',
+        dispatched_from_thread_id: 'THR-0030',
+        status: 'in_progress',
+        severity_rollup: 'in_progress',
+        brief: 'Reshape the tasks list rows',
+      }),
+    ]);
+    await waitFor(() => {
+      expect(screen.getByText('dev_agent')).toBeInTheDocument();
+    });
+    // Agent is the AgentChip idiom (role-colored dot), not plain text.
+    expect(document.querySelector('.bg-agent-worker')).not.toBeNull();
+    // Thread reference renders as an inline (tinted) chip.
+    expect(screen.getByText('THR-0030')).toBeInTheDocument();
+    // Row click-through to the detail route is preserved.
+    const rowLink = screen.getByRole('link', { name: /Reshape the tasks list rows/ });
+    expect(rowLink).toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-0420`);
+  });
+
+  // TASKS-02 honesty fence: missing agent/thread render a neutral fallback,
+  // never a fabricated identity.
+  test('renders neutral em-dash fallbacks when agent and thread are absent', async () => {
+    mountTasks([
+      rootTask({
+        task_id: 'TASK-0430',
+        assigned_agent: null,
+        status: 'pending',
+        severity_rollup: 'pending',
+        brief: 'Unassigned, no thread',
+      }),
+    ]);
+    await waitFor(() => {
+      expect(screen.getByText('Unassigned, no thread')).toBeInTheDocument();
+    });
+    // No fabricated agent chip for this row.
+    expect(document.querySelector('.bg-agent-worker')).toBeNull();
+    // Both the agent and thread cells fall back to an em-dash.
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(2);
   });
 });
 

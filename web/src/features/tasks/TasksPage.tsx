@@ -13,10 +13,13 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Tabs, TabsList, TabsTrigger } from '@/design-system/primitives/Tabs';
-import { TaskCard } from '@/design-system/patterns/TaskCard';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
+import {
+  TaskListColumnHeader,
+  TaskListRow,
+  severityRollupStatus,
+} from './TaskListRow';
 import { useTasksRootsInfinite, useTasksRoutes } from '@/hooks/tasks';
-import { useDensity } from '@/hooks/density';
 import type { TaskRecord } from '@/lib/api/types';
 
 type GroupBy = 'status' | 'agent' | 'thread';
@@ -97,7 +100,6 @@ const GROUP_ORDER_STATUS: Record<string, number> = {
 
 export function TasksPage(): JSX.Element {
   const [groupBy, setGroupBy] = useState<GroupBy>('status');
-  const { density } = useDensity();
   const routes = useTasksRoutes();
   const tasksQuery = useTasksRootsInfinite();
 
@@ -105,6 +107,26 @@ export function TasksPage(): JSX.Element {
     () => tasksQuery.data?.pages.flatMap((p) => p.tasks) ?? [],
     [tasksQuery.data],
   );
+
+  // Page eyebrow — derived ONLY from already-loaded roots-list fields
+  // (no extra fetch, no fabrication). "Waiting on you" = roots escalated to
+  // the founder (status blocked + block_kind escalated); "Failed" uses the
+  // same severity rollup the rows display. "Subtasks roll up" is a static,
+  // honest descriptor of the roots payload (it carries severity_rollup).
+  const eyebrow = useMemo(() => {
+    const waitingOnYou = allTasks.filter(
+      (t) => t.status === 'blocked' && t.block_kind === 'escalated',
+    ).length;
+    const failed = allTasks.filter(
+      (t) => severityRollupStatus(t) === 'failed',
+    ).length;
+    return [
+      `${allTasks.length} ROOT TASKS`,
+      'SUBTASKS ROLL UP',
+      `${waitingOnYou} WAITING ON YOU`,
+      `${failed} FAILED`,
+    ].join(' · ');
+  }, [allTasks]);
 
   // Group tasks by the active dimension, sorted by group priority then recency.
   const groups = useMemo(() => {
@@ -160,8 +182,11 @@ export function TasksPage(): JSX.Element {
     <div className="bg-surface-canvas flex h-full flex-col">
       {/* Page title + group-by selector */}
       <header className="border-border-default shrink-0 border-b px-6 py-5">
-        <h1 className="font-display text-display text-text-primary font-medium">
-          Tasks
+        <p className="text-text-muted text-xs font-medium uppercase tracking-wide">
+          {eyebrow}
+        </p>
+        <h1 className="font-display text-display text-text-primary mt-1 font-medium">
+          What the org is working on
         </h1>
         <Tabs
           className="mt-3"
@@ -187,6 +212,7 @@ export function TasksPage(): JSX.Element {
           <EmptyState title="No tasks" body="No tasks match the current filters." />
         ) : (
           <div className="mx-auto max-w-3xl space-y-6">
+            <TaskListColumnHeader />
             {groups.map(([key, tasks]) => {
               const dimmed = isResolvedGroup(key, groupBy);
               return (
@@ -195,13 +221,12 @@ export function TasksPage(): JSX.Element {
                     label={groupLabel(key, groupBy)}
                     dimmed={dimmed}
                   />
-                  <ul className="mt-2 space-y-1.5">
+                  <ul className="mt-2">
                     {tasks.map((t) => (
                       <li key={t.task_id}>
-                        <TaskCard
+                        <TaskListRow
                           task={t}
                           to={routes.detail(t.task_id)}
-                          density={density}
                           taskRoutes={routes}
                         />
                       </li>
