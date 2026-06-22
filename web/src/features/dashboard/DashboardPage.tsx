@@ -299,7 +299,14 @@ export function DashboardPage(): JSX.Element {
                 </div>
                 <div className="text-center">
                   <div className="font-display text-h1 text-text-primary font-medium tabular-nums">
-                    {formatTokens(tokensTodayQ.data ?? 0)}
+                    {/* Honest tile: render the real summed total ONLY once the
+                        /tokens query has succeeded with a defined figure. While
+                        pending, disabled, or errored the value is unknown, so we
+                        show the dashboard's neutral em-dash placeholder (see
+                        OrgPulseTable) rather than a fabricated 0 (THR-030 HOME-04). */}
+                    {tokensTodayQ.data !== undefined && !tokensTodayQ.isError
+                      ? formatTokens(tokensTodayQ.data)
+                      : '—'}
                   </div>
                   <div className="text-text-muted text-overline mt-1">Tokens today</div>
                 </div>

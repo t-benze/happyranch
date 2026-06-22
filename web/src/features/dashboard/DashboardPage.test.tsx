@@ -260,6 +260,72 @@ describe('DashboardPage', () => {
     expect(within(rail).queryByText(/\$0\.00/)).not.toBeInTheDocument();
   });
 
+  test('Tokens today tile shows a neutral placeholder (not 0) while the token query is pending', async () => {
+    const s = emptySummary();
+    s.org_age_days = 14;
+    s.narrative_counts.completed_today = 5;
+    // Token query still in flight: data undefined. The tile must NOT paint a
+    // fabricated 0 (THR-030 HOME-04 — value comes only from real data).
+    mockTokensToday.mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+      error: null,
+    });
+    seedShell();
+    server.use(handler(s));
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+
+    const rail = await screen.findByTestId('dashboard-rail');
+    const tile = within(rail).getByText('Tokens today').parentElement as HTMLElement;
+    expect(within(tile).getByText('—')).toBeInTheDocument();
+    expect(within(tile).queryByText('0')).not.toBeInTheDocument();
+  });
+
+  test('Tokens today tile shows a neutral placeholder (not 0) when the token query errors', async () => {
+    const s = emptySummary();
+    s.org_age_days = 14;
+    s.narrative_counts.completed_today = 5;
+    // Token query failed: data undefined, isError true. The tile must show the
+    // same neutral state — never a dishonest 0.
+    mockTokensToday.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error('boom'),
+    });
+    seedShell();
+    server.use(handler(s));
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+
+    const rail = await screen.findByTestId('dashboard-rail');
+    const tile = within(rail).getByText('Tokens today').parentElement as HTMLElement;
+    expect(within(tile).getByText('—')).toBeInTheDocument();
+    expect(within(tile).queryByText('0')).not.toBeInTheDocument();
+  });
+
+  test('Tokens today tile renders the real summed total via formatTokens on success', async () => {
+    const s = emptySummary();
+    s.org_age_days = 14;
+    s.narrative_counts.completed_today = 5;
+    // A real today-scoped total resolved by the (mocked) summing hook.
+    mockTokensToday.mockReturnValue({
+      data: 1_250_000,
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    seedShell();
+    server.use(handler(s));
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+
+    const rail = await screen.findByTestId('dashboard-rail');
+    const tile = within(rail).getByText('Tokens today').parentElement as HTMLElement;
+    expect(within(tile).getByText(formatTokens(1_250_000))).toBeInTheDocument();
+    // The success state replaces the neutral placeholder entirely.
+    expect(within(tile).queryByText('—')).not.toBeInTheDocument();
+  });
+
   test('renders org pulse table when teams exist', async () => {
     const s = emptySummary();
     s.org_age_days = 14;
