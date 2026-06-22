@@ -12,13 +12,11 @@
  * via next_cursor with IntersectionObserver sentinel.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
 import { Tabs, TabsList, TabsTrigger } from '@/design-system/primitives/Tabs';
 import { TaskCard } from '@/design-system/patterns/TaskCard';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { useTasksRootsInfinite, useTasksRoutes } from '@/hooks/tasks';
 import { useDensity } from '@/hooks/density';
-import { TaskDetailPane } from './TaskDetailPane';
 import type { TaskRecord } from '@/lib/api/types';
 
 type GroupBy = 'status' | 'agent' | 'thread';
@@ -98,7 +96,6 @@ const GROUP_ORDER_STATUS: Record<string, number> = {
 };
 
 export function TasksPage(): JSX.Element {
-  const { task_id: openTaskId } = useParams<{ task_id: string }>();
   const [groupBy, setGroupBy] = useState<GroupBy>('status');
   const { density } = useDensity();
   const routes = useTasksRoutes();
@@ -204,7 +201,6 @@ export function TasksPage(): JSX.Element {
                         <TaskCard
                           task={t}
                           to={routes.detail(t.task_id)}
-                          active={openTaskId === t.task_id}
                           density={density}
                           taskRoutes={routes}
                         />
@@ -228,8 +224,6 @@ export function TasksPage(): JSX.Element {
           </div>
         )}
       </main>
-
-      {openTaskId && <TaskDetailPane taskId={openTaskId} />}
     </div>
   );
 }

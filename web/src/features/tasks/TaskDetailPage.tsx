@@ -1,5 +1,9 @@
 /**
- * Task detail — Direction-A Pasture, drawer pane.
+ * Task detail — Direction-A Pasture, full-page surface.
+ *
+ * Reached via the `tasks/:task_id` route (mirrors the Jobs surface's
+ * `jobs/:job_id -> JobDetailPage`). A '‹ All tasks' back-nav returns to the
+ * roots list; the Tasks list navigates here rather than opening an overlay.
  *
  * Shows the task identity card (Pasture card style), the chain timeline
  * (current/done/blocked nodes, blocked node names its blocker), the brief,
@@ -9,13 +13,8 @@
  * Title in serif font-display.
  */
 import { useMemo, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import {
-  Drawer,
-  DrawerContent,
-  DrawerTitle,
-} from '@/design-system/primitives/Drawer';
 import { Button } from '@/design-system/primitives/Button';
 import { IdBadge } from '@/design-system/patterns/IdBadge';
 import { StatusBadge } from '@/design-system/patterns/StatusBadge';
@@ -347,9 +346,9 @@ const TERMINAL_STATUSES: ReadonlySet<string> = new Set([
   'resolved_superseded',
 ]);
 
-export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
-  const navigate = useNavigate();
-  const { slug } = useParams<{ slug: string }>();
+export function TaskDetailPage(): JSX.Element {
+  const { slug, task_id: taskIdParam } = useParams<{ slug: string; task_id: string }>();
+  const taskId = taskIdParam ?? '';
   const routes = useTasksRoutes();
   const task = useTask(taskId);
   const recall = useTaskRecall(taskId);
@@ -357,7 +356,6 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
   const chainQuery = useChainWithBlock(slug, taskId);
   const [dialog, setDialog] = useState<null | 'cancel' | 'revisit' | 'resolve'>(null);
 
-  const onClose = () => navigate(routes.inbox());
   const isEscalated = task.data?.status === 'blocked' && task.data?.block_kind === 'escalated';
   const isTerminal = task.data ? TERMINAL_STATUSES.has(task.data.status) : false;
   const isFailed = task.data?.status === 'failed';
@@ -379,11 +377,21 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
 
   return (
     <>
-      <Drawer open onOpenChange={(o) => !o && onClose()}>
-        <DrawerContent className="flex flex-col">
+      <div className="h-full overflow-y-auto">
+        <div className="mx-auto max-w-3xl px-4 py-6">
+          {/* Back-nav — return to the roots list */}
+          <nav className="mb-4">
+            <Link
+              to={routes.inbox()}
+              className="text-text-muted hover:text-text-primary text-xs transition-colors"
+            >
+              ‹ All tasks
+            </Link>
+          </nav>
+
           {/* Header — identity card */}
-          <header className="border-border-default shrink-0 border-b px-5 py-4">
-            <DrawerTitle className="flex items-center gap-2">
+          <header className="border-border-default border-b pb-4">
+            <h1 className="flex items-center gap-2">
               <span className="font-display text-h1 text-text-primary font-medium">
                 {taskId}
               </span>
@@ -393,7 +401,7 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
                   blockKind={task.data.block_kind}
                 />
               )}
-            </DrawerTitle>
+            </h1>
             {task.data && (
               <div className="text-text-muted mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-xs tabular-nums">
                 <span>{task.data.team}</span>
@@ -466,8 +474,8 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
             </div>
           </header>
 
-          {/* Scrollable body */}
-          <section className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          {/* Body */}
+          <section className="py-4">
             {task.data?.brief && <BriefSection brief={brief} />}
 
             {chainQuery.data?.chain && (
@@ -524,8 +532,8 @@ export function TaskDetailPane({ taskId }: { taskId: string }): JSX.Element {
               </section>
             )}
           </section>
-        </DrawerContent>
-      </Drawer>
+        </div>
+      </div>
 
       {dialog === 'cancel' && (
         <CancelTaskDialog taskId={taskId} onClose={() => setDialog(null)} />
