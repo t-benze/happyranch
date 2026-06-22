@@ -16,6 +16,7 @@ import { useState, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useDashboardSummary } from '@/hooks/dashboard';
+import { useTokensToday, formatTokens } from '@/hooks/tokens';
 import { Button } from '@/design-system/primitives/Button';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
@@ -78,11 +79,26 @@ function useActiveSlug(): string | null {
   return slug ?? ctx ?? null;
 }
 
+/** Local-midnight ISO of the given instant's calendar day. */
+function startOfLocalDayIso(d: Date): string {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).toISOString();
+}
+
 export function DashboardPage(): JSX.Element {
   const queryClient = useQueryClient();
   const q = useDashboardSummary();
   const [expandedEscId, setExpandedEscId] = useState<string | null>(null);
   const slug = useActiveSlug();
+
+  // Today-scoped REAL token total for the TODAY card (THR-030 HOME-04). The
+  // day boundary is derived from the server clock (server_now), not the
+  // browser, so the figure stays consistent with the rest of the page; local
+  // midnight of that day is the `since` filter on the existing GET /tokens
+  // route. Called unconditionally (rules-of-hooks); disabled until loaded.
+  const tokensTodaySince = q.data
+    ? startOfLocalDayIso(new Date(q.data.server_now))
+    : undefined;
+  const tokensTodayQ = useTokensToday({ since: tokensTodaySince });
 
   if (q.isLoading) {
     return <p className="text-text-muted p-6 text-sm">Loading dashboard…</p>;
@@ -282,10 +298,17 @@ export function DashboardPage(): JSX.Element {
                   <div className="text-text-muted text-overline mt-1">KB entries</div>
                 </div>
                 <div className="text-center">
-                  <div className="text-h2 text-text-primary font-mono font-medium tabular-nums">
-                    ${s.narrative_counts.spend_today_usd.toFixed(2)}
+                  <div className="font-display text-h1 text-text-primary font-medium tabular-nums">
+                    {/* Honest tile: render the real summed total ONLY once the
+                        /tokens query has succeeded with a defined figure. While
+                        pending, disabled, or errored the value is unknown, so we
+                        show the dashboard's neutral em-dash placeholder (see
+                        OrgPulseTable) rather than a fabricated 0 (THR-030 HOME-04). */}
+                    {tokensTodayQ.data !== undefined && !tokensTodayQ.isError
+                      ? formatTokens(tokensTodayQ.data)
+                      : '—'}
                   </div>
-                  <div className="text-text-muted text-overline mt-1">Spend today</div>
+                  <div className="text-text-muted text-overline mt-1">Tokens today</div>
                 </div>
               </div>
             </Panel>
