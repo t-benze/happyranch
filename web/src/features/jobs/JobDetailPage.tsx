@@ -49,19 +49,28 @@ function formatDateTime(iso: string | null | undefined): string | null {
 
 // ── Sub-components ───────────────────────────────────────────────────
 
-/** Monospace script block with interpreter + cwd context. */
+/**
+ * Command card styled with terminal chrome per the a-job-detail Direction-A
+ * reference (JOBDET-02): a "›_ command" header bar above the verbatim script,
+ * with an interpreter/cwd footer. Pure restyle of existing fields — interpreter
+ * and cwd_hint come straight from the job payload; cwd is omitted honestly when
+ * absent (no fabricated value).
+ */
 function ScriptBlock({ job }: { job: JobRecord }): JSX.Element {
   return (
-    <section>
-      <h3 className="text-text-muted mb-2 text-xs font-medium tracking-wider uppercase">
-        Command
-        <span className="ml-1 font-normal normal-case">
-          ({job.interpreter}{job.cwd_hint ? ` · cwd: ${job.cwd_hint}` : ''})
+    <section className="border-border-default overflow-hidden rounded-lg border">
+      <div className="bg-surface-sunken border-border-default flex items-center gap-2 border-b px-3 py-2">
+        <span aria-hidden="true" className="text-text-muted font-mono text-xs select-none">
+          ›_
         </span>
-      </h3>
-      <pre className="bg-surface-sunken border-border-default text-text-primary overflow-x-auto rounded-lg border p-3 font-mono text-xs whitespace-pre">
+        <span className="text-text-muted text-xs font-medium tracking-wider uppercase">command</span>
+      </div>
+      <pre className="bg-surface-canvas text-text-primary overflow-x-auto p-3 font-mono text-xs whitespace-pre">
         {job.script_text}
       </pre>
+      <div className="bg-surface-sunken border-border-default text-text-muted border-t px-3 py-1.5 font-mono text-xs">
+        {job.interpreter}{job.cwd_hint ? ` · cwd: ${job.cwd_hint}` : ''}
+      </div>
     </section>
   );
 }
