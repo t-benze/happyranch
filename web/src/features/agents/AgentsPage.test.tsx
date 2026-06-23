@@ -70,23 +70,31 @@ function mountAt(route: string) {
 describe('AgentsPage — two-pane roster list', () => {
   test('renders the agent roster with team / executor / description in left pane', async () => {
     stubBaseHandlers();
+    // The first agent auto-selects on mount (AGENTS-01), so the detail pane
+    // also queries — stub its endpoints to satisfy onUnhandledRequest:'error'.
+    stubDetailHandlers();
     mountAt(`/orgs/${SLUG}/agents`);
 
+    // support_agent is the second (un-selected) agent, so it appears once —
+    // in the roster — making it a stable anchor for the initial wait.
     await waitFor(() =>
-      expect(screen.getByText('engineering_head')).toBeInTheDocument(),
+      expect(screen.getByText('support_agent')).toBeInTheDocument(),
     );
-    expect(screen.getByText('support_agent')).toBeInTheDocument();
-    // "engineering" and "cx" appear in the roster list inside the left-pane <aside>
-    // (there are 2 <aside> elements: sidebar + roster). Scope to the second one.
+    // "engineering"/"cx"/names/descriptions appear in the roster list inside
+    // the left-pane <aside> (there are 2 <aside> elements: sidebar + roster).
+    // The auto-selected first agent also renders its name + description in the
+    // detail pane, so scope every roster assertion to the roster aside.
     const asides = document.querySelectorAll('aside');
     const rosterAside = asides[1]; // sidebar is [0], roster is [1]
     expect(rosterAside).toBeTruthy();
+    expect(within(rosterAside!).getByText('engineering_head')).toBeInTheDocument();
+    expect(within(rosterAside!).getByText('support_agent')).toBeInTheDocument();
     const engMatches = within(rosterAside!).getAllByText(/engineering/);
     expect(engMatches.length).toBeGreaterThan(0);
     const cxMatches = within(rosterAside!).getAllByText(/cx/);
     expect(cxMatches.length).toBeGreaterThan(0);
-    expect(screen.getByText('Owns engineering.')).toBeInTheDocument();
-    expect(screen.getByText('Handles support.')).toBeInTheDocument();
+    expect(within(rosterAside!).getByText('Owns engineering.')).toBeInTheDocument();
+    expect(within(rosterAside!).getByText('Handles support.')).toBeInTheDocument();
   });
 
   test('clicking an agent row loads detail in the right pane', async () => {
@@ -112,20 +120,43 @@ describe('AgentsPage — two-pane roster list', () => {
     ).toBeInTheDocument();
   });
 
-  test('shows calm empty state when no agent selected', async () => {
+  test('auto-selects the first roster agent on mount and renders its detail pane', async () => {
     stubBaseHandlers();
+    stubDetailHandlers();
     mountAt(`/orgs/${SLUG}/agents`);
 
-    // The right pane shows a calm state with "Select an agent" when no agent selected
+    // AGENTS-01: with a non-empty roster, the FIRST agent is auto-selected.
+    // The first agent (engineering_head) is a manager and the second
+    // (support_agent) is a worker, so the detail-pane "manager" role pill
+    // uniquely proves the first agent's detail pane rendered by default.
     await waitFor(() => {
-      expect(
-        screen.getAllByText(/Select an agent/).length,
-      ).toBeGreaterThan(0);
+      expect(screen.getByText('manager')).toBeInTheDocument();
     });
+    // Detail pane is rendered, so no empty "Select an agent" pane appears.
+    expect(screen.queryByText(/Select an agent/)).not.toBeInTheDocument();
+  });
+
+  test('empty roster renders the calm empty state without auto-selecting', async () => {
+    stubBaseHandlers();
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/agents`, () =>
+        HttpResponse.json({ agents: [] }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/agents`);
+
+    // Left pane: roster empty state. Right pane: calm "No agents yet" state.
+    // Nothing is auto-selected, so the page renders without error.
+    await waitFor(() => {
+      expect(screen.getByText('No agents enrolled')).toBeInTheDocument();
+    });
+    expect(screen.getByText('No agents yet')).toBeInTheDocument();
   });
 
   test('Add agent button opens dialog', async () => {
     stubBaseHandlers();
+    // Auto-select (AGENTS-01) mounts the detail pane — stub its endpoints.
+    stubDetailHandlers();
     const user = userEvent.setup();
     mountAt(`/orgs/${SLUG}/agents`);
 
