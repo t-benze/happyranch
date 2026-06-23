@@ -712,4 +712,27 @@ describe('SpendPage', () => {
     const card = screen.getByText('By team').closest('div') as HTMLElement;
     expect(within(card).getByText('No token spend in this window')).toBeDefined();
   });
+
+  it('shows the honest by-team error state — not an all-unattributed table — when the roster request fails', () => {
+    // Roster (agents-list) request FAILS while the spend rollup SUCCEEDS with
+    // non-empty burn. An unavailable roster must NOT be treated as proof that
+    // no agents have teams: the by-team card must NOT silently fold every
+    // burning agent into the 'unattributed' bucket (which fabricates a
+    // 'no agents have teams' reality). It must surface the honest error state.
+    mockAgentQ.mockReturnValue(loaded(SPEND03_AGENT_ROLLUP));
+    mockThreadQ.mockReturnValue(loaded([]));
+    mockModelQ.mockReturnValue(loaded([]));
+    mockAgentsList.mockReturnValue(errored() as ReturnType<typeof useAgentsList>);
+
+    render(<SpendPage />);
+    const card = screen.getByText('By team').closest('div') as HTMLElement;
+
+    // No fabricated 'unattributed' bucket from joining against the empty []
+    // roster fallback when the roster itself failed.
+    expect(within(card).queryByText('unattributed')).toBeNull();
+    // Honest error/unavailable state instead — mirrors the spend-rollup case.
+    expect(
+      within(card).getByText("Couldn't load spend by team — retry"),
+    ).toBeDefined();
+  });
 });

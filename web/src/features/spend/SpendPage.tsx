@@ -876,7 +876,10 @@ export function SpendPage(): JSX.Element {
               agentRollup={agentQ.data ?? []}
               agents={roster}
               loading={agentQ.isLoading || agentsQ.isLoading}
-              error={agentQ.isError && !agentQ.isLoading}
+              error={
+                (agentQ.isError && !agentQ.isLoading) ||
+                (agentsQ.isError && !agentsQ.isLoading)
+              }
             />
             <BreakdownTable
               segment={segment}
