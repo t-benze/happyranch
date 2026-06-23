@@ -2,9 +2,13 @@
  * DreamsPage — the reflection feed (§4.8). Direction-A Pasture fidelity
  * pass (THR-030 Leg B Batch 9).
  *
- * Lists dreams with Pasture card routing: dream card -> dream detail,
- * .kb-cand -> KB candidate detail (within the dream detail drawer),
- * "Open reflection thread" -> the dream's thread.
+ * Layout (DREAMS-02): a single-column reflection FEED (the main column) plus
+ * a right-side overview RAIL (lg:flex-row, mirroring the TASKDET-03 / JOBDET-01
+ * two-column right-rail precedents). The detail drawer is a portaled overlay
+ * opened from a dream card, independent of the in-flow two-column layout.
+ *
+ * Card routing: dream card -> dream detail drawer, .kb-cand -> KB candidate
+ * detail (within the drawer), "Open reflection thread" -> the dream's thread.
  *
  * Pasture vocabulary:
  *   Cards: bg-surface + border-border-default + shadow-pasture-sm + rounded-lg
@@ -12,7 +16,7 @@
  *   Dream ID / timestamps / counts: font-mono tabular-nums
  *   Status pills: rounded-full bg-accent-soft/text-accent-text (completed),
  *     bg-danger-soft/text-feedback-danger (failed/timeout)
- *   List rail: w-rail (244px)
+ *   Right rail: lg:w-rail (244px) overview aside
  *   Semantic text: text-text-primary / secondary / muted — no hardcoded colors
  *   Calm empty state: EmptyState with display heading
  *
@@ -192,6 +196,61 @@ function LoadingSkeleton(): JSX.Element {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Right-side overview rail (DREAMS-02)                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Honest, data-backed rail. Totals are summed from the loaded feed's
+ * DreamRecord fields (reflections / learnings / candidates). The Schedule
+ * section carries calm static guidance only — the next-run TIME is honestly
+ * omitted because no field on the dreams payload backs it.
+ */
+function DreamsRail({ dreams }: { dreams: DreamRecord[] }): JSX.Element {
+  const totalLearnings = dreams.reduce((sum, d) => sum + d.new_learnings_count, 0);
+  const totalCandidates = dreams.reduce((sum, d) => sum + d.kb_candidate_count, 0);
+
+  return (
+    <aside
+      aria-label={`Dreams ${DREAM_STRINGS.railOverviewTitle.toLowerCase()}`}
+      className="lg:w-rail lg:shrink-0"
+    >
+      <div className="border-border-default bg-surface-raised space-y-4 rounded-xl border p-4">
+        {/* Overview — totals summed from the loaded feed (data-backed) */}
+        <section>
+          <h2 className="text-text-muted mb-2 text-xs font-semibold tracking-wider uppercase">
+            {DREAM_STRINGS.railOverviewTitle}
+          </h2>
+          <ul className="text-text-secondary space-y-1 font-mono text-xs tabular-nums">
+            <li>{DREAM_STRINGS.reflectionsCount(dreams.length)}</li>
+            <li>{DREAM_STRINGS.learningsCount(totalLearnings)}</li>
+          </ul>
+        </section>
+
+        {/* Knowledge candidates — data-backed count; calm empty when none */}
+        <section className="border-border-default border-t pt-4">
+          <h2 className="text-text-muted mb-2 text-xs font-semibold tracking-wider uppercase">
+            {DREAM_STRINGS.railCandidatesTitle}
+          </h2>
+          <p className="text-text-secondary text-xs">
+            {totalCandidates > 0
+              ? DREAM_STRINGS.candidatesCount(totalCandidates)
+              : DREAM_STRINGS.railCandidatesEmpty}
+          </p>
+        </section>
+
+        {/* Schedule — calm guidance; next-run time honestly omitted (unbacked) */}
+        <section className="border-border-default border-t pt-4">
+          <h2 className="text-text-muted mb-2 text-xs font-semibold tracking-wider uppercase">
+            {DREAM_STRINGS.railScheduleTitle}
+          </h2>
+          <p className="text-text-muted text-xs">{DREAM_STRINGS.railScheduleNote}</p>
+        </section>
+      </div>
+    </aside>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Main page                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -204,64 +263,72 @@ export function DreamsPage(): JSX.Element {
   const dreams = dreamsQ.data?.dreams ?? [];
 
   return (
-    <div className="flex h-full">
-      {/* List rail — w-rail (244px) */}
-      <main className="w-rail border-border-default bg-surface shrink-0 overflow-y-auto border-r">
-        <header className="border-border-default border-b p-4">
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto max-w-5xl px-4 py-6">
+        <header className="border-border-default mb-6 border-b pb-4">
           <PageHeader
             title={<span className="font-display">{DREAM_STRINGS.pageTitle}</span>}
             meta={DREAM_STRINGS.pageSubtitle}
           />
         </header>
 
-        {dreamsQ.isLoading ? (
-          <LoadingSkeleton />
-        ) : dreamsQ.isError ? (
-          <div className="space-y-3 p-4 text-center">
-            <p className="text-feedback-danger text-sm">{DREAM_STRINGS.errorTitle}</p>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() =>
-                queryClient.invalidateQueries({
-                  queryKey: ['dreams-list', orgSlug],
-                })
-              }
-            >
-              {DREAM_STRINGS.retry}
-            </Button>
-          </div>
-        ) : dreams.length === 0 ? (
-          <EmptyState
-            title={DREAM_STRINGS.emptyTitle}
-            body={DREAM_STRINGS.emptyBody}
-          />
-        ) : (
-          <div className="flex flex-col gap-1 p-3">
-            {/* Count eyebrow — Pasture label */}
-            <p className="text-text-secondary mb-1 px-1 text-xs font-semibold tracking-wider uppercase">
-              {dreams.length} dream{dreams.length !== 1 ? 's' : ''}
-            </p>
-            <ul className="flex flex-col gap-3">
-              {dreams.map((d) => (
-                <DreamCard
-                  key={d.dream_id}
-                  dream={d}
-                  slug={orgSlug ?? ''}
-                  active={selectedDreamId === d.dream_id}
+        {/* Single-column reflection feed + right-side rail (DREAMS-02) */}
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
+          {/* Reflection feed — the single main column */}
+          <main className="min-w-0 flex-1">
+            {dreamsQ.isLoading ? (
+              <LoadingSkeleton />
+            ) : dreamsQ.isError ? (
+              <div className="space-y-3 p-4 text-center">
+                <p className="text-feedback-danger text-sm">{DREAM_STRINGS.errorTitle}</p>
+                <Button
+                  size="sm"
+                  variant="outline"
                   onClick={() =>
-                    setSelectedDreamId((prev) =>
-                      prev === d.dream_id ? null : d.dream_id,
-                    )
+                    queryClient.invalidateQueries({
+                      queryKey: ['dreams-list', orgSlug],
+                    })
                   }
-                />
-              ))}
-            </ul>
-          </div>
-        )}
-      </main>
+                >
+                  {DREAM_STRINGS.retry}
+                </Button>
+              </div>
+            ) : dreams.length === 0 ? (
+              <EmptyState
+                title={DREAM_STRINGS.emptyTitle}
+                body={DREAM_STRINGS.emptyBody}
+              />
+            ) : (
+              <div className="flex flex-col gap-1">
+                {/* Count eyebrow — Pasture label */}
+                <p className="text-text-secondary mb-1 px-1 text-xs font-semibold tracking-wider uppercase">
+                  {dreams.length} dream{dreams.length !== 1 ? 's' : ''}
+                </p>
+                <ul className="flex flex-col gap-3">
+                  {dreams.map((d) => (
+                    <DreamCard
+                      key={d.dream_id}
+                      dream={d}
+                      slug={orgSlug ?? ''}
+                      active={selectedDreamId === d.dream_id}
+                      onClick={() =>
+                        setSelectedDreamId((prev) =>
+                          prev === d.dream_id ? null : d.dream_id,
+                        )
+                      }
+                    />
+                  ))}
+                </ul>
+              </div>
+            )}
+          </main>
 
-      {/* Detail drawer — fills remaining space */}
+          {/* Right-side overview rail — honest, data-backed sections */}
+          <DreamsRail dreams={dreams} />
+        </div>
+      </div>
+
+      {/* Detail drawer — portaled overlay, opens on dream-card click */}
       {selectedDreamId && (
         <DreamDetailPane
           dreamId={selectedDreamId}

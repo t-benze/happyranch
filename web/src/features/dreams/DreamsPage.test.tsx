@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -437,5 +437,63 @@ describe('DreamsPage', () => {
     expect(qc.invalidateQueries).toHaveBeenCalledWith(
       expect.objectContaining({ queryKey: ['dream', 'test-org', 'DREAM-0011'] }),
     );
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  DREAMS-02 — single-column feed + right-side rail reshape         */
+  /* ---------------------------------------------------------------- */
+
+  it('renders the single-column feed + right-rail aside in the EMPTY state', () => {
+    mockDreamsList.mockReturnValue(loaded({ dreams: [] }));
+    renderPage(<DreamsPage />);
+
+    // Right rail is a labelled <aside> (complementary landmark)
+    expect(screen.getByRole('complementary', { name: /overview/i })).toBeDefined();
+    // Feed column still shows the calm empty state
+    expect(screen.getByText('No dreams yet')).toBeDefined();
+  });
+
+  it('renders the single-column feed + right-rail aside in the POPULATED state', () => {
+    mockDreamsList.mockReturnValue(
+      loaded({ dreams: [QUIET_DREAM, DREAM_WITH_CANDIDATES] }),
+    );
+    renderPage(<DreamsPage />);
+
+    expect(screen.getByRole('complementary', { name: /overview/i })).toBeDefined();
+    // Feed column still shows the dream cards
+    expect(screen.getByText('DREAM-0012')).toBeDefined();
+    expect(screen.getByText('DREAM-0011')).toBeDefined();
+  });
+
+  it('right rail surfaces data-backed totals summed from the loaded feed', () => {
+    // QUIET: 2 learnings / 0 candidates · WITH_CANDIDATES: 1 learning / 2 candidates
+    mockDreamsList.mockReturnValue(
+      loaded({ dreams: [QUIET_DREAM, DREAM_WITH_CANDIDATES] }),
+    );
+    renderPage(<DreamsPage />);
+
+    const rail = screen.getByRole('complementary', { name: /overview/i });
+    expect(within(rail).getByText('2 reflections')).toBeDefined();
+    expect(within(rail).getByText('3 learnings')).toBeDefined();
+    expect(within(rail).getByText('2 candidates')).toBeDefined();
+  });
+
+  it('right rail shows the calm empty Knowledge-candidates state when none are backed', () => {
+    mockDreamsList.mockReturnValue(loaded({ dreams: [] }));
+    renderPage(<DreamsPage />);
+
+    const rail = screen.getByRole('complementary', { name: /overview/i });
+    expect(within(rail).getByText('No knowledge candidates')).toBeDefined();
+  });
+
+  it('honestly omits a fabricated next-run time in the Schedule rail section', () => {
+    mockDreamsList.mockReturnValue(loaded({ dreams: [] }));
+    renderPage(<DreamsPage />);
+
+    const rail = screen.getByRole('complementary', { name: /overview/i });
+    // Schedule section renders calm, non-fabricated guidance ...
+    expect(within(rail).getByText(/configured in Settings/i)).toBeDefined();
+    // ... and never claims a (data-unbacked) next-run time.
+    expect(within(rail).queryByText(/next run/i)).toBeNull();
   });
 });
