@@ -115,6 +115,67 @@ describe('TasksPage — read path (roots endpoint)', () => {
     });
   });
 
+  // TASKS-04: group-by control is a segmented control (not plain text tabs).
+  test('renders the group-by control as a bordered segmented control (TASKS-04)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [TASK] }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/tasks`);
+    const tablist = await screen.findByRole('tablist', { name: 'Group by' });
+    // Segmented = a grouped, bordered, rounded container — not plain text tabs.
+    expect(tablist).toHaveClass('rounded-lg');
+    expect(tablist).toHaveClass('border');
+    // The active segment ('Status', the default) carries the accent fill.
+    expect(screen.getByRole('tab', { name: 'Status' })).toHaveClass(
+      'data-[state=active]:bg-accent-soft',
+    );
+  });
+
+  // TASKS-04: group headers carry a count badge + a colored status dot, both
+  // pure client-side derivations of the already-loaded roots payload.
+  test('group headers carry a count badge and a colored status dot (TASKS-04)', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const a = rootTask({
+      task_id: 'TASK-0400',
+      status: 'in_progress',
+      severity_rollup: 'in_progress',
+      brief: 'First running root',
+    });
+    const b = rootTask({
+      task_id: 'TASK-0401',
+      status: 'in_progress',
+      severity_rollup: 'in_progress',
+      brief: 'Second running root',
+    });
+    const c = rootTask({
+      task_id: 'TASK-0402',
+      status: 'pending',
+      severity_rollup: 'pending',
+      brief: 'Awaiting pickup',
+    });
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [a, b, c] }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/tasks`);
+    const inProgress = await screen.findByRole('heading', {
+      name: /In progress/,
+    });
+    // Count badge reflects the client-side group size (2 in_progress roots).
+    expect(within(inProgress).getByText('2')).toBeInTheDocument();
+    // Colored status dot uses the green 'open' token for in_progress.
+    const dot = inProgress.querySelector('span[aria-hidden="true"]');
+    expect(dot).not.toBeNull();
+    expect(dot).toHaveClass('text-status-open');
+    // The pending group shows a count of 1.
+    const pending = screen.getByRole('heading', { name: /Pending/ });
+    expect(within(pending).getByText('1')).toBeInTheDocument();
+  });
+
   test('renders severity_rollup badge in TaskCard (worst subtree status)', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     // Root is pending but has a blocked child → severity_rollup = 'blocked'

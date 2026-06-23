@@ -30,23 +30,74 @@ const GROUP_BY_OPTIONS: { value: GroupBy; label: string }[] = [
   { value: 'thread', label: 'Thread' },
 ];
 
-/** Pasture group section heading — serif display, muted for resolved groups. */
+/**
+ * Colored status dot per group. Status groups map to the same semantic tokens
+ * StatusBadge uses; non-status groups (agent / thread) carry a neutral dot —
+ * we never claim a status color for a dimension that has no single status.
+ */
+type GroupDot =
+  | 'in_progress'
+  | 'pending'
+  | 'blocked'
+  | 'completed'
+  | 'failed'
+  | 'resolved_superseded'
+  | 'neutral';
+
+const DOT_COLOR: Record<GroupDot, string> = {
+  in_progress: 'text-status-open',
+  pending: 'text-status-archiving',
+  blocked: 'text-status-blocked',
+  completed: 'text-status-open',
+  failed: 'text-status-abandoned',
+  resolved_superseded: 'text-status-archived',
+  neutral: 'text-text-muted',
+};
+
+const STATUS_DOT_KEYS = new Set<string>([
+  'in_progress',
+  'pending',
+  'blocked',
+  'completed',
+  'failed',
+  'resolved_superseded',
+]);
+
+function groupDot(key: string, by: GroupBy): GroupDot {
+  if (by === 'status' && STATUS_DOT_KEYS.has(key)) return key as GroupDot;
+  return 'neutral';
+}
+
+/**
+ * Pasture group section heading — serif display, muted for resolved groups.
+ * Carries a colored status dot and a count badge (TASKS-04). Both are pure
+ * client-side derivations of the already-loaded roots payload.
+ */
 function GroupHeading({
   label,
+  count,
+  dot,
   dimmed,
 }: {
   label: string;
+  count: number;
+  dot: GroupDot;
   dimmed?: boolean;
 }): JSX.Element {
   return (
     <h2
-      className={
-        dimmed
-          ? 'font-display text-text-muted text-lg font-medium'
-          : 'font-display text-text-primary text-lg font-medium'
-      }
+      className={`font-display flex items-center gap-2 text-lg font-medium ${
+        dimmed ? 'text-text-muted' : 'text-text-primary'
+      }`}
     >
-      {label}
+      <span
+        aria-hidden
+        className={`inline-block h-2 w-2 shrink-0 rounded-full bg-current ${DOT_COLOR[dot]}`}
+      />
+      <span>{label}</span>
+      <span className="bg-surface-sunken text-text-muted rounded-full px-1.5 py-0.5 text-xs font-medium tabular-nums">
+        {count}
+      </span>
     </h2>
   );
 }
@@ -192,11 +243,17 @@ export function TasksPage(): JSX.Element {
           className="mt-3"
           value={groupBy}
           onValueChange={(v) => setGroupBy(v as GroupBy)}
-          aria-label="Group by"
         >
-          <TabsList>
+          <TabsList
+            aria-label="Group by"
+            className="border-border-default bg-surface-sunken gap-0.5 rounded-lg border p-0.5"
+          >
             {GROUP_BY_OPTIONS.map((opt) => (
-              <TabsTrigger key={opt.value} value={opt.value}>
+              <TabsTrigger
+                key={opt.value}
+                value={opt.value}
+                className="data-[state=active]:bg-accent-soft data-[state=active]:text-accent-text rounded-md px-3 py-1"
+              >
                 {opt.label}
               </TabsTrigger>
             ))}
@@ -219,6 +276,8 @@ export function TasksPage(): JSX.Element {
                 <section key={key} className={dimmed ? 'opacity-60' : undefined}>
                   <GroupHeading
                     label={groupLabel(key, groupBy)}
+                    count={tasks.length}
+                    dot={groupDot(key, groupBy)}
                     dimmed={dimmed}
                   />
                   <ul className="mt-2">
