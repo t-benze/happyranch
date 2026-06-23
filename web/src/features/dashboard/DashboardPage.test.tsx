@@ -191,6 +191,32 @@ describe('DashboardPage', () => {
     expect(within(rail).queryByText(/Waiting on you/i)).not.toBeInTheDocument();
   });
 
+  test('section headers mix serif main-column card titles with small-eyebrow rail labels (THR-030 HOME-07)', async () => {
+    const s = emptySummary();
+    s.org_age_days = 14;
+    s.narrative_counts.completed_today = 5;
+    seedShell();
+    server.use(handler(s));
+    renderWithProviders(<AppRoutes />, { route: ROUTE });
+
+    const main = await screen.findByTestId('dashboard-main');
+    const rail = screen.getByTestId('dashboard-rail');
+
+    // Main-column primary cards: serif (var(--font-display)) titles, NOT the
+    // all-caps utilitarian label. Both must be softened off the eyebrow style.
+    const waiting = within(main).getByText(/Waiting on you/i);
+    expect(waiting).toHaveClass('font-display');
+    expect(waiting).not.toHaveClass('uppercase');
+    const recent = within(main).getByText(/^Recent activity$/);
+    expect(recent).toHaveClass('font-display');
+    expect(recent).not.toHaveClass('uppercase');
+
+    // Right-rail secondary cards stay small uppercase eyebrows (no serif role).
+    const today = within(rail).getByText(/^Today$/);
+    expect(today).toHaveClass('uppercase');
+    expect(today).not.toHaveClass('font-display');
+  });
+
   test('greeting heading is a serif status summary derived from the waiting count', async () => {
     const s = emptySummary();
     s.org_age_days = 14;

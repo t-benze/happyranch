@@ -56,17 +56,32 @@ function relativeAge(iso: string, now: Date): string {
 interface PanelProps {
   title: string;
   meta?: string;
+  /**
+   * Header hierarchy (THR-030 HOME-07). 'eyebrow' (default) paints the small
+   * uppercase tracked label the secondary right-rail cards use; 'title' paints
+   * the Direction-A serif card title (var(--font-display)) the primary
+   * main-column cards use. The a-dashboard reference mixes serif card titles
+   * (Waiting on you / Recent activity) with small eyebrows (Today / Org pulse
+   * / This week's burn) rather than one uniform all-caps utilitarian label.
+   */
+  variant?: 'eyebrow' | 'title';
   children: ReactNode;
 }
 
 /** Direction-A Pasture card — matches ds.css .card (bg-surface, rounded-lg 18px, soft shadow). */
-function Panel({ title, meta, children }: PanelProps): JSX.Element {
+function Panel({ title, meta, variant = 'eyebrow', children }: PanelProps): JSX.Element {
   return (
     <section className="border-border-default bg-surface shadow-pasture-sm rounded-lg border p-5">
       <header className="mb-4 flex items-baseline justify-between">
-        <h2 className="text-text-secondary text-xs font-semibold tracking-wider uppercase">
-          {title}
-        </h2>
+        {variant === 'title' ? (
+          <h2 className="font-display text-h3 text-text-primary font-medium">
+            {title}
+          </h2>
+        ) : (
+          <h2 className="text-text-secondary text-xs font-semibold tracking-wider uppercase">
+            {title}
+          </h2>
+        )}
         {meta ? (
           <span className="text-text-muted font-mono text-xs">{meta}</span>
         ) : null}
@@ -201,6 +216,7 @@ export function DashboardPage(): JSX.Element {
             aria-label="Main column"
           >
             <Panel
+              variant="title"
               title={
                 pendingCount > 0
                   ? `Waiting on you · ${pendingCount}`
@@ -226,7 +242,7 @@ export function DashboardPage(): JSX.Element {
               )}
             </Panel>
 
-            <Panel title="Recent activity">
+            <Panel variant="title" title="Recent activity">
               {s.recent_activity.length === 0 ? (
                 <p className="text-text-muted text-sm">No recent activity.</p>
               ) : (
