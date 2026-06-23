@@ -167,6 +167,32 @@ function HeroCard({
 }
 
 /* ------------------------------------------------------------------ */
+/*  Cache-saved callout — positive/success affordance (SPEND-02)        */
+/* ------------------------------------------------------------------ */
+
+/** Green "cache saved" callout shown adjacent to the hero burn card.
+ *  Cache reads are served-from-cache and never counted toward burn — that
+ *  IS the saving. The served-from-cache % reuses the SAME denominator as the
+ *  hero "of all reads" stat (cache / (fresh_burn_total + cache)); never a
+ *  second, divergent definition. When cacheRead is 0 we still render an
+ *  honest zero state rather than hiding the element. */
+function CacheSavedCallout({
+  cacheRead,
+  totalChurn,
+}: {
+  cacheRead: number;
+  totalChurn: number;
+}): JSX.Element {
+  return (
+    <div className="border-feedback-success/30 bg-feedback-success/10 text-feedback-success mt-3 rounded-lg border p-3 text-sm">
+      <p className="font-medium tabular-nums">
+        Cache saved {fmtNum(cacheRead)} tokens · {pct(cacheRead, totalChurn + cacheRead)} served from cache
+      </p>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Breakdown table                                                    */
 /* ------------------------------------------------------------------ */
 
@@ -636,6 +662,8 @@ export function SpendPage(): JSX.Element {
 
   const isAnyLoading = agentQ.isLoading || threadQ.isLoading || modelQ.isLoading;
   const isAnyError = agentQ.isError || threadQ.isError || modelQ.isError;
+  // The hero shows its skeleton only when loading AND we have no churn to show yet.
+  const heroLoading = isAnyLoading && !heroTotals.totalChurn;
 
   return (
     <div className="bg-surface-canvas h-full overflow-y-auto">
@@ -673,8 +701,16 @@ export function SpendPage(): JSX.Element {
             inputTokens={heroTotals.inputTokens}
             outputTokens={heroTotals.outputTokens}
             windowLabel={win.label}
-            loading={isAnyLoading && !heroTotals.totalChurn}
+            loading={heroLoading}
           />
+          {/* Positive cache-saved callout — suppressed only while the hero is a
+              loading skeleton or the data errored (no trustworthy numbers). */}
+          {!heroLoading && !isAnyError && (
+            <CacheSavedCallout
+              cacheRead={heroTotals.cacheRead}
+              totalChurn={heroTotals.totalChurn}
+            />
+          )}
         </div>
 
         {/* Breakdown */}

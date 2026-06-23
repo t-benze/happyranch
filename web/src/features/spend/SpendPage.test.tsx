@@ -542,4 +542,63 @@ describe('SpendPage', () => {
     fireEvent.keyDown(btns[1]!, { key: 'ArrowLeft' });
     expect(document.activeElement).toBe(btns[0]);
   });
+
+  // ---- SPEND-02: positive "cache saved" callout ----
+
+  it('renders the green "cache saved" callout with saved tokens + served-from-cache %', () => {
+    // cache_read 2000, total_tokens (fresh churn) 1600 -> served = 2000/(1600+2000) = 56%
+    mockAgentQ.mockReturnValue(
+      loaded([
+        {
+          agent: 'dev_agent',
+          sessions: 3,
+          input_tokens: 1000,
+          output_tokens: 500,
+          cache_read_tokens: 2000,
+          cache_creation_tokens: 0,
+          reasoning_tokens: 100,
+          total_tokens: 1600,
+        },
+      ]),
+    );
+    mockThreadQ.mockReturnValue(loaded([]));
+    mockModelQ.mockReturnValue(loaded([]));
+
+    render(<SpendPage />);
+
+    // N saved = total cache_read_tokens (fmtNum -> "2.0K"); % uses the SAME
+    // denominator as the hero "of all reads" stat: cache / (fresh + cache).
+    const callout = screen.getByText(
+      /Cache saved 2\.0K tokens .* 56% served from cache/,
+    );
+    expect(callout).toBeDefined();
+    // Styled with the design-system success token (no hardcoded hex)
+    expect(callout.closest('[class*="feedback-success"]')).not.toBeNull();
+  });
+
+  it('shows an honest zero state in the cache-saved callout when cache_read is 0', () => {
+    mockAgentQ.mockReturnValue(
+      loaded([
+        {
+          agent: 'dev_agent',
+          sessions: 2,
+          input_tokens: 1000,
+          output_tokens: 600,
+          cache_read_tokens: 0,
+          cache_creation_tokens: 0,
+          reasoning_tokens: 0,
+          total_tokens: 1600,
+        },
+      ]),
+    );
+    mockThreadQ.mockReturnValue(loaded([]));
+    mockModelQ.mockReturnValue(loaded([]));
+
+    render(<SpendPage />);
+
+    // Honest zero — not a hidden element.
+    expect(
+      screen.getByText(/Cache saved 0 tokens .* 0% served from cache/),
+    ).toBeDefined();
+  });
 });
